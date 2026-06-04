@@ -8,6 +8,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 
 from ..schemas.documents import (
     AttachDocumentRequest,
@@ -33,6 +34,8 @@ from ..schemas.documents import (
 )
 
 router = APIRouter()
+
+from ..services.storage_service import get_storage_service  # noqa: E402
 
 
 # File size limits
@@ -371,8 +374,15 @@ async def upload_document(
             file.filename,
         )
 
-        # In production: Upload to S3/MinIO here
-        # For now, just store metadata
+        # Upload bytes to storage (S3/MinIO) — was a stub (metadata only) before
+        storage = get_storage_service()
+        await file.seek(0)
+        upload_result = await storage.upload_file(
+            file=file,
+            tenant_id=ctx["tenant_id"],
+            category=category or "other",
+        )
+        file_path = upload_result.file_path
 
         # Calculate checksum
         import hashlib
@@ -621,3 +631,39 @@ async def get_entity_documents(
             data=[EntityDocument(**dict(row)) for row in rows],
             total=len(rows),
         )
+
+
+@router.get("/{document_id}/download")
+async def download_document(request: Request, document_id: UUID):
+    """Proxy-stream a document file from storage (S3/MinIO)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+        row = await conn.fetchrow(
+            "SELECT file_name, file_path, file_type FROM documents "
+            "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+            document_id,
+            ctx["tenant_id"],
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+    storage = get_storage_service()
+    obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
+    body = obj["Body"]
+
+    def iter_body():
+        while chunk := body.read(65536):
+            yield chunk
+        body.close()
+
+    return StreamingResponse(
+        iter_body(),
+        media_type=row["file_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{row["file_name"]}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )

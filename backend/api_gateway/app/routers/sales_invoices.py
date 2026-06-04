@@ -4165,7 +4165,7 @@ async def list_invoice_attachments(
             raise HTTPException(status_code=404, detail="Invoice not found")
 
         rows = await conn.fetch(
-            "SELECT id, filename, file_path, file_size, mime_type, uploaded_at FROM sales_invoice_attachments WHERE invoice_id = $1 ORDER BY uploaded_at DESC",
+            'SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name FROM sales_invoice_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text WHERE sa.invoice_id = $1 ORDER BY sa.uploaded_at DESC',
             invoice_id,
         )
 
@@ -4191,6 +4191,7 @@ async def list_invoice_attachments(
                     "uploaded_at": r["uploaded_at"].isoformat()
                     if r["uploaded_at"]
                     else None,
+                    "uploaded_by_name": r["uploaded_by_name"],
                 }
             )
 

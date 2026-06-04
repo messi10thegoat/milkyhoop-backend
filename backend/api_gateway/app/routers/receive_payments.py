@@ -41,6 +41,7 @@ from datetime import date
 
 from ..schemas.receive_payments import (
     CreateReceivePaymentRequest,
+    ReceivePaymentDetail,
     ReceivePaymentDetailResponse,
     ReceivePaymentListResponse,
     ReceivePaymentResponse,
@@ -2256,7 +2257,7 @@ async def list_payment_attachments(request: Request, payment_id: str):
                     "file_name": r["file_name"],
                     "file_size": r["file_size"],
                     "mime_type": r["mime_type"],
-                    "url": r["url"],
+                    "url": r["url"] or f"/api/documents/{r['id']}/download",
                     "thumbnail_url": r["thumbnail_url"],
                     "uploaded_at": r["uploaded_at"].isoformat()
                     if r["uploaded_at"]
