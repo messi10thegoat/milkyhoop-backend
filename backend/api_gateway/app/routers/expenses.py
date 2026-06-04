@@ -28,10 +28,46 @@ from ..schemas.expenses import (
     CalculateExpenseResponse,
     ExpenseAutocompleteResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Fase D2.1: required role mappings for expenses posting path.
+# VAT_INPUT is PKP-gated (toggle via resolve_account_id_by_role_if_pkp).
+# WHT_PPH_PAYABLE replaces the previous hardcoded 2-10300 (which was VAT_OUTPUT
+# interim and never WHT in production; latent bug fix).
+# CASH_GENERAL + AP_TRADE are listed for forward-compat and parity with the
+# D1 deferred precondition contract; current expense path always uses
+# user-picked paid_through bank, so CASH_GENERAL is a fallback (not yet
+# wired here) and AP_TRADE is reserved for future credit-expense work.
+EXPENSE_REQUIRED_ROLES = [
+    AccountRole.VAT_INPUT,
+    AccountRole.CASH_GENERAL,
+    AccountRole.AP_TRADE,
+]
+
+# One-time precondition check flag.
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool):
+    """Run role-mapping precondition once per process for expenses.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(pool, "expenses", EXPENSE_REQUIRED_ROLES)
+    _precondition_checked = True
+
 
 # Connection pool (initialized on first request)
 
@@ -135,27 +171,33 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             }
         )
 
-        # Dr. PPN Masukan (if tax)
+        # Dr. PPN Masukan (if tax) — PKP-gated via role resolver.
+        # Non-PKP tenants: skip line entirely (no PPN in journal).
         if tax_amount > 0:
-            ppn_name = "PPN Masukan"
-            ppn_code = "1-10800"
-            try:
-                row = await conn.fetchrow(
-                    "SELECT name FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10800' AND is_active = true",
+            vat_input_id = await resolve_account_id_by_role_if_pkp(
+                conn, ctx["tenant_id"], AccountRole.VAT_INPUT
+            )
+            if vat_input_id is not None:
+                ppn_row = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts "
+                    "WHERE id = $1 AND tenant_id = $2",
+                    vat_input_id,
                     ctx["tenant_id"],
                 )
-                if row:
-                    ppn_name = row["name"]
-            except Exception:
-                pass
-            lines.append(
-                {
-                    "account_name": ppn_name,
-                    "account_code": ppn_code,
-                    "debit": tax_amount,
-                    "credit": 0,
-                }
-            )
+                lines.append(
+                    {
+                        "account_name": ppn_row["name"] if ppn_row else "PPN Masukan",
+                        "account_code": ppn_row["account_code"] if ppn_row else "",
+                        "debit": tax_amount,
+                        "credit": 0,
+                    }
+                )
+            else:
+                logger.warning(
+                    "Non-PKP tenant %s previewed expense with tax_amount > 0; "
+                    "VAT line skipped",
+                    ctx["tenant_id"],
+                )
 
         # Cr. Bank/Kas
         bank_name = "Bank/Kas"
@@ -260,31 +302,38 @@ async def get_expenses_summary(
                 ctx["tenant_id"],
             )
 
-            # Tax total from journal_lines (PPN Masukan = account 1-10800, ASSET type)
-            total_tax = (
-                await conn.fetchval(
-                    f"""
-                WITH expense_journals AS (
-                    SELECT je.id
-                    FROM journal_entries je
-                    WHERE je.tenant_id = $1
-                      AND je.status = 'POSTED'
-                      AND je.source_type = 'expense'
-                      AND je.reversal_of_id IS NULL
-                      AND je.reversed_by_id IS NULL
-                      AND {date_filter_journal}
-                )
-                SELECT COALESCE(SUM(jl.debit), 0)
-                FROM expense_journals ej
-                JOIN journal_lines jl ON jl.journal_id = ej.id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE coa.account_code = '1-10800'
-                  AND jl.debit > 0
-            """,
-                    ctx["tenant_id"],
-                )
-                or 0
+            # Tax total from journal_lines (VAT_INPUT role).
+            # Non-PKP tenants return None -> total_tax = 0 (no PPN posted).
+            vat_input_id_summary = await resolve_account_id_by_role_if_pkp(
+                conn, ctx["tenant_id"], AccountRole.VAT_INPUT
             )
+            if vat_input_id_summary is not None:
+                total_tax = (
+                    await conn.fetchval(
+                        f"""
+                    WITH expense_journals AS (
+                        SELECT je.id
+                        FROM journal_entries je
+                        WHERE je.tenant_id = $1
+                          AND je.status = 'POSTED'
+                          AND je.source_type = 'expense'
+                          AND je.reversal_of_id IS NULL
+                          AND je.reversed_by_id IS NULL
+                          AND {date_filter_journal}
+                    )
+                    SELECT COALESCE(SUM(jl.debit), 0)
+                    FROM expense_journals ej
+                    JOIN journal_lines jl ON jl.journal_id = ej.id
+                    WHERE jl.account_id = $2
+                      AND jl.debit > 0
+                """,
+                        ctx["tenant_id"],
+                        vat_input_id_summary,
+                    )
+                    or 0
+                )
+            else:
+                total_tax = 0
 
             # Metadata from expenses table (non-financial: counts only)
             metadata = await conn.fetchrow(
@@ -894,12 +943,6 @@ async def list_expense_ledger(
                 else:
                     effective_status = "posted"
 
-                # Build display title
-                if has_expense_record and row["expense_number"]:
-                    title = row["expense_number"]
-                else:
-                    title = row["journal_description"] or row["journal_number"]
-
                 # Build account name
                 account_name = (
                     row["expense_account_name"]
@@ -1075,6 +1118,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
@@ -1418,24 +1462,34 @@ async def create_expense_journal(
             )
             line_number += 1
 
-    # DEBIT: PPN Masukan (if tax)
+    # DEBIT: PPN Masukan (if tax) — PKP toggle via role resolver.
+    # Non-PKP tenants must NOT submit tax_amount > 0; that would break Law 4
+    # (no VAT_INPUT account to debit). Reject with 422 instead of silent skip.
+    vat_input_id = await resolve_account_id_by_role_if_pkp(
+        conn, tenant_id, AccountRole.VAT_INPUT
+    )
     if tax_amount > 0:
-        ppn_masukan_id = await resolve_account_id(conn, tenant_id, "1-10800")
-
-        if ppn_masukan_id:
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (
-                    journal_id, line_number, account_id, debit, credit, memo
-                ) VALUES ($1, $2, $3, $4, 0, $5)
-            """,
-                str(journal_id),
-                line_number,
-                str(ppn_masukan_id),
-                tax_amount,
-                "PPN Masukan",
+        if vat_input_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Tenant non-PKP tidak boleh mencatat PPN Masukan "
+                    "(tax_amount harus 0)."
+                ),
             )
-            line_number += 1
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, 0, $5)
+        """,
+            str(journal_id),
+            line_number,
+            str(vat_input_id),
+            tax_amount,
+            "PPN Masukan",
+        )
+        line_number += 1
 
     # CREDIT: Kas/Bank (Law 4: total_amount = subtotal + tax - pph)
     cash_credit = subtotal + tax_amount - pph_amount
@@ -1453,23 +1507,36 @@ async def create_expense_journal(
     )
     line_number += 1
 
-    # CREDIT: Hutang PPh (if pph withheld)
+    # CREDIT: Hutang PPh (if pph withheld) — WHT_PPH_PAYABLE role.
+    # Pre-D2.1 BUG: previously hardcoded the old generic Utang Pajak
+    # account which after D1 split belongs to no canonical role (interim
+    # VAT_OUTPUT was repointed to the dedicated PPN Keluaran code).
+    # Correct WHT transactional account is resolved via WHT_PPH_PAYABLE role.
+    # Law 4: NULL guard -> 422, never silent skip.
     if pph_amount > 0:
-        hutang_pph_id = await resolve_account_id(conn, tenant_id, "2-10300")
-
-        if hutang_pph_id:
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (
-                    journal_id, line_number, account_id, debit, credit, memo
-                ) VALUES ($1, $2, $3, 0, $4, $5)
-            """,
-                str(journal_id),
-                line_number,
-                str(hutang_pph_id),
-                pph_amount,
-                "PPh dipotong",
+        hutang_pph_id = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.WHT_PPH_PAYABLE
+        )
+        if not hutang_pph_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Akun Hutang PPh (WHT_PPH_PAYABLE) belum dipetakan untuk "
+                    "tenant ini. Lengkapi mapping di account_roles."
+                ),
             )
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, 0, $4, $5)
+        """,
+            str(journal_id),
+            line_number,
+            str(hutang_pph_id),
+            pph_amount,
+            "PPh dipotong",
+        )
 
     # Law 20: DRAFT->POSTED after all lines inserted
     await conn.execute(
@@ -1477,20 +1544,20 @@ async def create_expense_journal(
         journal_id,
     )
 
-    # Wave 2: Write document_tax_lines (PPN on expense)
-    if tax_amount > 0 and tax_id:
+    # Wave 2: Write document_tax_lines (PPN on expense).
+    # Only when PKP tenant + tax line was emitted (vat_input_id resolved).
+    if tax_amount > 0 and tax_id and vat_input_id is not None:
         import uuid as _uuid
 
-        # Get the PPN Masukan journal_line_id
+        # Get the PPN Masukan journal_line_id via resolved VAT_INPUT id.
         ppn_jl_id = await conn.fetchval(
             """
             SELECT id FROM journal_lines
-            WHERE journal_id = $1 AND account_id = (
-                SELECT id FROM chart_of_accounts WHERE tenant_id = $2 AND account_code = '1-10800' LIMIT 1
-            ) LIMIT 1
+            WHERE journal_id = $1 AND account_id = $2
+            LIMIT 1
             """,
             journal_id,
-            tenant_id,
+            vat_input_id,
         )
         # Resolve coa_id from tax_codes
         tc_coa = await conn.fetchval(
@@ -1727,6 +1794,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
