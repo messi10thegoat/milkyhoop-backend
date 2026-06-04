@@ -115,11 +115,11 @@ async def create_tenant_and_user(
                 """
                 INSERT INTO "User" (
                     id, email, name, role, "passwordHash",
-                    "tenantId", "isVerified", "createdAt", "updatedAt",
+                    "tenantId", last_active_tenant_id, "isVerified", "createdAt", "updatedAt",
                     "lastInteraction"
                 ) VALUES (
                     $1, $2, $3, 'ADMIN'::"Role", $4,
-                    $5, true, $6, $6,
+                    $5, $5, true, $6, $6,
                     $6
                 )
                 """,
