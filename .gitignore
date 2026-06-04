@@ -86,3 +86,7 @@ frontend/workers/
 frontend/service-worker.js
 frontend/icons/
 frontend/manifest.json
+
+# Backup files from in-flight patches
+*.bak
+*.bak_*
