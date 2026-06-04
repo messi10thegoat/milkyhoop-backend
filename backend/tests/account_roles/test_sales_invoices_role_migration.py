@@ -3,11 +3,10 @@
 Coverage:
     1. Module imports role_resolver helpers + precondition.
     2. SALES_INVOICE_REQUIRED_ROLES contains the 5 critical roles.
-    3. No hardcoded CoA literals in WRITE paths
-       (the only allowed remaining literal is the 2-10750 unearned-revenue
-       helper, which lives in read-style account lookup that is out of
-       scope of Fase C1.1 because REVENUE_DEFERRED is a FUTURE role
-       not yet seeded in account_roles).
+    3. ZERO hardcoded CoA literals in WRITE paths
+       (Fase C1.1 addendum V151+V152 promoted REVENUE_DEFERRED to TIER 1
+       so the last literal 2-10750 is gone — all CoA references resolve
+       via role_resolver).
     4. No `account_code = '1-104xx'` or `LIKE '1-104%'` filters remain.
     5. Precondition util reports CLEAN for the 5 required roles across
        every tenant (live DB).
@@ -105,6 +104,7 @@ def test_module_exports_required_roles_constant():
         "COGS_SALES",
         "INVENTORY_MERCHANDISE",
         "VAT_OUTPUT",
+        "REVENUE_DEFERRED",
     }
 
 
@@ -127,21 +127,15 @@ def test_post_path_calls_precondition_gate():
 
 
 def test_no_hardcoded_coa_codes_in_write_paths():
-    """Only one literal allowed: 2-10750 inside _resolve_unearned_revenue.
+    """ZERO hardcoded CoA literals in sales_invoices.py (Fase C1.1 final DoD).
 
-    REVENUE_DEFERRED is reserved as a FUTURE role but not yet seeded into
-    account_roles, so the unearned-revenue resolution stays as direct CoA
-    lookup until Fase D. Every other CoA literal must be gone.
+    Fase C1.1 addendum (V151+V152) promoted REVENUE_DEFERRED to TIER 1,
+    eliminating the last literal (2-10750 in _resolve_unearned_revenue).
+    Every CoA reference must now go through resolve_account_id_by_role().
     """
     src = open(SI_PATH).read()
     literals = re.findall(r"[\"']([0-9]-[0-9]{4,5})[\"']", src)
-    # Exactly one occurrence allowed and it must be 2-10750.
-    assert literals.count("2-10750") == 1, (
-        f"Expected 1 occurrence of 2-10750 (unearned-revenue helper), "
-        f"got {literals.count('2-10750')}"
-    )
-    other = [c for c in literals if c != "2-10750"]
-    assert not other, f"Unexpected hardcoded CoA literals: {other}"
+    assert not literals, f"Unexpected hardcoded CoA literals: {literals}"
 
 
 def test_no_sql_account_code_filter_literals():
@@ -171,6 +165,7 @@ def test_precondition_clean_for_sales_invoice_required_roles():
                     AccountRole.COGS_SALES,
                     AccountRole.INVENTORY_MERCHANDISE,
                     AccountRole.VAT_OUTPUT,
+                    AccountRole.REVENUE_DEFERRED,
                 ],
             )
             assert gaps == {}, f"unexpected mapping gaps: {gaps}"
@@ -232,6 +227,47 @@ def test_vat_output_resolves_to_2_10300_for_all_tenants():
                 assert r["account_code"] == "2-10300", (
                     f"tenant={r['tenant_id']} expected 2-10300 (interim), "
                     f"got {r['account_code']}"
+                )
+        finally:
+            await conn.close()
+
+    _run(body())
+
+
+# ---------------------------------------------------------------------------
+# REVENUE_DEFERRED mapping sanity (Fase C1.1 addendum — TIER 1 promotion)
+# ---------------------------------------------------------------------------
+def test_revenue_deferred_resolves_to_2_10750_for_all_tenants():
+    """Fase C1.1 addendum (V151+V152): REVENUE_DEFERRED -> 2-10750 for every tenant.
+
+    REVENUE_DEFERRED is the core PSAK 72 contract liability of the 3-event
+    model (V137): billing credits it, revenue debits it. Promoted from
+    FUTURE RESERVATION to TIER 1 to close the last sales_invoices.py
+    hardcoded literal.
+    """
+
+    async def body():
+        _require_dsn()
+        conn = await asyncpg.connect(SUPERUSER_DSN)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT ar.tenant_id, ca.account_code, ar.is_interim
+                FROM account_roles ar
+                JOIN chart_of_accounts ca ON ca.id = ar.account_id
+                WHERE ar.role_key = 'REVENUE_DEFERRED'
+                ORDER BY ar.tenant_id
+                """
+            )
+            assert rows, "REVENUE_DEFERRED must be mapped for every tenant"
+            for r in rows:
+                assert r["account_code"] == "2-10750", (
+                    f"tenant={r['tenant_id']} expected 2-10750, "
+                    f"got {r['account_code']}"
+                )
+                assert r["is_interim"] is False, (
+                    f"tenant={r['tenant_id']} REVENUE_DEFERRED must NOT be interim "
+                    f"(TIER 1 promotion is final)"
                 )
         finally:
             await conn.close()

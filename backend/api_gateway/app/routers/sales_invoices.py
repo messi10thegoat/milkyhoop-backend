@@ -39,6 +39,7 @@ SALES_INVOICE_REQUIRED_ROLES = [
     AccountRole.COGS_SALES,
     AccountRole.INVENTORY_MERCHANDISE,
     AccountRole.VAT_OUTPUT,
+    AccountRole.REVENUE_DEFERRED,
 ]
 
 # One-time precondition check flag. Audit runs once per process at first
@@ -777,15 +778,15 @@ def _r2d(v) -> Decimal:
 
 
 async def _resolve_unearned_revenue(conn, tenant_id: str):
-    """Resolve Pendapatan Diterima Dimuka. Tries 2-10750 first, falls back to 2-10700."""
-    acct = await conn.fetchval(
-        "SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND account_code=$2 AND is_active=true",
-        tenant_id,
-        "2-10750",
+    """Resolve Pendapatan Diterima Dimuka via REVENUE_DEFERRED role (Fase C1.1 addendum).
+
+    REVENUE_DEFERRED is promoted to TIER 1 — it is the core contract liability
+    of the 3-event PSAK 72 model (V137): billing credits this; revenue debits this.
+    Seeded by V152 across all tenants -> 2-10750.
+    """
+    return await resolve_account_id_by_role(
+        conn, tenant_id, AccountRole.REVENUE_DEFERRED
     )
-    if acct:
-        return acct
-    return await _resolve_unearned_revenue(conn, tenant_id)
 
 
 async def _update_invoice_fulfillment_status(conn, invoice_id, tenant_id):
