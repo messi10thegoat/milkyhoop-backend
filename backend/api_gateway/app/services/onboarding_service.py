@@ -8,7 +8,7 @@ import uuid
 import re
 import logging
 import bcrypt
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .db_pool import get_db_pool
 
@@ -18,16 +18,17 @@ logger = logging.getLogger(__name__)
 def slugify(text: str) -> str:
     """Convert business name to URL-safe slug."""
     text = text.lower().strip()
-    text = re.sub(r'[^\w\s-]', '', text)
-    text = re.sub(r'[\s_]+', '-', text)
-    text = re.sub(r'-+', '-', text)
-    text = text.strip('-')
-    return text or 'bisnis'
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_]+", "-", text)
+    text = re.sub(r"-+", "-", text)
+    text = text.strip("-")
+    return text or "bisnis"
 
 
 def generate_random_suffix(length: int = 4) -> str:
     """Generate random alphanumeric suffix for slug collision."""
     import secrets
+
     return secrets.token_hex(length // 2)
 
 
@@ -38,8 +39,7 @@ async def generate_unique_slug(pool, business_name: str) -> str:
     async with pool.acquire() as conn:
         # Try base slug first
         exists = await conn.fetchval(
-            'SELECT EXISTS(SELECT 1 FROM "Tenant" WHERE alias = $1)',
-            base_slug
+            'SELECT EXISTS(SELECT 1 FROM "Tenant" WHERE alias = $1)', base_slug
         )
         if not exists:
             return base_slug
@@ -48,8 +48,7 @@ async def generate_unique_slug(pool, business_name: str) -> str:
         for _ in range(3):
             slug = f"{base_slug}-{generate_random_suffix()}"
             exists = await conn.fetchval(
-                'SELECT EXISTS(SELECT 1 FROM "Tenant" WHERE alias = $1)',
-                slug
+                'SELECT EXISTS(SELECT 1 FROM "Tenant" WHERE alias = $1)', slug
             )
             if not exists:
                 return slug
@@ -60,10 +59,9 @@ async def generate_unique_slug(pool, business_name: str) -> str:
 
 def hash_password(password: str) -> str:
     """Hash password with bcrypt (12 rounds) — consistent with auth_service."""
-    return bcrypt.hashpw(
-        password.encode('utf-8'),
-        bcrypt.gensalt(rounds=12)
-    ).decode('utf-8')
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode(
+        "utf-8"
+    )
 
 
 async def create_tenant_and_user(
@@ -104,7 +102,11 @@ async def create_tenant_and_user(
                     $5, $5
                 )
                 """,
-                tenant_id, slug, business_name, '[]', now_naive
+                tenant_id,
+                slug,
+                business_name,
+                "[]",
+                now_naive,
             )
             logger.info(f"Tenant created: {tenant_id} ({business_name})")
 
@@ -121,17 +123,27 @@ async def create_tenant_and_user(
                     $6
                 )
                 """,
-                user_id, email, business_name, password_hash,
-                tenant_id, now_naive
+                user_id,
+                email,
+                business_name,
+                password_hash,
+                tenant_id,
+                now_naive,
             )
             logger.info(f"User created: {user_id[:8]}... ({email})")
 
             # 3. Initialize CoA using existing DB function
-            coa_count = await conn.fetchval(
-                "SELECT seed_default_coa($1)",
-                tenant_id
-            )
+            coa_count = await conn.fetchval("SELECT seed_default_coa($1)", tenant_id)
             logger.info(f"CoA seeded: {coa_count} accounts for tenant {tenant_id}")
+
+            # 3b. Seed account role mappings (Fase B). Idempotent.
+            # Skips header / missing accounts; logs NOTICE for each.
+            role_count = await conn.fetchval(
+                "SELECT seed_default_account_roles($1)", tenant_id
+            )
+            logger.info(
+                f"Account roles seeded: {role_count} mappings for tenant {tenant_id}"
+            )
 
             # 4. Assign OWNER role to the new account owner.
             # Resolve the shared system OWNER role dynamically (do NOT hardcode UUID).
@@ -153,7 +165,9 @@ async def create_tenant_and_user(
                 )
                 ON CONFLICT (user_id, tenant_id, role_id) DO NOTHING
                 """,
-                user_id, tenant_id, owner_role_id
+                user_id,
+                tenant_id,
+                owner_role_id,
             )
             logger.info(
                 f"OWNER role assigned: user={user_id[:8]}... tenant={tenant_id} "
@@ -162,6 +176,7 @@ async def create_tenant_and_user(
 
     # 5. Generate tokens locally (same as QR login flow)
     from .auth_instance import auth_client
+
     token_response = await auth_client._generate_tokens_locally(
         user_id=user_id,
         tenant_id=tenant_id,
@@ -176,9 +191,11 @@ async def create_tenant_and_user(
     # 6. Register device in DB
     try:
         from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+
         prisma = Prisma()
         await prisma.connect()
         from .device_service import DeviceService
+
         device_service = DeviceService(prisma)
         await device_service.register_device(
             user_id=user_id,
@@ -187,7 +204,9 @@ async def create_tenant_and_user(
             browser_id=browser_id or str(uuid.uuid4()),
             device_fingerprint=device_fingerprint,
             user_agent="Signup Flow",
-            refresh_token_hash=DeviceService.hash_refresh_token(token_response.refresh_token),
+            refresh_token_hash=DeviceService.hash_refresh_token(
+                token_response.refresh_token
+            ),
             ip_address="signup",
             device_id=device_id,
         )
@@ -198,6 +217,7 @@ async def create_tenant_and_user(
     # 7. Set session authority in Redis
     try:
         from .session_manager import session_manager
+
         session_manager.activate_mobile_device(user_id=user_id, device_id=device_id)
     except Exception as e:
         logger.warning(f"Session activation during signup failed (non-blocking): {e}")
