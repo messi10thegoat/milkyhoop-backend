@@ -11,16 +11,22 @@ Flow:
 4. Void if needed (only if unapplied/unrefunded)
 
 Journal Entry on POST (Receive):
-    Dr. Kas/Bank (1-10100/1-10200)           amount
-        Cr. Uang Muka Pelanggan (2-10500)        amount
+    Dr. Kas/Bank (user-picked account_id)         amount
+        Cr. CUSTOMER_DEPOSIT_LIABILITY (Uang Muka Pelanggan)  amount
 
 Journal Entry on APPLY (to Invoice):
-    Dr. Uang Muka Pelanggan (2-10500)        applied_amount
-        Cr. Piutang Usaha (1-10300)              applied_amount
+    Dr. CUSTOMER_DEPOSIT_LIABILITY (Uang Muka Pelanggan)  applied_amount
+        Cr. AR_TRADE (Piutang Usaha)              applied_amount
 
 Journal Entry on REFUND:
-    Dr. Uang Muka Pelanggan (2-10500)        refund_amount
-        Cr. Kas/Bank (1-10100/1-10200)           refund_amount
+    Dr. CUSTOMER_DEPOSIT_LIABILITY (Uang Muka Pelanggan)  refund_amount
+        Cr. Kas/Bank (user-picked account_id)         refund_amount
+
+Fase C1.4: hardcoded CoA codes replaced with role resolver.
+- CUSTOMER_DEPOSIT_LIABILITY (was hardcoded 2-10500)
+- AR_TRADE (was hardcoded 1-10300 -- WRONG name: 1-10300 is Kas Kecil;
+  Piutang Usaha is 1-10400. Latent bug never triggered: zero apply
+  journals in DB at migration time.)
 
 Endpoints:
 - GET    /customer-deposits              - List customer deposits
@@ -55,16 +61,54 @@ from ..schemas.customer_deposits import (
     CustomerDepositListResponse,
     CustomerDepositSummaryResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
 
-# Account codes (resolved dynamically via Law 27)
-CUSTOMER_DEPOSIT_ACCOUNT_CODE = "2-10500"  # Uang Muka Pelanggan (Liability)
-AR_ACCOUNT_CODE = "1-10300"  # Piutang Usaha
+# Fase C1.4: required role mappings for customer_deposits.py posting paths.
+#
+# CUSTOMER_DEPOSIT_LIABILITY -- Cr on post, Dr on apply/refund.
+# AR_TRADE                   -- Cr on apply-to-invoice (settles Piutang Usaha).
+# CASH_GENERAL               -- fallback when create payload has no
+#                               user-picked account_id (cash path).
+#
+# Note: BANK_OPERATIONAL is intentionally EXCLUDED from the precondition
+# list (fallback-only pattern matches Fase C1.2/C1.3). Cash/bank posting
+# uses the user-picked dep["account_id"] (set at create) as primary; the
+# role fallback only fires if a future payload arrives without account_id.
+# NULL guard: raise 422 (Law 4 consistency), never silent-skip Dr/Cr.
+CUSTOMER_DEPOSITS_REQUIRED_ROLES = [
+    AccountRole.CUSTOMER_DEPOSIT_LIABILITY,
+    AccountRole.AR_TRADE,
+    AccountRole.CASH_GENERAL,
+]
+
+# One-time precondition flag (mirrors Fase C1.2/C1.3 pattern).
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool) -> None:
+    """Run role-mapping precondition once per process for customer_deposits.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped; a
+    tenant added later without mapping will still fail loud at
+    resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "customer_deposits", CUSTOMER_DEPOSITS_REQUIRED_ROLES
+    )
+    _precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -107,7 +151,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.status = 'POSTED'
-            AND coa.account_code = '1-10400'  -- Law 27: read filter, resolved via JOIN
+            AND coa.account_type = 'RECEIVABLE'  -- Law 27/Fase C1.4: semantic filter (was account_code literal 1-10400)
             AND je.tenant_id = $1
             AND (
                 -- Original invoice journal
@@ -496,6 +540,11 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
 
         pool = await get_pool()
 
+        # Fase C1.4: precondition gate (one-time per process). Required
+        # because auto_post=True triggers _post_deposit which resolves
+        # CUSTOMER_DEPOSIT_LIABILITY via role mapping.
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -795,15 +844,24 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
             status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}"
         )
 
-    # Law 27: Resolve deposit account dynamically
-    deposit_account_id = await resolve_account_id(
-        conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT_CODE
+    # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role mapping (Law 27).
+    # Precondition gate ensures every tenant is mapped; raises
+    # AccountRoleUnmappedError loud if any regression slips in.
+    deposit_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
     )
 
-    if not deposit_account_id:
+    # Fase C1.4 NULL guard (Law 4 consistency C1.2/C1.3): dep["account_id"]
+    # is the user-picked Dr Kas/Bank — validated as ASSET on create. If
+    # somehow NULL at this point, raise 422 rather than silently inserting
+    # a NULL account_id (which would fail FK or produce unbalanced journal).
+    if not dep["account_id"]:
         raise HTTPException(
-            status_code=500,
-            detail=f"Customer deposit account {CUSTOMER_DEPOSIT_ACCOUNT_CODE} not found",
+            status_code=422,
+            detail=(
+                "Akun kas/bank tidak tersedia untuk customer deposit. "
+                "account_id is required on the deposit record."
+            ),
         )
 
     # Create journal entry
@@ -931,6 +989,9 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
 
         pool = await get_pool()
 
+        # Fase C1.4: precondition gate (one-time per process).
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -991,6 +1052,9 @@ async def apply_customer_deposit(
 
         pool = await get_pool()
 
+        # Fase C1.4: precondition gate (one-time per process).
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1039,19 +1103,20 @@ async def apply_customer_deposit(
                 application_date = body.application_date or date.today()
                 applications_created = []
 
-                # Get account IDs
-                # Law 27: Resolve account IDs dynamically
-                deposit_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT_CODE
+                # Fase C1.4: Resolve via role mapping (Law 27).
+                # FIX: legacy AR_ACCOUNT_CODE constant (hardcoded 1-10300)
+                # pointed at Kas Kecil
+                # (Petty Cash), NOT Piutang Usaha (which is 1-10400). Apply-
+                # deposit credited the wrong account whenever it was used.
+                # No production records exist for this path (zero apply
+                # journals in DB at migration time) — historical data fix
+                # tracked separately if any tenant triggers it later.
+                deposit_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
                 )
-                ar_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], AR_ACCOUNT_CODE
+                ar_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.AR_TRADE
                 )
-
-                if not deposit_account_id or not ar_account_id:
-                    raise HTTPException(
-                        status_code=500, detail="Required accounts not found"
-                    )
 
                 for app in body.applications:
                     # Validate invoice
@@ -1280,6 +1345,9 @@ async def refund_customer_deposit(
 
         pool = await get_pool()
 
+        # Fase C1.4: precondition gate (one-time per process).
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1345,10 +1413,11 @@ async def refund_customer_deposit(
                         detail="Payment account must be an asset account",
                     )
 
-                # Get deposit account
-                # Law 27: Resolve deposit account dynamically
-                deposit_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT_CODE
+                # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role
+                # mapping (Law 27). body.account_id is the user-picked Cr
+                # Kas/Bank (validated ASSET above).
+                deposit_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
                 )
 
                 # Law 5: Period lock check
@@ -1515,6 +1584,13 @@ async def void_customer_deposit(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+
+        # Fase C1.4: precondition gate (one-time per process).
+        # Void reuses original journal account_ids (swap debit/credit) so
+        # it does not call resolve_account_id_by_role directly, but we
+        # still gate here so any process touching this module hits the
+        # precondition audit once.
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
