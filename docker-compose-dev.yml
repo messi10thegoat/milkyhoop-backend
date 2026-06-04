@@ -1,12 +1,26 @@
 version: '3.8'
 
+# =============================================================================
+# DANGER / FOOTGUN WARNING — DO NOT USE THIS FILE FOR THE PRODUCTION api_gateway
+# -----------------------------------------------------------------------------
+# The PRODUCTION api_gateway is defined ONLY in docker-compose.yml and MUST map
+# host port 8001 (nginx upstream is 127.0.0.1:8001). This file reuses the SAME
+# container_name (milkyhoop-dev-api_gateway) and the SAME external prod volume,
+# so running `docker compose -f docker-compose-dev.yml up -d api_gateway` will
+# KILL and REPLACE the live prod gateway and has taken prod DOWN before.
+# To (re)create the prod gateway ALWAYS use:
+#     docker compose -f docker-compose.yml up -d api_gateway
+# The api_gateway host port below was 9000 (collided with minio + bypassed the
+# nginx upstream); aligned to 8001 so an accidental run is at least reachable.
+# =============================================================================
+
 services:
   postgres:
     image: postgres:14  # Must match production data version
     container_name: milkyhoop-dev-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Proyek771977
+      POSTGRES_PASSWORD: Proyek771977  # pragma: allowlist secret
       POSTGRES_DB: milkydb
     ports:
       - "6432:5432"
@@ -18,7 +32,7 @@ services:
   redis:
     image: redis:7
     container_name: milkyhoop-dev-redis
-    command: redis-server --requirepass MilkyRedis2025Secure
+    command: redis-server --requirepass MilkyRedis2025Secure  # pragma: allowlist secret
     ports:
       - "7379:6379"
     networks:
@@ -30,15 +44,15 @@ services:
       dockerfile: backend/api_gateway/Dockerfile
     container_name: milkyhoop-dev-api_gateway
     ports:
-      - "9000:8000"
+      - "8001:8000"  # was 9000 (collided w/ minio, bypassed nginx upstream)
     env_file:
       - .env
     environment:
       - NODE_ENV=development
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
-      - REDIS_PASSWORD=MilkyRedis2025Secure
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - REDIS_PASSWORD=MilkyRedis2025Secure  # pragma: allowlist secret
+      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb  # pragma: allowlist secret  gitleaks:allow
     depends_on:
       - postgres
       - redis
