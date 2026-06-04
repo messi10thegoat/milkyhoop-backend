@@ -20,7 +20,7 @@ services:
     container_name: milkyhoop-dev-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Proyek771977  # pragma: allowlist secret
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
       POSTGRES_DB: milkydb
     ports:
       - "6432:5432"
@@ -52,7 +52,7 @@ services:
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
       - REDIS_PASSWORD=MilkyRedis2025Secure  # pragma: allowlist secret
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb  # pragma: allowlist secret  gitleaks:allow
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required in .env}
     depends_on:
       - postgres
       - redis
