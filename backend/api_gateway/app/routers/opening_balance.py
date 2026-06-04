@@ -6,9 +6,30 @@ or fiscal year transitions.
 
 Key Features:
 - Create opening balance entries for all accounts
-- Auto-balance to Opening Balance Equity (3-50000)
+- Auto-balance to Opening Balance Equity (EQUITY_OPENING_BALANCE role)
 - Support AR/AP/Inventory subledger opening balances
 - Supersede mechanism for updates (audit trail)
+
+Fase C1.5: hardcoded CoA codes replaced with role resolver (Law 27).
+- EQUITY_OPENING_BALANCE  (was hardcoded 3-50000)
+- AR_TRADE                (was hardcoded 1-10300 in READ filter --
+                           WRONG name: 1-10300 is Kas Kecil; Piutang
+                           Usaha is 1-10400. Subledger reconciliation
+                           warning was silently dead. Fase A finding.)
+- AP_TRADE                (was hardcoded 2-10100 -- correct semantic
+                           code but still a literal.)
+- INVENTORY_MERCHANDISE   (was hardcoded 1-10400 in READ filter --
+                           ALSO WRONG: 1-10400 is Piutang Usaha, not
+                           inventory. Inventory control is 1-10600. Old
+                           filter dead. Fase A finding.)
+
+REVERSE / SUPERSEDE PATH: uses original `account_id` from `journal_lines`
+table -- NO role re-resolve. If a tenant remaps EQUITY_OPENING_BALANCE
+between the original posting and the supersede, the reversal still
+mirrors the original posting (Law 4 / Law 2 integrity).
+
+Single-OB invariant: app-level guard at POST entry (`status='ACTIVE'`
+exists check) -- DB trigger `guard_opening_balance` removed per Law 28.
 """
 
 import json
@@ -35,6 +56,11 @@ from ..schemas.opening_balance import (
     OpeningBalanceData,
     OpeningBalanceSummary,
 )
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = structlog.get_logger()
 
@@ -48,6 +74,76 @@ async def get_pool() -> asyncpg.Pool:
     from ..services.db_pool import get_db_pool
 
     return await get_db_pool()
+
+
+# Fase C1.5: required role mappings for opening_balance.py posting paths.
+#
+# EQUITY_OPENING_BALANCE -- balancing leg of the OB journal (Modal Saldo
+#                           Awal). Used in both POST (create) and PUT
+#                           (supersede / new active journal).
+# AR_TRADE               -- READ-side subledger control match for
+#                           ar_balances reconciliation warning.
+# AP_TRADE               -- READ-side subledger control match for
+#                           ap_balances reconciliation warning.
+# INVENTORY_MERCHANDISE  -- READ-side subledger control match for
+#                           inventory_balances reconciliation warning.
+OPENING_BALANCE_REQUIRED_ROLES = [
+    AccountRole.EQUITY_OPENING_BALANCE,
+    AccountRole.AR_TRADE,
+    AccountRole.AP_TRADE,
+    AccountRole.INVENTORY_MERCHANDISE,
+]
+
+# One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4 pattern).
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool) -> None:
+    """Run role-mapping precondition once per process for opening_balance.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped; a
+    tenant added later without mapping will still fail loud at
+    resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "opening_balance", OPENING_BALANCE_REQUIRED_ROLES
+    )
+    _precondition_checked = True
+
+
+async def _resolve_role_account(
+    conn: Connection, tenant_id: str, role_key: str
+) -> dict:
+    """Resolve role -> full account row (id, code, name, type, normal_balance).
+
+    Raises AccountRoleUnmappedError if role not mapped for tenant
+    (Law 27 -- no silent fallback).
+    """
+    account_id = await resolve_account_id_by_role(conn, tenant_id, role_key)
+    row = await conn.fetchrow(
+        """
+        SELECT id, account_code as code, name, account_type as type, normal_balance
+        FROM chart_of_accounts
+        WHERE tenant_id = $1 AND id = $2 AND is_active = true
+        """,
+        tenant_id,
+        account_id,
+    )
+    if not row:
+        # Role mapping points to non-existent/inactive account: data integrity bug.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Role {role_key!r} for tenant {tenant_id!r} points to "
+                f"account_id={account_id} which is missing or inactive in "
+                f"chart_of_accounts. Fix account_roles mapping."
+            ),
+        )
+    return dict(row)
 
 
 def get_user_context(request: Request) -> dict:
@@ -83,19 +179,15 @@ async def get_account_by_code(
 
 
 async def get_opening_balance_equity_account(conn: Connection, tenant_id: str) -> dict:
-    """Get or verify Opening Balance Equity account exists."""
-    query = """
-        SELECT id, account_code as code, name, account_type as type, normal_balance
-        FROM chart_of_accounts
-        WHERE tenant_id = $1 AND account_code = '3-50000' AND is_active = true  -- Law 27: retained earnings account resolution
+    """Get Opening Balance Equity account via role resolver (Law 27).
+
+    Fase C1.5: was hardcoded 3-50000. Now resolves via
+    EQUITY_OPENING_BALANCE role. Fails loud (AccountRoleUnmappedError ->
+    422) if tenant has no mapping -- never silent fallback.
     """
-    account = await conn.fetchrow(query, tenant_id)
-    if not account:
-        raise HTTPException(
-            status_code=400,
-            detail="Opening Balance Equity account (3-50000) not found. Please run migrations.",
-        )
-    return dict(account)
+    return await _resolve_role_account(
+        conn, tenant_id, AccountRole.EQUITY_OPENING_BALANCE
+    )
 
 
 async def validate_opening_balance_request(
@@ -129,15 +221,31 @@ async def validate_opening_balance_request(
     imbalance = total_debit - total_credit
     equity_adjustment = abs(imbalance)
 
+    # Fase C1.5: resolve subledger control accounts via role (Law 27).
+    # Original code matched control account by hardcoded `account_code`,
+    # which carried two latent bugs (Fase A finding):
+    #   - AR filter used 1-10300 (= Kas Kecil), never matched real AR.
+    #   - Inventory filter used 1-10400 (= Piutang Usaha), never
+    #     matched real inventory CoA.
+    # Roles are tenant-configurable; we resolve to the tenant's actual
+    # AR_TRADE / AP_TRADE / INVENTORY_MERCHANDISE account_code, then
+    # match request lines by that code. Missing role mapping -> 422
+    # at role resolution (no silent skip).
+    ar_role_account = await _resolve_role_account(conn, tenant_id, AccountRole.AR_TRADE)
+    ap_role_account = await _resolve_role_account(conn, tenant_id, AccountRole.AP_TRADE)
+    inventory_role_account = await _resolve_role_account(
+        conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
+    )
+    ar_control_code = ar_role_account["code"]
+    ap_control_code = ap_role_account["code"]
+    inventory_control_code = inventory_role_account["code"]
+
     # Check AR subledger totals if provided
     ar_control_match = None
     if request.ar_balances:
         ar_total = sum(ar.amount for ar in request.ar_balances)
-        # Find AR control account in the accounts list
         ar_control = next(
-            (
-                a for a in request.accounts if a.account_code == "1-10300"
-            ),  # Law 27: request validation
+            (a for a in request.accounts if a.account_code == ar_control_code),
             None,
         )
         if ar_control:
@@ -149,18 +257,15 @@ async def validate_opening_balance_request(
                 )
         else:
             warnings.append(
-                "AR balances provided but AR control account (1-10300) not in accounts list"
+                f"AR balances provided but AR control account ({ar_control_code}) not in accounts list"
             )
 
     # Check AP subledger totals if provided
     ap_control_match = None
     if request.ap_balances:
         ap_total = sum(ap.amount for ap in request.ap_balances)
-        # Find AP control account in the accounts list
         ap_control = next(
-            (
-                a for a in request.accounts if a.account_code == "2-10100"
-            ),  # Law 27: request validation
+            (a for a in request.accounts if a.account_code == ap_control_code),
             None,
         )
         if ap_control:
@@ -172,7 +277,7 @@ async def validate_opening_balance_request(
                 )
         else:
             warnings.append(
-                "AP balances provided but AP control account (2-10100) not in accounts list"
+                f"AP balances provided but AP control account ({ap_control_code}) not in accounts list"
             )
 
     # Check inventory totals if provided
@@ -182,11 +287,8 @@ async def validate_opening_balance_request(
             inv.total_value or (inv.quantity * inv.unit_cost)
             for inv in request.inventory_balances
         )
-        # Find inventory control account
         inv_control = next(
-            (
-                a for a in request.accounts if a.account_code == "1-10400"
-            ),  # Law 27: request validation
+            (a for a in request.accounts if a.account_code == inventory_control_code),
             None,
         )
         if inv_control:
@@ -468,6 +570,7 @@ async def validate_opening_balance(request: Request, body: CreateOpeningBalanceR
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
+    await _ensure_role_preconditions(pool)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")
@@ -485,7 +588,7 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
     This will:
     1. Validate all account codes exist
     2. Calculate any imbalance
-    3. Post balancing entry to Opening Balance Equity (3-50000)
+    3. Post balancing entry to Opening Balance Equity (EQUITY_OPENING_BALANCE role)
     4. Create journal with is_opening_balance = true
     5. Create AR/AP subledger entries if provided
     6. Store snapshot for audit
@@ -496,6 +599,7 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
     tenant_id = ctx["tenant_id"]
     user_id = ctx["user_id"]
     pool = await get_pool()
+    await _ensure_role_preconditions(pool)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")
@@ -626,8 +730,8 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
                 )
 
             # Create journal entry
-            total_debit = sum(l["debit"] for l in journal_lines)
-            total_credit = sum(l["credit"] for l in journal_lines)
+            total_debit = sum(ln["debit"] for ln in journal_lines)
+            total_credit = sum(ln["credit"] for ln in journal_lines)
 
             journal_query = """
                 INSERT INTO journal_entries (
@@ -882,6 +986,7 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
     tenant_id = ctx["tenant_id"]
     user_id = ctx["user_id"]
     pool = await get_pool()
+    await _ensure_role_preconditions(pool)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")
@@ -955,10 +1060,19 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
                 existing["id"],
             )
 
-            # Create reversal journal for old opening balance
+            # Create reversal journal for old opening balance.
+            # Fase C1.5: reversal lines MIRROR the original posting by
+            # reusing the original `account_id` values from journal_lines.
+            # We DO NOT re-resolve via role_resolver here: if a tenant
+            # remaps EQUITY_OPENING_BALANCE (or any role) between the
+            # original post and this supersede, re-resolving would land
+            # the reversal on a different account than the original
+            # posting, breaking Law 2 (mirror) and Law 4 (drift). The
+            # role mapping is a forward-looking convention for NEW
+            # postings, never a rewrite of history.
             old_journal_id = existing["gl_journal_id"]
             if old_journal_id:
-                # Get old journal lines
+                # Get old journal lines (authoritative source for reversal)
                 old_lines = await conn.fetch(
                     """
                     SELECT account_id, debit, credit, memo
@@ -970,8 +1084,8 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
 
                 # Create reversal journal
                 reversal_number = f"OB-REV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                total_debit = sum(l["credit"] for l in old_lines)  # Swap debit/credit
-                total_credit = sum(l["debit"] for l in old_lines)
+                total_debit = sum(ln["credit"] for ln in old_lines)  # Swap debit/credit
+                total_credit = sum(ln["debit"] for ln in old_lines)
 
                 reversal_id = await conn.fetchval(
                     """
@@ -1109,8 +1223,8 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
                     }
                 )
 
-            total_debit = sum(l["debit"] for l in journal_lines)
-            total_credit = sum(l["credit"] for l in journal_lines)
+            total_debit = sum(ln["debit"] for ln in journal_lines)
+            total_credit = sum(ln["credit"] for ln in journal_lines)
 
             journal_number = f"OB-{body.opening_date.strftime('%Y%m%d')}-001"
             existing_count = await conn.fetchval(
