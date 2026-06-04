@@ -26,11 +26,44 @@ from ..schemas.bill_payments import (
     OpenBillsResponse,
     OpenBillItem,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.resolve_account import resolve_account_id  # noqa: F401
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,  # noqa: F401
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
-# Account codes for bill payment journals
-AP_ACCOUNT = "2-10100"  # Hutang Usaha (Accounts Payable)
+# Fase D2.3: PURCHASE_DISCOUNT_ACCOUNT retained pending role catalog
+# promotion. See DEFERRED LITERALS in docs/MAPPING-ROLE-AKUN-LOCKED.md.
+# DEFER: PURCHASE_DISCOUNT role -> D2-wrap
 PURCHASE_DISCOUNT_ACCOUNT = "5-10200"  # Diskon Pembelian (Purchase Discount)
+
+# Fase D2.3: required role mappings for bill_payments posting path.
+BILL_PAYMENTS_REQUIRED_ROLES = [
+    AccountRole.AP_TRADE,
+    AccountRole.CASH_GENERAL,
+    AccountRole.WHT_PPH_PAYABLE,
+]
+
+# Module-level once-flag for precondition audit.
+_bill_payments_precondition_checked = False
+
+
+async def _ensure_bill_payments_role_preconditions(pool):
+    """Run role-mapping precondition once per process for bill_payments.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _bill_payments_precondition_checked
+    if _bill_payments_precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "bill_payments", BILL_PAYMENTS_REQUIRED_ROLES
+    )
+    _bill_payments_precondition_checked = True
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,10 +130,11 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
         SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        JOIN account_roles ar ON ar.account_id = jl.account_id
+                              AND ar.tenant_id = je.tenant_id
         WHERE je.tenant_id = $1
           AND je.status = 'POSTED'
-          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
+          AND ar.role_key = 'AP_TRADE'  -- Fase D2.3: role-based read filter
           AND (
               -- Bill posting journal (source_id = bill_id)
               (je.source_type = 'BILL' AND je.source_id = $2::uuid)
@@ -200,12 +234,10 @@ async def create_bill_payment_journal(
         if bank:
             bank_coa_id = bank["coa_id"]
 
-    # Get AP account (Hutang Usaha)
-    ap_account_id = await resolve_account_id(conn, ctx["tenant_id"], AP_ACCOUNT)
-    if not ap_account_id:
-        raise HTTPException(
-            status_code=500, detail=f"AP account ({AP_ACCOUNT}) not found"
-        )
+    # Get AP account (Fase D2.3: role-based resolution).
+    ap_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.AP_TRADE
+    )
 
     # Get or default purchase discount account
     purchase_discount_account_id = discount_account_id
@@ -214,7 +246,9 @@ async def create_bill_payment_journal(
             conn, ctx["tenant_id"], PURCHASE_DISCOUNT_ACCOUNT
         )
 
-    # Get vendor deposit account for unapplied amounts (overpayments to vendor)
+    # DEFER: vendor_deposit role -> D2-wrap (investigate AP_PREPAID vs
+    # VENDOR_DEPOSIT, NOT AR_OTHER). 1-10500 literal retained until naming
+    # decision. See DEFERRED LITERALS in LOCKED file.
     vendor_deposit_account_id = None
     if unapplied_amount > 0:
         vendor_deposit_account_id = await resolve_account_id(
@@ -231,7 +265,11 @@ async def create_bill_payment_journal(
             else UUID(str(pph_tax_code_id)),
         )
         if not pph_coa_id:
-            pph_coa_id = await resolve_account_id(conn, ctx["tenant_id"], "2-10300")
+            # Fase D2.3: dedicated WHT_PPH_PAYABLE (2-10320 post-D1 V155),
+            # NOT polluted 2-10300 fallback. Closes AP-PPh pollution source.
+            pph_coa_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.WHT_PPH_PAYABLE
+            )
 
     # Generate journal number using database function
     journal_number = await conn.fetchval(
@@ -339,6 +377,7 @@ async def create_bill_payment_journal(
             f"Pembayaran dari bank - {payment_number}",
         )
     elif cash_out > 0 and source_type == "deposit" and source_deposit_id:
+        # DEFER: vendor_deposit role -> D2-wrap (LOCKED deferred-list).
         deposit_coa = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
         if deposit_coa:
             line_number += 1
@@ -440,13 +479,17 @@ async def preview_journal(request: Request, body: dict = Body(...)):
 
         # Resolve AP account (Law 27)
         ap_name = "Hutang Usaha"
-        ap_code = AP_ACCOUNT
+        # Fase D2.3: resolve AP via role then look up by id.
         try:
-            ap_row = await conn.fetchrow(
-                "SELECT name, account_code FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
-                ctx["tenant_id"],
-                AP_ACCOUNT,
+            ap_acct_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.AP_TRADE
             )
+            ap_row = await conn.fetchrow(
+                "SELECT name, account_code FROM chart_of_accounts WHERE id = $1 AND is_active = true",
+                ap_acct_id,
+            )
+            ap_code = ap_row["account_code"] if ap_row else "AP_TRADE"
+            ap_row = ap_row  # alias kept for downstream branches
             if ap_row:
                 ap_name = ap_row["name"]
                 ap_code = ap_row["account_code"]
@@ -1027,6 +1070,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        await _ensure_bill_payments_role_preconditions(pool)
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1419,6 +1463,7 @@ async def post_bill_payment(request: Request, payment_id: str):
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        await _ensure_bill_payments_role_preconditions(pool)
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1547,6 +1592,7 @@ async def void_bill_payment(
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        await _ensure_bill_payments_role_preconditions(pool)
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1815,10 +1861,11 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                         SELECT SUM(jl.credit) - SUM(jl.debit)
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                        JOIN account_roles ar ON ar.account_id = jl.account_id
+                                              AND ar.tenant_id = je.tenant_id
                         WHERE je.tenant_id = $1
                           AND je.status = 'POSTED'
-                          AND coa.account_code = '2-10100'  -- Law 27: read filter, resolved via JOIN
+                          AND ar.role_key = 'AP_TRADE'  -- Fase D2.3: role-based read filter
                           AND (
                               (je.source_type = 'BILL' AND je.source_id = b.id)
                               OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (

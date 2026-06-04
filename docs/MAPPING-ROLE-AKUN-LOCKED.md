@@ -85,3 +85,44 @@ Granular per-pasal reservasi (Q2): `WHT_PPH21`, `WHT_PPH23`, `WHT_PPH4_2`, `WHT_
 - Saldo 2-10300 grapgrap Rp 56.600 cr historis — immaterial, repoint go-forward (D1), no adjusting entry. Fold cleanup ke D2 jika perlu.
 - V011 long-term: keep deprecated marker; eventually delete or relocate ke `migrations/archive/`.
 - Payroll integration verify: pastikan payroll posting tidak pernah resolve WHT_PPH_PAYABLE — confirm direct `2-10310` resolution only.
+
+## DEFERRED LITERALS (per-modul, post-D1 batch)
+
+Tracking literal CoA codes intentionally retained pending follow-up role
+catalog work. Each entry is tracked by file path + line + reason +
+target wave. Tests in `backend/tests/account_roles/` assert the literal
+list per file (regression guard + deferred-list tracker).
+
+### Tax pollution (URGENT — close at D2 batch)
+
+- ~~bills_service.py line 1537 (PPh fallback `2-10300` → WHT_PPH_PAYABLE `2-10320`)~~ DONE D2.3
+- ~~bill_payments.py line 234 (PPh fallback `2-10300` → WHT_PPH_PAYABLE `2-10320`)~~ DONE D2.3
+- expenses.py PPh path — DONE D2.1
+- vendor_credits.py PPh path — N/A (no PPh emit)
+- sales_invoices indirect tax-code path — D2-wrap trace (audit upstream)
+
+### Non-tax deferred (D3 / D2-wrap)
+
+- bills_service.py lines ~2845, ~3340: subcontract ternary `1-10650 / 1-10600`
+  → **D3 manufaktur** (role WIP_SUBCONTRACT will be created in that phase;
+  promote to AccountRole catalog + V-migration seed before flipping).
+- bill_payments.py lines ~254, ~380: vendor deposit `1-10500`
+  → **D2-wrap micro** (investigate naming: AP_PREPAID vs VENDOR_DEPOSIT
+  asset; **NOT** AR_OTHER. Confirm CoA semantic against PSAK 14 advance
+  payment treatment, then promote role + seed).
+- bill_payments.py line ~40: purchase discount const `5-10200`
+  → **D2-wrap micro** (role `PURCHASE_DISCOUNT` — contra-COGS or
+  separate purchase-discount-received account; align with
+  REVENUE_SALES_DISCOUNT naming convention in catalog).
+- Reclassify ticket: grapgrap INVOICE Rp 41,600 misposted to `2-10300`
+  between D1 deploy and D2.3 (single tenant, single source_type). Folds
+  into D2-wrap micro cleanup (post adjusting journal repointing
+  2-10300 → 2-10320). Not a code change.
+
+### Audit window summary (post-D2.3)
+
+Post-D1 V155 deploy, `2-10300` mispost sources:
+- BILL / BILL_PAYMENT / PAYMENT_BILL: **zero rows** (D2.3 closes source).
+- INVOICE: 1 row (grapgrap, Rp 41,600) — reclassify ticket above.
+- Receive payment + sales-invoice indirect tax-code paths: pending D2.4
+  audit (WHT_PPH_PREPAID direction; new asset role).

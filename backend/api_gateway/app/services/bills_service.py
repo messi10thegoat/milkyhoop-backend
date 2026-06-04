@@ -23,8 +23,48 @@ _Dec = Decimal
 import asyncpg  # noqa: E402
 import uuid as uuid_module  # noqa: E402
 
-from .resolve_account import resolve_account_id  # noqa: E402
+from .resolve_account import resolve_account_id  # noqa: E402,F401
+from .role_resolver import (  # noqa: E402
+    AccountRole,
+    resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
+)
+from .role_precondition import assert_required_roles_for_path  # noqa: E402
 from .unit_helpers import convert_to_base_unit  # noqa: E402
+
+# Fase D2.3: required role mappings for bills_service posting paths
+# (create_bill -> post_bill -> void_bill, plus pay_bill helper).
+# - AP_TRADE: vendor liability (Cr on bill, Dr on payment/void)
+# - VAT_INPUT: PKP-conditional PPN input (Dr on bill, Cr on void)
+# - WHT_PPH_PAYABLE: PPh withheld at vendor payment (Cr on payment)
+# - INVENTORY_MERCHANDISE: default Dr account on bill (subcontract WIP
+#   1-10650 is deferred to D3 manufaktur — see DEFERRED LITERALS in
+#   docs/MAPPING-ROLE-AKUN-LOCKED.md).
+BILLS_SERVICE_REQUIRED_ROLES = [
+    AccountRole.AP_TRADE,
+    AccountRole.VAT_INPUT,
+    AccountRole.WHT_PPH_PAYABLE,
+    AccountRole.INVENTORY_MERCHANDISE,
+]
+
+# Module-level once-flag for precondition audit.
+_bills_service_precondition_checked = False
+
+
+async def _ensure_bills_service_role_preconditions(pool):
+    """Run role-mapping precondition once per process for bills_service.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _bills_service_precondition_checked
+    if _bills_service_precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "bills_service", BILLS_SERVICE_REQUIRED_ROLES
+    )
+    _bills_service_precondition_checked = True
+
 
 from ..utils.sorting import build_order_by_clause  # noqa: E402
 from ..utils.money import cents_to_decimal_string  # noqa: E402
@@ -1322,6 +1362,7 @@ class BillsService:
         - account_id (legacy): Direct CoA UUID, no bank transaction
         """
         async with self.pool.acquire() as conn:
+            await _ensure_bills_service_role_preconditions(self.pool)
             async with conn.transaction():
                 # 0. RLS context
                 await conn.execute(
@@ -1480,14 +1521,10 @@ class BillsService:
                         "data": None,
                     }
 
-                # 5. Resolve AP account (Law 27)
-                ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
-                if not ap_account_id:
-                    return {
-                        "success": False,
-                        "message": "AP account (2-10100) not found",
-                        "data": None,
-                    }
+                # 5. Resolve AP account (Law 27 + Fase D2.3 role)
+                ap_account_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.AP_TRADE
+                )
 
                 # 6. Generate payment number
                 payment_number = (
@@ -1533,8 +1570,10 @@ class BillsService:
                         else pph_tax_code_id,
                     )
                     if not pph_coa_id:
-                        pph_coa_id = await resolve_account_id(
-                            conn, tenant_id, "2-10300"
+                        # Fase D2.3: dedicated WHT_PPH_PAYABLE (2-10320 post-D1
+                        # V155), NOT polluted 2-10300 fallback.
+                        pph_coa_id = await resolve_account_id_by_role(
+                            conn, tenant_id, AccountRole.WHT_PPH_PAYABLE
                         )
 
                 line_number = 0
@@ -1875,6 +1914,7 @@ class BillsService:
         from .inventory_helpers import record_inventory_reversal
 
         async with self.pool.acquire() as conn:
+            await _ensure_bills_service_role_preconditions(self.pool)
             # Pre-check: fast fail before lock (non-authoritative)
             bill_exists = await conn.fetchrow(
                 "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
@@ -2515,6 +2555,7 @@ class BillsService:
             {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
+            await _ensure_bills_service_role_preconditions(self.pool)
             async with conn.transaction():
                 # 1. Generate invoice number if not provided
                 invoice_number = request.get("invoice_number")
@@ -2799,23 +2840,46 @@ class BillsService:
                         "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
                         bill_id,
                     )
+                    # DEFER: subcontract WIP role -> D3 manufaktur (LOCKED deferred-list).
+                    # 1-10650 / 1-10600 literal retained until WIP_SUBCONTRACT
+                    # role catalog promotion.
                     debit_account_code = "1-10650" if is_subcontract_bill else "1-10600"
 
-                    # Law 27: resolve accounts
-                    ap_acct_id = await resolve_account_id(conn, tenant_id, "2-10100")
-                    debit_acct_id = await resolve_account_id(
-                        conn, tenant_id, debit_account_code
+                    # Law 27 + Fase D2.3: role-based AP + VAT (PKP-gated).
+                    # Subcontract debit kept on code literal (deferred).
+                    ap_acct_id = await resolve_account_id_by_role(
+                        conn, tenant_id, AccountRole.AP_TRADE
                     )
+                    if is_subcontract_bill:
+                        # DEFER: WIP_SUBCONTRACT role (D3 manufaktur).
+                        debit_acct_id = await resolve_account_id(
+                            conn, tenant_id, debit_account_code
+                        )
+                    else:
+                        debit_acct_id = await resolve_account_id_by_role(
+                            conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
+                        )
                     vat_input_acct_id = None
                     if tax_amount_dec > 0:
-                        vat_input_acct_id = await resolve_account_id(
-                            conn, tenant_id, "1-10800"
+                        vat_input_acct_id = await resolve_account_id_by_role_if_pkp(
+                            conn, tenant_id, AccountRole.VAT_INPUT
                         )
+                        if vat_input_acct_id is None:
+                            # Tenant non-PKP submitting bill with PPN > 0 -> 422
+                            # (Law 4 consistency, no silent skip).
+                            raise ValueError(
+                                "Tenant non-PKP tidak dapat memposting tagihan "
+                                "dengan PPN > 0. Atur tax_amount = 0 atau "
+                                "aktifkan status PKP terlebih dahulu."
+                            )
 
                     if not ap_acct_id:
-                        raise ValueError("Akun Utang Usaha (2-10100) tidak ditemukan")
+                        raise ValueError("Akun AP_TRADE tidak ter-resolve")
                     if not debit_acct_id:
-                        raise ValueError(f"Akun {debit_account_code} tidak ditemukan")
+                        raise ValueError(
+                            f"Akun debit ({debit_account_code} / "
+                            f"INVENTORY_MERCHANDISE) tidak ter-resolve"
+                        )
 
                     # Generate journal number
                     journal_number_v2 = (
@@ -3226,6 +3290,7 @@ class BillsService:
         - Inventory ledger entries (for tracked goods)
         """
         async with self.pool.acquire() as conn:
+            await _ensure_bills_service_role_preconditions(self.pool)
             async with conn.transaction():
                 # 0. RLS context
                 await conn.execute(
@@ -3266,33 +3331,56 @@ class BillsService:
                 bill_tax = Decimal(str(bill["tax_amount"] or 0))
                 subtotal = grand_total - bill_tax
 
-                # 3. Resolve accounts (Law 27 — no hardcoded codes)
+                # 3. Resolve accounts (Law 27 + Fase D2.3 role-based)
                 # Check if this bill is linked to a production subcontract → route to WIP
                 is_sc_bill = await conn.fetchval(
                     "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
                     bill_id,
                 )
+                # DEFER: subcontract WIP role -> D3 manufaktur (LOCKED deferred-list).
                 debit_code = "1-10650" if is_sc_bill else "1-10600"
-                ap_account_id = await resolve_account_id(conn, tenant_id, "2-10100")
-                inventory_account_id = await resolve_account_id(
-                    conn, tenant_id, debit_code
+                ap_account_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.AP_TRADE
                 )
+                if is_sc_bill:
+                    # DEFER: WIP_SUBCONTRACT role (D3 manufaktur).
+                    inventory_account_id = await resolve_account_id(
+                        conn, tenant_id, debit_code
+                    )
+                else:
+                    inventory_account_id = await resolve_account_id_by_role(
+                        conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
+                    )
                 vat_input_account_id = None
                 if bill_tax > 0:
-                    vat_input_account_id = await resolve_account_id(
-                        conn, tenant_id, "1-10800"
+                    vat_input_account_id = await resolve_account_id_by_role_if_pkp(
+                        conn, tenant_id, AccountRole.VAT_INPUT
                     )
+                    if vat_input_account_id is None:
+                        # Non-PKP tenant with tax_amount > 0 -> reject loudly.
+                        return {
+                            "success": False,
+                            "message": (
+                                "Tenant non-PKP tidak dapat memposting tagihan "
+                                "dengan PPN > 0. Atur tax_amount = 0 atau "
+                                "aktifkan status PKP terlebih dahulu."
+                            ),
+                            "data": None,
+                        }
 
                 if not ap_account_id:
                     return {
                         "success": False,
-                        "message": "AP account (2-10100) not found",
+                        "message": "Akun AP_TRADE tidak ter-resolve",
                         "data": None,
                     }
                 if not inventory_account_id:
                     return {
                         "success": False,
-                        "message": "Inventory account (1-10600) not found",
+                        "message": (
+                            f"Akun debit ({debit_code} / "
+                            "INVENTORY_MERCHANDISE) tidak ter-resolve"
+                        ),
                         "data": None,
                     }
 
