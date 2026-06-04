@@ -23,8 +23,47 @@ from ..schemas.sales_invoices import (
     InvoiceSummaryResponse,
     InvoiceCalculationResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
+
+# Fase C1.1: required role mappings for sales_invoices posting path.
+# VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
+# docs/MAPPING-ROLE-AKUN-LOCKED.md. Fase D will split into VAT_OUTPUT vs WHT_*.
+SALES_INVOICE_REQUIRED_ROLES = [
+    AccountRole.AR_TRADE,
+    AccountRole.REVENUE_SALES_GOODS,
+    AccountRole.COGS_SALES,
+    AccountRole.INVENTORY_MERCHANDISE,
+    AccountRole.VAT_OUTPUT,
+]
+
+# One-time precondition check flag. Audit runs once per process at first
+# posting-path call. Rationale: this is an architectural invariant (every
+# tenant must be mapped) — repeating per request adds a tenant-table SELECT
+# to a hot path. After first successful check the audit is skipped; a
+# tenant added later without mapping would still fail loud at
+# resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool):
+    """Run role-mapping precondition once per process for sales_invoices.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "sales_invoices", SALES_INVOICE_REQUIRED_ROLES
+    )
+    _precondition_checked = True
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1148,8 +1187,12 @@ async def _execute_fulfillment(
         cogs_journal_id = uuid.uuid4()
         cogs_trace_id = str(uuid.uuid4())
 
-        hpp_account_id = await resolve_account_id(conn, tenant_id, "5-10100")
-        inventory_account_id = await resolve_account_id(conn, tenant_id, "1-10600")
+        hpp_account_id = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.COGS_SALES
+        )
+        inventory_account_id = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
+        )
 
         cogs_seq = await conn.fetchval(
             """
@@ -1213,7 +1256,9 @@ async def _execute_fulfillment(
         rev_trace_id = str(uuid.uuid4())
 
         deferred_rev_account_id = await _resolve_unearned_revenue(conn, tenant_id)
-        sales_account_id = await resolve_account_id(conn, tenant_id, "4-10100")
+        sales_account_id = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.REVENUE_SALES_GOODS
+        )
 
         recog_seq = await conn.fetchval(
             """
@@ -1388,10 +1433,19 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
     # Get AR and Unearned Revenue accounts
     # 3-Event: Credit goes to Pendapatan Diterima Dimuka (2-10700), NOT Penjualan (4-10100)
-    ar_account = {"id": await resolve_account_id(conn, ctx["tenant_id"], "1-10400")}
+    ar_account = {
+        "id": await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.AR_TRADE
+        )
+    }
     unearned_account = {"id": await _resolve_unearned_revenue(conn, ctx["tenant_id"])}
+    # Fase C1.1: VAT_OUTPUT interim → 2-10300 (Hutang Pajak) per LOCKED mapping.
+    # Was hardcoded to 2-10600 which only existed for 2/5 tenants (latent bug
+    # for anthonius-iwan, ponte-publishing, potus-id on any taxed invoice).
     vat_output_account = {
-        "id": await resolve_account_id(conn, ctx["tenant_id"], "2-10600")
+        "id": await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.VAT_OUTPUT
+        )
     }
 
     # Compute subtotal (revenue without tax)
@@ -1653,7 +1707,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         total_service_revenue = sum(_d(itm["_allocated"]) for itm in items)
         if total_service_revenue > 0:
             unearned_id2 = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
-            revenue_id2 = await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
+            revenue_id2 = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_GOODS
+            )
             rev_j_id = uuid.uuid4()
             rev_trace = str(uuid.uuid4())
             rev_seq = await conn.fetchval(
@@ -1763,6 +1819,10 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+
+        # Fase C1.1: fail-loud if any tenant lacks required role mapping
+        # (auto-post path inside create posts to AR/REV/COGS/INV/VAT).
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2263,6 +2323,9 @@ async def post_invoice(
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        # Fase C1.1: fail-loud if any tenant lacks required role mapping.
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             # Check invoice exists and is draft
             invoice = await conn.fetchrow(
@@ -2336,6 +2399,10 @@ async def record_payment(
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        # Fase C1.1: fail-loud if any tenant lacks required role mapping
+        # (payment shortcut posts AR settlement journal).
+        await _ensure_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
@@ -2389,7 +2456,7 @@ async def record_payment(
                     JOIN journal_entries je ON je.id = jl.journal_id
                     JOIN chart_of_accounts coa ON coa.id = jl.account_id
                     WHERE je.status = 'POSTED'
-                        AND coa.account_code = '1-10400'
+                        AND coa.account_type = 'RECEIVABLE'
                         AND je.tenant_id = $2
                         AND (
                             (je.source_type = 'INVOICE' AND je.source_id = $1)
@@ -2476,9 +2543,9 @@ async def record_payment(
                         detail="Could not resolve bank account from account_id",
                     )
 
-                # Resolve AR account (Law 27)
-                ar_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], "1-10400"
+                # Resolve AR account (Law 27, Fase C1.1: role-based)
+                ar_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.AR_TRADE
                 )
 
                 # Map payment_method: receive_payments CHECK allows only 'cash' or 'bank_transfer'
@@ -2775,14 +2842,14 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
                         JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
                         WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
-                          AND sip_coa.account_code LIKE '1-104%%'), 0)
+                          AND sip_coa.account_type = 'RECEIVABLE'), 0)
                     + COALESCE((SELECT SUM(jl5.credit)
                         FROM journal_lines jl5
                         JOIN journal_entries je5 ON je5.id = jl5.journal_id
                         JOIN chart_of_accounts coa5 ON coa5.id = jl5.account_id
                         WHERE je5.source_type = 'PAYMENT_RECEIVED'
                           AND je5.tenant_id = $2 AND je5.status = 'POSTED'
-                          AND coa5.account_code LIKE '1-104%%'
+                          AND coa5.account_type = 'RECEIVABLE'
                           AND je5.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $1) || '%%'
                           AND NOT EXISTS(
                               SELECT 1 FROM receive_payment_allocations rpa5
