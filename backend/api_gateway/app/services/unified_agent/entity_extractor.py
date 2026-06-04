@@ -343,6 +343,7 @@ EXTRACTION_SCHEMAS = {
                             "query_bank_transactions_by_date",
                             # Batch 3 report + cross-module calc intents
                             "query_profit_loss",
+                            "query_gross_profit_projection",
                             "query_balance_sheet",
                             "query_cash_flow",
                             "query_trial_balance",
@@ -815,6 +816,8 @@ PIPELINE_ENABLED_INTENTS = {
     "query_bank_transactions_by_date",
     # Batch 3 report + cross-module calc intents
     "query_profit_loss",
+    # Gross-profit projection (deterministic what-if engine, 2026-06-04)
+    "query_gross_profit_projection",
     "query_balance_sheet",
     "query_cash_flow",
     "query_trial_balance",
@@ -1056,6 +1059,31 @@ def classify_query_intent(user_text: str) -> tuple:
     from .domain_vocab import rank_pattern as _rank
 
     t = user_text.strip().lower()
+
+    # ── Gross-profit projection (2026-06-04) — MUST run FIRST so what-if /
+    # projection questions win over any calc_*/margin pattern. Trigger needs
+    # BOTH projection semantics AND financial context (PROJECTION_DETECTOR).
+    _proj_financial = _qre.search(
+        r"(laba|untung|profit|omzet|penjualan|pendapatan|margin|rugi)", t
+    )
+    if _proj_financial:
+        _proj_conditional_pct = bool(
+            _qre.search(r"\b(jika|kalau|kalo|misal(?:kan|nya)?|seandainya|andai)\b", t)
+            and _qre.search(
+                r"\b(naik|turun|tambah|bertambah|berkurang|meningkat|menurun|melonjak|anjlok|drop)\b",
+                t,
+            )
+            and _qre.search(r"\d+\s*(?:%|persen|perc?ent)", t)
+        )
+        _proj_explicit = bool(
+            _qre.search(
+                r"\b(proyeksi(?:kan)?|estimasi(?:kan)?|forecast|prediksi(?:kan)?|"
+                r"simulasi(?:kan)?|perkiraan)\b",
+                t,
+            )
+        )
+        if _proj_conditional_pct or _proj_explicit:
+            return "query_gross_profit_projection", None, None
 
     # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE
     # AR/AP ranking so "barang ... terbanyak" routes to items, not AR.

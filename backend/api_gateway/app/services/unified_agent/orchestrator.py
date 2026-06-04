@@ -3470,6 +3470,78 @@ class UnifiedAgent:
             "numeric": numeric,
         }
 
+    async def _handle_gross_profit_projection(
+        self,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """
+        PROJECTION_HANDLER_MARKER — deterministic gross-profit what-if projection.
+
+        Pulls last 2 complete months of journal-derived P&L (laba-rugi), computes
+        gross margin, applies the user's naik/turun N% scenario, and renders a
+        Bahasa-Indonesia markdown table entirely in code (no LLM polish, so the
+        numbers cannot be hallucinated — Iron Law 0/3.1/9). READ-ONLY.
+        """
+        import time as _time
+
+        _proj_start = _time.monotonic()
+        try:
+            from .projection_engine import execute_gross_profit_projection
+
+            _proj = await execute_gross_profit_projection(
+                user_text=user_text,
+                auth_token=getattr(context, "auth_token", "") or "",
+                tenant_id=context.tenant_id,
+            )
+        except Exception as _proj_err:
+            import traceback as _tb_proj
+
+            logger.warning(
+                "[PROJECTION_PIPELINE] engine failed: %s\n%s",
+                _proj_err,
+                _tb_proj.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menghitung proyeksi laba kotor. "
+                    "Silakan coba lagi."
+                ),
+                iterations=1,
+                model_used="projection_engine",
+                total_latency_ms=int((_time.monotonic() - _proj_start) * 1000),
+            )
+
+        _proj_text = _proj.get("text") or _proj.get(
+            "message", "Tidak dapat membuat proyeksi."
+        )
+
+        # Persist last_action_type for follow-up context (best-effort).
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type="query_gross_profit_projection",
+                    last_action_result={"response_text": _proj_text[:2000]},
+                )
+            except Exception:
+                pass
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=_proj_text,
+            iterations=1,
+            model_used="projection_engine",
+            total_latency_ms=int((_time.monotonic() - _proj_start) * 1000),
+        )
+
     async def _handle_query_pipeline(
         self,
         user_text: str,
@@ -6069,6 +6141,48 @@ class UnifiedAgent:
             user_text[:50],
         )
 
+        # ── PROJECTION_OVERRIDE (2026-06-04) ───────────────────────────────
+        # Gross-profit what-if/projection questions must beat the calc_*/margin
+        # extractor pick. The deterministic regex classifier wins here, BEFORE
+        # any _intent-gated branch (CHITCHAT, ACTION/SIMPLE_READ extraction,
+        # LLM router), so the question can never mis-route to the static
+        # calc_profit_margin_per_item table. READ-ONLY, no advisory lock.
+        try:
+            from .entity_extractor import (
+                classify_query_intent as _proj_qci,
+            )
+
+            _proj_guard, _, _ = _proj_qci(user_text)
+        except Exception:
+            _proj_guard = None
+        if _proj_guard == "query_gross_profit_projection":
+            logger.warning(
+                "[PROJECTION_OVERRIDE] intent forced to query_gross_profit_projection "
+                "(infer_intent=%s) user='%s'",
+                _intent,
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_pj
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_pj.uuid4()),
+                        "final_intent": "query_gross_profit_projection",
+                        "decision_source": "projection_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_gross_profit_projection(
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
+
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
             # P5: Emit intent_classified SSE meta event (test correlation)
@@ -7514,6 +7628,23 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
+            # ── Gross-profit projection (deterministic engine, non-LLM path) ──
+            # Intercept before the generic query pipeline: this intent has no
+            # direct_action_registry entry and would otherwise fall through.
+            if (
+                not _skip_query_pipeline
+                and extraction.intent == "query_gross_profit_projection"
+            ):
+                logger.warning(
+                    "[QUERY_PIPELINE] gross_profit_projection (non-LLM path)"
+                )
+                return await self._handle_gross_profit_projection(
+                    user_text=user_text,
+                    context=context,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
             if (
                 not USE_LLM_ROUTER
                 and not _skip_query_pipeline
@@ -7798,6 +7929,25 @@ class UnifiedAgent:
                 from .entity_extractor import is_pipeline_enabled as _llm_is_pipe
 
                 _lr_intent = _llm_extraction.intent or ""
+
+                # ── PROJECTION_OVERRIDE (defensive, 2026-06-04) ──
+                # Mirror MFG_OVERRIDE: if the deterministic regex classifier flags
+                # a gross-profit projection, trust it over the LLM router. (The
+                # early dispatch in process_message normally catches this first;
+                # this is a second line of defense inside the LLM-router path.)
+                if (
+                    _qci_guard == "query_gross_profit_projection"
+                    and _lr_intent != "query_gross_profit_projection"
+                ):
+                    logger.warning(
+                        "[PROJECTION_OVERRIDE] Trusting regex %s over LLM %s",
+                        _qci_guard,
+                        _lr_intent,
+                    )
+                    _lr_intent = "query_gross_profit_projection"
+                    _llm_extraction.intent = "query_gross_profit_projection"
+                    _llm_extraction.confidence = 1.0
+                    _llm_extraction.needs_escalation = False
 
                 # ── Query regex override: trust deterministic regex over LLM ──
                 # When regex classify_query_intent matched (confidence 1.0) and
@@ -8202,6 +8352,21 @@ class UnifiedAgent:
                         logger.warning(
                             "[LLM_ROUTER_PRIMARY] calc pipeline failed: %s", _calc_err
                         )
+
+                # ── Gross-profit projection (deterministic engine) ──
+                # Must intercept BEFORE the generic query pipeline below, since
+                # this intent has no direct_action_registry entry and would
+                # otherwise fall through to the agent loop.
+                if _lr_intent == "query_gross_profit_projection":
+                    logger.warning(
+                        "[LLM_ROUTER_PRIMARY] gross_profit_projection pipeline"
+                    )
+                    return await self._handle_gross_profit_projection(
+                        user_text=user_text,
+                        context=context,
+                        tool_executor=tool_executor,
+                        event_callback=event_callback,
+                    )
 
                 # ── Query pipeline ──
                 if _lr_intent.startswith("query_") and _llm_is_pipe(_lr_intent):

@@ -79,7 +79,7 @@ CRUD: {{action}}_{{module}}
 QUERY: query_{{module}}_{{type}}
   module: ar, ap, items, customers, vendors, bank, sales_invoices, bills, expenses, receive_payments, bill_payments, journals, accounts, credit_notes, vendor_credits, quotes, bank_transfers, customer_deposits, vendor_deposits, bom, work_order, production, work_center
   type: list, detail, summary, overdue, unpaid, search, aging, by_date, by_vendor
-  Special: query_ar_outstanding, query_ap_outstanding, query_customer_ar, query_vendor_ap, query_cash_balance, query_customers_with_overdue, query_vendors_with_overdue, query_item_stock_card, query_items_low_stock, query_items_no_stock, query_warehouse_stock, query_inventory_summary, query_inventory_health, query_account_ledger, query_general_ledger, query_profit_loss, query_balance_sheet, query_cash_flow, query_trial_balance, query_dashboard_summary, query_overdue_all, query_top_expenses
+  Special: query_ar_outstanding, query_ap_outstanding, query_customer_ar, query_vendor_ap, query_cash_balance, query_customers_with_overdue, query_vendors_with_overdue, query_item_stock_card, query_items_low_stock, query_items_no_stock, query_warehouse_stock, query_inventory_summary, query_inventory_health, query_account_ledger, query_general_ledger, query_profit_loss, query_gross_profit_projection, query_balance_sheet, query_cash_flow, query_trial_balance, query_dashboard_summary, query_overdue_all, query_top_expenses
 
 CALC: calc_{{op}}_{{what}}
   "rata-rata harga jual"→calc_avg_harga_jual. "total harga beli"→calc_sum_harga_beli. "total stok"→calc_sum_stok.
@@ -109,7 +109,7 @@ query_bills_list, query_bill_detail, query_bills_summary, query_bills_unpaid, qu
 query_expenses_list, query_expense_detail, query_expenses_summary
 query_customers_list, query_customer_detail, query_vendors_list, query_vendor_detail
 query_bank_accounts_list, query_bank_account_balance, query_bank_transactions
-query_accounts_list, query_account_ledger, query_profit_loss, query_balance_sheet, query_trial_balance, query_cash_balance
+query_accounts_list, query_account_ledger, query_profit_loss, query_gross_profit_projection, query_balance_sheet, query_trial_balance, query_cash_balance
 query_receive_payments_list, query_bill_payments_list, query_categories_list
 query_warehouses, query_items_inactive, query_items_slow_moving
 calc_avg_harga_jual, calc_sum_harga_beli, calc_sum_stok, calc_sum_all_bank_balances
@@ -153,6 +153,9 @@ RULES:
 14. "ringkasan/total pengeluaran bulan ini" → calc_sum_expenses_this_month (BUKAN query_expenses_summary).
 15. "arus kas" → query_cash_flow. "neraca saldo" → query_trial_balance. "neraca" → query_balance_sheet. "laba rugi" → query_profit_loss.
     "ringkasan X" tanpa "bulan ini/total" → query_X_summary.
+15b. PROYEKSI/WHAT-IF: pertanyaan andai/jika/kalau + perubahan persen (naik/turun N%) terhadap omzet/penjualan/laba, ATAU kata proyeksi/proyeksikan/estimasi/estimasikan/forecast/prediksi/simulasi → query_gross_profit_projection.
+    Contoh: "jika omzet naik 100 persen bulan depan, berapa laba kotor saya?" → query_gross_profit_projection. "proyeksikan laba kotor bulan depan" → query_gross_profit_projection. "estimasi untung kalau penjualan turun 20%" → query_gross_profit_projection.
+    BEDA dari query_profit_loss (laba rugi aktual periode tertentu) dan calc_profit_margin_per_item (margin statis per produk). Proyeksi = forward-looking what-if, BUKAN laporan historis.
 16. DOMAIN CONTINUITY (CRITICAL): Pesan pendek (<6 kata) atau pronoun TANPA keyword domain eksplisit → TETAP di domain RIWAYAT sebelumnya.
     Setelah hutang/AP: "ke siapa aja?" → query_ap_outstanding. "ke vendor siapa aja?" → query_ap_outstanding. "yang paling besar?" → calc_rank_vendors_by_ap. "bayar yang paling besar" → create_bill_payment.
     Setelah piutang/AR: "ke siapa aja?" → query_ar_invoices. "dari siapa aja?" → query_ar_invoices. "yang paling besar?" → calc_rank_customers_by_ar. "yang paling besar siapa?" → calc_rank_customers_by_ar.
