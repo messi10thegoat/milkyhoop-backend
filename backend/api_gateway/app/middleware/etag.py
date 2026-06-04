@@ -103,16 +103,13 @@ class ETagMiddleware(BaseHTTPMiddleware):
         body = b"".join(body_chunks)
         etag = 'W/"' + hashlib.md5(body).hexdigest() + '"'
 
-        inm = request.headers.get("if-none-match")
-        if inm and (inm == etag or inm.strip() == etag):
-            not_modified_headers: dict[str, str] = {"ETag": etag}
-            cc = response.headers.get("cache-control")
-            if cc:
-                not_modified_headers["Cache-Control"] = cc
-            vary = response.headers.get("vary")
-            if vary:
-                not_modified_headers["Vary"] = vary
-            return Response(status_code=304, headers=not_modified_headers)
+        # 304 short-circuit DISABLED 2026-06-04 (hotfix): prod FE bundle
+        # (build 2026-04-03) treats !res.ok as throw, so 304 triggered
+        # infinite refetch loop. ETag header still emitted for browser-side
+        # cache reuse; server just always sends full body.
+        # inm = request.headers.get("if-none-match")
+        # if inm and (inm == etag or inm.strip() == etag):
+        #     ...return 304...
 
         headers = dict(response.headers)
         headers.pop("content-length", None)
