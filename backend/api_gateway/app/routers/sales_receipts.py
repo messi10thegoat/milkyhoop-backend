@@ -25,7 +25,58 @@ from ..schemas.sales_receipts import (
     VoidSalesReceiptRequest,
     VoidSalesReceiptResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
+
+# Fase C1.2: required role mappings for sales_receipts posting path
+# (cash sale, NOT AR settlement — no AR_TRADE).
+#
+# BANK_OPERATIONAL is intentionally EXCLUDED from the precondition list:
+# bank posting uses the user-picked bank_account_id (CoA linked via
+# bank_accounts.coa_id). The role only acts as a last-resort fallback
+# when payment_method != cash AND no bank_account_id is provided. In
+# that fallback path, if the role is unmapped we raise 422 with a clear
+# message demanding bank_account_id selection — never silent-skip.
+# Rationale: BANK_OPERATIONAL has 3/5 tenant coverage (Fase C0); making
+# it precondition-required would block create on 2 tenants for the cash
+# path, which never needs it.
+#
+# VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
+# docs/MAPPING-ROLE-AKUN-LOCKED.md. Fase D will split.
+SALES_RECEIPT_REQUIRED_ROLES = [
+    AccountRole.CASH_GENERAL,
+    AccountRole.REVENUE_SALES_GOODS,
+    AccountRole.VAT_OUTPUT,
+    AccountRole.COGS_SALES,
+    AccountRole.INVENTORY_MERCHANDISE,
+]
+
+# One-time precondition check flag. Audit runs once per process at first
+# posting-path call. Rationale: this is an architectural invariant (every
+# tenant must be mapped) — repeating per request adds a tenant-table SELECT
+# to a hot path. After first successful check the audit is skipped; a
+# tenant added later without mapping would still fail loud at
+# resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool):
+    """Run role-mapping precondition once per process for sales_receipts.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "sales_receipts", SALES_RECEIPT_REQUIRED_ROLES
+    )
+    _precondition_checked = True
+
 
 router = APIRouter()
 
@@ -231,6 +282,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
     """Create sales receipt - atomic operation with journal entries"""
     ctx = get_user_context(request)
     pool = await get_pool()
+    await _ensure_role_preconditions(pool)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -457,24 +509,46 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
             journal_id = uuid4()
             journal_number = f"SR-JE-{receipt_number}"
 
-            # Law 27: Determine cash/bank account via resolve_account_id
-            if body.payment_method == "cash":
-                cash_acct = await resolve_account_id(
-                    conn, ctx["tenant_id"], "1-10100"
-                )  # Kas
-            else:
-                # Try bank_account CoA first, fall back to resolve
-                cash_acct = None
-                if body.bank_account_id:
-                    cash_acct = await conn.fetchval(
-                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        body.bank_account_id,
-                        ctx["tenant_id"],
+            # Fase C1.2: Determine cash/bank account via role resolver.
+            # Primary source = user-picked bank_account_id (CoA via
+            # bank_accounts.coa_id). Role is fallback ONLY:
+            #   - payment_method == cash         -> CASH_GENERAL
+            #   - other and no bank_account_id   -> BANK_OPERATIONAL (best-effort)
+            # NULL guard: if everything fails to resolve, raise 422 with a
+            # clear message. Previously this silently SKIPPED the Dr Kas/Bank
+            # line, producing an unbalanced journal (Law 4 violation).
+            cash_acct = None
+            if body.bank_account_id:
+                cash_acct = await conn.fetchval(
+                    "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                    body.bank_account_id,
+                    ctx["tenant_id"],
+                )
+            if not cash_acct:
+                if body.payment_method == "cash":
+                    # Required role — gate guarantees coverage; raises
+                    # AccountRoleUnmappedError if any future regression.
+                    cash_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.CASH_GENERAL
                     )
-                if not cash_acct:
-                    cash_acct = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10200"
-                    )  # Bank
+                else:
+                    # Non-cash without picked bank account: try fallback,
+                    # but raise 422 (NOT silent skip) if unmapped.
+                    try:
+                        cash_acct = await resolve_account_id_by_role(
+                            conn, ctx["tenant_id"], AccountRole.BANK_OPERATIONAL
+                        )
+                    except Exception:
+                        cash_acct = None
+            if not cash_acct:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Akun kas/bank tidak tersedia. Pilih bank_account_id "
+                        "atau konfigurasi role mapping (CASH_GENERAL / "
+                        "BANK_OPERATIONAL) untuk tenant ini."
+                    ),
+                )
 
             await conn.execute(
                 """
@@ -495,24 +569,28 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
             # Journal lines
             line_num = 1
-            # DR Cash/Bank
-            if cash_acct:
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
-                    VALUES ($1, $2, $3, $4, $5, 0, $6)
-                    """,
-                    uuid4(),
-                    journal_id,
-                    cash_acct,
-                    line_num,
-                    total_amount,
-                    f"Receipt {receipt_number}",
-                )
-                line_num += 1
+            # DR Cash/Bank — Law 4: cash_acct is guaranteed non-null by the
+            # resolution block above; emission is unconditional. Previously
+            # this was guarded by `if cash_acct:` which silently produced an
+            # unbalanced journal when resolution failed.
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, 0, $6)
+                """,
+                uuid4(),
+                journal_id,
+                cash_acct,
+                line_num,
+                total_amount,
+                f"Receipt {receipt_number}",
+            )
+            line_num += 1
 
-            # CR Sales
-            sales_acct = await resolve_account_id(conn, ctx["tenant_id"], "4-10100")
+            # CR Sales (Fase C1.2: role resolver)
+            sales_acct = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_GOODS
+            )
             if sales_acct:
                 await conn.execute(
                     """
@@ -528,9 +606,11 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                 )
                 line_num += 1
 
-            # CR Tax (if any)
+            # CR Tax (if any) — Fase C1.2: role resolver (VAT_OUTPUT interim 2-10300)
             if tax_amount > 0:
-                tax_acct = await resolve_account_id(conn, ctx["tenant_id"], "2-10300")
+                tax_acct = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.VAT_OUTPUT
+                )
                 if tax_acct:
                     await conn.execute(
                         """
@@ -573,8 +653,10 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     ctx.get("user_id"),
                 )
 
-                # DR HPP
-                hpp_acct = await resolve_account_id(conn, ctx["tenant_id"], "5-10100")
+                # DR HPP (Fase C1.2: role resolver)
+                hpp_acct = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.COGS_SALES
+                )
                 if hpp_acct:
                     await conn.execute(
                         """
@@ -588,8 +670,10 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         "Cost of Goods Sold",
                     )
 
-                # CR Inventory
-                inv_acct = await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
+                # CR Inventory (Fase C1.2: role resolver)
+                inv_acct = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE
+                )
                 if inv_acct:
                     await conn.execute(
                         """
