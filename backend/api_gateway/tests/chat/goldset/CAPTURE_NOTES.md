@@ -218,3 +218,119 @@ produced by classifiers / LLM routing, not hard-coded strings:
 | Intent (fallback) | DB `intent_decision_log.final_intent` WHERE `trace_id` matches |
 | Tier B signals | `model_used == "projection_engine"` OR (`model_used == "gpt-4o-mini"` AND `iterations > 1`) |
 | Tier A | everything else |
+
+---
+
+## 2026-06-05 Baseline
+
+Run:
+Dataset: 28 cases, 39 turns total (7 adversarial, 3 crud, 3 followup, 7 lookup, 3 reasoning, 3 whatif, 2 why)
+
+### Headline Numbers
+
+| Metric | Value |
+|--------|-------|
+| **Overall pass** | **16/28 (57%)** |
+| **Routing accuracy** | **28/39 (72%)** |
+| **Adversarial pass** | **4/7 (57%)** |
+| **I5 trace rate (Tier B)** | **5/6 (83%)** |
+
+### Per-Category Pass Rate
+
+| Category | Pass |
+|----------|------|
+| adversarial | 4/7 |
+| crud | 3/3 |
+| followup | 1/3 |
+| lookup | 4/7 |
+| reasoning | 1/3 |
+| whatif | 3/3 |
+| why | 0/2 |
+
+### Top Misroutes (expected -> actual)
+
+| Route | Count |
+|-------|-------|
+|  -> (empty/none) | 2 |
+|  -> (empty/none) | 1 |
+|  ->  | 1 |
+|  -> (empty/none) | 1 |
+|  ->  | 1 |
+
+### Key Observations
+
+- **Routing gaps**: 11 misroutes out of 39 turns. AP/AR outstanding queries (5 failures) are the biggest single cluster — the router is not reliably recognising piutang/hutang jatuh tempo phrasing.
+- **Adversarial traps**: 3 of 7 failed.  triggered a 500 server error (1 case errored).  over-escalated a genuine lookup.  gave a margin dump instead of contributing facts.
+- **Why-questions**: 0/2 — both causal/cashflow questions failed; the engine does not yet engage with open-ended why via contributing facts.
+- **Follow-up resolution**: 1/3 — pronoun/domain carry from session state is unreliable.
+- **I5 trace rate (83%)**: Higher than expected — most Tier B reasoning responses DO carry a structured trace. The 1 missing trace is the gap to close.
+- **CRUD + whatif**: 3/3 and 3/3 — these are solid; no regressions here.
+
+### Error Cases
+
+- : HTTP 500 from the live endpoint (server error, not a routing failure per se). Counted as failed/0-asserts.
+
+### What Phase 3 Must Beat
+
+- Routing accuracy > 72% (target: ≥85%)
+- Adversarial pass > 4/7 (target: ≥6/7)
+- Why-category pass > 0/2 (target: 2/2)
+- Follow-up pass > 1/3 (target: 3/3)
+
+---
+
+## 2026-06-05 Baseline
+
+Run: `python3 -m goldset.run_goldset goldset/baselines/2026-06-05-baseline.json`
+Dataset: 28 cases, 39 turns total (7 adversarial, 3 crud, 3 followup, 7 lookup, 3 reasoning, 3 whatif, 2 why)
+
+### Headline Numbers
+
+| Metric | Value |
+|--------|-------|
+| **Overall pass** | **16/28 (57%)** |
+| **Routing accuracy** | **28/39 (72%)** |
+| **Adversarial pass** | **4/7 (57%)** |
+| **I5 trace rate (Tier B)** | **5/6 (83%)** |
+
+### Per-Category Pass Rate
+
+| Category | Pass |
+|----------|------|
+| adversarial | 4/7 |
+| crud | 3/3 |
+| followup | 1/3 |
+| lookup | 4/7 |
+| reasoning | 1/3 |
+| whatif | 3/3 |
+| why | 0/2 |
+
+### Top Misroutes (expected -> actual)
+
+| Route | Count |
+|-------|-------|
+| query_ap_outstanding -> (none) | 2 |
+| query_ar_outstanding -> (none) | 1 |
+| query_items_list -> query_items_search | 1 |
+| (query_ar_invoices, query_ar_outstanding) -> (none) | 1 |
+| (calc_top_selling_items, query_items_summary) -> query_items_search | 1 |
+
+### Key Observations
+
+- **Routing gaps**: 11 misroutes out of 39 turns. AP/AR outstanding queries (5 failures) are the biggest single cluster.
+- **Adversarial traps**: 3 of 7 failed. adv_margin_keyword_is_projection triggered a 500 server error. adv_terlaris_not_projection over-escalated a genuine lookup. adv_why_without_rule gave a margin dump instead of contributing facts.
+- **Why-questions**: 0/2 — both causal/cashflow questions failed; engine does not yet engage with open-ended "why" via contributing facts.
+- **Follow-up resolution**: 1/3 — pronoun/domain carry from session state is unreliable.
+- **I5 trace rate (83%)**: Higher than expected — most Tier B responses DO carry a structured trace. 1 missing.
+- **CRUD + whatif**: 3/3 and 3/3 — solid, no regressions.
+
+### Error Cases
+
+- adv_margin_keyword_is_projection: HTTP 500 from live endpoint. Counted as failed/0-asserts.
+
+### What Phase 3 Must Beat
+
+- Routing accuracy > 72% (target: >=85%)
+- Adversarial pass > 4/7 (target: >=6/7)
+- Why-category pass > 0/2 (target: 2/2)
+- Follow-up pass > 1/3 (target: 3/3)
