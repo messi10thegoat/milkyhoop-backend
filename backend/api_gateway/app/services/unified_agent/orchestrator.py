@@ -20,6 +20,12 @@ from datetime import date
 
 # Phase 2: LLM Router primary classifier feature flag
 USE_LLM_ROUTER = os.environ.get("USE_LLM_ROUTER", "false").lower() == "true"
+# FIX_READ_PROMOTE (2026-06-04): READ-only promotion of the LLM router pick
+# over a less-confident extractor mis-pick. DEFAULT OFF — zero behavior change
+# in production until owner flips it. query_ family only; never CRUD/calc.
+LLM_ROUTER_READ_PROMOTE = (
+    os.environ.get("LLM_ROUTER_READ_PROMOTE", "false").lower() == "true"
+)
 from typing import Any, Dict, List, Optional  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from uuid import uuid4  # noqa: E402
@@ -5881,6 +5887,7 @@ class UnifiedAgent:
         tool_executor,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         db_pool=None,
+        read_only: bool = False,  # FIX_READ_PROMOTE: COMPLEX_READ widening
     ):
         """
         Phase 2 primary classifier. Calls LLM Intent Router and returns an
@@ -6032,6 +6039,37 @@ class UnifiedAgent:
                 )
         except Exception:
             pass
+
+        # FIX_READ_PROMOTE: in read_only mode (COMPLEX_READ tier widening), the
+        # primary path is only allowed to adopt a pipeline-enabled READ (query_)
+        # intent. Any CRUD/calc/other pick is rejected -> None -> legacy agent
+        # loop runs (== today behavior for COMPLEX_READ). Preserves CRUD/calc
+        # routing determinism: the router can never hijack a complex-read into a
+        # write or calc dispatch.
+        if read_only:
+            from .entity_extractor import (
+                is_pipeline_enabled as _ro_is_pipe,
+            )
+
+            _ro_forbidden = (
+                "create_",
+                "update_",
+                "delete_",
+                "void_",
+                "reverse_",
+                "calc_",
+            )
+            if (
+                not _intent_val.startswith("query_")
+                or _intent_val.startswith(_ro_forbidden)
+                or not _ro_is_pipe(_intent_val)
+            ):
+                logger.warning(
+                    "[READ_PROMOTE] read_only reject non-query router pick=%s "
+                    "-> legacy fallback",
+                    _intent_val,
+                )
+                return None
 
         # Build ExtractionResult-compatible object
         extraction = ExtractionResult(
@@ -6879,6 +6917,7 @@ class UnifiedAgent:
             # ── end P4 downstream remap ──
 
         # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
+        _read_promote_result = None  # FIX_READ_PROMOTE: sync router pick (flag ON)
         try:
             from .llm_intent_router import LLMIntentRouter
 
@@ -6931,15 +6970,32 @@ class UnifiedAgent:
                         _sh_result.ready,
                         _sh_result.latency_ms,
                     )
+                    return _sh_result  # FIX_READ_PROMOTE: expose for sync promotion
 
                 except Exception as _sh_err:
                     import traceback as _tb
 
                     logger.warning("[SHADOW] Failed: %s\n%s", _sh_err, _tb.format_exc())
+                    return None  # FIX_READ_PROMOTE
 
             import asyncio
 
-            asyncio.create_task(_run_shadow())
+            # FIX_READ_PROMOTE (2026-06-04): when the read-promotion flag is ON we
+            # need the router pick synchronously (before calc/query dispatch) so a
+            # confident query_ router intent can beat a less-confident extractor
+            # mis-pick (e.g. "profit bulan ini" -> extractor calc_sum_sales_this_month
+            # but router query_profit_loss). When OFF, behavior is IDENTICAL to before:
+            # fire-and-forget shadow, result only logged, never applied.
+            if LLM_ROUTER_READ_PROMOTE:
+                try:
+                    _read_promote_result = await _run_shadow()
+                except Exception as _rp_sync_err:
+                    logger.warning(
+                        "[READ_PROMOTE] sync shadow failed: %s", _rp_sync_err
+                    )
+                    _read_promote_result = None
+            else:
+                asyncio.create_task(_run_shadow())
         except Exception as _shadow_init_err:
             logger.warning("[SHADOW] Init failed: %s", _shadow_init_err)
 
@@ -6948,6 +7004,81 @@ class UnifiedAgent:
         # meaning REC resolver + ARAP guard only ran when shadow init failed (rare).
         # Moved out so multi-turn follow-ups (pronoun "dia", ordinal "yang pertama") work.
         if extraction is not None:
+            # ── FIX_READ_PROMOTE (2026-06-04): READ-only router promotion ──
+            # Flag-gated. When ON, let a confident, pipeline-enabled query_ router
+            # pick beat a LESS-confident extractor mis-pick BEFORE the calc/query
+            # dispatch. Purely READ: query_ family only. Explicitly NEVER touches
+            # create_/update_/delete_/void_/reverse_/calc_ router intents, so CRUD
+            # determinism and ARAP/CALC/CRUD guards are untouched. PROJECTION_OVERRIDE
+            # already ran earlier (before the _intent gate) and is not affected here.
+            if (
+                LLM_ROUTER_READ_PROMOTE
+                and _read_promote_result is not None
+                and getattr(_read_promote_result, "ready", False) is True
+            ):
+                try:
+                    from .entity_extractor import (
+                        is_pipeline_enabled as _rp_is_pipe,
+                    )
+
+                    _rp_router_intent = (
+                        getattr(_read_promote_result, "intent", "") or ""
+                    ).strip()
+                    _rp_router_conf = float(
+                        getattr(_read_promote_result, "confidence", 0.0) or 0.0
+                    )
+                    _rp_extractor_intent = extraction.intent or ""
+                    _rp_extractor_conf = float(extraction.confidence or 0.0)
+
+                    # WRITE/CALC family is NEVER eligible for promotion.
+                    _rp_forbidden_prefix = (
+                        "create_",
+                        "update_",
+                        "delete_",
+                        "void_",
+                        "reverse_",
+                        "calc_",
+                    )
+                    # NOTE: the extractor confidence is a pinned 1.0 for regex
+                    # matches, so a strict +0.05 margin is unsatisfiable in
+                    # practice. The real "router is right, extractor mis-picked"
+                    # signal for the documented bug ("profit bulan ini" ->
+                    # extractor calc_sum_sales_this_month, router query_profit_loss)
+                    # is: a READY, high-confidence query_ router pick disagreeing
+                    # with an extractor pick that is NOT itself a pipeline-enabled
+                    # query_ intent. We ONLY rescue non-query extractor mis-routes
+                    # (e.g. calc_); a legitimate query_ extractor pick is left
+                    # untouched (it already routes via the primary path), and
+                    # CRUD/calc determinism is preserved.
+                    _rp_extractor_is_query_pipe = _rp_extractor_intent.startswith(
+                        "query_"
+                    ) and _rp_is_pipe(_rp_extractor_intent)
+                    _rp_eligible = (
+                        _rp_router_intent.startswith("query_")
+                        and not _rp_router_intent.startswith(_rp_forbidden_prefix)
+                        and _rp_is_pipe(_rp_router_intent)
+                        and _rp_router_intent != _rp_extractor_intent
+                        and not _rp_extractor_is_query_pipe
+                        and _rp_router_conf >= 0.9
+                        and _rp_router_conf >= _rp_extractor_conf
+                    )
+                    if _rp_eligible:
+                        logger.warning(
+                            "[READ_PROMOTE] adopted router=%s(%.2f) over "
+                            "extractor=%s(%.2f) user=%r",
+                            _rp_router_intent,
+                            _rp_router_conf,
+                            _rp_extractor_intent,
+                            _rp_extractor_conf,
+                            (user_text or "")[:80],
+                        )
+                        extraction.intent = _rp_router_intent
+                        extraction.confidence = _rp_router_conf
+                        extraction.needs_escalation = False
+                except Exception as _rp_err:
+                    logger.warning("[READ_PROMOTE] guard failed: %s", _rp_err)
+            # ── end FIX_READ_PROMOTE ──
+
             _tel_gemini_ms = (
                 int((_tel_extraction_end - _tel_extraction_start) * 1000)
                 if _tel_extraction_end and _tel_extraction_start
@@ -7856,7 +7987,14 @@ class UnifiedAgent:
         # When USE_LLM_ROUTER=true, classify via LLM Router and dispatch to
         # calc/query/create pipelines. Falls through to existing agent loop on
         # fallback/failure (never breaks existing behavior).
-        if USE_LLM_ROUTER and _intent in ("ACTION", "SIMPLE_READ"):
+        # FIX_READ_PROMOTE (2026-06-04): when the flag is ON, COMPLEX_READ also
+        # enters the primary path (read_only mode) so a confident query_ router
+        # pick can be served instead of dropping into the generic agent loop.
+        # When the flag is OFF the gate is EXACTLY (ACTION,SIMPLE_READ) as before.
+        _rp_primary_tiers = ("ACTION", "SIMPLE_READ")
+        if LLM_ROUTER_READ_PROMOTE:
+            _rp_primary_tiers = ("ACTION", "SIMPLE_READ", "COMPLEX_READ")
+        if USE_LLM_ROUTER and _intent in _rp_primary_tiers:
             try:
                 _llm_extraction = await self._classify_via_llm_router(
                     user_text=user_text,
@@ -7864,6 +8002,7 @@ class UnifiedAgent:
                     tool_executor=tool_executor,
                     conversation_history=conversation_history,
                     db_pool=db_pool,
+                    read_only=(_intent == "COMPLEX_READ"),
                 )
             except Exception as _llm_primary_err:
                 logger.warning(
