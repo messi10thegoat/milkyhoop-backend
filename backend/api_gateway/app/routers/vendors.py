@@ -25,10 +25,75 @@ from ..schemas.vendors import (
     MergeVendorRequest,
     MergeVendorResponse,
 )
-from ..services.resolve_account import resolve_account
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Fase C1.6: required role mappings for vendors.py per-vendor
+# opening-balance posting path.
+#
+# AP_TRADE                -- debit leg (Hutang Usaha) of the per-vendor
+#                            OB journal.
+# EQUITY_OPENING_BALANCE  -- credit (balancing) leg (Modal Saldo Awal).
+VENDORS_REQUIRED_ROLES = [
+    AccountRole.AP_TRADE,
+    AccountRole.EQUITY_OPENING_BALANCE,
+]
+
+# One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4/C1.5 pattern).
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool) -> None:
+    """Run role-mapping precondition once per process for vendors.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped; a
+    tenant added later without mapping will still fail loud at
+    resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(pool, "vendors", VENDORS_REQUIRED_ROLES)
+    _precondition_checked = True
+
+
+async def _resolve_role_account(conn, tenant_id: str, role_key: str) -> dict:
+    """Resolve role -> full account row (id, account_code, name).
+
+    Used by per-vendor OB posting to preserve existing response shape
+    (which surfaces account_code + name for the journal_entry preview).
+    Raises HTTPException(500) if the role mapping points to a missing /
+    inactive CoA row (data integrity bug).
+    """
+    account_id = await resolve_account_id_by_role(conn, tenant_id, role_key)
+    row = await conn.fetchrow(
+        """
+        SELECT id, account_code, name
+        FROM chart_of_accounts
+        WHERE tenant_id = $1 AND id = $2 AND is_active = true
+        """,
+        tenant_id,
+        account_id,
+    )
+    if not row:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Role {role_key!r} for tenant {tenant_id!r} points to "
+                f"account_id={account_id} which is missing or inactive "
+                f"in chart_of_accounts. Fix account_roles mapping."
+            ),
+        )
+    return dict(row)
+
 
 # Connection pool (initialized on first request)
 
@@ -1259,6 +1324,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         raw_body = await request.json()
         amount = Dec(str(raw_body.get("amount", 0)))
@@ -1323,23 +1389,15 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                         f"To update, first reverse the existing journal.",
                     )
 
-                # 3. Get AP account (2-10100 - Hutang Usaha)
-                ap_account = await resolve_account(conn, ctx["tenant_id"], "2-10100")
-                if not ap_account:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="AP account (2-10100) not found. Please verify chart of accounts.",
-                    )
-
-                # 4. Get Opening Balance Equity account (3-50000 - Modal Saldo Awal)
-                equity_account = await resolve_account(
-                    conn, ctx["tenant_id"], "3-50000"
+                # 3. Resolve AP account via role mapping (Law 27 + Fase C1.6).
+                ap_account = await _resolve_role_account(
+                    conn, ctx["tenant_id"], AccountRole.AP_TRADE
                 )
-                if not equity_account:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Opening Balance Equity account (3-50000) not found. Please run migrations.",
-                    )
+
+                # 4. Resolve Opening Balance Equity via role mapping.
+                equity_account = await _resolve_role_account(
+                    conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE
+                )
 
                 # 5. Generate journal number (OB-V-YYMMDD-XXX)
                 year_month_str = as_of_date.strftime("%y%m%d")

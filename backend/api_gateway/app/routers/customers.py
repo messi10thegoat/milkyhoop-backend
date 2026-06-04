@@ -22,6 +22,11 @@ from ..schemas.customers import (
     CustomerActivity,
     CustomerActivityResponse,
 )
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,6 +39,41 @@ async def get_pool() -> asyncpg.Pool:
     from ..services.db_pool import get_db_pool
 
     return await get_db_pool()
+
+
+# Fase C1.6: required role mappings for customers.py per-customer
+# opening-balance posting path.
+#
+# AR_TRADE                -- debit leg (Piutang Usaha) of the per-customer
+#                            OB journal.
+# EQUITY_OPENING_BALANCE  -- credit (balancing) leg (Modal Saldo Awal).
+#                            FLIP from legacy 3-10100 (Modal Pemilik) ->
+#                            3-50000 (Modal Saldo Awal), konsisten dengan
+#                            vendors.py per-vendor OB. Historical journals
+#                            posted to 3-10100 stay there (Law 2);
+#                            reclassify = tiket terpisah.
+CUSTOMERS_REQUIRED_ROLES = [
+    AccountRole.AR_TRADE,
+    AccountRole.EQUITY_OPENING_BALANCE,
+]
+
+# One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4/C1.5 pattern).
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool) -> None:
+    """Run role-mapping precondition once per process for customers.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped; a
+    tenant added later without mapping will still fail loud at
+    resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(pool, "customers", CUSTOMERS_REQUIRED_ROLES)
+    _precondition_checked = True
 
 
 def get_user_context(request: Request) -> dict:
@@ -1270,6 +1310,7 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
 
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         # O08 fix: Use Decimal for financial amounts (Law 25)
         try:
@@ -1311,14 +1352,21 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                         detail="Opening balance already set. Use reversal to correct.",
                     )
 
-                # Resolve accounts (Law 27)
-                from ..services.resolve_account import resolve_account_id
-
-                ar_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], "1-10400"
+                # Resolve accounts via role mapping (Law 27 + Fase C1.6).
+                # NOTE: equity leg flipped from 3-10100 (Modal Pemilik) to
+                # EQUITY_OPENING_BALANCE -> 3-50000 (Modal Saldo Awal),
+                # konsisten dengan vendors.py per-vendor OB. Historical
+                # journals stay at 3-10100 (Law 2); reclassify via separate
+                # ticket (pola DEP-2604-0001, CN-2604-0005).
+                ar_account_id = str(
+                    await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.AR_TRADE
+                    )
                 )
-                equity_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], "3-10100"
+                equity_account_id = str(
+                    await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE
+                    )
                 )
 
                 # Generate journal number
