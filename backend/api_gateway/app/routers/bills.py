@@ -1057,7 +1057,7 @@ async def list_bill_attachments(
             raise HTTPException(status_code=404, detail="Bill not found")
 
         rows = await conn.fetch(
-            "SELECT id, filename, file_path, file_size, mime_type, uploaded_at FROM bill_attachments WHERE bill_id = $1 ORDER BY uploaded_at DESC",
+            'SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name FROM bill_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text WHERE sa.bill_id = $1 ORDER BY sa.uploaded_at DESC',
             bill_id,
         )
 
@@ -1084,6 +1084,7 @@ async def list_bill_attachments(
                     "uploaded_at": r["uploaded_at"].isoformat()
                     if r["uploaded_at"]
                     else None,
+                    "uploaded_by_name": r["uploaded_by_name"],
                 }
             )
 

@@ -254,6 +254,7 @@ class RecordPaymentResponse(BaseModel):
 
     success: bool
     message: str
+    created_payment_id: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
 
 

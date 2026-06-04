@@ -2253,7 +2253,7 @@ async def get_payment_documents(request: Request, payment_id: str):
                 SELECT id, file_name, file_type, file_size, file_url,
                        description, created_at, created_by
                 FROM documents
-                WHERE tenant_id = $1 AND entity_type = 'bill_payment' AND entity_id = $2::uuid
+                WHERE tenant_id = $1 AND entity_type = 'payment' AND entity_id = $2::uuid
                 ORDER BY created_at DESC
                 """,
                 ctx["tenant_id"],
@@ -2330,7 +2330,7 @@ async def list_payment_attachments(request: Request, payment_id: str):
                     "file_name": r["file_name"],
                     "file_size": r["file_size"],
                     "mime_type": r["mime_type"],
-                    "url": url,
+                    "url": url or f"/api/documents/{r['id']}/download",
                     "thumbnail_url": r["thumbnail_url"],
                     "uploaded_at": r["uploaded_at"].isoformat()
                     if r["uploaded_at"]

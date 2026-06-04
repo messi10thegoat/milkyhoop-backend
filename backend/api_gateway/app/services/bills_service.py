@@ -519,9 +519,16 @@ class BillsService:
             payments_query = """
                 SELECT bp.id, bp.payment_number, bp.total_amount, bp.payment_date,
                        bp.payment_method, bp.reference_number, bp.notes, bp.status,
-                       bp.created_at, bpa.amount_applied
+                       bp.created_at, bpa.amount_applied,
+                       bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
+                       ba.account_name AS bank_account_name,
+                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
+                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
                 FROM bill_payments_v2 bp
                 INNER JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
+                LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+                LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
+                LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
                 WHERE bpa.bill_id = $1
                 ORDER BY bp.payment_date DESC
             """
@@ -725,6 +732,18 @@ class BillsService:
                         "notes": payment["notes"],
                         "status": payment["status"],
                         "created_at": payment["created_at"].isoformat(),
+                        "bank_account_id": str(payment["bank_account_id"])
+                        if payment.get("bank_account_id")
+                        else None,
+                        "bank_account_name": payment.get("bank_account_name"),
+                        "journal_id": str(payment["journal_id"])
+                        if payment.get("journal_id")
+                        else None,
+                        "created_by_name": payment.get("created_by_name"),
+                        "posted_at": payment["posted_at"].isoformat()
+                        if payment.get("posted_at")
+                        else None,
+                        "posted_by_name": payment.get("posted_by_name"),
                     }
                     for payment in payments
                 ],
@@ -1757,6 +1776,7 @@ class BillsService:
                 return {
                     "success": True,
                     "message": "Payment recorded successfully",
+                    "created_payment_id": str(payment_id),
                     "data": {
                         "id": str(payment_id),
                         "bill_id": str(bill_id),
@@ -4020,9 +4040,16 @@ class BillsService:
             payments_query = """
                 SELECT bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
                        bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
-                       bp.payment_number, bp.status
+                       bp.payment_number, bp.status,
+                       bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
+                       ba.account_name AS bank_account_name,
+                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
+                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
                 FROM bill_payments_v2 bp
                 JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
+                LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+                LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
+                LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
                 WHERE bp.status != 'voided'
                 ORDER BY bp.created_at ASC
             """
@@ -4176,6 +4203,18 @@ class BillsService:
                         "reference": payment["reference"],
                         "notes": payment["notes"],
                         "created_at": payment["created_at"].isoformat(),
+                        "bank_account_id": str(payment["bank_account_id"])
+                        if payment.get("bank_account_id")
+                        else None,
+                        "bank_account_name": payment.get("bank_account_name"),
+                        "journal_id": str(payment["journal_id"])
+                        if payment.get("journal_id")
+                        else None,
+                        "created_by_name": payment.get("created_by_name"),
+                        "posted_at": payment["posted_at"].isoformat()
+                        if payment.get("posted_at")
+                        else None,
+                        "posted_by_name": payment.get("posted_by_name"),
                     }
                     for payment in payments
                 ],
