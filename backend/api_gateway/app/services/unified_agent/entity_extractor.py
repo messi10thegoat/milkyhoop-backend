@@ -1082,7 +1082,16 @@ def classify_query_intent(user_text: str) -> tuple:
                 t,
             )
         )
-        if _proj_conditional_pct or _proj_explicit:
+        # Hold-margin / no-change projection (2026-06-04): conditional +
+        # a "hold" word + financial term, WITHOUT requiring a percent.
+        # e.g. "kalau margin saya tetap, untung kotor bulan depan berapa".
+        _proj_hold_margin = bool(
+            _qre.search(r"\b(jika|kalau|kalo|misal(?:kan|nya)?|seandainya|andai)\b", t)
+            and _qre.search(
+                r"\b(tetap|sama|tidak\s+berubah|tak\s+berubah|stagnan|konstan)\b", t
+            )
+        )
+        if _proj_conditional_pct or _proj_explicit or _proj_hold_margin:
             return "query_gross_profit_projection", None, None
 
     # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE

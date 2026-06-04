@@ -6164,6 +6164,13 @@ class UnifiedAgent:
 
         # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
         _intent = _infer_intent(user_text)
+        # FIX_READ_PROMOTE guard (2026-06-04): _qci_guard/_qci_entity_name
+        # are otherwise only assigned inside the `if extraction is not None:`
+        # block. The LLM-router read-promote path references _qci_guard in its
+        # PROJECTION_OVERRIDE check on code paths where that block never ran.
+        # Initialize at function scope to avoid UnboundLocalError (500).
+        _qci_guard = None
+        _qci_entity_name = None
         _route = RouteResult(
             intent=_intent,
             confidence=1.0,
