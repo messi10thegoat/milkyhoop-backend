@@ -65,13 +65,20 @@ class AccountRole:
     # ---- TIER 2 — CORRECTED (seeded Fase B) ---------------------------------
     CASH_PETTY: Final[str] = "CASH_PETTY"
 
-    # ---- TIER 2 INTERIM (seeded with is_interim=true; repoint in Fase D) ----
+    # ---- TIER 1 PROMOTED — TAX SPLIT Fase D1 (V155, seeded 5/5) -------------
+    # VAT_OUTPUT was interim 2-10300 in Fase B; V155 repointed to dedicated
+    # 2-10600 PPN Keluaran (is_interim=false). VAT_INPUT/WHT_PPH_PREPAID/
+    # WHT_PPH_PAYABLE promoted from TIER 3 reservation.
     VAT_OUTPUT: Final[str] = "VAT_OUTPUT"
+    VAT_INPUT: Final[str] = "VAT_INPUT"
+    WHT_PPH_PAYABLE: Final[str] = "WHT_PPH_PAYABLE"
+    WHT_PPH_PREPAID: Final[str] = "WHT_PPH_PREPAID"
 
     # ---- TIER 3 — PENDING (reserved, NOT seeded) ----------------------------
-    VAT_INPUT: Final[str] = "VAT_INPUT"
     VAT_INPUT_NONCREDITABLE: Final[str] = "VAT_INPUT_NONCREDITABLE"
     VAT_PAYABLE_NET: Final[str] = "VAT_PAYABLE_NET"
+    # Granular WHT reservation (per-pasal, forward-compat, NOT mapped in D1).
+    # Unified WHT_PPH_PAYABLE / WHT_PPH_PREPAID covers PPh 23/22/4(2) for now.
     WHT_PPH21: Final[str] = "WHT_PPH21"
     WHT_PPH23: Final[str] = "WHT_PPH23"
     WHT_PPH4_2: Final[str] = "WHT_PPH4_2"
@@ -129,14 +136,17 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "COGS_SALES",
         "COGS_PURCHASE_RETURN",
         "REVENUE_DEFERRED",
+        # TIER 1 promoted (V155 Fase D1 — tax split)
+        "VAT_OUTPUT",
+        "VAT_INPUT",
+        "WHT_PPH_PAYABLE",
+        "WHT_PPH_PREPAID",
         # TIER 2
         "CASH_PETTY",
-        # TIER 2 INTERIM
-        "VAT_OUTPUT",
-        # TIER 3
-        "VAT_INPUT",
+        # TIER 3 (reserved, NOT seeded)
         "VAT_INPUT_NONCREDITABLE",
         "VAT_PAYABLE_NET",
+        # WHT granular reservation (forward-compat per Q2, NOT mapped in D1)
         "WHT_PPH21",
         "WHT_PPH23",
         "WHT_PPH4_2",
@@ -219,3 +229,58 @@ async def resolve_account_id_by_role(conn, tenant_id: str, role_key: str) -> UUI
             f"(see seed_default_account_roles or Fase D plan)."
         )
     return row["account_id"]
+
+
+# -----------------------------------------------------------------------------
+# PKP Toggle helper (V154/V155 Fase D1)
+# -----------------------------------------------------------------------------
+# VAT roles are gated by Tenant.is_pkp. Non-PKP tenants skip VAT line emission
+# (sales/purchase without PPN). WHT roles are NOT affected by this toggle.
+_VAT_ROLES: Final[frozenset[str]] = frozenset(
+    {
+        "VAT_OUTPUT",
+        "VAT_INPUT",
+        "VAT_INPUT_NONCREDITABLE",
+        "VAT_PAYABLE_NET",
+    }
+)
+
+
+async def resolve_account_id_by_role_if_pkp(
+    conn, tenant_id: str, role_key: str
+) -> UUID | None:
+    """Resolve account_id with PKP gating for VAT roles.
+
+    Behavior:
+        - VAT_OUTPUT / VAT_INPUT / VAT_INPUT_NONCREDITABLE / VAT_PAYABLE_NET:
+          check Tenant.is_pkp first. If false, return None (caller must skip
+          VAT line emission). If true, delegate to resolve_account_id_by_role.
+        - Non-VAT roles: delegate directly (WHT, AR, AP, inventory, etc.).
+
+    Returns:
+        UUID when role resolves; None when tenant is non-PKP and role is VAT.
+
+    Raises:
+        ValueError: role_key not in catalog.
+        AccountRoleUnmappedError: PKP tenant but VAT role unmapped, or any
+            non-VAT role unmapped — posting MUST abort.
+
+    Use this in posting paths for VAT_OUTPUT / VAT_INPUT to support non-PKP
+    tenants gracefully. WHT_PPH_* paths should NOT use this — call
+    resolve_account_id_by_role() directly.
+    """
+    if role_key in _VAT_ROLES:
+        is_pkp = await conn.fetchval(
+            'SELECT is_pkp FROM "Tenant" WHERE id = $1',
+            tenant_id,
+        )
+        if is_pkp is None:
+            raise AccountRoleUnmappedError(
+                f"Tenant {tenant_id!r} not found while checking PKP status "
+                f"for role {role_key!r}."
+            )
+        if not is_pkp:
+            # Non-PKP: caller must skip VAT line emission.
+            return None
+
+    return await resolve_account_id_by_role(conn, tenant_id, role_key)

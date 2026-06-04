@@ -238,8 +238,8 @@ def test_cash_general_resolves_to_1_10100_for_all_tenants():
     _run(body())
 
 
-def test_vat_output_resolves_to_2_10300_for_all_tenants():
-    """VAT_OUTPUT interim contract (shared with sales_invoices)."""
+def test_vat_output_resolves_to_2_10600_for_all_tenants():
+    """V155 Fase D1 contract: VAT_OUTPUT → 2-10600 (shared with sales_invoices)."""
 
     async def body():
         _require_dsn()
@@ -256,8 +256,8 @@ def test_vat_output_resolves_to_2_10300_for_all_tenants():
             )
             assert rows, "VAT_OUTPUT must be mapped for every tenant"
             for r in rows:
-                assert r["account_code"] == "2-10300", (
-                    f"tenant={r['tenant_id']} expected 2-10300 (interim), "
+                assert r["account_code"] == "2-10600", (
+                    f"tenant={r['tenant_id']} expected 2-10600 (V155 D1), "
                     f"got {r['account_code']}"
                 )
         finally:

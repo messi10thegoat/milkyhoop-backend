@@ -1,4 +1,15 @@
 -- ============================================================================
+-- DEPRECATED — DO NOT RUN
+--
+-- This file uses an older schema (code/type/parent_id UUID) that no longer
+-- matches the live chart_of_accounts table. Live `seed_default_coa(text)`
+-- function is authoritative; it is CREATE OR REPLACE'd in:
+--   * V151 (added REVENUE_DEFERRED 2-10750)
+--   * V154 (added tax split accounts 2-10600 / 1-10800 / 2-10320 / 1-10820)
+-- File retained as historical marker only.
+-- ============================================================================
+
+-- ============================================================================
 -- MilkyHoop Accounting Kernel - Default Chart of Accounts
 -- Migration: V011
 -- Date: 2026-01-04

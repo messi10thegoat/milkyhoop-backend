@@ -201,12 +201,11 @@ def test_precondition_assert_raises_on_unmapped_role():
 # ---------------------------------------------------------------------------
 # VAT_OUTPUT mapping sanity (the migration's interim contract)
 # ---------------------------------------------------------------------------
-def test_vat_output_resolves_to_2_10300_for_all_tenants():
-    """Fase C1.1 interim contract: VAT_OUTPUT → 2-10300 (Hutang Pajak).
+def test_vat_output_resolves_to_2_10600_for_all_tenants():
+    """V155 Fase D1 contract: VAT_OUTPUT → 2-10600 (PPN Keluaran, dedicated).
 
-    Old hardcode used 2-10600 which did NOT exist for 3/5 tenants
-    (anthonius-iwan, ponte-publishing, potus-id). The role-based mapping
-    fixes that latent posting failure.
+    Was interim 2-10300 in Fase C1.1; V155 repointed to dedicated PPN Keluaran
+    and backfilled missing accounts in 3 tenants.
     """
 
     async def body():
@@ -224,8 +223,8 @@ def test_vat_output_resolves_to_2_10300_for_all_tenants():
             )
             assert rows, "VAT_OUTPUT must be mapped for every tenant"
             for r in rows:
-                assert r["account_code"] == "2-10300", (
-                    f"tenant={r['tenant_id']} expected 2-10300 (interim), "
+                assert r["account_code"] == "2-10600", (
+                    f"tenant={r['tenant_id']} expected 2-10600 (V155 D1), "
                     f"got {r['account_code']}"
                 )
         finally:

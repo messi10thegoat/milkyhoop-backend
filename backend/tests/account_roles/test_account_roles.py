@@ -99,9 +99,11 @@ def test_resolver_returns_account_id_for_mapped_role():
 
 
 def test_resolver_raises_for_unmapped_tier3_role():
+    # V155 Fase D1: VAT_INPUT promoted to TIER 1 (mapped 5/5). Use a still-reserved
+    # role for this test (granular WHT, kept as reservation per Q2).
     async def body(conn):
         with pytest.raises(AccountRoleUnmappedError):
-            await resolve_account_id_by_role(conn, TENANT_A, AccountRole.VAT_INPUT)
+            await resolve_account_id_by_role(conn, TENANT_A, AccountRole.WHT_PPH21)
 
     _run(_with_su(body))
 
@@ -142,25 +144,26 @@ def test_seed_is_idempotent():
     _run(_with_su(body))
 
 
-def test_vat_output_is_interim():
+def test_vat_output_is_not_interim_post_d1():
+    # V155 Fase D1: VAT_OUTPUT repointed from interim 2-10300 to dedicated 2-10600.
     async def body(conn):
         row = await conn.fetchrow(
-            "SELECT is_interim, notes FROM account_roles "
+            "SELECT is_interim FROM account_roles "
             "WHERE tenant_id = $1 AND role_key = $2",
             TENANT_A,
             AccountRole.VAT_OUTPUT,
         )
         assert row is not None
-        assert row["is_interim"] is True
-        assert "interim" in (row["notes"] or "").lower()
+        assert row["is_interim"] is False, "Post-D1: VAT_OUTPUT must not be interim"
 
     _run(_with_su(body))
 
 
 def test_tier3_not_seeded():
+    # V155 Fase D1: VAT_INPUT, WHT_PPH_PAYABLE, WHT_PPH_PREPAID promoted to TIER 1.
+    # Granular WHT_PPH21/23/4_2/22 retained as reservation (forward-compat, NOT mapped).
     async def body(conn):
         for role in [
-            AccountRole.VAT_INPUT,
             AccountRole.WHT_PPH21,
             AccountRole.INVENTORY_WIP,
             AccountRole.MFG_DIRECT_LABOR,
