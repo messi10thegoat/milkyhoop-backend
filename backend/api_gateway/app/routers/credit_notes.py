@@ -43,6 +43,11 @@ from ..schemas.credit_notes import (
     CreditNoteSummaryResponse,
 )
 from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role_if_pkp,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,7 +57,34 @@ router = APIRouter()
 # Account codes (resolved dynamically via Law 27)
 AR_ACCOUNT_CODE = "1-10400"  # Piutang Usaha
 SALES_RETURN_ACCOUNT_CODE = "4-10300"  # Retur Penjualan
-TAX_PAYABLE_ACCOUNT_CODE = "2-10300"  # PPN Keluaran
+# Fase D2-wrap C4: VAT keluaran (PPN Output) di credit note (retur penjualan)
+# di-resolve via role VAT_OUTPUT dengan PKP guard. Const legacy
+# TAX_PAYABLE_ACCOUNT_CODE = "2-10300" dihapus karena 2-10300 sekarang generic
+# placeholder pasca D1 V155 repoint (VAT_OUTPUT pindah ke 2-10600 dedicated).
+
+# Required role mappings for credit_notes posting path.
+# VAT_OUTPUT is PKP-gated (tenant non-PKP tidak bisa post PPN > 0).
+CREDIT_NOTES_REQUIRED_ROLES = [
+    AccountRole.VAT_OUTPUT,
+]
+
+# One-time precondition check flag.
+_precondition_checked = False
+
+
+async def _ensure_role_preconditions(pool):
+    """Run role-mapping precondition once per process for credit_notes.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _precondition_checked
+    if _precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "credit_notes", CREDIT_NOTES_REQUIRED_ROLES
+    )
+    _precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -928,6 +960,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1044,11 +1077,19 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 line_number += 1
 
                 # Dr. VAT Payable (if tax)
+                # Fase D2-wrap C4: PKP-guarded VAT_OUTPUT role resolution.
+                # Tenant non-PKP tidak boleh post PPN > 0 (fail-loud 422).
                 tax_jl_id = None
                 if tax_amount > 0:
-                    tax_account_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], TAX_PAYABLE_ACCOUNT_CODE
+                    tax_account_id = await resolve_account_id_by_role_if_pkp(
+                        conn, ctx["tenant_id"], "VAT_OUTPUT"
                     )
+
+                    if tax_account_id is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Tenant non-PKP tidak dapat post PPN > 0 pada credit note",
+                        )
 
                     if tax_account_id:
                         tax_jl_id = uuid_module.uuid4()
