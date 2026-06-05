@@ -19,14 +19,28 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
+from app.services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+
 logger = logging.getLogger(__name__)
 
 
 async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> dict:
     """
     Resolve COGS and Inventory GL accounts.
-    Priority: product-level → tenant default.
+    Priority: product-level (products.cogs_account_id / inventory_account_id)
+              → tenant role mapping (AccountRole.COGS_SALES / INVENTORY_MERCHANDISE).
+
+    Fase F6/F7 migration: removed hardcoded literals '5-10100' / '1-10600'.
+    Tenant fallback now goes through account_roles per Iron Laws 1, 18, 27.
+
     Returns {"cogs_account_id": uuid, "inventory_account_id": uuid}.
+
+    Raises AccountRoleUnmappedError if role lookup needed but tenant has no
+    mapping for COGS_SALES or INVENTORY_MERCHANDISE (Iron Law: no silent
+    fallback to literal account codes).
     """
     product_accounts = await conn.fetchrow(
         "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
@@ -37,14 +51,12 @@ async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> 
     inv_acct = product_accounts["inventory_account_id"] if product_accounts else None
 
     if not cogs_acct:
-        cogs_acct = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '5-10100' AND is_active = true",
-            tenant_id,
+        cogs_acct = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.COGS_SALES
         )
     if not inv_acct:
-        inv_acct = await conn.fetchval(
-            "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = '1-10600' AND is_active = true",
-            tenant_id,
+        inv_acct = await resolve_account_id_by_role(
+            conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
         )
 
     return {"cogs_account_id": cogs_acct, "inventory_account_id": inv_acct}
