@@ -330,6 +330,7 @@ EXTRACTION_SCHEMAS = {
                             "query_vendors_with_overdue",
                             "query_ar_by_customer",
                             "query_ap_by_vendor",
+                            "query_business_drivers",
                             "query_sales_invoices_unpaid",
                             "query_bills_by_vendor",
                             "query_bills_unpaid",
@@ -735,6 +736,7 @@ PIPELINE_ENABLED_INTENTS = {
     # fabricated names (Bug G) and Iron-Law-1 numeric drift (Bug I).
     "query_ar_by_customer",  # FIX_CGI_PIPELINE_GATE
     "query_ap_by_vendor",  # FIX_CGI_PIPELINE_GATE
+    "query_business_drivers",  # DRIVER_WHY_GATE (Phase 2, 2026-06-05)
     "query_cash_balance",
     # Kas & Bank
     "query_bank_accounts_list",
@@ -1093,6 +1095,28 @@ def classify_query_intent(user_text: str) -> tuple:
         )
         if _proj_conditional_pct or _proj_explicit or _proj_hold_margin:
             return "query_gross_profit_projection", None, None
+
+    # ── Financial "why" / contributing-facts (Phase 2, 2026-06-05) ──────────
+    # DRIVER_WHY_GATE: deterministic keyword gate so financial "kenapa/mengapa"
+    # questions route to query_business_drivers (MoM driver deltas) instead of
+    # being hijacked by the TUTORIAL classifier (system_prompt._infer_intent
+    # maps "kenapa"/"kok " -> TUTORIAL). This is financial-critical, so it lives
+    # in the regex-primary layer and MUST fire before the calc/AR/AP blocks.
+    #
+    # Trigger = a "why" word AND a financial-driver noun. Non-financial "why"
+    # (e.g. "kenapa faktur harus di-void", "kenapa stok minus") has NO driver
+    # noun here -> falls through -> TUTORIAL (RAG) as before. Projection what-if
+    # ("kenapa kalau omzet naik 20%...") is already captured by the projection
+    # block above (returns first), so this gate never steals it.
+    _why_word = _qre.search(r"\b(kenapa|mengapa|kok|ngapa)\b", t)
+    if _why_word:
+        _driver_noun = _qre.search(
+            r"(cash\s*flow|arus\s*kas|\bkas\b|laba|untung|profit|rugi|omzet|"
+            r"penjualan|pengeluaran|beban|biaya|piutang|hutang|utang)",
+            t,
+        )
+        if _driver_noun:
+            return "query_business_drivers", None, None
 
     # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE
     # AR/AP ranking so "barang ... terbanyak" routes to items, not AR.

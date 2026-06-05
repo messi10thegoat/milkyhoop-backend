@@ -2792,6 +2792,34 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
         ],
         query_params=[],
     ),
+    # Why-question contributing-facts (Phase 2, 2026-06-05): MoM driver deltas.
+    # NOT backed by a REST endpoint — computed via driver_deltas.compute_driver_deltas
+    # and intercepted by a deterministic dispatch in the orchestrator (mirrors
+    # query_ar_by_customer / _render_ar_ap_by_entity). rest_endpoint is a sentinel
+    # and is never called. response_format="summary".
+    "query_business_drivers": QueryActionConfig(
+        action_key="query_business_drivers",
+        display_name="Faktor Pendorong Keuangan (MoM)",
+        rest_endpoint="__computed__/driver-deltas",  # sentinel: never fetched
+        response_format="summary",
+        description=(
+            "Faktor-faktor kontributor di balik pertanyaan 'kenapa' keuangan "
+            "(cash flow / laba / omzet / pengeluaran / piutang / hutang). "
+            "Membandingkan periode berjalan vs periode sebelumnya (MoM), "
+            "journal-derived (Iron Law 1). Deterministic — tidak ada LLM polish."
+        ),
+        signal_words=[
+            "kenapa cash flow",
+            "kenapa arus kas",
+            "kenapa laba turun",
+            "kenapa untung turun",
+            "kenapa omzet turun",
+            "kenapa pengeluaran naik",
+            "mengapa kas berkurang",
+            "kenapa piutang naik",
+        ],
+        query_params=[],
+    ),
     # Kas & Bank
     "query_bank_accounts_list": QueryActionConfig(
         action_key="query_bank_accounts_list",

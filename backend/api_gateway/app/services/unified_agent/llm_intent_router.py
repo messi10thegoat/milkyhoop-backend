@@ -103,6 +103,7 @@ update_vendor, update_customer, update_item, update_bank_account, update_warehou
 delete_vendor, delete_customer, delete_item, delete_warehouse, delete_bank_account
 void_sales_invoice, void_bill, void_expense, void_bill_payment, void_receive_payment, reverse_journal
 query_ar_outstanding, query_ap_outstanding, query_ar_by_customer, query_ap_by_vendor, query_ar_invoices, query_ar_aging, query_ap_aging, query_customer_ar, query_vendor_ap, query_customers_with_overdue, query_vendors_with_overdue
+query_business_drivers
 query_items_search, query_item_detail, query_items_summary, query_items_low_stock, query_items_no_stock, query_warehouse_stock
 query_sales_invoices_list, query_sales_invoice_detail, query_sales_invoices_summary, query_sales_invoices_unpaid, query_sales_invoices_overdue
 query_bills_list, query_bill_detail, query_bills_summary, query_bills_unpaid, query_bills_overdue
@@ -156,6 +157,9 @@ RULES:
 15b. PROYEKSI/WHAT-IF: pertanyaan andai/jika/kalau + perubahan persen (naik/turun N%) terhadap omzet/penjualan/laba, ATAU kata proyeksi/proyeksikan/estimasi/estimasikan/forecast/prediksi/simulasi → query_gross_profit_projection.
     Contoh: "jika omzet naik 100 persen bulan depan, berapa laba kotor saya?" → query_gross_profit_projection. "proyeksikan laba kotor bulan depan" → query_gross_profit_projection. "estimasi untung kalau penjualan turun 20%" → query_gross_profit_projection.
     BEDA dari query_profit_loss (laba rugi aktual periode tertentu) dan calc_profit_margin_per_item (margin statis per produk). Proyeksi = forward-looking what-if, BUKAN laporan historis.
+15c. WHY/KENAPA KEUANGAN (contributing-facts): pertanyaan "kenapa/mengapa/kok" TENTANG kondisi keuangan (cash flow/arus kas/kas, laba/untung/profit/rugi, omzet/penjualan, pengeluaran/beban/biaya, piutang, hutang/utang) → query_business_drivers. Membandingkan faktor pendorong periode berjalan vs sebelumnya (MoM), bukan tutorial.
+    Contoh: "kenapa cash flow seret bulan ini?" → query_business_drivers. "kenapa laba turun?" → query_business_drivers. "kok pengeluaran naik ya bulan ini" → query_business_drivers.
+    BEDA dari TUTORIAL (kenapa TENTANG cara pakai aplikasi, contoh "kenapa faktur harus di-void", "kenapa stok bisa minus" → tutorial) dan query_gross_profit_projection (forward-looking what-if dengan persen). Why-keuangan tanpa what-if/persen = query_business_drivers.
 16. DOMAIN CONTINUITY (CRITICAL): Pesan pendek (<6 kata) atau pronoun TANPA keyword domain eksplisit → TETAP di domain RIWAYAT sebelumnya.
     Setelah hutang/AP: "ke siapa aja?" → query_ap_outstanding. "ke vendor siapa aja?" → query_ap_outstanding. "yang paling besar?" → calc_rank_vendors_by_ap. "bayar yang paling besar" → create_bill_payment.
     Setelah piutang/AR: "ke siapa aja?" → query_ar_invoices. "dari siapa aja?" → query_ar_invoices. "yang paling besar?" → calc_rank_customers_by_ar. "yang paling besar siapa?" → calc_rank_customers_by_ar.

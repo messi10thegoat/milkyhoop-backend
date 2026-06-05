@@ -3548,6 +3548,125 @@ class UnifiedAgent:
             total_latency_ms=int((_time.monotonic() - _proj_start) * 1000),
         )
 
+    # Indonesian display labels for the 5 MoM drivers (BASIC renderer, Phase 2).
+    _DRIVER_LABELS_ID = {
+        "revenue_total": "Pendapatan / Omzet",
+        "expense_total": "Pengeluaran (beban + HPP)",
+        "cash_balance": "Saldo Kas & Bank",
+        "ar_outstanding": "Piutang Outstanding",
+        "ap_outstanding": "Hutang Outstanding",
+    }
+
+    @staticmethod
+    def _fmt_idr_basic(value: float) -> str:
+        """Rp thousand-separated (Indonesian '.' grouping), no decimals."""
+        try:
+            return "Rp " + f"{int(round(value)):,}".replace(",", ".")
+        except Exception:
+            return f"Rp {value}"
+
+    def _render_business_drivers_basic(self, delta_set) -> str:
+        """BASIC deterministic text dump of a DriverDeltaSet (Phase 2 placeholder).
+
+        Non-causal framing: lists the ranked contributing facts (drivers) with
+        current/prior/delta_pct + the resolved period labels for the I5 trace.
+        NO LLM (numbers cannot be hallucinated — Iron Law 1). Phase 3 replaces
+        this with a polished `_render_contributing_facts`.
+        """
+        cur_label = delta_set.current_label or "periode ini"
+        pri_label = delta_set.prior_label or "periode sebelumnya"
+
+        lines = [
+            f"Faktor pendorong keuangan: {cur_label} vs {pri_label}",
+            "(perbandingan bulan-ke-bulan, journal-derived — fakta kontributor, "
+            "bukan sebab-akibat)",
+            "",
+        ]
+        for rank, (name, drv) in enumerate(delta_set.ranked_by_abs_pct(), start=1):
+            label = self._DRIVER_LABELS_ID.get(name, name)
+            cur = self._fmt_idr_basic(float(drv.current))
+            pri = self._fmt_idr_basic(float(drv.prior))
+            if drv.delta_pct is None:
+                pct = "naik dari 0" if float(drv.current) else "tetap 0"
+            else:
+                _p = float(drv.delta_pct)
+                pct = f"{'+' if _p >= 0 else ''}{_p:.1f}%"
+            lines.append(f"{rank}. {label}: {pri} → {cur} ({pct})")
+
+        return "\n".join(lines)
+
+    async def _handle_business_drivers(
+        self,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """DRIVER_WHY_HANDLER_MARKER — deterministic MoM driver-deltas dispatch.
+
+        Computes journal-derived month-over-month driver deltas via
+        driver_deltas.compute_driver_deltas and renders a BASIC code-only text
+        dump (Phase 2 placeholder; Phase 3 adds the polished renderer). READ-ONLY,
+        no journal mutation, no LLM polish (Iron Law 1).
+        """
+        import time as _time
+
+        _drv_start = _time.monotonic()
+
+        # Resolve period from the user text (defaults to "bulan ini" inside
+        # compute_driver_deltas when no phrase matches).
+        _period_text = user_text if (user_text and user_text.strip()) else "bulan ini"
+
+        try:
+            from .driver_deltas import compute_driver_deltas
+
+            _delta_set = await compute_driver_deltas(
+                tenant_id=context.tenant_id,
+                period_text=_period_text,
+            )
+            _drv_text = self._render_business_drivers_basic(_delta_set)
+        except Exception as _drv_err:
+            import traceback as _tb_drv
+
+            logger.warning(
+                "[DRIVER_WHY_PIPELINE] driver-deltas failed: %s\n%s",
+                _drv_err,
+                _tb_drv.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menghitung faktor pendorong "
+                    "keuangan. Silakan coba lagi."
+                ),
+                iterations=1,
+                model_used="driver_deltas",
+                total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
+            )
+
+        # Persist last_action_type for follow-up context (best-effort).
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type="query_business_drivers",
+                    last_action_result={"response_text": _drv_text[:2000]},
+                )
+            except Exception:
+                pass
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=_drv_text,
+            iterations=1,
+            model_used="driver_deltas",
+            total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
+        )
+
     async def _handle_query_pipeline(
         self,
         user_text: str,
@@ -6222,6 +6341,53 @@ class UnifiedAgent:
             except Exception:
                 pass
             return await self._handle_gross_profit_projection(
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
+
+        # ── DRIVER_WHY_OVERRIDE (2026-06-05) ───────────────────────────────
+        # Financial "why" questions ("kenapa cash flow seret bulan ini?") must
+        # beat the TUTORIAL classification. system_prompt._infer_intent maps
+        # "kenapa"/"kok " -> TUTORIAL (userguide RAG), which would hijack this.
+        # The deterministic regex classifier (DRIVER_WHY_GATE in
+        # classify_query_intent) returns query_business_drivers; we honor it
+        # here, BEFORE any _intent-gated branch (CHITCHAT, ACTION/SIMPLE_READ
+        # extraction, LLM router, TUTORIAL), so the financial-why never routes
+        # to RAG. Non-financial "kenapa" (no driver noun) never matches the gate
+        # -> still flows to TUTORIAL. Self-contained: no variable leaks to the
+        # COMPLEX_READ / read-promote paths. READ-ONLY, no advisory lock.
+        try:
+            from .entity_extractor import (
+                classify_query_intent as _drv_qci,
+            )
+
+            _drv_guard, _, _ = _drv_qci(user_text)
+        except Exception:
+            _drv_guard = None
+        if _drv_guard == "query_business_drivers":
+            logger.warning(
+                "[DRIVER_WHY_OVERRIDE] intent forced to query_business_drivers "
+                "(infer_intent=%s) user='%s'",
+                _intent,
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_drv
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_drv.uuid4()),
+                        "final_intent": "query_business_drivers",
+                        "decision_source": "driver_why_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_business_drivers(
                 user_text=user_text,
                 context=context,
                 tool_executor=tool_executor,
