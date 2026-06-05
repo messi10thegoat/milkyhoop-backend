@@ -7021,27 +7021,17 @@ class UnifiedAgent:
             # Fires when (a) no pending slot was active, (b) LLM classified a
             # canonical period-dependent intent, (c) entities lack `period`.
             # Seeds slot + returns clarification question.
+            # STOCK_DIRECT_FIX (2026-06-05): AR/AP outstanding/summary/aging/rank
+            # are POINT-IN-TIME stock balances — outstanding = balance as of now,
+            # and their endpoints (/outstanding-summary) carry NO period param.
+            # Asking "Untuk periode kapan?" for "total piutang berapa" was P3
+            # over-clarification AND unfulfillable (no period the endpoint could
+            # honor). Removed them from the period gate so they answer directly.
+            # Only genuine period-bound FLOW intents (expense over a range) stay.
             _P4_PERIOD_INTENTS = {
-                # Old seeded names (kept for backward compat with seeded tests)
-                "calc_sum_ar",
-                "calc_sum_ap",
-                "query_ar_summary",
-                "query_ap_summary",
-                # Canonical names (natural LLM output, post-C3 remap targets)
-                "calc_sum_invoices_outstanding",
-                "calc_sum_bills_outstanding",
-                "query_ar_outstanding",
-                "query_ap_outstanding",
-                # Rank intents (pass through to rank templates)
-                "calc_rank_customers_by_ar",
-                "calc_rank_vendors_by_ap",
-                # Expense period-dependent
+                # FLOW / period-bound: legitimately ambiguous without a period.
                 "query_expenses_summary",
                 "calc_sum_expenses",
-                # Aging variants (Gemini sometimes emits query_ar_aging for bare
-                # "piutang total" — same period-dependence as outstanding)
-                "query_ar_aging",
-                "query_ap_aging",
             }
             try:
                 _ext_intent = getattr(extraction, "intent", "") or ""
