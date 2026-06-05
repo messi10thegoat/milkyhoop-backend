@@ -50,15 +50,44 @@ from ..schemas.receive_payments import (
     VoidPaymentRequest,
 )
 from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
 
-# Account codes
-CUSTOMER_DEPOSIT_ACCOUNT = "2-10500"  # Uang Muka Pelanggan (Liability)
-AR_ACCOUNT = "1-10400"  # Piutang Usaha (A/R)
+# Fase D2.4: AR_TRADE + CUSTOMER_DEPOSIT_LIABILITY now resolved via
+# role_resolver (Law 27). Const dropped; resolver inline at use sites.
+
+# Fase D2.4: REVENUE_SALES_DISCOUNT role NOT YET seeded (0/5 tenants).
+# Sales discount fallback literal RETAINED with DEFER comment below
+# (deferred to D2-wrap micro: seed role + flip line ~1564).
+
+# Fase D2.4: required role mappings for receive_payments posting path.
+RECEIVE_PAYMENTS_REQUIRED_ROLES = [
+    AccountRole.AR_TRADE,
+    AccountRole.CUSTOMER_DEPOSIT_LIABILITY,
+]
+
+# Module-level once-flag for precondition audit.
+_receive_payments_precondition_checked = False
+
+
+async def _ensure_receive_payments_role_preconditions(pool):
+    """Run role-mapping precondition once per process for receive_payments.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _receive_payments_precondition_checked
+    if _receive_payments_precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "receive_payments", RECEIVE_PAYMENTS_REQUIRED_ROLES
+    )
+    _receive_payments_precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -117,7 +146,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.status = 'POSTED'
-            AND coa.account_code = '1-10400'
+            AND coa.account_type = 'RECEIVABLE'  -- Fase D2.4: migrated from hardcoded RECEIVABLE account_code to account_type filter (Law 29)
             AND je.tenant_id = $1
             AND (
                 -- Original invoice journal (AR debit)
@@ -203,14 +232,16 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             except Exception:
                 pass
 
-        # Resolve AR account (Law 27)
+        # Resolve AR account via role_resolver (Law 27, Fase D2.4)
         ar_name = "Piutang Usaha"
-        ar_code = AR_ACCOUNT
+        ar_code = ""
         try:
+            ar_account_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.AR_TRADE
+            )
             ar_row = await conn.fetchrow(
-                "SELECT name, account_code FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true",
-                ctx["tenant_id"],
-                AR_ACCOUNT,
+                "SELECT name, account_code FROM chart_of_accounts WHERE id = $1",
+                ar_account_id,
             )
             if ar_row:
                 ar_name = ar_row["name"]
@@ -914,6 +945,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_receive_payments_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1479,10 +1511,12 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
 
     # Get account IDs
     # Law 27: resolve accounts via resolve_account_id
-    deposit_account_id = UUID(
-        await resolve_account_id(conn, ctx["tenant_id"], CUSTOMER_DEPOSIT_ACCOUNT)
+    deposit_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
     )
-    ar_account_id = UUID(await resolve_account_id(conn, ctx["tenant_id"], AR_ACCOUNT))
+    ar_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.AR_TRADE
+    )
 
     # Create journal entry
     journal_id = uuid_module.uuid4()
@@ -1560,6 +1594,10 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         discount_account = payment["discount_account_id"]
         if not discount_account:
             try:
+                # DEFER: REVENUE_SALES_DISCOUNT role NOT seeded 5/5 (0/5 as of D2.4).
+                # Retain literal 6-10100 fallback; flip to
+                # resolve_account_id_by_role(..., AccountRole.REVENUE_SALES_DISCOUNT)
+                # in D2-wrap micro after role + seed promoted.
                 discount_account = UUID(
                     await resolve_account_id(conn, ctx["tenant_id"], "6-10100")
                 )
@@ -1783,6 +1821,7 @@ async def post_receive_payment(request: Request, payment_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_receive_payments_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1851,6 +1890,7 @@ async def void_receive_payment(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_receive_payments_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():

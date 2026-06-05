@@ -70,7 +70,7 @@ Granular per-pasal reservasi (Q2): `WHT_PPH21`, `WHT_PPH23`, `WHT_PPH4_2`, `WHT_
 - **DEFERRED BATCH — READY untuk migrasi (post-D1)**:
   - `bills_service` — AP_TRADE + VAT_INPUT + WHT_PPH_PAYABLE + INVENTORY_MERCHANDISE — precondition CLEAN 5/5 ✅
   - `vendor_credits` — AP_TRADE + VAT_INPUT + COGS_PURCHASE_RETURN — precondition CLEAN 5/5 ✅
-  - `receive_payments` — AR_TRADE + CASH_GENERAL + WHT_PPH_PREPAID — precondition CLEAN 5/5 ✅
+  - ~~`receive_payments` — AR_TRADE + CUSTOMER_DEPOSIT_LIABILITY — precondition CLEAN 5/5~~ ✅ **DONE D2.4** (REVENUE_SALES_DISCOUNT defer to D2-wrap; WHT_PPH_PREPAID = no AR-PPh code path, future feature ticket)
   - `expenses` — VAT_INPUT + CASH_GENERAL + AP_TRADE — precondition CLEAN 5/5 ✅
 - DIPARKIR (post-MVP, jangan disentuh): intercompany, branches, cheques. fixed_assets = tiket bug terpisah.
 
@@ -110,6 +110,10 @@ list per file (regression guard + deferred-list tracker).
   → **D2-wrap micro** (investigate naming: AP_PREPAID vs VENDOR_DEPOSIT
   asset; **NOT** AR_OTHER. Confirm CoA semantic against PSAK 14 advance
   payment treatment, then promote role + seed).
+- receive_payments.py line ~1602: sales discount fallback `6-10100`
+  → **D2-wrap micro** (role `REVENUE_SALES_DISCOUNT` IS in catalog but NOT
+  seeded — 0/5 tenants as of D2.4 pre-check. Seed default mapping + flip
+  literal to resolve_account_id_by_role(AccountRole.REVENUE_SALES_DISCOUNT)).
 - bill_payments.py line ~40: purchase discount const `5-10200`
   → **D2-wrap micro** (role `PURCHASE_DISCOUNT` — contra-COGS or
   separate purchase-discount-received account; align with
