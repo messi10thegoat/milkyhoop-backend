@@ -17,10 +17,15 @@ from app.services.role_precondition import (  # noqa: E402
     check_required_roles_for_path,
 )
 
-SUPERUSER_DSN = os.environ.get(
-    "TEST_DATABASE_URL",
-    "",  # set TEST_DATABASE_URL env var
+SUPERUSER_DSN = os.environ.get("TEST_DATABASE_URL") or os.environ.get(
+    "DATABASE_URL", ""
 )
+
+if not SUPERUSER_DSN:
+    pytest.skip(
+        "TEST_DATABASE_URL / DATABASE_URL not set; live precondition checks skipped",
+        allow_module_level=True,
+    )
 
 
 def _run(coro):

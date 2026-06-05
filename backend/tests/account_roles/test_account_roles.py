@@ -29,10 +29,15 @@ from app.services.role_resolver import (  # noqa: E402
     resolve_account_id_by_role,
 )
 
-SUPERUSER_DSN = os.environ.get(
-    "TEST_DATABASE_URL",
-    "",  # set TEST_DATABASE_URL env var
+SUPERUSER_DSN = os.environ.get("TEST_DATABASE_URL") or os.environ.get(
+    "DATABASE_URL", ""
 )
+
+if not SUPERUSER_DSN:
+    pytest.skip(
+        "TEST_DATABASE_URL / DATABASE_URL not set; live precondition checks skipped",
+        allow_module_level=True,
+    )
 TENANT_A = "milkytest"
 TENANT_B = "grapgrap"
 
