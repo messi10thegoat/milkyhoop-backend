@@ -49,7 +49,6 @@ from ..schemas.receive_payments import (
     UpdateReceivePaymentRequest,
     VoidPaymentRequest,
 )
-from ..services.resolve_account import resolve_account_id
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -61,14 +60,15 @@ router = APIRouter()
 # Fase D2.4: AR_TRADE + CUSTOMER_DEPOSIT_LIABILITY now resolved via
 # role_resolver (Law 27). Const dropped; resolver inline at use sites.
 
-# Fase D2.4: REVENUE_SALES_DISCOUNT role NOT YET seeded (0/5 tenants).
-# Sales discount fallback literal RETAINED with DEFER comment below
-# (deferred to D2-wrap micro: seed role + flip line ~1564).
+# Fase D2-wrap D: REVENUE_SALES_DISCOUNT seeded 5/5 (V157 → 4-10200).
+# Hardcoded fallback literal '6-10100' (non-existent) removed; resolver
+# inline at use site with handler-level precondition gate.
 
 # Fase D2.4: required role mappings for receive_payments posting path.
 RECEIVE_PAYMENTS_REQUIRED_ROLES = [
     AccountRole.AR_TRADE,
     AccountRole.CUSTOMER_DEPOSIT_LIABILITY,
+    AccountRole.REVENUE_SALES_DISCOUNT,
 ]
 
 # Module-level once-flag for precondition audit.
@@ -1593,16 +1593,13 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     if payment["discount_amount"] and payment["discount_amount"] > 0:
         discount_account = payment["discount_account_id"]
         if not discount_account:
-            try:
-                # DEFER: REVENUE_SALES_DISCOUNT role NOT seeded 5/5 (0/5 as of D2.4).
-                # Retain literal 6-10100 fallback; flip to
-                # resolve_account_id_by_role(..., AccountRole.REVENUE_SALES_DISCOUNT)
-                # in D2-wrap micro after role + seed promoted.
-                discount_account = UUID(
-                    await resolve_account_id(conn, ctx["tenant_id"], "6-10100")
-                )
-            except ValueError:
-                discount_account = None  # Sales discount account not configured
+            # Fase D2-wrap D: role-resolved fallback (V157 seeded 5/5 → 4-10200).
+            # Fail-loud: AccountRoleUnmappedError if role missing for tenant
+            # — caught by handler-level precondition gate at registration time
+            # (RECEIVE_PAYMENTS_REQUIRED_ROLES includes REVENUE_SALES_DISCOUNT).
+            discount_account = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_DISCOUNT
+            )
 
         if discount_account:
             await conn.execute(

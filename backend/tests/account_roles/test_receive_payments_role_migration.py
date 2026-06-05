@@ -37,7 +37,6 @@ from app.services.role_precondition import (  # noqa: E402
 )
 from app.services.role_resolver import (  # noqa: E402
     AccountRole,
-    AccountRoleUnmappedError,
     resolve_account_id_by_role,
 )
 
@@ -117,7 +116,7 @@ def test_receive_payments_required_roles_constant():
             and elt.value.id == "AccountRole"
         )
         roles.add(elt.attr)
-    assert roles == {"AR_TRADE", "CUSTOMER_DEPOSIT_LIABILITY"}
+    assert roles == {"AR_TRADE", "CUSTOMER_DEPOSIT_LIABILITY", "REVENUE_SALES_DISCOUNT"}
 
 
 def test_ar_and_customer_deposit_constants_removed():
@@ -129,38 +128,33 @@ def test_ar_and_customer_deposit_constants_removed():
     ), "CUSTOMER_DEPOSIT_ACCOUNT const must be removed after D2.4 flip"
 
 
-def test_only_deferred_literals_remain():
-    """Acceptance: ONLY 1 deferred literal remains.
+def test_no_account_code_literals_remain():
+    """Post Fase D2-wrap D: no hardcoded CoA literals in active code.
 
-    Expected:
-      - "6-10100" (REVENUE_SALES_DISCOUNT fallback)
-
-    Per pre-check 2026-06-05: REVENUE_SALES_DISCOUNT seeded 0/5 tenants.
-    Defer to D2-wrap micro (seed role + flip).
+    Previously '6-10100' was retained as REVENUE_SALES_DISCOUNT fallback while
+    role unseeded. V157 seeded 5/5; receive_payments.py now resolves via
+    AccountRole.REVENUE_SALES_DISCOUNT. Stray literals tolerated only inside
+    comment lines (documentation), so this check excludes comment-only matches.
     """
     src, _ = _parse()
-    matches = re.findall(r"""['"][0-9]-[0-9]{4,5}['"]""", src)
-    assert sorted(matches) == sorted(['"6-10100"']), f"Unexpected literals: {matches}"
-
-
-def test_deferred_literal_has_defer_comment():
-    """The 6-10100 literal must carry a DEFER comment within 6 lines."""
-    src, _ = _parse()
-    lines = src.splitlines()
-    for i, ln in enumerate(lines):
-        if not re.search(r"""['"][0-9]-[0-9]{4,5}['"]""", ln):
+    bad = []
+    for m in re.finditer(r"""['"]([0-9]-[0-9]{4,5})['"]""", src):
+        line_start = src.rfind("\n", 0, m.start()) + 1
+        line_end = src.find("\n", m.end())
+        line = src[line_start : line_end if line_end != -1 else len(src)]
+        if line.lstrip().startswith("#"):
             continue
-        window = "\n".join(lines[max(0, i - 6) : i + 1])
-        assert (
-            "DEFER" in window
-        ), f"Literal at line {i + 1} ({ln.strip()}) missing DEFER comment"
+        bad.append(m.group(1))
+    assert bad == [], f"Hardcoded CoA literals still present in code: {bad}"
 
 
-def test_revenue_sales_discount_defer_target_is_d2_wrap():
+def test_revenue_sales_discount_resolver_inline():
+    """Post Fase D2-wrap D: discount_account resolved via role, no literal."""
     src, _ = _parse()
     assert re.search(
-        r"DEFER:.*REVENUE_SALES_DISCOUNT.*D2-wrap", src, re.DOTALL | re.IGNORECASE
-    ), "REVENUE_SALES_DISCOUNT DEFER comment missing or wrong target"
+        r"resolve_account_id_by_role\(\s*conn,\s*ctx\[.tenant_id.\],\s*AccountRole\.REVENUE_SALES_DISCOUNT",
+        src,
+    ), "REVENUE_SALES_DISCOUNT resolver call missing at discount path"
 
 
 def test_read_filter_uses_account_type_not_hardcoded_code():
@@ -213,6 +207,7 @@ def test_precondition_clean_for_all_tenants():
                 [
                     AccountRole.AR_TRADE,
                     AccountRole.CUSTOMER_DEPOSIT_LIABILITY,
+                    AccountRole.REVENUE_SALES_DISCOUNT,
                 ],
             )
         finally:
@@ -268,34 +263,29 @@ def test_customer_deposit_liability_resolves_to_2_10500():
         )
 
 
-def test_revenue_sales_discount_not_yet_mapped():
-    """DEFER justification: REVENUE_SALES_DISCOUNT unmapped for all tenants.
-
-    This test PASSES while the role is unmapped (current state). Once seed
-    is promoted in D2-wrap, this test MUST flip — replace the '6-10100'
-    literal in receive_payments.py with
-    resolve_account_id_by_role(..., AccountRole.REVENUE_SALES_DISCOUNT)
-    and update / remove this test accordingly.
+def test_revenue_sales_discount_resolves_to_4_10200():
+    """REGRESSION GUARD (Fase D2-wrap D / V157):
+    REVENUE_SALES_DISCOUNT -> 4-10200 (Diskon Penjualan) across 5/5 tenants.
     """
 
     async def _go(conn):
-        unmapped = []
+        results = {}
         for t in TENANTS:
-            try:
-                await resolve_account_id_by_role(
-                    conn, t, AccountRole.REVENUE_SALES_DISCOUNT
-                )
-            except AccountRoleUnmappedError:
-                unmapped.append(t)
-        return unmapped
+            acct_id = await resolve_account_id_by_role(
+                conn, t, AccountRole.REVENUE_SALES_DISCOUNT
+            )
+            row = await conn.fetchrow(
+                "SELECT account_code FROM chart_of_accounts WHERE id = $1",
+                acct_id,
+            )
+            results[t] = row["account_code"]
+        return results
 
-    unmapped = _run(_with_conn(_go))
-    assert sorted(unmapped) == sorted(TENANTS), (
-        f"REVENUE_SALES_DISCOUNT now mapped for "
-        f"{sorted(set(TENANTS) - set(unmapped))} "
-        f"-- D2-wrap flip required: remove the '6-10100' literal in "
-        f"receive_payments.py and update this test."
-    )
+    codes = _run(_with_conn(_go))
+    for tenant, code in codes.items():
+        assert (
+            code == "4-10200"
+        ), f"Tenant {tenant} REVENUE_SALES_DISCOUNT -> {code}; expected 4-10200"
 
 
 def test_synthetic_precondition_failure_raises():
