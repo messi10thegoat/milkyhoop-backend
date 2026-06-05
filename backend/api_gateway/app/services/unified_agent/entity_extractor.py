@@ -1191,6 +1191,17 @@ def classify_query_intent(user_text: str) -> tuple:
     # P1 systemic (2026-04-22): AR/AP uses rank_pattern("ar"/"ap") from
     # domain_vocab.py. Secondary "pelanggan/ranking..." variants use inline
     # _DT[...] tokens to keep their richer multi-term structure.
+    # FIX_ARAP_SIDE_CLARIFY (2026-06-05): vendor↔hutang and pelanggan↔piutang are
+    # opposite sides. If the query pairs an entity from one side with the financial
+    # noun of the other (and not the matching noun), it is contradictory → clarify,
+    # do not silently pick a side (this is what produced the wrong customers-by-AR
+    # table for "vendor dengan piutang terbesar").
+    _vend = bool(_qre.search(r"(?:\bvendor\w*|\bpemasok\w*|\bsupplier\w*)", t))
+    _cust = bool(_qre.search(r"(?:\bpelanggan\w*|\bcustomer\w*|\bklien\w*)", t))
+    _ar_n = bool(_qre.search(r"(?:\bpiutang\w*|\breceivable\w*)", t))
+    _ap_n = bool(_qre.search(r"(?:\bhutang\w*|\butang\w*|\bpayable\w*)", t))
+    if (_vend and _ar_n and not _ap_n) or (_cust and _ap_n and not _ar_n):
+        return "clarify_arap_side", None, None
     if (
         _rank("ar").search(t)
         or _qre.search(
@@ -1203,7 +1214,7 @@ def classify_query_intent(user_text: str) -> tuple:
         or _qre.search(
             rf"(?:ranking|peringkat).*{_DT['ar']}.*(?:pelanggan|customer)", t
         )
-    ):
+    ) and not _vend:
         return "calc_rank_customers_by_ar", None, None
     if (
         _rank("ap").search(t)
@@ -1216,7 +1227,7 @@ def classify_query_intent(user_text: str) -> tuple:
         or _qre.search(
             r"(?:vendor|pemasok).*(?:paling\s+banyak).*(?:\bhutang\b|hutangi)", t
         )
-    ):
+    ) and not _cust:
         return "calc_rank_vendors_by_ap", None, None
     # if _qre.search(r"(?:total|jumlah).*(?:penjualan|sales).*(?:bulan\s*ini)", t):
     #     return "calc_sum_sales_this_month", None, None

@@ -22,6 +22,7 @@ class CalculationTemplate:
     format_as_currency: bool = False
     list_field: str = ""  # key containing the list in response (e.g. "top_accounts")
     name_field: str = ""  # name field within each list item (e.g. "account_name")
+    value_label: str = ""  # column header for RANK/SUMMARY_LIST value column
 
 
 # ── Template Registry ──────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         filter_params={"status": "active", "limit": "100"},
         label="Item Berdasarkan Harga Jual (Termahal)",
         format_as_currency=True,
+        value_label="Harga",
     ),
     "calc_avg_harga_beli": CalculationTemplate(
         calc_type="AVG",
@@ -148,6 +150,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         source_field="stok",
         filter_params={"status": "active", "limit": "100"},
         label="Item Berdasarkan Stok (Terbanyak)",
+        value_label="Stok",
     ),
     "calc_sum_harga_beli": CalculationTemplate(
         calc_type="SUM",
@@ -164,6 +167,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         filter_params={"limit": "100"},
         label="Pelanggan Berdasarkan Piutang (Terbesar)",
         format_as_currency=True,
+        value_label="Total Piutang",
     ),
     "calc_rank_vendors_by_ap": CalculationTemplate(
         calc_type="RANK",
@@ -172,6 +176,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         filter_params={"limit": "100"},
         label="Vendor Berdasarkan Hutang (Terbesar)",
         format_as_currency=True,
+        value_label="Total Hutang",
     ),
     "calc_sum_sales_this_month": CalculationTemplate(
         calc_type="SUMMARY_FIELD",
@@ -237,6 +242,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         name_field="account_name",
         label="Pengeluaran per Akun (Terbesar)",
         format_as_currency=True,
+        value_label="Total",
     ),
     "calc_count_customers_inactive": CalculationTemplate(
         calc_type="COUNT",
@@ -265,6 +271,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         name_field="product_name",
         label="Margin Keuntungan per Produk",
         format_as_currency=True,
+        value_label="Margin",
     ),
     "calc_top_selling_items": CalculationTemplate(
         calc_type="SUMMARY_LIST",
@@ -274,6 +281,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         name_field="product_name",
         label="Produk Terlaris",
         format_as_currency=False,
+        value_label="Qty Terjual",
     ),
     # ── Manufacturing ──
     "calc_count_work_orders_active": CalculationTemplate(
@@ -306,6 +314,7 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         filter_params={"limit": "100"},
         name_field="order_number",
         label="Work Order Berdasarkan Jumlah Produksi",
+        value_label="Jumlah Produksi",
     ),
 }
 
@@ -453,6 +462,7 @@ async def execute_calculation(
         return {
             "type": "rank",
             "label": template.label,
+            "value_label": template.value_label,
             "items": items,
             "total_count": len(_list_data),
         }
@@ -553,6 +563,7 @@ async def execute_calculation(
             "data": top_items,
             "rec_items": rec_items,
             "label": template.label,
+            "value_label": template.value_label,
             "count": len(values),
             "source_total": total_from_api,
         }
@@ -588,7 +599,8 @@ def format_calculation_result(result: dict) -> str:
     if rtype == "rank":
         rdata = result.get("data", result.get("items", []))
         lines = ["**" + rlabel + "** (Top " + str(len(rdata)) + ")\n"]
-        lines.append("| No | Nama | Harga |")
+        _vcol = result.get("value_label") or "Nilai"
+        lines.append("| No | Nama | " + _vcol + " |")
         lines.append("|---:|------|------:|")
         for i, item in enumerate(rdata, 1):
             iname = item.get("name", "?")

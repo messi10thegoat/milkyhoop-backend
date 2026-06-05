@@ -3087,6 +3087,45 @@ class UnifiedAgent:
             thinking_stages=["Menganalisis pesan", "Validasi data"],
         )
 
+    def _clarify_arap_side(self, latency_ms: int):
+        # FIX_ARAP_SIDE_CLARIFY (2026-06-05): builds the two-option clarification
+        # for contradictory queries like "vendor dengan piutang terbesar"
+        # (vendor=AP side, piutang=AR side). Caller passes precomputed latency_ms
+        # using whatever clock is in scope at that call-site.
+        _q = "Maksud kamu yang mana?"
+        return AgentResponse(
+            message_type="CLARIFICATION",
+            content=(
+                "'Vendor' itu sisi hutang (yang kita bayar), 'piutang' sisi "
+                "pelanggan (yang bayar ke kita) \u2014 beda sisi. " + _q
+            ),
+            iterations=1,
+            tool_calls_made=[
+                {
+                    "name": "clarify",
+                    "args": {"intent": "clarify_arap_side"},
+                    "success": True,
+                }
+            ],
+            model_used="pipeline",
+            total_latency_ms=latency_ms,
+            thinking_stages=["Menganalisis pesan"],
+            extra_data={
+                "question": _q,
+                "options": [
+                    {
+                        "label": "Pelanggan dengan piutang terbesar",
+                        "value": "pelanggan dengan piutang terbesar",
+                    },
+                    {
+                        "label": "Vendor dengan hutang terbesar",
+                        "value": "vendor dengan hutang terbesar",
+                    },
+                ],
+                "allow_freetext": True,
+            },
+        )
+
     async def _natural_clarification(
         self,
         intent: str,
@@ -6557,6 +6596,45 @@ class UnifiedAgent:
                 event_callback=event_callback,
             )
 
+        # ── ARAP_SIDE_CLARIFY_OVERRIDE (2026-06-05) ────────────────────────
+        # FIX_ARAP_SIDE_CLARIFY: contradictory side queries (e.g. "vendor dengan
+        # piutang terbesar" — vendor is the AP/hutang side, piutang is the AR
+        # side) must NOT silently guess a side via CALC_GUARD. The deterministic
+        # regex classifier returns "clarify_arap_side"; honor it here, BEFORE the
+        # extraction guard-arbitration AND the LLM-router-primary paths, so the
+        # user gets two tappable options instead of a wrong customers-by-AR
+        # table. READ-ONLY, no advisory lock. Self-contained: no var leaks.
+        try:
+            from .entity_extractor import (
+                classify_query_intent as _arap_qci,
+            )
+
+            _arap_guard, _, _ = _arap_qci(user_text)
+        except Exception:
+            _arap_guard = None
+        if _arap_guard == "clarify_arap_side":
+            logger.warning(
+                "[ARAP_SIDE_CLARIFY_OVERRIDE] contradictory side query -> clarify "
+                "(infer_intent=%s) user='%s'",
+                _intent,
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_arap
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_arap.uuid4()),
+                        "final_intent": "clarify_arap_side",
+                        "decision_source": "arap_side_clarify_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return self._clarify_arap_side(int((_time.time() - start_time) * 1000))
+
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
             # P5: Emit intent_classified SSE meta event (test correlation)
@@ -7532,6 +7610,13 @@ class UnifiedAgent:
             from .guard_arbiter import GuardMatch
 
             _qci_guard, _qci_entity_name, _ = classify_query_intent(user_text)
+
+            # FIX_ARAP_SIDE_CLARIFY (2026-06-05): defense-in-depth. The early
+            # ARAP_SIDE_CLARIFY_OVERRIDE in process_message normally catches
+            # this first; honor it here too so a contradictory side query can
+            # never fall through to CALC_GUARD and pick a wrong side.
+            if _qci_guard == "clarify_arap_side":
+                return self._clarify_arap_side(int((_time.time() - start_time) * 1000))
 
             _ARAP_CRITICAL = {
                 "query_ar_outstanding",
