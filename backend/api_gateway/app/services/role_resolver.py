@@ -93,6 +93,24 @@ class AccountRole:
     WIP_SUBCONTRACT: Final[str] = "WIP_SUBCONTRACT"
     INVENTORY_ADJUSTMENT_EXPENSE: Final[str] = "INVENTORY_ADJUSTMENT_EXPENSE"
 
+    # ---- V161 D4.1 TIER 1 promote — payroll (MAPPED PENDING D4.2 seed) -------
+    # SALARY_EXPENSE       -> 5-20100 Beban Gaji (existing in seed_default_coa).
+    # SALARY_PAYABLE       -> 2-10400 Utang Gaji (existing in seed_default_coa).
+    # PPH21_PAYABLE        -> 2-10310 Utang PPh 21 (payroll-exclusive boundary;
+    #                         LOCKED §"PPH 21 PAYROLL BOUNDARY"). NEVER via
+    #                         WHT_PPH_PAYABLE (that points to 2-10320 = AP only).
+    # BPJS_EE_PAYABLE      -> 2-10410 Utang BPJS Karyawan.
+    # BPJS_ER_PAYABLE      -> 2-10420 Utang BPJS Perusahaan.
+    # BPJS_ER_EXPENSE      -> 5-20150 Beban BPJS Perusahaan.
+    # PPH21_ER_EXPENSE     -> 5-80100 Beban PPh 21 Perusahaan (nett method).
+    SALARY_EXPENSE: Final[str] = "SALARY_EXPENSE"
+    SALARY_PAYABLE: Final[str] = "SALARY_PAYABLE"
+    PPH21_PAYABLE: Final[str] = "PPH21_PAYABLE"
+    BPJS_EE_PAYABLE: Final[str] = "BPJS_EE_PAYABLE"
+    BPJS_ER_PAYABLE: Final[str] = "BPJS_ER_PAYABLE"
+    BPJS_ER_EXPENSE: Final[str] = "BPJS_ER_EXPENSE"
+    PPH21_ER_EXPENSE: Final[str] = "PPH21_ER_EXPENSE"
+
     # ---- TIER 3 — PENDING (reserved, NOT seeded) ----------------------------
     VAT_INPUT_NONCREDITABLE: Final[str] = "VAT_INPUT_NONCREDITABLE"
     VAT_PAYABLE_NET: Final[str] = "VAT_PAYABLE_NET"
@@ -183,6 +201,14 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "COGS_VARIANCE_PRODUCTION",
         "WIP_SUBCONTRACT",
         "INVENTORY_ADJUSTMENT_EXPENSE",
+        # TIER 1 promoted (V161 D4.1 — payroll, MAPPED via D4.2)
+        "SALARY_EXPENSE",
+        "SALARY_PAYABLE",
+        "PPH21_PAYABLE",
+        "BPJS_EE_PAYABLE",
+        "BPJS_ER_PAYABLE",
+        "BPJS_ER_EXPENSE",
+        "PPH21_ER_EXPENSE",
         # TIER 2
         "CASH_PETTY",
         # TIER 3 (reserved, NOT seeded)
