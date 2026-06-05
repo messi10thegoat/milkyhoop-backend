@@ -104,7 +104,7 @@ delete_vendor, delete_customer, delete_item, delete_warehouse, delete_bank_accou
 void_sales_invoice, void_bill, void_expense, void_bill_payment, void_receive_payment, reverse_journal
 query_ar_outstanding, query_ap_outstanding, query_ar_by_customer, query_ap_by_vendor, query_ar_invoices, query_ar_aging, query_ap_aging, query_customer_ar, query_vendor_ap, query_customers_with_overdue, query_vendors_with_overdue
 query_business_drivers
-query_items_search, query_item_detail, query_items_summary, query_items_low_stock, query_items_no_stock, query_warehouse_stock
+query_items_search, query_items_list, query_item_detail, query_items_summary, query_items_low_stock, query_items_no_stock, query_warehouse_stock
 query_sales_invoices_list, query_sales_invoice_detail, query_sales_invoices_summary, query_sales_invoices_unpaid, query_sales_invoices_overdue
 query_bills_list, query_bill_detail, query_bills_summary, query_bills_unpaid, query_bills_overdue
 query_expenses_list, query_expense_detail, query_expenses_summary
@@ -115,7 +115,7 @@ query_receive_payments_list, query_bill_payments_list, query_categories_list
 query_warehouses, query_items_inactive, query_items_slow_moving
 calc_avg_harga_jual, calc_sum_harga_beli, calc_sum_stok, calc_sum_all_bank_balances
 calc_count_items_active, calc_count_customers_active, calc_count_vendors_active
-calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, calc_rank_vendors_by_ap, calc_rank_expense_accounts
+calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, calc_rank_vendors_by_ap, calc_rank_expense_accounts, calc_top_selling_items
 calc_sum_sales_this_month, calc_sum_purchases_this_month, calc_sum_expenses_this_month
 calc_sum_received_this_month, calc_sum_paid_this_month
 
@@ -131,7 +131,7 @@ calc_count_work_orders_active, calc_count_bom_active, calc_count_work_orders_dra
 
 RULES:
 1. "daftar/list/semua/lihat/ringkasan/detail/cari" = QUERY. "buat/tambah/bikin/catat/daftarkan/input" = CREATE.
-   "daftar barang/produk" → query_items_search. "ringkasan barang" → query_items_summary. "detail X" → query_X_detail.
+   "daftar barang/produk" → query_items_list. "cari barang X" / "cari produk X" (with a keyword) → query_items_search. "ringkasan barang" → query_items_summary. "detail X" → query_X_detail. "produk terlaris / paling laku / best seller" → calc_top_selling_items.
 2. "hutang/utang" tanpa vendor → query_ap_outstanding. "hutang ke X" → query_vendor_ap. "piutang" tanpa pelanggan → query_ar_outstanding. "piutang X" → query_customer_ar. "piutang siapa saja" → query_ar_invoices. "aging" → query_ar/ap_aging.
     PER-ENTITY ROLLUP (Fix A): "rekap/tabel per pelanggan", "siapa pelanggan dengan piutang (>X)", "pelanggan piutang terbesar (rekap)", "rekap piutang per pelanggan/customer" → query_ar_by_customer. "rekap/tabel per vendor", "vendor mana yang utangnya/hutangnya paling besar", "rekap utang/hutang per vendor", "vendor dengan hutang terbesar" → query_ap_by_vendor. BEDA dari query_ar_invoices (single-customer drill-down per faktur) — by_customer = aggregated breakdown across all customers.
     DISAMBIGUASI WAJIB (Fix A v2): "siapa pelanggan dengan piutang lebih dari/di atas/>X" / "pelanggan dengan piutang minimal X" / "pelanggan piutangnya lebih dari X" → query_ar_by_customer (BUKAN query_customers_with_overdue, BUKAN query_ar_outstanding). "overdue/jatuh tempo/terlambat" wajib eksplisit di teks user untuk query_customers_with_overdue. Threshold amount tanpa kata "overdue" = filter rollup, BUKAN overdue. Analogue AP: "vendor dengan hutang lebih dari X" / "siapa vendor utangnya >X" → query_ap_by_vendor.

@@ -8402,6 +8402,51 @@ class UnifiedAgent:
                     ):
                         _llm_extraction.entities["item_name"] = _qci_entity_name
 
+                # ── ARAP regex override: trust deterministic ARAP classifier ──
+                # FIX_ITEMS_ARAP_OVERRIDE (2026-06-05): mirrors ARAP_GUARD from the
+                # non-LLM path. The LLM router sometimes mis-picks a near-neighbor
+                # (e.g. calc_rank_customers_by_ar / query_ar_aging) for AR/AP rollup
+                # questions; trust the kept deterministic ARAP regex so the
+                # journal-derived Fix-A renderer runs (Iron Law 1). Narrow scope:
+                # only the by-entity rollup intents that need no single entity.
+                if (
+                    _qci_guard
+                    and _qci_guard != _lr_intent
+                    and _qci_guard in ("query_ar_by_customer", "query_ap_by_vendor")
+                    and _llm_is_pipe(_qci_guard)
+                ):
+                    logger.warning(
+                        "[ARAP_REGEX_OVERRIDE] Trusting regex %s over LLM %s",
+                        _qci_guard,
+                        _lr_intent,
+                    )
+                    _lr_intent = _qci_guard
+                    _llm_extraction.intent = _qci_guard
+                    _llm_extraction.confidence = 1.0
+                    _llm_extraction.needs_escalation = False
+
+                # ── Calc regex override: code classifier calc_* always wins ──
+                # FIX_ITEMS_CALC_OVERRIDE (2026-06-05): mirrors CALC_GUARD from the
+                # non-LLM path. The LLM router often picks a near-neighbor query_
+                # intent (e.g. query_items_top_products) for "produk terlaris /
+                # paling laku"; trust the deterministic calc classifier so the
+                # number is code-computed (Iron Law 1) and routing matches gold-set.
+                if (
+                    _qci_guard
+                    and _qci_guard != _lr_intent
+                    and _qci_guard.startswith("calc_")
+                    and _llm_is_pipe(_qci_guard)
+                ):
+                    logger.warning(
+                        "[CALC_REGEX_OVERRIDE] Trusting regex %s over LLM %s",
+                        _qci_guard,
+                        _lr_intent,
+                    )
+                    _lr_intent = _qci_guard
+                    _llm_extraction.intent = _qci_guard
+                    _llm_extraction.confidence = 1.0
+                    _llm_extraction.needs_escalation = False
+
                 # ── Manufacturing intent trust: code classifier always wins ──
                 _MFG_QUERY_INTENTS = {
                     "query_bom_list",
@@ -8776,6 +8821,13 @@ class UnifiedAgent:
                                     message_type="TEXT",
                                     content=_txt,
                                     iterations=1,
+                                    tool_calls_made=[
+                                        {
+                                            "name": "calc_engine",
+                                            "args": {"intent": _lr_intent},
+                                            "success": True,
+                                        }
+                                    ],
                                     model_used="llm_router+calc_engine",
                                     total_latency_ms=int(
                                         (_time.monotonic() - _process_start) * 1000

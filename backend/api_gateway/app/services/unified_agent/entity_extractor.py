@@ -252,6 +252,7 @@ EXTRACTION_SCHEMAS = {
                             "query_warehouse_stock",
                             "query_categories_list",
                             "query_items_search",
+                            "query_items_list",
                             "query_items_by_stock",
                             "query_items_inactive",
                             "query_items_units",
@@ -697,6 +698,7 @@ PIPELINE_ENABLED_INTENTS = {
     "query_categories_list",
     # Items queries v2 (wired 2026-03-09)
     "query_items_search",
+    "query_items_list",
     "query_items_by_stock",
     "query_items_units",
     "query_items_stats",
@@ -1123,8 +1125,9 @@ def classify_query_intent(user_text: str) -> tuple:
     # Previously DOA (0 firings in intent_decision_log all-time).
     if _rank("stock").search(t):
         return "calc_rank_items_by_stock", None, None
+    # FIX_ITEMS_TERLARIS_LOOSEN (2026-06-05): allow words between noun and rank phrase
     if _qre.search(
-        r"(?:\bitem\b|\bbarang\b|\bproduk\b)\s+(?:terlaris|paling\s+laku|paling\s+banyak\s+terjual|top)",
+        r"(?:\bitem\b|\bbarang\b|\bproduk\b).*?(?:terlaris|paling\s+laku|paling\s+laris|paling\s+banyak\s+terjual|top\s+selling|best\s+seller|\btop\b)",
         t,
     ):
         return "calc_top_selling_items", None, None

@@ -4032,6 +4032,28 @@ QUERY_ACTIONS: dict[str, QueryActionConfig] = {
             ),
         ],
     ),
+    # query_items_list added 2026-06-05: plain "daftar barang" list (no search keyword)
+    "query_items_list": QueryActionConfig(
+        action_key="query_items_list",
+        display_name="Daftar Barang",
+        rest_endpoint="/api/items",
+        response_format="table",
+        description="Daftar barang/produk aktif (tanpa kata kunci pencarian).",
+        signal_words=[
+            "daftar barang",
+            "daftar produk",
+            "list barang",
+            "list produk",
+            "barang saya",
+            "produk saya",
+        ],
+        query_params=[
+            QueryParam(
+                name="status", label="Status", param_type="string", default="active"
+            ),
+            QueryParam(name="limit", label="Jumlah", param_type="number", default="50"),
+        ],
+    ),
     "query_items_by_stock": QueryActionConfig(
         action_key="query_items_by_stock",
         display_name="Ranking Stok Barang",
