@@ -1,12 +1,23 @@
+import re
 import uuid
 import time
 import subprocess
 import httpx
-from goldset.scoring import score_turn
+from goldset.scoring import score_turn, score_behavior
 from goldset.tiers import derive_tier
 
 BASE = "https://milkyhoop.com"
 UA = {"User-Agent": "Mozilla/5.0 (goldset-harness)"}
+
+# CLARIFY heuristic: the bot asked a clarifying question instead of answering.
+# Used by the 2-dimensional scorer (stock -> direct expected; flow -> clarify ok).
+_CLARIFY_MARKERS = re.compile(
+    r"\b(periode mana|periode berapa|periode kapan|untuk periode|bulan apa|"
+    r"rentang waktu|dari kapan|sampai kapan|untuk kapan|"
+    r"tanggal berapa|maksud anda|yang mana)\b",
+    re.I,
+)
+_HAS_AMOUNT = re.compile(r"\bRp\b|\b\d{1,3}(\.\d{3})+\b", re.I)
 
 
 def login(
@@ -82,7 +93,9 @@ def observe(resp):
     intent = ""
     if isinstance(tcs, list) and tcs and isinstance(tcs[0], dict):
         args = tcs[0].get("args") or {}
-        intent = args.get("intent") or ""
+        intent = (
+            args.get("intent") or args.get("query_key") or ""
+        )  # query_key = ARAP routing path
 
     # Secondary: data.action_key (DIRECT_ACTION_PREVIEW only)
     if not intent:
@@ -103,12 +116,16 @@ def observe(resp):
     if not intent and session_id:
         intent = _intent_from_db(session_id=session_id)
 
+    # CLARIFY detection: did the bot ask a clarifying question instead of answering?
+    clarified = bool(_CLARIFY_MARKERS.search(text)) and not _HAS_AMOUNT.search(text)
+
     return {
         "intent": intent,
         "tier": derive_tier(intent, model, mtype, iters),
         "text": text,
         "message_type": mtype,
         "model_used": model,
+        "clarified": clarified,
     }
 
 
@@ -121,11 +138,24 @@ def run_case(token, case):
         scored = score_turn(turn, obs)
         turns_out.append({"query": turn.query, "obs": obs, "asserts": scored})
         time.sleep(0.5)  # gentle pacing
-    passed = all(ok for t in turns_out for (_a, ok) in t["asserts"])
+    asserts_ok = all(ok for t in turns_out for (_a, ok) in t["asserts"])
+    # Behavior dimension: query_class describes the FIRST turn's stimulus
+    # (the stock-balance / period-flow question), so score behavior on turn 1.
+    # For single-turn cases this is identical to the only turn; for followup
+    # cases (e.g. followup_domain_carry) the stock query is turn 1, NOT the
+    # last (pronoun/ordinal) turn.
+    query_class = getattr(case, "query_class", None)
+    first_obs = turns_out[0]["obs"] if turns_out else {}
+    behavior, behavior_ok = score_behavior(first_obs, query_class)
+    # A case passes only if its asserts pass AND behavior is ok (charter rule).
+    passed = asserts_ok and behavior_ok
     return {
         "id": case.id,
         "category": case.category,
         "why": case.why,
+        "query_class": query_class,
         "passed": passed,
+        "behavior": behavior.value if behavior is not None else None,
+        "behavior_ok": behavior_ok,
         "turns": turns_out,
     }

@@ -1,5 +1,7 @@
 from goldset.schema import (
     Tier,
+    Behavior,
+    QueryClass,
     A_INTENT_IN,
     A_TIER,
     A_TEXT_CONTAINS,
@@ -8,7 +10,7 @@ from goldset.schema import (
     A_ABSTAINS,
     A_HAS_TRACE,
 )
-from goldset.scoring import score_assert
+from goldset.scoring import score_assert, score_behavior
 
 OBS = {
     "intent": "query_gross_profit_projection",
@@ -50,3 +52,34 @@ def test_abstains():
 
 def test_has_trace():
     assert score_assert((A_HAS_TRACE, True), OBS) is True
+
+
+# ---- score_behavior: 2nd scoring dimension ----
+def test_behavior_stock_clarified_is_over_clarify_fail():
+    beh, ok = score_behavior({"clarified": True}, QueryClass.STOCK)
+    assert beh == Behavior.OVER_CLARIFY
+    assert ok is False
+
+
+def test_behavior_stock_not_clarified_is_direct_pass():
+    beh, ok = score_behavior({"clarified": False}, QueryClass.STOCK)
+    assert beh == Behavior.DIRECT
+    assert ok is True
+
+
+def test_behavior_flow_clarified_is_clarify_pass():
+    beh, ok = score_behavior({"clarified": True}, QueryClass.FLOW)
+    assert beh == Behavior.CLARIFY
+    assert ok is True
+
+
+def test_behavior_flow_not_clarified_is_direct_pass():
+    beh, ok = score_behavior({"clarified": False}, QueryClass.FLOW)
+    assert beh == Behavior.DIRECT
+    assert ok is True
+
+
+def test_behavior_none_query_class_not_scored():
+    beh, ok = score_behavior({"clarified": True}, None)
+    assert beh is None
+    assert ok is True

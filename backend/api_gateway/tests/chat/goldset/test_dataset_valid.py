@@ -1,5 +1,5 @@
 from goldset.dataset import CASES
-from goldset.schema import Category, A_INTENT_IN
+from goldset.schema import Category, QueryClass, A_INTENT_IN
 from goldset.known_intents import KNOWN_INTENTS
 
 
@@ -23,6 +23,25 @@ def test_adversarial_block_is_substantial_and_justified():
 
 def test_min_size():
     assert len(CASES) >= 28
+
+
+def test_stock_flow_tagging_is_complete_and_consistent():
+    # Stock/flow tagging is a consistency policy (2-dim scoring), not ad-hoc.
+    # STOCK = point-in-time balance (piutang/hutang/saldo/stok/ekuitas) → DIRECT expected.
+    # FLOW  = period-bound flow query lacking a period → CLARIFY acceptable.
+    by_class = {c.id: c.query_class for c in CASES if c.query_class is not None}
+    stock = {cid for cid, qc in by_class.items() if qc == QueryClass.STOCK}
+    flow = {cid for cid, qc in by_class.items() if qc == QueryClass.FLOW}
+    assert stock == {
+        "lookup_ar",
+        "lookup_ap",
+        "followup_ar_top_value",
+        "followup_domain_carry",
+    }, f"unexpected STOCK set: {stock}"
+    assert flow == {
+        "lookup_profit_ambiguous",
+        "lookup_omzet_ambiguous",
+    }, f"unexpected FLOW set: {flow}"
 
 
 def test_all_expected_intents_are_known():

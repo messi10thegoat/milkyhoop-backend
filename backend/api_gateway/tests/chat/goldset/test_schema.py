@@ -1,6 +1,8 @@
 from goldset.schema import (
     Tier,
     Category,
+    Behavior,
+    QueryClass,
     Turn,
     GoldCase,
     A_INTENT_IN,
@@ -31,3 +33,27 @@ def test_goldcase_single_and_multi_turn():
         why="ordinal+pronoun follow-up must resolve from session state",
     )
     assert len(multi.turns) == 2
+
+
+def test_goldcase_query_class_defaults_none_and_is_optional():
+    # existing positional construction (id, category, turns[, why]) stays valid
+    c = GoldCase(
+        "lookup_x",
+        Category.LOOKUP,
+        [Turn("x", [(A_TIER, Tier.A)])],
+    )
+    assert c.query_class is None
+    tagged = GoldCase(
+        "lookup_ar",
+        Category.LOOKUP,
+        [Turn("total piutang berapa", [(A_TIER, Tier.A)])],
+        why="stock",
+        query_class=QueryClass.STOCK,
+    )
+    assert tagged.query_class == QueryClass.STOCK
+
+
+def test_behavior_and_queryclass_enums():
+    assert Behavior.OVER_CLARIFY.value == "over_clarify"
+    assert QueryClass.STOCK.value == "stock"
+    assert QueryClass.FLOW.value == "flow"

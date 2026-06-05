@@ -1,6 +1,7 @@
 from goldset.schema import (
     Tier,
     Category,
+    QueryClass,
     Turn,
     GoldCase,
     A_INTENT_IN,
@@ -53,6 +54,8 @@ CASES = [
                 [(A_TIER, Tier.A), (A_INTENT_IN, ["query_ar_outstanding"])],
             )
         ],
+        why="piutang is a stock (point-in-time) figure → answer directly; clarify = over_clarify fail",
+        query_class=QueryClass.STOCK,
     ),
     GoldCase(
         "lookup_ap",
@@ -63,6 +66,8 @@ CASES = [
                 [(A_TIER, Tier.A), (A_INTENT_IN, ["query_ap_outstanding"])],
             )
         ],
+        why="hutang is a stock (point-in-time) figure → answer directly; clarify = over_clarify fail",
+        query_class=QueryClass.STOCK,
     ),
     GoldCase(
         "lookup_items_list",
@@ -74,19 +79,33 @@ CASES = [
             )
         ],
     ),
+    # NOTE: removed `lookup_profit_this_month` — duplicate stimulus of
+    # `adv_profit_bulan_ini_not_ar` (both query "profit bulan ini"). Kept the
+    # adversarial one (tests the "not AR" trap → more valuable).
+    # ---- FLOW (income-statement / period-bound) lookups: clarify-first acceptable ----
     GoldCase(
-        "lookup_profit_this_month",
+        "lookup_profit_ambiguous",
         Category.LOOKUP,
         [
             Turn(
-                "profit bulan ini",
-                [
-                    (A_INTENT_IN, ["query_profit_loss"]),
-                    (A_TEXT_NOT_CONTAINS, "Penjualan Outstanding"),
-                ],
+                "berapa laba saya?",
+                [(A_TEXT_CONTAINS_ANY, ["periode", "bulan", "rentang", "Rp", "tahun"])],
             )
         ],
-        why="Bug I: must be P&L, not a mislabeled AR figure",
+        why="flow/period query without a period → clarify-first acceptable (stock/flow rule, charter READ-ambiguous)",
+        query_class=QueryClass.FLOW,
+    ),
+    GoldCase(
+        "lookup_omzet_ambiguous",
+        Category.LOOKUP,
+        [
+            Turn(
+                "omzet saya berapa?",
+                [(A_TEXT_CONTAINS_ANY, ["periode", "bulan", "rentang", "Rp", "tahun"])],
+            )
+        ],
+        why="flow/period query without a period → clarify-first acceptable",
+        query_class=QueryClass.FLOW,
     ),
     # ---- CRUD (Tier A, preview only) ----
     GoldCase(
@@ -202,11 +221,23 @@ CASES = [
         [
             Turn(
                 "siapa pelanggan dengan piutang terbesar?",
-                [(A_INTENT_IN, ["query_ar_invoices", "query_ar_outstanding"])],
+                [
+                    (
+                        A_INTENT_IN,
+                        [
+                            "query_ar_invoices",
+                            "query_ar_outstanding",
+                            "query_ar_by_customer",
+                        ],
+                    )
+                ],
             ),
             Turn("berapa nilainya?", [(A_TEXT_CONTAINS, "Rp")]),
         ],
         why="pronoun/ordinal follow-up must resolve from session state, not re-ask",
+        # Turn 1 ("piutang terbesar") is a point-in-time AR (stock) ranking →
+        # natural answer = current balance snapshot; a period-clarify here is over_clarify.
+        query_class=QueryClass.STOCK,
     ),
     GoldCase(
         "followup_domain_carry",
@@ -219,6 +250,9 @@ CASES = [
             Turn("yang paling besar siapa?", [(A_TEXT_NOT_CONTAINS, "maksud Anda")]),
         ],
         why="short follow-up must stay in the AP domain, not bounce to clarification",
+        # Turn 1 ("utang ke vendor berapa total") is vendor-AP outstanding =
+        # point-in-time stock balance → DIRECT expected; live bot over-clarifies it.
+        query_class=QueryClass.STOCK,
     ),
     GoldCase(
         "followup_pronoun_customer",

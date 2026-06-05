@@ -7,6 +7,17 @@ class Tier(str, Enum):
     B = "B"  # reasoning / analytical / what-if / why
 
 
+class Behavior(str, Enum):
+    DIRECT = "direct"
+    CLARIFY = "clarify"
+    OVER_CLARIFY = "over_clarify"
+
+
+class QueryClass(str, Enum):
+    STOCK = "stock"  # balance-sheet / point-in-time → default = now → DIRECT expected
+    FLOW = "flow"  # income-statement / period → period needed → CLARIFY acceptable
+
+
 class Category(str, Enum):
     LOOKUP = "lookup"
     CRUD = "crud"
@@ -42,3 +53,6 @@ class GoldCase:
     category: Category
     turns: list  # list[Turn]
     why: str = ""
+    # OPTIONAL stock/flow tag for 2-dimensional (routing + behavior) scoring.
+    # None => behavior not scored for this case (existing cases unaffected).
+    query_class: "QueryClass | None" = None

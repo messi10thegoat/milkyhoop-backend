@@ -10,6 +10,16 @@ def render(summary, case_results):
         f"Routing accuracy: {summary['routing_correct']}/{summary['routing_total']}"
         + (f" ({ra:.0%})" if ra is not None else "")
     )
+    # Denominator audit (TASK 2): the routing_total is never a mystery number.
+    gross = summary.get("routing_gross_asserts")
+    if gross is not None:
+        excl = summary.get("routing_excluded_on_clarify", [])
+        lines.append(
+            f"  Routing denominator: {gross} (A_INTENT_IN + A_TIER asserts) "
+            f"- {len(excl)} excluded-by-clarify = {summary['routing_total']}"
+        )
+        if excl:
+            lines.append(f"  Clarify-excluded case_ids: {', '.join(excl)}")
     tb = summary.get("tier_b_trace_rate")
     lines.append(
         f"I5 trace presence (across all Tier B responses): "
