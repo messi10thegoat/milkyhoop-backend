@@ -45,6 +45,7 @@ from ..schemas.credit_notes import (
 from ..services.resolve_account import resolve_account_id
 from ..services.role_resolver import (
     AccountRole,
+    resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
 )
 from ..services.role_precondition import assert_required_roles_for_path
@@ -1129,11 +1130,22 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     journal_id,
                 )
 
-                # ── Inventory restock for returned goods ──
+                # ── Inventory restock for returned goods + COGS companion journal ──
+                # Fase 4 fix (V164): emit companion journal Dr INVENTORY / Cr COGS @ WAC×qty
+                # mirroring `record_inventory_outbound` (Sales side). Direct reversal pattern,
+                # NOT wash. Atomic within same transaction as main CN journal.
+                from ..services.inventory_helpers import record_inventory_inbound
+
                 cn_items = await conn.fetch(
                     "SELECT * FROM credit_note_items WHERE credit_note_id = $1",
                     credit_note_id,
                 )
+
+                inv_restock_results = []  # [(ledger_id, total_cost)]
+                companion_total_cost = Decimal("0")
+                # Per-product accounts (resolved lazily once per product)
+                _acct_cache = {}
+
                 for item in cn_items:
                     if not item["item_id"]:
                         continue
@@ -1161,10 +1173,10 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     if not wh_id:
                         continue
 
-                    # Use record_inventory_inbound from inventory_helpers
-                    from ..services.inventory_helpers import record_inventory_inbound
+                    qty_dec = Decimal(str(item["quantity"]))
+                    line_cost = qty_dec * unit_cost_val
 
-                    await record_inventory_inbound(
+                    inb_result = await record_inventory_inbound(
                         conn=conn,
                         tenant_id=ctx["tenant_id"],
                         product_id=product["id"],
@@ -1180,6 +1192,137 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         notes=f"Restock from Credit Note {cn['credit_note_number']}",
                         movement_date=cn["credit_note_date"],
                     )
+
+                    if line_cost > 0:
+                        # Cache per-product Inventory + COGS account resolution
+                        if product["id"] not in _acct_cache:
+                            prod_accts = await conn.fetchrow(
+                                "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
+                                product["id"],
+                            )
+                            cogs_acct = (
+                                prod_accts["cogs_account_id"] if prod_accts else None
+                            )
+                            inv_acct = (
+                                prod_accts["inventory_account_id"]
+                                if prod_accts
+                                else None
+                            )
+                            if not cogs_acct:
+                                cogs_acct = await resolve_account_id_by_role(
+                                    conn, ctx["tenant_id"], AccountRole.COGS_SALES
+                                )
+                            if not inv_acct:
+                                inv_acct = await resolve_account_id_by_role(
+                                    conn,
+                                    ctx["tenant_id"],
+                                    AccountRole.INVENTORY_MERCHANDISE,
+                                )
+                            _acct_cache[product["id"]] = (inv_acct, cogs_acct)
+
+                        inv_restock_results.append(
+                            {
+                                "ledger_id": inb_result["ledger_id"],
+                                "product_id": product["id"],
+                                "line_cost": line_cost,
+                                "memo": f"Retur HPP - {cn['credit_note_number']} - {product['nama_produk']}",
+                            }
+                        )
+                        companion_total_cost += line_cost
+
+                # Emit companion journal (Dr Inventory / Cr COGS) if any tracked items
+                if companion_total_cost > 0 and inv_restock_results:
+                    companion_journal_id = uuid_module.uuid4()
+                    companion_number = (
+                        await conn.fetchval(
+                            "SELECT get_next_journal_number($1, 'COGS-CN')",
+                            ctx["tenant_id"],
+                        )
+                        or f"COGS-CN-{cn['credit_note_number']}"
+                    )
+
+                    # Header — DRAFT first (Law 20)
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_COGS', $6,
+                                  'DRAFT', $7, $7, $8)
+                        """,
+                        companion_journal_id,
+                        ctx["tenant_id"],
+                        companion_number,
+                        cn["credit_note_date"],
+                        f"COGS reversal {cn['credit_note_number']} - {cn['customer_name']}",
+                        credit_note_id,
+                        companion_total_cost,
+                        ctx["user_id"],
+                    )
+
+                    # Lines: per-item Dr INVENTORY / aggregate Cr COGS
+                    ln = 1
+                    # Aggregate COGS lines per product (single Cr per product is also fine,
+                    # but a single Cr COGS for the total is cleanest).
+                    # Inventory side: one Dr line per ledger entry for traceability.
+                    for r in inv_restock_results:
+                        inv_acct_id, _cogs_acct_id = _acct_cache[r["product_id"]]
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                            """,
+                            uuid_module.uuid4(),
+                            companion_journal_id,
+                            ln,
+                            inv_acct_id,
+                            r["line_cost"],
+                            r["memo"],
+                        )
+                        ln += 1
+
+                    # Single aggregate Cr COGS line (per-tenant COGS account; cache shows
+                    # all products mapped to same COGS_SALES role in normal tenants).
+                    # If products have heterogeneous COGS accounts, emit one Cr per account.
+                    cogs_buckets: dict = {}
+                    for r in inv_restock_results:
+                        _inv, cogs_acct_id = _acct_cache[r["product_id"]]
+                        cogs_buckets[cogs_acct_id] = (
+                            cogs_buckets.get(cogs_acct_id, Decimal("0"))
+                            + r["line_cost"]
+                        )
+
+                    for cogs_acct_id, total in cogs_buckets.items():
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                            """,
+                            uuid_module.uuid4(),
+                            companion_journal_id,
+                            ln,
+                            cogs_acct_id,
+                            total,
+                            f"Retur HPP - {cn['credit_note_number']}",
+                        )
+                        ln += 1
+
+                    # Law 20: Promote DRAFT -> POSTED
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        companion_journal_id,
+                    )
+
+                    # Link inventory_ledger rows just created to the companion journal
+                    for r in inv_restock_results:
+                        await conn.execute(
+                            "UPDATE inventory_ledger SET journal_id = $1 WHERE id = $2",
+                            companion_journal_id,
+                            r["ledger_id"],
+                        )
 
                 # Wave 3: Write document_tax_lines (PPN reversal on CN)
                 if tax_amount > 0 and tax_jl_id:
@@ -1848,6 +1991,97 @@ async def void_credit_note(
                     """,
                         cn["journal_id"],
                         reversal_journal_id,
+                    )
+
+                # ── Fase 4 (V164): Reverse COGS companion journal + inventory_ledger ──
+                companion = await conn.fetchrow(
+                    """
+                    SELECT id, total_debit FROM journal_entries
+                    WHERE tenant_id = $1
+                      AND source_type = 'CREDIT_NOTE_COGS'
+                      AND source_id = $2
+                      AND status = 'POSTED'
+                      AND reversed_by_id IS NULL
+                    LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                    credit_note_id,
+                )
+                if companion:
+                    import uuid as uuid_module2
+
+                    companion_rev_id = uuid_module2.uuid4()
+                    companion_rev_number = (
+                        await conn.fetchval(
+                            "SELECT get_next_journal_number($1, 'RV-COGS-CN')",
+                            ctx["tenant_id"],
+                        )
+                        or f"RV-COGS-CN-{cn['credit_note_number']}"
+                    )
+                    companion_orig_lines = await conn.fetch(
+                        "SELECT * FROM journal_lines WHERE journal_id = $1",
+                        companion["id"],
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4,
+                                  'CREDIT_NOTE_COGS', $5, $6, 'DRAFT', $7, $7, $8)
+                        """,
+                        companion_rev_id,
+                        ctx["tenant_id"],
+                        companion_rev_number,
+                        f"Void COGS companion {cn['credit_note_number']}",
+                        credit_note_id,
+                        companion["id"],
+                        companion["total_debit"],
+                        ctx["user_id"],
+                    )
+                    for idx, line in enumerate(companion_orig_lines, 1):
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, line_number, account_id, debit, credit, memo
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            """,
+                            uuid_module2.uuid4(),
+                            companion_rev_id,
+                            idx,
+                            line["account_id"],
+                            line["credit"],  # swap
+                            line["debit"],
+                            f"Reversal - {line['memo'] or ''}",
+                        )
+                    # Law 20: DRAFT -> POSTED
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        companion_rev_id,
+                    )
+                    # Mark original companion VOID (Law 14 mirror — single reversal)
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries
+                        SET reversed_by_id = $2, status = 'VOID'
+                        WHERE id = $1
+                        """,
+                        companion["id"],
+                        companion_rev_id,
+                    )
+
+                    # Reverse inventory_ledger entries (CREDIT_NOTE source) -> CREDIT_NOTE_VOID
+                    from ..services.inventory_helpers import record_inventory_reversal
+
+                    await record_inventory_reversal(
+                        conn=conn,
+                        tenant_id=ctx["tenant_id"],
+                        source_type="CREDIT_NOTE",
+                        source_id=credit_note_id,
+                        reversal_journal_id=companion_rev_id,
+                        created_by=ctx["user_id"],
+                        notes_prefix="VOID_CN",
                     )
 
                 # Update credit note status
