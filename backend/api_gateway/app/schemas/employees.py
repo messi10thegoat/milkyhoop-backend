@@ -8,6 +8,9 @@ from datetime import date
 
 class CreateEmployeeRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
+    pay_group_id: UUID = Field(
+        ..., description="Required: DB column pay_group_id NOT NULL"
+    )
     employee_code: Optional[str] = None
     email: Optional[str] = None
     department: Optional[str] = None

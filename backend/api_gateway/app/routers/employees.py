@@ -148,10 +148,12 @@ async def create_employee(request: Request, body: CreateEmployeeRequest):
                 nik, npwp, ptkp_status, tax_method, marital_status, date_of_birth,
                 gender, religion, join_date, employee_type, bpjs_kes_number,
                 bpjs_tk_number, bank_name, bank_account_number, bank_account_name,
-                jkk_risk_level, is_bpjs_kes, is_bpjs_jht, is_bpjs_jp, phone, address
+                jkk_risk_level, is_bpjs_kes, is_bpjs_jht, is_bpjs_jp, phone, address,
+                pay_group_id
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+                $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
+                $28
             ) RETURNING *""",
             ctx["tenant_id"],
             code,
@@ -180,6 +182,7 @@ async def create_employee(request: Request, body: CreateEmployeeRequest):
             body.is_bpjs_jp,
             body.phone,
             body.address,
+            body.pay_group_id,
         )
         return {"success": True, "data": dict(row)}
 
