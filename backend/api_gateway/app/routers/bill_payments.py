@@ -34,16 +34,17 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
-# Fase D2.3: PURCHASE_DISCOUNT_ACCOUNT retained pending role catalog
-# promotion. See DEFERRED LITERALS in docs/MAPPING-ROLE-AKUN-LOCKED.md.
-# DEFER: PURCHASE_DISCOUNT role -> D2-wrap
-PURCHASE_DISCOUNT_ACCOUNT = "5-10200"  # Diskon Pembelian (Purchase Discount)
+# Fase D2-wrap B: PURCHASE_DISCOUNT + AP_PREPAID now resolved at runtime via
+# role mapping (V156). Legacy hardcoded literals removed.
+# See /root/milkyhoop-dev/docs/MAPPING-ROLE-AKUN-LOCKED.md.
 
-# Fase D2.3: required role mappings for bill_payments posting path.
+# Fase D2.3 + D2-wrap B: required role mappings for bill_payments posting path.
 BILL_PAYMENTS_REQUIRED_ROLES = [
     AccountRole.AP_TRADE,
     AccountRole.CASH_GENERAL,
     AccountRole.WHT_PPH_PAYABLE,
+    AccountRole.AP_PREPAID,
+    AccountRole.PURCHASE_DISCOUNT,
 ]
 
 # Module-level once-flag for precondition audit.
@@ -239,20 +240,21 @@ async def create_bill_payment_journal(
         conn, ctx["tenant_id"], AccountRole.AP_TRADE
     )
 
-    # Get or default purchase discount account
+    # Get or default purchase discount account (D2-wrap B: role-based).
     purchase_discount_account_id = discount_account_id
     if discount_amount > 0 and not purchase_discount_account_id:
-        purchase_discount_account_id = await resolve_account_id(
-            conn, ctx["tenant_id"], PURCHASE_DISCOUNT_ACCOUNT
+        purchase_discount_account_id = await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.PURCHASE_DISCOUNT
         )
 
-    # DEFER: vendor_deposit role -> D2-wrap (investigate AP_PREPAID vs
-    # VENDOR_DEPOSIT, NOT AR_OTHER). 1-10500 literal retained until naming
-    # decision. See DEFERRED LITERALS in LOCKED file.
+    # D2-wrap B: vendor advance (Uang Muka Pembelian) resolved via AP_PREPAID
+    # role (1-10550). Replaced legacy 1-10500 (AR_OTHER) literal — semantically
+    # wrong: 1-10500 = Piutang Lain-lain (receivables non-trade), NOT vendor
+    # advance asset.
     vendor_deposit_account_id = None
     if unapplied_amount > 0:
-        vendor_deposit_account_id = await resolve_account_id(
-            conn, ctx["tenant_id"], "1-10500"
+        vendor_deposit_account_id = await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.AP_PREPAID
         )
 
     # Resolve PPh CoA (Fase 2.3) — Utang Pajak
@@ -377,8 +379,11 @@ async def create_bill_payment_journal(
             f"Pembayaran dari bank - {payment_number}",
         )
     elif cash_out > 0 and source_type == "deposit" and source_deposit_id:
-        # DEFER: vendor_deposit role -> D2-wrap (LOCKED deferred-list).
-        deposit_coa = await resolve_account_id(conn, ctx["tenant_id"], "1-10500")
+        # D2-wrap B: vendor advance via AP_PREPAID role (1-10550).
+        # Replaced legacy 1-10500 (AR_OTHER) literal.
+        deposit_coa = await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.AP_PREPAID
+        )
         if deposit_coa:
             line_number += 1
             await conn.execute(

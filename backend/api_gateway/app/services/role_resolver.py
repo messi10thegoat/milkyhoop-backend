@@ -74,6 +74,15 @@ class AccountRole:
     WHT_PPH_PAYABLE: Final[str] = "WHT_PPH_PAYABLE"
     WHT_PPH_PREPAID: Final[str] = "WHT_PPH_PREPAID"
 
+    # ---- V156 D2-wrap B TIER 1 promote ---------------------------------------
+    # AP_PREPAID  -> 1-10550 Uang Muka Pembelian (ASSET) — advance to vendor
+    #                before bill received. Replaces legacy 1-10500 (AR_OTHER)
+    #                literal in bill_payments.py.
+    # PURCHASE_DISCOUNT -> 5-10200 Diskon Pembelian (COGS contra) — vendor
+    #                cash / early-pay discount on bill payment.
+    AP_PREPAID: Final[str] = "AP_PREPAID"
+    PURCHASE_DISCOUNT: Final[str] = "PURCHASE_DISCOUNT"
+
     # ---- TIER 3 — PENDING (reserved, NOT seeded) ----------------------------
     VAT_INPUT_NONCREDITABLE: Final[str] = "VAT_INPUT_NONCREDITABLE"
     VAT_PAYABLE_NET: Final[str] = "VAT_PAYABLE_NET"

@@ -132,7 +132,13 @@ def test_bill_payments_required_roles_constant():
             and elt.value.id == "AccountRole"
         )
         roles.add(elt.attr)
-    assert roles == {"AP_TRADE", "CASH_GENERAL", "WHT_PPH_PAYABLE"}
+    assert roles == {
+        "AP_TRADE",
+        "CASH_GENERAL",
+        "WHT_PPH_PAYABLE",
+        "AP_PREPAID",
+        "PURCHASE_DISCOUNT",
+    }
 
 
 def test_ap_account_constant_removed():
@@ -144,17 +150,20 @@ def test_ap_account_constant_removed():
 
 
 def test_only_deferred_literals_remain():
-    """Acceptance: ONLY 3 deferred literals remain.
+    """Acceptance: D2-wrap B closes PURCHASE_DISCOUNT + vendor_deposit deferrals.
 
-    Expected:
-      - "5-10200" (PURCHASE_DISCOUNT_ACCOUNT const, line ~40)
-      - "1-10500" x2 (vendor deposit, two emit sites)
+    Both `"5-10200"` and `"1-10500"` literals MUST be gone — flipped to
+    runtime role resolution (AccountRole.PURCHASE_DISCOUNT and
+    AccountRole.AP_PREPAID respectively, V156).
     """
     src, _ = _parse()
-    matches = re.findall(r"['\"][0-9]-[0-9]{4,5}['\"]", src)
-    assert sorted(matches) == sorted(
-        ['"5-10200"', '"1-10500"', '"1-10500"']
-    ), f"Unexpected literals: {matches}"
+    # Strip line-comments to allow literal mentions in commentary/docstrings.
+    no_comments = "\n".join(re.sub(r"#.*$", "", ln) for ln in src.splitlines())
+    matches = re.findall(r"['\"][0-9]-[0-9]{4,5}['\"]", no_comments)
+    assert matches == [], (
+        f"D2-wrap B should have removed all hardcoded CoA literals "
+        f"from bill_payments.py (found: {matches})"
+    )
 
 
 def test_deferred_literals_have_defer_comment():
@@ -170,20 +179,28 @@ def test_deferred_literals_have_defer_comment():
         ), f"Literal at line {i + 1} ({ln.strip()}) missing DEFER comment"
 
 
-def test_purchase_discount_defer_target_is_d2_wrap():
+def test_purchase_discount_resolved_via_role():
+    """D2-wrap B: PURCHASE_DISCOUNT now resolved via role, not literal."""
     src, _ = _parse()
-    # Comment block must mention PURCHASE_DISCOUNT and D2-wrap (not D3).
-    assert re.search(
-        r"DEFER:.*PURCHASE_DISCOUNT.*D2-wrap", src, re.DOTALL | re.IGNORECASE
-    ), "PURCHASE_DISCOUNT DEFER comment missing or wrong target"
+    assert (
+        "AccountRole.PURCHASE_DISCOUNT" in src
+    ), "PURCHASE_DISCOUNT role reference missing — D2-wrap B flip incomplete"
+    assert (
+        "PURCHASE_DISCOUNT_ACCOUNT" not in src
+    ), "Legacy PURCHASE_DISCOUNT_ACCOUNT constant must be removed"
 
 
-def test_vendor_deposit_defer_target_is_d2_wrap():
+def test_vendor_deposit_resolved_via_ap_prepaid_role():
+    """D2-wrap B: vendor advance now resolved via AP_PREPAID role.
+
+    The legacy 1-10500 (AR_OTHER) literal was semantically wrong — vendor
+    advance is an asset (Uang Muka Pembelian, 1-10550), not a receivable.
+    """
     src, _ = _parse()
-    # Two emit sites; check the comment text appears somewhere.
-    assert re.search(
-        r"DEFER:.*vendor_deposit.*D2-wrap", src, re.DOTALL | re.IGNORECASE
-    ), "vendor_deposit DEFER comment missing or wrong target"
+    assert "AccountRole.AP_PREPAID" in src, (
+        "AP_PREPAID role reference missing — D2-wrap B vendor-deposit flip "
+        "incomplete"
+    )
 
 
 def test_read_filter_uses_role_join_not_hardcoded_code():
