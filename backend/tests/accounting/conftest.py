@@ -20,24 +20,33 @@ from datetime import date
 from uuid import uuid4
 
 # Add paths for imports
-sys.path.insert(0, '/root/milkyhoop-dev/backend/services')
-sys.path.insert(0, '/root/milkyhoop-dev/backend')
+sys.path.insert(0, "/root/milkyhoop-dev/backend/services")
+sys.path.insert(0, "/root/milkyhoop-dev/backend")
 
-from accounting_kernel.integration.facade import AccountingFacade
-from accounting_kernel.services.journal_service import JournalService
-from accounting_kernel.services.coa_service import CoAService
-from accounting_kernel.services.ledger_service import LedgerService
-from accounting_kernel.constants import SourceType, JournalStatus
+from accounting_kernel.integration.facade import AccountingFacade  # noqa: E402
+from accounting_kernel.services.journal_service import JournalService  # noqa: E402
+from accounting_kernel.services.coa_service import CoAService  # noqa: E402
+from accounting_kernel.services.ledger_service import LedgerService  # noqa: E402
+from accounting_kernel.constants import SourceType  # noqa: E402
 
 # Test configuration
 TEST_TENANT_ID = "test-tenant-accounting"
-DATABASE_URL = os.environ.get(
-    'TEST_DATABASE_URL',
-    'postgresql://postgres:Proyek771977@localhost:5433/milkydb'
-)
+# Fase F #19: removed hardcoded DB password fallback (was rejected by gitleaks).
+# CI / local runners must export TEST_DATABASE_URL or DATABASE_URL explicitly.
+DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
-# Configure pytest-asyncio loop scope
-pytest_plugins = ('pytest_asyncio',)
+# NOTE: `pytest_plugins = ('pytest_asyncio',)` was removed (Fase F #19).
+# Defining pytest_plugins in a non-top-level conftest is deprecated and
+# breaks `pytest backend/tests/` collection in pytest 8+.
+# pytest-asyncio >=0.21 auto-registers via setuptools entry_point, so the
+# declaration is redundant — fixtures using @pytest_asyncio.fixture continue
+# to work without it.
+
+# Fase F #19: tests in this package require a live DB. If neither
+# TEST_DATABASE_URL nor DATABASE_URL is set, skip the whole module rather
+# than fail at pool creation.
+if not DATABASE_URL:
+    collect_ignore_glob = ["*.py"]
 
 
 @pytest.fixture(scope="session")
@@ -53,10 +62,7 @@ def event_loop():
 async def db_pool(event_loop):
     """Create database connection pool (session-scoped for performance)."""
     pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=2,
-        max_size=10,
-        command_timeout=30
+        DATABASE_URL, min_size=2, max_size=10, command_timeout=30
     )
     yield pool
     await pool.close()
@@ -74,8 +80,7 @@ async def db_conn(db_pool):
 
         # Set tenant context
         await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)",
-            TEST_TENANT_ID
+            "SELECT set_config('app.tenant_id', $1, true)", TEST_TENANT_ID
         )
 
         yield conn
@@ -98,23 +103,22 @@ async def setup_tenant(db_conn, tenant_id):
     """
     # Check if tenant exists
     existing = await db_conn.fetchval(
-        'SELECT COUNT(*) FROM "Tenant" WHERE id = $1',
-        tenant_id
+        'SELECT COUNT(*) FROM "Tenant" WHERE id = $1', tenant_id
     )
 
     if existing == 0:
         # Create test tenant
         await db_conn.execute(
-            '''
+            """
             INSERT INTO "Tenant" (id, alias, display_name, menu_items, status, updated_at)
             VALUES ($1, $2, $3, $4, $5, NOW())
             ON CONFLICT (id) DO NOTHING
-            ''',
+            """,
             tenant_id,
-            'test-accounting',
-            'Test Tenant Accounting',
-            '{}',  # empty menu_items JSON
-            'ACTIVE'
+            "test-accounting",
+            "Test Tenant Accounting",
+            "{}",  # empty menu_items JSON
+            "ACTIVE",
         )
 
     return tenant_id
@@ -130,38 +134,37 @@ async def setup_coa(db_conn, setup_tenant):
 
     # Check if CoA already exists
     existing = await db_conn.fetchval(
-        "SELECT COUNT(*) FROM chart_of_accounts WHERE tenant_id = $1",
-        tenant_id
+        "SELECT COUNT(*) FROM chart_of_accounts WHERE tenant_id = $1", tenant_id
     )
 
     if existing > 0:
         # Return existing account mapping
         rows = await db_conn.fetch(
             "SELECT id, account_code FROM chart_of_accounts WHERE tenant_id = $1",
-            tenant_id
+            tenant_id,
         )
-        return {row['account_code']: row['id'] for row in rows}
+        return {row["account_code"]: row["id"] for row in rows}
 
     # Create test accounts (id, tenant_id, account_code, name, account_type, normal_balance)
     accounts = [
         # Assets
-        (uuid4(), tenant_id, '1-10100', 'Kas', 'ASSET', 'DEBIT'),
-        (uuid4(), tenant_id, '1-10200', 'Bank', 'ASSET', 'DEBIT'),
-        (uuid4(), tenant_id, '1-10300', 'Piutang Usaha', 'ASSET', 'DEBIT'),
-        (uuid4(), tenant_id, '1-10400', 'Persediaan', 'ASSET', 'DEBIT'),
+        (uuid4(), tenant_id, "1-10100", "Kas", "ASSET", "DEBIT"),
+        (uuid4(), tenant_id, "1-10200", "Bank", "ASSET", "DEBIT"),
+        (uuid4(), tenant_id, "1-10300", "Piutang Usaha", "ASSET", "DEBIT"),
+        (uuid4(), tenant_id, "1-10400", "Persediaan", "ASSET", "DEBIT"),
         # Liabilities
-        (uuid4(), tenant_id, '2-10100', 'Hutang Usaha', 'LIABILITY', 'CREDIT'),
-        (uuid4(), tenant_id, '2-10200', 'Hutang Gaji', 'LIABILITY', 'CREDIT'),
+        (uuid4(), tenant_id, "2-10100", "Hutang Usaha", "LIABILITY", "CREDIT"),
+        (uuid4(), tenant_id, "2-10200", "Hutang Gaji", "LIABILITY", "CREDIT"),
         # Equity
-        (uuid4(), tenant_id, '3-10100', 'Modal', 'EQUITY', 'CREDIT'),
-        (uuid4(), tenant_id, '3-20000', 'Laba Ditahan', 'EQUITY', 'CREDIT'),
+        (uuid4(), tenant_id, "3-10100", "Modal", "EQUITY", "CREDIT"),
+        (uuid4(), tenant_id, "3-20000", "Laba Ditahan", "EQUITY", "CREDIT"),
         # Revenue
-        (uuid4(), tenant_id, '4-10100', 'Pendapatan Penjualan', 'INCOME', 'CREDIT'),
-        (uuid4(), tenant_id, '4-10200', 'Pendapatan Lainnya', 'INCOME', 'CREDIT'),
+        (uuid4(), tenant_id, "4-10100", "Pendapatan Penjualan", "INCOME", "CREDIT"),
+        (uuid4(), tenant_id, "4-10200", "Pendapatan Lainnya", "INCOME", "CREDIT"),
         # Expenses
-        (uuid4(), tenant_id, '5-10100', 'Harga Pokok Penjualan', 'EXPENSE', 'DEBIT'),
-        (uuid4(), tenant_id, '6-10100', 'Beban Gaji', 'EXPENSE', 'DEBIT'),
-        (uuid4(), tenant_id, '6-10200', 'Beban Sewa', 'EXPENSE', 'DEBIT'),
+        (uuid4(), tenant_id, "5-10100", "Harga Pokok Penjualan", "EXPENSE", "DEBIT"),
+        (uuid4(), tenant_id, "6-10100", "Beban Gaji", "EXPENSE", "DEBIT"),
+        (uuid4(), tenant_id, "6-10200", "Beban Sewa", "EXPENSE", "DEBIT"),
     ]
 
     for acc in accounts:
@@ -171,7 +174,7 @@ async def setup_coa(db_conn, setup_tenant):
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (tenant_id, account_code) DO NOTHING
             """,
-            *acc
+            *acc,
         )
 
     return {acc[2]: acc[0] for acc in accounts}
@@ -180,37 +183,37 @@ async def setup_coa(db_conn, setup_tenant):
 @pytest.fixture
 def cash_account_id(setup_coa):
     """Get Cash account ID."""
-    return setup_coa.get('1-10100')
+    return setup_coa.get("1-10100")
 
 
 @pytest.fixture
 def bank_account_id(setup_coa):
     """Get Bank account ID."""
-    return setup_coa.get('1-10200')
+    return setup_coa.get("1-10200")
 
 
 @pytest.fixture
 def ar_account_id(setup_coa):
     """Get Accounts Receivable ID."""
-    return setup_coa.get('1-10300')
+    return setup_coa.get("1-10300")
 
 
 @pytest.fixture
 def ap_account_id(setup_coa):
     """Get Accounts Payable ID."""
-    return setup_coa.get('2-10100')
+    return setup_coa.get("2-10100")
 
 
 @pytest.fixture
 def revenue_account_id(setup_coa):
     """Get Sales Revenue account ID."""
-    return setup_coa.get('4-10100')
+    return setup_coa.get("4-10100")
 
 
 @pytest.fixture
 def cogs_account_id(setup_coa):
     """Get COGS account ID."""
-    return setup_coa.get('5-10100')
+    return setup_coa.get("5-10100")
 
 
 @pytest.fixture
@@ -244,7 +247,7 @@ async def create_test_journal(
     cash_account_id,
     revenue_account_id,
     amount: Decimal = Decimal("100000"),
-    status: str = "POSTED"
+    status: str = "POSTED",
 ) -> tuple:
     """
     Create a test journal entry (cash sale).
@@ -271,7 +274,7 @@ async def create_test_journal(
         str(uuid4()),
         status,
         float(amount),
-        float(amount)
+        float(amount),
     )
 
     # Create journal lines
@@ -286,7 +289,7 @@ async def create_test_journal(
         1,
         float(amount),
         0,
-        "Cash received"
+        "Cash received",
     )
 
     await conn.execute(
@@ -300,7 +303,7 @@ async def create_test_journal(
         2,
         0,
         float(amount),
-        "Sales revenue"
+        "Sales revenue",
     )
 
     return journal_id, journal_number
