@@ -1,0 +1,58 @@
+{
+  "by_category": {
+    "lookup": [
+      5,
+      8
+    ],
+    "crud": [
+      3,
+      3
+    ],
+    "reasoning": [
+      1,
+      3
+    ],
+    "whatif": [
+      3,
+      3
+    ],
+    "why": [
+      2,
+      2
+    ],
+    "followup": [
+      3,
+      3
+    ],
+    "adversarial": [
+      6,
+      7
+    ]
+  },
+  "routing_accuracy": 0.9024390243902439,
+  "routing_correct": 37,
+  "routing_total": 41,
+  "routing_gross_asserts": 43,
+  "routing_excluded_on_clarify": [
+    "lookup_ap",
+    "lookup_ar"
+  ],
+  "routing_excluded_count": 2,
+  "confusion": {
+    "('query_items_list',)->query_items_search": 1,
+    "('calc_top_selling_items', 'query_items_summary')->query_items_search": 1
+  },
+  "tier_b_trace_rate": 0.7272727272727273,
+  "tier_b_with_trace": 8,
+  "tier_b_total": 11,
+  "cases_passed": 23,
+  "cases_total": 29,
+  "behavior_scorecard": {
+    "direct": 4,
+    "clarify": 0,
+    "over_clarify": 2
+  },
+  "behavior_pass_rate": 0.6666666666666666,
+  "behavior_ok": 4,
+  "behavior_scored_total": 6
+}

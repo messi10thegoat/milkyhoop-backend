@@ -9,6 +9,14 @@ def test_projection_is_tier_b():
     )
 
 
+def test_driver_deltas_is_tier_b():
+    # The business-drivers (why-question) handler returns model_used="driver_deltas".
+    # Like projection_engine, it is a deterministic reasoning path -> Tier B,
+    # even though the intent string may be empty when resolved from the marker.
+    assert derive_tier("", "driver_deltas", "TEXT") == Tier.B
+    assert derive_tier("query_business_drivers", "driver_deltas", "TEXT") == Tier.B
+
+
 def test_agent_loop_reasoning_is_tier_b():
     # open-ended reasoning falls to the gpt-4o-mini agent loop with multiple iterations
     assert derive_tier("", "gpt-4o-mini", "TEXT", iterations=3) == Tier.B

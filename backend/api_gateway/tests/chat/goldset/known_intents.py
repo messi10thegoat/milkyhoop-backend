@@ -150,6 +150,7 @@ KNOWN_INTENTS: set[str] = {
     "query_bills_overdue",
     "query_bills_summary",
     "query_bills_unpaid",
+    "query_business_drivers",  # why-question contributing-facts (driver_deltas path)
     "query_bom_cost_breakdown",
     "query_bom_detail",
     "query_bom_list",

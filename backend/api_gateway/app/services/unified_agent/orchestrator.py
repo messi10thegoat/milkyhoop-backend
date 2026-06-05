@@ -3557,6 +3557,19 @@ class UnifiedAgent:
         "ap_outstanding": "Hutang Outstanding",
     }
 
+    # Near-zero suppression threshold: drivers moving < this |delta_pct| are
+    # folded into a brief "(stabil: ...)" tail so the signal isn't buried.
+    _DRIVER_NEARZERO_PCT = 0.5  # percent
+
+    # Phase 4: minimum absolute base (Rp) before an expense-SPIKE InsightEngine
+    # rule may fire. Guards the partial-month artifact: a tiny absolute expense
+    # base (e.g. Rp 50k on 1-5 June) can yield an extreme growth_pct that would
+    # trip the >50%/>20% spike rules on noise. The InsightEngine's expense rules
+    # have NO absolute floor of their own (they read growth_pct only), so the
+    # floor is enforced HERE in the driver->insight mapping. Rp 1.000.000 of
+    # period expense is the smallest base we consider non-trivial for a tenant.
+    _EXPENSE_SPIKE_ABS_FLOOR = 1_000_000.0
+
     @staticmethod
     def _fmt_idr_basic(value: float) -> str:
         """Rp thousand-separated (Indonesian '.' grouping), no decimals."""
@@ -3565,35 +3578,153 @@ class UnifiedAgent:
         except Exception:
             return f"Rp {value}"
 
-    def _render_business_drivers_basic(self, delta_set) -> str:
-        """BASIC deterministic text dump of a DriverDeltaSet (Phase 2 placeholder).
+    @staticmethod
+    def _fmt_driver_pct(drv) -> str:
+        """Render a driver's delta_pct phrase (None-pct -> 'naik dari 0' etc.)."""
+        if drv.delta_pct is None:
+            cur = float(drv.current)
+            if cur > 0:
+                return "naik dari 0"
+            if cur < 0:
+                return "turun ke 0"
+            return "tetap 0"
+        _p = float(drv.delta_pct)
+        return f"{'+' if _p >= 0 else ''}{_p:.1f}%"
 
-        Non-causal framing: lists the ranked contributing facts (drivers) with
-        current/prior/delta_pct + the resolved period labels for the I5 trace.
-        NO LLM (numbers cannot be hallucinated — Iron Law 1). Phase 3 replaces
-        this with a polished `_render_contributing_facts`.
+    def _build_driver_insights(self, delta_set) -> list:
+        """Phase 4 — map a DriverDeltaSet to InsightEngine inputs and evaluate.
+
+        Returns a list of InsightObject (possibly empty). Causality is allowed
+        ONLY because a hand-vetted rule fired; if no rule fires the caller renders
+        facts-only.
+
+        Mapping (each number traces back to the driver payload — Gate 6):
+          * query_expenses_summary  <- {"growth_pct": expense_total.delta_pct}
+              GATED by an absolute floor (_EXPENSE_SPIKE_ABS_FLOOR) on
+              expense_total.current to defeat the partial-month small-sample
+              artifact (the spike rules themselves have no floor).
+          * query_cash_balance      <- {"total_balance": cash_balance.current,
+                                         "monthly_expense_avg": expense_total.current}
+              The cash-runway rules read total_balance + monthly_expense_avg
+              (and the flattener derives runway_days from those two). We use the
+              current-period expense flow as the monthly burn proxy.
+        """
+        insights: list = []
+        try:
+            from .insight_engine import evaluate as _evaluate_insights
+        except Exception:
+            return insights
+
+        exp = delta_set.expense_total
+        cash = delta_set.cash_balance
+
+        # --- expense spike (floor-gated) ---
+        exp_growth = exp.delta_pct
+        exp_base = float(exp.current)
+        if (
+            exp_growth is not None
+            and float(exp_growth) > 20  # cheap pre-check (rule thresholds: 20/50)
+            and exp_base >= self._EXPENSE_SPIKE_ABS_FLOOR
+        ):
+            try:
+                insights.extend(
+                    _evaluate_insights(
+                        "query_expenses_summary",
+                        {"growth_pct": float(exp_growth)},
+                    )
+                )
+            except Exception:
+                pass
+
+        # --- cash balance / runway ---
+        # Only meaningful when we have a burn figure (expense flow > 0) or a
+        # negative balance (the <0 rule needs no burn). A zero burn would make
+        # the medium/info runway rules misfire on the 999999999 sentinel.
+        cash_balance = float(cash.current)
+        monthly_burn = float(exp.current)
+        if cash_balance < 0 or monthly_burn > 0:
+            try:
+                insights.extend(
+                    _evaluate_insights(
+                        "query_cash_balance",
+                        {
+                            "total_balance": cash_balance,
+                            "monthly_expense_avg": monthly_burn,
+                        },
+                    )
+                )
+            except Exception:
+                pass
+
+        return insights
+
+    def _render_contributing_facts(self, delta_set) -> str:
+        """Phase 3 — polished deterministic renderer for a DriverDeltaSet.
+
+        Deterministic, NO LLM: every number comes straight from the driver
+        payload (Iron Law 1 by construction). Non-causal framing is preserved
+        ("fakta kontributor, bukan sebab-akibat"). I5 trace markers
+        ("berdasarkan jurnal" + the resolved period labels) are kept so the
+        reply is traceable.
+
+        Layout:
+          * header + non-causal/trace line
+          * (Phase 4) any InsightEngine insight that fired, clearly marked,
+            placed ABOVE the facts (causal because a vetted rule fired)
+          * ranked contributing facts (by |delta_pct|, None-pct last)
+          * near-zero movers (|delta_pct| < 0.5%) folded into a "(stabil: ...)"
+            tail so the signal isn't buried in noise
         """
         cur_label = delta_set.current_label or "periode ini"
         pri_label = delta_set.prior_label or "periode sebelumnya"
 
         lines = [
-            f"Faktor pendorong keuangan: {cur_label} vs {pri_label}",
-            "(perbandingan bulan-ke-bulan, journal-derived — fakta kontributor, "
-            "bukan sebab-akibat)",
-            "",
+            f"Faktor pendorong keuangan ({cur_label} vs {pri_label}):",
+            "Berdasarkan jurnal (journal-derived) — ini fakta kontributor, "
+            "bukan sebab-akibat.",
         ]
-        for rank, (name, drv) in enumerate(delta_set.ranked_by_abs_pct(), start=1):
+
+        # Phase 4: rule-backed insight(s) ABOVE the facts.
+        insights = self._build_driver_insights(delta_set)
+        if insights:
+            lines.append("")
+            for ins in insights:
+                head = f"{ins.emoji} [{ins.severity.upper()}] {ins.title}".strip()
+                lines.append(head)
+                if ins.recommended_action:
+                    lines.append(f"   → {ins.recommended_action}")
+
+        # Split ranked drivers into significant movers vs near-zero (stabil).
+        ranked = delta_set.ranked_by_abs_pct()
+        movers = []
+        stable = []
+        for name, drv in ranked:
+            pct = drv.delta_pct
+            if pct is not None and abs(float(pct)) < self._DRIVER_NEARZERO_PCT:
+                stable.append((name, drv))
+            else:
+                movers.append((name, drv))
+
+        lines.append("")
+        for rank, (name, drv) in enumerate(movers, start=1):
             label = self._DRIVER_LABELS_ID.get(name, name)
             cur = self._fmt_idr_basic(float(drv.current))
             pri = self._fmt_idr_basic(float(drv.prior))
-            if drv.delta_pct is None:
-                pct = "naik dari 0" if float(drv.current) else "tetap 0"
-            else:
-                _p = float(drv.delta_pct)
-                pct = f"{'+' if _p >= 0 else ''}{_p:.1f}%"
+            pct = self._fmt_driver_pct(drv)
             lines.append(f"{rank}. {label}: {pri} → {cur} ({pct})")
 
+        if stable:
+            stable_labels = ", ".join(
+                self._DRIVER_LABELS_ID.get(name, name) for name, _ in stable
+            )
+            lines.append(f"(stabil: {stable_labels})")
+
         return "\n".join(lines)
+
+    # Back-compat alias: the handler calls the polished renderer; keep the old
+    # name pointing at it so any stray reference does not break.
+    def _render_business_drivers_basic(self, delta_set) -> str:
+        return self._render_contributing_facts(delta_set)
 
     async def _handle_business_drivers(
         self,
@@ -3624,7 +3755,7 @@ class UnifiedAgent:
                 tenant_id=context.tenant_id,
                 period_text=_period_text,
             )
-            _drv_text = self._render_business_drivers_basic(_delta_set)
+            _drv_text = self._render_contributing_facts(_delta_set)
         except Exception as _drv_err:
             import traceback as _tb_drv
 

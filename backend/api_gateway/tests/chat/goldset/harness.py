@@ -109,6 +109,13 @@ def observe(resp):
     if not intent and model == "projection_engine":
         intent = "query_gross_profit_projection"
 
+    # driver_deltas special case (same spirit as projection_engine): the
+    # business-drivers handler returns model_used="driver_deltas" with no
+    # tool_calls and bypasses intent_decision_log, so resolve the intent
+    # deterministically from the model marker.
+    if not intent and model == "driver_deltas":
+        intent = "query_business_drivers"
+
     # Fallback: DB intent_decision_log by session_id (no trace_id column in table).
     # Covers agent-loop / pipeline paths that do write to the log.
     # NOTE: intent_decision_log.session_id maps to the conversation_id we sent.

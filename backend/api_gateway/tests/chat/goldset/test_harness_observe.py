@@ -1,6 +1,20 @@
 from goldset.harness import observe
 
 
+def test_observe_driver_deltas_resolves_business_drivers_intent():
+    # The business-drivers handler returns model_used="driver_deltas" with no
+    # tool_calls and bypasses intent_decision_log. observe() must resolve the
+    # intent deterministically from the marker (mirrors projection_engine).
+    resp = {
+        "text": "Faktor pendorong keuangan (1–5 Juni 2026 vs 1–5 Mei 2026)...",
+        "tool_calls": None,
+        "model_used": "driver_deltas",
+    }
+    obs = observe(resp)
+    assert obs["intent"] == "query_business_drivers"
+    assert obs["tier"].value == "B"
+
+
 def test_observe_query_key_fallback():
     # ARAP routing path emits args.query_key (not args.intent). observe() must
     # fall back to it so the turn is scored as a real routing decision.

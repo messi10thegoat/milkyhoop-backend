@@ -13,6 +13,8 @@ def derive_tier(intent, model_used, message_type, iterations=1):
         return Tier.B
     if model_used == "projection_engine":
         return Tier.B
+    if model_used == "driver_deltas":
+        return Tier.B
     # agent-loop reasoning: gpt-4o-mini doing multi-iteration work that is NOT chitchat
     if model_used == "gpt-4o-mini" and (iterations or 1) > 1:
         return Tier.B

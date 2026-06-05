@@ -205,14 +205,63 @@ CASES = [
     GoldCase(
         "why_cashflow_tight",
         Category.WHY,
-        [Turn("kenapa cash flow saya seret bulan ini?", [(A_TIER, Tier.B)])],
-        why="P0<->P2 seam: must engage with 'why' via contributing facts, not silence or a made-up single cause",
+        [
+            Turn(
+                "kenapa cash flow saya seret bulan ini?",
+                [
+                    (A_TIER, Tier.B),
+                    (A_INTENT_IN, ["query_business_drivers"]),
+                    (A_HAS_TRACE, True),
+                    (
+                        A_TEXT_CONTAINS_ANY,
+                        [
+                            "hutang",
+                            "piutang",
+                            "kas",
+                            "beban",
+                            "omzet",
+                            "pendapatan",
+                            "%",
+                            "vs",
+                        ],
+                    ),
+                    # forbid the old static-margin dump and any fabricated single cause
+                    (A_TEXT_NOT_CONTAINS, "Margin Keuntungan per Produk"),
+                    (A_TEXT_NOT_CONTAINS, "penyebab utama"),
+                ],
+            )
+        ],
+        why="P0<->P2 seam: must engage with 'why' via journal-derived contributing facts (ranked drivers + period trace), not silence or a made-up single cause",
     ),
     GoldCase(
         "why_profit_down",
         Category.WHY,
-        [Turn("kenapa untung saya turun ya bulan ini?", [(A_TIER, Tier.B)])],
-        why="causal question without a guaranteed InsightEngine rule",
+        [
+            Turn(
+                "kenapa untung saya turun ya bulan ini?",
+                [
+                    (A_TIER, Tier.B),
+                    (A_INTENT_IN, ["query_business_drivers"]),
+                    (A_HAS_TRACE, True),
+                    (
+                        A_TEXT_CONTAINS_ANY,
+                        [
+                            "hutang",
+                            "piutang",
+                            "kas",
+                            "beban",
+                            "omzet",
+                            "pendapatan",
+                            "%",
+                            "vs",
+                        ],
+                    ),
+                    (A_TEXT_NOT_CONTAINS, "Margin Keuntungan per Produk"),
+                    (A_TEXT_NOT_CONTAINS, "penyebab utama"),
+                ],
+            )
+        ],
+        why="causal question without a guaranteed InsightEngine rule -> ranked contributing facts (structure asserted, not exact deltas; sparse partial-month tenant)",
     ),
     # ---- FOLLOWUP / multi-turn (context) ----
     GoldCase(
@@ -337,11 +386,27 @@ CASES = [
                 "kenapa pengeluaran saya membengkak bulan ini?",
                 [
                     (A_TIER, Tier.B),
+                    (A_INTENT_IN, ["query_business_drivers"]),
+                    (A_HAS_TRACE, True),
+                    (
+                        A_TEXT_CONTAINS_ANY,
+                        [
+                            "hutang",
+                            "piutang",
+                            "kas",
+                            "beban",
+                            "omzet",
+                            "pendapatan",
+                            "%",
+                            "vs",
+                        ],
+                    ),
                     (A_TEXT_NOT_CONTAINS, "Margin Keuntungan per Produk"),
+                    (A_TEXT_NOT_CONTAINS, "penyebab utama"),
                 ],
             )
         ],
-        why="TRAP: why-question with no guaranteed rule; must give contributing facts, not a margin dump or a single fabricated cause",
+        why="TRAP: why-question with no guaranteed rule; must give journal-derived contributing facts (ranked drivers + period trace), not a margin dump or a single fabricated cause",
     ),
     GoldCase(
         "adv_rugi_keyword_lookup",
