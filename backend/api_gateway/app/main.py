@@ -29,6 +29,7 @@ from .routers import items
 from .routers import members
 from .routers import team_members
 from .routers import pay_groups
+from .routers import employees
 from .routers import invoices
 from .routers import bills
 from .routers import vendors
@@ -405,6 +406,7 @@ app.include_router(members.router, prefix="/api/members", tags=["members"])
 app.include_router(team_members.router, tags=["team-members"])
 app.include_router(team_members.permissions_router, tags=["permissions"])
 app.include_router(pay_groups.router, tags=["pay-groups"])
+app.include_router(employees.router, prefix="/api/employees", tags=["employees"])
 
 # Invoices router (Faktur Pembelian list)
 app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
