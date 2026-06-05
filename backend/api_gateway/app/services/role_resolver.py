@@ -83,6 +83,16 @@ class AccountRole:
     AP_PREPAID: Final[str] = "AP_PREPAID"
     PURCHASE_DISCOUNT: Final[str] = "PURCHASE_DISCOUNT"
 
+    # ---- V158 D3.1 TIER 1 promote — manufaktur (MAPPED PENDING D3.2 seed) ----
+    # WIP_GENERIC                  -> single WIP bucket; semua produksi unified.
+    # COGS_VARIANCE_PRODUCTION     -> varian total (material+labor+overhead lumped).
+    # WIP_SUBCONTRACT              -> biaya subkontrak/maklon.
+    # INVENTORY_ADJUSTMENT_EXPENSE -> generic stock adjustment loss expense.
+    WIP_GENERIC: Final[str] = "WIP_GENERIC"
+    COGS_VARIANCE_PRODUCTION: Final[str] = "COGS_VARIANCE_PRODUCTION"
+    WIP_SUBCONTRACT: Final[str] = "WIP_SUBCONTRACT"
+    INVENTORY_ADJUSTMENT_EXPENSE: Final[str] = "INVENTORY_ADJUSTMENT_EXPENSE"
+
     # ---- TIER 3 — PENDING (reserved, NOT seeded) ----------------------------
     VAT_INPUT_NONCREDITABLE: Final[str] = "VAT_INPUT_NONCREDITABLE"
     VAT_PAYABLE_NET: Final[str] = "VAT_PAYABLE_NET"
@@ -127,6 +137,21 @@ class AccountRole:
     CURRENCY_LOSS: Final[str] = "CURRENCY_LOSS"
     CURRENCY_UNREALIZED_FX: Final[str] = "CURRENCY_UNREALIZED_FX"
 
+    # ---- V158 D3.1 RESERVED (forward-compat, NOT TIER 1, NOT seeded) --------
+    # Granular manufaktur tier — keputusan D3.1: jangan split sekarang,
+    # gunakan WIP_GENERIC. Reserved untuk future split per-cost-element.
+    WIP_RAW: Final[str] = "WIP_RAW"
+    WIP_LABOR: Final[str] = "WIP_LABOR"
+    WIP_OVERHEAD: Final[str] = "WIP_OVERHEAD"
+    # Finished goods — keputusan owner D3.1: TIDAK dipisah dari merchandise.
+    # Semua FG -> INVENTORY_MERCHANDISE. Reserved untuk future MFG-only tenants.
+    FG_FINISHED: Final[str] = "FG_FINISHED"
+    # Writeoff (forward-compat farmasi/F&B) — alias singkat untuk future split.
+    # Existing INVENTORY_WRITEOFF_* tetap di catalog.
+    WRITEOFF_DAMAGE: Final[str] = "WRITEOFF_DAMAGE"
+    WRITEOFF_EXPIRED: Final[str] = "WRITEOFF_EXPIRED"
+    WRITEOFF_SHRINKAGE: Final[str] = "WRITEOFF_SHRINKAGE"
+
 
 # Frozen catalog set — MUST equal V149 CHECK constraint exactly.
 _CATALOG: Final[frozenset[str]] = frozenset(
@@ -150,6 +175,14 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "VAT_INPUT",
         "WHT_PPH_PAYABLE",
         "WHT_PPH_PREPAID",
+        # TIER 1 promoted (V156 D2-wrap B)
+        "AP_PREPAID",
+        "PURCHASE_DISCOUNT",
+        # TIER 1 promoted (V158 D3.1 — manufaktur, MAPPED PENDING D3.2)
+        "WIP_GENERIC",
+        "COGS_VARIANCE_PRODUCTION",
+        "WIP_SUBCONTRACT",
+        "INVENTORY_ADJUSTMENT_EXPENSE",
         # TIER 2
         "CASH_PETTY",
         # TIER 3 (reserved, NOT seeded)
@@ -192,6 +225,14 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "CURRENCY_GAIN",
         "CURRENCY_LOSS",
         "CURRENCY_UNREALIZED_FX",
+        # V158 D3.1 reserved (forward-compat, NOT seeded)
+        "WIP_RAW",
+        "WIP_LABOR",
+        "WIP_OVERHEAD",
+        "FG_FINISHED",
+        "WRITEOFF_DAMAGE",
+        "WRITEOFF_EXPIRED",
+        "WRITEOFF_SHRINKAGE",
     }
 )
 

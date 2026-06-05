@@ -26,6 +26,10 @@ Status: CONFIRMED = aman dikunci · CORRECTED = pernah salah, versi ini yang ben
 | WHT_PPH_PREPAID | 1-10820 | PPh Dibayar Dimuka | ASSET — customer potong PPh dari kita = kredit pajak. V154 seed + V155 mapping, 5/5. |
 | AP_PREPAID | 1-10550 | Uang Muka Pembelian | ASSET — Fase D2-wrap B (V156), 5/5 tenants. Akun BARU di-seed lewat backfill V156 (existing tenants) + patched `seed_default_coa()` (new tenants). Flips `bill_payments.py:254,381` hardcoded `1-10500` (AR_OTHER = piutang non-trade, semantically wrong for advance to vendor). |
 | PURCHASE_DISCOUNT | 5-10200 | Diskon Pembelian | COGS (contra) — Fase D2-wrap B (V156), 5/5 tenants. Akun sudah ada di standar CoA 5 tenant; V156 hanya seed role mapping. Flips `bill_payments.py:40` const `PURCHASE_DISCOUNT_ACCOUNT`. |
+| WIP_GENERIC | (pending) | Work-in-Progress (unified) | ASSET — D3.1 catalog promote (V158). **MAPPED PENDING D3.2** (belum di-seed ke account_roles). Single WIP bucket: semua biaya produksi (raw+labor+overhead) unified di sini, tidak dipisah granular. Future split via `WIP_RAW/WIP_LABOR/WIP_OVERHEAD` reservasi. Akan flips literal di `production.py` saat D3.3. |
+| COGS_VARIANCE_PRODUCTION | (pending) | HPP Varian Produksi (lumped) | COGS — D3.1 catalog promote (V158). **MAPPED PENDING D3.2**. Varian total material+labor+overhead lumped (tidak granular per cost element). Existing granular `COGS_VARIANCE_MATERIAL/LABOR/OVERHEAD` tetap reserved untuk future per-element variance. |
+| WIP_SUBCONTRACT | (pending) | Biaya Subkontrak/Maklon | ASSET — D3.1 catalog promote (V158). **MAPPED PENDING D3.2**. Untuk biaya subcontract/maklon yang masuk ke WIP. |
+| INVENTORY_ADJUSTMENT_EXPENSE | (pending) | Biaya Penyesuaian Persediaan | EXPENSE — D3.1 catalog promote (V158). **MAPPED PENDING D3.2**. Generic stock adjustment loss; akan flips literal di `stock_adjustments.py` saat D3.3. |
 
 ## TIER 2 — CORRECTED (versi INI yang benar — JANGAN pakai mapping agen inventaris)
 | Role | Kode | Nama Akun | Catatan |
@@ -46,6 +50,18 @@ Status: CONFIRMED = aman dikunci · CORRECTED = pernah salah, versi ini yang ben
 
 ## ROLE TANPA AKUN (gap masa depan)
 INVENTORY_RAW/WIP/FINISHED · MFG_OVERHEAD_* · MFG_DIRECT_LABOR · INVENTORY_WRITEOFF_EXPIRED/DAMAGE/SHRINKAGE · AR_ALLOWANCE (CKPN) · AP_ACCRUED.
+
+## RESERVED — D3.1 forward-compat (V158 catalog only, BUKAN TIER 1, NOT seeded)
+Role berikut ditambah ke CHECK constraint untuk forward-compat. **JANGAN seed sekarang.**
+| Role | Tujuan | Keputusan D3.1 |
+|------|--------|----------------|
+| WIP_RAW | Granular WIP: raw material portion | Reserved. Pakai `WIP_GENERIC` untuk sekarang (unified bucket). Future split per cost-element. |
+| WIP_LABOR | Granular WIP: direct labor portion | Reserved. Pakai `WIP_GENERIC`. |
+| WIP_OVERHEAD | Granular WIP: applied overhead portion | Reserved. Pakai `WIP_GENERIC`. |
+| FG_FINISHED | Finished Goods (terpisah dari merchandise) | **Keputusan owner D3.1: TIDAK dipisah sekarang.** Semua FG → `INVENTORY_MERCHANDISE`. Reserved untuk future MFG-only tenants. |
+| WRITEOFF_DAMAGE | Writeoff rusak (alias singkat) | Reserved forward-compat farmasi/F&B. `INVENTORY_WRITEOFF_DAMAGE` existing tetap di catalog. |
+| WRITEOFF_EXPIRED | Writeoff kadaluwarsa (alias singkat) | Reserved forward-compat farmasi/F&B. `INVENTORY_WRITEOFF_EXPIRED` existing tetap. |
+| WRITEOFF_SHRINKAGE | Writeoff susut/hilang (alias singkat) | Reserved forward-compat farmasi/F&B. `INVENTORY_WRITEOFF_SHRINKAGE` existing tetap. |
 
 ## DESAIN PAJAK FASE D1 (LOCKED — V154 + V155)
 - **`VAT_OUTPUT`** (LIABILITY) → 2-10600 PPN Keluaran. Repointed dari interim 2-10300.
