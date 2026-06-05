@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
-from app.services.role_resolver import (
+from .role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
 )
