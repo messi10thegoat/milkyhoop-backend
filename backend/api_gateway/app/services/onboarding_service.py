@@ -145,6 +145,25 @@ async def create_tenant_and_user(
                 f"Account roles seeded: {role_count} mappings for tenant {tenant_id}"
             )
 
+            # 3c. Seed default tax codes (Fase G recon-fix). Idempotent via
+            # ON CONFLICT inside the function. Depends on CoA seeded above.
+            await conn.execute("SELECT seed_default_tax_codes($1)", tenant_id)
+            logger.info(f"Tax codes seeded for tenant {tenant_id}")
+
+            # 3d. Seed default warehouse (Gudang Utama). Inline INSERT keeps
+            # the call tenant-scoped (DB function seed_default_warehouses() is
+            # no-arg / retroactive global loop — fine as backfill but explicit
+            # per-tenant insert is correct for new onboarding).
+            await conn.execute(
+                """
+                INSERT INTO warehouses (tenant_id, code, name, is_default, is_active)
+                VALUES ($1, 'WH-MAIN', 'Gudang Utama', true, true)
+                ON CONFLICT (tenant_id, code) DO NOTHING
+                """,
+                tenant_id,
+            )
+            logger.info(f"Default warehouse seeded for tenant {tenant_id}")
+
             # 4. Assign OWNER role to the new account owner.
             # Resolve the shared system OWNER role dynamically (do NOT hardcode UUID).
             # Without this row the new owner has no role -> empty sidebar + 403s.
