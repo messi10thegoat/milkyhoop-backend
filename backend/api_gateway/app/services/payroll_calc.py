@@ -4,14 +4,19 @@ Payroll Calculation Engine
 Handles: TER PPh 21 (PP 58/2023), BPJS (5 components), proration, overtime.
 All amounts use Decimal for precision.
 
-CoA codes used (Law 27 — resolved at runtime via resolve_account_id):
-  5-20100  = Beban Gaji & Tunjangan (existing)
-  5-20150  = Beban BPJS Perusahaan
-  5-80100  = Beban PPh 21 Perusahaan (nett method only)
-  2-10400  = Utang Gaji (existing)
-  2-10310  = Utang PPh 21
-  2-10410  = Utang BPJS Karyawan
-  2-10420  = Utang BPJS Perusahaan
+Account references — Law 27 (Fase D4.3): callers use `AccountRole.*` from
+`app.services.role_resolver`, NEVER literal codes. The previous module-level
+`COA_*` constants duplicated the role catalog and were dropped — single
+source of truth is `account_roles` table + `role_resolver._CATALOG`.
+
+Roles available for payroll posting paths (V162 mapping, 7/7 tenants):
+  AccountRole.SALARY_EXPENSE       -> 5-20100 Beban Gaji
+  AccountRole.SALARY_PAYABLE       -> 2-10400 Utang Gaji
+  AccountRole.PPH21_PAYABLE        -> 2-10310 Utang PPh 21 (payroll-exclusive)
+  AccountRole.BPJS_EE_PAYABLE      -> 2-10410 Utang BPJS Karyawan
+  AccountRole.BPJS_ER_PAYABLE      -> 2-10420 Utang BPJS Perusahaan
+  AccountRole.BPJS_ER_EXPENSE      -> 5-20150 Beban BPJS Perusahaan
+  AccountRole.PPH21_ER_EXPENSE     -> 5-80100 Beban PPh 21 Perusahaan (nett)
 """
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -48,14 +53,12 @@ JKK_RATES = {
     5: Decimal("0.0174"),
 }
 
-# Payroll CoA codes
-COA_BEBAN_GAJI = "5-20100"
-COA_BEBAN_BPJS_ER = "5-20150"
-COA_BEBAN_PPH21_ER = "5-80100"
-COA_HUTANG_GAJI = "2-10400"
-COA_HUTANG_PPH21 = "2-10300"
-COA_HUTANG_BPJS_EE = "2-10410"
-COA_HUTANG_BPJS_ER = "2-10420"
+# Payroll CoA codes — REMOVED in Fase D4.3. Use `AccountRole.*` from
+# `app.services.role_resolver` instead. Historic note: COA_HUTANG_PPH21 was
+# the literal "2-10300" (Hutang Pajak generic) but the correct payroll-
+# exclusive PPh 21 account is "2-10310" (mapped via AccountRole.PPH21_PAYABLE,
+# V162). Keeping the generic 2-10300 would have violated the PPh 21 PAYROLL
+# BOUNDARY in MAPPING-ROLE-AKUN-LOCKED.md §"PPH 21 PAYROLL BOUNDARY".
 
 
 def d(val) -> Decimal:

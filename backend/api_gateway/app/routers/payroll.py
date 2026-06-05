@@ -54,16 +54,45 @@ from decimal import Decimal
 import json
 from pydantic import BaseModel, Field
 
-from ..services.resolve_account import resolve_account_id  # Law 27
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payroll", tags=["payroll"])
 
 # Connection pool
 
-# Account codes for journal entries — Law 27: resolved at runtime via resolve_account_id
-SALARY_EXPENSE_ACCOUNT = "6-10100"  # Beban Gaji (Expense)
-SALARY_PAYABLE_ACCOUNT = "2-10500"  # Hutang Gaji (Liability)
+# Fase D4.3: payroll journal posting now uses role_resolver (Law 27).
+# Literal SALARY_EXPENSE_ACCOUNT = "6-10100" (non-existent code, caused live
+# POST bug on golden-apparel) + SALARY_PAYABLE_ACCOUNT = "2-10500" (was
+# Uang Muka Pelanggan, semantically wrong) removed. Flipped to:
+#   SALARY_EXPENSE -> 5-20100 Beban Gaji (V162 mapping)
+#   SALARY_PAYABLE -> 2-10400 Utang Gaji (V162 mapping)
+
+# Required role mappings for payroll posting path. Active code emits
+# Dr SALARY_EXPENSE / Cr SALARY_PAYABLE (or bank for direct payment). The
+# additional PPh21/BPJS roles are catalog-seeded (V162) for forward-compat
+# fine-grained decomposition without requiring another migration.
+PAYROLL_REQUIRED_ROLES = [
+    AccountRole.SALARY_EXPENSE,
+    AccountRole.SALARY_PAYABLE,
+]
+
+# Module-level once-flag for precondition audit.
+_payroll_precondition_checked = False
+
+
+async def _ensure_payroll_role_preconditions(pool):
+    """Run role-mapping precondition once per process for payroll.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _payroll_precondition_checked
+    if _payroll_precondition_checked:
+        return
+    await assert_required_roles_for_path(pool, "payroll", PAYROLL_REQUIRED_ROLES)
+    _payroll_precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -1363,6 +1392,10 @@ async def post_payroll(request: Request, payroll_id: UUID):
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        # Fase D4.3: precondition gate — ensure SALARY_EXPENSE + SALARY_PAYABLE
+        # mapped for every tenant before any posting can run.
+        await _ensure_payroll_role_preconditions(pool)
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1392,9 +1425,10 @@ async def post_payroll(request: Request, payroll_id: UUID):
                 payment_date = payroll["payment_date"] or payroll["period_end"]
                 await check_period_is_open(conn, ctx["tenant_id"], payment_date)
 
-                # Law 27: Resolve account IDs via resolve_account_id
-                salary_expense_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], SALARY_EXPENSE_ACCOUNT
+                # Law 27 (D4.3): resolve via role catalog. SALARY_EXPENSE = 5-20100
+                # Beban Gaji (V162). Replaces literal '6-10100' (was non-existent).
+                salary_expense_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.SALARY_EXPENSE
                 )
 
                 # Hutang Gaji - Liability account (or Bank for direct payment)
@@ -1417,11 +1451,12 @@ async def post_payroll(request: Request, payroll_id: UUID):
                         )
                     credit_account_id = bank_account["id"]
                 else:
-                    # Accrual - credit hutang gaji
-                    credit_account_id = UUID(
-                        await resolve_account_id(
-                            conn, ctx["tenant_id"], SALARY_PAYABLE_ACCOUNT
-                        )
+                    # Accrual - credit hutang gaji.
+                    # Law 27 (D4.3): SALARY_PAYABLE = 2-10400 Utang Gaji (V162).
+                    # Replaces literal '2-10500' (was Uang Muka Pelanggan —
+                    # customer deposit liability, semantically wrong).
+                    credit_account_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.SALARY_PAYABLE
                     )
 
                 # Get journal number
@@ -1466,7 +1501,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
                     """,
                     uuid_module.uuid4(),
                     journal_id,
-                    UUID(salary_expense_id),
+                    salary_expense_id,  # UUID from resolve_account_id_by_role
                     total_amount,
                     f"Beban Gaji - {payroll['payroll_number']}",
                 )

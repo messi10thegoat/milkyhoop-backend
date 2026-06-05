@@ -8,13 +8,7 @@ import logging
 import asyncpg
 
 from ..schemas.payroll import CreatePayrollPaymentRequest, VoidPayrollRequest
-from ..services.payroll_calc import (
-    COA_HUTANG_GAJI,
-    COA_HUTANG_PPH21,
-    COA_HUTANG_BPJS_EE,
-    COA_HUTANG_BPJS_ER,
-)
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -144,20 +138,27 @@ async def post_payment(request: Request, payment_id: UUID):
             # Build journal lines
             debit_accounts = []
             if ptype == "salary":
-                coa = await resolve_account_id(conn, ctx["tenant_id"], COA_HUTANG_GAJI)
+                coa = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.SALARY_PAYABLE
+                )
                 debit_accounts.append((coa, amount, "Bayar Gaji"))
             elif ptype == "pph21":
-                coa = await resolve_account_id(conn, ctx["tenant_id"], COA_HUTANG_PPH21)
+                # Fase D4.3: payroll-exclusive PPH21_PAYABLE -> 2-10310. The
+                # legacy COA_HUTANG_PPH21 literal pointed to 2-10300 (generic
+                # Hutang Pajak) which violated the PPh 21 PAYROLL BOUNDARY.
+                coa = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.PPH21_PAYABLE
+                )
                 debit_accounts.append((coa, amount, "Setor PPh 21"))
             elif ptype == "bpjs":
-                coa_ee = await resolve_account_id(
-                    conn, ctx["tenant_id"], COA_HUTANG_BPJS_EE
+                coa_ee = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.BPJS_EE_PAYABLE
                 )
-                coa_er = await resolve_account_id(
-                    conn, ctx["tenant_id"], COA_HUTANG_BPJS_ER
+                coa_er = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.BPJS_ER_PAYABLE
                 )
                 # Split amount proportionally
-                run = await conn.fetchrow(
+                run = await conn.fetchrow(  # noqa: F841 - dead-code router; FK-existence check side-effect
                     "SELECT id FROM payroll_runs WHERE id = $1", payment["payroll_id"]
                 )
                 bpjs_ee = await conn.fetchval(

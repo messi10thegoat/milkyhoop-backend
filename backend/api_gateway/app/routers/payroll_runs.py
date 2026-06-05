@@ -21,15 +21,8 @@ from ..services.payroll_calc import (
     calculate_employee_slip,
     get_bpjs_config,
     get_ytd_data,
-    COA_BEBAN_GAJI,
-    COA_BEBAN_BPJS_ER,
-    COA_BEBAN_PPH21_ER,
-    COA_HUTANG_GAJI,
-    COA_HUTANG_PPH21,
-    COA_HUTANG_BPJS_EE,
-    COA_HUTANG_BPJS_ER,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code
 
 logger = logging.getLogger(__name__)
@@ -375,8 +368,8 @@ async def calculate_payroll(request: Request, run_id: UUID):
             total_gross = Decimal("0")
             total_deductions = Decimal("0")
             total_net = Decimal("0")
-            total_basic = Decimal("0")
-            total_allowances = Decimal("0")
+            total_basic = Decimal("0")  # noqa: F841 - dead-code router
+            total_allowances = Decimal("0")  # noqa: F841 - dead-code router
             emp_count = 0
 
             results = []
@@ -642,32 +635,34 @@ async def post_payroll(request: Request, run_id: UUID):
             )
             total_net = total_earnings - total_pph21_ee - total_bpjs_ee
 
-            # Resolve CoA accounts (Law 27)
-            coa_beban_gaji = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_BEBAN_GAJI
+            # Resolve CoA accounts via role catalog (Law 27, Fase D4.3).
+            # PPH21_PAYABLE -> 2-10310 (payroll-exclusive boundary), NOT
+            # the generic 2-10300 the legacy literal used to point at.
+            coa_beban_gaji = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.SALARY_EXPENSE
             )
-            coa_beban_bpjs = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_BEBAN_BPJS_ER
+            coa_beban_bpjs = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.BPJS_ER_EXPENSE
             )
-            coa_hutang_gaji = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_HUTANG_GAJI
+            coa_hutang_gaji = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.SALARY_PAYABLE
             )
-            coa_hutang_pph = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_HUTANG_PPH21
+            coa_hutang_pph = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.PPH21_PAYABLE
             )
-            coa_hutang_bpjs_ee = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_HUTANG_BPJS_EE
+            coa_hutang_bpjs_ee = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.BPJS_EE_PAYABLE
             )
-            coa_hutang_bpjs_er = await resolve_account_id(
-                conn, ctx["tenant_id"], COA_HUTANG_BPJS_ER
+            coa_hutang_bpjs_er = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.BPJS_ER_PAYABLE
             )
 
             total_debit = total_earnings + total_bpjs_er
             total_credit = total_debit  # balanced
 
             if total_pph21_er > 0:
-                coa_beban_pph = await resolve_account_id(
-                    conn, ctx["tenant_id"], COA_BEBAN_PPH21_ER
+                coa_beban_pph = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.PPH21_ER_EXPENSE
                 )
                 total_debit += total_pph21_er
                 total_credit += total_pph21_er
