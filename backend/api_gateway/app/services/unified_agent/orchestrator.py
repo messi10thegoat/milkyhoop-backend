@@ -3517,6 +3517,14 @@ class UnifiedAgent:
                     "Silakan coba lagi."
                 ),
                 iterations=1,
+                # FIX_OBS_TOOLCALLS (2026-06-05)
+                tool_calls_made=[
+                    {
+                        "name": "projection_engine",
+                        "args": {"intent": "query_gross_profit_projection"},
+                        "success": True,
+                    }
+                ],
                 model_used="projection_engine",
                 total_latency_ms=int((_time.monotonic() - _proj_start) * 1000),
             )
@@ -3544,6 +3552,14 @@ class UnifiedAgent:
             message_type="TEXT",
             content=_proj_text,
             iterations=1,
+            # FIX_OBS_TOOLCALLS (2026-06-05)
+            tool_calls_made=[
+                {
+                    "name": "projection_engine",
+                    "args": {"intent": "query_gross_profit_projection"},
+                    "success": True,
+                }
+            ],
             model_used="projection_engine",
             total_latency_ms=int((_time.monotonic() - _proj_start) * 1000),
         )
@@ -3771,6 +3787,14 @@ class UnifiedAgent:
                     "keuangan. Silakan coba lagi."
                 ),
                 iterations=1,
+                # FIX_OBS_TOOLCALLS (2026-06-05)
+                tool_calls_made=[
+                    {
+                        "name": "driver_deltas",
+                        "args": {"intent": "query_business_drivers"},
+                        "success": True,
+                    }
+                ],
                 model_used="driver_deltas",
                 total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
             )
@@ -3794,6 +3818,14 @@ class UnifiedAgent:
             message_type="TEXT",
             content=_drv_text,
             iterations=1,
+            # FIX_OBS_TOOLCALLS (2026-06-05)
+            tool_calls_made=[
+                {
+                    "name": "driver_deltas",
+                    "args": {"intent": "query_business_drivers"},
+                    "success": True,
+                }
+            ],
             model_used="driver_deltas",
             total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
         )
@@ -7977,6 +8009,14 @@ class UnifiedAgent:
                             message_type="TEXT",
                             content=_calc_text,
                             iterations=1,
+                            # FIX_OBS_TOOLCALLS (2026-06-05)
+                            tool_calls_made=[
+                                {
+                                    "name": "calc_engine",
+                                    "args": {"intent": extraction.intent},
+                                    "success": True,
+                                }
+                            ],
                             model_used="calc_engine",
                             total_latency_ms=int(
                                 (_time.monotonic() - _process_start) * 1000
