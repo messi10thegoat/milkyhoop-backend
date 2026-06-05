@@ -127,49 +127,41 @@ def test_bills_service_required_roles_constant():
             and elt.value.id == "AccountRole"
         )
         roles.add(elt.attr)
+    # Fase D3.3: subcontract literal promoted -> WIP_SUBCONTRACT role
+    # appended to required set.
     assert roles == {
         "AP_TRADE",
         "VAT_INPUT",
         "WHT_PPH_PAYABLE",
         "INVENTORY_MERCHANDISE",
+        "WIP_SUBCONTRACT",
     }
 
 
-def test_only_deferred_literals_remain():
-    """Acceptance: ONLY 2 deferred subcontract ternary literals remain.
+def test_no_coa_literals_remain():
+    """Acceptance (D3.3): zero CoA literals in bills_service code paths.
 
-    Subcontract WIP (1-10650) vs default (1-10600) split is deferred to
-    D3 manufaktur (WIP_SUBCONTRACT role catalog promotion). Any OTHER
-    CoA literal is a regression.
+    Fase D2.3 had 4 deferred subcontract ternary literals
+    (1-10650/1-10600 x2). Fase D3.3 promoted these to role-based
+    resolution via WIP_SUBCONTRACT. Any remaining literal is a regression.
+    Comments may still mention them historically.
     """
     src, _ = _parse()
-    matches = re.findall(r"['\"][0-9]-[0-9]{4,5}['\"]", src)
-    # Expected: ["1-10650", "1-10600", "1-10650", "1-10600"] (two ternaries).
-    assert sorted(matches) == sorted(
-        ['"1-10650"', '"1-10600"', '"1-10650"', '"1-10600"']
-    ), f"Unexpected literals: {matches}"
+    # Strip out comment lines before scanning.
+    code_only = "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
+    )
+    matches = re.findall(r"['\"][0-9]-[0-9]{4,5}['\"]", code_only)
+    assert matches == [], f"Unexpected literals in code: {matches}"
 
 
-def test_deferred_subcontract_ternary_has_defer_comment():
-    """Each subcontract ternary line must have a DEFER comment nearby."""
+def test_subcontract_branches_use_wip_subcontract_role():
+    """Both subcontract branches must resolve via AccountRole.WIP_SUBCONTRACT."""
     src, _ = _parse()
-    # Find lines containing the ternary.
-    lines = src.splitlines()
-    ternary_indices = [
-        i
-        for i, ln in enumerate(lines)
-        if 'if is_subcontract_bill else "1-10600"' in ln
-        or 'if is_sc_bill else "1-10600"' in ln
-    ]
-    assert (
-        len(ternary_indices) == 2
-    ), f"Expected 2 subcontract ternaries, found {len(ternary_indices)}"
-    for idx in ternary_indices:
-        # Look at the 5 lines preceding for a DEFER mention.
-        window = "\n".join(lines[max(0, idx - 5) : idx + 1])
-        assert "DEFER" in window and (
-            "D3 manufaktur" in window or "WIP_SUBCONTRACT" in window
-        ), f"Ternary at line {idx + 1} missing DEFER/D3 manufaktur comment"
+    assert src.count("AccountRole.WIP_SUBCONTRACT") >= 2, (
+        "Expected >= 2 references to AccountRole.WIP_SUBCONTRACT "
+        "(create + post paths)"
+    )
 
 
 def test_precondition_wired_into_handlers():

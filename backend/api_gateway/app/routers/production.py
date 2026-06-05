@@ -30,10 +30,38 @@ from ..schemas.production import (
     ProductionScheduleResponse,
     ProductionResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Fase D3.3: role-based CoA resolution for manufaktur posting paths.
+# Replaces hardcoded literals 1-10650 / 1-10600 / 5-90200 (cancel order
+# variance, material issue, FG receipt). Void/reverse paths read
+# account_id from journal_lines (Law 2/26) and are NOT touched.
+_PRODUCTION_REQUIRED_ROLES = [
+    AccountRole.WIP_GENERIC,
+    AccountRole.COGS_VARIANCE_PRODUCTION,
+    AccountRole.INVENTORY_MERCHANDISE,
+]
+_production_precondition_checked = False
+
+
+async def _ensure_production_role_preconditions(pool):
+    """Run role-mapping precondition once per process for production.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _production_precondition_checked
+    if _production_precondition_checked:
+        return
+    await assert_required_roles_for_path(pool, "production", _PRODUCTION_REQUIRED_ROLES)
+    _production_precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -626,26 +654,26 @@ async def get_production_order(request: Request, order_id: UUID):
                     ],
                     "labor": [
                         {
-                            "id": str(l["id"]),
-                            "operation_id": str(l["operation_id"])
-                            if l["operation_id"]
+                            "id": str(lr["id"]),
+                            "operation_id": str(lr["operation_id"])
+                            if lr["operation_id"]
                             else None,
-                            "operation_name": l["operation_name"],
-                            "planned_hours": l["planned_hours"],
-                            "planned_cost": l["planned_cost"],
-                            "actual_hours": l["actual_hours"],
-                            "actual_cost": l["actual_cost"],
-                            "worker_id": str(l["worker_id"])
-                            if l["worker_id"]
+                            "operation_name": lr["operation_name"],
+                            "planned_hours": lr["planned_hours"],
+                            "planned_cost": lr["planned_cost"],
+                            "actual_hours": lr["actual_hours"],
+                            "actual_cost": lr["actual_cost"],
+                            "worker_id": str(lr["worker_id"])
+                            if lr["worker_id"]
                             else None,
-                            "worker_name": l["worker_name"],
-                            "start_time": l["start_time"],
-                            "end_time": l["end_time"],
-                            "hourly_rate": l["hourly_rate"],
-                            "notes": l["notes"],
-                            "created_at": l["created_at"],
+                            "worker_name": lr["worker_name"],
+                            "start_time": lr["start_time"],
+                            "end_time": lr["end_time"],
+                            "hourly_rate": lr["hourly_rate"],
+                            "notes": lr["notes"],
+                            "created_at": lr["created_at"],
                         }
-                        for l in labor
+                        for lr in labor
                     ],
                     "completions": [
                         {
@@ -1021,9 +1049,12 @@ async def complete_order(request: Request, order_id: UUID):
 
             # Bug #9 fix: Flush WIP residual via variance journal
             # Check WIP balance from this order's journals
-            wip_account_id = await resolve_account_id(conn, ctx["tenant_id"], "1-10650")
-            variance_account_id = await resolve_account_id(
-                conn, ctx["tenant_id"], "5-90200"
+            # Fase D3.3: role-based resolution (was 1-10650 / 5-90200).
+            wip_account_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
+            )
+            variance_account_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.COGS_VARIANCE_PRODUCTION
             )
 
             if wip_account_id and variance_account_id:
@@ -1323,6 +1354,7 @@ async def cancel_order(request: Request, order_id: UUID):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_production_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1452,6 +1484,7 @@ async def issue_materials(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_production_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1620,16 +1653,17 @@ async def issue_materials(
                 if total_issued_cost > 0:
                     import uuid as _uuid_mi
 
-                    wip_acct = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10650"
+                    # Fase D3.3: role-based resolution (was 1-10650 / 1-10600).
+                    wip_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
                     )
-                    inv_acct = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10600"
+                    inv_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE
                     )
                     if not wip_acct or not inv_acct:
                         raise HTTPException(
                             status_code=500,
-                            detail="Akun WIP (1-10650) atau Persediaan (1-10600) tidak ditemukan",
+                            detail="Akun WIP_GENERIC atau INVENTORY_MERCHANDISE tidak ter-resolve",
                         )
 
                     from datetime import date as _date
@@ -1857,6 +1891,7 @@ async def report_output(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_production_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2015,16 +2050,18 @@ async def report_output(
                             status_code=404, detail="FG product not found"
                         )
 
-                    fg_acct = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10600"
+                    # Fase D3.3: role-based resolution (was 1-10600 / 1-10650).
+                    # FG kept on INVENTORY_MERCHANDISE per owner decision.
+                    fg_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE
                     )
-                    wip_acct = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10650"
+                    wip_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
                     )
                     if not fg_acct or not wip_acct:
                         raise HTTPException(
                             status_code=500,
-                            detail="Akun Persediaan FG (1-10600) atau WIP (1-10650) tidak ditemukan",
+                            detail="Akun INVENTORY_MERCHANDISE (FG) atau WIP_GENERIC tidak ter-resolve",
                         )
 
                     from datetime import date as _date_ro

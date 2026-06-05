@@ -38,16 +38,42 @@ from ..schemas.stock_adjustments import (
     StockAdjustmentListResponse,
     StockAdjustmentSummaryResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.resolve_account import resolve_account_id  # noqa: F401  (kept for back-compat)
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+)
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
 
-# Account codes resolved at runtime via resolve_account_id (Law 27)
-INVENTORY_ACCOUNT_CODE = "1-10600"  # Persediaan Barang Dagang
-ADJUSTMENT_EXPENSE_ACCOUNT_CODE = "5-50100"  # Penyesuaian Persediaan
+# Fase D3.3: role-based CoA resolution for stock adjustment posting.
+# Replaces hardcoded literals 1-10600 (INVENTORY_MERCHANDISE) and
+# 5-50100 (INVENTORY_ADJUSTMENT_EXPENSE). Void/reverse path reads
+# account_id from journal_lines (Law 2/26) and is NOT touched.
+_STOCK_ADJ_REQUIRED_ROLES = [
+    AccountRole.INVENTORY_MERCHANDISE,
+    AccountRole.INVENTORY_ADJUSTMENT_EXPENSE,
+]
+_stock_adj_precondition_checked = False
+
+
+async def _ensure_stock_adj_role_preconditions(pool):
+    """Run role-mapping precondition once per process for stock_adjustments.
+
+    Fails loud (PreconditionFailedError) if any tenant lacks any required
+    role mapping. After first successful check the audit is skipped.
+    """
+    global _stock_adj_precondition_checked
+    if _stock_adj_precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "stock_adjustments", _STOCK_ADJ_REQUIRED_ROLES
+    )
+    _stock_adj_precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -832,6 +858,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_stock_adj_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -896,12 +923,13 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
                     else:
                         total_decrease += item_value
 
-                # Law 27: Resolve account IDs at runtime
-                inventory_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], INVENTORY_ACCOUNT_CODE
+                # Law 27 + Fase D3.3: role-based resolution
+                # (was 1-10600 INVENTORY_ACCOUNT_CODE / 5-50100 ADJUSTMENT_EXPENSE_ACCOUNT_CODE).
+                inventory_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE
                 )
-                adjustment_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], ADJUSTMENT_EXPENSE_ACCOUNT_CODE
+                adjustment_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.INVENTORY_ADJUSTMENT_EXPENSE
                 )
 
                 if not inventory_account_id or not adjustment_account_id:
@@ -1311,6 +1339,11 @@ async def void_stock_adjustment(
                 )
 
                 # NOTE: persediaan table writes removed - inventory_ledger is source of truth (Law 16)
+                # Get default warehouse for inventory_ledger (used in fallback below)
+                default_warehouse_id = await conn.fetchval(
+                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                    ctx["tenant_id"],
+                )
                 for item in items:
                     # Reverse inventory_ledger entries (Law 16 compliant)
                     product_row = await conn.fetchrow(

@@ -37,14 +37,17 @@ from .unit_helpers import convert_to_base_unit  # noqa: E402
 # - AP_TRADE: vendor liability (Cr on bill, Dr on payment/void)
 # - VAT_INPUT: PKP-conditional PPN input (Dr on bill, Cr on void)
 # - WHT_PPH_PAYABLE: PPh withheld at vendor payment (Cr on payment)
-# - INVENTORY_MERCHANDISE: default Dr account on bill (subcontract WIP
-#   1-10650 is deferred to D3 manufaktur — see DEFERRED LITERALS in
-#   docs/MAPPING-ROLE-AKUN-LOCKED.md).
+# - INVENTORY_MERCHANDISE: default Dr account on bill
+# - WIP_SUBCONTRACT: Dr account when bill linked to subcontract
+#   (Fase D3.3 — was deferred 1-10650 literal, now role-resolved).
 BILLS_SERVICE_REQUIRED_ROLES = [
     AccountRole.AP_TRADE,
     AccountRole.VAT_INPUT,
     AccountRole.WHT_PPH_PAYABLE,
     AccountRole.INVENTORY_MERCHANDISE,
+    # Fase D3.3: subcontract bill debit -> WIP_SUBCONTRACT
+    # (was hardcoded 1-10650 in subcontract ternary).
+    AccountRole.WIP_SUBCONTRACT,
 ]
 
 # Module-level once-flag for precondition audit.
@@ -2840,25 +2843,21 @@ class BillsService:
                         "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
                         bill_id,
                     )
-                    # DEFER: subcontract WIP role -> D3 manufaktur (LOCKED deferred-list).
-                    # 1-10650 / 1-10600 literal retained until WIP_SUBCONTRACT
-                    # role catalog promotion.
-                    debit_account_code = "1-10650" if is_subcontract_bill else "1-10600"
-
-                    # Law 27 + Fase D2.3: role-based AP + VAT (PKP-gated).
-                    # Subcontract debit kept on code literal (deferred).
+                    # Law 27 + Fase D2.3 + Fase D3.3: role-based AP + VAT + debit.
+                    # Subcontract -> WIP_SUBCONTRACT (was 1-10650);
+                    # else -> INVENTORY_MERCHANDISE (was 1-10600).
                     ap_acct_id = await resolve_account_id_by_role(
                         conn, tenant_id, AccountRole.AP_TRADE
                     )
-                    if is_subcontract_bill:
-                        # DEFER: WIP_SUBCONTRACT role (D3 manufaktur).
-                        debit_acct_id = await resolve_account_id(
-                            conn, tenant_id, debit_account_code
-                        )
-                    else:
-                        debit_acct_id = await resolve_account_id_by_role(
-                            conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
-                        )
+                    debit_role = (
+                        AccountRole.WIP_SUBCONTRACT
+                        if is_subcontract_bill
+                        else AccountRole.INVENTORY_MERCHANDISE
+                    )
+                    debit_acct_id = await resolve_account_id_by_role(
+                        conn, tenant_id, debit_role
+                    )
+                    debit_account_code = debit_role  # for downstream error messages
                     vat_input_acct_id = None
                     if tax_amount_dec > 0:
                         vat_input_acct_id = await resolve_account_id_by_role_if_pkp(
@@ -3337,20 +3336,20 @@ class BillsService:
                     "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
                     bill_id,
                 )
-                # DEFER: subcontract WIP role -> D3 manufaktur (LOCKED deferred-list).
-                debit_code = "1-10650" if is_sc_bill else "1-10600"
+                # Fase D3.3: subcontract -> WIP_SUBCONTRACT (was 1-10650);
+                # else -> INVENTORY_MERCHANDISE (was 1-10600).
+                debit_role = (
+                    AccountRole.WIP_SUBCONTRACT
+                    if is_sc_bill
+                    else AccountRole.INVENTORY_MERCHANDISE
+                )
+                debit_code = debit_role  # for downstream error messages
                 ap_account_id = await resolve_account_id_by_role(
                     conn, tenant_id, AccountRole.AP_TRADE
                 )
-                if is_sc_bill:
-                    # DEFER: WIP_SUBCONTRACT role (D3 manufaktur).
-                    inventory_account_id = await resolve_account_id(
-                        conn, tenant_id, debit_code
-                    )
-                else:
-                    inventory_account_id = await resolve_account_id_by_role(
-                        conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
-                    )
+                inventory_account_id = await resolve_account_id_by_role(
+                    conn, tenant_id, debit_role
+                )
                 vat_input_account_id = None
                 if bill_tax > 0:
                     vat_input_account_id = await resolve_account_id_by_role_if_pkp(
