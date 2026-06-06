@@ -111,6 +111,11 @@ class AccountRole:
     BPJS_ER_EXPENSE: Final[str] = "BPJS_ER_EXPENSE"
     PPH21_ER_EXPENSE: Final[str] = "PPH21_ER_EXPENSE"
 
+    # ---- V165 Pre-Fase 6 Kas & Bank — BANK_FEE (MAPPED via V165) -------------
+    # BANK_FEE -> 5-20850 Biaya Administrasi Bank (EXPENSE). Replaces
+    # bank_transfers.py literal BANK_FEE_ACCOUNT = "5-20950" (non-existent code).
+    BANK_FEE: Final[str] = "BANK_FEE"
+
     # ---- TIER 3 — PENDING (reserved, NOT seeded) ----------------------------
     VAT_INPUT_NONCREDITABLE: Final[str] = "VAT_INPUT_NONCREDITABLE"
     VAT_PAYABLE_NET: Final[str] = "VAT_PAYABLE_NET"
@@ -209,6 +214,8 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "BPJS_ER_PAYABLE",
         "BPJS_ER_EXPENSE",
         "PPH21_ER_EXPENSE",
+        # TIER 1 promoted (V165 — Pre-Fase 6 Kas & Bank)
+        "BANK_FEE",
         # TIER 2
         "CASH_PETTY",
         # TIER 3 (reserved, NOT seeded)

@@ -36,15 +36,34 @@ from ..schemas.bank_transfers import (
     BankTransferListResponse,
     BankTransferSummaryResponse,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role
+from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
 
-# Account codes
-BANK_FEE_ACCOUNT = "5-20950"  # Biaya Transfer Bank
+# V165 Pre-Fase 6 Kas & Bank: literal BANK_FEE_ACCOUNT = "5-20950" (non-existent
+# code in any tenant — would crash on first transfer with fee) flipped to
+# runtime role resolution. BANK_FEE -> 5-20850 Biaya Administrasi Bank (V165).
+BANK_TRANSFERS_REQUIRED_ROLES = [
+    AccountRole.BANK_FEE,
+]
+
+# Module-level once-flag for precondition audit.
+_bank_transfers_precondition_checked = False
+
+
+async def _ensure_bank_transfers_role_preconditions(pool):
+    """Run role-mapping precondition once per process for bank transfers."""
+    global _bank_transfers_precondition_checked
+    if _bank_transfers_precondition_checked:
+        return
+    await assert_required_roles_for_path(
+        pool, "bank_transfers", BANK_TRANSFERS_REQUIRED_ROLES
+    )
+    _bank_transfers_precondition_checked = True
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -732,8 +751,10 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     # Get fee account ID if fee > 0
     fee_account_id = None
     if bt["fee_amount"] and bt["fee_amount"] > 0:
-        fee_account_id = await resolve_account_id(
-            conn, ctx["tenant_id"], BANK_FEE_ACCOUNT
+        fee_account_id = str(
+            await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.BANK_FEE
+            )
         )
 
     # Create journal entry
@@ -922,6 +943,7 @@ async def post_bank_transfer(request: Request, transfer_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
+        await _ensure_bank_transfers_role_preconditions(pool)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
