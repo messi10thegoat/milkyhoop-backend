@@ -299,6 +299,7 @@ EXTRACTION_SCHEMAS = {
                             "calc_rank_customers_by_ar",
                             "calc_rank_vendors_by_ap",
                             "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
+                            "query_customer_sales",  # FIX_CUST_SALES_SINGLE (2026-06-06)
                             "calc_sum_sales_this_month",
                             "calc_sum_purchases_this_month",
                             "calc_sum_expenses_this_month",
@@ -781,6 +782,7 @@ PIPELINE_ENABLED_INTENTS = {
     "calc_rank_customers_by_ar",
     "calc_rank_vendors_by_ap",
     "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
+    "query_customer_sales",  # FIX_CUST_SALES_SINGLE (2026-06-06)
     "calc_sum_sales_this_month",
     "calc_sum_purchases_this_month",
     "calc_sum_expenses_this_month",
@@ -1155,6 +1157,20 @@ def classify_query_intent(user_text: str) -> tuple:
         and not _qre.search(r"(?:\bpiutang\w*|\bhutang\w*|\butang\w*)", t)
     ):
         return "calc_rank_customers_by_sales", None, None
+
+    # FIX_CUST_SALES_SINGLE (2026-06-06): one customer's purchase total over a
+    # period. Requires explicit customer context (avoids hijacking "total
+    # pembelian" = our vendor purchases). Ranking handled above.
+    if (
+        _qre.search(r"(?:pembelian|belanja|transaksi|beli)\w*", t)
+        and _qre.search(r"(?:\bpelanggan\w*|\bcustomer\w*|\bklien\w*)", t)
+        and not _qre.search(
+            r"(?:paling|terbesar|terbanyak|terloyal|loyal|peringkat|ranking|\btop\b|\bdaftar\b|semua|seluruh)",
+            t,
+        )
+        and not _qre.search(r"(?:\bpiutang\w*|\bhutang\w*|\butang\w*)", t)
+    ):
+        return "query_customer_sales", None, None
 
     # ── Fix A v2 (2026-05-06): Per-entity AR/AP rollup — deterministic ──
     # Catches "siapa pelanggan dengan piutang [lebih dari X]", "rekap piutang per

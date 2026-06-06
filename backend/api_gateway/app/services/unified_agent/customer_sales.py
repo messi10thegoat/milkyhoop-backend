@@ -218,3 +218,67 @@ async def compute_customer_sales_total(
         result["invoice_count"],
     )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Name resolution (deterministic, from the customer master list)
+# --------------------------------------------------------------------------- #
+# Fetch this tenant's customers (active + inactive) and pick the one whose
+# `nama` appears as a substring of the user text. Longest matching name wins so
+# "PT Maju Jaya" beats "Maju". Deterministic — no positional regex, no LLM.
+_CUST_LIST_SQL = """
+    SELECT id::text AS id, nama
+    FROM customers
+    WHERE tenant_id = $1
+"""
+
+
+async def resolve_customer_in_text(tenant_id: str, user_text: str):
+    """Resolve a single customer by name-substring match against the master list.
+
+    READ-ONLY. Fetches every customer (active + inactive) for the tenant and
+    returns the one whose lowercased `nama` is a substring of the lowercased
+    user text, preferring the LONGEST matching name (so "PT Maju Jaya" wins over
+    "Maju"). Deterministic — never positional/regex name guessing.
+
+    Args:
+        tenant_id: tenant slug (text PK, e.g. "grapgrap").
+        user_text: the raw user message.
+
+    Returns:
+        {"id": str, "nama": str} for the best match, or None if no customer
+        name occurs in the text.
+    """
+    if not user_text:
+        return None
+
+    from ..db_pool import get_db_pool  # Law 32: singleton pool
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Law 24: RLS context (asyncpg cannot bind SET LOCAL params).
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            rows = await conn.fetch(_CUST_LIST_SQL, tenant_id)
+
+    text_lc = user_text.lower()
+    best = None
+    best_len = 0
+    for r in rows:
+        nama = r["nama"]
+        if not nama:
+            continue
+        nama_lc = nama.lower().strip()
+        if nama_lc and nama_lc in text_lc and len(nama_lc) > best_len:
+            best = {"id": r["id"], "nama": nama}
+            best_len = len(nama_lc)
+
+    logger.info(
+        "resolve_customer_in_text tenant=%s text=%r -> %s",
+        tenant_id,
+        user_text[:60],
+        best["nama"] if best else None,
+    )
+    return best

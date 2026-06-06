@@ -4019,6 +4019,177 @@ class UnifiedAgent:
             total_latency_ms=int((_time2.monotonic() - _csr_start) * 1000),
         )
 
+    async def _handle_customer_sales(
+        self,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """FIX_CUST_SALES_SINGLE — deterministic single-customer purchase total.
+
+        Resolves ONE customer by name from the master list (deterministic, no
+        positional regex) and returns that customer's GROSS BILLED (Dr RECEIVABLE
+        at INVOICE posting) over a resolved period via
+        customer_sales.compute_customer_sales_total (journal-derived, Iron Law
+        16). READ-ONLY, no LLM polish (Iron Law 1), no journal mutation, no
+        advisory lock. Missing/ambiguous customer -> honest clarify, never a
+        fabricated figure.
+        """
+        import time as _time2
+
+        _cst_start = _time2.monotonic()
+
+        # 1. Resolve the period (mirror the rank handler). Default current month.
+        from datetime import date as _date2
+
+        def _month_bounds_local(year: int, month: int):
+            from datetime import date as _d, timedelta as _td
+
+            _s = _d(year, month, 1)
+            if month == 12:
+                _e = _d(year, 12, 31)
+            else:
+                _e = _d(year, month + 1, 1) - _td(days=1)
+            return _s.isoformat(), _e.isoformat()
+
+        try:
+            from .period_resolver import resolve_period as _resolve_period
+
+            _period = _resolve_period(user_text or "")
+        except Exception:
+            _period = None
+
+        if _period and _period.get("start_date") and _period.get("end_date"):
+            _start_date = _period["start_date"]
+            _end_date = _period["end_date"]
+            _label = _period.get("label") or "periode ini"
+        else:
+            _today = _date2.today()
+            _start_date, _end_date = _month_bounds_local(_today.year, _today.month)
+            _label = "bulan ini"
+
+        _tool_calls = [
+            {
+                "name": "customer_sales",
+                "args": {"intent": "query_customer_sales"},
+                "success": True,
+            }
+        ]
+
+        # 2. Resolve the single customer by name (deterministic).
+        try:
+            from .customer_sales import (
+                resolve_customer_in_text,
+                compute_customer_sales_total,
+            )
+
+            cust = await resolve_customer_in_text(context.tenant_id, user_text or "")
+        except Exception as _cst_err:
+            import traceback as _tb_cst
+
+            logger.warning(
+                "[CUST_SALES_TOTAL] resolve failed: %s\n%s",
+                _cst_err,
+                _tb_cst.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menghitung pembelian pelanggan. "
+                    "Silakan coba lagi."
+                ),
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="customer_sales",
+                total_latency_ms=int((_time2.monotonic() - _cst_start) * 1000),
+            )
+
+        # 3. No customer name found -> clarify (never guess).
+        if cust is None:
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Pembelian pelanggan yang mana? Sebutkan nama pelanggannya ya."
+                ),
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="customer_sales",
+                total_latency_ms=int((_time2.monotonic() - _cst_start) * 1000),
+            )
+
+        # 4. Compute the customer's gross billed in the window (journal-derived).
+        try:
+            res = await compute_customer_sales_total(
+                context.tenant_id, cust["id"], _start_date, _end_date
+            )
+        except Exception as _cst_err2:
+            import traceback as _tb_cst2
+
+            logger.warning(
+                "[CUST_SALES_TOTAL] compute failed: %s\n%s",
+                _cst_err2,
+                _tb_cst2.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menghitung pembelian pelanggan. "
+                    "Silakan coba lagi."
+                ),
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="customer_sales",
+                total_latency_ms=int((_time2.monotonic() - _cst_start) * 1000),
+            )
+
+        # 5. Render (Iron Law 1: no hallucinated numbers; Law 25: Decimal Rupiah).
+        from decimal import Decimal as _D_cst
+
+        def _fmt_rp_cst(v) -> str:
+            try:
+                d = _D_cst(str(v))
+            except Exception:
+                d = _D_cst(0)
+            n = int(d.quantize(_D_cst("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        if res.get("invoice_count", 0) == 0:
+            _content = (
+                f"Belum ada transaksi penjualan dari **{cust['nama']}** di {_label}."
+            )
+        else:
+            _n = int(res["invoice_count"])
+            _amt = _fmt_rp_cst(res.get("billed", 0))
+            _content = (
+                f"**Pembelian {cust['nama']}** — {_label}: **{_amt}**  "
+                f"(dari {_n} faktur)\n\n"
+                f"_Berdasarkan jurnal (Dr Piutang saat penagihan), {_label}._"
+            )
+
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type="query_customer_sales",
+                    last_action_result={"response_text": _content[:2000]},
+                )
+            except Exception:
+                pass
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=_content,
+            iterations=1,
+            tool_calls_made=_tool_calls,
+            model_used="customer_sales",
+            total_latency_ms=int((_time2.monotonic() - _cst_start) * 1000),
+        )
+
     async def _handle_query_pipeline(
         self,
         user_text: str,
@@ -6820,6 +6991,45 @@ class UnifiedAgent:
             except Exception:
                 pass
             return await self._handle_rank_customers_by_sales(
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
+
+        # ── CUST_SALES_TOTAL_OVERRIDE (2026-06-06) ─────────────────────────
+        # "berapa total pembelian pelanggan Debora bulan ini" must route to the
+        # deterministic single-customer journal-derived purchase total, NOT the
+        # generic vendor-purchases ("total pembelian") path and NOT LLM polish.
+        # The regex classifier returns query_customer_sales only when an explicit
+        # customer keyword is present (and no superlative -> ranking wins above).
+        # READ-ONLY, no advisory lock. Self-contained: no var leaks.
+        try:
+            from .entity_extractor import classify_query_intent as _cst_qci
+
+            _cst_guard, _, _ = _cst_qci(user_text)
+        except Exception:
+            _cst_guard = None
+        if _cst_guard == "query_customer_sales":
+            logger.warning(
+                "[CUST_SALES_TOTAL_OVERRIDE] -> single customer sales user='%s'",
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_cst
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_cst.uuid4()),
+                        "final_intent": "query_customer_sales",
+                        "decision_source": "cust_sales_total_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_customer_sales(
                 user_text=user_text,
                 context=context,
                 tool_executor=tool_executor,
