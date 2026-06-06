@@ -298,6 +298,7 @@ EXTRACTION_SCHEMAS = {
                             "calc_sum_harga_beli",
                             "calc_rank_customers_by_ar",
                             "calc_rank_vendors_by_ap",
+                            "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
                             "calc_sum_sales_this_month",
                             "calc_sum_purchases_this_month",
                             "calc_sum_expenses_this_month",
@@ -779,6 +780,7 @@ PIPELINE_ENABLED_INTENTS = {
     "calc_sum_harga_beli",
     "calc_rank_customers_by_ar",
     "calc_rank_vendors_by_ap",
+    "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
     "calc_sum_sales_this_month",
     "calc_sum_purchases_this_month",
     "calc_sum_expenses_this_month",
@@ -1131,6 +1133,28 @@ def classify_query_intent(user_text: str) -> tuple:
         t,
     ):
         return "calc_top_selling_items", None, None
+
+    # ── FIX_CUST_SALES_RANK (2026-06-06): rank customers by purchase value
+    # (journal-derived sales), NOT by piutang. "pelanggan paling loyal /
+    # terbanyak belanja / pembelian terbesar". MUST fire before the per-entity
+    # AR/AP rollup, AR/AP ranking, and clarify_arap_side blocks below — but the
+    # `not piutang/hutang` guard makes it disjoint from all of them (those need
+    # a piutang/hutang noun, this needs a purchase/loyalty superlative). No
+    # collision with calc_rank_customers_by_ar (requires "piutang") or
+    # clarify_arap_side (requires entity↔opposite-side noun).
+    if (
+        _qre.search(r"(?:\bpelanggan\w*|\bcustomer\w*|\bklien\w*)", t)
+        and _qre.search(
+            r"(?:paling\s+loyal|terloyal|paling\s+sering\s+beli|"
+            r"terbanyak\s+(?:beli|belanja)|"
+            r"(?:beli|belanja|pembelian|transaksi)\w*\s+"
+            r"(?:terbesar|terbanyak|paling\s+banyak)|"
+            r"(?:terbesar|terbanyak)\s+(?:beli|belanja|pembelian))",
+            t,
+        )
+        and not _qre.search(r"(?:\bpiutang\w*|\bhutang\w*|\butang\w*)", t)
+    ):
+        return "calc_rank_customers_by_sales", None, None
 
     # ── Fix A v2 (2026-05-06): Per-entity AR/AP rollup — deterministic ──
     # Catches "siapa pelanggan dengan piutang [lebih dari X]", "rekap piutang per

@@ -3869,6 +3869,156 @@ class UnifiedAgent:
             total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
         )
 
+    async def _handle_rank_customers_by_sales(
+        self,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """CUST_SALES_RANK_HANDLER — deterministic ranked customer-by-sales table.
+
+        Ranks customers by GROSS BILLED (Dr RECEIVABLE at INVOICE posting) over a
+        resolved period via customer_sales.compute_customer_sales_rank (journal-
+        derived, Iron Law 16). READ-ONLY, no LLM polish (Iron Law 1), no journal
+        mutation, no advisory lock. Empty data → honest message, never a
+        fabricated ranking.
+        """
+        import time as _time2
+
+        _csr_start = _time2.monotonic()
+
+        # 1. Resolve the period from the user text. resolve_period returns a dict
+        #    {kind, start_date, end_date, label} (start/end are ISO 'YYYY-MM-DD'
+        #    strings) or None. Default to "bulan ini" (current month) on None.
+        from datetime import date as _date2
+
+        def _month_bounds_local(year: int, month: int):
+            from datetime import date as _d, timedelta as _td
+
+            _s = _d(year, month, 1)
+            if month == 12:
+                _e = _d(year, 12, 31)
+            else:
+                _e = _d(year, month + 1, 1) - _td(days=1)
+            return _s.isoformat(), _e.isoformat()
+
+        try:
+            from .period_resolver import resolve_period as _resolve_period
+
+            _period = _resolve_period(user_text or "")
+        except Exception:
+            _period = None
+
+        if _period and _period.get("start_date") and _period.get("end_date"):
+            _start_date = _period["start_date"]
+            _end_date = _period["end_date"]
+            _label = _period.get("label") or "periode ini"
+        else:
+            _today = _date2.today()
+            _start_date, _end_date = _month_bounds_local(_today.year, _today.month)
+            _label = "bulan ini"
+
+        # 2. Compute the ranking (journal-derived, Law 16).
+        _tool_calls = [
+            {
+                "name": "customer_sales",
+                "args": {"intent": "calc_rank_customers_by_sales"},
+                "success": True,
+            }
+        ]
+        try:
+            from .customer_sales import compute_customer_sales_rank
+
+            rows = await compute_customer_sales_rank(
+                context.tenant_id, _start_date, _end_date, 10
+            )
+        except Exception as _csr_err:
+            import traceback as _tb_csr
+
+            logger.warning(
+                "[CUST_SALES_RANK] compute failed: %s\n%s",
+                _csr_err,
+                _tb_csr.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menghitung peringkat pelanggan "
+                    "berdasarkan pembelian. Silakan coba lagi."
+                ),
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="customer_sales",
+                total_latency_ms=int((_time2.monotonic() - _csr_start) * 1000),
+            )
+
+        # 3. Empty data → honest message, NO fabricated ranking.
+        if not rows:
+            _empty = (
+                f"Belum ada transaksi penjualan di {_label}, jadi belum bisa "
+                f"diurutkan. Mau coba periode lain (mis. tahun ini)?"
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=_empty,
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="customer_sales",
+                total_latency_ms=int((_time2.monotonic() - _csr_start) * 1000),
+            )
+
+        # 4. Deterministic markdown table (Iron Law 1: no hallucinated numbers,
+        #    Iron Law 25: Decimal-safe Rupiah formatting).
+        from decimal import Decimal as _D_csr
+
+        def _fmt_rp_csr(v) -> str:
+            try:
+                d = _D_csr(str(v))
+            except Exception:
+                d = _D_csr(0)
+            n = int(d.quantize(_D_csr("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        _n = len(rows)
+        _lines = [
+            f"**Pelanggan dengan Pembelian Terbesar** — {_label} (Top {_n})",
+            "",
+            "| No | Nama | Total Pembelian |",
+            "|---:|------|------:|",
+        ]
+        for _i, _r in enumerate(rows, start=1):
+            _name = _r.get("customer_name") or "(Tanpa Nama)"
+            _amt = _fmt_rp_csr(_r.get("billed", 0))
+            _lines.append(f"| {_i} | {_name} | {_amt} |")
+        _lines.append("")
+        _lines.append(f"_Berdasarkan jurnal (Dr Piutang saat penagihan), {_label}._")
+        _content = "\n".join(_lines)
+
+        # Persist last_action_type for follow-up context (best-effort).
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type="calc_rank_customers_by_sales",
+                    last_action_result={"response_text": _content[:2000]},
+                )
+            except Exception:
+                pass
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=_content,
+            iterations=1,
+            tool_calls_made=_tool_calls,
+            model_used="customer_sales",
+            total_latency_ms=int((_time2.monotonic() - _csr_start) * 1000),
+        )
+
     async def _handle_query_pipeline(
         self,
         user_text: str,
@@ -6634,6 +6784,47 @@ class UnifiedAgent:
             except Exception:
                 pass
             return self._clarify_arap_side(int((_time.time() - start_time) * 1000))
+
+        # ── CUST_SALES_RANK_OVERRIDE (2026-06-06) ──────────────────────────
+        # "siapa pelanggan paling loyal" / "pelanggan dengan pembelian terbesar"
+        # / "10 pelanggan terbanyak belanja" must route to the deterministic
+        # journal-derived customer-by-sales ranking, NOT a fabricated loyalty
+        # list and NOT the AR-ranking path (those need "piutang"). The regex
+        # classifier returns calc_rank_customers_by_sales; honor it here, BEFORE
+        # any _intent-gated branch (CHITCHAT, extraction, LLM router), so the
+        # purchase-superlative query can never fall through to LLM polish.
+        # READ-ONLY, no advisory lock. Self-contained: no var leaks.
+        try:
+            from .entity_extractor import classify_query_intent as _csr_qci
+
+            _csr_guard, _, _ = _csr_qci(user_text)
+        except Exception:
+            _csr_guard = None
+        if _csr_guard == "calc_rank_customers_by_sales":
+            logger.warning(
+                "[CUST_SALES_RANK_OVERRIDE] -> rank customers by sales user='%s'",
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_csr
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_csr.uuid4()),
+                        "final_intent": "calc_rank_customers_by_sales",
+                        "decision_source": "cust_sales_rank_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_rank_customers_by_sales(
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
 
         # CHITCHAT short-circuit — bypass agent loop entirely
         if _intent == "CHITCHAT":
