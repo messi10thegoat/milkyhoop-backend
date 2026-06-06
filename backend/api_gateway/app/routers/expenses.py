@@ -285,7 +285,7 @@ async def get_expenses_summary(
                     FROM journal_entries je
                     WHERE je.tenant_id = $1
                       AND je.status = 'POSTED'
-                      AND je.source_type = 'expense'
+                      AND je.source_type = 'EXPENSE'
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
                       AND {date_filter_journal}
@@ -316,7 +316,7 @@ async def get_expenses_summary(
                         FROM journal_entries je
                         WHERE je.tenant_id = $1
                           AND je.status = 'POSTED'
-                          AND je.source_type = 'expense'
+                          AND je.source_type = 'EXPENSE'
                           AND je.reversal_of_id IS NULL
                           AND je.reversed_by_id IS NULL
                           AND {date_filter_journal}
@@ -357,7 +357,7 @@ async def get_expenses_summary(
                     JOIN expenses e ON e.journal_id = je.id AND e.tenant_id = $1
                     WHERE je.tenant_id = $1
                       AND je.status = 'POSTED'
-                      AND je.source_type = 'expense'
+                      AND je.source_type = 'EXPENSE'
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
                       AND e.is_billable = true
@@ -383,7 +383,7 @@ async def get_expenses_summary(
                     FROM journal_entries je
                     WHERE je.tenant_id = $1
                       AND je.status = 'POSTED'
-                      AND je.source_type = 'expense'
+                      AND je.source_type = 'EXPENSE'
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
                       AND {date_filter_journal}
@@ -741,7 +741,7 @@ async def list_expense_ledger(
     enriched with metadata from the expenses table where available.
 
     Captures ALL expense-type transactions regardless of source module:
-    - Expenses module (source_type = 'expense')
+    - Expenses module (source_type = 'EXPENSE')
     - Kas & Bank module (source_type = 'BANK_TRANSACTION')
     - Reconciliation adjustments (source_type = 'RECONCILIATION_ADJUSTMENT')
     - Manual journals (source_type = 'MANUAL')
@@ -1297,7 +1297,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                         transaction_type, amount, running_balance,
                         reference_type, reference_id, description,
                         payee_payer, created_by, journal_id
-                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'expense', $6, $7, $8, $9, $10)
+                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE', $6, $7, $8, $9, $10)
                     """,
                     bank_tx_id,
                     ctx["tenant_id"],
@@ -1331,7 +1331,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                                 INSERT INTO document_attachments (
                                     tenant_id, document_id, entity_type, entity_id,
                                     attachment_type, display_order, attached_by
-                                ) VALUES ($1, $2, 'expense', $3, 'receipt', 0, $4)
+                                ) VALUES ($1, $2, 'EXPENSE', $3, 'receipt', 0, $4)
                                 ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING
                             """,
                                 ctx["tenant_id"],
@@ -1344,7 +1344,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                 expense = await conn.fetchrow(
                     """
                     SELECT e.*,
-                        (SELECT COUNT(*) FROM document_attachments WHERE entity_type = 'expense' AND entity_id = e.id) as attachment_count
+                        (SELECT COUNT(*) FROM document_attachments WHERE entity_type = 'EXPENSE' AND entity_id = e.id) as attachment_count
                     FROM expenses e WHERE e.id = $1
                 """,
                     str(expense_id),
@@ -1360,7 +1360,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                            d.uploaded_at
                     FROM document_attachments da
                     JOIN documents d ON da.document_id = d.id
-                    WHERE da.entity_type = 'expense' AND da.entity_id = $1
+                    WHERE da.entity_type = 'EXPENSE' AND da.entity_id = $1
                     ORDER BY da.display_order
                 """,
                     str(expense_id),
@@ -1422,7 +1422,7 @@ async def create_expense_journal(
         journal_number,
         expense_date,
         f"Expense: {expense_number}",
-        "expense",
+        "EXPENSE",
         str(expense_id),
         total_debit,
         total_credit,
@@ -1900,7 +1900,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                         original_btxn = await conn.fetchrow(
                             """
                             SELECT * FROM bank_transactions
-                            WHERE reference_type = 'expense'
+                            WHERE reference_type = 'EXPENSE'
                               AND reference_id = $1
                               AND tenant_id = $2
                               AND status != 'void'
@@ -1925,8 +1925,8 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 ) VALUES (
                                     gen_random_uuid(), $1, $2, CURRENT_DATE,
                                     $3, $4, $5,
-                                    'expense', $6, $7,
-                                    'POSTED', 'system', 'expense',
+                                    'EXPENSE', $6, $7,
+                                    'POSTED', 'system', 'EXPENSE',
                                     $8, NOW()
                                 )
                                 """,
@@ -2018,7 +2018,7 @@ async def list_expense_attachments(request: Request, expense_id: UUID):
                        d.uploaded_at, da.display_order
                 FROM document_attachments da
                 JOIN documents d ON da.document_id = d.id
-                WHERE da.entity_type = 'expense' AND da.entity_id = $1
+                WHERE da.entity_type = 'EXPENSE' AND da.entity_id = $1
                 AND d.deleted_at IS NULL
                 ORDER BY da.display_order, d.uploaded_at
             """,
@@ -2075,7 +2075,7 @@ async def add_expense_attachment(
             current_count = await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM document_attachments
-                WHERE entity_type = 'expense' AND entity_id = $1
+                WHERE entity_type = 'EXPENSE' AND entity_id = $1
             """,
                 str(expense_id),
             )
@@ -2089,7 +2089,7 @@ async def add_expense_attachment(
             existing = await conn.fetchval(
                 """
                 SELECT id FROM document_attachments
-                WHERE document_id = $1 AND entity_type = 'expense' AND entity_id = $2
+                WHERE document_id = $1 AND entity_type = 'EXPENSE' AND entity_id = $2
             """,
                 str(body.document_id),
                 str(expense_id),
@@ -2106,7 +2106,7 @@ async def add_expense_attachment(
                 INSERT INTO document_attachments (
                     tenant_id, document_id, entity_type, entity_id,
                     attachment_type, display_order, attached_by
-                ) VALUES ($1, $2, 'expense', $3, 'receipt', $4, $5)
+                ) VALUES ($1, $2, 'EXPENSE', $3, 'receipt', $4, $5)
             """,
                 ctx["tenant_id"],
                 str(body.document_id),
@@ -2168,7 +2168,7 @@ async def remove_expense_attachment(
             deleted = await conn.fetchval(
                 """
                 DELETE FROM document_attachments
-                WHERE document_id = $1 AND entity_type = 'expense' AND entity_id = $2
+                WHERE document_id = $1 AND entity_type = 'EXPENSE' AND entity_id = $2
                 AND tenant_id = $3
                 RETURNING id
             """,
@@ -2184,7 +2184,7 @@ async def remove_expense_attachment(
             remaining = await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM document_attachments
-                WHERE entity_type = 'expense' AND entity_id = $1
+                WHERE entity_type = 'EXPENSE' AND entity_id = $1
             """,
                 str(expense_id),
             )
