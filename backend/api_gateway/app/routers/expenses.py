@@ -1849,7 +1849,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 tenant_id, journal_number, journal_date, description,
                                 source_type, source_id, status,
                                 total_debit, total_credit, reversal_of_id
-                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'expense_reversal', $4, 'DRAFT', $5, $6, $7)
+                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'EXPENSE_REVERSAL', $4, 'DRAFT', $5, $6, $7)
                             RETURNING id
                             """,
                             ctx["tenant_id"],

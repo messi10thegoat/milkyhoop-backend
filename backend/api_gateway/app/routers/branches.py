@@ -853,7 +853,7 @@ async def create_from_branch_journal(
             INSERT INTO journal_entries (
                 tenant_id, journal_number, entry_date, description,
                 source_type, source_id, branch_id, status, created_by
-            ) VALUES ($1, $2, $3, $4, 'branch_transfer', $5, $6, 'posted', $7)
+            ) VALUES ($1, $2, $3, $4, 'BRANCH_TRANSFER', $5, $6, 'POSTED', $7)
             RETURNING id
             """,
             tenant_id,
@@ -1098,7 +1098,7 @@ async def create_to_branch_journal(conn, tenant_id, transfer, user_id):
             INSERT INTO journal_entries (
                 tenant_id, journal_number, entry_date, description,
                 source_type, source_id, branch_id, status, created_by
-            ) VALUES ($1, $2, $3, $4, 'branch_transfer', $5, $6, 'posted', $7)
+            ) VALUES ($1, $2, $3, $4, 'BRANCH_TRANSFER', $5, $6, 'POSTED', $7)
             RETURNING id
             """,
             tenant_id,
