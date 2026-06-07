@@ -423,7 +423,7 @@ async def _get_sales_today(
             JOIN chart_of_accounts coa ON coa.id = jl.account_id
             WHERE je.tenant_id = $1
               AND je.status = 'POSTED'
-              AND je.reversed_by_id IS NULL
+              AND is_effective_journal(je.id)  -- T2: migrate from reversed_by_id IS NULL
               AND coa.account_type = 'REVENUE'
               AND je.journal_date BETWEEN $2 AND $3
         """,
@@ -1497,10 +1497,13 @@ async def get_top_expenses(
             await conn.execute("SET LOCAL statement_timeout = '5000'")
             # Query expenses grouped by account category
             # Expense accounts typically start with 5-xxx or 6-xxx
+            # FIX (Surprise #13, T2): net Dr-Cr per expense category (Dr-normal).
+            # SUM(jl.debit) one-sided missed offset Cr (e.g. expense reversal/credit).
+            # Add is_effective_journal() to exclude reversal sources.
             query = """
                 SELECT
                     COALESCE(c.category, c.name) as category,
-                    SUM(jl.debit) as amount
+                    SUM(jl.debit) - SUM(jl.credit) as amount
                 FROM journal_entries je
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 JOIN chart_of_accounts c ON c.id = jl.account_id
@@ -1508,9 +1511,10 @@ async def get_top_expenses(
                   AND je.journal_date >= $2
                   AND je.journal_date <= $3
                   AND je.status = 'POSTED'
+                  AND is_effective_journal(je.id)
                   AND (c.account_code LIKE '5-%%' OR c.account_code LIKE '6-%%')
-                  AND jl.debit > 0
                 GROUP BY COALESCE(c.category, c.name)
+                HAVING SUM(jl.debit) - SUM(jl.credit) > 0
                 ORDER BY amount DESC
                 LIMIT $4
             """
@@ -2124,18 +2128,19 @@ async def get_sales_daily(
                         )::date AS period_start
                     ),
                     sales AS (
+                        -- FIX (Surprise #13, T2): net Cr-Dr per REVENUE acct (Cr-normal);
+                        -- migrate reversed_by_id IS NULL → is_effective_journal().
                         SELECT
                             date_trunc('month', je.journal_date)::date AS period_start,
-                            SUM(jl.credit) AS revenue,
+                            SUM(jl.credit) - SUM(jl.debit) AS revenue,
                             COUNT(DISTINCT je.id) AS trx_count
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
                         JOIN chart_of_accounts coa ON coa.id = jl.account_id
                         WHERE je.tenant_id = $1
                           AND coa.account_type = 'REVENUE'
-                          AND jl.credit > 0
                           AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
+                          AND is_effective_journal(je.id)
                           AND je.journal_date >= CURRENT_DATE - INTERVAL '11 months'
                         GROUP BY 1
                     )
@@ -2172,18 +2177,19 @@ async def get_sales_daily(
                         )::date AS day
                     ),
                     sales AS (
+                        -- FIX (Surprise #13, T2): net Cr-Dr per REVENUE acct (Cr-normal);
+                        -- migrate reversed_by_id IS NULL → is_effective_journal().
                         SELECT
                             je.journal_date::date AS day,
-                            SUM(jl.credit) AS revenue,
+                            SUM(jl.credit) - SUM(jl.debit) AS revenue,
                             COUNT(DISTINCT je.id) AS trx_count
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
                         JOIN chart_of_accounts coa ON coa.id = jl.account_id
                         WHERE je.tenant_id = $1
                           AND coa.account_type = 'REVENUE'
-                          AND jl.credit > 0
                           AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
+                          AND is_effective_journal(je.id)
                           AND je.journal_date >= CURRENT_DATE - ($2 - 1) * INTERVAL '1 day'
                         GROUP BY 1
                     )
