@@ -106,7 +106,9 @@ SET category = CASE
 
     ELSE NULL
 END
-WHERE category IS NULL OR category = '';
+WHERE category IS NULL OR category = ''
+   OR category IN ('LIABILITY', 'ASSET', 'EQUITY', 'REVENUE', 'EXPENSE', 'COGS', 'OTHER_INCOME', 'OTHER_EXPENSE');
+-- Legacy uppercase account_type values from old seed path also normalized.
 
 -- -----------------------------------------------------------------------------
 -- 2. Overwrite cash_flow_category (UPPERCASE per chk_cash_flow_cat CHECK)
