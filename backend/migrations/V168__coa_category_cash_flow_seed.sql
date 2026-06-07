@@ -148,16 +148,22 @@ DECLARE
     v_null_count INTEGER;
     v_none_count INTEGER;
 BEGIN
+    -- Verify excludes headers — canonical seed intentionally leaves header
+    -- rows (is_header=TRUE) with NULL category / 'NONE' cash_flow_category
+    -- since they don't classify (they aggregate children). Only leaf accounts
+    -- must be fully populated.
     SELECT COUNT(*) INTO v_null_count
     FROM chart_of_accounts
-    WHERE (category IS NULL OR category = '')
+    WHERE is_header = false
+      AND (category IS NULL OR category = '')
       AND (account_code LIKE '1-%' OR account_code LIKE '2-%'
         OR account_code LIKE '3-%' OR account_code LIKE '4-%'
         OR account_code LIKE '5-%' OR account_code LIKE '6-%');
 
     SELECT COUNT(*) INTO v_none_count
     FROM chart_of_accounts
-    WHERE cash_flow_category = 'NONE'
+    WHERE is_header = false
+      AND cash_flow_category = 'NONE'
       AND (account_code LIKE '1-%' OR account_code LIKE '2-%'
         OR account_code LIKE '3-%' OR account_code LIKE '4-%'
         OR account_code LIKE '5-%' OR account_code LIKE '6-%');
