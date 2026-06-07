@@ -321,100 +321,113 @@ async def get_neraca(request: Request, periode: str):
                 d, c = int(row["total_debit"] or 0), int(row["total_credit"] or 0)
                 return (d - c) if row["normal_balance"] == "DEBIT" else (c - d)
 
-            kas = (
-                bank
-            ) = (
-                piutang_usaha
-            ) = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
+            # V168 refactor: bucket via coa.category column (Indonesia lowercase),
+            # NOT via startswith prefix or name-ILIKE heuristic (which broke
+            # against 5-digit codes in 100%-NULL-category tenants).
+            # Equity sub-bucket via canonical account_code (per V154 seed).
+            kas = bank = piutang_usaha = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
             peralatan = kendaraan = bangunan = tanah = akum_penyusutan = 0
-            hutang_usaha = (
-                hutang_bank_jp
-            ) = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
+            hutang_usaha = hutang_bank_jp = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
             hutang_bank = 0
             modal_awal = setor_modal = prive = laba_ditahan = 0
             total_revenue = total_expense = total_cogs = 0
+            unclassified = 0
+            unclassified_codes: list[str] = []
+
+            # Canonical equity code map (V154 seed): used for sub-classification
+            # within ekuitas category. Specific codes, not prefix heuristic.
+            EQUITY_PRIVE_CODES = {"3-40000"}
+            EQUITY_LABA_DITAHAN_CODES = {"3-20000"}
+            # Modal includes: 3-10100 Modal Pemilik, 3-50000 Modal Saldo Awal.
+            # 3-30000 Laba Tahun Berjalan is derived (laba_periode_berjalan).
+
             for row in rows:
                 code = row["account_code"]
                 atype = row["account_type"]
-                cat = (row["category"] or "").lower()
+                cat = (row["category"] or "").strip().lower()
                 bal = net_bal(row)
-                if atype in ("ASSET", "RECEIVABLE"):
-                    if "kas" in cat or code.startswith("1-1001") or "cash" in cat:
-                        kas += bal
-                    elif "bank" in cat or code.startswith("1-1002"):
-                        bank += bal
-                    elif (
-                        "piutang" in cat
-                        or "receivable" in cat
-                        or code.startswith("1-1003")
-                    ):
-                        piutang_usaha += bal
-                    elif (
-                        "persediaan" in cat
-                        or "inventory" in cat
-                        or code.startswith("1-1004")
-                    ):
-                        persediaan += bal
-                    elif "beban_dibayar_dimuka" in cat or "prepaid" in cat:
-                        beban_dibayar_dimuka += bal
-                    elif "uang_muka" in cat and "pembelian" in cat:
-                        uang_muka_pembelian += bal
-                    elif "peralatan" in cat or "equipment" in cat:
-                        peralatan += bal
-                    elif "kendaraan" in cat or "vehicle" in cat:
-                        kendaraan += bal
-                    elif "bangunan" in cat or "building" in cat:
-                        bangunan += bal
-                    elif "tanah" in cat or "land" in cat:
+
+                # PPN Masukan / unearned revenue / akumulasi penyusutan handled
+                # by their specific category — drop down to category dispatch.
+                if cat == "kas":
+                    kas += bal
+                elif cat == "bank":
+                    bank += bal
+                elif cat == "piutang":
+                    piutang_usaha += bal
+                elif cat == "persediaan":
+                    persediaan += bal
+                elif cat == "beban_dibayar_dimuka":
+                    # Includes PPh Dibayar Dimuka, prepaid expenses
+                    beban_dibayar_dimuka += bal
+                elif cat == "ppn_masukan":
+                    # PPN Masukan is a prepaid tax asset — bucket with prepaid
+                    beban_dibayar_dimuka += bal
+                elif cat == "akumulasi_penyusutan":
+                    akum_penyusutan += abs(bal)
+                elif cat == "aset_tetap":
+                    # Sub-classify by canonical V154 code (5-digit specific match)
+                    if code == "1-20100":
                         tanah += bal
-                    elif (
-                        "akumulasi" in cat
-                        or "accumulated" in cat
-                        or "depreciation" in cat
-                    ):
-                        akum_penyusutan += abs(bal)
-                    elif code.startswith("1-2"):
+                    elif code == "1-20200":
+                        bangunan += bal
+                    elif code == "1-20300":
+                        kendaraan += bal
+                    elif code == "1-20400":
                         peralatan += bal
                     else:
-                        kas += bal
-                elif atype in ("LIABILITY", "PAYABLE"):
-                    if (
-                        "hutang_usaha" in cat
-                        or "payable" in cat
-                        or code.startswith("2-1001")
-                    ):
-                        hutang_usaha += bal
-                    elif "hutang_bank" in cat and (
-                        "jangka_pendek" in cat or "short" in cat
-                    ):
-                        hutang_bank_jp += bal
-                    elif "uang_muka_pelanggan" in cat or "customer_deposit" in cat:
-                        uang_muka_pelanggan += bal
-                    elif "hutang_pajak" in cat or "tax_payable" in cat:
-                        hutang_pajak += bal
-                    elif "hutang_gaji" in cat or "salary_payable" in cat:
-                        hutang_gaji += bal
-                    elif "hutang_bank" in cat or "bank_loan" in cat:
-                        hutang_bank += bal
-                    else:
-                        hutang_usaha += bal
-                elif atype == "EQUITY":
-                    if "modal" in cat and "awal" in cat:
-                        modal_awal += bal
-                    elif "setor" in cat or "contributed" in cat:
-                        setor_modal += bal
-                    elif "prive" in cat or "drawing" in cat or "withdrawal" in cat:
+                        # Non-canonical aset_tetap code → lump to peralatan default
+                        peralatan += bal
+                elif cat == "hutang_usaha":
+                    hutang_usaha += bal
+                elif cat == "hutang_pajak":
+                    hutang_pajak += bal
+                elif cat == "ppn_keluaran":
+                    # PPN Keluaran is tax payable — bucket with hutang_pajak
+                    hutang_pajak += bal
+                elif cat == "hutang_gaji":
+                    hutang_gaji += bal
+                elif cat == "uang_muka_pelanggan":
+                    uang_muka_pelanggan += bal
+                elif cat == "unearned_revenue":
+                    # Pendapatan Diterima Dimuka — bucket with uang_muka_pelanggan
+                    uang_muka_pelanggan += bal
+                elif cat == "hutang_bank":
+                    hutang_bank += bal
+                elif cat == "ekuitas":
+                    # Sub-classify equity via canonical account_code
+                    if code in EQUITY_PRIVE_CODES:
                         prive += bal
-                    elif "laba_ditahan" in cat or "retained" in cat:
+                    elif code in EQUITY_LABA_DITAHAN_CODES:
                         laba_ditahan += bal
                     else:
+                        # 3-10100, 3-50000 → modal_awal; 3-30000 derived elsewhere
                         modal_awal += bal
+                elif cat == "pendapatan":
+                    total_revenue += bal
+                elif cat == "beban":
+                    if atype == "COGS":
+                        total_cogs += bal
+                    else:
+                        total_expense += bal
                 elif atype in ("INCOME", "REVENUE", "OTHER_INCOME"):
+                    # Defensive fallback: category empty but type known
                     total_revenue += bal
                 elif atype in ("EXPENSE", "OTHER_EXPENSE"):
                     total_expense += bal
                 elif atype == "COGS":
                     total_cogs += bal
+                else:
+                    # No category match + no type fallback → unclassified.
+                    # NO silent absorption to kas/hutang_usaha (drop catch-all).
+                    unclassified += bal
+                    unclassified_codes.append(code)
+
+            if unclassified_codes:
+                logger.warning(
+                    f"Neraca unclassified accounts: tenant={tenant_id}, "
+                    f"codes={unclassified_codes}, total={unclassified}"
+                )
 
             laba_periode_berjalan = total_revenue - total_cogs - total_expense
             total_aset_lancar = (
