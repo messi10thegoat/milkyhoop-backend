@@ -346,6 +346,18 @@ async def get_neraca(request: Request, periode: str):
                 atype = row["account_type"]
                 cat = (row["category"] or "").strip().lower()
                 bal = net_bal(row)
+                # Raw Cr-Dr arithmetic for revenue/cogs/expense net (handles
+                # contra accounts correctly without double-counting):
+                #   revenue net = SUM(credit - debit) across ALL REVENUE accts
+                #     (Penjualan Cr-normal: positive contrib; Retur Dr-normal: negative)
+                #   cogs net    = SUM(debit - credit) across ALL COGS accts
+                #     (HPP Dr-normal: positive; Diskon/Retur Pembelian Cr-normal: negative)
+                #   expense net = SUM(debit - credit) across ALL EXPENSE accts
+                d = int(row["total_debit"] or 0)
+                c = int(row["total_credit"] or 0)
+                rev_contrib = c - d
+                cogs_contrib = d - c
+                exp_contrib = d - c
 
                 # PPN Masukan / unearned revenue / akumulasi penyusutan handled
                 # by their specific category — drop down to category dispatch.
@@ -403,20 +415,17 @@ async def get_neraca(request: Request, periode: str):
                     else:
                         # 3-10100, 3-50000 → modal_awal; 3-30000 derived elsewhere
                         modal_awal += bal
-                elif cat == "pendapatan":
-                    total_revenue += bal
-                elif cat == "beban":
-                    if atype == "COGS":
-                        total_cogs += bal
-                    else:
-                        total_expense += bal
-                elif atype in ("INCOME", "REVENUE", "OTHER_INCOME"):
-                    # Defensive fallback: category empty but type known
-                    total_revenue += bal
-                elif atype in ("EXPENSE", "OTHER_EXPENSE"):
-                    total_expense += bal
+                elif cat == "pendapatan" or atype in ("INCOME", "REVENUE", "OTHER_INCOME"):
+                    # Net revenue: Cr-natural minus contra Dr (Diskon/Retur)
+                    total_revenue += rev_contrib
+                elif cat == "beban" and atype == "COGS":
+                    # Net COGS: Dr-natural minus contra Cr (Diskon/Retur Pembelian)
+                    total_cogs += cogs_contrib
                 elif atype == "COGS":
-                    total_cogs += bal
+                    total_cogs += cogs_contrib
+                elif cat == "beban" or atype in ("EXPENSE", "OTHER_EXPENSE"):
+                    # Net expense: Dr-natural minus any Cr contra
+                    total_expense += exp_contrib
                 else:
                     # No category match + no type fallback → unclassified.
                     # NO silent absorption to kas/hutang_usaha (drop catch-all).
