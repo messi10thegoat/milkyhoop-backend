@@ -9,7 +9,7 @@ Iron Law compliance:
 - Law 27: Account IDs from tax_codes.coa_id (no hardcoded codes, no ILIKE)
 - Law 24: RLS enforced
 - Law 25: Decimal precision
-- Voided journals excluded via reversed_by_id IS NULL
+- Voided journals excluded via is_effective_journal(je.id) (Rule 8.1, Track α tick)
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
@@ -137,7 +137,7 @@ async def get_ppn_report(
               AND je.tenant_id = $1
               AND je.journal_date >= $2
               AND je.journal_date < $3
-              AND je.reversed_by_id IS NULL
+              AND is_effective_journal(je.id)  -- Rule 8.1 (Track α tick: PPN+PPh consistent)
               AND jl.account_id = ANY($4)
             ORDER BY je.journal_date, je.journal_number
         """,
@@ -361,7 +361,7 @@ async def get_pph_report(
               AND je.tenant_id = $1
               AND je.journal_date >= $2
               AND je.journal_date < $3
-              AND je.reversed_by_id IS NULL
+              AND is_effective_journal(je.id)  -- Rule 8.1 (Track α tick: PPN+PPh consistent)
               AND jl.account_id = ANY($4)
               AND jl.credit > 0
             ORDER BY je.journal_date, je.journal_number
