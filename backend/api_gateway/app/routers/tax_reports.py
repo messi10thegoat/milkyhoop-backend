@@ -148,6 +148,11 @@ async def get_ppn_report(
         )
 
         # Separate keluaran vs masukan
+        # FIX (Surprise #13, T1): totals = net per akun (SUM(credit)-SUM(debit) for Keluaran
+        # liability Cr-normal; SUM(debit)-SUM(credit) for Masukan asset Dr-normal). Per-row
+        # one-sided collection missed Dr-on-keluaran (e.g. CN wash) → drift vs GL.
+        # Transactions list keeps positive-side display (no FE break); totals diverge from
+        # sum-of-transactions when offset entries present (intentional, by GL truth).
         keluaran_txns = []
         masukan_txns = []
         keluaran_total = Decimal("0")
@@ -157,40 +162,43 @@ async def get_ppn_report(
 
         for r in rows:
             acct_id = r["account_id"]
-            # PPN Keluaran = credit side (liability increases)
-            if acct_id in keluaran_coa_ids and r["credit"] > 0:
-                amt = Decimal(str(r["credit"]))
-                keluaran_total += amt
-                keluaran_txns.append(
-                    PPNTransaction(
-                        journal_number=r["journal_number"],
-                        journal_date=r["journal_date"],
-                        description=r["description"] or "",
-                        source_type=r["source_type"] or "",
-                        source_id=r["source_id"],
-                        amount=amt,
-                        dpp=Decimal("0"),
-                        tax_rate=Decimal("0"),
+            cr = Decimal(str(r["credit"] or 0))
+            dr = Decimal(str(r["debit"] or 0))
+            if acct_id in keluaran_coa_ids:
+                # Net Cr-Dr (Keluaran liability Cr-normal)
+                keluaran_total += cr - dr
+                # Transactions: collect Cr-positive rows for display
+                if cr > 0:
+                    keluaran_txns.append(
+                        PPNTransaction(
+                            journal_number=r["journal_number"],
+                            journal_date=r["journal_date"],
+                            description=r["description"] or "",
+                            source_type=r["source_type"] or "",
+                            source_id=r["source_id"],
+                            amount=cr,
+                            dpp=Decimal("0"),
+                            tax_rate=Decimal("0"),
+                        )
                     )
-                )
-                _jl_id_map[len(keluaran_txns) - 1] = r["jl_id"]
-            # PPN Masukan = debit side (asset increases)
-            elif acct_id in masukan_coa_ids and r["debit"] > 0:
-                amt = Decimal(str(r["debit"]))
-                masukan_total += amt
-                masukan_txns.append(
-                    PPNTransaction(
-                        journal_number=r["journal_number"],
-                        journal_date=r["journal_date"],
-                        description=r["description"] or "",
-                        source_type=r["source_type"] or "",
-                        source_id=r["source_id"],
-                        amount=amt,
-                        dpp=Decimal("0"),
-                        tax_rate=Decimal("0"),
+                    _jl_id_map[len(keluaran_txns) - 1] = r["jl_id"]
+            elif acct_id in masukan_coa_ids:
+                # Net Dr-Cr (Masukan asset Dr-normal)
+                masukan_total += dr - cr
+                if dr > 0:
+                    masukan_txns.append(
+                        PPNTransaction(
+                            journal_number=r["journal_number"],
+                            journal_date=r["journal_date"],
+                            description=r["description"] or "",
+                            source_type=r["source_type"] or "",
+                            source_id=r["source_id"],
+                            amount=dr,
+                            dpp=Decimal("0"),
+                            tax_rate=Decimal("0"),
+                        )
                     )
-                )
-                _jl_id_map_m[len(masukan_txns) - 1] = r["jl_id"]
+                    _jl_id_map_m[len(masukan_txns) - 1] = r["jl_id"]
 
         # Enrich with document_tax_lines for DPP and rate
         dtl_rows = await conn.fetch(
@@ -345,6 +353,9 @@ async def get_pph_report(
             )
 
         # Step 2: Journal-derived PPh amounts
+        # FIX (Surprise #13, T1): net Cr-Dr per PPh withholding account (liability Cr-normal).
+        # Per-row credit-only collection missed offset Dr entries (e.g. PPh refund/reversal).
+        # Display: keep Cr-positive rows in transactions list. Total: net aggregation.
         pph_rows = await conn.fetch(
             """
             SELECT
@@ -354,6 +365,9 @@ async def get_pph_report(
                 je.description,
                 je.source_type,
                 je.source_id::text AS source_id,
+                jl.account_id,
+                jl.debit,
+                jl.credit,
                 jl.credit AS amount
             FROM journal_lines jl
             JOIN journal_entries je ON je.id = jl.journal_id
@@ -363,7 +377,7 @@ async def get_pph_report(
               AND je.journal_date < $3
               AND is_effective_journal(je.id)  -- Rule 8.1 (Track α tick: PPN+PPh consistent)
               AND jl.account_id = ANY($4)
-              AND jl.credit > 0
+              AND (jl.credit > 0 OR jl.debit > 0)
             ORDER BY je.journal_date, je.journal_number
         """,
             tenant_id,
@@ -372,8 +386,13 @@ async def get_pph_report(
             pph_coa_ids,
         )
 
-        journal_total = sum(Decimal(str(r["amount"])) for r in pph_rows)
-        journal_ids = [r["journal_id"] for r in pph_rows]
+        # Net total = SUM(credit) - SUM(debit) across all rows (liability Cr-normal)
+        journal_total = sum(
+            Decimal(str(r["credit"] or 0)) - Decimal(str(r["debit"] or 0))
+            for r in pph_rows
+        )
+        # journal_ids only for rows with Cr > 0 (display rows that enrich with wtr)
+        journal_ids = [r["journal_id"] for r in pph_rows if (r["credit"] or 0) > 0]
 
         # Step 3: Enrich with withholding_tax_records (metadata only)
         wtr_rows = []
@@ -412,6 +431,9 @@ async def get_pph_report(
         grand_dpp = Decimal("0")
 
         for r in pph_rows:
+            # Skip Dr-only offset rows (Cr=0); they're counted in journal_total but not displayed
+            if not ((r["credit"] or 0) > 0):
+                continue
             wtr = wtr_by_journal.get(r["journal_id"])
             tax_code_name = wtr["tax_code_name"] if wtr else "Lainnya"
             tax_code_id = str(wtr["tax_code_id"]) if wtr else None
