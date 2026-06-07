@@ -299,16 +299,21 @@ async def get_neraca(request: Request, periode: str):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
+                -- V168 Fase 9.5: switch LEFT→INNER JOIN. LEFT JOIN with date
+                -- filter in ON clause was BUGGY — journal_lines whose je was
+                -- filtered out (out-of-period) still contributed to SUM because
+                -- LEFT JOIN preserves jl rows with NULL je. INNER JOIN excludes
+                -- them properly. Accounts with zero activity excluded by HAVING.
                 SELECT coa.account_code, coa.name as account_name, coa.account_type,
                     coa.category, coa.normal_balance,
                     COALESCE(SUM(jl.debit), 0) as total_debit,
                     COALESCE(SUM(jl.credit), 0) as total_credit
                 FROM chart_of_accounts coa
-                LEFT JOIN journal_lines jl ON jl.account_id = coa.id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.status = 'POSTED' AND je.journal_date <= $2
-                    AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14 inconsistent void path
+                INNER JOIN journal_lines jl ON jl.account_id = coa.id
+                INNER JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE coa.tenant_id = $1 AND coa.is_active = true AND coa.is_header = false
+                    AND je.status = 'POSTED' AND je.journal_date <= $2
+                    AND is_effective_journal(je.id)  -- T2.5 + Track α
                 GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.normal_balance
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.account_code
