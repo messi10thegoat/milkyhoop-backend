@@ -544,12 +544,14 @@ async def get_arus_kas(request: Request, periode: str):
         ed = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # V168: cash accounts identified by is_cash=TRUE column (populated
+            # at seed_default_coa + backfilled for existing tenants). No more
+            # prefix/category heuristic — direct column read.
             cash_accounts = await conn.fetch(
                 """
                 SELECT id, account_code, name, category FROM chart_of_accounts
-                WHERE tenant_id = $1 AND is_active = true AND account_type = 'ASSET'
-                    AND (LOWER(category) IN ('kas', 'bank', 'cash', 'cash_and_bank')
-                         OR account_code LIKE '1-1001%' OR account_code LIKE '1-1002%')
+                WHERE tenant_id = $1 AND is_active = true
+                  AND is_cash = true AND is_header = false
             """,
                 tenant_id,
             )
@@ -606,6 +608,7 @@ async def get_arus_kas(request: Request, periode: str):
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE je.tenant_id = $1 AND je.status = 'POSTED'
                         AND je.journal_date BETWEEN $2 AND $3
+                        AND is_effective_journal(je.id)  -- Track α :593 (Surprise #14 defensive)
                         AND jl.account_id = ANY($4)
                 ),
                 contra_lines AS (
@@ -615,6 +618,7 @@ async def get_arus_kas(request: Request, periode: str):
                     JOIN chart_of_accounts coa ON coa.id = jl.account_id
                     WHERE je.tenant_id = $1 AND je.status = 'POSTED'
                         AND je.journal_date BETWEEN $2 AND $3
+                        AND is_effective_journal(je.id)  -- Track α (Surprise #14 defensive)
                         AND jl.account_id != ALL($4)
                         AND jl.journal_id IN (SELECT journal_id FROM cash_lines)
                 )
@@ -643,82 +647,103 @@ async def get_arus_kas(request: Request, periode: str):
             beli_aset = jual_aset = pen_inv = kel_inv = 0
             setor_modal = prv = pen_pinjaman = bay_pinjaman = bay_bunga = 0
 
+            # V168 refactor: classify cash flow by contra-account category column
+            # (Indonesia lowercase, no startswith/substring heuristic).
+            # Canonical V154 equity codes for sub-classification.
+            EQUITY_PRIVE_CODES_CF = {"3-40000"}
+
             for row in cash_flows:
                 ci = int(row["cash_in"] or 0)
                 co = int(row["cash_out"] or 0)
                 net = ci - co
                 ct = row["contra_type"] or ""
-                cc = (row["contra_category"] or "").lower()
+                cc = (row["contra_category"] or "").strip().lower()
                 ccode = row["contra_code"] or ""
 
-                if ct in ("INCOME", "REVENUE", "OTHER_INCOME"):
+                # Cash-to-cash transfer (contra is also cash) — skip entirely
+                if cc in ("kas", "bank"):
+                    continue
+
+                # Operating activities — by contra category
+                if cc == "pendapatan" or ct in ("INCOME", "REVENUE", "OTHER_INCOME"):
                     pen_penjualan += net
-                elif ct == "COGS":
+                elif cc == "piutang":
+                    if net > 0:
+                        pen_piutang += net
+                elif cc == "persediaan" or ct == "COGS":
                     if net < 0:
                         bay_kulakan += abs(net)
-                elif ct == "EXPENSE":
-                    if "gaji" in cc or "salary" in cc:
+                elif cc == "hutang_usaha":
+                    # AP payment for inventory/expense — typically outflow
+                    if net < 0:
+                        bay_kulakan += abs(net)
+                    else:
+                        pen_lainnya += net
+                elif cc in ("hutang_pajak", "ppn_keluaran", "ppn_masukan"):
+                    if net < 0:
+                        bay_pajak += abs(net)
+                elif cc == "hutang_gaji":
+                    if net < 0:
+                        bay_gaji += abs(net)
+                elif cc == "uang_muka_pelanggan" or cc == "unearned_revenue":
+                    if net > 0:
+                        pen_lainnya += net  # customer advance, operating
+                elif cc == "beban":
+                    # Sub-classify by canonical code (5-20100 = gaji canonical)
+                    if ccode == "5-20100":
                         if net < 0:
                             bay_gaji += abs(net)
-                    elif "pajak" in cc or "tax" in cc:
+                    elif ccode in ("5-80000",) or ct == "EXPENSE" and ccode.startswith("5-80"):
+                        # Tax expense (rare — non-Operating tax)
                         if net < 0:
                             bay_pajak += abs(net)
-                    elif "bunga" in cc or "interest" in cc:
-                        if net < 0:
-                            bay_bunga += abs(net)
                     else:
                         if net < 0:
                             bay_beban += abs(net)
                 elif ct == "OTHER_EXPENSE":
                     if net < 0:
                         bay_beban += abs(net)
-                elif ct in ("ASSET", "RECEIVABLE"):
-                    if "piutang" in cc or "receivable" in cc:
-                        if net > 0:
-                            pen_piutang += net
-                    elif (
-                        cc in ("kas", "bank", "cash", "cash_and_bank")
-                        or ccode.startswith("1-1001")
-                        or ccode.startswith("1-1002")
-                    ):
-                        pass  # cash-to-cash transfer, ignore
-                    elif "persediaan" in cc or "inventory" in cc:
-                        if net < 0:
-                            bay_kulakan += abs(net)
-                    elif ccode.startswith("1-2"):
-                        if net < 0:
-                            beli_aset += abs(net)
-                        else:
-                            jual_aset += net
+                # Investing activities
+                elif cc in ("aset_tetap", "akumulasi_penyusutan"):
+                    if net < 0:
+                        beli_aset += abs(net)
                     else:
-                        if net > 0:
-                            pen_lainnya += net
-                        else:
-                            bay_lainnya += abs(net)
-                elif ct in ("LIABILITY", "PAYABLE"):
-                    if "hutang_bank" in cc or "bank_loan" in cc:
-                        if net > 0:
-                            pen_pinjaman += net
-                        else:
-                            bay_pinjaman += abs(net)
-                    elif "hutang" in cc or "payable" in cc:
-                        if net < 0:
-                            bay_kulakan += abs(net)
-                        else:
-                            pen_lainnya += net
+                        jual_aset += net
+                elif cc == "beban_dibayar_dimuka":
+                    # Prepaid expense purchase = operating outflow typically
+                    if net < 0:
+                        bay_beban += abs(net)
                     else:
-                        if net > 0:
-                            pen_lainnya += net
-                        else:
-                            bay_lainnya += abs(net)
-                elif ct == "EQUITY":
-                    if "prive" in cc or "drawing" in cc:
+                        pen_lainnya += net
+                # Financing activities
+                elif cc == "hutang_bank":
+                    if net > 0:
+                        pen_pinjaman += net
+                    else:
+                        bay_pinjaman += abs(net)
+                elif cc == "ekuitas":
+                    if ccode in EQUITY_PRIVE_CODES_CF:
                         if net < 0:
                             prv += abs(net)
                     else:
                         if net > 0:
                             setor_modal += net
+                # Fallback by account_type (defensive — should rarely fire post-V168)
+                elif ct in ("ASSET", "RECEIVABLE"):
+                    if net > 0:
+                        pen_lainnya += net
+                    else:
+                        bay_lainnya += abs(net)
+                elif ct in ("LIABILITY", "PAYABLE"):
+                    if net > 0:
+                        pen_lainnya += net
+                    else:
+                        bay_lainnya += abs(net)
+                elif ct == "EQUITY":
+                    if net > 0:
+                        setor_modal += net
                 else:
+                    # Truly unclassified (no category + no type)
                     if net > 0:
                         pen_lainnya += net
                     else:
@@ -3099,7 +3124,7 @@ async def get_pendapatan_report(
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 WHERE je.tenant_id = $1
                   AND je.source_type = 'INVOICE_REVENUE' AND je.status = 'POSTED'
-                  AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
+                  AND is_effective_journal(je.id)  -- #17 Track α residue pendapatan recon
                   AND jl.account_id = $2
                   AND je.journal_date BETWEEN $3 AND $4
                 """,
@@ -3120,7 +3145,7 @@ async def get_pendapatan_report(
                 JOIN customers c ON c.id::text = si.customer_id::text
                 WHERE je.tenant_id = $1
                   AND je.source_type = 'INVOICE_REVENUE' AND je.status = 'POSTED'
-                  AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
+                  AND is_effective_journal(je.id)  -- #17 Track α residue pendapatan recon
                   AND je.journal_date BETWEEN $3 AND $4
                 GROUP BY c.id, c.nama
                 HAVING SUM(jl.credit - jl.debit) <> 0
@@ -3146,8 +3171,7 @@ async def get_pendapatan_report(
                     WHERE je.tenant_id = $1
                       AND je.source_type = 'INVOICE_REVENUE'
                       AND je.status = 'POSTED'
-                      AND je.reversed_by_id IS NULL
-                      AND je.reversal_of_id IS NULL
+                      AND is_effective_journal(je.id)  -- #17 Track α residue
                       AND je.journal_date BETWEEN $3 AND $4
                     GROUP BY je.source_id::text
                 ),
