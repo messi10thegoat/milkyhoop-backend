@@ -72,6 +72,7 @@ class NeracaJournalResponse(BaseModel):
 async def get_db_connection():
     """Get database connection using centralized config."""
     from ..config import settings
+
     db_config = settings.get_db_config()
     return await asyncpg.connect(**db_config)
 
@@ -80,7 +81,7 @@ def parse_periode(periode: str):
     """Parse period string into start and end dates."""
     from datetime import datetime
     import calendar
-    
+
     if "-Q" in periode:
         year, quarter = periode.split("-Q")
         quarter = int(quarter)
@@ -98,7 +99,7 @@ def parse_periode(periode: str):
         year = int(periode)
         start_date = datetime(year, 1, 1)
         end_date = datetime(year, 12, 31, 23, 59, 59)
-    
+
     return start_date, end_date
 
 
@@ -124,7 +125,7 @@ async def get_neraca_journal(request: Request, periode: str):
                     coa.account_code,
                     coa.name,
                     coa.account_type,
-                    CASE 
+                    CASE
                         WHEN coa.normal_balance = 'DEBIT' THEN COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
                         ELSE COALESCE(SUM(jl.credit), 0) - COALESCE(SUM(jl.debit), 0)
                     END as balance
@@ -134,6 +135,7 @@ async def get_neraca_journal(request: Request, periode: str):
                     AND je.tenant_id = $1
                     AND je.status = 'POSTED'
                     AND je.journal_date <= $2
+                    AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 WHERE coa.tenant_id = $1
                 GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.normal_balance
                 ORDER BY coa.account_code
@@ -207,13 +209,24 @@ async def get_neraca_journal(request: Request, periode: str):
                     else:
                         modal += balance
 
-            total_aset_lancar = kas + bank + persediaan + piutang_usaha + beban_dibayar_dimuka + uang_muka_pembelian
+            total_aset_lancar = (
+                kas
+                + bank
+                + persediaan
+                + piutang_usaha
+                + beban_dibayar_dimuka
+                + uang_muka_pembelian
+            )
             total_aset_tetap_bruto = peralatan + kendaraan + bangunan + tanah
-            total_akum_penyusutan = akum_peny_peralatan + akum_peny_kendaraan + akum_peny_bangunan
+            total_akum_penyusutan = (
+                akum_peny_peralatan + akum_peny_kendaraan + akum_peny_bangunan
+            )
             total_aset_tetap_neto = total_aset_tetap_bruto - total_akum_penyusutan
             total_aset = total_aset_lancar + total_aset_tetap_neto
 
-            total_kewajiban_jk_pendek = hutang_usaha + hutang_bank_jk_pendek + uang_muka_pelanggan
+            total_kewajiban_jk_pendek = (
+                hutang_usaha + hutang_bank_jk_pendek + uang_muka_pelanggan
+            )
             total_kewajiban_jk_panjang = hutang_bank_jk_panjang
             total_kewajiban = total_kewajiban_jk_pendek + total_kewajiban_jk_panjang
 
@@ -223,31 +236,46 @@ async def get_neraca_journal(request: Request, periode: str):
                 periode=periode,
                 tanggal=end_date.strftime("%d %B %Y"),
                 aset_lancar=AsetLancarResponse(
-                    kas=kas, bank=bank, persediaan=persediaan,
-                    piutang_usaha=piutang_usaha, beban_dibayar_dimuka=beban_dibayar_dimuka,
-                    uang_muka_pembelian=uang_muka_pembelian, total=total_aset_lancar
+                    kas=kas,
+                    bank=bank,
+                    persediaan=persediaan,
+                    piutang_usaha=piutang_usaha,
+                    beban_dibayar_dimuka=beban_dibayar_dimuka,
+                    uang_muka_pembelian=uang_muka_pembelian,
+                    total=total_aset_lancar,
                 ),
                 aset_tetap=AsetTetapResponse(
-                    peralatan=peralatan, akum_penyusutan_peralatan=akum_peny_peralatan,
-                    kendaraan=kendaraan, akum_penyusutan_kendaraan=akum_peny_kendaraan,
-                    bangunan=bangunan, akum_penyusutan_bangunan=akum_peny_bangunan,
-                    tanah=tanah, total_bruto=total_aset_tetap_bruto,
-                    total_akum_penyusutan=total_akum_penyusutan, total_neto=total_aset_tetap_neto
+                    peralatan=peralatan,
+                    akum_penyusutan_peralatan=akum_peny_peralatan,
+                    kendaraan=kendaraan,
+                    akum_penyusutan_kendaraan=akum_peny_kendaraan,
+                    bangunan=bangunan,
+                    akum_penyusutan_bangunan=akum_peny_bangunan,
+                    tanah=tanah,
+                    total_bruto=total_aset_tetap_bruto,
+                    total_akum_penyusutan=total_akum_penyusutan,
+                    total_neto=total_aset_tetap_neto,
                 ),
                 total_aset=total_aset,
                 kewajiban_jangka_pendek=KewajibanJangkaPendekResponse(
-                    hutang_usaha=hutang_usaha, hutang_bank_jangka_pendek=hutang_bank_jk_pendek,
-                    uang_muka_pelanggan=uang_muka_pelanggan, total=total_kewajiban_jk_pendek
+                    hutang_usaha=hutang_usaha,
+                    hutang_bank_jangka_pendek=hutang_bank_jk_pendek,
+                    uang_muka_pelanggan=uang_muka_pelanggan,
+                    total=total_kewajiban_jk_pendek,
                 ),
                 kewajiban_jangka_panjang=KewajibanJangkaPanjangResponse(
-                    hutang_bank_jangka_panjang=hutang_bank_jk_panjang, total=total_kewajiban_jk_panjang
+                    hutang_bank_jangka_panjang=hutang_bank_jk_panjang,
+                    total=total_kewajiban_jk_panjang,
                 ),
                 total_kewajiban=total_kewajiban,
                 ekuitas=EkuitasResponse(
-                    modal=modal, laba_ditahan=laba_ditahan, prive=prive, total=total_ekuitas
+                    modal=modal,
+                    laba_ditahan=laba_ditahan,
+                    prive=prive,
+                    total=total_ekuitas,
                 ),
                 is_balanced=(abs(total_aset - (total_kewajiban + total_ekuitas)) < 100),
-                source="journal_entries"
+                source="journal_entries",
             )
 
         finally:
@@ -257,4 +285,6 @@ async def get_neraca_journal(request: Request, periode: str):
         raise
     except Exception as e:
         logger.error(f"Get neraca journal error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to generate neraca report: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate neraca report: {str(e)}"
+        )

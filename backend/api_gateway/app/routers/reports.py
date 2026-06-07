@@ -307,6 +307,7 @@ async def get_neraca(request: Request, periode: str):
                 LEFT JOIN journal_lines jl ON jl.account_id = coa.id
                 LEFT JOIN journal_entries je ON je.id = jl.journal_id
                     AND je.status = 'POSTED' AND je.journal_date <= $2
+                    AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14 inconsistent void path
                 WHERE coa.tenant_id = $1 AND coa.is_active = true AND coa.is_header = false
                 GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.normal_balance
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
@@ -1734,8 +1735,8 @@ async def get_profit_loss_by_basis(
 
         start_date, end_date = parse_periode(periode)
         # Convert to unix timestamp (milliseconds) for bigint column
-        start_ts = int(start_date.timestamp() * 1000)
-        end_ts = int(end_date.timestamp() * 1000)
+        start_ts = int(start_date.timestamp() * 1000)  # noqa: F841
+        end_ts = int(end_date.timestamp() * 1000)  # noqa: F841
         conn = await get_db_connection()
 
         try:
@@ -1932,8 +1933,8 @@ async def get_cash_accrual_comparison(request: Request, periode: str):
 
         start_date, end_date = parse_periode(periode)
         # Convert to unix timestamp (milliseconds) for bigint column
-        start_ts = int(start_date.timestamp() * 1000)
-        end_ts = int(end_date.timestamp() * 1000)
+        start_ts = int(start_date.timestamp() * 1000)  # noqa: F841
+        end_ts = int(end_date.timestamp() * 1000)  # noqa: F841
         conn = await get_db_connection()
 
         try:
@@ -2286,7 +2287,7 @@ async def get_timing_differences(
 # AR/AP Aging Reports
 # ========================================
 
-from ..schemas.aging_reports import (
+from ..schemas.aging_reports import (  # noqa: E402
     ARAgingSummary,
     ARAgingSummaryResponse,
     ARAgingDetailItem,
@@ -2822,7 +2823,7 @@ async def get_aging_trend(
 # Drill-Down Report
 # ========================================
 
-from ..schemas.drill_down import (
+from ..schemas.drill_down import (  # noqa: E402
     DrillDownTransaction,
     DrillDownResponse,
 )
@@ -3846,7 +3847,7 @@ async def get_profit_loss_query_params(
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'REVENUE'
                   AND je.journal_date BETWEEN $2 AND $3
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 GROUP BY coa.id, coa.account_code, coa.name
                 HAVING SUM(jl.credit) - SUM(jl.debit) != 0
                 ORDER BY coa.account_code
@@ -3883,7 +3884,7 @@ async def get_profit_loss_query_params(
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'COGS'
                   AND je.journal_date BETWEEN $2 AND $3
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 GROUP BY coa.id, coa.account_code, coa.name
                 HAVING SUM(jl.debit) - SUM(jl.credit) != 0
                 ORDER BY coa.account_code
@@ -3920,7 +3921,7 @@ async def get_profit_loss_query_params(
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'EXPENSE'
                   AND je.journal_date BETWEEN $2 AND $3
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 GROUP BY coa.id, coa.account_code, coa.name
                 HAVING SUM(jl.debit) - SUM(jl.credit) != 0
                 ORDER BY coa.account_code
@@ -3957,7 +3958,7 @@ async def get_profit_loss_query_params(
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'OTHER_INCOME'
                   AND je.journal_date BETWEEN $2 AND $3
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 GROUP BY coa.id, coa.account_code, coa.name
                 HAVING SUM(jl.credit) - SUM(jl.debit) != 0
                 ORDER BY coa.account_code
@@ -3994,7 +3995,7 @@ async def get_profit_loss_query_params(
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'OTHER_EXPENSE'
                   AND je.journal_date BETWEEN $2 AND $3
-                  AND je.reversed_by_id IS NULL
+                  AND is_effective_journal(je.id)  -- T2.5: defensive vs Surprise #14
                 GROUP BY coa.id, coa.account_code, coa.name
                 HAVING SUM(jl.debit) - SUM(jl.credit) != 0
                 ORDER BY coa.account_code
