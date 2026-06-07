@@ -61,6 +61,7 @@ KNOWN_INTENTS: set[str] = {
     "calc_sum_sales_this_month",
     "calc_sum_stok",
     "calc_top_selling_items",
+    "calc_rank_customers_by_sales",
     # ── Create (CRUD — write) ────────────────────────────────────────────────
     "create_account",
     "create_bank_account",
@@ -164,6 +165,7 @@ KNOWN_INTENTS: set[str] = {
     "query_credit_notes_list",
     "query_credit_notes_summary",
     "query_customer_ar",
+    "query_customer_sales",
     "query_customer_deposits_list",
     "query_customer_detail",
     "query_customers_list",

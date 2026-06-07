@@ -434,4 +434,26 @@ CASES = [
         ],
         why="TRAP: 'kalau dihitung' looks conditional but is a plain count, must stay Tier A",
     ),
+    GoldCase(
+        "lookup_customer_sales_rank",
+        Category.LOOKUP,
+        [
+            Turn(
+                "siapa pelanggan paling loyal 30 hari terakhir?",
+                [(A_TIER, Tier.A), (A_INTENT_IN, ["calc_rank_customers_by_sales"])],
+            )
+        ],
+        why="dogfood #1: was a fabricated loyalty ranking (I1/I5 bluff); now journal-derived calc_rank_customers_by_sales",
+    ),
+    GoldCase(
+        "lookup_customer_sales_single",
+        Category.LOOKUP,
+        [
+            Turn(
+                "total nilai pembelian pelanggan Debora 30 hari terakhir",
+                [(A_TIER, Tier.A), (A_INTENT_IN, ["query_customer_sales"])],
+            )
+        ],
+        why="dogfood #3: was misrouted to query_customer_ar; now query_customer_sales (customer-keyword-gated)",
+    ),
 ]
