@@ -19,6 +19,10 @@ from ..config import settings
 
 # Import AccountingFacade for proper double-entry reporting
 from accounting_kernel.integration.facade import AccountingFacade
+from ..services.resolve_account import (
+    resolve_account_id_or_none,
+)  # LAW16_PENDAPATAN_FIX
+from decimal import Decimal, ROUND_HALF_UP  # LAW16_PENDAPATAN_FIX
 
 # Import accounting settings schemas
 from ..schemas.accounting_settings import (
@@ -3024,94 +3028,189 @@ async def get_drill_down(
 async def get_pendapatan_report(
     request: Request,
     periode: str,
+    limit: int = Query(10, ge=1, le=100),
 ):
     """
     Get revenue (pendapatan) report for a period.
     Periode format: YYYY-MM for monthly or YYYY for yearly.
+
+    LAW16_PENDAPATAN_FIX: revenue is journal-derived from CoA 4-10100
+    (Penjualan), source_type=INVOICE_REVENUE, status=POSTED, effective-only,
+    period by journal_date. TRUE revenue, ex-PPN, PSAK-72-recognized.
+    Replaces the old SUM(sales_invoices.total_amount) (billing, incl PPN).
     """
     try:
         ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
         pool = await get_pool()
 
+        def _q2(d: Decimal) -> Decimal:
+            return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
         async with pool.acquire() as conn:
-            # Parse period
+            # Parse period -> date objects (journal_date is a SQL date column,
+            # asyncpg requires datetime.date, not str). LAW16_PENDAPATAN_FIX
             if len(periode) == 7:  # YYYY-MM format
-                start_date = f"{periode}-01"
-                # Get last day of month
                 import calendar
 
                 year, month = map(int, periode.split("-"))
                 last_day = calendar.monthrange(year, month)[1]
-                end_date = f"{periode}-{last_day:02d}"
+                start_date = date(year, month, 1)
+                end_date = date(year, month, last_day)
             else:  # YYYY format
-                start_date = f"{periode}-01-01"
-                end_date = f"{periode}-12-31"
+                year = int(periode)
+                start_date = date(year, 1, 1)
+                end_date = date(year, 12, 31)
 
-            # Get revenue from sales invoices
-            sales_revenue = await conn.fetchval(
+            # Law 27: resolve 4-10100 (Penjualan) at runtime — never hardcode UUID
+            rev_acct_id = await resolve_account_id_or_none(conn, tenant_id, "4-10100")
+            if not rev_acct_id:
+                logger.warning(
+                    f"[PENDAPATAN_RECON] CoA 4-10100 not found, returning zeros "
+                    f"period={periode}, tenant={tenant_id}"
+                )
+                return {
+                    "success": True,
+                    "period": periode,
+                    "total_revenue": 0.0,
+                    "by_category": [],
+                    "top_customers": [],
+                }
+
+            # 1. total_revenue (authoritative, journal-derived)
+            total_rev_raw = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(total_amount), 0)
-                FROM sales_invoices
-                WHERE tenant_id = $1
-                  AND invoice_date BETWEEN $2 AND $3
-                  AND status IN ('posted', 'paid', 'partial')
-            """,
-                ctx["tenant_id"],
+                SELECT COALESCE(SUM(jl.credit - jl.debit), 0)
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                WHERE je.tenant_id = $1
+                  AND je.source_type = 'INVOICE_REVENUE' AND je.status = 'POSTED'
+                  AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
+                  AND jl.account_id = $2
+                  AND je.journal_date BETWEEN $3 AND $4
+                """,
+                tenant_id,
+                rev_acct_id,
                 start_date,
                 end_date,
             )
+            total_revenue = _q2(Decimal(str(total_rev_raw or 0)))
 
-            # Get revenue by category (from sales invoice lines)
-            revenue_by_category = await conn.fetch(
+            # 2. top_customers (journal-anchored via source_id -> invoice -> customer)
+            top_customers_rows = await conn.fetch(
                 """
-                SELECT
-                    COALESCE(p.kategori, 'Uncategorized') as category,
-                    SUM(sii.total) as total
-                FROM sales_invoice_items sii
-                JOIN sales_invoices si ON si.id = sii.invoice_id
-                LEFT JOIN products p ON p.id = sii.item_id
-                WHERE si.tenant_id = $1
-                  AND si.invoice_date BETWEEN $2 AND $3
-                  AND si.status IN ('posted', 'paid', 'partial')
-                GROUP BY COALESCE(p.kategori, 'Uncategorized')
-                ORDER BY total DESC
-            """,
-                ctx["tenant_id"],
-                start_date,
-                end_date,
-            )
-
-            # Get top customers
-            top_customers = await conn.fetch(
-                """
-                SELECT
-                    c.nama as customer_name,
-                    SUM(si.total_amount) as total
-                FROM sales_invoices si
-                JOIN customers c ON c.id = si.customer_id
-                WHERE si.tenant_id = $1
-                  AND si.invoice_date BETWEEN $2 AND $3
-                  AND si.status IN ('posted', 'paid', 'partial')
+                SELECT c.nama AS name, COALESCE(SUM(jl.credit - jl.debit), 0) AS total
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id = je.id AND jl.account_id = $2
+                JOIN sales_invoices si ON si.id::text = je.source_id::text
+                JOIN customers c ON c.id::text = si.customer_id::text
+                WHERE je.tenant_id = $1
+                  AND je.source_type = 'INVOICE_REVENUE' AND je.status = 'POSTED'
+                  AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
+                  AND je.journal_date BETWEEN $3 AND $4
                 GROUP BY c.id, c.nama
+                HAVING SUM(jl.credit - jl.debit) <> 0
                 ORDER BY total DESC
-                LIMIT 10
-            """,
-                ctx["tenant_id"],
+                LIMIT $5
+                """,
+                tenant_id,
+                rev_acct_id,
                 start_date,
                 end_date,
+                limit,
+            )
+
+            # 3. by_category (journal-anchored proportional allocation)
+            by_category_rows = await conn.fetch(
+                """
+                WITH inv_rev AS (
+                    SELECT je.source_id::text AS invoice_id,
+                           SUM(jl.credit - jl.debit) AS r_inv
+                    FROM journal_entries je
+                    JOIN journal_lines jl ON jl.journal_id = je.id
+                        AND jl.account_id = $2
+                    WHERE je.tenant_id = $1
+                      AND je.source_type = 'INVOICE_REVENUE'
+                      AND je.status = 'POSTED'
+                      AND je.reversed_by_id IS NULL
+                      AND je.reversal_of_id IS NULL
+                      AND je.journal_date BETWEEN $3 AND $4
+                    GROUP BY je.source_id::text
+                ),
+                inv_lines AS (
+                    SELECT si.id::text AS invoice_id,
+                           COALESCE(NULLIF(TRIM(p.kategori), ''), 'Tanpa Kategori')
+                               AS category,
+                           SUM(COALESCE(sii.quantity, 0)
+                               * COALESCE(sii.unit_price, 0)) AS w_cat
+                    FROM sales_invoices si
+                    JOIN sales_invoice_items sii
+                        ON sii.invoice_id::text = si.id::text
+                    LEFT JOIN products p ON p.id::text = sii.item_id::text
+                    WHERE si.tenant_id = $1
+                      AND si.id::text IN (SELECT invoice_id FROM inv_rev)
+                    GROUP BY si.id::text,
+                             COALESCE(NULLIF(TRIM(p.kategori), ''),
+                                      'Tanpa Kategori')
+                ),
+                inv_tot AS (
+                    SELECT invoice_id, SUM(w_cat) AS total_w
+                    FROM inv_lines GROUP BY invoice_id
+                )
+                SELECT il.category,
+                       SUM(ir.r_inv * (il.w_cat / NULLIF(it.total_w, 0))) AS total
+                FROM inv_lines il
+                JOIN inv_rev ir ON ir.invoice_id = il.invoice_id
+                JOIN inv_tot it ON it.invoice_id = il.invoice_id
+                WHERE it.total_w > 0
+                GROUP BY il.category
+                ORDER BY total DESC
+                """,
+                tenant_id,
+                rev_acct_id,
+                start_date,
+                end_date,
+            )
+
+            # Build by_category with Decimal + reconciliation guard
+            by_category = {}
+            cat_sum = Decimal("0")
+            for row in by_category_rows:
+                cat = row["category"]
+                val = _q2(Decimal(str(row["total"] or 0)))
+                by_category[cat] = by_category.get(cat, Decimal("0")) + val
+                cat_sum += val
+
+            residual = total_revenue - cat_sum
+            if abs(residual) >= Decimal("0.01"):
+                by_category["Tanpa Kategori"] = (
+                    by_category.get("Tanpa Kategori", Decimal("0")) + residual
+                )
+                logger.warning(
+                    f"[PENDAPATAN_RECON] residual {residual} folded into "
+                    f"Tanpa Kategori, period={periode}, tenant={tenant_id}"
+                )
+
+            by_category_list = sorted(
+                (
+                    {"category": cat, "total": float(_q2(tot))}
+                    for cat, tot in by_category.items()
+                ),
+                key=lambda r: r["total"],
+                reverse=True,
             )
 
             return {
                 "success": True,
                 "period": periode,
-                "total_revenue": sales_revenue,
-                "by_category": [
-                    {"category": row["category"], "total": row["total"]}
-                    for row in revenue_by_category
-                ],
+                "total_revenue": float(total_revenue),
+                "by_category": by_category_list,
                 "top_customers": [
-                    {"name": row["customer_name"], "total": row["total"]}
-                    for row in top_customers
+                    {
+                        "name": row["name"],
+                        "total": float(_q2(Decimal(str(row["total"] or 0)))),
+                    }
+                    for row in top_customers_rows
                 ],
             }
     except Exception as e:
