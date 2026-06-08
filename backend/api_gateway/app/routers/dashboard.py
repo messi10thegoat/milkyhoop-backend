@@ -840,14 +840,12 @@ async def get_dashboard_summary(
             # 4. KAS & BANK
             # ============================
             # Get cash and bank account balances from CoA + balances
+            # Fase G-10 Step 5.4: is_cash column (not prefix) + is_effective_journal
             kas_bank_query = """
                 SELECT
                     c.account_code,
                     c.name,
-                    CASE
-                        WHEN c.account_code LIKE '1-101%' THEN 'cash'
-                        ELSE 'bank'
-                    END as account_type,
+                    COALESCE(c.category, CASE WHEN c.account_code LIKE '1-101%' THEN 'kas' ELSE 'bank' END) as account_type,
                     COALESCE(b.debit_balance - b.credit_balance, 0) as balance
                 FROM chart_of_accounts c
                 LEFT JOIN (
@@ -858,11 +856,12 @@ async def get_dashboard_summary(
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
                         WHERE je.status = 'POSTED'
+                          AND je.tenant_id = $1
+                          AND is_effective_journal(je.id) = true
                         GROUP BY jl.account_id
                     ) b ON b.account_id = c.id
                 WHERE c.tenant_id = $1
-                  AND c.account_code LIKE '1-1%'
-                  AND (c.account_code LIKE '1-101%' OR c.account_code LIKE '1-102%')
+                  AND c.is_cash = true
                 ORDER BY c.account_code
             """
             kas_bank_rows = await conn.fetch(kas_bank_query, tenant_id)
@@ -876,28 +875,32 @@ async def get_dashboard_summary(
                 account = BankAccount(
                     id=row["account_code"],
                     name=row["name"],
-                    account_type=row["account_type"],
+                    account_type=(
+                        "cash" if row["account_type"] in ("cash", "kas") else "bank"
+                    ),
                     balance=balance,
                     account_code=row["account_code"],
                 )
                 accounts.append(account)
 
-                if row["account_type"] == "cash":
+                # Fase G-10 Step 5.4: category column uses 'kas'/'bank' (Indonesian)
+                if row["account_type"] in ("cash", "kas"):
                     total_kas += balance
                 else:
                     total_bank += balance
 
             # Previous period Kas/Bank comparison
             # Pure Ledger: compute balance as of prev_end_date
+            # Fase G-10 Step 5.4: is_cash + is_effective_journal
             prev_kas_bank_query = """
                 SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_balance
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
                 JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND is_effective_journal(je.id) = true
                   AND je.journal_date <= $2
-                  AND coa.account_code LIKE '1-1%%'
-                  AND (coa.account_code LIKE '1-101%%' OR coa.account_code LIKE '1-102%%')
+                  AND coa.is_cash = true
             """
             kas_bank_total = total_kas + total_bank
             prev_kb_row = await conn.fetchrow(
@@ -1169,14 +1172,12 @@ async def get_kas_bank_detail(request: Request):
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # Fase G-10 Step 5.4: is_cash column + is_effective_journal
             query = """
                 SELECT
                     c.account_code,
                     c.name,
-                    CASE
-                        WHEN c.account_code LIKE '1-101%' THEN 'cash'
-                        ELSE 'bank'
-                    END as account_type,
+                    COALESCE(c.category, CASE WHEN c.account_code LIKE '1-101%' THEN 'kas' ELSE 'bank' END) as account_type,
                     COALESCE(b.debit_balance - b.credit_balance, 0) as balance
                 FROM chart_of_accounts c
                 LEFT JOIN (
@@ -1187,11 +1188,12 @@ async def get_kas_bank_detail(request: Request):
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
                         WHERE je.status = 'POSTED'
+                          AND je.tenant_id = $1
+                          AND is_effective_journal(je.id) = true
                         GROUP BY jl.account_id
                     ) b ON b.account_id = c.id
                 WHERE c.tenant_id = $1
-                  AND c.account_code LIKE '1-1%'
-                  AND (c.account_code LIKE '1-101%' OR c.account_code LIKE '1-102%')
+                  AND c.is_cash = true
                 ORDER BY c.account_code
             """
             rows = await conn.fetch(query, tenant_id)
@@ -1205,13 +1207,16 @@ async def get_kas_bank_detail(request: Request):
                 account = BankAccount(
                     id=row["account_code"],
                     name=row["name"],
-                    account_type=row["account_type"],
+                    account_type=(
+                        "cash" if row["account_type"] in ("cash", "kas") else "bank"
+                    ),
                     balance=balance,
                     account_code=row["account_code"],
                 )
                 accounts.append(account)
 
-                if row["account_type"] == "cash":
+                # Fase G-10 Step 5.4: category column uses 'kas'/'bank' (Indonesian)
+                if row["account_type"] in ("cash", "kas"):
                     total_kas += balance
                 else:
                     total_bank += balance
@@ -1297,25 +1302,38 @@ async def get_cash_flow_trends(
             await conn.execute("SET LOCAL statement_timeout = '5000'")
             if use_monthly:
                 # Monthly aggregation for fiscal year views
+                # Fase G-10 Step 5.3: is_cash column, is_effective_journal,
+                # exclude bank-transfer entries (all legs is_cash = net-zero stock)
                 query = """
-                    WITH monthly_flows AS (
-                        SELECT
-                            DATE_TRUNC('month', je.journal_date)::date as flow_date,
-                            COALESCE(SUM(CASE
-                                WHEN jl.debit > 0 AND c.account_code LIKE '1-10%%'
-                                THEN jl.debit ELSE 0
-                            END), 0) as kas_masuk,
-                            COALESCE(SUM(CASE
-                                WHEN jl.credit > 0 AND c.account_code LIKE '1-10%%'
-                                THEN jl.credit ELSE 0
-                            END), 0) as kas_keluar
+                    WITH non_transfer_entries AS (
+                        SELECT je.id, je.journal_date
                         FROM journal_entries je
-                        JOIN journal_lines jl ON jl.journal_id = je.id
-                        JOIN chart_of_accounts c ON c.id = jl.account_id
                         WHERE je.tenant_id = $1
                           AND je.journal_date >= $2 AND je.journal_date <= $3
                           AND je.status = 'POSTED'
-                        GROUP BY DATE_TRUNC('month', je.journal_date)
+                          AND is_effective_journal(je.id) = true
+                          AND EXISTS (
+                              SELECT 1 FROM journal_lines jl2
+                              JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
+                              WHERE jl2.journal_id = je.id
+                                AND COALESCE(c2.is_cash, false) = false
+                          )
+                    ),
+                    monthly_flows AS (
+                        SELECT
+                            DATE_TRUNC('month', e.journal_date)::date as flow_date,
+                            COALESCE(SUM(CASE
+                                WHEN jl.debit > 0 AND c.is_cash = true
+                                THEN jl.debit ELSE 0
+                            END), 0) as kas_masuk,
+                            COALESCE(SUM(CASE
+                                WHEN jl.credit > 0 AND c.is_cash = true
+                                THEN jl.credit ELSE 0
+                            END), 0) as kas_keluar
+                        FROM non_transfer_entries e
+                        JOIN journal_lines jl ON jl.journal_id = e.id
+                        JOIN chart_of_accounts c ON c.id = jl.account_id
+                        GROUP BY DATE_TRUNC('month', e.journal_date)
                     )
                     SELECT flow_date, kas_masuk, kas_keluar FROM monthly_flows ORDER BY flow_date
                 """
@@ -1366,25 +1384,37 @@ async def get_cash_flow_trends(
                         )
             else:
                 # Daily aggregation (existing behavior)
+                # Fase G-10 Step 5.3: is_cash, is_effective_journal, exclude transfers
                 query = """
-                    WITH daily_flows AS (
-                        SELECT
-                            DATE(je.journal_date) as flow_date,
-                            COALESCE(SUM(CASE
-                                WHEN jl.debit > 0 AND c.account_code LIKE '1-10%%'
-                                THEN jl.debit ELSE 0
-                            END), 0) as kas_masuk,
-                            COALESCE(SUM(CASE
-                                WHEN jl.credit > 0 AND c.account_code LIKE '1-10%%'
-                                THEN jl.credit ELSE 0
-                            END), 0) as kas_keluar
+                    WITH non_transfer_entries AS (
+                        SELECT je.id, je.journal_date
                         FROM journal_entries je
-                        JOIN journal_lines jl ON jl.journal_id = je.id
-                        JOIN chart_of_accounts c ON c.id = jl.account_id
                         WHERE je.tenant_id = $1
                           AND je.journal_date >= $2 AND je.journal_date <= $3
                           AND je.status = 'POSTED'
-                        GROUP BY DATE(je.journal_date)
+                          AND is_effective_journal(je.id) = true
+                          AND EXISTS (
+                              SELECT 1 FROM journal_lines jl2
+                              JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
+                              WHERE jl2.journal_id = je.id
+                                AND COALESCE(c2.is_cash, false) = false
+                          )
+                    ),
+                    daily_flows AS (
+                        SELECT
+                            DATE(e.journal_date) as flow_date,
+                            COALESCE(SUM(CASE
+                                WHEN jl.debit > 0 AND c.is_cash = true
+                                THEN jl.debit ELSE 0
+                            END), 0) as kas_masuk,
+                            COALESCE(SUM(CASE
+                                WHEN jl.credit > 0 AND c.is_cash = true
+                                THEN jl.credit ELSE 0
+                            END), 0) as kas_keluar
+                        FROM non_transfer_entries e
+                        JOIN journal_lines jl ON jl.journal_id = e.id
+                        JOIN chart_of_accounts c ON c.id = jl.account_id
+                        GROUP BY DATE(e.journal_date)
                     )
                     SELECT flow_date, kas_masuk, kas_keluar FROM daily_flows ORDER BY flow_date
                 """
@@ -1415,14 +1445,15 @@ async def get_cash_flow_trends(
                     current += timedelta(days=1)
 
             # Query today's transaction counts
+            # Fase G-10 Step 5.3: is_cash + is_effective_journal
             today_trx_query = """
                 SELECT
                     COUNT(DISTINCT CASE
-                        WHEN jl.debit > 0 AND c.account_code LIKE '1-10%'
+                        WHEN jl.debit > 0 AND c.is_cash = true
                         THEN je.id
                     END) as trx_masuk,
                     COUNT(DISTINCT CASE
-                        WHEN jl.credit > 0 AND c.account_code LIKE '1-10%'
+                        WHEN jl.credit > 0 AND c.is_cash = true
                         THEN je.id
                     END) as trx_keluar
                 FROM journal_entries je
@@ -1431,6 +1462,7 @@ async def get_cash_flow_trends(
                 WHERE je.tenant_id = $1
                   AND je.journal_date = CURRENT_DATE
                   AND je.status = 'POSTED'
+                  AND is_effective_journal(je.id) = true
             """
             today_trx = await conn.fetchrow(today_trx_query, tenant_id)
 

@@ -632,3 +632,155 @@ async def test_no_orphan_effective_reversal_class_closure(db):
             f"with reversed_by counterpart still effective (double-count). "
             f"Examples: {[(r['journal_number'], r['source_type']) for r in orphans[:3]]}"
         )
+
+
+# ─── Fase G-10 Step 5.5 — Dashboard widget == source EXACT ──────────────
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_laba_rugi_eq_profit_loss(http, db):
+    """
+    T4 Arbiter (Fase G-10): dashboard.summary.laba_rugi.profit must equal
+    /api/reports/profit-loss net_income (cross-report convergence).
+
+    Pre-V170 the dashboard widget called get_revenue_by_basis() /
+    get_expenses_by_basis() which lacked is_effective_journal() filter,
+    producing STALE figures (golden-apparel 10,997,001 vs GL truth
+    11,485,001, Δ=488k orphan-reversal residue from Surprise #23).
+    """
+    r1 = http.get("/api/dashboard/summary?period=month")
+    assert r1.status_code == 200, r1.text
+    laba_rugi = r1.json()["laba_rugi"]
+    dash_profit = Decimal(str(laba_rugi["profit"]))
+    dash_revenue = Decimal(str(laba_rugi["pendapatan"]))
+    dash_expense = Decimal(str(laba_rugi["pengeluaran"]))
+
+    r2 = http.get(f"/api/reports/profit-loss/{PERIOD}")
+    assert r2.status_code == 200, r2.text
+    pl = r2.json()["data"]
+    pl_revenue = Decimal(str(pl["revenue"]["total"]))
+    pl_cogs = Decimal(str(pl["cost_of_goods_sold"]["total"]))
+    pl_opex = Decimal(str(pl["operating_expenses"]["total"]))
+    pl_net = Decimal(str(pl["net_income"]))
+    pl_expense = pl_cogs + pl_opex
+
+    assert (
+        dash_profit == pl_net
+    ), f"Dashboard laba_rugi.profit ({dash_profit}) != P&L net_income ({pl_net})"
+    assert (
+        dash_revenue == pl_revenue
+    ), f"Dashboard pendapatan ({dash_revenue}) != P&L revenue ({pl_revenue})"
+    assert (
+        dash_expense == pl_expense
+    ), f"Dashboard pengeluaran ({dash_expense}) != P&L (cogs+opex) ({pl_expense})"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_piutang_eq_ar_subledger(http, db):
+    """
+    T4 Arbiter (Fase G-10): dashboard.summary.piutang.total must equal
+    SUM(compute_ar_outstanding($tenant)) — AR sub-ledger.
+
+    Single source of truth: compute_ar_outstanding() journal-derived (Iron Law 1).
+    """
+    r = http.get("/api/dashboard/summary?period=month")
+    assert r.status_code == 200, r.text
+    dash_ar = Decimal(str(r.json()["piutang"]["total"]))
+
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(outstanding), 0) AS total FROM compute_ar_outstanding($1)",
+            TENANT,
+        )
+        sub_ar = Decimal(str(row["total"]))
+
+    assert (
+        dash_ar == sub_ar
+    ), f"Dashboard piutang.total ({dash_ar}) != AR sub-ledger ({sub_ar})"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_kas_bank_eq_gl_is_cash(http, db):
+    """
+    T4 Arbiter (Fase G-10): dashboard.summary.kas_bank.total must equal
+    SUM(jl.debit-jl.credit) for chart_of_accounts.is_cash=true under
+    is_effective_journal() filter.
+
+    Pre-fix used account_code LIKE '1-101%'/'1-102%' (brittle prefix).
+    """
+    r = http.get("/api/dashboard/summary?period=month")
+    assert r.status_code == 200, r.text
+    dash_kb = Decimal(str(r.json()["kas_bank"]["total"]))
+
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS total
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.journal_id
+            JOIN chart_of_accounts c ON c.id = jl.account_id
+            WHERE je.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND is_effective_journal(je.id) = true
+              AND c.is_cash = true
+            """,
+            TENANT,
+        )
+        gl_kb = Decimal(str(row["total"]))
+
+    assert (
+        dash_kb == gl_kb
+    ), f"Dashboard kas_bank.total ({dash_kb}) != GL is_cash effective ({gl_kb})"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cashflow_net_flow_eq_delta_kas(http, db):
+    """
+    T4 Arbiter (Fase G-10): dashboard.cashFlow.net_flow must equal delta
+    saldo kas periode (kas akhir - kas awal) where both computed via
+    is_cash=true + is_effective_journal(), excluding bank-transfer
+    entries (all-cash legs net-zero).
+
+    For golden-apparel June 2026: kas awal=0, kas akhir=20,735,000.
+    net_flow expected = 20,735,000.
+    """
+    r = http.get("/api/dashboard/cash-flow-trends?period=month")
+    assert r.status_code == 200, r.text
+    cf = r.json()
+    net_flow = Decimal(str(cf["net_flow"]))
+
+    start, end = _period_bounds(PERIOD)
+    async with db.acquire() as conn:
+        # GL truth = sum of debit-credit for is_cash accounts in non-transfer
+        # entries during period.
+        row = await conn.fetchrow(
+            """
+            WITH non_transfer AS (
+                SELECT je.id
+                FROM journal_entries je
+                WHERE je.tenant_id = $1
+                  AND je.journal_date >= $2::date
+                  AND je.journal_date <  $3::date
+                  AND je.status = 'POSTED'
+                  AND is_effective_journal(je.id) = true
+                  AND EXISTS (
+                      SELECT 1 FROM journal_lines jl2
+                      JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
+                      WHERE jl2.journal_id = je.id
+                        AND COALESCE(c2.is_cash, false) = false
+                  )
+            )
+            SELECT COALESCE(SUM(CASE WHEN c.is_cash THEN jl.debit - jl.credit ELSE 0 END), 0) AS delta_kas
+            FROM non_transfer e
+            JOIN journal_lines jl ON jl.journal_id = e.id
+            JOIN chart_of_accounts c ON c.id = jl.account_id
+            """,
+            TENANT,
+            start,
+            end,
+        )
+        delta_kas = Decimal(str(row["delta_kas"]))
+
+    assert (
+        net_flow == delta_kas
+    ), f"Dashboard cashFlow.net_flow ({net_flow}) != delta kas GL ({delta_kas})"
