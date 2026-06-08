@@ -280,9 +280,14 @@ def get_period_date_range(period: str) -> tuple:
     elif period == "30d":
         start_date = today - timedelta(days=30)
         period_label = "30 Hari"
-    else:  # month
+    else:  # month — full calendar month (start_of_month → end_of_month)
+        from calendar import monthrange
+
         start_date = date(today.year, today.month, 1)
+        last_day = monthrange(today.year, today.month)[1]
+        end_date_month = date(today.year, today.month, last_day)
         period_label = "Bulan Ini"
+        return start_date, end_date_month, period_label
 
     return start_date, today, period_label
 
@@ -570,7 +575,7 @@ async def get_dashboard_all(
 @router.get("/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
     request: Request,
-    period: str = Query("30d", regex="^(7d|30d|month)$"),
+    period: str = Query("month", regex="^(7d|30d|month)$"),
     start_date: Optional[str] = Query(
         None, description="Start date YYYY-MM-DD (overrides period)"
     ),
@@ -1239,7 +1244,7 @@ async def health_check():
 @router.get("/cash-flow-trends", response_model=CashFlowTrendsResponse)
 async def get_cash_flow_trends(
     request: Request,
-    period: str = Query("7d", regex="^(7d|30d|month)$"),
+    period: str = Query("month", regex="^(7d|30d|month)$"),
     start_date: Optional[str] = Query(
         None, description="Start date YYYY-MM-DD (overrides period)"
     ),
@@ -1274,9 +1279,14 @@ async def get_cash_flow_trends(
                 cf_start = now.date() - timedelta(days=6)
             elif period == "30d":
                 cf_start = now.date() - timedelta(days=29)
-            else:  # month
+            else:  # month — full calendar month
+                from calendar import monthrange as _mr
+
                 cf_start = date(now.year, now.month, 1)
-            cf_end = now.date()
+                _last = _mr(now.year, now.month)[1]
+                cf_end = date(now.year, now.month, _last)
+            if period != "month":
+                cf_end = now.date()
 
         # Determine aggregation: monthly for ranges > 60 days, daily otherwise
         range_days = (cf_end - cf_start).days
@@ -1452,7 +1462,7 @@ async def get_cash_flow_trends(
 @router.get("/top-expenses", response_model=TopExpensesResponse)
 async def get_top_expenses(
     request: Request,
-    period: str = Query("30d", regex="^(7d|30d|month)$"),
+    period: str = Query("month", regex="^(7d|30d|month)$"),
     limit: int = Query(5, ge=1, le=20),
     start_date: Optional[str] = Query(
         None, description="Start date YYYY-MM-DD (overrides period)"
@@ -1488,9 +1498,14 @@ async def get_top_expenses(
                 te_start = now.date() - timedelta(days=7)
             elif period == "30d":
                 te_start = now.date() - timedelta(days=30)
-            else:  # month
+            else:  # month — full calendar month
+                from calendar import monthrange as _mr
+
                 te_start = date(now.year, now.month, 1)
-            te_end = now.date()
+                _last = _mr(now.year, now.month)[1]
+                te_end = date(now.year, now.month, _last)
+            if period != "month":
+                te_end = now.date()
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
