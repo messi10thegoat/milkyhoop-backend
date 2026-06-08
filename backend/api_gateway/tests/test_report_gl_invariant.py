@@ -91,6 +91,7 @@ async def db():
 # ─── Collection-time helper: does tenant have PPh data? ──────────────────
 # Replaces in-body pytest.skip() with eager check — silent skip is gap-hide.
 
+
 def _tenant_has_pph() -> bool:
     """Synchronous probe — runs at collection time."""
     import asyncpg
@@ -406,10 +407,9 @@ async def test_neraca_balanced_eq_gl(http, db):
     Inventory +1 barrier tolerated globally (drift <= 1 Rp).
     """
     EXPECTED_DIFF = Decimal("1")  # +1 barrier across whole balance
-    _, end_str = _period_bounds(PERIOD)
-    from datetime import date
+    # _period_bounds not needed (endpoint takes PERIOD string directly)
 
-    as_of = date.fromisoformat(end_str).replace(day=1).isoformat()  # not used
+    # as_of removed (F841 cleanup; period bounds inferred from PERIOD directly)
     # Use periode YYYY-MM directly
     resp = http.get(f"/api/reports/neraca/{PERIOD}")
     assert resp.status_code == 200, resp.text
@@ -575,4 +575,60 @@ async def test_onboarding_completeness_class_closure(db):
         assert not ppn_null_dir, (
             f"V167 regression: {len(ppn_null_dir)} active PPN tax_codes have "
             f"NULL direction. Examples: {[r['name'] for r in ppn_null_dir[:3]]}"
+        )
+
+
+# ─── Surprise #23 — orphan-effective reversal class closure ──────────────
+
+
+@pytest.mark.asyncio
+async def test_no_orphan_effective_reversal_class_closure(db):
+    """
+    CLASS CLOSURE: Surprise #23 — V169 fixed is_effective_journal() to
+    exclude entries with reversal_of_id SET (reversal entries themselves).
+
+    Pre-V169, journal_entries with reversal_of_id IS NOT NULL could still
+    return is_effective_journal()=true if their counterpart had not yet been
+    flagged reversed_by_id, producing orphan double-counted reversal lines
+    in GL (12 lines on golden-apparel, Δ=−1,376,000 vs sub-ledger).
+
+    Post-V169, NO entry with reversal_of_id SET should be effective. This
+    test is fail-loud anti-regression. Pattern mirrors test #18 class
+    closure (onboarding completeness).
+    """
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT je.id, je.journal_number, je.source_type, je.tenant_id
+            FROM journal_entries je
+            WHERE je.tenant_id = $1
+              AND je.status = 'POSTED'
+              AND je.reversal_of_id IS NOT NULL
+              AND is_effective_journal(je.id) = true
+            """,
+            TENANT,
+        )
+        assert not rows, (
+            f"Surprise #23 class regression: {len(rows)} reversal entries "
+            f"with reversal_of_id SET still flagged is_effective_journal=true. "
+            f"Examples: {[(r['journal_number'], r['source_type']) for r in rows[:3]]}"
+        )
+
+        # Stronger pattern: orphan-class — VOID-source entries that have a
+        # reversal counterpart, but counterpart still effective (double-count).
+        orphans = await conn.fetch(
+            """
+            SELECT je.id, je.journal_number, je.source_type
+            FROM journal_entries je
+            WHERE je.tenant_id = $1
+              AND je.status = 'VOID'
+              AND je.reversed_by_id IS NOT NULL
+              AND is_effective_journal(je.reversed_by_id) = true
+            """,
+            TENANT,
+        )
+        assert not orphans, (
+            f"Surprise #23 orphan-pair regression: {len(orphans)} VOID entries "
+            f"with reversed_by counterpart still effective (double-count). "
+            f"Examples: {[(r['journal_number'], r['source_type']) for r in orphans[:3]]}"
         )
