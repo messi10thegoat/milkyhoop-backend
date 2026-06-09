@@ -147,6 +147,8 @@ class AccountRole:
     MFG_OVERHEAD_UTILITIES: Final[str] = "MFG_OVERHEAD_UTILITIES"
     MFG_OVERHEAD_DEPRECIATION: Final[str] = "MFG_OVERHEAD_DEPRECIATION"
     MFG_OVERHEAD_APPLIED: Final[str] = "MFG_OVERHEAD_APPLIED"
+    # ---- Deep-val 2.5 V173 — labor/OH applied liability clearing (TIER 1 promote) -
+    MFG_LABOR_APPLIED: Final[str] = "MFG_LABOR_APPLIED"
     REVENUE_SALES_SERVICE: Final[str] = "REVENUE_SALES_SERVICE"
     REVENUE_SALES_DISCOUNT: Final[str] = "REVENUE_SALES_DISCOUNT"
     # REVENUE_DEFERRED — promoted to TIER 1 in Fase C1.1 addendum (see above).
@@ -247,6 +249,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "MFG_OVERHEAD_UTILITIES",
         "MFG_OVERHEAD_DEPRECIATION",
         "MFG_OVERHEAD_APPLIED",
+        "MFG_LABOR_APPLIED",  # V173 deep-val 2.5
         "REVENUE_SALES_SERVICE",
         "REVENUE_SALES_DISCOUNT",
         "REVENUE_UNBILLED",

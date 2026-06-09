@@ -1008,178 +1008,179 @@ async def complete_order(request: Request, order_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            order = await conn.fetchrow(
-                """
-                SELECT * FROM production_orders
-                WHERE tenant_id = $1 AND id = $2
-                """,
-                ctx["tenant_id"],
-                order_id,
-            )
-            if not order:
-                raise HTTPException(status_code=404, detail="Order not found")
-
-            if order["status"] != "in_progress":
-                raise HTTPException(status_code=400, detail="Order not in progress")
-
-            # Calculate variance
-            actual_total = (
-                order["actual_material_cost"]
-                + order["actual_labor_cost"]
-                + order["actual_overhead_cost"]
-            )
-            planned_total = (
-                order["planned_material_cost"]
-                + order["planned_labor_cost"]
-                + order["planned_overhead_cost"]
-            )
-            variance = actual_total - planned_total
-
-            await conn.execute(
-                """
-                UPDATE production_orders
-                SET status = 'completed', actual_end_date = CURRENT_DATE,
-                    variance_amount = $3, updated_at = NOW()
-                WHERE tenant_id = $1 AND id = $2
-                """,
-                ctx["tenant_id"],
-                order_id,
-                variance,
-            )
-
-            # Bug #9 fix: Flush WIP residual via variance journal
-            # Check WIP balance from this order's journals
-            # Fase D3.3: role-based resolution (was 1-10650 / 5-90200).
-            wip_account_id = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
-            )
-            variance_account_id = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.COGS_VARIANCE_PRODUCTION
-            )
-
-            if wip_account_id and variance_account_id:
-                # Get WIP balance from material issue + FG receipt journals of this order
-                wip_residual = await conn.fetchval(
+            async with conn.transaction():
+                order = await conn.fetchrow(
                     """
-                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
-                    FROM journal_lines jl
-                    JOIN journal_entries je ON je.id = jl.journal_id
-                    WHERE je.source_id = $1 AND je.tenant_id = $2
-                      AND je.status = 'POSTED' AND jl.account_id = $3
-                """,
-                    order_id,
+                    SELECT * FROM production_orders
+                    WHERE tenant_id = $1 AND id = $2
+                    """,
                     ctx["tenant_id"],
-                    wip_account_id,
+                    order_id,
+                )
+                if not order:
+                    raise HTTPException(status_code=404, detail="Order not found")
+
+                if order["status"] != "in_progress":
+                    raise HTTPException(status_code=400, detail="Order not in progress")
+
+                # Calculate variance
+                actual_total = (
+                    order["actual_material_cost"]
+                    + order["actual_labor_cost"]
+                    + order["actual_overhead_cost"]
+                )
+                planned_total = (
+                    order["planned_material_cost"]
+                    + order["planned_labor_cost"]
+                    + order["planned_overhead_cost"]
+                )
+                variance = actual_total - planned_total
+
+                await conn.execute(
+                    """
+                    UPDATE production_orders
+                    SET status = 'completed', actual_end_date = CURRENT_DATE,
+                        variance_amount = $3, updated_at = NOW()
+                    WHERE tenant_id = $1 AND id = $2
+                    """,
+                    ctx["tenant_id"],
+                    order_id,
+                    variance,
                 )
 
-                if wip_residual and abs(float(wip_residual)) > Decimal("0.01"):
-                    from datetime import date as _date_var
-                    import uuid as _uuid_var
+                # Bug #9 fix: Flush WIP residual via variance journal
+                # Check WIP balance from this order's journals
+                # Fase D3.3: role-based resolution (was 1-10650 / 5-90200).
+                wip_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
+                )
+                variance_account_id = await resolve_account_id_by_role(
+                    conn, ctx["tenant_id"], AccountRole.COGS_VARIANCE_PRODUCTION
+                )
 
-                    wip_residual = Decimal(str(wip_residual))
-
-                    # Advisory lock
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext($1))",
-                        f"VARIANCE:{order_id}",
-                    )
-
-                    today_var = _date_var.today()
-                    var_id = _uuid_var.uuid4()
-                    ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
-                    vseq = await conn.fetchval(
+                if wip_account_id and variance_account_id:
+                    # Get WIP balance from material issue + FG receipt journals of this order
+                    wip_residual = await conn.fetchval(
                         """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'JV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
+                        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE je.source_id = $1 AND je.tenant_id = $2
+                          AND je.status = 'POSTED' AND jl.account_id = $3
                     """,
-                        ctx["tenant_id"],
-                        today_var.year,
-                        today_var.month,
-                    )
-                    var_num = f"JV-VAR-{ym_var}-{vseq:04d}"
-
-                    abs_amount = abs(wip_residual)
-
-                    # Create DRAFT journal
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id,
-                            total_debit, total_credit, status, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_VARIANCE', $6, $7, $7, 'DRAFT', $8)
-                    """,
-                        var_id,
-                        ctx["tenant_id"],
-                        var_num,
-                        today_var,
-                        f"Manufacturing variance WO {order['order_number']}",
                         order_id,
-                        abs_amount,
-                        ctx.get("user_id"),
+                        ctx["tenant_id"],
+                        wip_account_id,
                     )
 
-                    if wip_residual > 0:
-                        # WIP has debit residual: Cr WIP, Dr Variance Expense
+                    if wip_residual and abs(float(wip_residual)) > Decimal("0.01"):
+                        from datetime import date as _date_var
+                        import uuid as _uuid_var
+
+                        wip_residual = Decimal(str(wip_residual))
+
+                        # Advisory lock
                         await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES (gen_random_uuid(), $1, $2, $3, 0, 'Variance expense', 1)
-                        """,
-                            var_id,
-                            variance_account_id,
-                            abs_amount,
-                        )
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES (gen_random_uuid(), $1, $2, 0, $3, 'WIP flush', 2)
-                        """,
-                            var_id,
-                            wip_account_id,
-                            abs_amount,
-                        )
-                    else:
-                        # WIP has credit residual: Dr WIP, Cr Variance Income
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES (gen_random_uuid(), $1, $2, $3, 0, 'WIP flush', 1)
-                        """,
-                            var_id,
-                            wip_account_id,
-                            abs_amount,
-                        )
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                            VALUES (gen_random_uuid(), $1, $2, 0, $3, 'Variance credit', 2)
-                        """,
-                            var_id,
-                            variance_account_id,
-                            abs_amount,
+                            "SELECT pg_advisory_xact_lock(hashtext($1))",
+                            f"VARIANCE:{order_id}",
                         )
 
-                    # DRAFT -> POSTED (Law 20)
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries SET status = 'POSTED' WHERE id = $1
-                    """,
-                        var_id,
-                    )
+                        today_var = _date_var.today()
+                        var_id = _uuid_var.uuid4()
+                        ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
+                        vseq = await conn.fetchval(
+                            """
+                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                            VALUES ($1, 'JV', $2, $3, 1)
+                            ON CONFLICT (tenant_id, prefix, year, month)
+                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                            RETURNING last_number
+                        """,
+                            ctx["tenant_id"],
+                            today_var.year,
+                            today_var.month,
+                        )
+                        var_num = f"JV-VAR-{ym_var}-{vseq:04d}"
 
-                    logger.info(
-                        f"Variance journal {var_num}: WIP flush {wip_residual} for {order['order_number']}"
-                    )
+                        abs_amount = abs(wip_residual)
 
-            return {
-                "success": True,
-                "message": "Production order completed",
-                "data": {"variance_amount": variance},
-            }
+                        # Create DRAFT journal
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_entries (
+                                id, tenant_id, journal_number, journal_date,
+                                description, source_type, source_id,
+                                total_debit, total_credit, status, created_by
+                            ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_VARIANCE', $6, $7, $7, 'DRAFT', $8)
+                        """,
+                            var_id,
+                            ctx["tenant_id"],
+                            var_num,
+                            today_var,
+                            f"Manufacturing variance WO {order['order_number']}",
+                            order_id,
+                            abs_amount,
+                            ctx.get("user_id"),
+                        )
+
+                        if wip_residual > 0:
+                            # WIP has debit residual: Cr WIP, Dr Variance Expense
+                            await conn.execute(
+                                """
+                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                                VALUES (gen_random_uuid(), $1, $2, $3, 0, 'Variance expense', 1)
+                            """,
+                                var_id,
+                                variance_account_id,
+                                abs_amount,
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                                VALUES (gen_random_uuid(), $1, $2, 0, $3, 'WIP flush', 2)
+                            """,
+                                var_id,
+                                wip_account_id,
+                                abs_amount,
+                            )
+                        else:
+                            # WIP has credit residual: Dr WIP, Cr Variance Income
+                            await conn.execute(
+                                """
+                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                                VALUES (gen_random_uuid(), $1, $2, $3, 0, 'WIP flush', 1)
+                            """,
+                                var_id,
+                                wip_account_id,
+                                abs_amount,
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
+                                VALUES (gen_random_uuid(), $1, $2, 0, $3, 'Variance credit', 2)
+                            """,
+                                var_id,
+                                variance_account_id,
+                                abs_amount,
+                            )
+
+                        # DRAFT -> POSTED (Law 20)
+                        await conn.execute(
+                            """
+                            UPDATE journal_entries SET status = 'POSTED' WHERE id = $1
+                        """,
+                            var_id,
+                        )
+
+                        logger.info(
+                            f"Variance journal {var_num}: WIP flush {wip_residual} for {order['order_number']}"
+                        )
+
+                return {
+                    "success": True,
+                    "message": "Production order completed",
+                    "data": {"variance_amount": variance},
+                }
 
     except HTTPException:
         raise
@@ -1811,67 +1812,256 @@ async def issue_materials(
 # =============================================================================
 @router.post("/{order_id}/labor", response_model=ProductionResponse)
 async def record_labor(request: Request, order_id: UUID, body: ProductionLaborInput):
-    """Record labor for production order."""
+    """Record labor for production order.
+
+    V173 deep-val 2.5 — standard-cost labor + auto-applied overhead.
+      - Standard labor cost = actual_hours × work_centers.labor_rate_per_hour
+      - Standard OH cost    = actual_hours × work_centers.overhead_rate_per_hour
+      - body.hourly_rate is preserved in production_order_labor for audit trail
+        but is NOT used for accounting posting (standard cost only).
+      - Two journals are posted (when respective rate > 0):
+          PRODUCTION_LABOR    : Dr WIP_GENERIC / Cr MFG_LABOR_APPLIED (2-10430)
+          PRODUCTION_OVERHEAD : Dr WIP_GENERIC / Cr MFG_OVERHEAD_APPLIED (2-10440)
+      - PRO-D-2 fix: handler body wrapped in conn.transaction() — partial-post
+        on exception was historically possible.
+    """
     try:
+        import uuid as _uuid_lb
+        from datetime import date as _date_lb
+
         ctx = get_user_context(request)
         pool = await get_pool()
+        await _ensure_production_role_preconditions(pool)
 
         async with pool.acquire() as conn:
-            order = await conn.fetchrow(
-                "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"],
-                order_id,
-            )
-            if not order:
-                raise HTTPException(status_code=404, detail="Order not found")
-
-            if order["status"] not in ("released", "in_progress"):
-                raise HTTPException(
-                    status_code=400, detail="Order must be released or in progress"
+            async with conn.transaction():
+                # PRO-D-2 advisory lock at TOP of tx (Surprise #28 pattern)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"LABOR:{order_id}",
                 )
 
-            labor_cost = int(
-                Decimal(str(body.actual_hours)) * Decimal(str(body.hourly_rate))
-            )
+                order = await conn.fetchrow(
+                    """
+                    SELECT po.*, wc.labor_rate_per_hour, wc.overhead_rate_per_hour
+                    FROM production_orders po
+                    LEFT JOIN work_centers wc ON wc.id = po.work_center_id
+                    WHERE po.tenant_id = $1 AND po.id = $2
+                    """,
+                    ctx["tenant_id"],
+                    order_id,
+                )
+                if not order:
+                    raise HTTPException(status_code=404, detail="Order not found")
 
-            labor_id = await conn.fetchval(
-                """
-                INSERT INTO production_order_labor (
-                    production_order_id, operation_id, operation_name,
-                    actual_hours, actual_cost, worker_id, worker_name,
-                    start_time, end_time, hourly_rate, notes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING id
-                """,
-                order_id,
-                body.operation_id,
-                body.operation_name,
-                body.actual_hours,
-                labor_cost,
-                body.worker_id,
-                body.worker_name,
-                body.start_time,
-                body.end_time,
-                body.hourly_rate,
-                body.notes,
-            )
+                if order["status"] not in ("released", "in_progress"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Order must be released or in progress",
+                    )
 
-            # Update order actual labor cost
-            await conn.execute(
-                """
-                UPDATE production_orders
-                SET actual_labor_cost = actual_labor_cost + $2, updated_at = NOW()
-                WHERE id = $1
-                """,
-                order_id,
-                labor_cost,
-            )
+                # Standard rates from work_centers (NULL-safe)
+                labor_rate_std = Decimal(str(order["labor_rate_per_hour"] or 0))
+                oh_rate_std = Decimal(str(order["overhead_rate_per_hour"] or 0))
+                actual_hours = Decimal(str(body.actual_hours))
 
-            return {
-                "success": True,
-                "message": "Labor recorded",
-                "data": {"id": str(labor_id), "cost": labor_cost},
-            }
+                labor_cost_applied = (actual_hours * labor_rate_std).quantize(
+                    Decimal("0.01")
+                )
+                oh_cost_applied = (actual_hours * oh_rate_std).quantize(Decimal("0.01"))
+
+                # Audit-trail input (body.hourly_rate × hours) — stored in
+                # production_order_labor.actual_cost so legacy reports stay
+                # consistent. Journals use standard cost only.
+                audit_cost = int(actual_hours * Decimal(str(body.hourly_rate)))
+
+                labor_id = await conn.fetchval(
+                    """
+                    INSERT INTO production_order_labor (
+                        production_order_id, operation_id, operation_name,
+                        actual_hours, actual_cost, worker_id, worker_name,
+                        start_time, end_time, hourly_rate, notes
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    RETURNING id
+                    """,
+                    order_id,
+                    body.operation_id,
+                    body.operation_name,
+                    body.actual_hours,
+                    int(labor_cost_applied),
+                    body.worker_id,
+                    body.worker_name,
+                    body.start_time,
+                    body.end_time,
+                    body.hourly_rate,
+                    body.notes,
+                )
+
+                # Update production_orders standard-applied amounts
+                await conn.execute(
+                    """
+                    UPDATE production_orders
+                    SET actual_labor_cost    = COALESCE(actual_labor_cost, 0) + $2,
+                        actual_overhead_cost = COALESCE(actual_overhead_cost, 0) + $3,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    order_id,
+                    labor_cost_applied,
+                    oh_cost_applied,
+                )
+
+                today_lb = _date_lb.today()
+                ym_lb = f"{today_lb.year % 100:02d}{today_lb.month:02d}"
+                order_number = order["order_number"]
+
+                # ---- Journal #1 : PRODUCTION_LABOR -------------------------
+                if labor_cost_applied > 0:
+                    wip_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
+                    )
+                    labor_applied_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.MFG_LABOR_APPLIED
+                    )
+
+                    jseq_lb = await conn.fetchval(
+                        """
+                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                        VALUES ($1, 'JV', $2, $3, 1)
+                        ON CONFLICT (tenant_id, prefix, year, month)
+                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                        RETURNING last_number
+                        """,
+                        ctx["tenant_id"],
+                        today_lb.year,
+                        today_lb.month,
+                    )
+                    je_lb = _uuid_lb.uuid4()
+                    jnum_lb = f"JV-LB-{ym_lb}-{jseq_lb:04d}"
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id,
+                            total_debit, total_credit, status, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_LABOR', $6, $7, $7, 'DRAFT', $8)
+                        """,
+                        je_lb,
+                        ctx["tenant_id"],
+                        jnum_lb,
+                        today_lb,
+                        f"Labor applied {actual_hours}h x {labor_rate_std}/h ({order_number})",
+                        order_id,
+                        labor_cost_applied,
+                        ctx.get("user_id"),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 1, $3, $4, 0, $5)
+                        """,
+                        _uuid_lb.uuid4(),
+                        je_lb,
+                        wip_id,
+                        labor_cost_applied,
+                        f"WIP labor applied {order_number}",
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 2, $3, 0, $4, $5)
+                        """,
+                        _uuid_lb.uuid4(),
+                        je_lb,
+                        labor_applied_id,
+                        labor_cost_applied,
+                        f"MFG_LABOR_APPLIED {order_number}",
+                    )
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        je_lb,
+                    )
+
+                # ---- Journal #2 : PRODUCTION_OVERHEAD ----------------------
+                if oh_cost_applied > 0:
+                    wip_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
+                    )
+                    oh_applied_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.MFG_OVERHEAD_APPLIED
+                    )
+
+                    jseq_oh = await conn.fetchval(
+                        """
+                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                        VALUES ($1, 'JV', $2, $3, 1)
+                        ON CONFLICT (tenant_id, prefix, year, month)
+                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                        RETURNING last_number
+                        """,
+                        ctx["tenant_id"],
+                        today_lb.year,
+                        today_lb.month,
+                    )
+                    je_oh = _uuid_lb.uuid4()
+                    jnum_oh = f"JV-OH-{ym_lb}-{jseq_oh:04d}"
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id,
+                            total_debit, total_credit, status, created_by
+                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_OVERHEAD', $6, $7, $7, 'DRAFT', $8)
+                        """,
+                        je_oh,
+                        ctx["tenant_id"],
+                        jnum_oh,
+                        today_lb,
+                        f"OH applied {actual_hours}h x {oh_rate_std}/h ({order_number})",
+                        order_id,
+                        oh_cost_applied,
+                        ctx.get("user_id"),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 1, $3, $4, 0, $5)
+                        """,
+                        _uuid_lb.uuid4(),
+                        je_oh,
+                        wip_id,
+                        oh_cost_applied,
+                        f"WIP overhead applied {order_number}",
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, 2, $3, 0, $4, $5)
+                        """,
+                        _uuid_lb.uuid4(),
+                        je_oh,
+                        oh_applied_id,
+                        oh_cost_applied,
+                        f"MFG_OVERHEAD_APPLIED {order_number}",
+                    )
+                    await conn.execute(
+                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                        je_oh,
+                    )
+
+                return {
+                    "success": True,
+                    "message": "Labor recorded (standard-cost applied)",
+                    "data": {
+                        "id": str(labor_id),
+                        "actual_hours": str(actual_hours),
+                        "labor_cost_applied": str(labor_cost_applied),
+                        "overhead_cost_applied": str(oh_cost_applied),
+                        "labor_rate_std": str(labor_rate_std),
+                        "overhead_rate_std": str(oh_rate_std),
+                        "audit_input_cost": audit_cost,
+                    },
+                }
 
     except HTTPException:
         raise
