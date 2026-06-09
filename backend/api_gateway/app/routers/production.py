@@ -1908,6 +1908,18 @@ async def report_output(
                         status_code=400, detail="Order must be released or in progress"
                     )
 
+                # BUG-1C-3 / Surprise #28 fix: advisory lock hoisted to top of tx.
+                # Serializes concurrent retries of report_output for same WO so that
+                # over-output guard, completion INSERT, WO counter UPDATE, and FG
+                # receipt journal emission all run under a single critical section.
+                # Previously the lock was acquired AFTER completion INSERT (~L2031),
+                # allowing two parallel retries to both pass the overrun guard
+                # (each seeing identical existing_completed) and both proceed.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"PRODUCTION_OUTPUT:{order_id}",
+                )
+
                 # Over-output guard: warn if good+scrap > remaining, require allow_overrun=true
                 existing_totals = await conn.fetchrow(
                     """
@@ -2026,11 +2038,8 @@ async def report_output(
                 # FG RECEIPT JOURNAL Dr 1-10600 Persediaan FG / Cr 1-10650 WIP
                 # + inventory_ledger PRODUCTION_OUTPUT for FG product
                 # Law 6, 13, 20, 25, 27 / Inventory Rules 1, 3, 10
+                # Advisory lock hoisted to top of tx (see Surprise #28 fix above).
                 # =============================================================
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"PRODUCTION_OUTPUT:{order_id}",
-                )
 
                 fg_journal_id = None
                 if total_cost > 0:
