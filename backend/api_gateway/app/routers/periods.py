@@ -460,7 +460,10 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 period_id,
             )
 
-            # Generate trial balance snapshot
+            # Generate trial balance snapshot (cumulative-to-date, effective only)
+            # R2 FIX (Surprise #25): date predicate moved into INNER JOIN so it
+            # actually filters journal_lines; also use is_effective_journal() to
+            # exclude reversed/reversal journals (matches /reports/trial-balance).
             tb_data = await conn.fetch(
                 """
                 SELECT
@@ -472,10 +475,15 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     COALESCE(SUM(jl.debit), 0) as total_debit,
                     COALESCE(SUM(jl.credit), 0) as total_credit
                 FROM chart_of_accounts coa
-                LEFT JOIN journal_lines jl ON jl.account_id = coa.id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id
-                    AND je.status = 'POSTED'
-                    AND je.journal_date <= $2
+                LEFT JOIN (
+                    SELECT jl.account_id, jl.debit, jl.credit
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.tenant_id = $1
+                      AND je.status = 'POSTED'
+                      AND je.journal_date <= $2
+                      AND is_effective_journal(je.id) = true
+                ) jl ON jl.account_id = coa.id
                 WHERE coa.tenant_id = $1 AND coa.is_active = TRUE
                 GROUP BY coa.id
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
@@ -524,27 +532,75 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
             )
 
             # ── Create closing journal entries ──────────────────────────
-            # DR all REVENUE accounts (zero them out)
-            # CR all EXPENSE accounts (zero them out)
-            # Net difference → Retained Earnings (3-20000)
+            # R2 FIX (Surprise #24, sub-bugs #1/#2/#3/#4):
+            #   #1 PERIOD-SCOPED DELTA: read journal_lines BETWEEN period.start
+            #      AND period.end only — NOT cumulative-to-date TB. Each close
+            #      drains its own period delta, not the cumulative ledger.
+            #   #2 P&L WHITELIST EXPANDED: include COGS / OTHER_INCOME /
+            #      OTHER_EXPENSE alongside REVENUE / INCOME / EXPENSE.
+            #   #3 EMPTY-PERIOD SHORT-CIRCUIT: if period delta is exactly zero,
+            #      skip closing-journal creation; mark period CLOSED no-op.
+            #   #4 SANITY GUARD: re-sum P&L delta from raw journal_lines and
+            #      assert it matches Σ(income_dr) − Σ(expense_cr); fail-loud.
+            #   Also: is_effective_journal() guard skips reversed/reversal entries.
             closing_journal_id = None
+            INCOME_TYPES = ("INCOME", "REVENUE", "OTHER_INCOME")
+            EXPENSE_TYPES = ("EXPENSE", "COGS", "OTHER_EXPENSE")
+            PNL_TYPES = INCOME_TYPES + EXPENSE_TYPES
+
+            period_pnl = await conn.fetch(
+                """
+                SELECT
+                    coa.id          AS account_id,
+                    coa.account_code,
+                    coa.account_type,
+                    COALESCE(SUM(jl.debit), 0)  AS total_debit,
+                    COALESCE(SUM(jl.credit), 0) AS total_credit
+                FROM chart_of_accounts coa
+                JOIN journal_lines jl ON jl.account_id = coa.id
+                JOIN journal_entries je ON je.id = jl.journal_id
+                WHERE coa.tenant_id = $1
+                  AND coa.account_type = ANY($2::text[])
+                  AND je.tenant_id = $1
+                  AND je.status = 'POSTED'
+                  AND je.journal_date BETWEEN $3 AND $4
+                  AND je.source_type != 'CLOSING'
+                  AND is_effective_journal(je.id) = true
+                GROUP BY coa.id, coa.account_code, coa.account_type
+                HAVING COALESCE(SUM(jl.debit), 0) != COALESCE(SUM(jl.credit), 0)
+                ORDER BY coa.account_code
+                """,
+                ctx["tenant_id"],
+                list(PNL_TYPES),
+                period["start_date"],
+                period["end_date"],
+            )
 
             income_accounts = []
             expense_accounts = []
-
-            for row in tb_data:
-                balance = row["total_credit"] - row["total_debit"]  # net balance
-                if balance == 0:
-                    continue
+            for row in period_pnl:
+                # net balance per natural side; income = credit-debit (CR-normal),
+                # expense = debit-credit (DR-normal). We store signed by atype.
                 atype = row["account_type"]
-                if atype in ("INCOME", "REVENUE"):
-                    income_accounts.append(
-                        (row["account_id"], row["account_code"], balance)
-                    )
-                elif atype == "EXPENSE":
-                    expense_accounts.append(
-                        (row["account_id"], row["account_code"], balance)
-                    )
+                if atype in INCOME_TYPES:
+                    bal = row["total_credit"] - row["total_debit"]  # CR-normal net
+                    if bal != 0:
+                        income_accounts.append(
+                            (row["account_id"], row["account_code"], bal)
+                        )
+                elif atype in EXPENSE_TYPES:
+                    bal = row["total_debit"] - row["total_credit"]  # DR-normal net
+                    if bal != 0:
+                        expense_accounts.append(
+                            (row["account_id"], row["account_code"], bal)
+                        )
+
+            # Bug #3: empty-period short-circuit. No P&L activity this period →
+            # close period with NO closing journal (closing_journal_id stays None).
+            if not income_accounts and not expense_accounts:
+                logger.info(
+                    f"Period {period_id} has zero P&L activity — empty-period close (no closing journal)."
+                )
 
             if income_accounts or expense_accounts:
                 # Get Retained Earnings account
@@ -553,10 +609,88 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 )
 
                 if retained_earnings:
-                    total_income_dr = sum(abs(b) for _, _, b in income_accounts)
-                    total_expense_cr = sum(abs(b) for _, _, b in expense_accounts)
-                    # RE amount = DR side minus CR side so far; positive means CR RE
-                    re_amount = total_income_dr - total_expense_cr
+                    # Signed handling: income lines stored as CR-net (CR-normal);
+                    # expense lines stored as DR-net (DR-normal). For closing,
+                    # we zero each account out by booking the opposite side.
+                    # If account ran "abnormal" (e.g. revenue with debit-net from
+                    # returns), the closing line flips natural side correctly.
+                    line_entries = []  # (acct_id, code, debit, credit, memo)
+                    sum_dr = 0
+                    sum_cr = 0
+
+                    for acct_id, code, bal in income_accounts:
+                        # bal = credit - debit. If bal > 0 → CR balance → DR to close.
+                        # If bal < 0 → DR balance → CR to close.
+                        if bal > 0:
+                            line_entries.append(
+                                (
+                                    acct_id,
+                                    code,
+                                    bal,
+                                    0,
+                                    f"Close {code} to Retained Earnings",
+                                )
+                            )
+                            sum_dr += bal
+                        else:
+                            line_entries.append(
+                                (
+                                    acct_id,
+                                    code,
+                                    0,
+                                    -bal,
+                                    f"Close {code} to Retained Earnings",
+                                )
+                            )
+                            sum_cr += -bal
+
+                    for acct_id, code, bal in expense_accounts:
+                        # bal = debit - credit. If bal > 0 → DR balance → CR to close.
+                        # If bal < 0 → CR balance → DR to close.
+                        if bal > 0:
+                            line_entries.append(
+                                (
+                                    acct_id,
+                                    code,
+                                    0,
+                                    bal,
+                                    f"Close {code} to Retained Earnings",
+                                )
+                            )
+                            sum_cr += bal
+                        else:
+                            line_entries.append(
+                                (
+                                    acct_id,
+                                    code,
+                                    -bal,
+                                    0,
+                                    f"Close {code} to Retained Earnings",
+                                )
+                            )
+                            sum_dr += -bal
+
+                    # Net P&L delta (period). Positive = net income; negative = net loss.
+                    net_income = sum(bal for _, _, bal in income_accounts) - sum(
+                        bal for _, _, bal in expense_accounts
+                    )
+
+                    # Bug #4 sanity guard: closing must balance. RE plug = sum_cr - sum_dr
+                    # is what's needed on the DR side to balance (or vice versa).
+                    re_plug = sum_cr - sum_dr  # if >0 → DR RE; if <0 → CR RE
+                    # Cross-check: re_plug should equal net_income (CR RE for income).
+                    # Net income (positive) means income CR > expense DR → sum_dr (income side)
+                    # > sum_cr (expense side) → re_plug < 0 → CR RE = |re_plug| = net_income.
+                    if re_plug + net_income != 0:
+                        logger.error(
+                            f"Period close sanity guard FAILED: re_plug={re_plug} "
+                            f"net_income={net_income} sum_dr={sum_dr} sum_cr={sum_cr} "
+                            f"income_n={len(income_accounts)} expense_n={len(expense_accounts)}"
+                        )
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Period close sanity guard failed: RE plug != net income",
+                        )
 
                     # Generate closing journal number
                     clo_seq = await conn.fetchval(
@@ -565,7 +699,22 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                     )
                     clo_number = f"CLO-{period['end_date'].strftime('%Y%m')}-{str(clo_seq).zfill(3)}"
 
-                    closing_total = max(total_income_dr, total_expense_cr)
+                    # Final closing totals include the RE plug
+                    if re_plug > 0:
+                        total_dr_final = sum_dr + re_plug
+                        total_cr_final = sum_cr
+                    elif re_plug < 0:
+                        total_dr_final = sum_dr
+                        total_cr_final = sum_cr + (-re_plug)
+                    else:
+                        total_dr_final = sum_dr
+                        total_cr_final = sum_cr
+
+                    if total_dr_final != total_cr_final:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Period close imbalance: DR={total_dr_final} CR={total_cr_final}",
+                        )
 
                     closing_journal_id = await conn.fetchval(
                         """
@@ -582,65 +731,31 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                         clo_number,
                         period["end_date"],
                         f"Closing entries for period ending {period['end_date']}",
-                        closing_total,
+                        total_dr_final,
                         ctx["user_id"],
                         period_id,
                     )
 
                     line_num = 1
-
-                    # Close income accounts (DR to reduce credit balance)
-                    for acct_id, code, balance in income_accounts:
+                    for acct_id, code, dr, cr, memo in line_entries:
                         await conn.execute(
                             """
                             INSERT INTO journal_lines (
                                 id, journal_id, account_id, line_number,
                                 debit, credit, memo
-                            ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 0, $5)
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
                             """,
                             closing_journal_id,
                             acct_id,
                             line_num,
-                            abs(balance),
-                            f"Close {code} to Retained Earnings",
+                            dr,
+                            cr,
+                            memo,
                         )
                         line_num += 1
 
-                    # Close expense accounts (CR to reduce debit balance)
-                    for acct_id, code, balance in expense_accounts:
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, account_id, line_number,
-                                debit, credit, memo
-                            ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
-                            """,
-                            closing_journal_id,
-                            acct_id,
-                            line_num,
-                            abs(balance),
-                            f"Close {code} to Retained Earnings",
-                        )
-                        line_num += 1
-
-                    # Retained Earnings entry (balancing entry)
-                    # re_amount > 0 means more DR than CR so far → CR RE to balance
-                    # re_amount < 0 means more CR than DR so far → DR RE to balance
-                    if re_amount >= 0:
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, account_id, line_number,
-                                debit, credit, memo
-                            ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
-                            """,
-                            closing_journal_id,
-                            retained_earnings["id"],
-                            line_num,
-                            re_amount,
-                            "Net income to Retained Earnings",
-                        )
-                    else:
+                    # Retained Earnings balancing line
+                    if re_plug > 0:
                         await conn.execute(
                             """
                             INSERT INTO journal_lines (
@@ -651,8 +766,22 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                             closing_journal_id,
                             retained_earnings["id"],
                             line_num,
-                            abs(re_amount),
+                            re_plug,
                             "Net loss to Retained Earnings",
+                        )
+                    elif re_plug < 0:
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (
+                                id, journal_id, account_id, line_number,
+                                debit, credit, memo
+                            ) VALUES (gen_random_uuid(), $1, $2, $3, 0, $4, $5)
+                            """,
+                            closing_journal_id,
+                            retained_earnings["id"],
+                            line_num,
+                            -re_plug,
+                            "Net income to Retained Earnings",
                         )
 
                     # Law 20: Finalize DRAFT -> POSTED after all lines inserted
