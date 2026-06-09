@@ -120,7 +120,8 @@ from .routers import tables
 from .routers import expenses
 from .routers import kasbank
 from .routers import expense_extended
-from .routers import payroll
+from .routers import payroll_runs as payroll
+from .routers import payroll_payments
 from .routers import salary_components
 from .routers import payroll_config
 
@@ -700,7 +701,10 @@ app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
 app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
 # Payroll router (Penggajian)
-app.include_router(payroll.router, prefix="", tags=["payroll"])
+app.include_router(payroll.router, prefix="/api/payroll", tags=["payroll"])
+app.include_router(
+    payroll_payments.router, prefix="/api/payroll-payments", tags=["payroll-payments"]
+)
 app.include_router(
     salary_components.router,
     prefix="/api/salary-components",

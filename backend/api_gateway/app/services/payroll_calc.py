@@ -256,7 +256,9 @@ async def calculate_employee_slip(
 
     if employee.get("is_bpjs_kes", True) and kes_cfg:
         ceiling = d(kes_cfg.get("ceiling_amount")) or gross
-        bpjs_kes_ee = round2(min(gross, ceiling) * d(kes_cfg.get("employee_rate", 0)))
+        bpjs_kes_ee = round2(
+            min(gross, ceiling) * d(kes_cfg.get("employee_rate", 0)) / Decimal("100")
+        )
         deductions.append(
             {
                 "component_id": None,
@@ -270,7 +272,9 @@ async def calculate_employee_slip(
         )
 
     if employee.get("is_bpjs_jht", True) and jht_cfg:
-        bpjs_jht_ee = round2(gross * d(jht_cfg.get("employee_rate", 0)))
+        bpjs_jht_ee = round2(
+            gross * d(jht_cfg.get("employee_rate", 0)) / Decimal("100")
+        )
         deductions.append(
             {
                 "component_id": None,
@@ -285,7 +289,9 @@ async def calculate_employee_slip(
 
     if employee.get("is_bpjs_jp", True) and jp_cfg:
         jp_ceiling = d(jp_cfg.get("ceiling_amount")) or gross
-        bpjs_jp_ee = round2(min(gross, jp_ceiling) * d(jp_cfg.get("employee_rate", 0)))
+        bpjs_jp_ee = round2(
+            min(gross, jp_ceiling) * d(jp_cfg.get("employee_rate", 0)) / Decimal("100")
+        )
         deductions.append(
             {
                 "component_id": None,
@@ -346,7 +352,9 @@ async def calculate_employee_slip(
 
     if employee.get("is_bpjs_kes", True) and kes_cfg:
         ceiling = d(kes_cfg.get("ceiling_amount")) or gross
-        amt = round2(min(gross, ceiling) * d(kes_cfg.get("employer_rate", 0)))
+        amt = round2(
+            min(gross, ceiling) * d(kes_cfg.get("employer_rate", 0)) / Decimal("100")
+        )
         bpjs_er_total += amt
         employer_costs.append(
             {
@@ -359,7 +367,7 @@ async def calculate_employee_slip(
         )
 
     if employee.get("is_bpjs_jht", True) and jht_cfg:
-        amt = round2(gross * d(jht_cfg.get("employer_rate", 0)))
+        amt = round2(gross * d(jht_cfg.get("employer_rate", 0)) / Decimal("100"))
         bpjs_er_total += amt
         employer_costs.append(
             {
@@ -373,7 +381,9 @@ async def calculate_employee_slip(
 
     if employee.get("is_bpjs_jp", True) and jp_cfg:
         jp_ceiling = d(jp_cfg.get("ceiling_amount")) or gross
-        amt = round2(min(gross, jp_ceiling) * d(jp_cfg.get("employer_rate", 0)))
+        amt = round2(
+            min(gross, jp_ceiling) * d(jp_cfg.get("employer_rate", 0)) / Decimal("100")
+        )
         bpjs_er_total += amt
         employer_costs.append(
             {
