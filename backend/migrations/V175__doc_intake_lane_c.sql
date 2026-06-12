@@ -30,6 +30,18 @@ COMMENT ON COLUMN document_intake_log.final_outcome IS
     'Terminal disposition of the file-bearing turn. Leak metric: '
     'count(final_outcome=''generic_chat'') over file-turns MUST be 0 when Lane C is on.';
 
+-- 2b) documents.category: allow 'unclassified' (stored at upload time, before
+--     classification; replaces the silent hardcoded 'receipt'). Keep existing values.
+ALTER TABLE documents
+    DROP CONSTRAINT IF EXISTS chk_doc_category;
+ALTER TABLE documents
+    ADD CONSTRAINT chk_doc_category CHECK (
+        (category)::text = ANY (ARRAY[
+            'invoice','receipt','contract','photo','report','statement',
+            'certificate','other','unclassified'
+        ]::text[])
+    );
+
 -- 3) document_attachments: allow anti-orphan link to the chat message that produced
 --    a Lane C capture (entity_type=''chat_message'', entity_id=message_id).
 ALTER TABLE document_attachments

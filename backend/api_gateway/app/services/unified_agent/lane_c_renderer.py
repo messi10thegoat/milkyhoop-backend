@@ -107,12 +107,40 @@ def suggestion_prompt(outcome: str, header: Optional[dict] = None) -> str:
     return ""
 
 
+# documents.category is constrained by chk_doc_category — map doc_type into it.
+_DOC_TYPE_TO_CATEGORY = {
+    "invoice": "invoice",
+    "purchase_invoice": "invoice",
+    "bill": "invoice",
+    "sales_invoice": "invoice",
+    "quotation": "invoice",
+    "quote": "invoice",
+    "po": "invoice",
+    "purchase_order": "invoice",
+    "receipt": "receipt",
+    "nota": "receipt",
+    "kwitansi": "receipt",
+    "struk": "receipt",
+    "payment_receipt": "receipt",
+    "bank_transfer": "receipt",
+    "contract": "contract",
+    "bank_statement": "statement",
+    "statement": "statement",
+    "photo": "photo",
+    "report": "report",
+    "certificate": "certificate",
+    "catalog": "other",
+    "id_card": "other",
+}
+
+
 def category_for_outcome(outcome: str, header: Optional[dict] = None) -> str:
-    """Real category to UPDATE documents.category (replaces hardcoded 'receipt')."""
+    """Real documents.category (constraint-safe) — replaces hardcoded 'receipt'."""
     header = header or {}
     dt = (header.get("doc_type") or "").lower().strip()
-    if dt and dt not in ("unknown", "null"):
-        return dt
+    mapped = _DOC_TYPE_TO_CATEGORY.get(dt)
+    if mapped:
+        return mapped
     if outcome == CAPTURED_UNSUPPORTED_FILETYPE:
-        return "unsupported_filetype"
+        return "other"
     return "unclassified"
