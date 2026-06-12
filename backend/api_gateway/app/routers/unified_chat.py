@@ -81,6 +81,183 @@ class _VisionGateSkip(Exception):
     pass
 
 
+# ─── Lane C (DOC_INTAKE_LANE_C) — capture & explain, no leak to generic chat ───
+
+
+def _lane_c_enabled() -> bool:
+    """Phase 1a feature flag. OFF (default) => byte-identical legacy behavior."""
+    import os as _lc_os
+
+    return _lc_os.environ.get("DOC_INTAKE_LANE_C", "off").strip().lower() == "on"
+
+
+def _lane_c_amount_bucket(amount) -> str:
+    try:
+        v = float(amount or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    if v <= 0:
+        return "none"
+    if v < 100_000:
+        return "<100K"
+    if v < 1_000_000:
+        return "100K-1M"
+    if v < 10_000_000:
+        return "1M-10M"
+    return ">10M"
+
+
+async def _lane_c_write_telemetry(
+    *, pool, tenant_id, ocr_data, caption, message_id, final_outcome
+):
+    """PII-safe write of final_outcome to document_intake_log. Never raises."""
+    try:
+        import hashlib as _hl
+
+        _od = ocr_data or {}
+        _src = (
+            _od.get("extracted_text")
+            or _od.get("raw_text")
+            or _od.get("doc_type")
+            or ""
+        )
+        ocr_hash = _hl.sha256(str(_src).encode("utf-8", "ignore")).hexdigest()[:32]
+        doc_type = str(_od.get("doc_type") or "")[:64]
+        bucket = _lane_c_amount_bucket(_od.get("total_amount") or _od.get("amount"))
+        has_cp = bool(
+            _od.get("vendor_name")
+            or _od.get("counterparty_name")
+            or _od.get("customer_name")
+        )
+        has_cap = bool(caption and caption.strip())
+        try:
+            _mid = __import__("uuid").UUID(str(message_id))
+        except Exception:
+            _mid = None
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+                await conn.execute(
+                    """INSERT INTO document_intake_log
+                        (tenant_id, message_id, ocr_hash, doc_type, amount_bucket,
+                         has_counterparty, has_caption, classified_type, final_outcome)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    tenant_id,
+                    _mid,
+                    ocr_hash,
+                    doc_type,
+                    bucket,
+                    has_cp,
+                    has_cap,
+                    doc_type or None,
+                    final_outcome,
+                )
+    except Exception as _tel_err:
+        logger.warning("[LaneC][tel] non-blocking: %s", _tel_err)
+
+
+async def _lane_c_persist(
+    *, outcome, header, doc_id, message_id, tenant_id, pool, caption
+):
+    """Anti-orphan link + real category + telemetry. Fire-and-forget, never raises."""
+    from ..services.unified_agent.lane_c_renderer import category_for_outcome
+
+    try:
+        if doc_id:
+            _cat = category_for_outcome(outcome, header)
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                    )
+                    await conn.execute(
+                        "UPDATE documents SET category = $2, intake_outcome = $3 "
+                        "WHERE id = $1::uuid AND tenant_id = $4",
+                        str(doc_id),
+                        _cat,
+                        outcome,
+                        tenant_id,
+                    )
+                    await conn.execute(
+                        "INSERT INTO document_attachments "
+                        "(tenant_id, document_id, entity_type, entity_id, attachment_type) "
+                        "VALUES ($1, $2::uuid, 'chat_message', $3::uuid, 'lane_c') "
+                        "ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING",
+                        tenant_id,
+                        str(doc_id),
+                        str(message_id),
+                    )
+    except Exception as _persist_err:
+        logger.warning("[LaneC] persist failed (non-blocking): %s", _persist_err)
+    await _lane_c_write_telemetry(
+        pool=pool,
+        tenant_id=tenant_id,
+        ocr_data=header,
+        caption=caption,
+        message_id=message_id,
+        final_outcome="lane_c_captured",
+    )
+
+
+async def _build_lane_c_result(
+    *, outcome, ocr_data, file_metas, session_id, tenant_id, pool, caption
+):
+    """Build a LANE_C_CAPTURE response + schedule persist. Deterministic, no LLM."""
+    from ..services.unified_agent.lane_c_renderer import (
+        render_lane_c_narration,
+        suggestion_prompt,
+    )
+
+    header = ocr_data or {}
+    _fm0 = file_metas[0] if file_metas else {}
+    filename = (
+        _fm0.get("file_name") or _fm0.get("filename") or _fm0.get("original_name") or ""
+    )
+    doc_id = _fm0.get("document_id")
+    narration = render_lane_c_narration(outcome, header, filename)
+    suggestion = suggestion_prompt(outcome, header)
+    resp = ChatMessageResponse(
+        message_type="LANE_C_CAPTURE",
+        text=narration,
+        data={
+            "outcome": outcome,
+            "suggestion": suggestion,
+            "document": (
+                {
+                    "document_id": doc_id,
+                    "file_url": _fm0.get("file_url"),
+                    "file_name": filename,
+                }
+                if doc_id
+                else None
+            ),
+        },
+        session_id=session_id,
+    )
+    import asyncio as _aio
+
+    _aio.create_task(
+        _lane_c_persist(
+            outcome=outcome,
+            header=header,
+            doc_id=doc_id,
+            message_id=resp.message_id,
+            tenant_id=tenant_id,
+            pool=pool,
+            caption=caption,
+        )
+    )
+    logger.info(
+        "[LaneC] outcome=%s doc=%s msg=%s",
+        outcome,
+        (str(doc_id)[:8] if doc_id else "none"),
+        str(resp.message_id)[:8],
+    )
+    return resp
+
+
 router = APIRouter()
 
 # Singleton agent instance (stateless, safe to reuse)
@@ -289,11 +466,14 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                     file_url_path = (
                         f"/api/v3/chat/files/{tenant_id}/chat/{file_hash}{ext}"
                     )
+                    # Lane C: store with 'unclassified' so the real category is set
+                    # AFTER classification/Lane-C (legacy hardcoded 'receipt' when off).
+                    _doc_category = "unclassified" if _lane_c_enabled() else "receipt"
                     doc_id = await _doc_conn.fetchval(
                         """INSERT INTO documents (
                             tenant_id, file_name, original_name, file_type, file_extension,
                             file_size, storage_type, file_path, file_url, category, checksum_sha256, source
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, 'receipt', $9, 'chat')
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, $9, $10, 'chat')
                         RETURNING id""",
                         tenant_id,
                         file.filename or f"upload{ext}",
@@ -303,6 +483,7 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                         len(content),
                         relative_path,
                         file_url_path,
+                        _doc_category,
                         file_hash,
                     )
                     file_meta["document_id"] = str(doc_id)
@@ -2340,6 +2521,7 @@ async def send_message_with_files(
 
     _t_pipeline_start = _t_mod.perf_counter()
     _doc_pipeline_result = None
+    _doc_intent_ocr_path = False  # Lane C: IntentOCR is exempt from exit-invariant
     if file_metas and not _recon_shortcut_result:
         _has_image = any(
             fm.get("content_type", "").startswith("image/")
@@ -2389,6 +2571,7 @@ async def send_message_with_files(
         # When user has explicit intent + image: extract text from image via
         # quick OCR and inject into enriched_text so the pipeline can use it
         if _has_image and _has_explicit_intent:
+            _doc_intent_ocr_path = True  # legit CRUD-via-agent-loop path; KEEP
             try:
                 _intent_img = next(
                     (
@@ -2749,6 +2932,30 @@ Aturan:
                                 and _ocr_confidence_val < 0.4
                             )
                         ):
+                            if _lane_c_enabled():
+                                # Lane C: capture & explain instead of leaking to
+                                # generic chat (provenance: OCR text NOT injected).
+                                from ..services.unified_agent.lane_c_renderer import (
+                                    CAPTURED_NON_TRANSACTION as _LC_NONTX,
+                                )
+
+                                _doc_pipeline_result = await _build_lane_c_result(
+                                    outcome=_LC_NONTX,
+                                    ocr_data=_ocr_data,
+                                    file_metas=file_metas,
+                                    session_id=session_id,
+                                    tenant_id=ctx["tenant_id"],
+                                    pool=_ocr_pool,
+                                    caption=text or "",
+                                )
+                                logger.info(
+                                    "[VisionGate->LaneC] captured non-financial doc "
+                                    "(is_financial=%s, doc_type=%s, confidence=%.2f)",
+                                    _is_financial,
+                                    _ocr_doc_type_gate,
+                                    _ocr_confidence_val,
+                                )
+                                raise _VisionGateSkip()
                             _extracted_text = (
                                 _ocr_data.get("extracted_text")
                                 or _ocr_data.get("raw_text")
@@ -2824,6 +3031,21 @@ Aturan:
                                     "[DocIntakeV3] generic-chat skip: %s",
                                     _match_err,
                                 )
+                                if _lane_c_enabled():
+                                    from ..services.unified_agent.lane_c_renderer import (
+                                        CAPTURED_NON_TRANSACTION as _LC_NONTX2,
+                                    )
+
+                                    _doc_pipeline_result = await _build_lane_c_result(
+                                        outcome=_LC_NONTX2,
+                                        ocr_data=_ocr_data,
+                                        file_metas=file_metas,
+                                        session_id=session_id,
+                                        tenant_id=ctx["tenant_id"],
+                                        pool=_ocr_pool,
+                                        caption=text or "",
+                                    )
+                                    logger.info("[DocIntakeV3->LaneC] UNKNOWN captured")
                                 raise _VisionGateSkip() from _match_err
                             if isinstance(_match_err, _V3V2Fallback):
                                 # V3 couldn't produce action — re-run via V2 safety net
@@ -3589,6 +3811,47 @@ Aturan:
             except Exception as _doc_err:
                 logger.error(f"[DocSimple] Failed: {_doc_err}", exc_info=True)
                 # Fall through to normal LLM path
+
+    # ── Lane C exit-invariant ──────────────────────────────────────────────
+    # A file-bearing turn must never silently reach the generic agent loop.
+    # IntentOCR (_doc_intent_ocr_path) is exempt: it uses the agent loop by
+    # design to perform an explicit CRUD (Phase 1b owns its fail-backstop).
+    if (
+        _lane_c_enabled()
+        and _doc_pipeline_result is None
+        and file_metas
+        and not _doc_intent_ocr_path
+    ):
+        try:
+            _inv_has_image = any(
+                fm.get("content_type", "").startswith("image/")
+                or fm.get("extension", "").lower() == ".pdf"
+                for fm in file_metas
+            )
+            from ..services.unified_agent.lane_c_renderer import (
+                CAPTURED_NON_TRANSACTION as _LC_NT,
+                CAPTURED_UNSUPPORTED_FILETYPE as _LC_UF,
+            )
+            from ..services.unified_agent.db_utils import (
+                get_session_db_pool as _inv_pool_fn,
+            )
+
+            _inv_outcome = _LC_NT if _inv_has_image else _LC_UF
+            _inv_pool = await _inv_pool_fn()
+            _doc_pipeline_result = await _build_lane_c_result(
+                outcome=_inv_outcome,
+                ocr_data=locals().get("_ocr_data") or {},
+                file_metas=file_metas,
+                session_id=session_id,
+                tenant_id=ctx["tenant_id"],
+                pool=_inv_pool,
+                caption=text or "",
+            )
+            logger.info("[LaneC][exit-invariant] outcome=%s", _inv_outcome)
+        except Exception as _inv_err:
+            logger.warning(
+                "[LaneC][exit-invariant] failed (non-blocking): %s", _inv_err
+            )
 
     if _doc_pipeline_result:
         try:
