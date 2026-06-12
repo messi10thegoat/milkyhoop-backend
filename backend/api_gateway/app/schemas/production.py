@@ -65,6 +65,10 @@ class ProductionLaborInput(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     notes: Optional[str] = None
+    # Optional journal date for the applied labor/OH journals; must fall in an
+    # OPEN fiscal period. Defaults to today. Enables recording labor into the
+    # current open period (incl. legitimate back-dating within an open period).
+    posting_date: Optional[date] = None
 
 
 class ProductionLaborDetail(BaseModel):

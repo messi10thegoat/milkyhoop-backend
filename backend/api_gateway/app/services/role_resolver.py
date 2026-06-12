@@ -149,6 +149,10 @@ class AccountRole:
     MFG_OVERHEAD_APPLIED: Final[str] = "MFG_OVERHEAD_APPLIED"
     # ---- Deep-val 2.5 V173 — labor/OH applied liability clearing (TIER 1 promote) -
     MFG_LABOR_APPLIED: Final[str] = "MFG_LABOR_APPLIED"
+    # ---- V174 — actual production overhead basis (absorption costing) ----
+    # Actual OH = Penyusutan peralatan jahit (5-30300). Pilot decision:
+    # Sewa/Listrik excluded (cannot split factory vs office from ledger).
+    MFG_ACTUAL_OVERHEAD: Final[str] = "MFG_ACTUAL_OVERHEAD"
     REVENUE_SALES_SERVICE: Final[str] = "REVENUE_SALES_SERVICE"
     REVENUE_SALES_DISCOUNT: Final[str] = "REVENUE_SALES_DISCOUNT"
     # REVENUE_DEFERRED — promoted to TIER 1 in Fase C1.1 addendum (see above).
@@ -250,6 +254,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "MFG_OVERHEAD_DEPRECIATION",
         "MFG_OVERHEAD_APPLIED",
         "MFG_LABOR_APPLIED",  # V173 deep-val 2.5
+        "MFG_ACTUAL_OVERHEAD",  # V174 actual-OH basis (5-30300 Penyusutan peralatan)
         "REVENUE_SALES_SERVICE",
         "REVENUE_SALES_DISCOUNT",
         "REVENUE_UNBILLED",

@@ -26,6 +26,12 @@ from ..schemas.periods import (
     TrialBalanceSnapshotResponse,
 )
 from ..services.resolve_account import resolve_account
+from ..services.role_resolver import (
+    AccountRole,
+    resolve_account_id_by_role,
+    AccountRoleUnmappedError,
+)
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -332,6 +338,84 @@ async def update_period(request: Request, period_id: UUID, body: UpdatePeriodReq
 # =============================================================================
 # CLOSE PERIOD
 # =============================================================================
+# ── PRE-CLOSE GUARD helper (Surprise #32 structural closure) ─────────────
+# Manufacturing applied-clearing accounts (2-10430 MFG_LABOR_APPLIED,
+# 2-10440 MFG_OVERHEAD_APPLIED) are LIABILITY clearing accounts: WO applied
+# labor/overhead credits them; month-end reconcile debits them back to zero.
+# A period MUST NOT close while either still carries a balance, else the
+# clearing liability silently leaks across the period boundary.
+_MFG_CLEARING_TOL = Decimal("0.01")
+
+
+async def _mfg_clearing_balance(
+    conn, tenant_id: str, account_id, period_end
+) -> Decimal:
+    """Cumulative EFFECTIVE balance of a clearing account as-of period_end.
+
+    Clearing accounts are LIABILITY (normal credit), so balance = SUM(credit)
+    - SUM(debit). is_effective_journal() excludes reversed/reversal entries
+    (matches trial-balance / period-close TB conventions). Returns Decimal.
+    """
+    val = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        WHERE je.tenant_id = $1
+          AND jl.account_id = $2
+          AND is_effective_journal(je.id) = true
+          AND je.journal_date <= $3
+        """,
+        tenant_id,
+        account_id,
+        period_end,
+    )
+    return Decimal(str(val if val is not None else 0))
+
+
+async def _assert_mfg_clearing_zeroed(conn, tenant_id: str, period_end) -> None:
+    """REFUSE period close if MFG applied-clearing accounts carry a balance.
+
+    Surprise #32 structural closure. Resolves each clearing account by ROLE
+    (Law 27, never hardcode UUID). Non-manufacturing tenants have these roles
+    UNMAPPED -> AccountRoleUnmappedError caught per account -> that account is
+    skipped. If BOTH unmapped, the guard is a silent no-op and close proceeds.
+    A tenant may have only one mapped; each is resolved independently.
+
+    Raises HTTPException(400) listing the non-zero clearing balances (only
+    those mapped) with remediation pointing at month-end reconcile.
+    """
+    checks = (
+        (AccountRole.MFG_LABOR_APPLIED, "2-10430", "Hutang TKL Applied"),
+        (AccountRole.MFG_OVERHEAD_APPLIED, "2-10440", "Hutang Overhead Applied"),
+    )
+
+    parts = []  # human-readable balance fragments (mapped accounts only)
+    any_nonzero = False
+    for role_key, code, label in checks:
+        try:
+            acct_id = await resolve_account_id_by_role(conn, tenant_id, role_key)
+        except AccountRoleUnmappedError:
+            # Non-manufacturing tenant (or this clearing role unmapped) -> skip.
+            continue
+        bal = await _mfg_clearing_balance(conn, tenant_id, acct_id, period_end)
+        parts.append(f"{code} {label} = {bal}")
+        if abs(bal) > _MFG_CLEARING_TOL:
+            any_nonzero = True
+
+    if any_nonzero:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Tutup buku ditolak: clearing manufaktur masih bersaldo ("
+                + ", ".join(parts)
+                + "). Jalankan Month-End Manufacturing Reconcile "
+                "(POST /api/production/month-end-reconcile) untuk periode ini "
+                "sebelum tutup buku. (Invariant #32)"
+            ),
+        )
+
+
 @router.post("/{period_id}/close", response_model=ClosePeriodResponse)
 async def close_period(request: Request, period_id: UUID, body: ClosePeriodRequest):
     """Close an accounting period."""
@@ -458,6 +542,19 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                 SELECT start_date, end_date FROM fiscal_periods WHERE id = $1
             """,
                 period_id,
+            )
+
+            # ── PRE-CLOSE GUARD: manufacturing applied-clearing zeroing ──
+            # Structural closure of Surprise #32: REFUSE to close while the
+            # MFG_LABOR_APPLIED (2-10430) / MFG_OVERHEAD_APPLIED (2-10440)
+            # clearing liabilities still carry a balance as-of period end.
+            # Makes "run month-end reconcile before close" an ENFORCED
+            # invariant, not a convention. Law 27: resolve by role, never
+            # hardcode UUID. Graceful for non-manufacturing tenants: if a
+            # role is unmapped, that clearing account does not exist for the
+            # tenant -> skip it. Law 25: Decimal everywhere.
+            await _assert_mfg_clearing_zeroed(
+                conn, ctx["tenant_id"], period["end_date"]
             )
 
             # Generate trial balance snapshot (cumulative-to-date, effective only)

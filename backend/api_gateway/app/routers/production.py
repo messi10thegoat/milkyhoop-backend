@@ -1197,7 +1197,7 @@ async def _reverse_journal(
     from datetime import date as _date_rev
 
     original = await conn.fetchrow(
-        "SELECT id, journal_number, source_type, source_id, total_debit, total_credit, status, reversed_by_id FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+        "SELECT id, journal_number, source_type, source_id, total_debit, total_credit, status, reversed_by_id, journal_date, period_id FROM journal_entries WHERE id = $1 AND tenant_id = $2",
         original_journal_id,
         tenant_id,
     )
@@ -1208,8 +1208,45 @@ async def _reverse_journal(
     if original["reversed_by_id"]:
         return None  # already reversed (Law 26 single-reversal)
 
-    today_rev = _date_rev.today()
-    ym_rev = f"{today_rev.year % 100:02d}{today_rev.month:02d}"
+    # --- Determine a reversal date that lands in an OPEN period (Law 5) ----
+    # Same-period reversal (original journal_date) is the accounting-correct
+    # default; fall back to today; if BOTH are closed/locked raise a clean
+    # HTTPException(400) so callers surface a proper error (not a raw 500 from
+    # the prevent_closed_period_journal trigger). Inline fiscal_periods status
+    # check mirrors record_labor's posting_date gate.
+    async def _period_is_open(d):
+        fp_chk = await conn.fetchrow(
+            """
+            SELECT status FROM fiscal_periods
+            WHERE tenant_id = $1
+              AND $2 BETWEEN start_date AND end_date
+            LIMIT 1
+            """,
+            tenant_id,
+            d,
+        )
+        # No matching period or CLOSED/LOCKED => treated as not-open.
+        return bool(fp_chk) and str(fp_chk["status"]).upper() not in (
+            "CLOSED",
+            "LOCKED",
+        )
+
+    orig_date = original["journal_date"]
+    today_actual = _date_rev.today()
+    if orig_date is not None and await _period_is_open(orig_date):
+        reversal_date = orig_date
+    elif await _period_is_open(today_actual):
+        reversal_date = today_actual
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Tidak bisa reverse: periode jurnal asal dan hari ini "
+                "sama-sama tertutup/terkunci."
+            ),
+        )
+
+    ym_rev = f"{reversal_date.year % 100:02d}{reversal_date.month:02d}"
     jseq_rev = await conn.fetchval(
         """
         INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
@@ -1219,8 +1256,8 @@ async def _reverse_journal(
         RETURNING last_number
         """,
         tenant_id,
-        today_rev.year,
-        today_rev.month,
+        reversal_date.year,
+        reversal_date.month,
     )
     rev_id = _uuid_rev.uuid4()
     rev_num = f"JV-{ym_rev}-{jseq_rev:04d}"
@@ -1230,13 +1267,13 @@ async def _reverse_journal(
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id,
             total_debit, total_credit, status, created_by,
-            reversal_of_id, reversal_reason
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
+            reversal_of_id, reversal_reason, period_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'DRAFT', $9, $10, $11, $12)
         """,
         rev_id,
         tenant_id,
         rev_num,
-        today_rev,
+        reversal_date,
         f"REVERSAL {original['journal_number']}: {reason}",
         original["source_type"],
         original["source_id"],
@@ -1244,6 +1281,9 @@ async def _reverse_journal(
         user_id,
         original_journal_id,
         reason,
+        original[
+            "period_id"
+        ],  # inherit period from original (carry period_id on reversal)
     )
     # Copy lines with debit/credit swapped
     orig_lines = await conn.fetch(
@@ -1911,7 +1951,33 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                     oh_cost_applied,
                 )
 
-                today_lb = _date_lb.today()
+                # Optional period-gated posting date (default = today). Must
+                # fall in an OPEN fiscal period. Clean HTTP 400 pre-check BEFORE
+                # any journal insert (the prevent_closed_period_journal trigger
+                # would otherwise surface a raw DB error). Iron Law 5.
+                effective_date = body.posting_date or _date_lb.today()
+                fp_lb = await conn.fetchrow(
+                    """
+                    SELECT status FROM fiscal_periods
+                    WHERE tenant_id = $1
+                      AND $2 BETWEEN start_date AND end_date
+                    LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                    effective_date,
+                )
+                if (not fp_lb) or str(fp_lb["status"]).upper() in ("CLOSED", "LOCKED"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Tidak bisa mencatat labor: tanggal {effective_date} "
+                            f"berada di periode yang sudah ditutup/dikunci atau "
+                            f"tidak ada periode aktif. Pilih tanggal di periode "
+                            f"yang masih OPEN."
+                        ),
+                    )
+
+                today_lb = effective_date
                 ym_lb = f"{today_lb.year % 100:02d}{today_lb.month:02d}"
                 order_number = order["order_number"]
 
@@ -2663,3 +2729,600 @@ async def get_production_schedule(
     except Exception as e:
         logger.error(f"Error getting production schedule: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get production schedule")
+
+
+from ..services.role_resolver import AccountRoleUnmappedError  # noqa: E402 (reconcile OH-skip guard)
+
+# =============================================================================
+# MONTH-END MANUFACTURING RECONCILE (Fase G-12 / Deep-val 2.5 closeout)
+# -----------------------------------------------------------------------------
+# Policy = FULL ABSORPTION. At month end we drain the applied-cost clearing
+# accounts (MFG_LABOR_APPLIED 2-10430 / MFG_OVERHEAD_APPLIED 2-10440), zero out
+# the actual expense accounts (MFG_DIRECT_LABOR 5-20100 / MFG_ACTUAL_OVERHEAD
+# 5-30300), and plug the difference to COGS_VARIANCE_PRODUCTION 5-90200.
+#
+# Goal: Beban Gaji (5-20100) and Actual OH (5-30300) net to ZERO for the period
+# (fully absorbed into WIP via applied clearing + variance), leaving only the
+# variance in 5-90200.
+#
+# Conventions copied verbatim from record_labor / complete_order variance flush:
+#   - resolve_account_id_by_role(conn, tenant_id, AccountRole.*)
+#   - pg_advisory_xact_lock(hashtext($1)) at top of tx
+#   - JV sequence via journal_number_sequences ON CONFLICT bump
+#   - journal_entries DRAFT -> POSTED (Law 20), conn.transaction() wrap
+#   - Law 4 (Dr=Cr asserted), Law 25 (Decimal quantize 0.01), Law 27 (role-based)
+#   - Void path reuses _reverse_journal (Law 2/26 single-reversal, reversal_of_id)
+# =============================================================================
+
+_RECON_SOURCE_TYPE = "PRODUCTION_RECONCILE"
+
+
+@router.post("/month-end-reconcile", response_model=ProductionResponse)
+async def month_end_reconcile(request: Request, body: dict):
+    """Month-end manufacturing reconcile (full absorption).
+
+    Body: {"period": "YYYY-MM"}
+
+    Drains labor/OH applied clearing, zeroes actual labor/OH expense, plugs the
+    difference to production variance (5-90200). One POSTED journal of
+    source_type=PRODUCTION_RECONCILE per tenant+period (idempotent; re-runnable
+    only after the reconcile journal is voided/reversed).
+    """
+    try:
+        import uuid as _uuid_rc
+        from decimal import Decimal as _D
+
+        ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx.get("user_id")
+
+        period = (body or {}).get("period")
+        if not period or not isinstance(period, str):
+            raise HTTPException(
+                status_code=400, detail="Body requires 'period' as 'YYYY-MM'"
+            )
+
+        pool = await get_pool()
+        await _ensure_production_role_preconditions(pool)
+
+        Q = _D("0.01")
+        ZERO = _D("0")
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # --- Advisory lock (period-scoped) -------------------------
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MFG_RECONCILE:{tenant_id}:{period}",
+                )
+
+                # --- Resolve fiscal period window --------------------------
+                fp = await conn.fetchrow(
+                    """
+                    SELECT id, period_name, start_date, end_date, status
+                    FROM fiscal_periods
+                    WHERE tenant_id = $1 AND period_name = $2
+                    """,
+                    tenant_id,
+                    period,
+                )
+                if not fp:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Fiscal period '{period}' not found for tenant",
+                    )
+                if str(fp["status"]).upper() in ("CLOSED", "LOCKED"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Period '{period}' is {fp['status']}; reconcile must "
+                            f"run before the period is closed/locked."
+                        ),
+                    )
+                p_start = fp["start_date"]
+                p_end = fp["end_date"]
+
+                # --- Idempotency guard -------------------------------------
+                # A POSTED reconcile journal for this period blocks re-run. A
+                # reversed/void reconcile is treated as 'not reconciled' so the
+                # void path enables a clean re-run.
+                existing = await conn.fetchrow(
+                    """
+                    SELECT journal_number
+                    FROM journal_entries
+                    WHERE tenant_id = $1
+                      AND source_type = $2
+                      AND status = 'POSTED'
+                      AND reversed_by_id IS NULL
+                      AND reversal_of_id IS NULL
+                      AND is_effective_journal(id)
+                      AND journal_date BETWEEN $3 AND $4
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    _RECON_SOURCE_TYPE,
+                    p_start,
+                    p_end,
+                )
+                if existing:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Period '{period}' already reconciled "
+                            f"({existing['journal_number']}). Void it first to re-run."
+                        ),
+                    )
+
+                # --- Resolve roles -> account_ids --------------------------
+                labor_applied_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.MFG_LABOR_APPLIED
+                )
+                direct_labor_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.MFG_DIRECT_LABOR
+                )
+                oh_applied_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.MFG_OVERHEAD_APPLIED
+                )
+                variance_id = await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.COGS_VARIANCE_PRODUCTION
+                )
+
+                # MFG_ACTUAL_OVERHEAD is a NEW role (parallel agent). If absent
+                # from the catalog (ValueError) or unmapped for this tenant
+                # (AccountRoleUnmappedError), skip the OH leg gracefully.
+                actual_oh_id = None
+                try:
+                    actual_oh_id = await resolve_account_id_by_role(
+                        conn, tenant_id, "MFG_ACTUAL_OVERHEAD"
+                    )
+                except (ValueError, AccountRoleUnmappedError):
+                    actual_oh_id = None
+                    logger.info(
+                        "month_end_reconcile: MFG_ACTUAL_OVERHEAD unmapped — "
+                        "skipping OH leg for tenant %s period %s",
+                        tenant_id,
+                        period,
+                    )
+
+                # --- Compute period figures (Decimal, effective-only) ------
+                async def _signed_sum(
+                    account_id, sign_debit: bool, extra_sql: str = "", *extra_args
+                ):
+                    # sign_debit=True  -> Σ(debit - credit)
+                    # sign_debit=False -> Σ(credit - debit)
+                    expr = (
+                        "COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)"
+                        if sign_debit
+                        else "COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)"
+                    )
+                    val = await conn.fetchval(
+                        f"""
+                        SELECT {expr}
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE je.tenant_id = $1
+                          AND jl.account_id = $2
+                          AND je.journal_date BETWEEN $3 AND $4
+                          AND is_effective_journal(je.id)
+                          {extra_sql}
+                        """,
+                        tenant_id,
+                        account_id,
+                        p_start,
+                        p_end,
+                        *extra_args,
+                    )
+                    return _D(str(val or 0)).quantize(Q)
+
+                # applied_labor = Σ(credit - debit) on 2-10430 (absorption only)
+                # Scope to PRODUCTION_LABOR absorption journals so labeled
+                # residual-disposition / adjustment journals posted into the
+                # same clearing account during the window do NOT shrink the
+                # drain; drain must equal exactly the period's absorption.
+                applied_labor = await _signed_sum(
+                    labor_applied_id,
+                    sign_debit=False,
+                    extra_sql="AND je.source_type = 'PRODUCTION_LABOR'",
+                )
+                # actual_labor = Σ(debit - credit) on 5-20100 from PAYROLL only,
+                # EXCLUDE CLOSING (so a prior close's zero-out doesn't double count)
+                actual_labor = await _signed_sum(
+                    direct_labor_id,
+                    sign_debit=True,
+                    extra_sql="AND je.source_type = 'PAYROLL'",
+                )
+
+                applied_oh = ZERO
+                actual_oh = ZERO
+                if actual_oh_id is not None:
+                    # Scope to PRODUCTION_OVERHEAD absorption journals only
+                    # (same rationale as applied_labor above).
+                    applied_oh = await _signed_sum(
+                        oh_applied_id,
+                        sign_debit=False,
+                        extra_sql="AND je.source_type = 'PRODUCTION_OVERHEAD'",
+                    )
+                    actual_oh = await _signed_sum(
+                        actual_oh_id,
+                        sign_debit=True,
+                        extra_sql="AND je.source_type <> 'CLOSING'",
+                    )
+
+                labor_active = (applied_labor != ZERO) or (actual_labor != ZERO)
+                oh_active = (actual_oh_id is not None) and (
+                    (applied_oh != ZERO) or (actual_oh != ZERO)
+                )
+
+                if not labor_active and not oh_active:
+                    return {
+                        "success": True,
+                        "message": "Nothing to reconcile for this period",
+                        "data": {
+                            "period": period,
+                            "labor": {
+                                "applied": str(applied_labor),
+                                "actual": str(actual_labor),
+                                "variance": "0.00",
+                            },
+                            "overhead": {
+                                "mapped": actual_oh_id is not None,
+                                "applied": str(applied_oh),
+                                "actual": str(actual_oh),
+                                "variance": "0.00",
+                            },
+                            "journal_number": None,
+                        },
+                    }
+
+                # --- Build the reconcile journal ---------------------------
+                ym = f"{p_end.year % 100:02d}{p_end.month:02d}"
+                rseq = await conn.fetchval(
+                    """
+                    INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
+                    VALUES ($1, 'JV', $2, $3, 1)
+                    ON CONFLICT (tenant_id, prefix, year, month)
+                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
+                    RETURNING last_number
+                    """,
+                    tenant_id,
+                    p_end.year,
+                    p_end.month,
+                )
+                je_id = _uuid_rc.uuid4()
+                jnum = f"JV-RECON-{ym}-{rseq:04d}"
+
+                lines = []  # (account_id, debit, credit, memo)
+
+                var_labor = ZERO
+                var_oh = ZERO
+
+                # ---- LABOR leg ----------------------------------------------
+                # Dr 2-10430 applied_labor (drain clearing; if positive)
+                # Cr 5-20100 actual_labor  (zero out Beban Gaji; if positive)
+                # plug var_labor = actual_labor - applied_labor to 5-90200
+                #   var>0 -> Dr 5-90200 (under-applied/unfavorable)
+                #   var<0 -> Cr 5-90200 (over-applied/favorable)
+                if labor_active:
+                    if applied_labor > ZERO:
+                        lines.append(
+                            (
+                                labor_applied_id,
+                                applied_labor,
+                                ZERO,
+                                f"Drain TKL Applied {period}",
+                            )
+                        )
+                    elif applied_labor < ZERO:
+                        # clearing had a debit balance — credit it back
+                        lines.append(
+                            (
+                                labor_applied_id,
+                                ZERO,
+                                -applied_labor,
+                                f"Drain TKL Applied (neg) {period}",
+                            )
+                        )
+                    if actual_labor > ZERO:
+                        lines.append(
+                            (
+                                direct_labor_id,
+                                ZERO,
+                                actual_labor,
+                                f"Zero Beban Gaji {period}",
+                            )
+                        )
+                    elif actual_labor < ZERO:
+                        lines.append(
+                            (
+                                direct_labor_id,
+                                -actual_labor,
+                                ZERO,
+                                f"Zero Beban Gaji (neg) {period}",
+                            )
+                        )
+                    var_labor = (actual_labor - applied_labor).quantize(Q)
+                    if var_labor > ZERO:
+                        lines.append(
+                            (
+                                variance_id,
+                                var_labor,
+                                ZERO,
+                                f"Labor variance (unfavorable) {period}",
+                            )
+                        )
+                    elif var_labor < ZERO:
+                        lines.append(
+                            (
+                                variance_id,
+                                ZERO,
+                                -var_labor,
+                                f"Labor variance (favorable) {period}",
+                            )
+                        )
+
+                # ---- OH leg (only if MFG_ACTUAL_OVERHEAD mapped) ------------
+                if oh_active:
+                    if applied_oh > ZERO:
+                        lines.append(
+                            (
+                                oh_applied_id,
+                                applied_oh,
+                                ZERO,
+                                f"Drain Overhead Applied {period}",
+                            )
+                        )
+                    elif applied_oh < ZERO:
+                        lines.append(
+                            (
+                                oh_applied_id,
+                                ZERO,
+                                -applied_oh,
+                                f"Drain Overhead Applied (neg) {period}",
+                            )
+                        )
+                    if actual_oh > ZERO:
+                        lines.append(
+                            (
+                                actual_oh_id,
+                                ZERO,
+                                actual_oh,
+                                f"Zero Actual Overhead {period}",
+                            )
+                        )
+                    elif actual_oh < ZERO:
+                        lines.append(
+                            (
+                                actual_oh_id,
+                                -actual_oh,
+                                ZERO,
+                                f"Zero Actual Overhead (neg) {period}",
+                            )
+                        )
+                    var_oh = (actual_oh - applied_oh).quantize(Q)
+                    if var_oh > ZERO:
+                        lines.append(
+                            (
+                                variance_id,
+                                var_oh,
+                                ZERO,
+                                f"Overhead variance (unfavorable) {period}",
+                            )
+                        )
+                    elif var_oh < ZERO:
+                        lines.append(
+                            (
+                                variance_id,
+                                ZERO,
+                                -var_oh,
+                                f"Overhead variance (favorable) {period}",
+                            )
+                        )
+
+                # --- Law 4: assert Dr == Cr before POSTED ------------------
+                total_debit = sum((ln[1] for ln in lines), ZERO).quantize(Q)
+                total_credit = sum((ln[2] for ln in lines), ZERO).quantize(Q)
+                if total_debit != total_credit:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"Reconcile journal unbalanced (Law 4): "
+                            f"Dr {total_debit} != Cr {total_credit}"
+                        ),
+                    )
+                if not lines:
+                    return {
+                        "success": True,
+                        "message": "Nothing to reconcile for this period",
+                        "data": {"period": period, "journal_number": None},
+                    }
+
+                # --- Insert DRAFT journal + lines --------------------------
+                await conn.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        id, tenant_id, journal_number, journal_date,
+                        description, source_type, source_id,
+                        total_debit, total_credit, status, period_id, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', $10, $11)
+                    """,
+                    je_id,
+                    tenant_id,
+                    jnum,
+                    p_end,
+                    f"Month-end manufacturing reconcile {period} (full absorption)",
+                    _RECON_SOURCE_TYPE,
+                    je_id,  # self-referencing source_id (period-level, no WO)
+                    total_debit,
+                    total_credit,
+                    fp["id"],
+                    user_id,
+                )
+                for idx, (acc_id, dr, cr, memo) in enumerate(lines, start=1):
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        _uuid_rc.uuid4(),
+                        je_id,
+                        idx,
+                        acc_id,
+                        dr,
+                        cr,
+                        memo,
+                    )
+
+                # --- Law 20: DRAFT -> POSTED -------------------------------
+                await conn.execute(
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                    je_id,
+                )
+
+                logger.info(
+                    "month_end_reconcile %s period=%s labor(app=%s act=%s var=%s) "
+                    "oh(mapped=%s app=%s act=%s var=%s)",
+                    jnum,
+                    period,
+                    applied_labor,
+                    actual_labor,
+                    var_labor,
+                    actual_oh_id is not None,
+                    applied_oh,
+                    actual_oh,
+                    var_oh,
+                )
+
+                return {
+                    "success": True,
+                    "message": f"Month-end reconcile posted ({jnum})",
+                    "data": {
+                        "period": period,
+                        "journal_id": str(je_id),
+                        "journal_number": jnum,
+                        "labor": {
+                            "applied": str(applied_labor),
+                            "actual": str(actual_labor),
+                            "variance": str(var_labor),
+                        },
+                        "overhead": {
+                            "mapped": actual_oh_id is not None,
+                            "applied": str(applied_oh),
+                            "actual": str(actual_oh),
+                            "variance": str(var_oh),
+                        },
+                        "total_debit": str(total_debit),
+                        "total_credit": str(total_credit),
+                    },
+                }
+
+    except HTTPException:
+        raise
+    except AccountRoleUnmappedError as e:
+        logger.error("month_end_reconcile role unmapped: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Error in month_end_reconcile: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reconcile month-end")
+
+
+@router.post(
+    "/month-end-reconcile/{journal_id}/void", response_model=ProductionResponse
+)
+async def void_month_end_reconcile(request: Request, journal_id: UUID):
+    """Void (reverse) a month-end reconcile journal (Law 2 + Law 26).
+
+    Creates a reversal journal linked via reversal_of_id; the period then reads
+    as 'not reconciled' (idempotency guard skips reversed reconciles) so it can
+    be re-run after new payroll/OH postings land.
+    """
+    try:
+        ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx.get("user_id")
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"MFG_RECONCILE_VOID:{tenant_id}:{journal_id}",
+                )
+
+                je = await conn.fetchrow(
+                    """
+                    SELECT id, journal_number, source_type, status, reversed_by_id,
+                           journal_date
+                    FROM journal_entries
+                    WHERE id = $1 AND tenant_id = $2
+                    """,
+                    journal_id,
+                    tenant_id,
+                )
+                if not je:
+                    raise HTTPException(
+                        status_code=404, detail="Reconcile journal not found"
+                    )
+                if je["source_type"] != _RECON_SOURCE_TYPE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Journal is not a month-end reconcile",
+                    )
+                if je["status"] != "POSTED":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot void: journal status is {je['status']}",
+                    )
+                if je["reversed_by_id"]:
+                    raise HTTPException(
+                        status_code=409, detail="Reconcile already reversed"
+                    )
+
+                # Guard: cannot reverse into a closed/locked period
+                fp = await conn.fetchrow(
+                    """
+                    SELECT status FROM fiscal_periods
+                    WHERE tenant_id = $1
+                      AND $2 BETWEEN start_date AND end_date
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                    je["journal_date"],
+                )
+                if fp and str(fp["status"]).upper() in ("CLOSED", "LOCKED"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot void: target period is closed/locked",
+                    )
+
+                rev_id = await _reverse_journal(
+                    conn,
+                    tenant_id,
+                    user_id,
+                    journal_id,
+                    "Void month-end manufacturing reconcile",
+                )
+                if rev_id is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Reversal failed (already reversed or not posted)",
+                    )
+
+                logger.info(
+                    "void_month_end_reconcile %s reversed by %s",
+                    je["journal_number"],
+                    rev_id,
+                )
+                return {
+                    "success": True,
+                    "message": f"Reconcile {je['journal_number']} reversed",
+                    "data": {
+                        "original_journal_id": str(journal_id),
+                        "reversal_journal_id": str(rev_id),
+                    },
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error voiding month_end_reconcile: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to void reconcile")
