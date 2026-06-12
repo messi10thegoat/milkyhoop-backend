@@ -1963,7 +1963,8 @@ def classify_query_intent(user_text: str) -> tuple:
 def classify_crud_intent(user_text: str) -> tuple:
     """
     Classify CRUD intent from user text using keyword matching.
-    Returns (intent, entity_name_raw, name_field) or (None, None, None).
+    Returns (intent, entity_name_raw, name_field, new_value) or (None, None, None, None).
+    new_value carries the rename target for "X menjadi/jadi Y" updates.
     """
     text = user_text.strip()
     text_lower = text.lower()
@@ -1992,7 +1993,7 @@ def classify_crud_intent(user_text: str) -> tuple:
             break
 
     if not action:
-        return None, None, None
+        return None, None, None, None
 
     # Step 2: Detect entity type
     remaining = text_lower[action_end_pos:].strip()
@@ -2033,7 +2034,7 @@ def classify_crud_intent(user_text: str) -> tuple:
         _, _, entity_suffix, entity_config, entity_end_pos, _src = _entity_candidates[0]
 
     if not entity_suffix:
-        return None, None, None
+        return None, None, None, None
 
     # Step 3: Build intent
     if action == "void" and entity_suffix not in (
@@ -2084,13 +2085,65 @@ def classify_crud_intent(user_text: str) -> tuple:
         remaining_after_entity = ""
     remaining_after_entity = remaining_after_entity.strip("\"'\u201c\u201d\u2018\u2019")
 
+    # FIX_RENAME_MENJADI 2026-06-13 — rename detection BEFORE generic truncation.
+    # "RIB 24S RED PLUM ROLL menjadi RIB 20S BABY PEACH" = RENAME; the old
+    # truncation discarded everything after menjadi/jadi/ke (the new name).
+    # Strip a leading separator (: - – —) then split on the connector so the
+    # left = OLD name (for lookup) and right = NEW name (new_value).
+    _rename_new = None
+    if action == "update" and remaining_after_entity:
+        # Strip a leading separator like "EDIT ITEM : RIB 24S ..."
+        remaining_after_entity = _re.sub(
+            r"^\s*[:\-\u2013\u2014]\s*", "", remaining_after_entity
+        ).strip()
+        _rn = _re.split(
+            r"\s+(?:menjadi|jadi|ke)\s+",
+            remaining_after_entity,
+            maxsplit=1,
+            flags=_re.IGNORECASE,
+        )
+        if len(_rn) == 2 and _rn[1].strip():
+            _left = _rn[0].strip()
+            _right = _rn[1].strip()
+            # GUARD: do not treat field-set phrasing as a rename.
+            #  - connector "menjadi" is a strong rename signal (accept unless a
+            #    field keyword leads the left side, which never happens here).
+            #  - bare "jadi"/"ke": only a rename when NO field keyword appears in
+            #    the remainder (e.g. "telepon jadi 081" is a field-set, NOT rename).
+            _conn_match = _re.search(
+                r"\s+(menjadi|jadi|ke)\s+",
+                remaining_after_entity,
+                flags=_re.IGNORECASE,
+            )
+            _conn = _conn_match.group(1).lower() if _conn_match else ""
+            _field_kw = _re.compile(
+                r"\b(?:telepon|telp|hp|email|alamat|harga|stok|sku|kode|"
+                r"satuan|deskripsi|catatan|telphone|phone|no\s*rek|rekening|"
+                r"bank|cabang|perusahaan|company)\b",
+                flags=_re.IGNORECASE,
+            )
+            # A field keyword on the LEFT side (immediately before connector)
+            # means the user is setting that field, e.g. "..., ubah telepon jadi".
+            _left_has_field = bool(_field_kw.search(_left.split(",")[-1]))
+            _is_rename = False
+            if _conn == "menjadi" and not _left_has_field:
+                _is_rename = True
+            elif _conn in ("jadi", "ke"):
+                # Conservative: only rename when neither side carries a field kw.
+                if not _left_has_field and not _field_kw.search(_right):
+                    _is_rename = True
+            if _is_rename:
+                remaining_after_entity = _left
+                _rename_new = _right.strip("\"'\u201c\u201d\u2018\u2019").strip()
+
     # Truncate at comma or field-indicator words for update commands
     # "PT Bahagia Sejahtera, ubah telepon jadi 081234567890" → "PT Bahagia Sejahtera"
+    # NOTE: jadi/menjadi/ke removed here — consumed by rename block above.
     if action == "update" and remaining_after_entity:
         if "," in remaining_after_entity:
             remaining_after_entity = remaining_after_entity.split(",")[0].strip()
         _fi = _re.split(
-            r"\s+(?:ubah|ganti|update|set|jadikan|jadi|menjadi|ke|telepon|telp|hp|email|alamat|harga|stok)\s+",
+            r"\s+(?:ubah|ganti|update|set|jadikan|telepon|telp|hp|email|alamat|harga|stok)\s+",
             remaining_after_entity,
             maxsplit=1,
             flags=_re.IGNORECASE,
@@ -2102,15 +2155,16 @@ def classify_crud_intent(user_text: str) -> tuple:
     name_field = entity_config["name_field"]
 
     logger.warning(
-        "[INTENT_CLASSIFIER] text='%s' -> action=%s entity=%s intent=%s name='%s'",
+        "[INTENT_CLASSIFIER] text='%s' -> action=%s entity=%s intent=%s name='%s' new='%s'",
         text[:60],
         action,
         entity_suffix,
         intent,
         entity_name or "",
+        _rename_new or "",
     )
 
-    return intent, entity_name, name_field
+    return intent, entity_name, name_field, _rename_new
 
 
 class EntityExtractor:
@@ -2285,6 +2339,14 @@ def build_intent_prompt(intent: str, collected: dict) -> str:
         '- Persen: nilai "11%" atau "11 persen" = 11 (integer 0-100), BUKAN 0.11. Selalu emit angka persen utuh.',
         '- Diskon "5%" = 5 (BUKAN 0.05). Pajak "11%" = 11 (BUKAN 0.11).',
     ]
+
+    # FIX_RENAME_MENJADI 2026-06-13 — rename guard for update intents.
+    if intent.startswith("update_"):
+        parts.append(
+            "- RENAME: pola 'X menjadi/jadi Y' berarti Y adalah NILAI NAMA BARU. "
+            "Taruh Y di field nama (name/account_name), JANGAN pernah menaruh "
+            "nama entitas (X atau Y) ke field description/Deskripsi."
+        )
 
     # BUG-item-slot fix (2026-05-07): constrain items[].description to barang/jasa
     _CREATE_SHAPE_INTENTS = {

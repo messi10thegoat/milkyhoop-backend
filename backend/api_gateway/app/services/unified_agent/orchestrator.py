@@ -2614,12 +2614,68 @@ class UnifiedAgent:
                             "name",
                             "date",
                             "entity_name",
+                            "_rename_new",  # FIX_RENAME_MENJADI sentinel
                         }
                         _change_fields = {
                             k: v
                             for k, v in merged_entities.items()
                             if k not in _id_fields and v is not None and v != ""
                         }
+                        # FIX_RENAME_MENJADI 2026-06-13 — "X menjadi/jadi Y" rename:
+                        # map the new name to the registry's entity_name_field
+                        # (name / account_name) so the card shows the NEW name and
+                        # the old name never leaks into description/deskripsi.
+                        _rename_new = merged_entities.get("_rename_new")
+                        if _rename_new:
+                            from .direct_action_registry import (
+                                get_direct_action as _rn_get_cfg,
+                            )
+
+                            _rn_cfg = _rn_get_cfg(extraction.intent)
+                            _rn_field = (
+                                getattr(_rn_cfg, "entity_name_field", None) or "name"
+                            )
+                            _change_fields[_rn_field] = _rename_new
+                            # Stage-2 LLM sometimes leaks the OLD name into
+                            # description/deskripsi/notes during a pure rename
+                            # (prompt guard is best-effort on gpt-4o-mini). Scrub
+                            # any free-text field whose value == old/new name so
+                            # the old name never lands in Deskripsi.
+                            _rn_old_lc = str(_entity_name or "").strip().lower()
+                            _rn_new_lc = str(_rename_new or "").strip().lower()
+                            _rn_old_search_lc = (
+                                str(
+                                    merged_entities.get("item_name")
+                                    or merged_entities.get("customer_name")
+                                    or merged_entities.get("vendor_name")
+                                    or merged_entities.get("bank_name")
+                                    or merged_entities.get("warehouse_name")
+                                    or ""
+                                )
+                                .strip()
+                                .lower()
+                            )
+                            for _leak_f in ("description", "deskripsi", "notes"):
+                                _lv = (
+                                    str(_change_fields.get(_leak_f, "")).strip().lower()
+                                )
+                                if _lv and _lv in (
+                                    _rn_old_lc,
+                                    _rn_new_lc,
+                                    _rn_old_search_lc,
+                                ):
+                                    _change_fields.pop(_leak_f, None)
+                                    logger.warning(
+                                        "[PIPELINE] Rename scrub: dropped leaked %s",
+                                        _leak_f,
+                                    )
+                            logger.warning(
+                                "[PIPELINE] Rename fast path: %s %s='%s' (old='%s')",
+                                extraction.intent,
+                                _rn_field,
+                                _rename_new,
+                                _entity_name,
+                            )
                         if _change_fields:
                             # User said "edit X, harga jual 43000" — go straight to propose
                             _fast_payload = {
@@ -9270,9 +9326,12 @@ class UnifiedAgent:
             # 4. CRUD GUARD (deferred — legacy block retained verbatim)
             from .entity_extractor import classify_crud_intent
 
-            _code_intent, _code_entity_name, _code_name_field = classify_crud_intent(
-                user_text
-            )
+            (
+                _code_intent,
+                _code_entity_name,
+                _code_name_field,
+                _code_new_value,
+            ) = classify_crud_intent(user_text)
 
             if _code_intent:
                 is_crud = extraction.intent.startswith(
@@ -9295,6 +9354,22 @@ class UnifiedAgent:
                         extraction.entities = {}
                     if not extraction.entities.get(_code_name_field):
                         extraction.entities[_code_name_field] = _code_entity_name
+                # FIX_RENAME_MENJADI 2026-06-13 — carry the new name for the
+                # rename fast-path. Sentinel key, mapped to entity_name_field later.
+                # Also FORCE the search/name field to the OLD name (code classifier
+                # is authoritative): the Stage-1/2 LLM otherwise extracts the NEW
+                # name into customer_name/etc, so entity lookup searches the wrong
+                # (new) name and fails. Override regardless of any LLM value.
+                if _code_new_value:
+                    if not isinstance(extraction.entities, dict):
+                        extraction.entities = {}
+                    extraction.entities["_rename_new"] = _code_new_value
+                    if _code_entity_name and _code_name_field:
+                        extraction.entities[_code_name_field] = _code_entity_name
+                        # Clear any LLM-extracted generic "name" that may hold the
+                        # new name and shadow the old name during resolution.
+                        if extraction.entities.get("name") == _code_new_value:
+                            extraction.entities.pop("name", None)
 
             # 6. DE-ESCALATION via arbiter helper
             _new_esc, _de_fired = self.guard_arbiter.apply_de_escalate(
@@ -10057,7 +10132,7 @@ class UnifiedAgent:
                 try:
                     from .entity_extractor import classify_crud_intent as _cci_override
 
-                    _ovr_code_intent, _, _ = _cci_override(user_text)
+                    _ovr_code_intent, _, _, _ = _cci_override(user_text)
                 except Exception:
                     _ovr_code_intent = None
                 if (
