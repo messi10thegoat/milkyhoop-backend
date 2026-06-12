@@ -166,6 +166,7 @@ KNOWN_INTENTS: set[str] = {
     "query_credit_notes_summary",
     "query_customer_ar",
     "query_customer_sales",
+    "query_restock_priority",  # FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08)
     "query_customer_deposits_list",
     "query_customer_detail",
     "query_customers_list",

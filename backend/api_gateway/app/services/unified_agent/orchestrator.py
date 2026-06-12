@@ -3191,6 +3191,16 @@ class UnifiedAgent:
         field_hints = {}
         if config:
             for f in config.fields:
+                # FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): NEVER ask the user
+                # for hidden/display_only fields. Hidden required fields
+                # (customer_id, bank_account_id, allocations, ...) carry raw
+                # internal UUIDs the user can never provide; surfacing their
+                # labels ("Customer ID", "Bank Account ID") is a trust bug. A
+                # missing required HIDDEN field is a resolution issue handled
+                # upstream (entity resolver / bank pills / name-unresolved
+                # branch), not a user-askable slot.
+                if getattr(f, "hidden", False) or getattr(f, "display_only", False):
+                    continue
                 if f.required and f.name not in collected_clean:
                     hint = f.label
                     if f.options:
@@ -3869,6 +3879,155 @@ class UnifiedAgent:
             total_latency_ms=int((_time.monotonic() - _drv_start) * 1000),
         )
 
+    async def _handle_restock_priority(
+        self,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """RESTOCK_PRIORITY_HANDLER — deterministic "sells well but low on stock".
+
+        Renders the INTERSECTION of (sells well in last 90d) AND (low stock) as a
+        restock-priority table ranked by 90d units sold DESC, via
+        restock_priority.compute_restock_priority (journal/ledger-derived, Iron
+        Law 16). NO LLM polish (Iron Law 1), no journal mutation, no advisory
+        lock. Non-sellers are excluded by the compute. Empty data -> honest
+        message, never a fabricated list.
+        """
+        import time as _time_rsp
+
+        _rsp_start = _time_rsp.monotonic()
+
+        _tool_calls = [
+            {
+                "name": "restock_priority",
+                "args": {"intent": "query_restock_priority"},
+                "success": True,
+            }
+        ]
+        try:
+            from .restock_priority import compute_restock_priority
+
+            rows = await compute_restock_priority(context.tenant_id, 50)
+        except Exception as _rsp_err:
+            import traceback as _tb_rsp
+
+            logger.warning(
+                "[RESTOCK_PRIORITY] compute failed: %s\n%s",
+                _rsp_err,
+                _tb_rsp.format_exc(),
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=(
+                    "Maaf, terjadi kendala saat menyusun daftar barang yang laku "
+                    "tapi stoknya menipis. Silakan coba lagi."
+                ),
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="restock_priority",
+                total_latency_ms=int((_time_rsp.monotonic() - _rsp_start) * 1000),
+            )
+
+        # Empty -> honest message, NO fabricated list.
+        if not rows:
+            _empty = (
+                "Kabar baik: tidak ada barang yang laku 90 hari terakhir sekaligus "
+                "stoknya menipis. Stok untuk barang-barang laris kamu masih aman. 👍"
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=_empty,
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="restock_priority",
+                total_latency_ms=int((_time_rsp.monotonic() - _rsp_start) * 1000),
+            )
+
+        # Deterministic markdown table (Iron Law 1: no LLM, no hallucinated nums).
+        from decimal import Decimal as _D_rsp
+
+        def _fmt_qty_rsp(v) -> str:
+            try:
+                d = _D_rsp(str(v))
+            except Exception:
+                d = _D_rsp(0)
+            # integer-ish -> no decimals; else strip trailing zeros (id-ID comma).
+            if d == d.to_integral_value():
+                n = int(d)
+                return f"{n:,}".replace(",", ".")
+            s = format(d.normalize(), "f")
+            intpart, _, frac = s.partition(".")
+            intpart_fmt = f"{int(intpart):,}".replace(",", ".")
+            return intpart_fmt + ("," + frac if frac else "")
+
+        _top = rows[:10]
+        _more = len(rows) - len(_top)
+        _lines = [
+            "**Prioritas Restock — laku 90 hari terakhir tapi stok menipis**",
+            "",
+            "| No | Barang | Terjual (90 hari) | Stok Sekarang | Ambang |",
+            "|---:|--------|------:|------:|:------|",
+        ]
+        for _i, _r in enumerate(_top, start=1):
+            _name = _r.get("name") or "(Tanpa Nama)"
+            _unit = _r.get("unit") or "pcs"
+            _sold = _fmt_qty_rsp(_r.get("units_90d", 0))
+            _soh = _fmt_qty_rsp(_r.get("soh", 0))
+            try:
+                _ro = _D_rsp(str(_r.get("reorder_level", 0)))
+            except Exception:
+                _ro = _D_rsp(0)
+            _soh_val = _r.get("soh", 0)
+            try:
+                _soh_dec = _D_rsp(str(_soh_val))
+            except Exception:
+                _soh_dec = _D_rsp(0)
+            if _ro > 0:
+                _thresh = f"reorder {_fmt_qty_rsp(_ro)}"
+            elif _soh_dec <= 0:
+                _thresh = "habis"
+            else:
+                _thresh = "habis"
+            _lines.append(
+                f"| {_i} | {_name} | {_sold} {_unit} | {_soh} {_unit} | {_thresh} |"
+            )
+        _lines.append("")
+        if _more > 0:
+            _lines.append(
+                f"_+{_more} lainnya. Total {len(rows)} barang perlu restock._"
+            )
+        _lines.append(
+            "_Terjual = unit terjual 90 hari terakhir (faktur efektif). "
+            "Stok = jurnal/ledger. Urut dari yang paling laku._"
+        )
+        _content = "\n".join(_lines)
+
+        # Persist last_action_type for follow-up context (best-effort).
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id,
+                    last_action_type="query_restock_priority",
+                    last_action_result={"response_text": _content[:2000]},
+                )
+            except Exception:
+                pass
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=_content,
+            iterations=1,
+            tool_calls_made=_tool_calls,
+            model_used="restock_priority",
+            total_latency_ms=int((_time_rsp.monotonic() - _rsp_start) * 1000),
+        )
+
     async def _handle_rank_customers_by_sales(
         self,
         user_text: str,
@@ -4207,6 +4366,96 @@ class UnifiedAgent:
         import httpx
 
         start_time = _time.time()
+
+        # ── FIX_DOGFOOD_AR_DRILL_OUTSTANDING (2026-06-08) ──────────────────────
+        # Single chokepoint for AR/AP per-invoice "rincian faktur piutang dari
+        # pelanggan X" requests, regardless of arrival path (drilldown_table ->
+        # query_sales_invoices_list, LLM-router primary -> query_sales_invoices_list,
+        # query_ar_by_customer, or query_customer_ar). The generic list path returns
+        # per-invoice total_amount/amount_paid (NOT outstanding) and/or loses the
+        # customer scope -> Rp 0. Instead render per-invoice OUTSTANDING journal-
+        # derived (Law 16, Iron Law 1 by construction; draft/void excluded +
+        # outstanding>0 via compute_ar/ap_outstanding()). Gated on piutang/utang
+        # framing + an invoice-detail/rincian intent + a SINGLE resolvable entity, so
+        # plain "daftar faktur penjualan" (no piutang framing) is untouched.
+        _AR_DRILL_INTENTS = {
+            "query_sales_invoices_list",
+            "query_ar_by_customer",
+            "query_customer_ar",
+            "query_ar_invoices",
+        }
+        _AP_DRILL_INTENTS = {
+            "query_bills_list",
+            "query_ap_by_vendor",
+            "query_vendor_ap",
+        }
+        if extraction.intent in (_AR_DRILL_INTENTS | _AP_DRILL_INTENTS):
+            try:
+                _ar_resp = await self._maybe_render_ar_ap_invoice_detail(
+                    user_text=user_text,
+                    context=context,
+                    extraction=extraction,
+                    start_time=start_time,
+                )
+                if _ar_resp is not None:
+                    return _ar_resp
+            except Exception as _ar_err:
+                logger.warning(
+                    "[AR_DRILL_OUTSTANDING] per-invoice detail render failed, "
+                    "falling back to generic pipeline: %s",
+                    _ar_err,
+                )
+
+        # ── FIX_DOGFOOD_OVERDUE_PRIORITY_LIST (2026-06-08) ─────────────────────
+        # Theme B: "mana tagihan vendor yang paling mendesak harus dibayar?" /
+        # "piutang apa saja yang sudah jatuh tempo dan harus saya tagih mendesak"
+        # were answered as an AP/AR SUMMARY or AGING (cumulative totals + insight),
+        # or worse — the generic list path let Gemini polish HALLUCINATE the total
+        # (observed AR "50 faktur total Rp -19.155.000" vs real 95 / Rp 79.371.000;
+        # Iron Law 1 violation). The user wants a PRIORITIZED per-item list to act
+        # on: which bill to pay / which invoice to chase FIRST. Render a
+        # journal-derived (Law 16), draft/void-excluded, outstanding>0, most-overdue-
+        # first list deterministically (Iron Law 1 by construction — no LLM polish).
+        # Gated on urgency/overdue + prioritization framing in the user text AND an
+        # AR/AP overdue/outstanding/aging-family intent, so a plain "ringkasan
+        # tagihan vendor" / "aging piutang" (no urgency wording) stays a summary.
+        _OVERDUE_AP_INTENTS = {
+            "query_bills_overdue",
+            "query_ap_aging",
+            "query_ap_outstanding",
+            "query_ap_by_vendor",
+            "query_vendor_ap",
+            "query_bills_unpaid",
+            "query_overdue_bills_dashboard",
+            "query_hutang_detail",
+        }
+        _OVERDUE_AR_INTENTS = {
+            "query_sales_invoices_overdue",
+            "query_ar_aging",
+            "query_ar_outstanding",
+            "query_ar_invoices",
+            "query_ar_by_customer",
+            "query_customer_ar",
+            "query_sales_invoices_unpaid",
+            "query_overdue_invoices_dashboard",
+            "query_piutang_detail",
+        }
+        if extraction.intent in (_OVERDUE_AP_INTENTS | _OVERDUE_AR_INTENTS):
+            try:
+                _ov_resp = await self._maybe_render_overdue_priority_list(
+                    user_text=user_text,
+                    context=context,
+                    extraction=extraction,
+                    start_time=start_time,
+                )
+                if _ov_resp is not None:
+                    return _ov_resp
+            except Exception as _ov_err:
+                logger.warning(
+                    "[OVERDUE_PRIORITY_LIST] render failed, falling back to "
+                    "generic pipeline: %s",
+                    _ov_err,
+                )
 
         # Bug #1.5: AR/AP drill-down redirect — when user asks for invoice/bill
         # detail with an entity name, query_customer_ar / query_vendor_ap returns
@@ -5206,6 +5455,424 @@ class UnifiedAgent:
             model_used=getattr(self, "_last_polish_model", "pipeline"),
             total_latency_ms=int((_time.time() - start_time) * 1000),
             thinking_stages=["Menganalisis pesan", "Mencari data", "Menyusun jawaban"],
+        )
+
+    async def _maybe_render_ar_ap_invoice_detail(
+        self,
+        user_text,
+        context,
+        extraction,
+        start_time,
+    ):
+        """FIX_DOGFOOD_AR_DRILL_OUTSTANDING (2026-06-08).
+        If the drill is a piutang/utang-framed per-invoice detail request for a
+        SINGLE resolvable customer/vendor, render per-invoice OUTSTANDING
+        (journal-derived, Law 16) deterministically (Iron Law 1 by construction).
+        Returns AgentResponse on handle, or None to let the caller fall through to
+        the generic drilldown path (so non-AR 'rincian faktur penjualan' drills are
+        untouched).
+        """
+        import re as _re
+        import time as _time
+        from decimal import Decimal as _D
+
+        t = (user_text or "").lower()
+
+        # Gate 1: must be piutang/AR or utang/AP framed. Framing comes from the
+        # user text keyword OR from an explicit AR/AP intent. Bare "faktur
+        # penjualan" (query_sales_invoices_list with NO piutang word) falls through
+        # to the generic list path so non-AR drills are untouched.
+        _intent = getattr(extraction, "intent", "") or ""
+        _ar_intents = {
+            "query_ar_by_customer",
+            "query_customer_ar",
+            "query_ar_invoices",
+        }
+        _ap_intents = {"query_ap_by_vendor", "query_vendor_ap"}
+        _kw_ar = bool(_re.search(r"\b(piutang|receivable)\b", t))
+        _kw_ap = bool(_re.search(r"\b(utang|hutang|payable)\b", t))
+        _is_ar = _kw_ar or _intent in _ar_intents
+        _is_ap = _kw_ap or _intent in _ap_intents
+        if not (_is_ar or _is_ap):
+            return None
+        # Disambiguate when both fire: trust the keyword; if both keywords or the
+        # intent conflicts, defer to generic path (don't guess).
+        if _is_ar and _is_ap:
+            if _kw_ar and not _kw_ap:
+                _is_ap = False
+            elif _kw_ap and not _kw_ar:
+                _is_ar = False
+            elif _intent in _ar_intents and _intent not in _ap_intents:
+                _is_ap = False
+            elif _intent in _ap_intents and _intent not in _ar_intents:
+                _is_ar = False
+            else:
+                return None
+
+        # Gate 2: resolve a single customer (AR) or vendor (AP) name.
+        ents = getattr(extraction, "entities", None) or {}
+        if _is_ar:
+            _name = ents.get("customer_name") or ents.get("name")
+            if not _name:
+                m = _re.search(
+                    r"(?:dari|untuk|pelanggan|customer|atas\s+nama)\s+(?:pelanggan\s+|customer\s+)?([A-Za-z0-9][\w .,'&-]+?)\s*$",
+                    user_text or "",
+                    _re.IGNORECASE,
+                )
+                if m:
+                    _name = m.group(1).strip()
+        else:
+            _name = ents.get("vendor_name") or ents.get("name")
+            if not _name:
+                m = _re.search(
+                    r"(?:dari|untuk|vendor|pemasok|supplier|atas\s+nama)\s+(?:vendor\s+|pemasok\s+|supplier\s+)?([A-Za-z0-9][\w .,'&-]+?)\s*$",
+                    user_text or "",
+                    _re.IGNORECASE,
+                )
+                if m:
+                    _name = m.group(1).strip()
+        if not _name:
+            return None
+
+        from .entity_resolver import EntityResolver
+        from .db_utils import get_session_db_pool
+
+        pool = await get_session_db_pool()
+        resolver = EntityResolver(pool, context.tenant_id)
+        if _is_ar:
+            _res = await resolver._resolve_customer(_name)
+        else:
+            _res = await resolver._resolve_vendor(_name)
+        if not (_res and _res.entity_id and _res.confidence >= 0.5):
+            # Could not pin a single entity -> let generic path handle it.
+            return None
+
+        _entity_id = _res.entity_id
+        _entity_disp = getattr(_res, "name", None) or _name
+
+        # Gate 3: journal-derived per-invoice outstanding for this entity ONLY.
+        # compute_ar/ap_outstanding already: excludes draft/void (status filter),
+        # excludes reversed journals, and returns outstanding != 0 only.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", context.tenant_id
+            )
+            if _is_ar:
+                rows = await conn.fetch(
+                    """
+                    SELECT invoice_number AS doc_number, due_date, outstanding
+                    FROM compute_ar_outstanding($1)
+                    WHERE customer_id = $2 AND outstanding > 0
+                    ORDER BY due_date
+                    """,
+                    context.tenant_id,
+                    _entity_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT bill_number AS doc_number, due_date, outstanding
+                    FROM compute_ap_outstanding($1)
+                    WHERE vendor_id = $2 AND outstanding > 0
+                    ORDER BY due_date
+                    """,
+                    context.tenant_id,
+                    _entity_id,
+                )
+
+        kind_label = "piutang" if _is_ar else "utang"
+        doc_word = "faktur" if _is_ar else "tagihan"
+
+        def _fmt_rp(v) -> str:
+            try:
+                d = _D(str(v or 0))
+            except Exception:
+                d = _D(0)
+            n = int(d.quantize(_D("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        if not rows:
+            text = (
+                f"{_entity_disp} tidak punya {kind_label} outstanding saat ini "
+                f"(semua {doc_word} sudah lunas)."
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=text,
+                iterations=1,
+                tool_calls_made=[
+                    {
+                        "name": "query_ar_by_customer"
+                        if _is_ar
+                        else "query_ap_by_vendor",
+                        "args": {"customer" if _is_ar else "vendor": _entity_disp},
+                        "success": True,
+                    }
+                ],
+                model_used="pipeline",
+                total_latency_ms=int((_time.time() - start_time) * 1000),
+            )
+
+        lines = [f"Rincian {doc_word} {kind_label} {_entity_disp}:", ""]
+        total = _D(0)
+        for r in rows:
+            num = r["doc_number"] or "(tanpa nomor)"
+            out = r["outstanding"]
+            try:
+                total += _D(str(out or 0))
+            except Exception:
+                pass
+            due = r["due_date"]
+            due_s = f" (jatuh tempo {due.isoformat()})" if due is not None else ""
+            lines.append(f"• {num}{due_s} — {_fmt_rp(out)}")
+        lines.append("")
+        lines.append(
+            f"Total {kind_label}: {_fmt_rp(total)} dari {len(rows)} {doc_word}."
+        )
+        text = "\n".join(lines)
+
+        logger.warning(
+            "[AR_DRILL_OUTSTANDING] entity=%s id=%s rows=%d total=%s (%s)",
+            _entity_disp,
+            _entity_id,
+            len(rows),
+            str(total),
+            "AR" if _is_ar else "AP",
+        )
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=text,
+            iterations=1,
+            tool_calls_made=[
+                {
+                    "name": "query_ar_by_customer" if _is_ar else "query_ap_by_vendor",
+                    "args": {"customer" if _is_ar else "vendor": _entity_disp},
+                    "success": True,
+                }
+            ],
+            model_used="pipeline",
+            total_latency_ms=int((_time.time() - start_time) * 1000),
+        )
+
+    async def _maybe_render_overdue_priority_list(
+        self,
+        user_text,
+        context,
+        extraction,
+        start_time,
+    ):
+        """FIX_DOGFOOD_OVERDUE_PRIORITY_LIST (2026-06-08).
+        Render a PRIORITIZED, per-item overdue list (most-overdue first) for AP
+        ("which bill to pay first") or AR ("which receivable to chase first")
+        urgency questions. Journal-derived via compute_ap/ar_outstanding (Law 16):
+        draft/void excluded, reversed journals excluded, outstanding>0 only.
+        Deterministic render → Iron Law 1 by construction (no LLM polish, so no
+        hallucinated totals). Returns AgentResponse on handle, or None to let the
+        caller fall through to the generic summary/aging/list path (so explicit
+        summary/aging requests are untouched).
+        """
+        import re as _re
+        import time as _time
+        from decimal import Decimal as _D
+
+        t = (user_text or "").lower()
+
+        # Gate 1: urgency / overdue + prioritization framing. Without an urgency
+        # signal we do NOT hijack — "ringkasan tagihan vendor" / "aging piutang"
+        # must stay a summary. We require BOTH (a) an overdue/due signal and
+        # (b) an urgency or prioritization signal, OR a strong standalone urgency
+        # phrase, to avoid stealing neutral list/summary queries.
+        _due_sig = bool(
+            _re.search(
+                r"\bjatuh\s*tempo\b|\boverdue\b|\bterlambat\b|\blewat\s+tempo\b", t
+            )
+        )
+        _urgent_sig = bool(
+            _re.search(
+                r"\bmendesak\b|\bprioritas\b|\bsegera\b|paling\s+(?:mendesak|penting|dulu)"
+                r"|harus\s+(?:di)?(?:bayar|tagih)|yang\s+mana\s+(?:dulu|duluan)"
+                r"|mana\s+(?:yang|dulu|duluan)|duluan",
+                t,
+            )
+        )
+        if not (_due_sig and _urgent_sig):
+            # Allow a very explicit standalone urgency-to-act phrase even if the
+            # "jatuh tempo" word is absent (e.g. "tagihan mana yang harus dibayar
+            # duluan"), but still require an action verb so we don't grab neutral
+            # "daftar tagihan".
+            _strong = bool(
+                _re.search(
+                    r"(?:tagihan|hutang|utang|piutang|faktur|invoice|bill)\b.*"
+                    r"(?:harus\s+(?:di)?(?:bayar|tagih)|paling\s+mendesak|prioritas|duluan)",
+                    t,
+                )
+            )
+            if not _strong:
+                return None
+
+        # Gate 2: AR or AP side. Trust intent first, then keyword.
+        _intent = getattr(extraction, "intent", "") or ""
+        _ar_intents = {
+            "query_sales_invoices_overdue",
+            "query_ar_aging",
+            "query_ar_outstanding",
+            "query_ar_invoices",
+            "query_ar_by_customer",
+            "query_customer_ar",
+            "query_sales_invoices_unpaid",
+            "query_overdue_invoices_dashboard",
+            "query_piutang_detail",
+        }
+        _ap_intents = {
+            "query_bills_overdue",
+            "query_ap_aging",
+            "query_ap_outstanding",
+            "query_ap_by_vendor",
+            "query_vendor_ap",
+            "query_bills_unpaid",
+            "query_overdue_bills_dashboard",
+            "query_hutang_detail",
+        }
+        _kw_ar = bool(
+            _re.search(r"\b(piutang|receivable|tagih|customer|pelanggan)\b", t)
+        )
+        _kw_ap = bool(
+            _re.search(r"\b(utang|hutang|payable|vendor|pemasok|supplier|bayar)\b", t)
+        )
+        _is_ar = _intent in _ar_intents
+        _is_ap = _intent in _ap_intents
+        if not (_is_ar or _is_ap):
+            _is_ar = _kw_ar and not _kw_ap
+            _is_ap = _kw_ap and not _kw_ar
+        if _is_ar and _is_ap:
+            # both intent-families impossible (single intent); keyword tie -> defer
+            return None
+        if not (_is_ar or _is_ap):
+            return None
+
+        from .db_utils import get_session_db_pool
+
+        pool = await get_session_db_pool()
+
+        # Gate 3: journal-derived per-item OVERDUE list (due_date < today),
+        # outstanding>0, sorted most-overdue first (due_date ASC). compute_ar/ap_
+        # outstanding already excludes draft/void + reversed journals.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", context.tenant_id
+            )
+            if _is_ar:
+                rows = await conn.fetch(
+                    """
+                    SELECT customer_name AS party, invoice_number AS doc_number,
+                           due_date, outstanding,
+                           (CURRENT_DATE - due_date) AS days_overdue
+                    FROM compute_ar_outstanding($1)
+                    WHERE outstanding > 0 AND due_date IS NOT NULL
+                      AND due_date < CURRENT_DATE
+                    ORDER BY due_date ASC, outstanding DESC
+                    """,
+                    context.tenant_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT vendor_name AS party, bill_number AS doc_number,
+                           due_date, outstanding,
+                           (CURRENT_DATE - due_date) AS days_overdue
+                    FROM compute_ap_outstanding($1)
+                    WHERE outstanding > 0 AND due_date IS NOT NULL
+                      AND due_date < CURRENT_DATE
+                    ORDER BY due_date ASC, outstanding DESC
+                    """,
+                    context.tenant_id,
+                )
+
+        kind_label = "piutang" if _is_ar else "tagihan"
+        doc_word = "faktur" if _is_ar else "tagihan"
+        action_word = "ditagih" if _is_ar else "dibayar"
+        tool_name = "query_sales_invoices_overdue" if _is_ar else "query_bills_overdue"
+
+        def _fmt_rp(v) -> str:
+            try:
+                d = _D(str(v or 0))
+            except Exception:
+                d = _D(0)
+            n = int(d.quantize(_D("1")))
+            return "Rp " + f"{n:,}".replace(",", ".")
+
+        if not rows:
+            text = (
+                f"Tidak ada {kind_label} yang sudah jatuh tempo saat ini. "
+                f"Semua {doc_word} masih dalam tenggat. 👍"
+            )
+            return AgentResponse(
+                message_type="TEXT",
+                content=text,
+                iterations=1,
+                tool_calls_made=[
+                    {"name": tool_name, "args": {"intent": tool_name}, "success": True}
+                ],
+                model_used="pipeline",
+                total_latency_ms=int((_time.time() - start_time) * 1000),
+            )
+
+        _TOP_N = 15
+        total = _D(0)
+        for r in rows:
+            try:
+                total += _D(str(r["outstanding"] or 0))
+            except Exception:
+                pass
+
+        header = (
+            f"{kind_label.capitalize()} jatuh tempo yang paling mendesak untuk "
+            f"{action_word} (paling lama dulu):"
+        )
+        lines = [header, ""]
+        for i, r in enumerate(rows[:_TOP_N], start=1):
+            party = r["party"] or "(tanpa nama)"
+            num = r["doc_number"] or "(tanpa nomor)"
+            out = r["outstanding"]
+            due = r["due_date"]
+            dov = r["days_overdue"]
+            try:
+                dov_i = int(dov)
+            except Exception:
+                dov_i = None
+            due_s = due.isoformat() if due is not None else "-"
+            dov_s = f"{dov_i} hari" if dov_i is not None else "?"
+            lines.append(
+                f"{i}. {party} — {num} — {_fmt_rp(out)} "
+                f"(jatuh tempo {due_s}, telat {dov_s})"
+            )
+        _remaining = len(rows) - min(_TOP_N, len(rows))
+        if _remaining > 0:
+            lines.append(f"… +{_remaining} {doc_word} lainnya")
+        lines.append("")
+        # Avoid "tagihan tagihan" when doc_word == kind_label (AP side).
+        _tail_noun = doc_word if doc_word == kind_label else f"{doc_word} {kind_label}"
+        lines.append(f"Total {len(rows)} {_tail_noun} jatuh tempo: {_fmt_rp(total)}.")
+        text = "\n".join(lines)
+
+        logger.warning(
+            "[OVERDUE_PRIORITY_LIST] side=%s rows=%d total=%s shown=%d",
+            "AR" if _is_ar else "AP",
+            len(rows),
+            str(total),
+            min(_TOP_N, len(rows)),
+        )
+
+        return AgentResponse(
+            message_type="TEXT",
+            content=text,
+            iterations=1,
+            tool_calls_made=[
+                {"name": tool_name, "args": {"intent": tool_name}, "success": True}
+            ],
+            model_used="pipeline",
+            total_latency_ms=int((_time.time() - start_time) * 1000),
         )
 
     async def _handle_drilldown_table(
@@ -6956,6 +7623,52 @@ class UnifiedAgent:
                 pass
             return self._clarify_arap_side(int((_time.time() - start_time) * 1000))
 
+        # ── FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08) ──────────────────────
+        # "item barang apa yang penjualannya bagus tapi stok-nya menipis?" is a
+        # COMPOUND query: a sells-well signal AND a low/out-of-stock signal in the
+        # same message. The bot used to answer ONLY the low-stock half (plain
+        # stok-0 list incl. dead/zero-sales items) via query_items_low_stock, or
+        # misroute to an UNREGISTERED query_items_top_products -> wrong render.
+        # The correct answer is the INTERSECTION ranked by 90d sales velocity (a
+        # restock-priority list). classify_query_intent returns
+        # query_restock_priority ONLY for the compound phrasing; honor it HERE,
+        # BEFORE any _intent-gated branch (CHITCHAT, extraction, LLM router), so
+        # it beats both the plain-low-stock route and Gemini's misroute.
+        # Plain "stok menipis" (no sells-well signal) and plain "barang terlaris"
+        # (no low-stock signal) never reach this branch -> their routes intact.
+        # READ-ONLY, no advisory lock. Self-contained: no var leaks.
+        try:
+            from .entity_extractor import classify_query_intent as _rsp_qci
+
+            _rsp_guard, _, _ = _rsp_qci(user_text)
+        except Exception:
+            _rsp_guard = None
+        if _rsp_guard == "query_restock_priority":
+            logger.warning(
+                "[RESTOCK_PRIORITY_OVERRIDE] sells-well + low-stock compound user='%s'",
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_rsp
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_rsp.uuid4()),
+                        "final_intent": "query_restock_priority",
+                        "decision_source": "restock_priority_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_restock_priority(
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
+
         # ── CUST_SALES_RANK_OVERRIDE (2026-06-06) ──────────────────────────
         # "siapa pelanggan paling loyal" / "pelanggan dengan pembelian terbesar"
         # / "10 pelanggan terbanyak belanja" must route to the deterministic
@@ -7034,6 +7747,324 @@ class UnifiedAgent:
                 context=context,
                 tool_executor=tool_executor,
                 event_callback=event_callback,
+            )
+
+        # ── FIX_DOGFOOD_CUSTSALES_NAMED (2026-06-08) ───────────────────────
+        # Resolve-then-route. When a purchase verb is present, the user names a
+        # party DIRECTLY (no "pelanggan"/"customer"/"klien" noun), and that name
+        # resolves to a CUSTOMER, the question means OUR SALES to that customer
+        # ("Berapa total pembelian Aneke Mataputun ...") -> query_customer_sales.
+        #
+        # Without this, the customer-keyword-gated regex in
+        # classify_query_intent never returns query_customer_sales (no noun), so
+        # CUST_SALES_TOTAL_OVERRIDE above can't fire, and Gemini hijacks the turn
+        # to calc_sum_purchases_this_month (vendor purchases) or query_customer_ar
+        # (point-in-time AR -> "belum tercatat"). Both contradict the customer's
+        # own ranked sales figure.
+        #
+        # The resolved entity TYPE disambiguates: name->customer = our sales;
+        # name->vendor = a real AP purchase (resolve_customer_in_text only hits
+        # the customers table, so a vendor name returns None and we fall through,
+        # leaving the legitimate vendor-purchase path untouched).
+        #
+        # GUARDS (must ALL hold to fire):
+        #   * purchase verb present (pembelian/belanja/beli/transaksi)
+        #   * NO piutang/hutang/AR/AP keyword (those own their AR/AP paths,
+        #     incl. clarify_arap_side) -> never break them
+        #   * NO ranking/superlative (paling/terbesar/terbanyak/daftar/...) ->
+        #     the rank path (CUST_SALES_RANK_OVERRIDE) owns those
+        #   * the name resolves to a real CUSTOMER row
+        #
+        # READ-ONLY, no advisory lock. Self-contained: no var leaks. Runs BEFORE
+        # the _intent-gated branches and the LLM router, so it beats Gemini's
+        # query_customer_ar / calc_sum_purchases_this_month decision.
+        try:
+            import re as _re_csn
+
+            _csn_text = (user_text or "").lower()
+            _csn_has_verb = bool(
+                _re_csn.search(r"(?:pembelian|belanja|beli|transaksi)\w*", _csn_text)
+            )
+            _csn_has_arap = bool(
+                _re_csn.search(
+                    r"(?:\bpiutang\w*|\bhutang\w*|\butang\w*|\bar\b|\bap\b)", _csn_text
+                )
+            )
+            _csn_has_rank = bool(
+                _re_csn.search(
+                    r"(?:paling|terbesar|terbanyak|terloyal|loyal|peringkat|ranking|\btop\b|\bdaftar\b|semua|seluruh)",
+                    _csn_text,
+                )
+            )
+            # Also skip if an explicit customer noun is present: that case is
+            # already handled by the customer-keyword-gated regex ->
+            # CUST_SALES_TOTAL_OVERRIDE above (avoid double-resolving).
+            _csn_has_cust_noun = bool(
+                _re_csn.search(
+                    r"(?:\bpelanggan\w*|\bcustomer\w*|\bklien\w*)", _csn_text
+                )
+            )
+            _csn_eligible = (
+                _csn_has_verb
+                and not _csn_has_arap
+                and not _csn_has_rank
+                and not _csn_has_cust_noun
+            )
+        except Exception:
+            _csn_eligible = False
+
+        if _csn_eligible:
+            _csn_cust = None
+            try:
+                from .customer_sales import (
+                    resolve_customer_in_text as _csn_resolve,
+                )
+
+                _csn_cust = await _csn_resolve(context.tenant_id, user_text or "")
+            except Exception as _csn_err:
+                logger.warning(
+                    "[CUST_SALES_NAMED_OVERRIDE] resolve failed: %s", _csn_err
+                )
+                _csn_cust = None
+
+            if _csn_cust is not None:
+                logger.warning(
+                    "[CUST_SALES_NAMED_OVERRIDE] name->customer '%s' user='%s'",
+                    _csn_cust.get("nama"),
+                    user_text[:60],
+                )
+                try:
+                    import uuid as _uuid_csn
+
+                    await emit(
+                        "intent_classified",
+                        {
+                            "request_id": str(_uuid_csn.uuid4()),
+                            "final_intent": "query_customer_sales",
+                            "decision_source": "cust_sales_named_override",
+                            "confidence": 1.0,
+                        },
+                    )
+                except Exception:
+                    pass
+                return await self._handle_customer_sales(
+                    user_text=user_text,
+                    context=context,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
+        # ── FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09) ────────────────────
+        # "Catat pelunasan piutang dari <pelanggan> sebesar <X> lewat transfer
+        # bank" must route to create_receive_payment (a CUSTOMER settlement of
+        # AR), NOT create_bank_transfer. The phrase "transfer bank" here is the
+        # payment METHOD, not a bank-to-bank transfer. The deterministic CRUD
+        # classifier only recognises "terima pembayaran"/"penerimaan pembayaran"
+        # as receive_payment keywords, so "pelunasan/lunasi/bayar piutang dari
+        # <X>" was hijacked by the "transfer bank" -> create_bank_transfer
+        # entity keyword (crud_guard), and the LLM router flip-flopped between
+        # the two -> flaky raw-ID clarification.
+        #
+        # Fire ONLY when an AR-settlement verb ("pelunasan/lunasi/melunasi/bayar/
+        # pembayaran" + "piutang", OR "terima pembayaran/setoran/transfer dari
+        # <pelanggan>") co-occurs with a name that resolves to a real CUSTOMER.
+        # A real bank-to-bank transfer ("transfer dari BCA ke Mandiri 5jt") has
+        # NO customer-settlement verb and its names resolve to bank accounts,
+        # not customers -> never matches -> bank_transfer path intact.
+        #
+        # On match: build a synthetic create_receive_payment extraction
+        # (customer_name + parsed amount) and route through the normal
+        # _handle_pipeline CRUD flow, which resolves the customer, auto-builds
+        # the oldest-unpaid allocation (_enrich_receive_payment), applies the
+        # 3-tier bank pill picker, defaults payment_date=today, and emits a
+        # proper DIRECT_ACTION_PREVIEW or a bank-name CLARIFICATION. No raw IDs.
+        # READ-ONLY resolve; the actual write still requires user confirmation.
+        try:
+            import re as _re_rcp
+
+            _rcp_text = (user_text or "").lower()
+            # AR-settlement verb gate (any one):
+            _rcp_ar_verb = bool(
+                (
+                    _re_rcp.search(
+                        r"(?:pelunasan|melunasi|lunasi|pembayaran|bayar(?:kan)?|terima)",
+                        _rcp_text,
+                    )
+                    and _re_rcp.search(r"piutang", _rcp_text)
+                )
+                or _re_rcp.search(
+                    r"(?:terima\s+pembayaran|penerimaan\s+pembayaran|terima\s+transfer|"
+                    r"setoran|pembayaran\s+masuk|masuk\s+uang|pelunasan\s+faktur)\s+dari",
+                    _rcp_text,
+                )
+            )
+            # Disqualify genuine bank-to-bank transfers ("dari BCA ke Mandiri").
+            _rcp_is_bank_xfer = bool(
+                _re_rcp.search(r"transfer.*dari.*ke", _rcp_text)
+                and not _re_rcp.search(r"piutang", _rcp_text)
+            )
+            _rcp_eligible = _rcp_ar_verb and not _rcp_is_bank_xfer
+        except Exception:
+            _rcp_eligible = False
+
+        if _rcp_eligible:
+            _rcp_cust = None
+            try:
+                from .customer_sales import (
+                    resolve_customer_in_text as _rcp_resolve,
+                )
+
+                _rcp_cust = await _rcp_resolve(context.tenant_id, user_text or "")
+            except Exception as _rcp_err:
+                logger.warning(
+                    "[RECEIVEPAY_RESOLVE] customer resolve failed: %s", _rcp_err
+                )
+                _rcp_cust = None
+
+            if _rcp_cust is not None:
+                # Parse Indonesian amount: "16.170.000" / "16,170,000" / "5jt" /
+                # "5 juta" / "Rp 16.170.000". Deterministic; dots are thousands
+                # separators in id-ID.
+                def _rcp_parse_amount(txt: str):
+                    t = (txt or "").lower()
+                    _m = _re_rcp.search(
+                        r"(\d[\d.,]*)\s*(jt|juta|rb|ribu|m|miliar|milyar)?",
+                        t.split("dari", 1)[-1] if "dari" in t else t,
+                    )
+                    # Prefer the LARGEST numeric token in the message (the amount)
+                    _best = 0.0
+                    for _mm in _re_rcp.finditer(
+                        r"(\d[\d.,]*)\s*(jt|juta|rb|ribu|m|miliar|milyar)?", t
+                    ):
+                        _num = _mm.group(1)
+                        _suf = _mm.group(2) or ""
+                        _clean = _num.replace(".", "").replace(",", "")
+                        try:
+                            _val = float(_clean)
+                        except Exception:
+                            continue
+                        if _suf in ("jt", "juta", "m"):
+                            _val *= 1_000_000
+                        elif _suf in ("rb", "ribu"):
+                            _val *= 1_000
+                        elif _suf in ("miliar", "milyar"):
+                            _val *= 1_000_000_000
+                        if _val > _best:
+                            _best = _val
+                    return _best
+
+                _rcp_amount = _rcp_parse_amount(user_text or "")
+                logger.warning(
+                    "[RECEIVEPAY_RESOLVE] name->customer '%s' amount=%s user='%s'",
+                    _rcp_cust.get("nama"),
+                    _rcp_amount,
+                    (user_text or "")[:60],
+                )
+                try:
+                    import uuid as _uuid_rcp
+
+                    await emit(
+                        "intent_classified",
+                        {
+                            "request_id": str(_uuid_rcp.uuid4()),
+                            "final_intent": "create_receive_payment",
+                            "decision_source": "receivepay_resolve_override",
+                            "confidence": 1.0,
+                        },
+                    )
+                except Exception:
+                    pass
+
+                from .entity_extractor import ExtractionResult as _RcpExtraction
+
+                _rcp_entities = {
+                    "customer_name": _rcp_cust.get("nama"),
+                    "customer_id": _rcp_cust.get("id"),
+                    "payment_method": "bank_transfer",
+                }
+                if _rcp_amount and _rcp_amount > 0:
+                    _rcp_entities["amount"] = _rcp_amount
+                    _rcp_entities["total_amount"] = _rcp_amount
+
+                _rcp_extraction = _RcpExtraction(
+                    intent="create_receive_payment",
+                    entities=_rcp_entities,
+                    modifiers=[],
+                    confidence=1.0,
+                )
+                return await self._handle_pipeline(
+                    user_text=user_text,
+                    context=context,
+                    extraction=_rcp_extraction,
+                    conversation_history=conversation_history,
+                    tool_executor=tool_executor,
+                    event_callback=event_callback,
+                )
+
+        # ── FIX_DOGFOOD_OVERDUE_EARLY_OVERRIDE (2026-06-09) ────────────────
+        # HARDENING of FIX_DOGFOOD_OVERDUE_PRIORITY_LIST. The deterministic
+        # prioritized overdue per-item renderer (_maybe_render_overdue_priority_
+        # list) is invoked as a chokepoint at the TOP of _handle_query_pipeline,
+        # but ONLY when a query actually reaches that pipeline. The classified
+        # intent is FLAKY: the same urgency query ("Piutang apa saja yang sudah
+        # jatuh tempo ya dan harus saya tagih mendesak") sometimes routes to the
+        # AGENT LOOP (model_used=gpt-4o-mini, entity_extractor->query_endpoint)
+        # which emits an LLM SUMMARY (cumulative totals, Iron Law 1 risk) instead
+        # of the deterministic list — the chokepoint is never reached. AP twin
+        # ("tagihan vendor paling mendesak harus dibayar") has the same exposure.
+        #
+        # Fix: call the EXISTING renderer HERE, BEFORE the _intent-gated branches,
+        # the LLM-router primary path, AND the agent-loop dispatch — driven by the
+        # URGENCY+OVERDUE WORDING in user_text, NOT the (flaky) classified intent.
+        # The renderer self-gates: Gate 1 (urgency+overdue wording) returns None
+        # for plain "ringkasan piutang"/"aging"; Gate 2 derives AR vs AP side from
+        # user_text keywords (we pass intent="" so it falls to keyword detection);
+        # the single-customer/vendor AR-drill (#2) path uses different wording and
+        # is untouched. Non-None => return; None => fall through to normal routing.
+        # Identical OUTPUT to the existing working path, just reached earlier, so
+        # routing flakiness becomes irrelevant. READ-ONLY (compute_ar/ap_
+        # outstanding, journal-derived, draft/void excluded, most-overdue-first),
+        # deterministic (model_used=pipeline), no advisory lock. No var leaks.
+        try:
+
+            class _OvStubExtraction:
+                # intent left blank on purpose: the renderer's Gate 2 then derives
+                # the AR/AP side from user_text keywords (routing-independent).
+                intent = ""
+
+            _ov_early = await self._maybe_render_overdue_priority_list(
+                user_text=user_text,
+                context=context,
+                extraction=_OvStubExtraction(),
+                start_time=start_time,
+            )
+            if _ov_early is not None:
+                logger.warning(
+                    "[OVERDUE_EARLY_OVERRIDE] deterministic overdue list served "
+                    "pre-routing (infer_intent=%s) user='%s'",
+                    _intent,
+                    (user_text or "")[:60],
+                )
+                try:
+                    import uuid as _uuid_ov
+
+                    await emit(
+                        "intent_classified",
+                        {
+                            "request_id": str(_uuid_ov.uuid4()),
+                            "final_intent": "overdue_priority_list",
+                            "decision_source": "overdue_early_override",
+                            "confidence": 1.0,
+                        },
+                    )
+                except Exception:
+                    pass
+                return _ov_early
+        except Exception as _ov_early_err:
+            logger.warning(
+                "[OVERDUE_EARLY_OVERRIDE] render failed, falling through to normal "
+                "routing: %s",
+                _ov_early_err,
             )
 
         # CHITCHAT short-circuit — bypass agent loop entirely

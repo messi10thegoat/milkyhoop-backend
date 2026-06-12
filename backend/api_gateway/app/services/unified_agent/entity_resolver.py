@@ -374,6 +374,67 @@ class EntityResolver:
                     result.payload["account_id"] = acct_res.entity_id
                     result.payload["account_name"] = acct_res.entity_name
 
+        # ── FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): no-hint bank 3-tier ──
+        # Payment intents need a bank/cash account (hidden required field), but
+        # the user often states the METHOD ("lewat transfer bank") not a bank
+        # NAME, so _resolve_bank_account never ran and `bank_account` is absent
+        # from resolved. Without this, validation reports the hidden field
+        # missing -> the old code leaked "Bank Account ID" to the user. Here we
+        # apply the proper 3-tier resolution: fetch ACTIVE bank/cash accounts;
+        # exactly 1 -> auto-pick into payload; >1 -> populate resolved candidates
+        # so the orchestrator's existing pills shortcut asks by NAME; 0 -> leave
+        # unresolved (downstream surfaces a human ask, never an ID). READ-ONLY.
+        _bank_payment_intents = (
+            "create_receive_payment",
+            "create_bill_payment",
+        )
+        if (
+            intent in _bank_payment_intents
+            and "bank_account" not in result.resolved
+            and not result.payload.get("bank_account_id")
+        ):
+            try:
+                _bank_rows = await self.db.fetch(
+                    """SELECT id, account_name, bank_name
+                       FROM bank_accounts
+                       WHERE tenant_id = $1 AND is_active = true
+                       ORDER BY account_name""",
+                    self.tenant_id,
+                )
+                if _bank_rows:
+                    _cands = [
+                        {"id": str(r["id"]), "name": r["account_name"]}
+                        for r in _bank_rows
+                    ]
+                    if len(_cands) == 1:
+                        # Single active account -> auto-pick (tier 2 collapse).
+                        result.resolved["bank_account"] = ResolvedEntity(
+                            entity_type="bank_account",
+                            entity_id=_cands[0]["id"],
+                            entity_name=_cands[0]["name"],
+                            confidence=1.0,
+                            candidates=_cands,
+                        )
+                        result.payload["bank_account_id"] = _cands[0]["id"]
+                        result.payload["bank_account_name"] = _cands[0]["name"]
+                    else:
+                        # >1 active accounts -> ambiguous, present pills by NAME.
+                        result.resolved["bank_account"] = ResolvedEntity(
+                            entity_type="bank_account",
+                            entity_id=_cands[0]["id"],
+                            entity_name=_cands[0]["name"],
+                            confidence=0.7,
+                            candidates=_cands,
+                        )
+                        result.payload.pop("bank_account_id", None)
+                        result.payload.pop("bank_account_name", None)
+                        result.needs_clarification = True
+            except Exception as _bank_err:
+                logger.warning(
+                    "[RESOLVE] no-hint bank fallback failed (non-fatal): %s",
+                    _bank_err,
+                )
+
         # Step C: Check required fields
         from .direct_action_registry import (
             get_direct_action,
@@ -404,10 +465,19 @@ class EntityResolver:
             is_valid, missing_fields = validate_payload(intent, result.payload)
             if not is_valid:
                 result.missing.extend(missing_fields)
-                if not result.needs_clarification:
-                    # missing_fields contains labels (from validate_payload)
+                # FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): validate_payload now
+                # returns ONLY user-facing labels (hidden/display_only excluded).
+                # When the sole unresolved required fields are hidden IDs,
+                # missing_fields is EMPTY but is_valid is False. Do NOT emit an
+                # empty "Mohon lengkapi:" clarification (that produced the raw-ID
+                # ask). Still flag needs_clarification so the orchestrator (bank
+                # pills / name-unresolved branch) handles the hidden resolution.
+                if missing_fields and not result.needs_clarification:
                     labels_str = ", ".join(missing_fields)
                     result.clarifications.append(f"Mohon lengkapi: {labels_str}")
+                    result.needs_clarification = True
+                elif not missing_fields:
+                    # hidden-only missing -> ensure downstream resolves, not asks ID
                     result.needs_clarification = True
 
         return result
@@ -702,7 +772,14 @@ class EntityResolver:
         # bill (faktur pembelian): needs items array, field names differ
         elif intent == "create_bill" and "item" in resolved:
             item = resolved["item"]
-            if "items" not in payload:
+            # FIX_DOGFOOD_BILL_DUEDATE 2026-06-09: Stage-2 LLM sometimes returns
+            # items as an empty STRING ("") for the json-typed FieldSpec. The old
+            # guard `"items" not in payload` treated "" as present -> scalar-build
+            # skipped -> validate_payload sees falsy items -> spurious "missing Item"
+            # clarification (mis-narrated by LLM as a due_date question). Treat any
+            # falsy items (empty string/list/None) as "needs build" so the bill
+            # proposes directly, mirroring how the sales path stays populated.
+            if not payload.get("items"):
                 qty = entities.get("quantity", 1)
                 price = entities.get("unit_price", 0)
                 payload["items"] = [

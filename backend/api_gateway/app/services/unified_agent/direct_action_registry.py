@@ -4897,10 +4897,25 @@ def validate_payload(action_key: str, payload: dict) -> tuple[bool, list[str]]:
     config = DIRECT_ACTIONS.get(action_key)
     if not config:
         return False, [f"Unknown action_key: {action_key}"]
-    missing = []
+    # FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): a missing required HIDDEN
+    # (or display_only) field is a RESOLUTION failure, not a user-askable field.
+    # Hidden fields (customer_id, bank_account_id, allocations, ...) carry raw
+    # internal UUIDs the user can never supply. Surfacing their labels ("Customer
+    # ID", "Bank Account ID") to the user is a UX/trust bug. We therefore keep
+    # is_valid accurate (any missing required field => invalid, so the propose
+    # never proceeds with incomplete data), but the user-facing `missing` list
+    # EXCLUDES hidden/display_only labels. Callers that need to know a hidden
+    # field is unresolved should inspect the payload directly (resolver/pills),
+    # not echo an ID label.
+    missing = []  # user-facing labels ONLY (hidden/display_only excluded)
+    has_any_missing = False
     for f in config.fields:
         if f.required and not payload.get(f.name):
-            missing.append(f.label)
+            has_any_missing = True
+            if not getattr(f, "hidden", False) and not getattr(
+                f, "display_only", False
+            ):
+                missing.append(f.label)
 
     # At-least-one group validation
     if hasattr(config, "at_least_one_groups"):
@@ -4909,9 +4924,10 @@ def validate_payload(action_key: str, payload: dict) -> tuple[bool, list[str]]:
             group_label = group["label"]
             has_any = any(payload.get(fn) for fn in field_names)
             if not has_any:
+                has_any_missing = True
                 missing.append(group_label)
 
-    return len(missing) == 0, missing
+    return (not has_any_missing), missing
 
 
 def apply_defaults(action_key: str, payload: dict) -> dict:

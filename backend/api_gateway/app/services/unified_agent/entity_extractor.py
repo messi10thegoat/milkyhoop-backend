@@ -300,6 +300,7 @@ EXTRACTION_SCHEMAS = {
                             "calc_rank_vendors_by_ap",
                             "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
                             "query_customer_sales",  # FIX_CUST_SALES_SINGLE (2026-06-06)
+                            "query_restock_priority",  # FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08)
                             "calc_sum_sales_this_month",
                             "calc_sum_purchases_this_month",
                             "calc_sum_expenses_this_month",
@@ -783,6 +784,7 @@ PIPELINE_ENABLED_INTENTS = {
     "calc_rank_vendors_by_ap",
     "calc_rank_customers_by_sales",  # FIX_CUST_SALES_RANK (2026-06-06)
     "query_customer_sales",  # FIX_CUST_SALES_SINGLE (2026-06-06)
+    "query_restock_priority",  # FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08)
     "calc_sum_sales_this_month",
     "calc_sum_purchases_this_month",
     "calc_sum_expenses_this_month",
@@ -1123,6 +1125,31 @@ def classify_query_intent(user_text: str) -> tuple:
         )
         if _driver_noun:
             return "query_business_drivers", None, None
+
+    # ── FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08): compound "sells well but low
+    # on stock". MUST fire BEFORE calc_top_selling_items (sells-well signal) and
+    # BEFORE query_items_low_stock / query_items_no_stock (low-stock signal) so
+    # the INTERSECTION (a restock-priority list) wins over either half. Fires
+    # ONLY when a sells-well signal AND a low/out-of-stock signal co-occur; plain
+    # "stok menipis" or plain "barang terlaris" never match (missing the other
+    # half) and keep their own routes. Dispatched to compute_restock_priority
+    # (journal/ledger-derived, Iron Law 1+16 by construction) via an early
+    # override in the orchestrator.
+    _rp_sells_well = _qre.search(
+        r"(?:\blaku\w*|\blaris\w*|penjualan(?:nya)?\s+(?:bagus|tinggi|baik)|"
+        r"terjual\s+banyak|best[\s-]?seller|paling\s+laku|paling\s+laris|"
+        r"laku\s+keras|laris\s+manis)",
+        t,
+    )
+    _rp_low_stock = _qre.search(
+        r"(?:stok\w*\s+menipis|stok\w*\s+(?:hampir\s+)?habis|stok\w*\s+tipis|"
+        r"stok\w*\s+sedikit|stok\w*\s+(?:mau|nyaris)\s+habis|hampir\s+habis|"
+        r"low\s+stock|menipis|stok-?nya\s+menipis|stok-?nya\s+habis|"
+        r"stok-?nya\s+tipis|stok-?nya\s+sedikit)",
+        t,
+    )
+    if _rp_sells_well and _rp_low_stock:
+        return "query_restock_priority", None, None
 
     # ── P3 (2026-04-22): Stock/top-selling ranking — MUST be checked BEFORE
     # AR/AP ranking so "barang ... terbanyak" routes to items, not AR.

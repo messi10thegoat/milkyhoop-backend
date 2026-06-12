@@ -508,6 +508,44 @@ class TenantContext:
         self.tenant_name = tenant_name
 
 
+def _normalize_payment_method(value) -> str:
+    """FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): coerce any incoming
+    payment_method to the receive_payments enum {'cash', 'bank_transfer'}.
+
+    The DB CHECK chk_rcv_payment_method + Pydantic Literal only accept those
+    two values; the LLM frequently leaks the raw Indonesian phrase ("transfer
+    bank", "tunai", "lewat transfer") which fails at POST. A bank account was
+    chosen on the card, so default to bank_transfer when ambiguous.
+    """
+    if value is None:
+        return "bank_transfer"
+    v = str(value).strip().lower()
+    if v in ("cash", "bank_transfer"):
+        return v
+    # cash-on-hand synonyms
+    if "tunai" in v or "cash" in v or v == "kas":
+        return "cash"
+    # bank / non-cash instrument synonyms
+    _bank_tokens = (
+        "transfer",
+        "bank",
+        "tf",
+        "giro",
+        "rtgs",
+        "qris",
+        "va",
+        "virtual account",
+        "debit",
+        "kartu",
+        "ewallet",
+        "e-wallet",
+    )
+    if any(_tok in v for _tok in _bank_tokens):
+        return "bank_transfer"
+    # default: a bank account was chosen on the card
+    return "bank_transfer"
+
+
 class ToolExecutor:
     """
     Executes tools called by the unified agent.
@@ -1374,15 +1412,25 @@ class ToolExecutor:
         # Validate required fields
         is_valid, missing = validate_payload(action_key, payload)
         if not is_valid:
-            # Build helpful message with field descriptions
+            # Build helpful message with field descriptions.
+            # FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): validate_payload now
+            # returns ONLY user-facing labels (hidden/display_only excluded), so
+            # `missing` here never contains raw-ID fields. When ALL unresolved
+            # required fields are hidden (e.g. bank_account_id/customer_id not
+            # yet resolved), `missing` is EMPTY: emit a generic, human-friendly
+            # ask instead of echoing an internal ID label. This path is normally
+            # pre-empted by the orchestrator (bank pills / name-unresolved
+            # branch); this is a last-resort net so we NEVER leak "Customer ID"
+            # / "Bank Account ID" to the user.
             from .direct_action_registry import DIRECT_ACTIONS
 
+            # `missing` is built from FieldSpec.label; map label -> FieldSpec.
             field_hints = []
             da_config = DIRECT_ACTIONS.get(action_key)
             if da_config:
-                field_map = {f.name: f for f in da_config.fields}
+                label_map = {f.label: f for f in da_config.fields}
                 for m in missing:
-                    f = field_map.get(m)
+                    f = label_map.get(m)
                     if f and f.options:
                         opts = ", ".join(f.options)
                         field_hints.append(f"**{f.label}** ({opts})")
@@ -1393,6 +1441,18 @@ class ToolExecutor:
                     else:
                         field_hints.append(f"**{m}**")
             hint_str = ", ".join(field_hints) if field_hints else ", ".join(missing)
+            if not hint_str:
+                # Hidden-only missing -> no askable label. Generic ask, no IDs.
+                return {
+                    "success": False,
+                    "error": (
+                        "Saya masih perlu memastikan beberapa detail "
+                        "(pelanggan/rekening) sebelum melanjutkan. Bisa "
+                        "perjelas sedikit lagi? 😊"
+                    ),
+                    "error_type": "VALIDATION_ERROR",
+                    "missing_fields": missing,
+                }
             return {
                 "success": False,
                 "error": f"Saya perlu info tambahan untuk melanjutkan: {hint_str}. Bisa tolong lengkapi? 😊",
@@ -1496,13 +1556,36 @@ class ToolExecutor:
                 )
             except (ValueError, TypeError):
                 pass
-        for _det_key, _det_label in [
-            ("vendor_name", "vendor"),
-            ("customer_name", "pelanggan"),
-            ("item_name", "barang"),
-            ("account_name", "akun"),
-            ("name", "nama"),
-        ]:
+        # FIX_DOGFOOD_DETECTION_PARTY (2026-06-09): the detection_reason party
+        # must reflect THIS action's own counterparty. The old loop picked
+        # vendor_name first via break, so a CUSTOMER receive-payment whose
+        # payload carried a stale/leaked vendor_name rendered "vendor 'Knitto
+        # Textile Holis'" instead of the real customer (Aqua). Make the party
+        # field action-aware: receive_payment -> customer; bill_payment ->
+        # vendor; otherwise fall back to the generic priority order.
+        if action_key in ("create_receive_payment", "receive_payment"):
+            _det_party_order = [
+                ("customer_name", "pelanggan"),
+                ("item_name", "barang"),
+                ("account_name", "akun"),
+                ("name", "nama"),
+            ]
+        elif action_key in ("create_bill_payment", "make_payment"):
+            _det_party_order = [
+                ("vendor_name", "vendor"),
+                ("item_name", "barang"),
+                ("account_name", "akun"),
+                ("name", "nama"),
+            ]
+        else:
+            _det_party_order = [
+                ("vendor_name", "vendor"),
+                ("customer_name", "pelanggan"),
+                ("item_name", "barang"),
+                ("account_name", "akun"),
+                ("name", "nama"),
+            ]
+        for _det_key, _det_label in _det_party_order:
             if payload.get(_det_key):
                 _det_parts.append(_det_label + " '" + str(payload[_det_key]) + "'")
                 break
@@ -4531,11 +4614,17 @@ class ToolExecutor:
                         item["product_name"] = "Item"
 
                     # Coerce numeric types
+                    # FIX_DOGFOOD_BILL_DUEDATE 2026-06-09: preserve decimal qty
+                    # (e.g. 100.5 meter). BillItemRequestV2.qty is Decimal (widened
+                    # 2026-06-02); int() truncation here silently dropped the
+                    # fractional part (100.5 -> 100) corrupting subtotal. Keep float,
+                    # normalize whole numbers to int for clean display.
                     if item.get("qty") is not None:
                         try:
-                            item["qty"] = int(float(item["qty"]))
-                            if item["qty"] <= 0:
-                                item["qty"] = 1
+                            _q = float(item["qty"])
+                            if _q <= 0:
+                                _q = 1.0
+                            item["qty"] = int(_q) if _q == int(_q) else _q
                         except (ValueError, TypeError):
                             item["qty"] = 1
                     if item.get("price") is not None:
@@ -4945,6 +5034,15 @@ class ToolExecutor:
         today = datetime.now().strftime("%Y-%m-%d")
         payload.setdefault("payment_date", today)
         payload.setdefault("payment_method", "bank_transfer")
+        # FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): the LLM/override can
+        # set payment_method to a raw Indonesian phrase ("transfer bank",
+        # "lewat transfer") that survives setdefault (only fills when absent)
+        # and then violates DB CHECK chk_rcv_payment_method + Pydantic
+        # CreateReceivePaymentRequest.payment_method Literal["cash",
+        # "bank_transfer"] at POST. Normalize to the enum unconditionally.
+        payload["payment_method"] = _normalize_payment_method(
+            payload.get("payment_method")
+        )
 
         # Translate LLM field names → kernel field names
         if "deposit_account_id" in payload and "bank_account_id" not in payload:
@@ -5051,6 +5149,81 @@ class ToolExecutor:
                     f"_enrich_receive_payment allocations auto-build failed: {e}"
                 )
 
+        # ── FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): journal-derived alloc ──
+        # The REST list path above (/api/sales-invoices?status=unpaid,partial)
+        # is unreliable for allocation building: the comma status filter can
+        # drop `partial` invoices, and the list rows return NULL
+        # outstanding_amount/balance_due -> the loop computes outstanding=0 and
+        # builds NO allocations, so a customer settlement posts unallocated.
+        # ARAP Rule 5 + Iron Law 16 mandate compute_ar_outstanding() (journal-
+        # derived, draft/void-excluded, partial-aware) as the SINGLE source of
+        # truth for AR outstanding. When allocations are still missing, build
+        # them oldest-due-first from compute_ar_outstanding for this customer.
+        _cid_alloc = payload.get("customer_id")
+        if (not payload.get("allocations")) and _cid_alloc:
+            try:
+                _ra_total_raw = payload.get("total_amount") or payload.get("amount")
+                _ra_total = float(_ra_total_raw) if _ra_total_raw is not None else 0.0
+            except Exception:
+                _ra_total = 0.0
+            if _ra_total > 0:
+                try:
+                    from .db_utils import get_session_db_pool as _ra_pool_fn
+
+                    _ra_pool = await _ra_pool_fn()
+                    async with _ra_pool.acquire() as _ra_conn:
+                        async with _ra_conn.transaction():
+                            await _ra_conn.execute(
+                                "SELECT set_config('app.tenant_id', $1, true)",
+                                self.context.tenant_id,
+                            )
+                            _ra_rows = await _ra_conn.fetch(
+                                """
+                                SELECT invoice_id, invoice_number, outstanding
+                                FROM compute_ar_outstanding($1)
+                                WHERE customer_id = $2 AND outstanding > 0
+                                ORDER BY due_date ASC NULLS LAST, invoice_number ASC
+                                """,
+                                self.context.tenant_id,
+                                str(_cid_alloc),
+                            )
+                    _ra_remaining = _ra_total
+                    _ra_built = []
+                    _ra_nums = []
+                    for _ra_r in _ra_rows:
+                        if _ra_remaining <= 0:
+                            break
+                        try:
+                            _ra_out = float(_ra_r["outstanding"] or 0)
+                        except Exception:
+                            _ra_out = 0.0
+                        if _ra_out <= 0:
+                            continue
+                        _ra_apply = min(_ra_out, _ra_remaining)
+                        _ra_built.append(
+                            {
+                                "invoice_id": str(_ra_r["invoice_id"]),
+                                "amount_applied": _ra_apply,
+                            }
+                        )
+                        if _ra_r["invoice_number"]:
+                            _ra_nums.append(str(_ra_r["invoice_number"]))
+                        _ra_remaining -= _ra_apply
+                    if _ra_built:
+                        payload["allocations"] = _ra_built
+                        if _ra_nums and "invoice_numbers" not in payload:
+                            payload["invoice_numbers"] = ", ".join(_ra_nums)
+                        logger.warning(
+                            "[ENRICH] rcv journal-derived allocations: %d invoice(s) %s",
+                            len(_ra_built),
+                            _ra_nums,
+                        )
+                except Exception as _ra_err:
+                    logger.warning(
+                        "[ENRICH] rcv journal-derived allocation build failed: %s",
+                        _ra_err,
+                    )
+
         _perf_t2 = time.perf_counter()
         logger.info(
             f"[ENRICH] rcv stage0={(_perf_t1 - _perf_t0) * 1000:.0f}ms stage1_parallel={(_perf_t2 - _perf_t1) * 1000:.0f}ms total={(_perf_t2 - _perf_t0) * 1000:.0f}ms tasks={len(stage1_tasks)}"
@@ -5064,6 +5237,14 @@ class ToolExecutor:
         from vendor's oldest outstanding bill when bill_id is missing.
         """
         today = datetime.now().strftime("%Y-%m-%d")
+        # FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): symmetric defensive
+        # normalization for the bill-payment twin. bill_payments_v2 has no DB
+        # CHECK on payment_method, but downstream bill schemas restrict it; a
+        # raw phrase like "transfer bank" should map to bank_transfer here too.
+        if payload.get("payment_method"):
+            payload["payment_method"] = _normalize_payment_method(
+                payload.get("payment_method")
+            )
 
         # Stale-date override on payment_date
         _pd = payload.get("payment_date")

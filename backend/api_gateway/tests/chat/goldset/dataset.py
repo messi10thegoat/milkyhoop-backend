@@ -456,4 +456,179 @@ CASES = [
         ],
         why="dogfood #3: was misrouted to query_customer_ar; now query_customer_sales (customer-keyword-gated)",
     ),
+    GoldCase(
+        "lookup_customer_sales_named_no_keyword",  # FIX_DOGFOOD_CUSTSALES_NAMED
+        Category.LOOKUP,
+        [
+            Turn(
+                "Berapa total pembelian Aneke Mataputun dalam 30 hari terakhir?",
+                [
+                    (A_TIER, Tier.A),
+                    (A_INTENT_IN, ["query_customer_sales"]),
+                    (A_TEXT_NOT_CONTAINS, "belum tercatat"),
+                ],
+            )
+        ],
+        why="dogfood 2026-06-08 #1: customer named DIRECTLY (no pelanggan/customer keyword) -> regex gate fails -> Gemini hijacks to calc_sum_purchases_this_month / query_customer_ar; resolve-then-route override fires on name->customer resolution.",
+    ),
+    GoldCase(
+        "drill_ar_invoice_detail_named_customer",  # FIX_DOGFOOD_AR_DRILL_OUTSTANDING
+        Category.FOLLOWUP,
+        [
+            Turn(
+                "apa piutang yang paling besar dan minta rincian pelanggan yang punya piutang terbesar",
+                [(A_INTENT_IN, ["query_ar_by_customer", "calc_rank_customers_by_ar"])],
+            ),
+            Turn(
+                "minta rincian faktur piutang dari pelanggan Aqua Airmadidi",
+                [
+                    # Bug: drilldown_table mapped AR-by-customer to the generic
+                    # query_sales_invoices_list path -> every invoice Rp 0,
+                    # Total Rp 0, customer scope lost (20 unrelated invoices).
+                    (A_TEXT_NOT_CONTAINS, "Total: Rp 0"),
+                    (A_TEXT_NOT_CONTAINS, "dari 20 item"),
+                    # Must surface the customer real outstanding magnitude
+                    # (journal-derived per-invoice piutang for Aqua).
+                    (A_TEXT_CONTAINS, "16.170.000"),
+                ],
+            ),
+        ],
+        why="dogfood 2026-06-08 #2: AR-by-customer drill ('rincian faktur piutang dari pelanggan Aqua') was intercepted by DRILL_GUARD -> drilldown_table -> generic query_sales_invoices_list -> Rp 0 per invoice (wrong field + lost customer scope). Now renders per-invoice journal-derived outstanding for the resolved customer (draft/void excluded, outstanding>0 only).",
+    ),
+    # ---- FIX_DOGFOOD_OVERDUE_PRIORITY_LIST (2026-06-08) ----
+    GoldCase(
+        "overdue_ap_priority_list",  # FIX_DOGFOOD_OVERDUE_PRIORITY_LIST
+        Category.LOOKUP,
+        [
+            Turn(
+                "mana tagihan hutang vendor yang paling mendesak harus dibayar?",
+                [
+                    (
+                        A_INTENT_IN,
+                        [
+                            "query_bills_overdue",
+                            "query_ap_aging",
+                            "query_ap_outstanding",
+                        ],
+                    ),
+                    # Bug: answered as an AP SUMMARY ("Ringkasan Tagihan Vendor",
+                    # cumulative Total Hutang/Total Jatuh Tempo) instead of a
+                    # prioritized per-bill list to act on.
+                    (A_TEXT_NOT_CONTAINS, "Ringkasan"),
+                    # Must be a prioritized per-item overdue list, journal-derived.
+                    (A_TEXT_CONTAINS, "jatuh tempo"),
+                    (A_TEXT_CONTAINS, "hari"),
+                    # Reconciling total of the real overdue set (39 bills /
+                    # Rp 110.481.345, journal-derived via compute_ap_outstanding).
+                    (A_TEXT_CONTAINS, "110.481.345"),
+                ],
+            ),
+        ],
+        why="dogfood 2026-06-08 #3 (Theme B): AP urgency 'tagihan vendor paling mendesak harus dibayar' was answered as a cumulative SUMMARY/aging, not a prioritized per-bill list. Now renders a deterministic most-overdue-first list (party + bill# + journal-derived outstanding + due date + days overdue), draft/void excluded, outstanding>0, top-15 + '+N lainnya' + reconciling total. Iron Law 1 by construction (no LLM polish).",
+    ),
+    GoldCase(
+        "overdue_ar_priority_list",  # FIX_DOGFOOD_OVERDUE_PRIORITY_LIST
+        Category.LOOKUP,
+        [
+            Turn(
+                "Piutang apa saja yang sudah jatuh tempo ya dan harus saya tagih mendesak",
+                [
+                    (
+                        A_INTENT_IN,
+                        [
+                            "query_sales_invoices_overdue",
+                            "query_ar_aging",
+                            "query_ar_invoices",
+                            "query_ar_outstanding",
+                        ],
+                    ),
+                    # Bug A: answered as an AR AGING SUMMARY (bucket "1-30",
+                    # "31-60"). Bug B (worse): generic list path let Gemini polish
+                    # HALLUCINATE the total ("50 faktur total Rp -19.155.000" vs
+                    # real 95 / Rp 79.371.000) — Iron Law 1 violation.
+                    (A_TEXT_NOT_CONTAINS, "1-30"),
+                    (A_TEXT_NOT_CONTAINS, "Ringkasan"),
+                    (A_TEXT_CONTAINS, "jatuh tempo"),
+                    (A_TEXT_CONTAINS, "hari"),
+                    # Reconciling total of the real overdue set (95 invoices /
+                    # Rp 79.371.000, journal-derived via compute_ar_outstanding).
+                    (A_TEXT_CONTAINS, "79.371.000"),
+                ],
+            ),
+        ],
+        why="dogfood 2026-06-08 #4 (Theme B): AR urgency 'piutang jatuh tempo harus saya tagih mendesak' was answered as an aging SUMMARY or (generic-list path) an LLM-hallucinated total (-19.155.000 / 50 faktur). Now renders a deterministic most-overdue-first per-invoice list (customer + invoice# + journal-derived outstanding + due date + days overdue), draft/void excluded, outstanding>0, top-15 + '+N lainnya' + reconciling total (95 / Rp 79.371.000). Iron Law 1 by construction.",
+    ),
+    # ---- FIX_DOGFOOD_BILL_DUEDATE (2026-06-09) ----
+    GoldCase(
+        "crud_create_bill_proposes_no_duedate_ask",  # FIX_DOGFOOD_BILL_DUEDATE
+        Category.CRUD,
+        [
+            Turn(
+                "Catat faktur pembelian dari Knitto Textile Holis, 100,5 meter Kain Taslan @ 22rb",
+                [
+                    # Must PROPOSE the confirmation card directly, mirroring
+                    # create_sales_invoice. due_date is DERIVED from vendor
+                    # payment_terms_days (Knitto = NET-30), never asked.
+                    (A_IS_CONFIRMATION, True),
+                    (A_INTENT_IN, ["create_bill"]),
+                    # The bug emitted a TEXT clarification asking for jatuh tempo.
+                    (A_TEXT_NOT_CONTAINS, "jatuh tempo"),
+                ],
+            ),
+        ],
+        why="dogfood 2026-06-09 (Knitto Textile Holis): bill create echoed vendor+item+qty 100.5+harga 22rb correctly but INTERMITTENTLY blocked with a TEXT clarification asking for jatuh tempo instead of proposing. Root cause: Stage-2 LLM sometimes returned the json-typed items field as an empty STRING for create_bill; entity_resolver._build_payload guard treated empty string as present so the scalar items-build was skipped, validate_payload saw falsy items and set needs_clarification (mis-narrated by the clarification LLM as a due_date question). Fix: guard now uses not payload.get(items) so empty items always trigger the build; bill proposes directly with due derived from vendor NET-30. Also preserved decimal qty 100.5 in _enrich_purchase_invoice (was int-truncated to 100).",
+    ),
+    # ---- FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08) ----
+    GoldCase(
+        "restock_priority_compound",  # FIX_DOGFOOD_RESTOCK_PRIORITY
+        Category.LOOKUP,
+        [
+            Turn(
+                "item barang apa yang penjualannya bagus tapi stok-nya menipis?",
+                [
+                    (A_INTENT_IN, ["query_restock_priority"]),
+                    # Must be the INTERSECTION ranked by sales velocity, not a
+                    # plain stok-0 dump. Kaos is the #1 seller (stok 0) -> present.
+                    (A_TEXT_CONTAINS, "Kaos"),
+                    # Non-sellers (0 units sold in 90d) MUST be absent: the old
+                    # behavior listed every stok-0 item incl. "Kopi Coba".
+                    (A_TEXT_NOT_CONTAINS, "Kopi Coba"),
+                ],
+            ),
+        ],
+        why="dogfood 2026-06-08: compound 'penjualan bagus tapi stok menipis' answered ONLY the low-stock half (plain stok-0 list incl. zero-sales 'Kopi Coba'/E2E test items; misrouted to UNREGISTERED query_items_top_products). Now query_restock_priority renders the INTERSECTION (sells well last 90d AND stock <= reorder_level / <= 0) ranked by 90d units sold DESC, journal/ledger-derived (Iron Law 1+16 by construction). Kaos (#1 seller, stok 0) leads; non-sellers excluded.",
+    ),
+    # ---- FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09) ----
+    GoldCase(
+        "receive_payment_pelunasan_piutang",  # FIX_DOGFOOD_RECEIVEPAY_RESOLVE
+        Category.CRUD,
+        [
+            Turn(
+                "Catat pelunasan piutang dari Aqua Airmadidi sebesar 16.170.000 lewat transfer bank",
+                [
+                    (A_TIER, Tier.A),
+                    # THE BUG: bot asked the user for raw internal UUIDs
+                    # ("Customer ID", "Bank Account ID") + a payment date that
+                    # should default to today. Hidden FieldSpec labels MUST
+                    # NEVER be surfaced to the user.
+                    (A_TEXT_NOT_CONTAINS, "Customer ID"),
+                    (A_TEXT_NOT_CONTAINS, "Bank Account ID"),
+                    # Correct end state: receive-payment for the resolved
+                    # customer Aqua, the stated amount, asking the bank by NAME
+                    # (3-tier pill picker, >1 active account in grapgrap).
+                    (A_TEXT_CONTAINS, "Aqua Airmadidi"),
+                    (A_TEXT_CONTAINS, "16.170.000"),
+                    (A_TEXT_CONTAINS, "rekening"),
+                ],
+            )
+        ],
+        # Intent is intentionally NOT asserted: this turn returns a CLARIFICATION
+        # (bank-name pills) via the early-override -> _handle_pipeline path, which
+        # carries no tool_calls / action_key and does not write the chosen intent
+        # to intent_decision_log (the stale DB row still reads create_bank_transfer
+        # from the legacy crud_guard), so A_INTENT_IN is not cleanly observable
+        # here. The load-bearing assertion is the TEXT: no raw-ID ask, correct
+        # customer + amount, bank asked by name.
+        why="dogfood 2026-06-09: 'Catat pelunasan piutang dari <pelanggan> sebesar <X> lewat transfer bank' (a) misrouted to create_bank_transfer ('transfer bank' hijack via crud_guard; LLM router flip-flop) and (b) leaked hidden FieldSpec ID labels to the user ('Customer ID', 'Bank Account ID') + asked for a date that should default to today. Fix: early override routes 'pelunasan/lunasi/bayar piutang dari <customer>' to create_receive_payment (customer resolved by name), the generic hidden/display_only gate (validate_payload + _natural_clarification + _execute_propose_direct) never surfaces hidden IDs, the no-hint 3-tier bank picker asks by NAME, payment_date defaults to today, and allocations are built journal-derived from compute_ar_outstanding (INV-2605-0009 / Rp 16.170.000). Real bank-to-bank transfer ('transfer dari BCA ke Mandiri') is untouched.",
+    ),
 ]
