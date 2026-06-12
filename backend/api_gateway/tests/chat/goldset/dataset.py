@@ -631,4 +631,49 @@ CASES = [
         # customer + amount, bank asked by name.
         why="dogfood 2026-06-09: 'Catat pelunasan piutang dari <pelanggan> sebesar <X> lewat transfer bank' (a) misrouted to create_bank_transfer ('transfer bank' hijack via crud_guard; LLM router flip-flop) and (b) leaked hidden FieldSpec ID labels to the user ('Customer ID', 'Bank Account ID') + asked for a date that should default to today. Fix: early override routes 'pelunasan/lunasi/bayar piutang dari <customer>' to create_receive_payment (customer resolved by name), the generic hidden/display_only gate (validate_payload + _natural_clarification + _execute_propose_direct) never surfaces hidden IDs, the no-hint 3-tier bank picker asks by NAME, payment_date defaults to today, and allocations are built journal-derived from compute_ar_outstanding (INV-2605-0009 / Rp 16.170.000). Real bank-to-bank transfer ('transfer dari BCA ke Mandiri') is untouched.",
     ),
+    # ---- FIX_RENAME_MENJADI (2026-06-13) ----
+    GoldCase(
+        "crud_update_item_rename_via_menjadi",  # FIX_RENAME_MENJADI
+        Category.CRUD,
+        [
+            Turn(
+                "edit item Lacoste Pique 24s Hitam Ecer menjadi Lacoste Pique 30s Putih",
+                [
+                    (A_TIER, Tier.A),
+                    (A_IS_CONFIRMATION, True),
+                    (A_INTENT_IN, ["update_item"]),
+                    # The new name (after "menjadi") MUST be captured as the
+                    # proposed name and shown on the card.
+                    (A_TEXT_CONTAINS, "Lacoste Pique 30s Putih"),
+                    # REGRESSION GUARD: the old behavior leaked the OLD name into
+                    # Deskripsi and left an empty change-set -> auto-cancel. The
+                    # cancel narration must NOT appear; this is a live rename.
+                    (A_TEXT_NOT_CONTAINS, "tidak ada perubahan"),
+                ],
+            )
+        ],
+        why="FIX_RENAME_MENJADI 2026-06-13 (commit 3b738573): 'edit item X menjadi Y' lost Y. classify_crud_intent truncated at menjadi/jadi/ke and discarded the value after it, so the new name Y was dropped, the old name X leaked into Deskripsi, and the empty change-set auto-cancelled. Fix: rename-detection before truncation + colon strip + 4-tuple new_value propagated to a dedicated rename fast-path that maps Y to the registry entity_name_field (name/account_name), forces X as the lookup key, and scrubs any leaked old name from description/deskripsi/notes. Covers item/customer/vendor/bank/warehouse. Must propose a confirmation card (I3, never auto-post) showing the NEW name.",
+    ),
+    GoldCase(
+        "crud_update_vendor_fieldset_not_rename",  # FIX_RENAME_MENJADI (false-positive guard)
+        Category.CRUD,
+        [
+            Turn(
+                "edit vendor Knitto Textile Holis, ubah telepon jadi 081234567890",
+                [
+                    (A_TIER, Tier.A),
+                    (A_IS_CONFIRMATION, True),
+                    (A_INTENT_IN, ["update_vendor"]),
+                    # Field-set, NOT a rename: the phone number must land on the
+                    # telepon/phone field and the vendor NAME must stay Knitto.
+                    (A_TEXT_CONTAINS, "081234567890"),
+                    (A_TEXT_CONTAINS, "Knitto"),
+                    # GUARD: bare "jadi" preceded by a field keyword (telepon)
+                    # must NOT be mistaken for a rename to "081234567890".
+                    (A_TEXT_NOT_CONTAINS, "tidak ada perubahan"),
+                ],
+            )
+        ],
+        why="FIX_RENAME_MENJADI 2026-06-13 false-positive guard: 'edit vendor X, ubah telepon jadi 081...' is a FIELD-SET, not a rename. The rename block only fires for connector 'menjadi' (no field keyword on the left) or bare 'jadi'/'ke' when NEITHER side carries a field keyword; here 'telepon' precedes 'jadi' so rename detection is suppressed and the phone is set normally with the vendor name unchanged. Proves the rename fix did not introduce a rename false-positive on field-set phrasing.",
+    ),
 ]
