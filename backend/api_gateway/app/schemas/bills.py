@@ -350,6 +350,18 @@ class BillItemRequestV2(BaseModel):
         None, ge=0, le=100, description="Per-item tax rate %"
     )
 
+    @field_validator("discount_percent", "bonus_qty", mode="before")
+    @classmethod
+    def _coerce_optional_decimal_none(cls, v):
+        # FIX_BILL_DECIMAL_NONE (2026-06-15): these are optional-with-default
+        # Decimal fields. An explicit None (chat Stage-2 LLM emits null for
+        # per-line fields the user did not specify) bypasses the Field default
+        # and 422s against the Decimal type. Treat None as "use default 0"
+        # (no discount / no bonus == 0). Real values pass through untouched.
+        if v is None:
+            return Decimal("0")
+        return v
+
     @field_validator("exp_date")
     @classmethod
     def validate_exp_date(cls, v):
@@ -403,6 +415,17 @@ class CreateBillRequestV2(BaseModel):
         ..., min_length=1, description="Line items (min 1)"
     )
     status: Literal["draft", "posted"] = Field("draft", description="Initial status")
+
+    @field_validator(
+        "invoice_discount_percent", "cash_discount_percent", mode="before"
+    )
+    @classmethod
+    def _coerce_header_discount_none(cls, v):
+        # FIX_BILL_DECIMAL_NONE (2026-06-15): same None->default(0) coercion for
+        # the header discount Decimals (chat Stage-2 may send null).
+        if v is None:
+            return Decimal("0")
+        return v
 
     @field_validator("items")
     @classmethod

@@ -4138,6 +4138,19 @@ class ToolExecutor:
             invoice_date_key="invoice_date",
         )
 
+        # FIX_BILL_DECIMAL_NONE (2026-06-15): mirror of the bill path. Stage-2 LLM
+        # emits null for unspecified per-line fields (discount_percent, tax_rate,
+        # ...); an explicit None bypasses the InvoiceItemCreate Field default and
+        # 422s against the float/Decimal type at POST. Drop None-valued per-line
+        # keys so schema defaults apply. Runs AFTER price-ask detection so the
+        # missing-price flow is unaffected; core fields are non-None for valid lines.
+        _si_items = payload.get("items", [])
+        if isinstance(_si_items, list):
+            for _it in _si_items:
+                if isinstance(_it, dict):
+                    for _nk in [_k for _k, _v in list(_it.items()) if _v is None]:
+                        _it.pop(_nk, None)
+
         return payload
 
     async def _enrich_sales_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -4636,6 +4649,16 @@ class ToolExecutor:
                     # Apply top-level tax_rate per line if line lacks it
                     if _cur_tr and not item.get("tax_rate"):
                         item["tax_rate"] = _cur_tr
+
+                    # FIX_BILL_DECIMAL_NONE (2026-06-15): Stage-2 LLM emits null
+                    # for per-line fields the user did not specify (discount_percent,
+                    # bonus_qty, batch_no, exp_date, tax_code_id, ...). An explicit
+                    # None bypasses the schema Field default and 422s against the
+                    # Decimal type at POST. Drop None-valued keys so the schema
+                    # default applies. Required keys (product_name/qty/price) are
+                    # already backfilled/coerced above, so this only sheds optionals.
+                    for _nk in [_k for _k, _v in list(item.items()) if _v is None]:
+                        item.pop(_nk, None)
 
             # Cleanup top-level extraction artifacts (schema rejects them)
             for _k in (
