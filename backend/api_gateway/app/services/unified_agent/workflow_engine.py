@@ -21,6 +21,13 @@ import httpx
 logger = logging.getLogger("unified_agent.workflow_engine")
 logger.setLevel(logging.INFO)
 
+# FIX_WF_STALE_REUSE (2026-06-15): idle TTL for crud_form reuse. Matches the
+# established 30-min sticky-period notion used elsewhere in the pipeline. A
+# workflow whose row hasn't advanced within this window is treated as abandoned
+# (frontend reuses one conversation for days) so a fresh request starts clean
+# instead of merging onto stale payload.
+WORKFLOW_IDLE_TTL_SECONDS = int(os.environ.get("WORKFLOW_IDLE_TTL_SECONDS", "1800"))
+
 # Prune transient data after leaving a state to keep ctx.data lean.
 # Keys listed are removed after advancing FROM that state.
 # NEVER prune: recon_session_id, account_id, statement_ending_balance, unmatched_count, reviewed_count
@@ -1720,6 +1727,22 @@ class WorkflowEngine:
         # Merge new data (don't overwrite existing with None)
         for k, v in user_data.items():
             if v is not None:
+                # FIX_WF_DEEPMERGE (2026-06-15): the `payload` key accumulates the
+                # CRUD fields across turns. A slot-fill answer (e.g. only due_date)
+                # arrives as a partial payload; the old wholesale assignment
+                # clobbered previously-collected fields (dropping items, vendor,
+                # etc.). Deep-merge so the answer ADDS fields without dropping prior
+                # ones. Incoming non-None sub-values still win. All other keys keep
+                # their original replace-on-not-None behavior.
+                if k == "payload" and isinstance(v, dict):
+                    _existing_payload = ctx.data.get("payload")
+                    if isinstance(_existing_payload, dict):
+                        _merged_payload = dict(_existing_payload)
+                        for _pk, _pv in v.items():
+                            if _pv is not None:
+                                _merged_payload[_pk] = _pv
+                        ctx.data["payload"] = _merged_payload
+                        continue
                 ctx.data[k] = v
 
         # Resume from failed: user sending a message = "coba lagi" — reset retry counters
@@ -2249,7 +2272,7 @@ class WorkflowEngine:
         """Load active or failed workflow context from database."""
         import json
         row = await self.db.fetchrow(
-            """SELECT id, tenant_id, user_id, current_state, status, data
+            """SELECT id, tenant_id, user_id, current_state, status, data, updated_at
                FROM chat_workflow_state
                WHERE chat_session_id = $1 AND workflow_type = $2
                  AND status IN ('active', 'failed')""",
@@ -2258,6 +2281,40 @@ class WorkflowEngine:
 
         if not row:
             return None
+
+        # FIX_WF_STALE_REUSE (2026-06-15): the UNIQUE (chat_session_id, workflow_type)
+        # slot keeps exactly one crud_form per session forever, and the frontend reuses
+        # one conversation across days. A long-idle active/COLLECTING row is an
+        # ABANDONED workflow, not a live one — reusing its payload as a merge base
+        # leaks stale vendor_id / due_date / unrelated party fields into a fresh
+        # create request. Match the established 30-min idle TTL: if the row hasn't
+        # advanced within that window, treat it as abandoned — cancel it (frees the
+        # slot for a brand-new payload via _load_or_create) and return None so callers
+        # see "no active workflow". A legitimate same-intent resume happens within
+        # seconds and is never affected.
+        try:
+            from datetime import datetime, timezone
+            _wf_updated_at = row["updated_at"]
+            if _wf_updated_at is not None:
+                if _wf_updated_at.tzinfo is None:
+                    _wf_updated_at = _wf_updated_at.replace(tzinfo=timezone.utc)
+                _wf_idle_secs = (datetime.now(timezone.utc) - _wf_updated_at).total_seconds()
+                if _wf_idle_secs > WORKFLOW_IDLE_TTL_SECONDS:
+                    await self.db.execute(
+                        """UPDATE chat_workflow_state
+                           SET status = 'cancelled', updated_at = NOW()
+                           WHERE id = $1 AND status IN ('active', 'failed')""",
+                        row["id"],
+                    )
+                    logger.warning(
+                        "[FIX_WF_STALE_REUSE] Abandoned idle %s workflow (idle=%.0fs > %ds), "
+                        "cancelled to seed fresh; session=%s state=%s",
+                        workflow_type, _wf_idle_secs, WORKFLOW_IDLE_TTL_SECONDS,
+                        chat_session_id, row["current_state"],
+                    )
+                    return None
+        except Exception as _stale_err:
+            logger.warning("[FIX_WF_STALE_REUSE] staleness check skipped: %s", _stale_err)
 
         return WorkflowContext(
             workflow_id=str(row["id"]),

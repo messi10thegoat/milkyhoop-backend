@@ -7436,6 +7436,34 @@ class UnifiedAgent:
                 )
                 return None
 
+        # ── FIX_WF_SLOTFILL_ARBITER (2026-06-15) ──────────────────────────
+        # When there is an ACTIVE crud_form for this session and the router
+        # signalled a slot-fill (it returned a populated slot_fill object, OR it
+        # picked an intent that disagrees with the active workflow's intent),
+        # the user's message is a continuation answer — NOT a new action. Defer
+        # to the workflow intent so the answer routes into the live workflow and
+        # finishes the in-flight CRUD, instead of a low-confidence regex/router
+        # update_* mis-pick winning [CLASSIFY_FINAL] and falling to the agent
+        # loop (which loses the accumulated payload). Scope: only when an active
+        # crud_form exists; query_* / cancel words are NOT forced here (PHASE-0
+        # query/question/cancel guards and the question heuristics already cancel
+        # the workflow before this path). Read-only of router output.
+        _wf_active_intent = (_wf_ctx or {}).get("intent", "") if _wf_ctx else ""
+        if _wf_active_intent and _wf_active_intent != _intent_val:
+            _slotfill_signalled = bool(getattr(_result, "slot_fill", None))
+            # A router pick that is itself a fresh query_/calc_ (a genuine intent
+            # switch) is left to the PHASE-0 / pipeline cancel guards; we only
+            # rescue the case where the router DID flag a slot_fill continuation
+            # but landed on a different (often update_*) intent label.
+            if _slotfill_signalled:
+                logger.warning(
+                    "[FIX_WF_SLOTFILL_ARBITER] router intent=%s + slot_fill -> "
+                    "deferring to active workflow intent=%s",
+                    _intent_val,
+                    _wf_active_intent,
+                )
+                _intent_val = _wf_active_intent
+
         # Build ExtractionResult-compatible object
         extraction = ExtractionResult(
             intent=_intent_val,
