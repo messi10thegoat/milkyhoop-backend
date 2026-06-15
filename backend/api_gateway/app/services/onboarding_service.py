@@ -193,7 +193,26 @@ async def create_tenant_and_user(
                 f"role_id={owner_role_id}"
             )
 
-    # 5. Generate tokens locally (same as QR login flow)
+            # 5. Provision the CURRENT fiscal year + 12 monthly OPEN periods.
+            # Without this, posted journals have no covering fiscal_period
+            # (Class-2 onboarding-completeness gap). start_month mirrors the
+            # Tenant.fiscal_year_start value used at the Tenant insert (default 1).
+            fiscal_year_start = 1  # keep in sync with "Tenant" insert above
+            current_year = datetime.utcnow().year
+            await conn.fetchval(
+                "SELECT create_fiscal_year_with_periods($1, $2, $3, $4, $5::uuid)",
+                tenant_id,
+                f"Tahun Buku {current_year}",
+                fiscal_year_start,
+                current_year,
+                user_id,
+            )
+            logger.info(
+                f"Fiscal year provisioned: Tahun Buku {current_year} "
+                f"(12 OPEN periods) for tenant {tenant_id}"
+            )
+
+    # 6. Generate tokens locally (same as QR login flow)
     from .auth_instance import auth_client
 
     token_response = await auth_client._generate_tokens_locally(
@@ -207,7 +226,7 @@ async def create_tenant_and_user(
         device_type="mobile",
     )
 
-    # 6. Register device in DB
+    # 7. Register device in DB
     try:
         from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
@@ -233,7 +252,7 @@ async def create_tenant_and_user(
     except Exception as e:
         logger.warning(f"Device registration during signup failed (non-blocking): {e}")
 
-    # 7. Set session authority in Redis
+    # 8. Set session authority in Redis
     try:
         from .session_manager import session_manager
 
