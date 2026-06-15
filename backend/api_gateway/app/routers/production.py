@@ -1709,7 +1709,41 @@ async def issue_materials(
 
                     from datetime import date as _date
 
-                    today = _date.today()
+                    # Optional period-gated posting date (default = today). Must
+                    # fall in an OPEN fiscal period. Clean HTTP 400 pre-check
+                    # BEFORE any journal/ledger insert (the
+                    # prevent_closed_period_journal trigger would otherwise surface
+                    # a raw DB error). Iron Law 5. Mirrors record_labor /
+                    # report_output posting_date gate. posting_date is taken from
+                    # the first material row (single journal per request).
+                    effective_date = (
+                        materials[0].posting_date if materials else None
+                    ) or _date.today()
+                    fp_mi = await conn.fetchrow(
+                        """
+                        SELECT status FROM fiscal_periods
+                        WHERE tenant_id = $1
+                          AND $2 BETWEEN start_date AND end_date
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                        effective_date,
+                    )
+                    if (not fp_mi) or str(fp_mi["status"]).upper() in (
+                        "CLOSED",
+                        "LOCKED",
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Tidak bisa issue material: tanggal {effective_date} "
+                                f"berada di periode yang sudah ditutup/dikunci atau "
+                                f"tidak ada periode aktif. Pilih tanggal di periode "
+                                f"yang masih OPEN."
+                            ),
+                        )
+
+                    today = effective_date
                     year_month_str = f"{today.year % 100:02d}{today.month:02d}"
                     jseq = await conn.fetchval(
                         """
@@ -1802,7 +1836,7 @@ async def issue_materials(
                                 warehouse_id, created_by, notes, journal_id
                             ) VALUES (
                                 gen_random_uuid(), $1, $2, $3, $4,
-                                'MATERIAL_ISSUE', CURRENT_DATE, 'MATERIAL_ISSUE', $5, $6,
+                                'MATERIAL_ISSUE', $16, 'MATERIAL_ISSUE', $5, $6,
                                 0, $7, $8,
                                 $9, $10, $11,
                                 $12, $13, $14, $15
@@ -1823,6 +1857,7 @@ async def issue_materials(
                             ctx["user_id"],
                             f"Pengeluaran bahan untuk {order_number}",
                             mi_journal_id,
+                            effective_date,
                         )
 
                     # Link journal to WO
@@ -2331,7 +2366,37 @@ async def report_output(
 
                     from datetime import date as _date_ro
 
-                    today_ro = _date_ro.today()
+                    # Optional period-gated posting date (default = today). Must
+                    # fall in an OPEN fiscal period. Clean HTTP 400 pre-check
+                    # BEFORE any journal insert (the prevent_closed_period_journal
+                    # trigger would otherwise surface a raw DB error). Iron Law 5.
+                    # Mirrors record_labor's posting_date gate.
+                    effective_date = body.posting_date or _date_ro.today()
+                    fp_ro = await conn.fetchrow(
+                        """
+                        SELECT status FROM fiscal_periods
+                        WHERE tenant_id = $1
+                          AND $2 BETWEEN start_date AND end_date
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                        effective_date,
+                    )
+                    if (not fp_ro) or str(fp_ro["status"]).upper() in (
+                        "CLOSED",
+                        "LOCKED",
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Tidak bisa lapor output: tanggal {effective_date} "
+                                f"berada di periode yang sudah ditutup/dikunci atau "
+                                f"tidak ada periode aktif. Pilih tanggal di periode "
+                                f"yang masih OPEN."
+                            ),
+                        )
+
+                    today_ro = effective_date
                     ym_ro = f"{today_ro.year % 100:02d}{today_ro.month:02d}"
                     jseq_ro = await conn.fetchval(
                         """
@@ -2440,7 +2505,7 @@ async def report_output(
                             warehouse_id, created_by, notes, journal_id
                         ) VALUES (
                             gen_random_uuid(), $1, $2, $3, $4,
-                            'PRODUCTION_OUTPUT', CURRENT_DATE, 'PRODUCTION_OUTPUT', $5, $6,
+                            'PRODUCTION_OUTPUT', $16, 'PRODUCTION_OUTPUT', $5, $6,
                             $7, 0, $8,
                             $9, $10, $11,
                             $12, $13, $14, $15
@@ -2461,6 +2526,7 @@ async def report_output(
                         ctx["user_id"],
                         f"Penerimaan produksi {order['order_number']}",
                         fg_journal_id,
+                        today_ro,
                     )
 
                     # Link journal to completion + WO

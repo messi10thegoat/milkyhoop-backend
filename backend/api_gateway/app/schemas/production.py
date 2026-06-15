@@ -25,6 +25,11 @@ class ProductionMaterialInput(BaseModel):
     warehouse_id: Optional[UUID] = None
     batch_id: Optional[UUID] = None
     serial_ids: Optional[List[UUID]] = None
+    # Optional journal date for the MATERIAL_ISSUE journal + ledger; must fall
+    # in an OPEN fiscal period. Defaults to today. Mirrors ProductionLaborInput /
+    # ProductionCompletionInput.posting_date. Taken from the first material row
+    # (single journal per request). Enables back-dating within an open period.
+    posting_date: Optional[date] = None
 
 
 class ProductionMaterialDetail(BaseModel):
@@ -105,6 +110,10 @@ class ProductionCompletionInput(BaseModel):
     warehouse_id: Optional[UUID] = None
     batch_id: Optional[UUID] = None
     allow_overrun: bool = False
+    # Optional journal date for the FG-receipt journal (Dr Inventory / Cr WIP);
+    # must fall in an OPEN fiscal period. Defaults to today. Enables recording
+    # FG receipt into the current open period (mirrors ProductionLaborInput).
+    posting_date: Optional[date] = None
 
 
 class ProductionCompletionDetail(BaseModel):
