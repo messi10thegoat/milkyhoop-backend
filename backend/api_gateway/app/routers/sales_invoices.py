@@ -597,15 +597,23 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 ctx["tenant_id"],
                 invoice_id,
             )
-            # If no row from function: invoice is fully paid (outstanding=0) or draft/void
+            # FIX_AR_HERO_SETTLED (2026-06-15): derive paid/due from ledger truth.
+            # No row from compute_ar_outstanding means either fully settled (outstanding
+            # 0 — incl. settlement via credit note/retur) OR draft/void. Distinguish by
+            # status: only draft/void are unpaid. Do NOT gate "fully paid" on cached
+            # status=='paid' — a stale cache (e.g. 'partial') otherwise shows DITERIMA 0
+            # / SISA = full on an invoice that the ledger says is settled.
             if ar_row:
                 journal_amount_paid = float(
                     invoice["total_amount"] - ar_row["outstanding"]
                 )
-            elif invoice["status"] in ("paid",):
-                journal_amount_paid = float(invoice["total_amount"])
+                _amount_due = float(ar_row["outstanding"])
+            elif invoice["status"] in ("draft", "void"):
+                journal_amount_paid = 0.0
+                _amount_due = float(invoice["total_amount"] or 0)
             else:
-                journal_amount_paid = 0
+                journal_amount_paid = float(invoice["total_amount"])
+                _amount_due = 0.0
 
             return {
                 "success": True,
@@ -628,13 +636,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
                     "amount_paid": journal_amount_paid,
-                    "amount_due": float(ar_row["outstanding"])
-                    if ar_row
-                    else (
-                        0.0
-                        if invoice["status"] in ("paid",)
-                        else float(invoice["total_amount"] or 0)
-                    ),
+                    # FIX_AR_HERO_SETTLED: amount_due + remaining_amount from ledger
+                    # truth (_amount_due). remaining_amount is the field the FE hero
+                    # reads first for SISA.
+                    "amount_due": _amount_due,
+                    "remaining_amount": _amount_due,
                     "status": invoice["status"],  # noqa: F601  # pre-existing duplicate key
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",

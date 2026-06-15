@@ -1675,21 +1675,24 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         invoice_total = await conn.fetchval(
             "SELECT total_amount FROM sales_invoices WHERE id = $1", alloc["invoice_id"]
         )
-        # After this payment posts, the remaining will decrease by amount_applied.
-        # But journal is already created above, so remaining_from_journal already
-        # reflects THIS payment's allocation. We read it after journal creation.
-        # However, the allocation record was created before posting, so the
-        # journal-based helper won't count this payment yet (it's still draft
-        # at this point in the code). We need to manually account for this.
-        current_remaining = await get_invoice_remaining_from_journal(
-            conn, ctx["tenant_id"], alloc["invoice_id"]
+        # FIX_AR_CACHE_SYNC (2026-06-15): recompute the cache from ledger truth
+        # (compute_ar_outstanding) instead of the bespoke helper. The payment journal
+        # is already POSTED (above), so the function reflects THIS payment plus any
+        # credit note / retur that credits AR directly. The previous code (a) double-
+        # subtracted amount_applied after the journal was already POSTED (stale comment),
+        # and (b) used get_invoice_remaining_from_journal which ignores credit notes
+        # lacking a credit_note_applications row — together desyncing amount_paid/status
+        # from the ledger (e.g. INV-2604-0029: cache 100k/partial vs ledger fully paid).
+        _outstanding = await conn.fetchval(
+            "SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+            ctx["tenant_id"],
+            alloc["invoice_id"],
         )
-        # current_remaining doesn't include this payment yet (still draft),
-        # so subtract the allocation amount
-        new_remaining = current_remaining - alloc["amount_applied"]
-        new_amount_paid = invoice_total - max(0, new_remaining)
+        # No row from the function = fully settled (outstanding 0).
+        new_outstanding = float(_outstanding) if _outstanding is not None else 0.0
+        new_amount_paid = float(invoice_total) - max(0.0, new_outstanding)
 
-        new_status = "paid" if new_amount_paid >= invoice_total else "partial"
+        new_status = "paid" if new_outstanding < 0.01 else "partial"
 
         await conn.execute(
             """
