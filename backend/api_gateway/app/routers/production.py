@@ -525,7 +525,8 @@ async def get_production_order(request: Request, order_id: UUID):
             order = await conn.fetchrow(
                 """
                 SELECT po.*, p.nama_produk as product_name, p.sku as product_sku,
-                       bom.bom_code, wc.name as work_center_name, w.name as warehouse_name
+                       bom.bom_code, wc.name as work_center_name, w.name as warehouse_name,
+                       wc.labor_rate_per_hour, wc.overhead_rate_per_hour
                 FROM production_orders po
                 JOIN products p ON p.id = po.product_id
                 JOIN bill_of_materials bom ON bom.id = po.bom_id
@@ -600,6 +601,8 @@ async def get_production_order(request: Request, order_id: UUID):
                     if order["work_center_id"]
                     else None,
                     "work_center_name": order["work_center_name"],
+                    "labor_rate_per_hour": order["labor_rate_per_hour"],
+                    "overhead_rate_per_hour": order["overhead_rate_per_hour"],
                     "warehouse_id": str(order["warehouse_id"])
                     if order["warehouse_id"]
                     else None,
@@ -1932,7 +1935,16 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 if order["status"] not in ("released", "in_progress"):
                     raise HTTPException(
                         status_code=400,
-                        detail="Order must be released or in progress",
+                        detail=f"Tidak bisa mencatat labor: WO berstatus '{order['status']}'. Labor hanya untuk WO yang sudah dirilis atau sedang dikerjakan (released/in_progress).",
+                    )
+                if (
+                    order["completed_quantity"] is not None
+                    and order["planned_quantity"] is not None
+                    and order["completed_quantity"] >= order["planned_quantity"]
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Tidak bisa mencatat labor: output WO sudah penuh (selesai dilaporkan). Catat labor SEBELUM menyelesaikan output; biaya labor setelah output penuh akan terdampar di WIP.",
                     )
 
                 # Standard rates from work_centers (NULL-safe)
