@@ -4486,6 +4486,13 @@ async def _confirm_direct_action(
                 "reference_number": payload.get("bill_number", ""),
                 "notes": f"Pembayaran dari rekonsiliasi bank — {payload.get('bill_number', '')}",
             }
+            # FIX_DOCLINK_PAYMENT (2026-06-15): the whitelist rebuild above drops the
+            # chat-uploaded doc id; carry it so the DocLink block links the bukti
+            # transfer to the payment (+ bill via the secondary link below).
+            if payload.get("_uploaded_document_id"):
+                clean_payload["_uploaded_document_id"] = payload[
+                    "_uploaded_document_id"
+                ]
 
         elif action_key == "create_receive_payment":
             allocations = payload.get("allocations", [])
@@ -4509,6 +4516,11 @@ async def _confirm_direct_action(
                 clean_payload["session_id"] = payload["session_id"]
             if payload.get("statement_line_id"):
                 clean_payload["statement_line_id"] = payload["statement_line_id"]
+            # FIX_DOCLINK_PAYMENT (2026-06-15): carry uploaded doc id (whitelist drops it)
+            if payload.get("_uploaded_document_id"):
+                clean_payload["_uploaded_document_id"] = payload[
+                    "_uploaded_document_id"
+                ]
 
         elif action_key == "create_vendor_credit":
             # VC schema requires vendor_name (stripped by display_only), reason enum, items[].
@@ -4709,6 +4721,40 @@ async def _confirm_direct_action(
                                 logger.info(
                                     f"[DocLink] Attached document {_uploaded_document_id[:8]} to {_link_entity_type}/{entity_id[:8]}"
                                 )
+                                # FIX_DOCLINK_PAYMENT (2026-06-15): dual-link — also
+                                # attach to the underlying bill/invoice so the bukti
+                                # transfer surfaces in the document's Lampiran section,
+                                # not only on the payment. Matches the documented
+                                # primary+secondary link architecture.
+                                _sec_type = None
+                                if action_key == "create_bill_payment":
+                                    _sec_type = "bill"
+                                elif action_key == "create_receive_payment":
+                                    _sec_type = "sales_invoice"
+                                if _sec_type:
+                                    _allocs = clean_payload.get("allocations") or []
+                                    _sec_id = None
+                                    if _allocs and isinstance(_allocs[0], dict):
+                                        _sec_id = (
+                                            _allocs[0].get("bill_id")
+                                            or _allocs[0].get("invoice_id")
+                                            or _allocs[0].get("sales_invoice_id")
+                                        )
+                                    if _sec_id:
+                                        await _link_conn.execute(
+                                            """INSERT INTO document_attachments
+                                               (tenant_id, document_id, entity_type, entity_id, attachment_type, attached_by)
+                                               VALUES ($1, $2, $3, $4, 'receipt', $5)
+                                               ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING""",
+                                            tenant_id,
+                                            uuid_mod.UUID(_uploaded_document_id),
+                                            _sec_type,
+                                            uuid_mod.UUID(str(_sec_id)),
+                                            uuid_mod.UUID(user_id) if user_id else None,
+                                        )
+                                        logger.info(
+                                            f"[DocLink] Secondary attach document {_uploaded_document_id[:8]} to {_sec_type}/{str(_sec_id)[:8]}"
+                                        )
                     except Exception as _link_err:
                         logger.warning(
                             f"[DocLink] Failed to attach document: {_link_err}"

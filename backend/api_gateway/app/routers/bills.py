@@ -1088,6 +1088,54 @@ async def list_bill_attachments(
                 }
             )
 
+        # FIX_DOCLINK_PAYMENT (2026-06-15): UNION document_attachments linked to
+        # this bill (entity_type='bill') — e.g. a chat-uploaded bukti transfer
+        # dual-linked at bill_payment confirm. Legacy bill_attachments only held
+        # manual dashboard uploads, so chat-origin docs never surfaced here.
+        # Mirrors bill_payments.list_payment_attachments; same item shape so the
+        # FE Lampiran renders unchanged.
+        try:
+            _seen_ids = {a["id"] for a in attachments}
+            doc_rows = await conn.fetch(
+                """SELECT d.id, d.file_name, d.file_size, d.file_type, d.file_url,
+                          d.file_path, d.uploaded_at
+                   FROM document_attachments da
+                   JOIN documents d ON da.document_id = d.id
+                   WHERE da.tenant_id = $1 AND da.entity_type = 'bill'
+                     AND da.entity_id = $2 AND d.deleted_at IS NULL
+                   ORDER BY da.display_order, da.attached_at DESC""",
+                tenant_id,
+                bill_id,
+            )
+            for r in doc_rows:
+                if str(r["id"]) in _seen_ids:
+                    continue
+                try:
+                    _u = (
+                        await storage.generate_signed_url(r["file_path"])
+                        if r["file_path"]
+                        else None
+                    ) or r["file_url"]
+                except Exception:
+                    _u = r["file_url"]
+                attachments.append(
+                    {
+                        "id": str(r["id"]),
+                        "filename": r["file_name"],
+                        "url": _u or f"/api/documents/{r['id']}/download",
+                        "size": r["file_size"],
+                        "mime_type": r["file_type"],
+                        "uploaded_at": r["uploaded_at"].isoformat()
+                        if r["uploaded_at"]
+                        else None,
+                        "uploaded_by_name": None,
+                    }
+                )
+        except Exception as _doc_err:
+            logger.warning(
+                f"[FIX_DOCLINK_PAYMENT] bill document_attachments union skipped: {_doc_err}"
+            )
+
         return {"attachments": attachments}
 
 
