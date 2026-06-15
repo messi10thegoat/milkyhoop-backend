@@ -62,6 +62,11 @@ from ..schemas.items import (
 )
 from ..config import settings
 from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    AccountRoleUnmappedError,
+    resolve_account_id_by_role,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -88,6 +93,56 @@ def get_tenant_id(request: Request) -> str:
         raise HTTPException(status_code=401, detail="Invalid user context")
 
     return tenant_id
+
+
+async def _auto_default_product_accounts(
+    conn,
+    tenant_id: str,
+    item_type,
+    track_inventory,
+    inventory_account_id,
+    cogs_account_id,
+):
+    """Auto-default stockable-goods inventory/COGS accounts to the tenant's
+    role-mapped accounts when the caller left them NULL.
+
+    Makes the COGS/restock path's previously-silent role fallback explicit at the
+    master-data layer (same accounts, zero economic change). Stockable goods only
+    (item_type='goods' AND track_inventory=true). If the tenant lacks the role
+    mapping, leave NULL + WARN rather than hard-failing the create/update.
+
+    Returns (inventory_account_id, cogs_account_id) — resolved or unchanged.
+    """
+    if item_type != "goods" or not track_inventory:
+        return inventory_account_id, cogs_account_id
+
+    if not inventory_account_id:
+        try:
+            inventory_account_id = str(
+                await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
+                )
+            )
+        except AccountRoleUnmappedError:
+            logger.warning(
+                "Auto-default skipped: tenant %s has no INVENTORY_MERCHANDISE role "
+                "mapping; leaving inventory_account_id NULL on stockable product",
+                tenant_id,
+            )
+    if not cogs_account_id:
+        try:
+            cogs_account_id = str(
+                await resolve_account_id_by_role(
+                    conn, tenant_id, AccountRole.COGS_SALES
+                )
+            )
+        except AccountRoleUnmappedError:
+            logger.warning(
+                "Auto-default skipped: tenant %s has no COGS_SALES role mapping; "
+                "leaving cogs_account_id NULL on stockable product",
+                tenant_id,
+            )
+    return inventory_account_id, cogs_account_id
 
 
 # Connection pool for newer endpoints
@@ -480,6 +535,20 @@ async def create_item(request: Request, body: CreateItemRequest):
                 status_code=409, detail=f"Kode item {item_code_to_use} sudah digunakan"
             )
 
+        # Auto-default inventory/COGS accounts for stockable goods so the
+        # COGS/restock path no longer relies on an implicit silent role fallback.
+        (
+            body.inventory_account_id,
+            body.cogs_account_id,
+        ) = await _auto_default_product_accounts(
+            conn,
+            tenant_id,
+            body.item_type,
+            body.track_inventory,
+            body.inventory_account_id,
+            body.cogs_account_id,
+        )
+
         # Start transaction
         async with conn.transaction():
             # Insert item
@@ -735,7 +804,8 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             """SELECT nama_produk, sales_price, harga_jual, purchase_price,
                       base_unit, satuan, reorder_level, item_type, track_inventory,
                       kategori, deskripsi, barcode, is_returnable,
-                      sales_tax, purchase_tax, image_url
+                      sales_tax, purchase_tax, image_url,
+                      inventory_account_id, cogs_account_id
                FROM products WHERE id = $1 AND tenant_id = $2""",
             str(item_id),
             tenant_id,
@@ -785,6 +855,42 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             }
 
             body_dict = body.model_dump(exclude_unset=True, exclude={"conversions"})
+
+            # Auto-default inventory/COGS accounts for stockable goods. Compute the
+            # effective type/flags + account ids (post-update if changed, else current
+            # row) and fill any NULL via the tenant's role mapping so the COGS/restock
+            # path no longer depends on an implicit silent fallback. Stockable goods only.
+            eff_item_type = body_dict.get(
+                "item_type", old_item["item_type"] if old_item else None
+            )
+            eff_track_inventory = body_dict.get(
+                "track_inventory",
+                old_item["track_inventory"] if old_item else False,
+            )
+            eff_inv_acct = body_dict.get(
+                "inventory_account_id",
+                str(old_item["inventory_account_id"])
+                if old_item and old_item["inventory_account_id"]
+                else None,
+            )
+            eff_cogs_acct = body_dict.get(
+                "cogs_account_id",
+                str(old_item["cogs_account_id"])
+                if old_item and old_item["cogs_account_id"]
+                else None,
+            )
+            new_inv_acct, new_cogs_acct = await _auto_default_product_accounts(
+                conn,
+                tenant_id,
+                eff_item_type,
+                eff_track_inventory,
+                eff_inv_acct,
+                eff_cogs_acct,
+            )
+            if new_inv_acct and new_inv_acct != eff_inv_acct:
+                body_dict["inventory_account_id"] = new_inv_acct
+            if new_cogs_acct and new_cogs_acct != eff_cogs_acct:
+                body_dict["cogs_account_id"] = new_cogs_acct
 
             for field, db_field in field_mappings.items():
                 if field in body_dict:

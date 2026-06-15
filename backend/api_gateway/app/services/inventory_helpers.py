@@ -51,10 +51,22 @@ async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> 
     inv_acct = product_accounts["inventory_account_id"] if product_accounts else None
 
     if not cogs_acct:
+        logger.warning(
+            "Product %s (tenant %s) has NULL cogs_account_id; "
+            "substituting tenant COGS_SALES role default",
+            product_id,
+            tenant_id,
+        )
         cogs_acct = await resolve_account_id_by_role(
             conn, tenant_id, AccountRole.COGS_SALES
         )
     if not inv_acct:
+        logger.warning(
+            "Product %s (tenant %s) has NULL inventory_account_id; "
+            "substituting tenant INVENTORY_MERCHANDISE role default",
+            product_id,
+            tenant_id,
+        )
         inv_acct = await resolve_account_id_by_role(
             conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
         )

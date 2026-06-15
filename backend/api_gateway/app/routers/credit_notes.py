@@ -1209,10 +1209,22 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                                 else None
                             )
                             if not cogs_acct:
+                                logger.warning(
+                                    "Product %s (tenant %s) has NULL cogs_account_id; "
+                                    "substituting tenant COGS_SALES role default",
+                                    product["id"],
+                                    ctx["tenant_id"],
+                                )
                                 cogs_acct = await resolve_account_id_by_role(
                                     conn, ctx["tenant_id"], AccountRole.COGS_SALES
                                 )
                             if not inv_acct:
+                                logger.warning(
+                                    "Product %s (tenant %s) has NULL inventory_account_id; "
+                                    "substituting tenant INVENTORY_MERCHANDISE role default",
+                                    product["id"],
+                                    ctx["tenant_id"],
+                                )
                                 inv_acct = await resolve_account_id_by_role(
                                     conn,
                                     ctx["tenant_id"],
