@@ -776,6 +776,23 @@ Tenant: {tenant_name}
 """
 
 
+def _upload_persona_enabled() -> bool:
+    """Gate the upload-capability persona note (shares DOC_INTAKE_LANE_C flag)."""
+    import os as _up_os
+
+    return _up_os.environ.get("DOC_INTAKE_LANE_C", "off").strip().lower() == "on"
+
+
+# Generic chat must never claim it cannot handle uploads — chat supports
+# photo/PDF attachments that are processed automatically. Injected per-turn.
+UPLOAD_CAPABILITY_NOTE = """
+## UPLOAD DOKUMEN (PENTING)
+User BISA melampirkan foto/PDF langsung di chat (tombol +) — dokumen diproses otomatis (struk, faktur, bukti transfer, dll).
+JANGAN PERNAH bilang kamu "tidak bisa upload" / "tidak dapat memproses dokumen" — itu SALAH.
+Kalau user bertanya atau berniat upload tapi belum melampirkan file: ajak singkat — "Ya, bisa — lampirkan saja foto atau PDF-nya lewat tombol +." JANGAN minta user mengetik detail dokumen manual.
+"""
+
+
 def build_system_messages(
     tenant_name: str,
     today: str | None = None,
@@ -820,6 +837,11 @@ def build_system_messages(
     # weight of ACTION/READ guidance still present in static_content.
     if userguide_enabled and intent == "TUTORIAL":
         dynamic = USERGUIDE_TUTORIAL_OVERRIDE + "\n" + dynamic
+
+    # Document-upload capability note (flag-gated) — applies to ALL intents incl.
+    # CHITCHAT so "bisa upload?" is answered correctly, not hallucinated away.
+    if _upload_persona_enabled():
+        dynamic += UPLOAD_CAPABILITY_NOTE
 
     return [
         {"role": "system", "content": static_content},
