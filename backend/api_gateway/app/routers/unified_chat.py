@@ -2522,6 +2522,9 @@ async def send_message_with_files(
     _t_pipeline_start = _t_mod.perf_counter()
     _doc_pipeline_result = None
     _doc_intent_ocr_path = False  # Lane C: IntentOCR is exempt from exit-invariant
+    _doc_resolved_financial = (
+        False  # Lane C: a resolved financial action must not be masked
+    )
     if file_metas and not _recon_shortcut_result:
         _has_image = any(
             fm.get("content_type", "").startswith("image/")
@@ -3102,6 +3105,13 @@ Aturan:
                         if _intake_result
                         else None
                     )
+                    # FIX_TRANSFER_LANEC_MASK (2026-06-15): once the intake
+                    # pipeline resolves a financial action (e.g. a matched
+                    # receive_payment), the turn is NOT a "leak" — the Lane C
+                    # exit-invariant must not mask a downstream propose/preview
+                    # failure with a misleading "captured, can't process" card.
+                    if _resolved_action:
+                        _doc_resolved_financial = True
 
                     if _intake_result is not None:
                         # If direction clarification needed -> CLARIFICATION pills
@@ -3547,7 +3557,11 @@ Aturan:
                                     "file_hash", str(_ocr_uuid.uuid4())
                                 ),
                                 "doc_type": _doc_type,
-                                "vendor_name": _counterparty,
+                                # FIX_TRANSFER_COUNTERPARTY (2026-06-15): fallback
+                                # path never assigns _counterparty (only the
+                                # propose-success path does) → UnboundLocalError.
+                                # Use the local _vendor (assigned in this block).
+                                "vendor_name": _vendor,
                                 "document_number": _doc_number,
                                 "document_date": _doc_date,
                                 "total_amount": _total,
@@ -3759,7 +3773,9 @@ Aturan:
                                 "confidence": _confidence,
                                 "document_number": _doc_number,
                                 "document_date": _doc_date,
-                                "vendor_name": _counterparty,
+                                # FIX_TRANSFER_COUNTERPARTY (2026-06-15): _vendor,
+                                # not the unbound _counterparty (fallback scope).
+                                "vendor_name": _vendor,
                                 "total_amount": _total,
                                 "tax_amount": _tax,
                                 "items": _items,
@@ -3821,6 +3837,7 @@ Aturan:
         and _doc_pipeline_result is None
         and file_metas
         and not _doc_intent_ocr_path
+        and not _doc_resolved_financial
     ):
         try:
             _inv_has_image = any(

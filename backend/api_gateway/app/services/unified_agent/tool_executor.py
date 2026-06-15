@@ -5032,7 +5032,20 @@ class ToolExecutor:
     async def _enrich_receive_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich RECEIVE_PAYMENT: customer lookup from invoice, field translations, defaults."""
         today = datetime.now().strftime("%Y-%m-%d")
-        payload.setdefault("payment_date", today)
+        # FIX_TRANSFER_RCV_DATE (2026-06-15): the document resolver sets
+        # payment_date="" when OCR has no date (bank transfers often lack one).
+        # setdefault does NOT override an existing empty string, so the required
+        # "Tanggal" field stayed empty → propose validation rejected it
+        # (success=False) → fallback crash → Lane C masked it. The bill-payment
+        # twin (_enrich_make_payment) already has this empty-safe override; this
+        # mirrors it. Lesson: empty-string vs missing-key — use `if not get(x)`.
+        if not payload.get("payment_date") or payload.get("payment_date") in (
+            "null",
+            "",
+            "-",
+            "None",
+        ):
+            payload["payment_date"] = today
         payload.setdefault("payment_method", "bank_transfer")
         # FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): the LLM/override can
         # set payment_method to a raw Indonesian phrase ("transfer bank",
