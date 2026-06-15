@@ -2860,6 +2860,8 @@ async def month_end_reconcile(request: Request, body: dict):
                 status_code=400, detail="Body requires 'period' as 'YYYY-MM'"
             )
 
+        dry_run = bool((body or {}).get("dry_run"))
+
         pool = await get_pool()
         await _ensure_production_role_preconditions(pool)
 
@@ -2869,10 +2871,12 @@ async def month_end_reconcile(request: Request, body: dict):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # --- Advisory lock (period-scoped) -------------------------
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"MFG_RECONCILE:{tenant_id}:{period}",
-                )
+                # Dry-run is a pure read: no lock (no write to serialize).
+                if not dry_run:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"MFG_RECONCILE:{tenant_id}:{period}",
+                    )
 
                 # --- Resolve fiscal period window --------------------------
                 fp = await conn.fetchrow(
@@ -2889,7 +2893,8 @@ async def month_end_reconcile(request: Request, body: dict):
                         status_code=400,
                         detail=f"Fiscal period '{period}' not found for tenant",
                     )
-                if str(fp["status"]).upper() in ("CLOSED", "LOCKED"):
+                period_status = str(fp["status"]).upper()
+                if period_status in ("CLOSED", "LOCKED") and not dry_run:
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -2906,7 +2911,7 @@ async def month_end_reconcile(request: Request, body: dict):
                 # void path enables a clean re-run.
                 existing = await conn.fetchrow(
                     """
-                    SELECT journal_number
+                    SELECT id, journal_number
                     FROM journal_entries
                     WHERE tenant_id = $1
                       AND source_type = $2
@@ -2922,7 +2927,8 @@ async def month_end_reconcile(request: Request, body: dict):
                     p_start,
                     p_end,
                 )
-                if existing:
+                already_reconciled = existing is not None
+                if existing and not dry_run:
                     raise HTTPException(
                         status_code=409,
                         detail=(
@@ -3030,6 +3036,57 @@ async def month_end_reconcile(request: Request, body: dict):
                 oh_active = (actual_oh_id is not None) and (
                     (applied_oh != ZERO) or (actual_oh != ZERO)
                 )
+
+                # --- DRY-RUN preview: pure read, no lock/insert/409 --------
+                # Numbers come from the IDENTICAL computation above (anti-drift).
+                # Additionally surface CURRENT effective clearing balances so the
+                # FE can show "saldo clearing sekarang -> akan jadi 0".
+                if dry_run:
+                    clr_labor = await _signed_sum(labor_applied_id, sign_debit=False)
+                    clr_oh = (
+                        await _signed_sum(oh_applied_id, sign_debit=False)
+                        if actual_oh_id is not None
+                        else ZERO
+                    )
+                    var_labor_dr = (actual_labor - applied_labor).quantize(Q)
+                    var_oh_dr = (
+                        (actual_oh - applied_oh).quantize(Q)
+                        if actual_oh_id is not None
+                        else ZERO
+                    )
+                    return {
+                        "success": True,
+                        "message": "Month-end reconcile preview (dry-run)",
+                        "data": {
+                            "period": period,
+                            "dry_run": True,
+                            "period_status": period_status,
+                            "already_reconciled": already_reconciled,
+                            "journal_id": (
+                                str(existing["id"]) if already_reconciled else None
+                            ),
+                            "journal_number": (
+                                existing["journal_number"]
+                                if already_reconciled
+                                else None
+                            ),
+                            "labor": {
+                                "applied": str(applied_labor),
+                                "actual": str(actual_labor),
+                                "variance": str(var_labor_dr),
+                            },
+                            "overhead": {
+                                "mapped": actual_oh_id is not None,
+                                "applied": str(applied_oh),
+                                "actual": str(actual_oh),
+                                "variance": str(var_oh_dr),
+                            },
+                            "clearing": {
+                                "labor_2_10430": str(clr_labor),
+                                "oh_2_10440": str(clr_oh),
+                            },
+                        },
+                    }
 
                 if not labor_active and not oh_active:
                     return {
