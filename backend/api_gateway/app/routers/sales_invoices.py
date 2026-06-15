@@ -587,6 +587,37 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 ctx["tenant_id"],
             )
 
+            # FIX_AR_HERO_SETTLED (2026-06-15): credit notes / retur that settle this
+            # invoice are NOT receive_payments — surface them so the settlement history
+            # is complete (else 75k of payments shows on a 125k invoice marked paid,
+            # with the 50k retur invisible). Amount = the CN journal's RECEIVABLE credit.
+            applied_credits = await conn.fetch(
+                """
+                SELECT cn.id, cn.credit_note_number, cn.credit_note_date, cn.reason,
+                       COALESCE(SUM(jl.credit), 0) AS amount
+                FROM credit_notes cn
+                JOIN journal_entries je
+                  ON je.source_id::uuid = cn.id AND je.source_type = 'CREDIT_NOTE'
+                JOIN journal_lines jl ON jl.journal_id = je.id
+                JOIN chart_of_accounts coa
+                  ON coa.id = jl.account_id AND coa.account_type = 'RECEIVABLE'
+                WHERE cn.tenant_id = $2 AND cn.status = 'posted'
+                  AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                  AND jl.credit > 0
+                  AND (
+                      cn.original_invoice_id = $1
+                      OR cn.id IN (
+                          SELECT credit_note_id FROM credit_note_applications
+                          WHERE invoice_id = $1
+                      )
+                  )
+                GROUP BY cn.id, cn.credit_note_number, cn.credit_note_date, cn.reason
+                ORDER BY cn.credit_note_date
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
             ar_row = await conn.fetchrow(
                 """
@@ -731,6 +762,19 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "posted_by_name": p.get("posted_by_name"),
                         }
                         for p in payments
+                    ],
+                    # FIX_AR_HERO_SETTLED: credit notes / retur settling this invoice
+                    "applied_credits": [
+                        {
+                            "id": str(c["id"]),
+                            "credit_note_number": c.get("credit_note_number") or "-",
+                            "amount": float(c["amount"] or 0),
+                            "credit_note_date": c["credit_note_date"].isoformat()
+                            if c.get("credit_note_date")
+                            else None,
+                            "reason": c.get("reason"),
+                        }
+                        for c in applied_credits
                     ],
                     "ar_id": str(invoice["ar_id"]) if invoice["ar_id"] else None,
                     "journal_id": str(invoice["journal_id"])
