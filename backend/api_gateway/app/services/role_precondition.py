@@ -63,13 +63,20 @@ def _validate_roles(required_roles: Iterable[str]) -> list[str]:
 
 
 async def check_required_roles_for_path(
-    pool, path_name: str, required_roles: list[str]
+    pool, path_name: str, required_roles: list[str], tenant_id: str | None = None
 ) -> dict[str, list[str]]:
-    """Audit every active tenant for the required role mappings.
+    """Audit tenants for the required role mappings.
+
+    Args:
+        tenant_id: when given, audit ONLY this tenant (the one performing the
+            action). When None, audit every tenant (the original startup/CLI
+            behaviour). Scoping to the acting tenant is what posting paths want:
+            one misconfigured (e.g. test) tenant must NOT block posting for a
+            properly-onboarded tenant. (FIX_ROLE_PRECOND_PER_TENANT, 2026-06-16)
 
     Returns:
         ``{role_key: [tenant_id, ...]}`` of MISSING mappings. Empty dict
-        ⇒ all tenants are mapping-complete for this path.
+        ⇒ the audited tenant(s) are mapping-complete for this path.
 
     Notes:
         - Reads via superuser/admin pool; bypasses RLS on purpose so the
@@ -81,15 +88,23 @@ async def check_required_roles_for_path(
     roles = _validate_roles(required_roles)
 
     async with pool.acquire() as conn:
-        rows = await conn.fetch('SELECT id FROM "Tenant" ORDER BY id')
-        tenant_ids = [r["id"] for r in rows]
-
-        # Single round-trip: fetch all (tenant_id, role_key) pairs we care about.
-        present = await conn.fetch(
-            "SELECT tenant_id, role_key FROM account_roles "
-            "WHERE role_key = ANY($1::text[])",
-            roles,
-        )
+        if tenant_id is not None:
+            tenant_ids = [tenant_id]
+            present = await conn.fetch(
+                "SELECT tenant_id, role_key FROM account_roles "
+                "WHERE role_key = ANY($1::text[]) AND tenant_id = $2",
+                roles,
+                tenant_id,
+            )
+        else:
+            rows = await conn.fetch('SELECT id FROM "Tenant" ORDER BY id')
+            tenant_ids = [r["id"] for r in rows]
+            # Single round-trip: fetch all (tenant_id, role_key) pairs we care about.
+            present = await conn.fetch(
+                "SELECT tenant_id, role_key FROM account_roles "
+                "WHERE role_key = ANY($1::text[])",
+                roles,
+            )
 
     have = {(r["tenant_id"], r["role_key"]) for r in present}
     gaps: dict[str, list[str]] = {}
@@ -101,14 +116,20 @@ async def check_required_roles_for_path(
 
 
 async def assert_required_roles_for_path(
-    pool, path_name: str, required_roles: list[str]
+    pool, path_name: str, required_roles: list[str], tenant_id: str | None = None
 ) -> None:
     """Fail-loud version of :func:`check_required_roles_for_path`.
 
+    Args:
+        tenant_id: when given, only the acting tenant is audited (see
+            :func:`check_required_roles_for_path`).
+
     Raises:
-        PreconditionFailedError: any tenant is missing any required role.
+        PreconditionFailedError: the audited tenant(s) miss any required role.
     """
-    gaps = await check_required_roles_for_path(pool, path_name, required_roles)
+    gaps = await check_required_roles_for_path(
+        pool, path_name, required_roles, tenant_id=tenant_id
+    )
     if gaps:
         raise PreconditionFailedError(path_name, gaps)
 

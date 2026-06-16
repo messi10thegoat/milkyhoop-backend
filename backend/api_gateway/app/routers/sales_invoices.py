@@ -48,22 +48,26 @@ SALES_INVOICE_REQUIRED_ROLES = [
 # to a hot path. After first successful check the audit is skipped; a
 # tenant added later without mapping would still fail loud at
 # resolve_account_id_by_role(...) via AccountRoleUnmappedError.
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool):
-    """Run role-mapping precondition once per process for sales_invoices.
+async def _ensure_role_preconditions(pool, tenant_id):
+    """Run the role-mapping precondition for the ACTING tenant.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped.
+    FIX_ROLE_PRECOND_PER_TENANT (2026-06-16): scope to the tenant performing the
+    post. Previously this audited ALL tenants and cached one global flag, so a
+    single misconfigured tenant (e.g. a leftover test tenant lacking role
+    mappings) failed-loud and blocked posting for EVERY tenant. Now we only audit
+    the acting tenant and cache the pass per-tenant.
+
+    Fails loud (PreconditionFailedError) if THIS tenant lacks any required role.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "sales_invoices", SALES_INVOICE_REQUIRED_ROLES
+        pool, "sales_invoices", SALES_INVOICE_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 logger = logging.getLogger(__name__)
@@ -1810,7 +1814,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
 
         # Fase C1.1: fail-loud if any tenant lacks required role mapping
         # (auto-post path inside create posts to AR/REV/COGS/INV/VAT).
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2312,7 +2316,7 @@ async def post_invoice(
         pool = await get_pool()
 
         # Fase C1.1: fail-loud if any tenant lacks required role mapping.
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             # Check invoice exists and is draft
@@ -2389,7 +2393,7 @@ async def record_payment(
 
         # Fase C1.1: fail-loud if any tenant lacks required role mapping
         # (payment shortcut posts AR settlement journal).
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
