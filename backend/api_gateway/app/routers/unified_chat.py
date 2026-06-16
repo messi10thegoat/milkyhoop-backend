@@ -988,6 +988,10 @@ async def send_message(request: Request, body: ChatMessageRequest):
     # When user taps a bank option from CLARIFICATION, text = bank_account_id (UUID).
     # Check Layer 2 document_context.pending_bank_selection and re-resolve.
     _retrigger_sid = body.session_id or body.conversation_id
+    # FIX_DOCDIR_NORESOLVE: once a direction pill ("direction:in/out") is being
+    # handled, the block MUST return a response — never let the pill token leak to
+    # the generic orchestrator (it misroutes "direction:in" -> query_vendors_list).
+    _dir_pill_answer = False
     if _retrigger_sid and body.text:
         try:
             _retrigger_pool = await get_session_db_pool()
@@ -1011,6 +1015,7 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 # Direction pills inherit document_context TTL (~10 min).
                 # If expired, saved_ocr_data will be None → graceful fallback.
                 if _selected_value.startswith("direction:"):
+                    _dir_pill_answer = True  # FIX_DOCDIR_NORESOLVE
                     _forced_dir = _selected_value.split(":", 1)[1]  # "in" or "out"
                     _saved_ocr = _doc_ctx.get("saved_ocr_data")
 
@@ -1157,6 +1162,30 @@ async def send_message(request: Request, body: ChatMessageRequest):
                                     text=_propose_dir.get("error", "Gagal memproses."),
                                     session_id=body.session_id,
                                 )
+                        else:
+                            # FIX_DOCDIR_NORESOLVE: direction forced but the pipeline
+                            # resolved no action (e.g. category=unknown, no AR/AP match).
+                            # Capture gracefully + clear pending flag — NEVER fall through
+                            # to the generic orchestrator (it misreads "direction:in").
+                            _dir_label_nr = "masuk" if _forced_dir == "in" else "keluar"
+                            try:
+                                await _retrigger_sm.update_state(
+                                    _retrigger_sid,
+                                    document_context={"pending_bank_selection": False},
+                                )
+                            except Exception:
+                                pass
+                            return ChatMessageResponse(
+                                message_type="TEXT",
+                                text=(
+                                    "Dokumennya sudah tersimpan & terlampir di chat. "
+                                    f"Tapi aku belum bisa otomatis mencatatnya sebagai pembayaran {_dir_label_nr} "
+                                    "— data di bukti transfer belum cocok dengan faktur/tagihan yang ada. "
+                                    "Kamu bisa catat manual lewat menu Pembayaran, atau ketik detailnya "
+                                    "(nominal, nomor faktur, rekening)."
+                                ),
+                                session_id=_retrigger_sid,
+                            )
                     else:
                         # No saved OCR — can not re-run, clear state
                         await _retrigger_sm.update_state(
@@ -1284,6 +1313,32 @@ async def send_message(request: Request, body: ChatMessageRequest):
                             session_id=body.session_id,
                         )
         except Exception as _retrigger_err:
+            # FIX_DOCDIR_NORESOLVE: if this was a direction-pill answer, the re-run
+            # threw — return gracefully instead of leaking "direction:in" to the
+            # orchestrator. WARNING (not debug) so the failure is observable.
+            if _dir_pill_answer:
+                logger.warning(
+                    "[DocRetrigger] direction re-trigger failed: %s",
+                    _retrigger_err,
+                    exc_info=True,
+                )
+                try:
+                    await _retrigger_sm.update_state(
+                        _retrigger_sid,
+                        document_context={"pending_bank_selection": False},
+                    )
+                except Exception:
+                    pass
+                return ChatMessageResponse(
+                    message_type="TEXT",
+                    text=(
+                        "Dokumennya sudah tersimpan & terlampir di chat, tapi aku belum "
+                        "bisa memproses pilihan tadi. Kamu bisa catat manual lewat menu "
+                        "Pembayaran, atau ketik detail pembayarannya (nominal, nomor "
+                        "faktur, rekening)."
+                    ),
+                    session_id=_retrigger_sid,
+                )
             logger.debug("[DocRetrigger] Not a bank selection: %s", _retrigger_err)
 
     # ── Editing Mode Handler: apply field revisions to pending payload ──
