@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Optional
 from ...document_action_resolver import DocumentActionResolver, ResolvedAction
 from ...document_matcher import DocumentMatcher, SmartMatchResult
 from ..primitives.arap_matcher import ARAPMatcher
-from ..signals import classify_doc_number, extract_doc_numbers
+from ..signals import classify_doc_number, extract_doc_numbers, extract_party_name
 from ..transfer_types import TransferType
 from .base import ForcedOverride, HandlerMatchResult, HandlerResolveError
 
@@ -62,6 +62,21 @@ class BillPaymentHandler:
         candidates = await self._arap.match_ap(amt_min, amt_max, counterparty)
 
         if not candidates:
+            # FIX_DIR_PARTYNAME: caption names a vendor → match THEIR open bill
+            # (oldest first), partial payment allowed.
+            _vend = extract_party_name(caption or "", "out")
+            if _vend:
+                by_vend = await self._arap.match_ap_by_vendor(_vend)
+                if by_vend:
+                    best = by_vend[0]
+                    best.confidence = 0.85
+                    best.reasons = ["caption_vendor_match", _vend]
+                    return HandlerMatchResult(
+                        success=True,
+                        candidates=by_vend,
+                        best=best,
+                        reasons=["ap_match_by_vendor", _vend],
+                    )
             return HandlerMatchResult(
                 success=False,
                 reasons=["no_ap_match"],

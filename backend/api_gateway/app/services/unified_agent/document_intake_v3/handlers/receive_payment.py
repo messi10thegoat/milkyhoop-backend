@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Optional
 from ...document_action_resolver import DocumentActionResolver, ResolvedAction
 from ...document_matcher import DocumentMatcher, SmartMatchResult
 from ..primitives.arap_matcher import ARAPMatcher
-from ..signals import classify_doc_number, extract_doc_numbers
+from ..signals import classify_doc_number, extract_doc_numbers, extract_party_name
 from ..transfer_types import TransferType
 from .base import ForcedOverride, HandlerMatchResult, HandlerResolveError
 
@@ -63,6 +63,23 @@ class ReceivePaymentHandler:
         candidates = await self._arap.match_ar(amt_min, amt_max, counterparty)
 
         if not candidates:
+            # FIX_DIR_PARTYNAME: caption names a customer → match THEIR open invoice
+            # (oldest first), partial payment allowed. A "pembayaran sebagian" never
+            # equals the invoice amount, so amount-match above misses it; the user
+            # told us who paid, so honour that instead of failing/flipping direction.
+            _cust = extract_party_name(caption or "", "in")
+            if _cust:
+                by_cust = await self._arap.match_ar_by_customer(_cust)
+                if by_cust:
+                    best = by_cust[0]
+                    best.confidence = 0.85
+                    best.reasons = ["caption_customer_match", _cust]
+                    return HandlerMatchResult(
+                        success=True,
+                        candidates=by_cust,
+                        best=best,
+                        reasons=["ar_match_by_customer", _cust],
+                    )
             return HandlerMatchResult(
                 success=False,
                 reasons=["no_ar_match"],

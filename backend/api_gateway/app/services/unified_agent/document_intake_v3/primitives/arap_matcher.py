@@ -31,3 +31,11 @@ class ARAPMatcher:
     async def match_ap_by_number(self, number: str) -> list[MatchCandidate]:
         # FIX_DOCNUM_MATCH: open AP bill by exact number (partial amount ok)
         return await self._inner.match_ap_by_number(number)
+
+    async def match_ar_by_customer(self, customer_name: str) -> list[MatchCandidate]:
+        # FIX_DIR_PARTYNAME: open AR invoices for named customer, oldest first
+        return await self._inner.match_ar_by_customer(customer_name)
+
+    async def match_ap_by_vendor(self, vendor_name: str) -> list[MatchCandidate]:
+        # FIX_DIR_PARTYNAME: open AP bills for named vendor, oldest first
+        return await self._inner.match_ap_by_vendor(vendor_name)

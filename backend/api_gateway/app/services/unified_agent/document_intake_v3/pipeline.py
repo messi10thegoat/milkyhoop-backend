@@ -325,17 +325,33 @@ class DocumentIntakePipelineV3:
                         ],
                     )
                     return result
-                # Hard fail — fall through to V2 inline preview
-                logger.info(
-                    "[IntakeV3] handler match failed for %s (%s) — fallback to V2",
-                    classification.type.value,
-                    ",".join(match.reasons),
-                )
+                # Hard fail. FIX_DIR_NOFLIP: for a CONFIDENTLY-classified payment
+                # direction, do NOT fall to the V2 preview — V2 re-classifies purely
+                # by amount and can FLIP the side (a customer payment whose amount
+                # coincidentally equals an open bill became a vendor payment). The
+                # user's direction is authoritative; capture gracefully instead so
+                # the framing stays correct (no opposite-side posting).
                 result = IntakeResult(
                     success=False,
                     classification=classification,
                     handler_match=match,
                     log_trail=[f"handler_match_fail:{classification.type.value}"],
+                )
+                if classification.type in (
+                    TransferType.RECEIVE_PAYMENT,
+                    TransferType.BILL_PAYMENT,
+                ):
+                    logger.info(
+                        "[IntakeV3] handler match failed for %s (%s) — graceful "
+                        "capture (no V2 flip)",
+                        classification.type.value,
+                        ",".join(match.reasons),
+                    )
+                    raise _FallbackToGenericChatSkip()
+                logger.info(
+                    "[IntakeV3] handler match failed for %s (%s) — fallback to V2",
+                    classification.type.value,
+                    ",".join(match.reasons),
                 )
                 raise _FallbackToV2PreviewSkip()
 

@@ -48,6 +48,39 @@ def classify_doc_number(number: str) -> str:
     return "unknown"
 
 
+# FIX_DIR_PARTYNAME (2026-06-16): pull the customer/vendor name the user typed in
+# the caption ("dari pelanggan Britney Ticoalu", "ke vendor LILING"). Lets the
+# handler match that party's open invoices by NAME (partial payments never equal
+# the invoice amount, so amount-match alone fails). Stop at a separator / amount /
+# transfer word so we don't swallow the rest of the sentence.
+_PARTY_STOP = (
+    r"(?=$|[,.;]|\s+(?:untuk|sebesar|sejumlah|senilai|via|lewat|pakai|pake|"
+    r"transfer|tf|tgl|tanggal|no\b|nomor|faktur|invoice|tagihan|yang)\b)"
+)
+_PARTY_IN_RE = re.compile(
+    r"\bdari\s+(?:pelanggan|pelangan|customer|cust)\s+(.+?)" + _PARTY_STOP,
+    re.IGNORECASE,
+)
+_PARTY_OUT_RE = re.compile(
+    r"\b(?:ke|kepada|untuk|bayar|bayar\s+ke)\s+(?:vendor|supplier|pemasok)\s+(.+?)"
+    + _PARTY_STOP,
+    re.IGNORECASE,
+)
+
+
+def extract_party_name(caption: str, direction: str) -> str | None:
+    """direction 'in' → customer name after 'dari pelanggan'; 'out' → vendor name
+    after 'ke/bayar vendor'. Returns None if not present."""
+    if not caption:
+        return None
+    rx = _PARTY_IN_RE if direction == "in" else _PARTY_OUT_RE
+    m = rx.search(caption)
+    if not m:
+        return None
+    name = m.group(1).strip(" .,:-")
+    return name or None
+
+
 @dataclass
 class Signal:
     """One piece of evidence contributing to transfer type classification."""

@@ -471,6 +471,73 @@ class DocumentMatcher:
         """FIX_DOCNUM_MATCH: find an open AP bill by its exact number."""
         return await self._find_payable_by_number(number)
 
+    async def match_ar_by_customer(self, customer_name: str):
+        """FIX_DIR_PARTYNAME: open AR invoices for a named customer, OLDEST first
+        (partial payments don't equal the invoice amount, so amount-match fails)."""
+        return await self._find_open_by_party(customer_name, "ar")
+
+    async def match_ap_by_vendor(self, vendor_name: str):
+        """FIX_DIR_PARTYNAME: open AP bills for a named vendor, OLDEST first."""
+        return await self._find_open_by_party(vendor_name, "ap")
+
+    async def _find_open_by_party(self, party_name: str, side: str):
+        """side 'ar'→receivables by customer_name, 'ap'→payables by vendor_name."""
+        if not party_name or not party_name.strip():
+            return []
+        pattern = f"%{party_name.strip()}%"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
+                if side == "ar":
+                    rows = await conn.fetch(
+                        """
+                        SELECT invoice_id, invoice_number, customer_name,
+                               invoice_total, outstanding, due_date
+                        FROM compute_ar_outstanding($1)
+                        WHERE outstanding > 0 AND customer_name ILIKE $2
+                        ORDER BY due_date NULLS LAST, invoice_number
+                        LIMIT 10
+                        """,
+                        self.tenant_id,
+                        pattern,
+                    )
+                    return [
+                        MatchCandidate(
+                            source_type="sales_invoice",
+                            source_id=str(r["invoice_id"]),
+                            label=r["invoice_number"] or "",
+                            counterparty=r["customer_name"] or "",
+                            amount=Decimal(str(r["invoice_total"] or 0)),
+                            outstanding=Decimal(str(r["outstanding"] or 0)),
+                            due_date=r["due_date"],
+                        )
+                        for r in rows
+                    ]
+                rows = await conn.fetch(
+                    """
+                    SELECT bill_id, bill_number, vendor_name,
+                           bill_total, outstanding, due_date
+                    FROM compute_ap_outstanding($1)
+                    WHERE outstanding > 0 AND vendor_name ILIKE $2
+                    ORDER BY due_date NULLS LAST, bill_number
+                    LIMIT 10
+                    """,
+                    self.tenant_id,
+                    pattern,
+                )
+                return [
+                    MatchCandidate(
+                        source_type="bill",
+                        source_id=str(r["bill_id"]),
+                        label=r["bill_number"] or "",
+                        counterparty=r["vendor_name"] or "",
+                        amount=Decimal(str(r["bill_total"] or 0)),
+                        outstanding=Decimal(str(r["outstanding"] or 0)),
+                        due_date=r["due_date"],
+                    )
+                    for r in rows
+                ]
+
     def score_match(
         self,
         candidate,
