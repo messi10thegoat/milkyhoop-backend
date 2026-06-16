@@ -1286,9 +1286,10 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     """
                     INSERT INTO bills (
                         tenant_id, invoice_number, vendor_id, vendor_name,
-                        bill_date, due_date, amount, grand_total,
+                        issue_date, due_date, amount, grand_total,
+                        subtotal, tax_amount,
                         purchase_order_id, notes, status_v2, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', $11)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -1296,9 +1297,11 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     po["vendor_id"],
                     po["vendor_name"],
                     body.bill_date,
-                    body.due_date,
+                    body.due_date or body.bill_date,
                     bill_subtotal,
                     bill_total,
+                    bill_subtotal,
+                    bill_tax,
                     po_id,
                     body.notes or f"From PO {po['po_number']}",
                     ctx["user_id"],
@@ -1337,12 +1340,12 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     await conn.execute(
                         """
                         INSERT INTO bill_items (
-                            bill_id, item_id, item_code, description,
+                            bill_id, product_id, product_code, description,
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
-                            tax_code, tax_rate, tax_amount,
+                            tax_rate, tax_amount,
                             subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     """,
                         bill_id,
                         po_item["item_id"],
@@ -1353,7 +1356,6 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         unit_price,
                         po_item["discount_percent"] or 0,
                         int(discount),
-                        po_item["tax_code"],
                         po_item["tax_rate"] or 0,
                         tax,
                         item_subtotal,
