@@ -186,6 +186,9 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                 OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
                     SELECT 1 FROM customer_deposit_applications cda
                     WHERE cda.invoice_id = $2 AND cda.deposit_id = je.source_id
+                    -- FIX_P1_DEPOSIT 2026-06-16 OPTION B: drop reversed (un-applied)
+                    -- deposit applications so invoice outstanding is restored.
+                    AND is_effective_journal(je.id)
                 ))
                 -- Invoice reversal (partial void)
                 OR (je.source_type = 'INVOICE_REVERSAL' AND je.source_id = $2)

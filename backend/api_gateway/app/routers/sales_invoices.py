@@ -2465,6 +2465,9 @@ async def record_payment(
                             OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
                                 SELECT 1 FROM customer_deposit_applications cda
                                 WHERE cda.invoice_id = $1 AND cda.deposit_id = je.source_id
+                                -- FIX_P1_DEPOSIT 2026-06-16 OPTION B: drop reversed (un-applied)
+                                -- deposit applications so invoice outstanding is restored.
+                                AND is_effective_journal(je.id)
                             ))
                             OR (je.source_type = 'INVOICE_REVERSAL' AND je.source_id = $1)
                             OR (je.id IN (
