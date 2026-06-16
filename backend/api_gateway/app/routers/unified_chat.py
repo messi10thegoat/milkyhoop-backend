@@ -3205,6 +3205,20 @@ Aturan:
                                         "SELECT set_config('app.tenant_id', $1, true)",
                                         _tid,
                                     )
+                                    # FIX_DOCDIR_SESSION_FK: a brand-new conversation may
+                                    # not have its chat_sessions row yet; create it before
+                                    # writing chat_session_state (FK target). Without this
+                                    # the direction/bank state write fails FK -> state is
+                                    # lost -> the pill answer (direction:in/out, bank UUID)
+                                    # leaks to the agent loop instead of re-entering intake.
+                                    await _rls_conn.execute(
+                                        "INSERT INTO chat_sessions (id, tenant_id, user_id) "
+                                        "VALUES ($1::uuid, $2, $3::uuid) "
+                                        "ON CONFLICT (id) DO NOTHING",
+                                        _sid_uuid,
+                                        _tid,
+                                        ctx["user_id"],
+                                    )
                                     await _rls_conn.execute(
                                         "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
                                         "VALUES ($1::uuid, $2, $3::jsonb) "
@@ -3294,6 +3308,20 @@ Aturan:
                                     await _rls_conn.execute(
                                         "SELECT set_config('app.tenant_id', $1, true)",
                                         _tid,
+                                    )
+                                    # FIX_DOCDIR_SESSION_FK: a brand-new conversation may
+                                    # not have its chat_sessions row yet; create it before
+                                    # writing chat_session_state (FK target). Without this
+                                    # the direction/bank state write fails FK -> state is
+                                    # lost -> the pill answer (direction:in/out, bank UUID)
+                                    # leaks to the agent loop instead of re-entering intake.
+                                    await _rls_conn.execute(
+                                        "INSERT INTO chat_sessions (id, tenant_id, user_id) "
+                                        "VALUES ($1::uuid, $2, $3::uuid) "
+                                        "ON CONFLICT (id) DO NOTHING",
+                                        _sid_uuid,
+                                        _tid,
+                                        ctx["user_id"],
                                     )
                                     await _rls_conn.execute(
                                         "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
@@ -3522,6 +3550,20 @@ Aturan:
                                     await _rls_conn.execute(
                                         "SELECT set_config('app.tenant_id', $1, true)",
                                         _tid,
+                                    )
+                                    # FIX_DOCDIR_SESSION_FK: a brand-new conversation may
+                                    # not have its chat_sessions row yet; create it before
+                                    # writing chat_session_state (FK target). Without this
+                                    # the direction/bank state write fails FK -> state is
+                                    # lost -> the pill answer (direction:in/out, bank UUID)
+                                    # leaks to the agent loop instead of re-entering intake.
+                                    await _rls_conn.execute(
+                                        "INSERT INTO chat_sessions (id, tenant_id, user_id) "
+                                        "VALUES ($1::uuid, $2, $3::uuid) "
+                                        "ON CONFLICT (id) DO NOTHING",
+                                        _sid_uuid,
+                                        _tid,
+                                        ctx["user_id"],
                                     )
                                     await _rls_conn.execute(
                                         "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
