@@ -1120,20 +1120,14 @@ async def _execute_fulfillment(
 
     # -- After item loop -------------------------------------------------------
 
-    # 1. Generate fulfillment_number via sequence
-    ful_seq = await conn.fetchval(
-        """
-        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-        VALUES ($1, 'SJ', $2, $3, 1)
-        ON CONFLICT (tenant_id, prefix, year, month)
-        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-        RETURNING last_number
-    """,
+    # 1. Generate fulfillment_number via self-healing canonical fn (V176).
+    #    journal_date = fulfillment_date so SJ YYMM tracks the document date (BL-05).
+    fulfillment_number = await conn.fetchval(
+        "SELECT get_next_journal_number($1, $2, $3)",
         tenant_id,
-        today.year,
-        today.month,
+        "SJ",
+        fulfillment_date,
     )
-    fulfillment_number = f"SJ-{year_month_str}-{ful_seq:04d}"
 
     # 2. Idempotency pre-check (safety net for auto-fulfill retries)
     if idempotency_key:
@@ -1205,19 +1199,14 @@ async def _execute_fulfillment(
             conn, tenant_id, AccountRole.INVENTORY_MERCHANDISE
         )
 
-        cogs_seq = await conn.fetchval(
-            """
-            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-            VALUES ($1, 'COGS', $2, $3, 1)
-            ON CONFLICT (tenant_id, prefix, year, month)
-            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-            RETURNING last_number
-        """,
+        # COGS journal number via self-healing canonical fn (V176);
+        # YYMM tracks fulfillment_date (the journal_date).
+        cogs_journal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
             tenant_id,
-            today.year,
-            today.month,
+            "COGS",
+            fulfillment_date,
         )
-        cogs_journal_number = f"COGS-{year_month_str}-{cogs_seq:04d}"
 
         await conn.execute(
             """
@@ -1271,19 +1260,14 @@ async def _execute_fulfillment(
             conn, tenant_id, AccountRole.REVENUE_SALES_GOODS
         )
 
-        recog_seq = await conn.fetchval(
-            """
-            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-            VALUES ($1, 'RECOG', $2, $3, 1)
-            ON CONFLICT (tenant_id, prefix, year, month)
-            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-            RETURNING last_number
-        """,
+        # Revenue-recognition journal number via self-healing canonical fn (V176);
+        # YYMM tracks fulfillment_date (the journal_date).
+        recog_journal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
             tenant_id,
-            today.year,
-            today.month,
+            "RECOG",
+            fulfillment_date,
         )
-        recog_journal_number = f"RECOG-{year_month_str}-{recog_seq:04d}"
 
         await conn.execute(
             """
@@ -1409,19 +1393,17 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     today = dt_date.today()
     year_month_str = today.strftime("%y%m")
 
-    journal_seq = await conn.fetchval(
-        """
-        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-        VALUES ($1, 'JV', $2, $3, 1)
-        ON CONFLICT (tenant_id, prefix, year, month)
-        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-        RETURNING last_number
-        """,
+    # Billing (INVOICE) journal number via self-healing canonical fn (V176).
+    # This was the deadlock site: an inline ON CONFLICT counter that drifted
+    # behind the actual JV-{yymm}-NNNN max -> unique violation -> txn rollback.
+    # The fn reconciles counter vs actual max (GREATEST) so it self-heals.
+    # journal_date = invoice_date so JV YYMM tracks the invoice date (BL-05).
+    journal_number = await conn.fetchval(
+        "SELECT get_next_journal_number($1, $2, $3)",
         ctx["tenant_id"],
-        today.year,
-        today.month,
+        "JV",
+        invoice["invoice_date"],
     )
-    journal_number = f"JV-{year_month_str}-{journal_seq:04d}"
 
     await conn.execute(
         """
@@ -1723,19 +1705,14 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             )
             rev_j_id = uuid.uuid4()
             rev_trace = str(uuid.uuid4())
-            rev_seq = await conn.fetchval(
-                """
-                INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                VALUES ($1, 'RECOG', $2, $3, 1)
-                ON CONFLICT (tenant_id, prefix, year, month)
-                DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                RETURNING last_number
-                """,
+            # Service revenue-recognition journal number via self-healing
+            # canonical fn (V176); YYMM tracks invoice_date (the journal_date).
+            rev_jn = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
                 ctx["tenant_id"],
-                today.year,
-                today.month,
+                "RECOG",
+                invoice["invoice_date"],
             )
-            rev_jn = f"RECOG-{today.strftime('%y%m')}-{rev_seq:04d}"
             await conn.execute(
                 """
                 INSERT INTO journal_entries (
