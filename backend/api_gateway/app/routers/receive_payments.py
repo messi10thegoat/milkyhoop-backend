@@ -1665,6 +1665,19 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
 
+    # FIX_AR_CACHE_ORDER (2026-06-16): link the wrapper to its journal BEFORE the
+    # cache recompute below. compute_ar_outstanding() Path A counts this payment
+    # only via receive_payments.journal_id -> journal_entries; the full status
+    # UPDATE (journal_id, status='posted', ...) runs later in this function, so
+    # without this early link the just-posted payment is invisible to the function
+    # and a FULLY-settled invoice gets cached as amount_paid=0 / status='partial'
+    # (ledger correct, cache wrong). Idempotent with the later UPDATE.
+    await conn.execute(
+        "UPDATE receive_payments SET journal_id = $2 WHERE id = $1",
+        payment_id,
+        journal_id,
+    )
+
     # Update invoices - reduce remaining, update status
     allocations = await conn.fetch(
         "SELECT * FROM receive_payment_allocations WHERE payment_id = $1", payment_id
