@@ -741,7 +741,9 @@ class FiscalPeriodService:
 
         # Create closing journal
         journal_id = uuid4()
-        journal_number = await self._generate_journal_number(conn, tenant_id, "CLO")
+        journal_number = await self._generate_journal_number(
+            conn, tenant_id, "CLO", closing_date
+        )
 
         await conn.execute(
             """
@@ -854,28 +856,25 @@ class FiscalPeriodService:
         return journal_id
 
     async def _generate_journal_number(
-        self, conn, tenant_id: str, prefix: str = "JE"
+        self, conn, tenant_id: str, prefix: str = "JE", p_date=None
     ) -> str:
-        """Generate sequential journal number"""
-        today = datetime.now()
-        month_prefix = f"{prefix}-{today.strftime('%y%m')}"
+        """Generate sequential journal number.
 
-        last = await conn.fetchval(
-            """
-            SELECT journal_number FROM journal_entries
-            WHERE tenant_id = $1 AND journal_number LIKE $2
-            ORDER BY journal_number DESC LIMIT 1
-            """,
+        Delegates to the canonical self-healing DB function
+        get_next_journal_number (V176) instead of the legacy race-prone
+        MAX(journal_number)+1 scan. p_date defaults to today; callers should
+        pass the journal_date so the YYMM segment tracks the document date.
+        """
+        from datetime import date as _date
+
+        if p_date is None:
+            p_date = _date.today()
+        return await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
             tenant_id,
-            f"{month_prefix}-%",
+            prefix,
+            p_date,
         )
-
-        if last:
-            seq = int(last.split("-")[-1]) + 1
-        else:
-            seq = 1
-
-        return f"{month_prefix}-{seq:04d}"
 
     async def _publish_event(
         self, conn, tenant_id: str, event_type: EventType, payload: Dict

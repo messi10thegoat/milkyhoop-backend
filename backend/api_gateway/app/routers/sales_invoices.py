@@ -2942,17 +2942,12 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     if f["revenue_journal_id"]:
                         rev_rev_id = uuid.uuid4()
                         rev_trace = str(uuid.uuid4())
-                        rev_seq = await conn.fetchval(
-                            """
-                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                            VALUES ($1, 'REV', $2, $3, 1)
-                            ON CONFLICT (tenant_id, prefix, year, month)
-                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                            RETURNING last_number
-                        """,
+                        # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+                        rev_number = await conn.fetchval(
+                            "SELECT get_next_journal_number($1, $2, $3)",
                             ctx["tenant_id"],
-                            today.year,
-                            today.month,
+                            "REV",
+                            today,
                         )
 
                         orig_rev = await conn.fetchrow(
@@ -2972,7 +2967,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         """,
                             rev_rev_id,
                             ctx["tenant_id"],
-                            f"REV-{year_month_str}-{rev_seq:04d}",
+                            rev_number,
                             today,
                             f"VOID Revenue: {invoice['invoice_number']}",
                             invoice_id,
@@ -3012,17 +3007,12 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     if f["journal_id"]:
                         last_cogs_rev_id = uuid.uuid4()
                         cogs_trace = str(uuid.uuid4())
-                        cogs_seq = await conn.fetchval(
-                            """
-                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                            VALUES ($1, 'COGS-REV', $2, $3, 1)
-                            ON CONFLICT (tenant_id, prefix, year, month)
-                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                            RETURNING last_number
-                        """,
+                        # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
+                        cogs_rev_number_f = await conn.fetchval(
+                            "SELECT get_next_journal_number($1, $2, $3)",
                             ctx["tenant_id"],
-                            today.year,
-                            today.month,
+                            "COGS-REV",
+                            today,
                         )
                         orig_cogs = await conn.fetchrow(
                             "SELECT total_debit FROM journal_entries WHERE id=$1",
@@ -3041,7 +3031,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         """,
                             last_cogs_rev_id,
                             ctx["tenant_id"],
-                            f"COGS-REV-{year_month_str}-{cogs_seq:04d}",
+                            cogs_rev_number_f,
                             today,
                             f"VOID COGS: {invoice['invoice_number']}",
                             invoice_id,
@@ -3114,19 +3104,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     reversal_journal_id = uuid.uuid4()
                     trace_id = str(uuid.uuid4())
 
-                    rev_seq = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'REV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                    """,
+                    # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+                    rev_journal_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today.year,
-                        today.month,
+                        "REV",
+                        today,
                     )
-                    rev_journal_number = f"REV-{year_month_str}-{rev_seq:04d}"
 
                     await conn.execute(
                         """
@@ -3202,19 +3186,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     cogs_reversal_journal_id = uuid.uuid4()
                     cogs_trace_id = str(uuid.uuid4())
 
-                    cogs_rev_seq = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'COGS-REV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                    """,
+                    # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
+                    cogs_rev_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today.year,
-                        today.month,
+                        "COGS-REV",
+                        today,
                     )
-                    cogs_rev_number = f"COGS-REV-{year_month_str}-{cogs_rev_seq:04d}"
 
                     await conn.execute(
                         """

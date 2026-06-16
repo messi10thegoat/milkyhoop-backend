@@ -50,29 +50,24 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
-async def get_next_journal_number(conn, tenant_id: str, prefix: str = "JV") -> str:
-    """Get next journal number using sequence (uses year + month columns)."""
-    today = date.today()
-    year = today.year
-    month = today.month
-    year_month_str = today.strftime("%y%m")
+async def get_next_journal_number(
+    conn, tenant_id: str, prefix: str = "JV", p_date=None
+) -> str:
+    """Get next journal number via the canonical self-healing DB function.
 
-    # Get or create sequence for this prefix/year/month
-    seq = await conn.fetchval(
-        """
-        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-        VALUES ($1, $2, $3, $4, 1)
-        ON CONFLICT (tenant_id, prefix, year, month)
-        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-        RETURNING last_number
-    """,
+    Delegates to get_next_journal_number(tenant, prefix, p_date) (V176), which
+    bumps the prefix's own counter AND self-heals against the actual emitted max
+    (no drift, concurrency-safe). p_date defaults to today; callers should pass
+    the journal_date so the YYMM segment tracks the document date.
+    """
+    if p_date is None:
+        p_date = date.today()
+    return await conn.fetchval(
+        "SELECT get_next_journal_number($1, $2, $3)",
         tenant_id,
         prefix,
-        year,
-        month,
+        p_date,
     )
-
-    return f"{prefix}-{year_month_str}-{seq:04d}"
 
 
 # =============================================================================
@@ -463,7 +458,7 @@ async def create_journal(request: Request, body: CreateJournalRequest):
 
                 # Law 23: Generate journal number inside transaction
                 journal_number = await get_next_journal_number(
-                    conn, ctx["tenant_id"], "JV"
+                    conn, ctx["tenant_id"], "JV", body.entry_date
                 )
 
                 # Law 31 Gate 4: Block derived-layer accounts in manual journal
@@ -676,7 +671,7 @@ async def reverse_journal(
 
                 # Law 23: Generate journal number inside transaction
                 reversal_number = await get_next_journal_number(
-                    conn, ctx["tenant_id"], "JV"
+                    conn, ctx["tenant_id"], "JV", body.reversal_date
                 )
 
                 # Law 20: Create reversal journal as DRAFT first

@@ -1091,19 +1091,14 @@ async def complete_order(request: Request, order_id: UUID):
                         today_var = _date_var.today()
                         var_id = _uuid_var.uuid4()
                         ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
-                        vseq = await conn.fetchval(
-                            """
-                            INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                            VALUES ($1, 'JV', $2, $3, 1)
-                            ON CONFLICT (tenant_id, prefix, year, month)
-                            DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                            RETURNING last_number
-                        """,
+                        # Self-healing canonical generator (V176): emits JV-VAR
+                        # and bumps the JV-VAR counter (not the parent JV counter).
+                        var_num = await conn.fetchval(
+                            "SELECT get_next_journal_number($1, $2, $3)",
                             ctx["tenant_id"],
-                            today_var.year,
-                            today_var.month,
+                            "JV-VAR",
+                            today_var,
                         )
-                        var_num = f"JV-VAR-{ym_var}-{vseq:04d}"
 
                         abs_amount = abs(wip_residual)
 
@@ -1250,20 +1245,14 @@ async def _reverse_journal(
         )
 
     ym_rev = f"{reversal_date.year % 100:02d}{reversal_date.month:02d}"
-    jseq_rev = await conn.fetchval(
-        """
-        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-        VALUES ($1, 'JV', $2, $3, 1)
-        ON CONFLICT (tenant_id, prefix, year, month)
-        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-        RETURNING last_number
-        """,
+    # Self-healing canonical generator (V176): plain JV, reversal date.
+    rev_num = await conn.fetchval(
+        "SELECT get_next_journal_number($1, $2, $3)",
         tenant_id,
-        reversal_date.year,
-        reversal_date.month,
+        "JV",
+        reversal_date,
     )
     rev_id = _uuid_rev.uuid4()
-    rev_num = f"JV-{ym_rev}-{jseq_rev:04d}"
     await conn.execute(
         """
         INSERT INTO journal_entries (
@@ -1748,20 +1737,14 @@ async def issue_materials(
 
                     today = effective_date
                     year_month_str = f"{today.year % 100:02d}{today.month:02d}"
-                    jseq = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'JV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                        """,
+                    # Self-healing canonical generator (V176): plain JV, effective date.
+                    jnum = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today.year,
-                        today.month,
+                        "JV",
+                        today,
                     )
                     mi_journal_id = _uuid_mi.uuid4()
-                    jnum = f"JV-{year_month_str}-{jseq:04d}"
                     await conn.execute(
                         """
                         INSERT INTO journal_entries (
@@ -2037,20 +2020,14 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         conn, ctx["tenant_id"], AccountRole.MFG_LABOR_APPLIED
                     )
 
-                    jseq_lb = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'JV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                        """,
+                    # Self-healing canonical generator (V176): emits JV-LB, bumps JV-LB counter.
+                    jnum_lb = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today_lb.year,
-                        today_lb.month,
+                        "JV-LB",
+                        today_lb,
                     )
                     je_lb = _uuid_lb.uuid4()
-                    jnum_lb = f"JV-LB-{ym_lb}-{jseq_lb:04d}"
                     await conn.execute(
                         """
                         INSERT INTO journal_entries (
@@ -2104,20 +2081,14 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         conn, ctx["tenant_id"], AccountRole.MFG_OVERHEAD_APPLIED
                     )
 
-                    jseq_oh = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'JV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                        """,
+                    # Self-healing canonical generator (V176): emits JV-OH, bumps JV-OH counter.
+                    jnum_oh = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today_lb.year,
-                        today_lb.month,
+                        "JV-OH",
+                        today_lb,
                     )
                     je_oh = _uuid_lb.uuid4()
-                    jnum_oh = f"JV-OH-{ym_lb}-{jseq_oh:04d}"
                     await conn.execute(
                         """
                         INSERT INTO journal_entries (
@@ -2410,20 +2381,14 @@ async def report_output(
 
                     today_ro = effective_date
                     ym_ro = f"{today_ro.year % 100:02d}{today_ro.month:02d}"
-                    jseq_ro = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'JV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                        RETURNING last_number
-                        """,
+                    # Self-healing canonical generator (V176): plain JV, effective date.
+                    jnum_ro = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
-                        today_ro.year,
-                        today_ro.month,
+                        "JV",
+                        today_ro,
                     )
                     fg_journal_id = _uuid_ro.uuid4()
-                    jnum_ro = f"JV-{ym_ro}-{jseq_ro:04d}"
                     total_cost_dec = Decimal(str(total_cost))
                     await conn.execute(
                         """
@@ -3111,20 +3076,14 @@ async def month_end_reconcile(request: Request, body: dict):
 
                 # --- Build the reconcile journal ---------------------------
                 ym = f"{p_end.year % 100:02d}{p_end.month:02d}"
-                rseq = await conn.fetchval(
-                    """
-                    INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                    VALUES ($1, 'JV', $2, $3, 1)
-                    ON CONFLICT (tenant_id, prefix, year, month)
-                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                    RETURNING last_number
-                    """,
+                # Self-healing canonical generator (V176): emits JV-RECON, bumps JV-RECON counter.
+                jnum = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, $2, $3)",
                     tenant_id,
-                    p_end.year,
-                    p_end.month,
+                    "JV-RECON",
+                    p_end,
                 )
                 je_id = _uuid_rc.uuid4()
-                jnum = f"JV-RECON-{ym}-{rseq:04d}"
 
                 lines = []  # (account_id, debit, credit, memo)
 

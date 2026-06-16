@@ -509,7 +509,7 @@ class KernelDocumentExecutor:
 
                 # Get next journal number
                 journal_number = await self._next_journal_number(
-                    conn, tenant_id, "DI"
+                    conn, tenant_id, "DI", journal_date
                 )
 
                 # INSERT journal_entries as DRAFT (Law 20)
@@ -738,25 +738,21 @@ class KernelDocumentExecutor:
         return row["status"] == "OPEN"
 
     async def _next_journal_number(
-        self, conn, tenant_id: str, prefix: str = "DI"
+        self, conn, tenant_id: str, prefix: str = "DI", p_date=None
     ) -> str:
-        """Generate next journal number: DI-YYMM-NNNN."""
-        now = datetime.now()
-        year = now.year
-        month = now.month
+        """Generate next journal number via the canonical self-healing DB fn.
 
-        row = await conn.fetchrow(
-            """INSERT INTO journal_number_sequences
-                   (tenant_id, prefix, year, month, last_number)
-               VALUES ($1, $2, $3, $4, 1)
-               ON CONFLICT (tenant_id, prefix, year, month)
-               DO UPDATE SET last_number = journal_number_sequences.last_number + 1,
-                             updated_at = NOW()
-               RETURNING last_number""",
-            tenant_id, prefix, year, month,
+        Delegates to get_next_journal_number(tenant, prefix, p_date) (V176):
+        bumps the prefix's own counter AND self-heals against the actual emitted
+        max (drift-proof, concurrency-safe). p_date defaults to today; callers
+        should pass journal_date so the YYMM segment tracks the document date.
+        """
+        if p_date is None:
+            p_date = date.today()
+        return await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
+            tenant_id, prefix, p_date,
         )
-        seq = row["last_number"]
-        return f"{prefix}-{year % 100:02d}{month:02d}-{seq:04d}"
 
     async def _mark_failed(
         self, conn, doc_uuid, tenant_id: str, error: str

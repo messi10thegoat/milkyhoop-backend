@@ -470,22 +470,14 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
                 )
 
             # Generate journal number
-            seq = await conn.fetchrow(
-                """
-                INSERT INTO journal_number_sequences
-                    (tenant_id, prefix, year, month, last_number)
-                VALUES ($1, 'JV', $2, $3, 1)
-                ON CONFLICT (tenant_id, prefix, year, month)
-                DO UPDATE SET
-                    last_number = journal_number_sequences.last_number + 1,
-                    updated_at = NOW()
-                RETURNING last_number
-                """,
+            # Self-healing canonical generator (V176): emits canonical JV-YYMM-NNNN
+            # (was JV-YYYY-NNNNN, an off-format that the JV regex could not reconcile).
+            journal_number = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
                 ctx["tenant_id"],
-                vd["deposit_date"].year,
-                vd["deposit_date"].month,
+                "JV",
+                vd["deposit_date"],
             )
-            journal_number = f"JV-{vd['deposit_date'].year}-{seq['last_number']:05d}"
 
             # Law 20: Create journal entry as DRAFT first
             journal = await conn.fetchrow(
@@ -646,22 +638,15 @@ async def apply_vendor_deposit(
                 )
 
             # Generate journal
-            seq = await conn.fetchrow(
-                """
-                INSERT INTO journal_number_sequences
-                    (tenant_id, prefix, year, month, last_number)
-                VALUES ($1, 'JV', $2, $3, 1)
-                ON CONFLICT (tenant_id, prefix, year, month)
-                DO UPDATE SET
-                    last_number = journal_number_sequences.last_number + 1,
-                    updated_at = NOW()
-                RETURNING last_number
-                """,
+            # Self-healing canonical generator (V176): emits canonical JV-YYMM-NNNN
+            # keyed to applied_date (the journal_date), fixing the prior split where the
+            # counter used deposit_date but the emitted year used applied_date.
+            journal_number = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
                 ctx["tenant_id"],
-                vd["deposit_date"].year,
-                vd["deposit_date"].month,
+                "JV",
+                applied_date,
             )
-            journal_number = f"JV-{applied_date.year}-{seq['last_number']:05d}"
 
             # Law 20: Create journal as DRAFT
             journal = await conn.fetchrow(
@@ -839,22 +824,13 @@ async def refund_vendor_deposit(
                 )
 
             # Generate journal
-            seq = await conn.fetchrow(
-                """
-                INSERT INTO journal_number_sequences
-                    (tenant_id, prefix, year, month, last_number)
-                VALUES ($1, 'JV', $2, $3, 1)
-                ON CONFLICT (tenant_id, prefix, year, month)
-                DO UPDATE SET
-                    last_number = journal_number_sequences.last_number + 1,
-                    updated_at = NOW()
-                RETURNING last_number
-                """,
+            # Self-healing canonical generator (V176): emits canonical JV-YYMM-NNNN.
+            journal_number = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
                 ctx["tenant_id"],
-                data.refund_date.year,
-                data.refund_date.month,
+                "JV",
+                data.refund_date,
             )
-            journal_number = f"JV-{data.refund_date.year}-{seq['last_number']:05d}"
 
             # Law 20: Create journal as DRAFT
             journal = await conn.fetchrow(

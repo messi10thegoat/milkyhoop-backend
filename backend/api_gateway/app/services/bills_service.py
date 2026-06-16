@@ -2027,23 +2027,13 @@ class BillsService:
                     )
 
                     # Get next reversal journal number
-                    year_month_str = today.strftime("%y%m")
-                    rev_seq = await conn.fetchval(
-                        """
-                        INSERT INTO journal_number_sequences
-                            (tenant_id, prefix, year, month, last_number)
-                        VALUES ($1, 'REV', $2, $3, 1)
-                        ON CONFLICT (tenant_id, prefix, year, month)
-                        DO UPDATE SET
-                            last_number = journal_number_sequences.last_number + 1,
-                            updated_at = NOW()
-                        RETURNING last_number
-                        """,
+                    # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+                    rev_journal_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
                         tenant_id,
-                        today.year,
-                        today.month,
+                        "REV",
+                        today,
                     )
-                    rev_journal_number = f"REV-{year_month_str}-{rev_seq:04d}"
 
                     from uuid import uuid4 as _uuid4
 

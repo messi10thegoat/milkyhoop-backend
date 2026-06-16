@@ -1376,17 +1376,13 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                 today = dt_date.today()
                 year_month_str = today.strftime("%y%m")
 
-                journal_seq = await conn.fetchval(
-                    """INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                    VALUES ($1, 'OB', $2, $3, 1)
-                    ON CONFLICT (tenant_id, prefix, year, month)
-                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                    RETURNING last_number""",
+                # Self-healing canonical generator (V176): emits OB, bumps OB counter.
+                journal_number = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, $2, $3)",
                     ctx["tenant_id"],
-                    today.year,
-                    today.month,
+                    "OB",
+                    today,
                 )
-                journal_number = f"OB-{year_month_str}-{journal_seq:04d}"
 
                 # Law 20: DRAFT→lines→POSTED
                 journal_id = uuid_module.uuid4()
@@ -1521,17 +1517,13 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                 # Generate reversal journal number
                 today = dt_date.today()
                 year_month_str = today.strftime("%y%m")
-                journal_seq = await conn.fetchval(
-                    """INSERT INTO journal_number_sequences (tenant_id, prefix, year, month, last_number)
-                    VALUES ($1, 'OBR', $2, $3, 1)
-                    ON CONFLICT (tenant_id, prefix, year, month)
-                    DO UPDATE SET last_number = journal_number_sequences.last_number + 1, updated_at = NOW()
-                    RETURNING last_number""",
+                # Self-healing canonical generator (V176): emits OBR, bumps OBR counter.
+                reversal_number = await conn.fetchval(
+                    "SELECT get_next_journal_number($1, $2, $3)",
                     ctx["tenant_id"],
-                    today.year,
-                    today.month,
+                    "OBR",
+                    today,
                 )
-                reversal_number = f"OBR-{year_month_str}-{journal_seq:04d}"
 
                 # Law 20: Create reversal journal as DRAFT
                 reversal_id = uuid_module.uuid4()
