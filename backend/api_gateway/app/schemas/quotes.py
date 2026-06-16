@@ -90,6 +90,9 @@ class CreateQuoteRequest(BaseModel):
     payment_bank_name: Optional[str] = Field(None, max_length=100, description="Bank name for payment")
     payment_account_number: Optional[str] = Field(None, max_length=50, description="Bank account number")
     payment_account_holder: Optional[str] = Field(None, max_length=100, description="Account holder name")
+    # FIX_P2_QUOTEDP 2026-06-16 — adjustable down-payment (NO-LEDGER, just a number on the quote)
+    dp_amount: Optional[int] = Field(None, ge=0, description="Down-payment in rupiah (CANONICAL, source of truth)")
+    dp_percent: Optional[float] = Field(None, ge=0, le=100, description="Down-payment percent (helper/display)")
     items: List[QuoteItemCreate] = Field(..., min_length=1, description="Quote line items")
 
     @field_validator('customer_name')
@@ -127,6 +130,9 @@ class UpdateQuoteRequest(BaseModel):
     payment_bank_name: Optional[str] = Field(None, max_length=100)
     payment_account_number: Optional[str] = Field(None, max_length=50)
     payment_account_holder: Optional[str] = Field(None, max_length=100)
+    # FIX_P2_QUOTEDP 2026-06-16 — adjustable down-payment (NO-LEDGER)
+    dp_amount: Optional[int] = Field(None, ge=0)
+    dp_percent: Optional[float] = Field(None, ge=0, le=100)
     items: Optional[List[QuoteItemUpdate]] = None
 
 
@@ -189,6 +195,9 @@ class QuoteListItem(BaseModel):
     discount_amount: int
     tax_amount: int
     total_amount: int
+    # FIX_P2_QUOTEDP 2026-06-16 — down-payment (NO-LEDGER, display only)
+    dp_amount: Optional[int] = None
+    dp_percent: Optional[float] = None
     status: str
     converted_to_type: Optional[str] = None
     converted_to_id: Optional[str] = None
@@ -213,6 +222,9 @@ class QuoteDetail(BaseModel):
     discount_amount: int
     tax_amount: int
     total_amount: int
+    # FIX_P2_QUOTEDP 2026-06-16 — down-payment (NO-LEDGER, display only)
+    dp_amount: Optional[int] = None
+    dp_percent: Optional[float] = None
     status: str
     converted_to_type: Optional[str] = None
     converted_to_id: Optional[str] = None

@@ -7,6 +7,7 @@ import uuid
 import logging
 import asyncpg
 from datetime import date
+from decimal import Decimal  # FIX_P2_QUOTEDP 2026-06-16
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
@@ -49,6 +50,9 @@ class AccountingSettingsResponse(BaseModel):
     thousand_separator: str
     decimal_separator: str
     date_format: str
+    # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+    default_dp_percent: Optional[float] = None
+    default_uang_muka_account_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -66,6 +70,9 @@ class UpdateAccountingSettingsRequest(BaseModel):
     thousand_separator: Optional[str] = None
     decimal_separator: Optional[str] = None
     date_format: Optional[str] = None
+    # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+    default_dp_percent: Optional[float] = None
+    default_uang_muka_account_id: Optional[str] = None
 
 
 class CreateAccountingSettingsRequest(BaseModel):
@@ -131,6 +138,12 @@ async def get_accounting_settings(request: Request):
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
+                    default_dp_percent=float(row["default_dp_percent"])
+                    if row["default_dp_percent"] is not None
+                    else None,
+                    default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
+                    if row["default_uang_muka_account_id"] is not None
+                    else None,
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -207,6 +220,12 @@ async def create_accounting_settings(
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
+                    default_dp_percent=float(row["default_dp_percent"])
+                    if row["default_dp_percent"] is not None
+                    else None,
+                    default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
+                    if row["default_uang_muka_account_id"] is not None
+                    else None,
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -292,6 +311,17 @@ async def update_accounting_settings(
                 params.append(data.date_format)
                 param_idx += 1
 
+            # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+            if data.default_dp_percent is not None:
+                updates.append(f"default_dp_percent = ${param_idx}")
+                params.append(Decimal(str(data.default_dp_percent)))
+                param_idx += 1
+
+            if data.default_uang_muka_account_id is not None:
+                updates.append(f"default_uang_muka_account_id = ${param_idx}")
+                params.append(uuid.UUID(data.default_uang_muka_account_id))
+                param_idx += 1
+
             if updates:
                 updates.append("updated_at = NOW()")
                 update_sql = f"""
@@ -318,6 +348,12 @@ async def update_accounting_settings(
                     thousand_separator=row["thousand_separator"] or ".",
                     decimal_separator=row["decimal_separator"] or ",",
                     date_format=row["date_format"] or "DD/MM/YYYY",
+                    default_dp_percent=float(row["default_dp_percent"])
+                    if row["default_dp_percent"] is not None
+                    else None,
+                    default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
+                    if row["default_uang_muka_account_id"] is not None
+                    else None,
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",

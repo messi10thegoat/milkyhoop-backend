@@ -28,6 +28,9 @@ class AccountingSettingsResponse(BaseModel):
     thousand_separator: str = "."
     decimal_separator: str = ","
     date_format: str = "DD/MM/YYYY"
+    # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+    default_dp_percent: Optional[float] = None
+    default_uang_muka_account_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -41,6 +44,9 @@ class UpdateAccountingSettingsRequest(BaseModel):
     thousand_separator: Optional[str] = Field(None, max_length=1)
     decimal_separator: Optional[str] = Field(None, max_length=1)
     date_format: Optional[str] = Field(None, max_length=20)
+    # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+    default_dp_percent: Optional[float] = Field(None, ge=0, le=100)
+    default_uang_muka_account_id: Optional[str] = None
 
 
 class AccountingSettingsDetailResponse(BaseModel):

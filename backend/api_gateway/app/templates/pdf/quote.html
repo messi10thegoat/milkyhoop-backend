@@ -168,6 +168,24 @@
             </tr>
         </table>
     </div>
+{#- FIX_P2_QUOTEDP 2026-06-16 — Jadwal Pembayaran (down-payment schedule). Gated on
+   dp_amount > 0. When DP is null/0 the block emits NOTHING and the rendered PDF is
+   byte-identical to pre-change (whitespace-trimmed). NO-LEDGER, display only. -#}
+{%- if quote.dp_amount and quote.dp_amount|float > 0 %}
+
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Uang Muka{% if quote.dp_percent and quote.dp_percent|float > 0 %} ({{ quote.dp_percent|round(0)|int }}%){% endif %}</td>
+                <td class="value">Rp {{ quote.dp_amount | currency }}</td>
+            </tr>
+            <tr class="total-row">
+                <td class="label">Sisa Pembayaran</td>
+                <td class="value">Rp {{ quote.dp_remaining | currency }}</td>
+            </tr>
+        </table>
+    </div>
+{%- endif %}
 
     <!-- Rekening Pembayaran -->
     {% if quote.payment_bank_name or quote.payment_account_number %}

@@ -6,7 +6,7 @@ NO journal entries - accounting impact happens on conversion.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
 import logging
 import uuid as uuid_module
@@ -103,6 +103,46 @@ def calculate_quote_totals(
     }
 
 
+def resolve_dp(
+    total_amount: int,
+    dp_amount: Optional[int],
+    dp_percent: Optional[float],
+) -> dict:
+    """FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment.
+
+    NO-LEDGER: this is purely a number stored on the non-posting quote document.
+    Canonical rule: dp_amount is authoritative.
+    - If only dp_percent is provided -> dp_amount = round(total * pct / 100, 2).
+    - If dp_amount is provided -> keep it, derive dp_percent for display.
+    - If neither -> both None (block absent in PDF; byte-identical to pre-change).
+    Returns ints for amount (rupiah convention) and float for percent.
+    """
+    if dp_amount is None and dp_percent is None:
+        return {"dp_amount": None, "dp_percent": None}
+
+    total = Decimal(str(total_amount or 0))
+
+    if dp_amount is not None:
+        amount = Decimal(str(dp_amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        # derive percent for display (only when total > 0)
+        if total > 0:
+            pct = (amount / total * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            pct = Decimal(str(dp_percent)) if dp_percent is not None else None
+        return {
+            "dp_amount": int(amount),
+            "dp_percent": float(pct) if pct is not None else None,
+        }
+
+    # Only dp_percent provided -> compute dp_amount = round(total * pct / 100, 2)
+    pct = Decimal(str(dp_percent))
+    amount = (total * pct / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "dp_amount": int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+        "dp_percent": float(pct),
+    }
+
+
 # ============================================================================
 # LIST & DETAIL ENDPOINTS
 # ============================================================================
@@ -181,7 +221,8 @@ async def list_quotes(
             # List
             list_query = f"""
                 SELECT id, quote_number, quote_date, expiry_date, customer_id, customer_name,
-                       subject, subtotal, discount_amount, tax_amount, total_amount, status,
+                       subject, subtotal, discount_amount, tax_amount, total_amount,
+                       dp_amount, dp_percent, status,
                        converted_to_type, converted_to_id, created_at
                 FROM quotes
                 WHERE {where_clause}
@@ -213,6 +254,9 @@ async def list_quotes(
                         discount_amount=row["discount_amount"],
                         tax_amount=row["tax_amount"],
                         total_amount=row["total_amount"],
+                        # FIX_P2_QUOTEDP 2026-06-16
+                        dp_amount=int(row["dp_amount"]) if row["dp_amount"] is not None else None,
+                        dp_percent=float(row["dp_percent"]) if row["dp_percent"] is not None else None,
                         status=row["status"],
                         converted_to_type=row["converted_to_type"],
                         converted_to_id=str(row["converted_to_id"])
@@ -389,6 +433,9 @@ async def get_quote_detail(request: Request, quote_id: str):
                     discount_amount=quote["discount_amount"],
                     tax_amount=quote["tax_amount"],
                     total_amount=quote["total_amount"],
+                    # FIX_P2_QUOTEDP 2026-06-16 — down-payment (NO-LEDGER, display only)
+                    dp_amount=int(quote["dp_amount"]) if quote["dp_amount"] is not None else None,
+                    dp_percent=float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
                     status=quote["status"],
                     converted_to_type=quote["converted_to_type"],
                     converted_to_id=str(quote["converted_to_id"])
@@ -476,6 +523,11 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     calculated_items, body.discount_type, body.discount_value
                 )
 
+                # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER)
+                dp = resolve_dp(
+                    totals["total_amount"], body.dp_amount, body.dp_percent
+                )
+
                 # Auto-resolve customer_name if not provided
                 if not body.customer_name and body.customer_id:
                     cust = await conn.fetchrow(
@@ -497,7 +549,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         subtotal, discount_type, discount_value, discount_amount,
                         tax_amount, total_amount, status,
                         notes, terms, footer, opening_text, closing_text,
-                        payment_bank_name, payment_account_number, payment_account_holder, created_by
+                        payment_bank_name, payment_account_number, payment_account_holder, created_by,
+                        dp_amount, dp_percent
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8,
@@ -505,7 +558,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         $11, $12, $13, $14,
                         $15, $16, 'draft',
                         $17, $18, $19, $20, $21,
-                        $22, $23, $24, $25
+                        $22, $23, $24, $25,
+                        $26, $27
                     )
                 """,
                     quote_id,
@@ -533,6 +587,9 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     body.payment_account_number,
                     body.payment_account_holder,
                     ctx["user_id"],
+                    # FIX_P2_QUOTEDP 2026-06-16 (NUMERIC columns expect Decimal/None)
+                    Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
+                    Decimal(str(dp["dp_percent"])) if dp["dp_percent"] is not None else None,
                 )
 
                 # Create items
@@ -575,6 +632,9 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         "id": str(quote_id),
                         "quote_number": quote_number,
                         "total_amount": totals["total_amount"],
+                        # FIX_P2_QUOTEDP 2026-06-16
+                        "dp_amount": dp["dp_amount"],
+                        "dp_percent": dp["dp_percent"],
                     },
                 )
 
@@ -723,6 +783,38 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                             item.get("group_name"),
                             item.get("sort_order", idx),
                         )
+
+                # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER).
+                # dp_amount is authoritative. Recompute against the effective total
+                # (new total if items changed this update, else the stored total).
+                # Only touch dp columns when the client actually sent a dp_* field.
+                if body.dp_amount is not None or body.dp_percent is not None:
+                    if body.items is not None:
+                        effective_total = totals["total_amount"]
+                    else:
+                        eff = await conn.fetchrow(
+                            "SELECT total_amount FROM quotes WHERE id = $1",
+                            uuid_module.UUID(quote_id),
+                        )
+                        effective_total = int(eff["total_amount"]) if eff else 0
+
+                    dp = resolve_dp(effective_total, body.dp_amount, body.dp_percent)
+
+                    updates.append(f"dp_amount = ${param_idx}")
+                    params.append(
+                        Decimal(str(dp["dp_amount"]))
+                        if dp["dp_amount"] is not None
+                        else None
+                    )
+                    param_idx += 1
+
+                    updates.append(f"dp_percent = ${param_idx}")
+                    params.append(
+                        Decimal(str(dp["dp_percent"]))
+                        if dp["dp_percent"] is not None
+                        else None
+                    )
+                    param_idx += 1
 
                 if updates:
                     params.append(uuid_module.UUID(quote_id))
@@ -1603,6 +1695,14 @@ async def get_quote_pdf(
                 "discount_amount": quote["discount_amount"],
                 "tax_amount": quote["tax_amount"],
                 "total_amount": quote["total_amount"],
+                # FIX_P2_QUOTEDP 2026-06-16 — down-payment block (NO-LEDGER, display only)
+                "dp_amount": int(quote["dp_amount"]) if quote["dp_amount"] is not None else None,
+                "dp_percent": float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
+                "dp_remaining": (
+                    int(quote["total_amount"]) - int(quote["dp_amount"])
+                    if quote["dp_amount"] is not None
+                    else None
+                ),
                 "shipping_charges": None,
                 "adjustment": None,
                 "adjustment_label": None,
