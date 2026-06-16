@@ -330,9 +330,15 @@ async def get_neraca(request: Request, periode: str):
             # NOT via startswith prefix or name-ILIKE heuristic (which broke
             # against 5-digit codes in 100%-NULL-category tenants).
             # Equity sub-bucket via canonical account_code (per V154 seed).
-            kas = bank = piutang_usaha = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
+            kas = (
+                bank
+            ) = (
+                piutang_usaha
+            ) = persediaan = beban_dibayar_dimuka = uang_muka_pembelian = 0
             peralatan = kendaraan = bangunan = tanah = akum_penyusutan = 0
-            hutang_usaha = hutang_bank_jp = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
+            hutang_usaha = (
+                hutang_bank_jp
+            ) = uang_muka_pelanggan = hutang_pajak = hutang_gaji = 0
             hutang_bank = 0
             modal_awal = setor_modal = prive = laba_ditahan = 0
             total_revenue = total_expense = total_cogs = 0
@@ -420,7 +426,11 @@ async def get_neraca(request: Request, periode: str):
                     else:
                         # 3-10100, 3-50000 → modal_awal; 3-30000 derived elsewhere
                         modal_awal += bal
-                elif cat == "pendapatan" or atype in ("INCOME", "REVENUE", "OTHER_INCOME"):
+                elif cat == "pendapatan" or atype in (
+                    "INCOME",
+                    "REVENUE",
+                    "OTHER_INCOME",
+                ):
                     # Net revenue: Cr-natural minus contra Dr (Diskon/Retur)
                     total_revenue += rev_contrib
                 elif cat == "beban" and atype == "COGS":
@@ -707,7 +717,11 @@ async def get_arus_kas(request: Request, periode: str):
                     if ccode == "5-20100":
                         if net < 0:
                             bay_gaji += abs(net)
-                    elif ccode in ("5-80000",) or ct == "EXPENSE" and ccode.startswith("5-80"):
+                    elif (
+                        ccode in ("5-80000",)
+                        or ct == "EXPENSE"
+                        and ccode.startswith("5-80")
+                    ):
                         # Tax expense (rare — non-Operating tax)
                         if net < 0:
                             bay_pajak += abs(net)
@@ -1370,7 +1384,13 @@ async def get_trial_balance_full(
                     LEFT JOIN journal_entries je ON je.id = jl.journal_id
                         AND je.status = 'POSTED'
                         AND je.journal_date <= $3
-                    WHERE coa.tenant_id = $1 AND coa.is_active = true
+                    -- BL-07: include inactive accounts that still carry a
+                    -- posted balance (je.id IS NOT NULL = has in-scope posted
+                    -- line) so their leg is not dropped -> phantom imbalance.
+                    -- Zero-balance inactive accounts are skipped Python-side
+                    -- via the show_zero_balance / closing==0 filter below.
+                    WHERE coa.tenant_id = $1
+                      AND (coa.is_active = true OR je.id IS NOT NULL)
                     GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.level, coa.is_header, coa.parent_code, coa.normal_balance
                 )
                 SELECT *,

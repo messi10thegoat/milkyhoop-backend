@@ -7,6 +7,7 @@ CRUD endpoints for managing Chart of Accounts with hierarchy support.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from decimal import Decimal
 import logging
 import asyncpg
 
@@ -731,7 +732,7 @@ async def update_account(
         async with pool.acquire() as conn:
             # Check if account exists
             existing = await conn.fetchrow(
-                "SELECT id, account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, account_code, is_active FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
                 account_id,
                 ctx["tenant_id"],
             )
@@ -760,6 +761,44 @@ async def update_account(
                     "message": "No changes provided",
                     "data": {"id": str(account_id)},
                 }
+
+            # ── BL-07 GUARD: block deactivation of a balance-holding account ──
+            # Only the true->false transition is guarded (editing other fields
+            # or reactivating false->true is always allowed). An account that is
+            # is_active=false but still carries a posted balance gets DROPPED by
+            # the is_active filter in TB queries together with its balance ->
+            # its leg vanishes while the matching active leg survives -> phantom
+            # imbalance. Prevent the root cause: refuse to deactivate while the
+            # journal-derived posted balance is non-zero (Law 1/16: derive the
+            # balance from journal_lines, never a cached column).
+            if (
+                "is_active" in update_data
+                and update_data["is_active"] is False
+                and existing["is_active"] is True
+            ):
+                bal_row = await conn.fetchrow(
+                    """
+                    SELECT COALESCE(SUM(jl.debit), 0) - COALESCE(SUM(jl.credit), 0)
+                               AS net_balance
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.tenant_id = $1
+                      AND jl.account_id = $2
+                      AND je.status = 'POSTED'
+                    """,
+                    ctx["tenant_id"],
+                    account_id,
+                )
+                net_balance = bal_row["net_balance"] if bal_row else 0
+                if abs(net_balance) > Decimal("0.01"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Tidak bisa menonaktifkan akun yang masih bersaldo "
+                            f"(saldo: {net_balance}). Nolkan saldo akun ini "
+                            f"lebih dulu."
+                        ),
+                    )
 
             # Map schema field names to database column names
             field_mapping = {

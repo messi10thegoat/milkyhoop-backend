@@ -21,8 +21,7 @@ from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 
-from ..config import settings
-from ..constants import PeriodStatus, AccountType, EventType
+from ..constants import PeriodStatus, EventType
 from ..models.fiscal_period import (
     FiscalPeriod,
     CreatePeriodRequest,
@@ -59,10 +58,7 @@ class FiscalPeriodService:
         """
         self.db = db_pool
 
-    async def create_period(
-        self,
-        request: CreatePeriodRequest
-    ) -> CreatePeriodResponse:
+    async def create_period(self, request: CreatePeriodRequest) -> CreatePeriodResponse:
         """
         Create a new fiscal period.
 
@@ -72,14 +68,16 @@ class FiscalPeriodService:
         Returns:
             CreatePeriodResponse with period_id or errors
         """
-        logger.info(f"Creating period {request.period_name} for tenant {request.tenant_id}")
+        logger.info(
+            f"Creating period {request.period_name} for tenant {request.tenant_id}"
+        )
 
         async with self.db.acquire() as conn:
             async with conn.transaction():
                 # Set tenant context
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)",
-                    str(request.tenant_id)
+                    str(request.tenant_id),
                 )
 
                 # Check for existing period with same name
@@ -89,13 +87,13 @@ class FiscalPeriodService:
                     WHERE tenant_id = $1 AND period_name = $2
                     """,
                     request.tenant_id,
-                    request.period_name
+                    request.period_name,
                 )
 
                 if existing:
                     return CreatePeriodResponse(
                         success=False,
-                        errors=[f"Period {request.period_name} already exists"]
+                        errors=[f"Period {request.period_name} already exists"],
                     )
 
                 # Create period
@@ -113,14 +111,14 @@ class FiscalPeriodService:
                         request.period_name,
                         request.start_date,
                         request.end_date,
-                        PeriodStatus.OPEN.value
+                        PeriodStatus.OPEN.value,
                     )
                 except Exception as e:
                     # EXCLUDE constraint violation = overlapping periods
                     if "excl_no_overlap" in str(e):
                         return CreatePeriodResponse(
                             success=False,
-                            errors=["Period dates overlap with existing period"]
+                            errors=["Period dates overlap with existing period"],
                         )
                     raise
 
@@ -130,13 +128,11 @@ class FiscalPeriodService:
                     success=True,
                     period_id=period_id,
                     period_name=request.period_name,
-                    message=f"Period {request.period_name} created successfully"
+                    message=f"Period {request.period_name} created successfully",
                 )
 
     async def get_period_by_date(
-        self,
-        tenant_id: str,
-        target_date: date
+        self, tenant_id: str, target_date: date
     ) -> Optional[FiscalPeriod]:
         """
         Get the fiscal period containing a specific date.
@@ -157,7 +153,7 @@ class FiscalPeriodService:
                   AND $2 <= end_date
                 """,
                 tenant_id,
-                target_date
+                target_date,
             )
 
             if not row:
@@ -166,9 +162,7 @@ class FiscalPeriodService:
             return self._row_to_period(row)
 
     async def get_period_by_id(
-        self,
-        tenant_id: str,
-        period_id: UUID
+        self, tenant_id: str, period_id: UUID
     ) -> Optional[FiscalPeriod]:
         """
         Get a fiscal period by ID.
@@ -187,7 +181,7 @@ class FiscalPeriodService:
                 WHERE tenant_id = $1 AND id = $2
                 """,
                 tenant_id,
-                period_id
+                period_id,
             )
 
             if not row:
@@ -196,9 +190,7 @@ class FiscalPeriodService:
             return self._row_to_period(row)
 
     async def list_periods(
-        self,
-        tenant_id: str,
-        status: Optional[PeriodStatus] = None
+        self, tenant_id: str, status: Optional[PeriodStatus] = None
     ) -> List[FiscalPeriod]:
         """
         List all fiscal periods for a tenant.
@@ -219,7 +211,7 @@ class FiscalPeriodService:
                     ORDER BY start_date DESC
                     """,
                     tenant_id,
-                    status.value
+                    status.value,
                 )
             else:
                 rows = await conn.fetch(
@@ -228,16 +220,12 @@ class FiscalPeriodService:
                     WHERE tenant_id = $1
                     ORDER BY start_date DESC
                     """,
-                    tenant_id
+                    tenant_id,
                 )
 
             return [self._row_to_period(row) for row in rows]
 
-    async def is_date_locked(
-        self,
-        tenant_id: str,
-        target_date: date
-    ) -> bool:
+    async def is_date_locked(self, tenant_id: str, target_date: date) -> bool:
         """
         Check if a date falls within a LOCKED period.
 
@@ -250,17 +238,11 @@ class FiscalPeriodService:
         """
         async with self.db.acquire() as conn:
             result = await conn.fetchval(
-                "SELECT is_period_locked($1, $2)",
-                tenant_id,
-                target_date
+                "SELECT is_period_locked($1, $2)", tenant_id, target_date
             )
             return result or False
 
-    async def is_date_closed(
-        self,
-        tenant_id: str,
-        target_date: date
-    ) -> bool:
+    async def is_date_closed(self, tenant_id: str, target_date: date) -> bool:
         """
         Check if a date falls within a CLOSED or LOCKED period.
 
@@ -273,17 +255,12 @@ class FiscalPeriodService:
         """
         async with self.db.acquire() as conn:
             result = await conn.fetchval(
-                "SELECT is_period_closed($1, $2)",
-                tenant_id,
-                target_date
+                "SELECT is_period_closed($1, $2)", tenant_id, target_date
             )
             return result or False
 
     async def can_post_to_date(
-        self,
-        tenant_id: str,
-        target_date: date,
-        is_system_generated: bool = False
+        self, tenant_id: str, target_date: date, is_system_generated: bool = False
     ) -> tuple[bool, Optional[str]]:
         """
         Check if posting is allowed for a specific date.
@@ -313,10 +290,7 @@ class FiscalPeriodService:
         # OPEN
         return (True, None)
 
-    async def close_period(
-        self,
-        request: ClosePeriodRequest
-    ) -> ClosePeriodResponse:
+    async def close_period(self, request: ClosePeriodRequest) -> ClosePeriodResponse:
         """
         Close a fiscal period (OPEN → CLOSED).
 
@@ -332,14 +306,16 @@ class FiscalPeriodService:
         Returns:
             ClosePeriodResponse with closing details
         """
-        logger.info(f"Closing period {request.period_name} for tenant {request.tenant_id}")
+        logger.info(
+            f"Closing period {request.period_name} for tenant {request.tenant_id}"
+        )
 
         async with self.db.acquire() as conn:
             async with conn.transaction():
                 # Set tenant context
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)",
-                    str(request.tenant_id)
+                    str(request.tenant_id),
                 )
 
                 # Get the period
@@ -350,28 +326,28 @@ class FiscalPeriodService:
                     FOR UPDATE
                     """,
                     request.tenant_id,
-                    request.period_name
+                    request.period_name,
                 )
 
                 if not period_row:
                     return ClosePeriodResponse(
                         success=False,
-                        errors=[f"Period {request.period_name} not found"]
+                        errors=[f"Period {request.period_name} not found"],
                     )
 
-                if period_row['status'] != PeriodStatus.OPEN.value:
+                if period_row["status"] != PeriodStatus.OPEN.value:
                     return ClosePeriodResponse(
                         success=False,
-                        errors=[f"Period {request.period_name} is not open (status: {period_row['status']})"]
+                        errors=[
+                            f"Period {request.period_name} is not open (status: {period_row['status']})"
+                        ],
                     )
 
-                period_id = period_row['id']
+                period_id = period_row["id"]
 
                 # Generate closing snapshot (all account balances)
                 closing_snapshot = await self._generate_closing_snapshot(
-                    conn,
-                    request.tenant_id,
-                    period_row['end_date']
+                    conn, request.tenant_id, period_row["end_date"]
                 )
 
                 # Create closing journal entry if requested
@@ -381,9 +357,9 @@ class FiscalPeriodService:
                         conn,
                         request.tenant_id,
                         period_id,
-                        period_row['end_date'],
+                        period_row["end_date"],
                         request.closed_by,
-                        closing_snapshot
+                        closing_snapshot,
                     )
 
                 # Update period status
@@ -402,7 +378,7 @@ class FiscalPeriodService:
                     request.closed_by,
                     closing_journal_id,
                     json.dumps(closing_snapshot),
-                    period_id
+                    period_id,
                 )
 
                 # Publish event to outbox
@@ -414,8 +390,10 @@ class FiscalPeriodService:
                         "period_id": str(period_id),
                         "period_name": request.period_name,
                         "closed_by": str(request.closed_by),
-                        "closing_journal_id": str(closing_journal_id) if closing_journal_id else None,
-                    }
+                        "closing_journal_id": str(closing_journal_id)
+                        if closing_journal_id
+                        else None,
+                    },
                 )
 
                 logger.info(f"Period {request.period_name} closed successfully")
@@ -426,13 +404,10 @@ class FiscalPeriodService:
                     period_name=request.period_name,
                     closing_journal_id=closing_journal_id,
                     closing_snapshot=closing_snapshot,
-                    message=f"Period {request.period_name} closed successfully"
+                    message=f"Period {request.period_name} closed successfully",
                 )
 
-    async def lock_period(
-        self,
-        request: LockPeriodRequest
-    ) -> LockPeriodResponse:
+    async def lock_period(self, request: LockPeriodRequest) -> LockPeriodResponse:
         """
         Lock a fiscal period (CLOSED → LOCKED).
 
@@ -444,14 +419,16 @@ class FiscalPeriodService:
         Returns:
             LockPeriodResponse
         """
-        logger.info(f"Locking period {request.period_id} for tenant {request.tenant_id}")
+        logger.info(
+            f"Locking period {request.period_id} for tenant {request.tenant_id}"
+        )
 
         async with self.db.acquire() as conn:
             async with conn.transaction():
                 # Set tenant context
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)",
-                    str(request.tenant_id)
+                    str(request.tenant_id),
                 )
 
                 # Get the period (with lock)
@@ -462,25 +439,22 @@ class FiscalPeriodService:
                     FOR UPDATE
                     """,
                     request.tenant_id,
-                    request.period_id
+                    request.period_id,
                 )
 
                 if not period_row:
                     return LockPeriodResponse(
-                        success=False,
-                        errors=["Period not found"]
+                        success=False, errors=["Period not found"]
                     )
 
-                if period_row['status'] == PeriodStatus.LOCKED.value:
+                if period_row["status"] == PeriodStatus.LOCKED.value:
                     return LockPeriodResponse(
-                        success=False,
-                        errors=["Period is already locked"]
+                        success=False, errors=["Period is already locked"]
                     )
 
-                if period_row['status'] != PeriodStatus.CLOSED.value:
+                if period_row["status"] != PeriodStatus.CLOSED.value:
                     return LockPeriodResponse(
-                        success=False,
-                        errors=["Period must be closed before locking"]
+                        success=False, errors=["Period must be closed before locking"]
                     )
 
                 # Lock the period
@@ -499,7 +473,7 @@ class FiscalPeriodService:
                     locked_at,
                     request.locked_by,
                     request.reason,
-                    request.period_id
+                    request.period_id,
                 )
 
                 # Publish event
@@ -509,11 +483,11 @@ class FiscalPeriodService:
                     EventType.PERIOD_LOCKED,
                     {
                         "period_id": str(request.period_id),
-                        "period_name": period_row['period_name'],
+                        "period_name": period_row["period_name"],
                         "locked_by": str(request.locked_by),
                         "reason": request.reason,
-                        "closing_snapshot": period_row['closing_snapshot'],
-                    }
+                        "closing_snapshot": period_row["closing_snapshot"],
+                    },
                 )
 
                 logger.info(f"Period {period_row['period_name']} locked successfully")
@@ -521,15 +495,12 @@ class FiscalPeriodService:
                 return LockPeriodResponse(
                     success=True,
                     period_id=request.period_id,
-                    period_name=period_row['period_name'],
+                    period_name=period_row["period_name"],
                     locked_at=locked_at,
-                    message=f"Period {period_row['period_name']} locked successfully"
+                    message=f"Period {period_row['period_name']} locked successfully",
                 )
 
-    async def unlock_period(
-        self,
-        request: UnlockPeriodRequest
-    ) -> UnlockPeriodResponse:
+    async def unlock_period(self, request: UnlockPeriodRequest) -> UnlockPeriodResponse:
         """
         Unlock a fiscal period (LOCKED → CLOSED).
 
@@ -544,18 +515,19 @@ class FiscalPeriodService:
         """
         if not request.reason:
             return UnlockPeriodResponse(
-                success=False,
-                errors=["Reason is required for unlocking a period"]
+                success=False, errors=["Reason is required for unlocking a period"]
             )
 
-        logger.warning(f"Unlocking period {request.period_id} for tenant {request.tenant_id} - Reason: {request.reason}")
+        logger.warning(
+            f"Unlocking period {request.period_id} for tenant {request.tenant_id} - Reason: {request.reason}"
+        )
 
         async with self.db.acquire() as conn:
             async with conn.transaction():
                 # Set tenant context
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)",
-                    str(request.tenant_id)
+                    str(request.tenant_id),
                 )
 
                 # Get the period (with lock)
@@ -566,19 +538,20 @@ class FiscalPeriodService:
                     FOR UPDATE
                     """,
                     request.tenant_id,
-                    request.period_id
+                    request.period_id,
                 )
 
                 if not period_row:
                     return UnlockPeriodResponse(
-                        success=False,
-                        errors=["Period not found"]
+                        success=False, errors=["Period not found"]
                     )
 
-                if period_row['status'] != PeriodStatus.LOCKED.value:
+                if period_row["status"] != PeriodStatus.LOCKED.value:
                     return UnlockPeriodResponse(
                         success=False,
-                        errors=[f"Period is not locked (status: {period_row['status']})"]
+                        errors=[
+                            f"Period is not locked (status: {period_row['status']})"
+                        ],
                     )
 
                 # Unlock the period (back to CLOSED, not OPEN)
@@ -593,7 +566,7 @@ class FiscalPeriodService:
                     WHERE id = $2
                     """,
                     PeriodStatus.CLOSED.value,
-                    request.period_id
+                    request.period_id,
                 )
 
                 # Publish event with audit info
@@ -603,28 +576,31 @@ class FiscalPeriodService:
                     EventType.PERIOD_UNLOCKED,
                     {
                         "period_id": str(request.period_id),
-                        "period_name": period_row['period_name'],
+                        "period_name": period_row["period_name"],
                         "unlocked_by": str(request.unlocked_by),
                         "reason": request.reason,
-                        "previous_lock_time": period_row['locked_at'].isoformat() if period_row['locked_at'] else None,
-                        "previous_locked_by": str(period_row['locked_by']) if period_row['locked_by'] else None,
-                    }
+                        "previous_lock_time": period_row["locked_at"].isoformat()
+                        if period_row["locked_at"]
+                        else None,
+                        "previous_locked_by": str(period_row["locked_by"])
+                        if period_row["locked_by"]
+                        else None,
+                    },
                 )
 
-                logger.warning(f"Period {period_row['period_name']} unlocked by {request.unlocked_by} - Reason: {request.reason}")
+                logger.warning(
+                    f"Period {period_row['period_name']} unlocked by {request.unlocked_by} - Reason: {request.reason}"
+                )
 
                 return UnlockPeriodResponse(
                     success=True,
                     period_id=request.period_id,
-                    period_name=period_row['period_name'],
-                    message=f"Period {period_row['period_name']} unlocked (now CLOSED)"
+                    period_name=period_row["period_name"],
+                    message=f"Period {period_row['period_name']} unlocked (now CLOSED)",
                 )
 
     async def _generate_closing_snapshot(
-        self,
-        conn,
-        tenant_id: str,
-        as_of_date: date
+        self, conn, tenant_id: str, as_of_date: date
     ) -> Dict[str, Any]:
         """
         Generate a snapshot of all account balances at period end.
@@ -655,38 +631,43 @@ class FiscalPeriodService:
                 AND je.tenant_id = $1
                 AND je.journal_date <= $2
                 AND je.status = 'POSTED'
-            WHERE coa.tenant_id = $1 AND coa.is_active = true
+            -- BL-07: include inactive accounts that still carry a posted
+            -- balance (je.id IS NOT NULL) so their leg is not dropped ->
+            -- phantom imbalance. Zero-balance inactive accounts have no
+            -- je.id and stay excluded.
+            WHERE coa.tenant_id = $1
+              AND (coa.is_active = true OR je.id IS NOT NULL)
             GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.normal_balance
             ORDER BY coa.account_code
             """,
             tenant_id,
-            as_of_date
+            as_of_date,
         )
 
         snapshot = {
             "generated_at": datetime.utcnow().isoformat(),
             "as_of_date": as_of_date.isoformat(),
-            "accounts": {}
+            "accounts": {},
         }
 
         total_debit = Decimal("0")
         total_credit = Decimal("0")
 
         for row in rows:
-            code = row['account_code']
-            debit = Decimal(str(row['debit_total']))
-            credit = Decimal(str(row['credit_total']))
+            code = row["account_code"]
+            debit = Decimal(str(row["debit_total"]))
+            credit = Decimal(str(row["credit_total"]))
 
             # Calculate balance based on normal balance
-            if row['normal_balance'] == 'DEBIT':
+            if row["normal_balance"] == "DEBIT":
                 balance = debit - credit
             else:
                 balance = credit - debit
 
             snapshot["accounts"][code] = {
-                "name": row['account_name'],
-                "type": row['account_type'],
-                "normal_balance": row['normal_balance'],
+                "name": row["account_name"],
+                "type": row["account_type"],
+                "normal_balance": row["normal_balance"],
                 "balance": float(balance),
                 "debit_total": float(debit),
                 "credit_total": float(credit),
@@ -708,7 +689,7 @@ class FiscalPeriodService:
         period_id: UUID,
         closing_date: date,
         closed_by: UUID,
-        snapshot: Dict
+        snapshot: Dict,
     ) -> Optional[UUID]:
         """
         Create closing journal entries.
@@ -724,13 +705,13 @@ class FiscalPeriodService:
         expense_accounts = []
 
         for code, data in snapshot.get("accounts", {}).items():
-            balance = Decimal(str(data['balance']))
+            balance = Decimal(str(data["balance"]))
             if balance == 0:
                 continue
 
-            if data['type'] == 'INCOME':
+            if data["type"] == "INCOME":
                 income_accounts.append((code, balance))
-            elif data['type'] == 'EXPENSE':
+            elif data["type"] == "EXPENSE":
                 expense_accounts.append((code, balance))
 
         # If no income/expense accounts have balances, no closing entry needed
@@ -749,11 +730,13 @@ class FiscalPeriodService:
             SELECT id, account_code FROM chart_of_accounts
             WHERE tenant_id = $1 AND account_code = '3-20000'
             """,
-            tenant_id
+            tenant_id,
         )
 
         if not retained_earnings:
-            logger.warning("Retained Earnings account (3-20000) not found, skipping closing entries")
+            logger.warning(
+                "Retained Earnings account (3-20000) not found, skipping closing entries"
+            )
             return None
 
         # Create closing journal
@@ -779,7 +762,7 @@ class FiscalPeriodService:
             total_income + total_expense,  # All debits
             total_income + total_expense,  # All credits
             closed_by,
-            period_id
+            period_id,
         )
 
         line_num = 1
@@ -788,7 +771,8 @@ class FiscalPeriodService:
         for code, balance in income_accounts:
             account = await conn.fetchrow(
                 "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                tenant_id, code
+                tenant_id,
+                code,
             )
             if account:
                 await conn.execute(
@@ -798,8 +782,12 @@ class FiscalPeriodService:
                         debit, credit, memo
                     ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                     """,
-                    uuid4(), journal_id, account['id'], line_num,
-                    balance, f"Close {code} to Retained Earnings"
+                    uuid4(),
+                    journal_id,
+                    account["id"],
+                    line_num,
+                    balance,
+                    f"Close {code} to Retained Earnings",
                 )
                 line_num += 1
 
@@ -807,7 +795,8 @@ class FiscalPeriodService:
         for code, balance in expense_accounts:
             account = await conn.fetchrow(
                 "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2",
-                tenant_id, code
+                tenant_id,
+                code,
             )
             if account:
                 await conn.execute(
@@ -817,8 +806,12 @@ class FiscalPeriodService:
                         debit, credit, memo
                     ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                     """,
-                    uuid4(), journal_id, account['id'], line_num,
-                    balance, f"Close {code} to Retained Earnings"
+                    uuid4(),
+                    journal_id,
+                    account["id"],
+                    line_num,
+                    balance,
+                    f"Close {code} to Retained Earnings",
                 )
                 line_num += 1
 
@@ -832,8 +825,12 @@ class FiscalPeriodService:
                     debit, credit, memo
                 ) VALUES ($1, $2, $3, $4, 0, $5, $6)
                 """,
-                uuid4(), journal_id, retained_earnings['id'], line_num,
-                net_income, "Net income to Retained Earnings"
+                uuid4(),
+                journal_id,
+                retained_earnings["id"],
+                line_num,
+                net_income,
+                "Net income to Retained Earnings",
             )
         else:
             # Net loss: DR Retained Earnings
@@ -844,8 +841,12 @@ class FiscalPeriodService:
                     debit, credit, memo
                 ) VALUES ($1, $2, $3, $4, $5, 0, $6)
                 """,
-                uuid4(), journal_id, retained_earnings['id'], line_num,
-                abs(net_income), "Net loss to Retained Earnings"
+                uuid4(),
+                journal_id,
+                retained_earnings["id"],
+                line_num,
+                abs(net_income),
+                "Net loss to Retained Earnings",
             )
 
         logger.info(f"Created closing journal {journal_number} with {line_num} lines")
@@ -853,10 +854,7 @@ class FiscalPeriodService:
         return journal_id
 
     async def _generate_journal_number(
-        self,
-        conn,
-        tenant_id: str,
-        prefix: str = "JE"
+        self, conn, tenant_id: str, prefix: str = "JE"
     ) -> str:
         """Generate sequential journal number"""
         today = datetime.now()
@@ -869,7 +867,7 @@ class FiscalPeriodService:
             ORDER BY journal_number DESC LIMIT 1
             """,
             tenant_id,
-            f"{month_prefix}-%"
+            f"{month_prefix}-%",
         )
 
         if last:
@@ -880,11 +878,7 @@ class FiscalPeriodService:
         return f"{month_prefix}-{seq:04d}"
 
     async def _publish_event(
-        self,
-        conn,
-        tenant_id: str,
-        event_type: EventType,
-        payload: Dict
+        self, conn, tenant_id: str, event_type: EventType, payload: Dict
     ) -> None:
         """Publish event to accounting_outbox"""
         await conn.execute(
@@ -899,27 +893,33 @@ class FiscalPeriodService:
             event_type.value,
             "fiscal_period",
             payload.get("period_id", ""),
-            json.dumps(payload)
+            json.dumps(payload),
         )
 
     def _row_to_period(self, row) -> FiscalPeriod:
         """Convert database row to FiscalPeriod model"""
         return FiscalPeriod(
-            id=row['id'],
-            tenant_id=row['tenant_id'],
-            period_name=row['period_name'],
-            start_date=row['start_date'],
-            end_date=row['end_date'],
-            status=PeriodStatus(row['status']),
-            closed_at=row.get('closed_at'),
-            closed_by=row.get('closed_by'),
-            closing_journal_id=row.get('closing_journal_id'),
-            locked_at=row.get('locked_at'),
-            locked_by=row.get('locked_by'),
-            lock_reason=row.get('lock_reason'),
-            opening_balances=json.loads(row['opening_balances']) if row.get('opening_balances') else None,
-            closing_balances=json.loads(row['closing_balances']) if row.get('closing_balances') else None,
-            closing_snapshot=json.loads(row['closing_snapshot']) if row.get('closing_snapshot') else None,
-            created_at=row.get('created_at'),
-            updated_at=row.get('updated_at'),
+            id=row["id"],
+            tenant_id=row["tenant_id"],
+            period_name=row["period_name"],
+            start_date=row["start_date"],
+            end_date=row["end_date"],
+            status=PeriodStatus(row["status"]),
+            closed_at=row.get("closed_at"),
+            closed_by=row.get("closed_by"),
+            closing_journal_id=row.get("closing_journal_id"),
+            locked_at=row.get("locked_at"),
+            locked_by=row.get("locked_by"),
+            lock_reason=row.get("lock_reason"),
+            opening_balances=json.loads(row["opening_balances"])
+            if row.get("opening_balances")
+            else None,
+            closing_balances=json.loads(row["closing_balances"])
+            if row.get("closing_balances")
+            else None,
+            closing_snapshot=json.loads(row["closing_snapshot"])
+            if row.get("closing_snapshot")
+            else None,
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
         )

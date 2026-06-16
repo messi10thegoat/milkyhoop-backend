@@ -16,13 +16,13 @@ from uuid import UUID
 
 import asyncpg
 
-from ..constants import AccountType, NormalBalance, JournalStatus
-from ..config import settings
+from ..constants import AccountType, NormalBalance
 
 
 @dataclass
 class TrialBalanceRow:
     """Single row in Trial Balance report"""
+
     account_code: str
     account_name: str
     account_type: AccountType
@@ -42,6 +42,7 @@ class TrialBalanceRow:
 @dataclass
 class TrialBalance:
     """Trial Balance report"""
+
     tenant_id: str
     as_of_date: date
     rows: List[TrialBalanceRow] = field(default_factory=list)
@@ -63,6 +64,7 @@ class TrialBalance:
 @dataclass
 class LedgerEntry:
     """Single entry in account ledger"""
+
     journal_id: UUID
     journal_number: str
     journal_date: date
@@ -79,6 +81,7 @@ class LedgerEntry:
 @dataclass
 class AccountLedger:
     """Account Ledger (transaction history for an account)"""
+
     tenant_id: str
     account_id: UUID
     account_code: str
@@ -97,6 +100,7 @@ class AccountLedger:
 @dataclass
 class AccountBalanceSummary:
     """Account balance at a point in time"""
+
     account_id: UUID
     account_code: str
     account_name: str
@@ -125,7 +129,7 @@ class LedgerService:
         tenant_id: str,
         as_of_date: Optional[date] = None,
         account_type: Optional[AccountType] = None,
-        include_zero_balances: bool = False
+        include_zero_balances: bool = False,
     ) -> TrialBalance:
         """
         Generate Trial Balance report.
@@ -158,8 +162,14 @@ class LedgerService:
                     AND je.tenant_id = $1
                     AND je.journal_date <= $2
                     AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id) = true
                 WHERE c.tenant_id = $1
-                    AND c.is_active = true
+                    -- BL-07: include inactive accounts that still carry a
+                    -- posted balance (je.id IS NOT NULL) so their leg is not
+                    -- dropped -> phantom imbalance. Zero-balance inactive
+                    -- accounts stay excluded by the outer balance filter
+                    -- (total_debit/credit != 0) unless include_zero_balances.
+                    AND (c.is_active = true OR je.id IS NOT NULL)
                     AND ($3::text IS NULL OR c.account_type = $3)
                 GROUP BY c.id, c.account_code, c.name, c.account_type, c.normal_balance
                 ORDER BY c.account_code
@@ -190,8 +200,7 @@ class LedgerService:
         async with self.pool.acquire() as conn:
             # Set tenant context for RLS
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             rows = await conn.fetch(
@@ -199,19 +208,16 @@ class LedgerService:
                 tenant_id,
                 as_of_date,
                 account_type.value if account_type else None,
-                include_zero_balances
+                include_zero_balances,
             )
 
-        trial_balance = TrialBalance(
-            tenant_id=tenant_id,
-            as_of_date=as_of_date
-        )
+        trial_balance = TrialBalance(tenant_id=tenant_id, as_of_date=as_of_date)
 
         for row in rows:
             # Calculate proper debit/credit presentation
-            total_debit = Decimal(str(row['total_debit']))
-            total_credit = Decimal(str(row['total_credit']))
-            normal_balance = NormalBalance(row['normal_balance'])
+            total_debit = Decimal(str(row["total_debit"]))
+            total_credit = Decimal(str(row["total_credit"]))
+            normal_balance = NormalBalance(row["normal_balance"])
 
             net = total_debit - total_credit
 
@@ -231,12 +237,12 @@ class LedgerService:
                     debit_balance = net
 
             tb_row = TrialBalanceRow(
-                account_code=row['account_code'],
-                account_name=row['account_name'],
-                account_type=AccountType(row['account_type']),
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                account_type=AccountType(row["account_type"]),
                 normal_balance=normal_balance,
                 debit_balance=debit_balance,
-                credit_balance=credit_balance
+                credit_balance=credit_balance,
             )
 
             trial_balance.rows.append(tb_row)
@@ -251,7 +257,7 @@ class LedgerService:
         account_code: str,
         start_date: date,
         end_date: date,
-        include_opening_balance: bool = True
+        include_opening_balance: bool = True,
     ) -> AccountLedger:
         """
         Get account ledger (transaction history) for a specific account.
@@ -311,8 +317,7 @@ class LedgerService:
         async with self.pool.acquire() as conn:
             # Set tenant context
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             # Get account
@@ -320,21 +325,18 @@ class LedgerService:
             if not account_row:
                 raise ValueError(f"Account not found: {account_code}")
 
-            account_id = account_row['id']
-            normal_balance = NormalBalance(account_row['normal_balance'])
+            account_id = account_row["id"]
+            normal_balance = NormalBalance(account_row["normal_balance"])
 
             # Calculate opening balance
             opening_balance = Decimal("0")
             if include_opening_balance:
                 ob_row = await conn.fetchrow(
-                    opening_balance_query,
-                    tenant_id,
-                    account_id,
-                    start_date
+                    opening_balance_query, tenant_id, account_id, start_date
                 )
                 if ob_row:
-                    ob_debit = Decimal(str(ob_row['total_debit']))
-                    ob_credit = Decimal(str(ob_row['total_credit']))
+                    ob_debit = Decimal(str(ob_row["total_debit"]))
+                    ob_credit = Decimal(str(ob_row["total_credit"]))
                     if normal_balance == NormalBalance.DEBIT:
                         opening_balance = ob_debit - ob_credit
                     else:
@@ -342,24 +344,20 @@ class LedgerService:
 
             # Get entries
             entry_rows = await conn.fetch(
-                entries_query,
-                tenant_id,
-                account_id,
-                start_date,
-                end_date
+                entries_query, tenant_id, account_id, start_date, end_date
             )
 
         # Build ledger
         ledger = AccountLedger(
             tenant_id=tenant_id,
             account_id=account_id,
-            account_code=account_row['account_code'],
-            account_name=account_row['name'],
-            account_type=AccountType(account_row['account_type']),
+            account_code=account_row["account_code"],
+            account_name=account_row["name"],
+            account_type=AccountType(account_row["account_type"]),
             normal_balance=normal_balance,
             start_date=start_date,
             end_date=end_date,
-            opening_balance=opening_balance
+            opening_balance=opening_balance,
         )
 
         running_balance = opening_balance
@@ -367,8 +365,8 @@ class LedgerService:
         total_credit = Decimal("0")
 
         for row in entry_rows:
-            debit = Decimal(str(row['debit']))
-            credit = Decimal(str(row['credit']))
+            debit = Decimal(str(row["debit"]))
+            credit = Decimal(str(row["credit"]))
 
             # Update running balance based on normal balance
             if normal_balance == NormalBalance.DEBIT:
@@ -380,17 +378,17 @@ class LedgerService:
             total_credit += credit
 
             entry = LedgerEntry(
-                journal_id=row['journal_id'],
-                journal_number=row['journal_number'],
-                journal_date=row['journal_date'],
-                description=row['description'],
+                journal_id=row["journal_id"],
+                journal_number=row["journal_number"],
+                journal_date=row["journal_date"],
+                description=row["description"],
                 debit=debit,
                 credit=credit,
                 running_balance=running_balance,
-                source_type=row['source_type'],
-                source_id=row['source_id'],
-                memo=row['memo'],
-                created_at=row['created_at']
+                source_type=row["source_type"],
+                source_id=row["source_id"],
+                memo=row["memo"],
+                created_at=row["created_at"],
             )
             ledger.entries.append(entry)
 
@@ -401,10 +399,7 @@ class LedgerService:
         return ledger
 
     async def get_account_balance(
-        self,
-        tenant_id: str,
-        account_code: str,
-        as_of_date: Optional[date] = None
+        self, tenant_id: str, account_code: str, as_of_date: Optional[date] = None
     ) -> AccountBalanceSummary:
         """
         Get balance for a specific account.
@@ -441,8 +436,7 @@ class LedgerService:
 
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             row = await conn.fetchrow(query, tenant_id, account_code, as_of_date)
@@ -450,9 +444,9 @@ class LedgerService:
         if not row:
             raise ValueError(f"Account not found: {account_code}")
 
-        total_debit = Decimal(str(row['total_debit']))
-        total_credit = Decimal(str(row['total_credit']))
-        normal_balance = NormalBalance(row['normal_balance'])
+        total_debit = Decimal(str(row["total_debit"]))
+        total_credit = Decimal(str(row["total_credit"]))
+        normal_balance = NormalBalance(row["normal_balance"])
 
         # Calculate balance based on normal balance
         if normal_balance == NormalBalance.DEBIT:
@@ -461,21 +455,21 @@ class LedgerService:
             balance = total_credit - total_debit
 
         return AccountBalanceSummary(
-            account_id=row['account_id'],
-            account_code=row['account_code'],
-            account_name=row['account_name'],
-            account_type=AccountType(row['account_type']),
+            account_id=row["account_id"],
+            account_code=row["account_code"],
+            account_name=row["account_name"],
+            account_type=AccountType(row["account_type"]),
             normal_balance=normal_balance,
             debit_total=total_debit,
             credit_total=total_credit,
-            balance=balance
+            balance=balance,
         )
 
     async def get_all_account_balances(
         self,
         tenant_id: str,
         as_of_date: Optional[date] = None,
-        account_type: Optional[AccountType] = None
+        account_type: Optional[AccountType] = None,
     ) -> List[AccountBalanceSummary]:
         """
         Get balances for all accounts.
@@ -515,46 +509,44 @@ class LedgerService:
 
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             rows = await conn.fetch(
                 query,
                 tenant_id,
                 as_of_date,
-                account_type.value if account_type else None
+                account_type.value if account_type else None,
             )
 
         balances = []
         for row in rows:
-            total_debit = Decimal(str(row['total_debit']))
-            total_credit = Decimal(str(row['total_credit']))
-            normal_balance = NormalBalance(row['normal_balance'])
+            total_debit = Decimal(str(row["total_debit"]))
+            total_credit = Decimal(str(row["total_credit"]))
+            normal_balance = NormalBalance(row["normal_balance"])
 
             if normal_balance == NormalBalance.DEBIT:
                 balance = total_debit - total_credit
             else:
                 balance = total_credit - total_debit
 
-            balances.append(AccountBalanceSummary(
-                account_id=row['account_id'],
-                account_code=row['account_code'],
-                account_name=row['account_name'],
-                account_type=AccountType(row['account_type']),
-                normal_balance=normal_balance,
-                debit_total=total_debit,
-                credit_total=total_credit,
-                balance=balance
-            ))
+            balances.append(
+                AccountBalanceSummary(
+                    account_id=row["account_id"],
+                    account_code=row["account_code"],
+                    account_name=row["account_name"],
+                    account_type=AccountType(row["account_type"]),
+                    normal_balance=normal_balance,
+                    debit_total=total_debit,
+                    credit_total=total_credit,
+                    balance=balance,
+                )
+            )
 
         return balances
 
     async def get_balance_from_cache(
-        self,
-        tenant_id: str,
-        account_id: UUID,
-        as_of_date: date
+        self, tenant_id: str, account_id: UUID, as_of_date: date
     ) -> Optional[Tuple[Decimal, Decimal]]:
         """
         Get balance from account_balances_daily cache table.
@@ -580,16 +572,13 @@ class LedgerService:
 
         if row:
             return (
-                Decimal(str(row['debit_balance'])),
-                Decimal(str(row['credit_balance']))
+                Decimal(str(row["debit_balance"])),
+                Decimal(str(row["credit_balance"])),
             )
         return None
 
     async def get_journals_by_source(
-        self,
-        tenant_id: str,
-        source_type: str,
-        source_id: UUID
+        self, tenant_id: str, source_type: str, source_id: UUID
     ) -> List[Dict[str, Any]]:
         """
         Get all journal entries for a specific source document.
@@ -631,8 +620,7 @@ class LedgerService:
 
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             rows = await conn.fetch(query, tenant_id, source_type, str(source_id))
@@ -644,7 +632,7 @@ class LedgerService:
         tenant_id: str,
         start_date: date,
         end_date: date,
-        account_type: Optional[AccountType] = None
+        account_type: Optional[AccountType] = None,
     ) -> Dict[str, Decimal]:
         """
         Get period totals for reporting.
@@ -673,8 +661,7 @@ class LedgerService:
 
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)",
-                str(tenant_id)
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
             row = await conn.fetchrow(
@@ -682,14 +669,14 @@ class LedgerService:
                 tenant_id,
                 start_date,
                 end_date,
-                account_type.value if account_type else None
+                account_type.value if account_type else None,
             )
 
-        total_debit = Decimal(str(row['total_debit']))
-        total_credit = Decimal(str(row['total_credit']))
+        total_debit = Decimal(str(row["total_debit"]))
+        total_credit = Decimal(str(row["total_credit"]))
 
         return {
             "total_debit": total_debit,
             "total_credit": total_credit,
-            "net": total_debit - total_credit
+            "net": total_debit - total_credit,
         }

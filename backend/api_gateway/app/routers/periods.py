@@ -581,7 +581,12 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
                       AND je.journal_date <= $2
                       AND is_effective_journal(je.id) = true
                 ) jl ON jl.account_id = coa.id
-                WHERE coa.tenant_id = $1 AND coa.is_active = TRUE
+                -- BL-07: include inactive accounts that still hold a posted
+                -- balance (activity subquery match) so their leg is not dropped
+                -- while the matching active leg survives -> phantom imbalance.
+                -- Zero-balance inactive accounts stay excluded via HAVING below.
+                WHERE coa.tenant_id = $1
+                  AND (coa.is_active = TRUE OR jl.account_id IS NOT NULL)
                 GROUP BY coa.id
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.account_code
@@ -594,6 +599,24 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
             total_debit = sum(row["total_debit"] for row in tb_data)
             total_credit = sum(row["total_credit"] for row in tb_data)
             is_balanced = total_debit == total_credit
+
+            # ── PRE-CLOSE GUARD: trial balance MUST balance (BL-07) ──────
+            # Structural fail-loud (mirrors _assert_mfg_clearing_zeroed #32):
+            # close must NEVER return 200 over an unbalanced book. After the
+            # BL-07 is_active relax the snapshot balances; this guard is the
+            # defensive backstop against ANY future TB-imbalance cause
+            # (e.g. an inactive account still carrying a balance, or an
+            # unbalanced manual journal). Refuse the close fail-loud.
+            if not is_balanced:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Tutup buku ditolak: trial balance tidak seimbang "
+                        f"(total debit {total_debit} != total credit "
+                        f"{total_credit}). Periksa akun nonaktif yang masih "
+                        f"bersaldo atau jurnal tidak seimbang."
+                    ),
+                )
 
             # Save TB snapshot
             snapshot_id = await conn.fetchval(
