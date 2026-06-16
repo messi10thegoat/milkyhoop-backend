@@ -47,10 +47,10 @@ VENDORS_REQUIRED_ROLES = [
 ]
 
 # One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4/C1.5 pattern).
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool) -> None:
+async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
     """Run role-mapping precondition once per process for vendors.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
@@ -58,11 +58,16 @@ async def _ensure_role_preconditions(pool) -> None:
     tenant added later without mapping will still fail loud at
     resolve_account_id_by_role(...) via AccountRoleUnmappedError.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(pool, "vendors", VENDORS_REQUIRED_ROLES)
         return
-    await assert_required_roles_for_path(pool, "vendors", VENDORS_REQUIRED_ROLES)
-    _precondition_checked = True
+    if tenant_id in _precondition_checked_tenants:
+        return
+    await assert_required_roles_for_path(
+        pool, "vendors", VENDORS_REQUIRED_ROLES, tenant_id=tenant_id
+    )
+    _precondition_checked_tenants.add(tenant_id)
 
 
 async def _resolve_role_account(conn, tenant_id: str, role_key: str) -> dict:
@@ -1324,7 +1329,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         raw_body = await request.json()
         amount = Dec(str(raw_body.get("amount", 0)))

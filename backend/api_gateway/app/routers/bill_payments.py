@@ -47,23 +47,30 @@ BILL_PAYMENTS_REQUIRED_ROLES = [
     AccountRole.PURCHASE_DISCOUNT,
 ]
 
-# Module-level once-flag for precondition audit.
-_bill_payments_precondition_checked = False
+# Per-tenant precondition cache.
+# FIX_ROLE_PRECOND_PER_TENANT (2026-06-16): scope the audit to the ACTING
+# tenant so one misconfigured tenant cannot fail-loud-block posting for all.
+_bill_payments_precondition_checked_tenants: set = set()
 
 
-async def _ensure_bill_payments_role_preconditions(pool):
-    """Run role-mapping precondition once per process for bill_payments.
+async def _ensure_bill_payments_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition for the ACTING tenant on bill_payments.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped.
+    Fails loud (PreconditionFailedError) if THIS tenant lacks any required
+    role mapping. With tenant_id=None falls back to the legacy all-tenant
+    audit. After first successful check the per-tenant audit is skipped.
     """
-    global _bill_payments_precondition_checked
-    if _bill_payments_precondition_checked:
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "bill_payments", BILL_PAYMENTS_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _bill_payments_precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "bill_payments", BILL_PAYMENTS_REQUIRED_ROLES
+        pool, "bill_payments", BILL_PAYMENTS_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _bill_payments_precondition_checked = True
+    _bill_payments_precondition_checked_tenants.add(tenant_id)
 
 
 logger = logging.getLogger(__name__)
@@ -1075,7 +1082,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        await _ensure_bill_payments_role_preconditions(pool)
+        await _ensure_bill_payments_role_preconditions(pool, ctx["tenant_id"])
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1468,7 +1475,7 @@ async def post_bill_payment(request: Request, payment_id: str):
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        await _ensure_bill_payments_role_preconditions(pool)
+        await _ensure_bill_payments_role_preconditions(pool, ctx["tenant_id"])
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -1597,7 +1604,7 @@ async def void_bill_payment(
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        await _ensure_bill_payments_role_preconditions(pool)
+        await _ensure_bill_payments_role_preconditions(pool, ctx["tenant_id"])
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")

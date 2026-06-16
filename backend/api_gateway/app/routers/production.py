@@ -48,20 +48,27 @@ _PRODUCTION_REQUIRED_ROLES = [
     AccountRole.COGS_VARIANCE_PRODUCTION,
     AccountRole.INVENTORY_MERCHANDISE,
 ]
-_production_precondition_checked = False
+_production_precondition_checked_tenants: set = set()
 
 
-async def _ensure_production_role_preconditions(pool):
-    """Run role-mapping precondition once per process for production.
+async def _ensure_production_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition once per tenant for production.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _production_precondition_checked
-    if _production_precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(
+            pool, "production", _PRODUCTION_REQUIRED_ROLES
+        )
         return
-    await assert_required_roles_for_path(pool, "production", _PRODUCTION_REQUIRED_ROLES)
-    _production_precondition_checked = True
+    if tenant_id in _production_precondition_checked_tenants:
+        return
+    await assert_required_roles_for_path(
+        pool, "production", _PRODUCTION_REQUIRED_ROLES, tenant_id=tenant_id
+    )
+    _production_precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -1387,7 +1394,7 @@ async def cancel_order(request: Request, order_id: UUID):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_production_role_preconditions(pool)
+        await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1517,7 +1524,7 @@ async def issue_materials(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_production_role_preconditions(pool)
+        await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1892,7 +1899,7 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
 
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_production_role_preconditions(pool)
+        await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2165,7 +2172,7 @@ async def report_output(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_production_role_preconditions(pool)
+        await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2828,7 +2835,7 @@ async def month_end_reconcile(request: Request, body: dict):
         dry_run = bool((body or {}).get("dry_run"))
 
         pool = await get_pool()
-        await _ensure_production_role_preconditions(pool)
+        await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         Q = _D("0.01")
         ZERO = _D("0")

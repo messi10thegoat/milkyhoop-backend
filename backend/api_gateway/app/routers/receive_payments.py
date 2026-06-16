@@ -71,23 +71,28 @@ RECEIVE_PAYMENTS_REQUIRED_ROLES = [
     AccountRole.REVENUE_SALES_DISCOUNT,
 ]
 
-# Module-level once-flag for precondition audit.
-_receive_payments_precondition_checked = False
+# Per-tenant once-flag set for precondition audit.
+_receive_payments_precondition_checked_tenants: set = set()
 
 
-async def _ensure_receive_payments_role_preconditions(pool):
-    """Run role-mapping precondition once per process for receive_payments.
+async def _ensure_receive_payments_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition once per tenant for receive_payments.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _receive_payments_precondition_checked
-    if _receive_payments_precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(
+            pool, "receive_payments", RECEIVE_PAYMENTS_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _receive_payments_precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "receive_payments", RECEIVE_PAYMENTS_REQUIRED_ROLES
+        pool, "receive_payments", RECEIVE_PAYMENTS_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _receive_payments_precondition_checked = True
+    _receive_payments_precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -918,7 +923,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_receive_payments_role_preconditions(pool)
+        await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1791,7 +1796,7 @@ async def post_receive_payment(request: Request, payment_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_receive_payments_role_preconditions(pool)
+        await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1860,7 +1865,7 @@ async def void_receive_payment(
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_receive_payments_role_preconditions(pool)
+        await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():

@@ -50,23 +50,28 @@ BILLS_SERVICE_REQUIRED_ROLES = [
     AccountRole.WIP_SUBCONTRACT,
 ]
 
-# Module-level once-flag for precondition audit.
-_bills_service_precondition_checked = False
+# Per-tenant once-flag set for precondition audit.
+_bills_service_precondition_checked_tenants: set = set()
 
 
-async def _ensure_bills_service_role_preconditions(pool):
-    """Run role-mapping precondition once per process for bills_service.
+async def _ensure_bills_service_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition once per tenant for bills_service.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _bills_service_precondition_checked
-    if _bills_service_precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(
+            pool, "bills_service", BILLS_SERVICE_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _bills_service_precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "bills_service", BILLS_SERVICE_REQUIRED_ROLES
+        pool, "bills_service", BILLS_SERVICE_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _bills_service_precondition_checked = True
+    _bills_service_precondition_checked_tenants.add(tenant_id)
 
 
 from ..utils.sorting import build_order_by_clause  # noqa: E402
@@ -1365,7 +1370,7 @@ class BillsService:
         - account_id (legacy): Direct CoA UUID, no bank transaction
         """
         async with self.pool.acquire() as conn:
-            await _ensure_bills_service_role_preconditions(self.pool)
+            await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
                 # 0. RLS context
                 await conn.execute(
@@ -1917,7 +1922,7 @@ class BillsService:
         from .inventory_helpers import record_inventory_reversal
 
         async with self.pool.acquire() as conn:
-            await _ensure_bills_service_role_preconditions(self.pool)
+            await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             # Pre-check: fast fail before lock (non-authoritative)
             bill_exists = await conn.fetchrow(
                 "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
@@ -2548,7 +2553,7 @@ class BillsService:
             {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
-            await _ensure_bills_service_role_preconditions(self.pool)
+            await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
                 # 1. Generate invoice number if not provided
                 invoice_number = request.get("invoice_number")
@@ -3279,7 +3284,7 @@ class BillsService:
         - Inventory ledger entries (for tracked goods)
         """
         async with self.pool.acquire() as conn:
-            await _ensure_bills_service_role_preconditions(self.pool)
+            await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
                 # 0. RLS context
                 await conn.execute(

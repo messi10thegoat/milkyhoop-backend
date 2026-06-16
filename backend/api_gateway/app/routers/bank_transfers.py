@@ -51,19 +51,28 @@ BANK_TRANSFERS_REQUIRED_ROLES = [
     AccountRole.BANK_FEE,
 ]
 
-# Module-level once-flag for precondition audit.
-_bank_transfers_precondition_checked = False
+# Per-tenant precondition cache.
+# FIX_ROLE_PRECOND_PER_TENANT (2026-06-16): scope the audit to the ACTING
+# tenant so one misconfigured tenant cannot fail-loud-block posting for all.
+_bank_transfers_precondition_checked_tenants: set = set()
 
 
-async def _ensure_bank_transfers_role_preconditions(pool):
-    """Run role-mapping precondition once per process for bank transfers."""
-    global _bank_transfers_precondition_checked
-    if _bank_transfers_precondition_checked:
+async def _ensure_bank_transfers_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition for the ACTING tenant on bank transfers.
+
+    With tenant_id=None falls back to the legacy all-tenant audit.
+    """
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "bank_transfers", BANK_TRANSFERS_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _bank_transfers_precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "bank_transfers", BANK_TRANSFERS_REQUIRED_ROLES
+        pool, "bank_transfers", BANK_TRANSFERS_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _bank_transfers_precondition_checked = True
+    _bank_transfers_precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -943,7 +952,7 @@ async def post_bank_transfer(request: Request, transfer_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_bank_transfers_role_preconditions(pool)
+        await _ensure_bank_transfers_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():

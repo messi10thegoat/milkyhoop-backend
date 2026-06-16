@@ -92,24 +92,29 @@ CUSTOMER_DEPOSITS_REQUIRED_ROLES = [
 ]
 
 # One-time precondition flag (mirrors Fase C1.2/C1.3 pattern).
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool) -> None:
-    """Run role-mapping precondition once per process for customer_deposits.
+async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
+    """Run role-mapping precondition for customer_deposits.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped; a
-    tenant added later without mapping will still fail loud at
-    resolve_account_id_by_role(...) via AccountRoleUnmappedError.
+    Scopes the audit to the ACTING tenant when tenant_id is supplied (cached
+    per-tenant); tenant_id=None preserves the legacy all-tenants behavior.
+    Fails loud (PreconditionFailedError) if the audited tenant lacks any
+    required role mapping; a tenant added later without mapping will still
+    fail loud at resolve_account_id_by_role(...) via AccountRoleUnmappedError.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "customer_deposits", CUSTOMER_DEPOSITS_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "customer_deposits", CUSTOMER_DEPOSITS_REQUIRED_ROLES
+        pool, "customer_deposits", CUSTOMER_DEPOSITS_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -645,7 +650,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
         # Fase C1.4: precondition gate (one-time per process). Required
         # because auto_post=True triggers _post_deposit which resolves
         # CUSTOMER_DEPOSIT_LIABILITY via role mapping.
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1175,7 +1180,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
         pool = await get_pool()
 
         # Fase C1.4: precondition gate (one-time per process).
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1238,7 +1243,7 @@ async def apply_customer_deposit(
         pool = await get_pool()
 
         # Fase C1.4: precondition gate (one-time per process).
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1868,7 +1873,7 @@ async def refund_customer_deposit(
         pool = await get_pool()
 
         # Fase C1.4: precondition gate (one-time per process).
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2112,7 +2117,7 @@ async def void_customer_deposit(
         # it does not call resolve_account_id_by_role directly, but we
         # still gate here so any process touching this module hits the
         # precondition audit once.
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():

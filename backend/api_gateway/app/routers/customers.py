@@ -58,10 +58,10 @@ CUSTOMERS_REQUIRED_ROLES = [
 ]
 
 # One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4/C1.5 pattern).
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool) -> None:
+async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
     """Run role-mapping precondition once per process for customers.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
@@ -69,11 +69,16 @@ async def _ensure_role_preconditions(pool) -> None:
     tenant added later without mapping will still fail loud at
     resolve_account_id_by_role(...) via AccountRoleUnmappedError.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(pool, "customers", CUSTOMERS_REQUIRED_ROLES)
         return
-    await assert_required_roles_for_path(pool, "customers", CUSTOMERS_REQUIRED_ROLES)
-    _precondition_checked = True
+    if tenant_id in _precondition_checked_tenants:
+        return
+    await assert_required_roles_for_path(
+        pool, "customers", CUSTOMERS_REQUIRED_ROLES, tenant_id=tenant_id
+    )
+    _precondition_checked_tenants.add(tenant_id)
 
 
 def get_user_context(request: Request) -> dict:
@@ -1310,7 +1315,7 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
 
         ctx = get_user_context(request)
         pool = await get_pool()
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         # O08 fix: Use Decimal for financial amounts (Law 25)
         try:

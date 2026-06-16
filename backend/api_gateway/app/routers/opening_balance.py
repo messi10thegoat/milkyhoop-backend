@@ -94,25 +94,31 @@ OPENING_BALANCE_REQUIRED_ROLES = [
     AccountRole.INVENTORY_MERCHANDISE,
 ]
 
-# One-time precondition flag (mirrors Fase C1.2/C1.3/C1.4 pattern).
-_precondition_checked = False
+# Per-tenant precondition cache (mirrors Fase C1.2/C1.3/C1.4 pattern).
+# FIX_ROLE_PRECOND_PER_TENANT (2026-06-16): scope the audit to the ACTING
+# tenant so one misconfigured tenant cannot fail-loud-block posting for all.
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool) -> None:
-    """Run role-mapping precondition once per process for opening_balance.
+async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
+    """Run role-mapping precondition for the ACTING tenant.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped; a
-    tenant added later without mapping will still fail loud at
+    Fails loud (PreconditionFailedError) if THIS tenant lacks any required
+    role mapping. With tenant_id=None falls back to the legacy all-tenant
+    audit. A tenant added later without mapping will still fail loud at
     resolve_account_id_by_role(...) via AccountRoleUnmappedError.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "opening_balance", OPENING_BALANCE_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "opening_balance", OPENING_BALANCE_REQUIRED_ROLES
+        pool, "opening_balance", OPENING_BALANCE_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 async def _resolve_role_account(
@@ -570,7 +576,7 @@ async def validate_opening_balance(request: Request, body: CreateOpeningBalanceR
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
-    await _ensure_role_preconditions(pool)
+    await _ensure_role_preconditions(pool, tenant_id)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")
@@ -599,7 +605,7 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
     tenant_id = ctx["tenant_id"]
     user_id = ctx["user_id"]
     pool = await get_pool()
-    await _ensure_role_preconditions(pool)
+    await _ensure_role_preconditions(pool, tenant_id)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")
@@ -986,7 +992,7 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
     tenant_id = ctx["tenant_id"]
     user_id = ctx["user_id"]
     pool = await get_pool()
-    await _ensure_role_preconditions(pool)
+    await _ensure_role_preconditions(pool, tenant_id)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{tenant_id}'")

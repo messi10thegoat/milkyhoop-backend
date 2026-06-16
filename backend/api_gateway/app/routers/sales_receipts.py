@@ -54,28 +54,35 @@ SALES_RECEIPT_REQUIRED_ROLES = [
     AccountRole.INVENTORY_MERCHANDISE,
 ]
 
-# One-time precondition check flag. Audit runs once per process at first
-# posting-path call. Rationale: this is an architectural invariant (every
+# Per-tenant precondition cache. Audit runs once per tenant per process at
+# first posting-path call. Rationale: this is an architectural invariant (every
 # tenant must be mapped) — repeating per request adds a tenant-table SELECT
 # to a hot path. After first successful check the audit is skipped; a
 # tenant added later without mapping would still fail loud at
 # resolve_account_id_by_role(...) via AccountRoleUnmappedError.
-_precondition_checked = False
+# FIX_ROLE_PRECOND_PER_TENANT (2026-06-16): scope the audit to the ACTING
+# tenant so one misconfigured tenant cannot fail-loud-block posting for all.
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool):
-    """Run role-mapping precondition once per process for sales_receipts.
+async def _ensure_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition for the ACTING tenant on sales_receipts.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped.
+    Fails loud (PreconditionFailedError) if THIS tenant lacks any required
+    role mapping. With tenant_id=None falls back to the legacy all-tenant
+    audit. After first successful check the per-tenant audit is skipped.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "sales_receipts", SALES_RECEIPT_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "sales_receipts", SALES_RECEIPT_REQUIRED_ROLES
+        pool, "sales_receipts", SALES_RECEIPT_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 router = APIRouter()
@@ -282,7 +289,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
     """Create sales receipt - atomic operation with journal entries"""
     ctx = get_user_context(request)
     pool = await get_pool()
-    await _ensure_role_preconditions(pool)
+    await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
     async with pool.acquire() as conn:
         async with conn.transaction():

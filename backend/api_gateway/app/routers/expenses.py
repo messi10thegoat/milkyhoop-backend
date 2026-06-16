@@ -53,20 +53,25 @@ EXPENSE_REQUIRED_ROLES = [
 ]
 
 # One-time precondition check flag.
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool):
+async def _ensure_role_preconditions(pool, tenant_id=None):
     """Run role-mapping precondition once per process for expenses.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(pool, "expenses", EXPENSE_REQUIRED_ROLES)
         return
-    await assert_required_roles_for_path(pool, "expenses", EXPENSE_REQUIRED_ROLES)
-    _precondition_checked = True
+    if tenant_id in _precondition_checked_tenants:
+        return
+    await assert_required_roles_for_path(
+        pool, "expenses", EXPENSE_REQUIRED_ROLES, tenant_id=tenant_id
+    )
+    _precondition_checked_tenants.add(tenant_id)
 
 
 # Connection pool (initialized on first request)
@@ -1118,7 +1123,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
@@ -1794,7 +1799,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")

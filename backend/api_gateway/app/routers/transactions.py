@@ -61,22 +61,27 @@ TRANSACTIONS_REQUIRED_ROLES = [
 # to a hot path. After first successful check the audit is skipped; a
 # tenant added later without mapping would still fail loud at
 # resolve_account_id_by_role(...) via AccountRoleUnmappedError.
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool):
+async def _ensure_role_preconditions(pool, tenant_id=None):
     """Run role-mapping precondition once per process for transactions.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(
+            pool, "transactions", TRANSACTIONS_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "transactions", TRANSACTIONS_REQUIRED_ROLES
+        pool, "transactions", TRANSACTIONS_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 # ============================================
@@ -106,7 +111,7 @@ async def _create_pos_inventory_and_journals(
         # Fase C1.3: precondition gate (one-time per process).
         from ..services.db_pool import get_db_pool
 
-        await _ensure_role_preconditions(await get_db_pool())
+        await _ensure_role_preconditions(await get_db_pool(), tenant_id)
 
         conn = await get_db_connection()
         try:

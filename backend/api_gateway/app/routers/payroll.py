@@ -78,21 +78,26 @@ PAYROLL_REQUIRED_ROLES = [
     AccountRole.SALARY_PAYABLE,
 ]
 
-# Module-level once-flag for precondition audit.
-_payroll_precondition_checked = False
+# Per-tenant once-flag set for precondition audit.
+_payroll_precondition_checked_tenants: set = set()
 
 
-async def _ensure_payroll_role_preconditions(pool):
-    """Run role-mapping precondition once per process for payroll.
+async def _ensure_payroll_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition once per tenant for payroll.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _payroll_precondition_checked
-    if _payroll_precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(pool, "payroll", PAYROLL_REQUIRED_ROLES)
         return
-    await assert_required_roles_for_path(pool, "payroll", PAYROLL_REQUIRED_ROLES)
-    _payroll_precondition_checked = True
+    if tenant_id in _payroll_precondition_checked_tenants:
+        return
+    await assert_required_roles_for_path(
+        pool, "payroll", PAYROLL_REQUIRED_ROLES, tenant_id=tenant_id
+    )
+    _payroll_precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -1394,7 +1399,7 @@ async def post_payroll(request: Request, payroll_id: UUID):
 
         # Fase D4.3: precondition gate — ensure SALARY_EXPENSE + SALARY_PAYABLE
         # mapped for every tenant before any posting can run.
-        await _ensure_payroll_role_preconditions(pool)
+        await _ensure_payroll_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():

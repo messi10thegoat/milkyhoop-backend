@@ -70,22 +70,28 @@ CREDIT_NOTES_REQUIRED_ROLES = [
 ]
 
 # One-time precondition check flag.
-_precondition_checked = False
+_precondition_checked_tenants: set = set()
 
 
-async def _ensure_role_preconditions(pool):
-    """Run role-mapping precondition once per process for credit_notes.
+async def _ensure_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition for credit_notes.
 
-    Fails loud (PreconditionFailedError) if any tenant lacks any required
-    role mapping. After first successful check the audit is skipped.
+    Scopes the audit to the ACTING tenant when tenant_id is supplied (cached
+    per-tenant); tenant_id=None preserves the legacy all-tenants behavior.
+    Fails loud (PreconditionFailedError) if the audited tenant lacks any
+    required role mapping.
     """
-    global _precondition_checked
-    if _precondition_checked:
+    if tenant_id is None:
+        await assert_required_roles_for_path(
+            pool, "credit_notes", CREDIT_NOTES_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "credit_notes", CREDIT_NOTES_REQUIRED_ROLES
+        pool, "credit_notes", CREDIT_NOTES_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _precondition_checked = True
+    _precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -964,7 +970,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_role_preconditions(pool)
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():

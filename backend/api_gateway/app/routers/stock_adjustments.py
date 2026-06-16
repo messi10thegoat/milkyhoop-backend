@@ -58,22 +58,27 @@ _STOCK_ADJ_REQUIRED_ROLES = [
     AccountRole.INVENTORY_MERCHANDISE,
     AccountRole.INVENTORY_ADJUSTMENT_EXPENSE,
 ]
-_stock_adj_precondition_checked = False
+_stock_adj_precondition_checked_tenants: set = set()
 
 
-async def _ensure_stock_adj_role_preconditions(pool):
-    """Run role-mapping precondition once per process for stock_adjustments.
+async def _ensure_stock_adj_role_preconditions(pool, tenant_id=None):
+    """Run role-mapping precondition once per tenant for stock_adjustments.
 
     Fails loud (PreconditionFailedError) if any tenant lacks any required
     role mapping. After first successful check the audit is skipped.
     """
-    global _stock_adj_precondition_checked
-    if _stock_adj_precondition_checked:
+    if tenant_id is None:
+        # legacy/global fallback (unchanged behavior)
+        await assert_required_roles_for_path(
+            pool, "stock_adjustments", _STOCK_ADJ_REQUIRED_ROLES
+        )
+        return
+    if tenant_id in _stock_adj_precondition_checked_tenants:
         return
     await assert_required_roles_for_path(
-        pool, "stock_adjustments", _STOCK_ADJ_REQUIRED_ROLES
+        pool, "stock_adjustments", _STOCK_ADJ_REQUIRED_ROLES, tenant_id=tenant_id
     )
-    _stock_adj_precondition_checked = True
+    _stock_adj_precondition_checked_tenants.add(tenant_id)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -858,7 +863,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID):
             raise HTTPException(status_code=401, detail="User ID required")
 
         pool = await get_pool()
-        await _ensure_stock_adj_role_preconditions(pool)
+        await _ensure_stock_adj_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
