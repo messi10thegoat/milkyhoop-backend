@@ -4,6 +4,7 @@ Includes logo upload/delete endpoints.
 """
 import logging
 import os
+import time  # FIX_LOGO_CACHEBUST 2026-06-16
 import glob
 from typing import Optional
 from pathlib import Path
@@ -172,13 +173,15 @@ async def upload_tenant_logo(request: Request, file: UploadFile = File(...)):
     # Determine extension
     ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
     ext = ext_map.get(file.content_type, "png")
-    filename = f"{tenant_id}.{ext}"
+    filename = f"{tenant_id}-{int(time.time())}.{ext}"  # FIX_LOGO_CACHEBUST 2026-06-16 versioned key busts UI img + PDF base64
 
     # Ensure logo directory exists
     LOGO_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Remove any previous logo for this tenant (different extension)
-    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")):
+    # Remove any previous logo for this tenant (fixed-name AND prior versioned)  # FIX_LOGO_CACHEBUST 2026-06-16
+    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")) + glob.glob(
+        str(LOGO_DIR / f"{tenant_id}-*")
+    ):
         try:
             os.remove(old)
         except OSError:
@@ -213,8 +216,10 @@ async def delete_tenant_logo(request: Request):
     if not tenant_id:
         raise HTTPException(status_code=401, detail="No tenant context")
 
-    # Remove logo files
-    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")):
+    # Remove logo files (fixed-name AND versioned)  # FIX_LOGO_CACHEBUST 2026-06-16
+    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")) + glob.glob(
+        str(LOGO_DIR / f"{tenant_id}-*")
+    ):
         try:
             os.remove(old)
         except OSError:
@@ -254,5 +259,7 @@ async def serve_tenant_logo(filename: str):
     return FileResponse(
         str(logo_path),
         media_type=media,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "no-cache, must-revalidate"
+        },  # FIX_LOGO_CACHEBUST 2026-06-16
     )

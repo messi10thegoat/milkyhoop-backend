@@ -661,7 +661,7 @@ async def get_bill_pdf(
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f'inline; filename="{filename}"',
-                    "Cache-Control": "private, max-age=300",
+                    "Cache-Control": "no-store",  # FIX_LOGO_CACHEBUST 2026-06-16
                 },
             )
 
@@ -700,7 +700,7 @@ async def get_bill_pdf(
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f'inline; filename="{filename}"',
-                    "Cache-Control": "private, max-age=300",
+                    "Cache-Control": "no-store",  # FIX_LOGO_CACHEBUST 2026-06-16
                 },
             )
 
