@@ -73,6 +73,36 @@ _CAPTION_SIGNALS: list[tuple[str, list[str], dict[TransferType, float]]] = [
 ]
 
 
+# FIX_DIR_EXPLICIT (2026-06-16): phrases where the USER explicitly states the
+# payment direction. Unlike the weak caption hints above (≤0.3, "cannot alone
+# cross 0.5"), these are decisive: the user told us the side, so a coincidental
+# amount-match on the WRONG side must NOT hijack it (a Rp 2jt receipt that
+# happens to equal an open bill was being classified BILL_PAYMENT despite "dari
+# pelanggan"). High target + strong exclude on the opposite side → resolves the
+# direction with a wide gap, no clarification pill.
+_EXPLICIT_DIR_IN = [
+    "dari pelanggan",
+    "dari customer",
+    "pembayaran masuk",
+    "terima dari",
+    "diterima dari",
+    "pelanggan bayar",
+    "masuk dari pelanggan",
+    "pelunasan dari",
+]
+_EXPLICIT_DIR_OUT = [
+    "ke vendor",
+    "ke supplier",
+    "bayar vendor",
+    "bayar supplier",
+    "bayar ke vendor",
+    "bayar ke supplier",
+    "pembayaran keluar",
+    "untuk vendor",
+    "untuk supplier",
+]
+
+
 class TransferClassifier:
     def __init__(self, pool, tenant_id: str):
         self.pool = pool
@@ -241,6 +271,37 @@ class TransferClassifier:
                         )
                     )
                     break
+
+        # FIX_DIR_EXPLICIT: explicit user-stated direction is decisive.
+        if any(re.search(rf"\b{re.escape(p)}\b", lowered) for p in _EXPLICIT_DIR_IN):
+            out.append(
+                Signal(
+                    source="caption",
+                    name="caption:explicit_direction_in",
+                    strength=0.7,
+                    targets={TransferType.RECEIVE_PAYMENT: 0.7},
+                    excludes={
+                        TransferType.BILL_PAYMENT: 0.7,
+                        TransferType.INTERNAL_TRANSFER: 0.6,
+                        TransferType.PAYROLL: 0.6,
+                        TransferType.EXPENSE_OPERATIONAL: 0.5,
+                    },
+                )
+            )
+        if any(re.search(rf"\b{re.escape(p)}\b", lowered) for p in _EXPLICIT_DIR_OUT):
+            out.append(
+                Signal(
+                    source="caption",
+                    name="caption:explicit_direction_out",
+                    strength=0.7,
+                    targets={TransferType.BILL_PAYMENT: 0.7},
+                    excludes={
+                        TransferType.RECEIVE_PAYMENT: 0.7,
+                        TransferType.INTERNAL_TRANSFER: 0.6,
+                        TransferType.PAYROLL: 0.6,
+                    },
+                )
+            )
         return out
 
     # ------------------------------------------------------------------ DB
