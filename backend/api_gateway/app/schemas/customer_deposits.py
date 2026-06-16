@@ -41,6 +41,22 @@ class CreateCustomerDepositRequest(BaseModel):
     reference: Optional[str] = Field(None, max_length=100, description="Payment reference number")
     notes: Optional[str] = None
     auto_post: bool = Field(False, description="Automatically post after creation")
+    # FIX_P3_BRIDGE 2026-06-16: spine linkage + money-in create idempotency.
+    quote_id: Optional[str] = Field(
+        None, description="Quote UUID this DP was taken against (quote-accepted stage)"
+    )
+    sales_order_id: Optional[str] = Field(
+        None, description="Sales Order UUID this DP was taken against (SO stage)"
+    )
+    idempotency_key: Optional[str] = Field(
+        None,
+        max_length=255,
+        description=(
+            "Client-supplied de-dup key. A second create with the same key "
+            "returns the existing deposit (money-in: double-click must not "
+            "double-record cash)."
+        ),
+    )
 
     @field_validator('customer_name')
     @classmethod

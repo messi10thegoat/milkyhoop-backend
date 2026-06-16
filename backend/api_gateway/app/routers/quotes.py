@@ -1550,6 +1550,27 @@ async def convert_to_sales_order(
                         item["line_total"],
                     )
 
+                # FIX_P3_BRIDGE 2026-06-16: propagate the new sales_order_id to
+                # any customer deposit already taken at the quote stage. WAJIB:
+                # a DP taken against the quote must spine-match the invoice that
+                # is later created from this SO (sales_order_id linkage).
+                # Tenant-scoped; only stamp deposits that aren't already linked.
+                propagated = await conn.execute(
+                    """
+                    UPDATE customer_deposits
+                    SET sales_order_id = $1, updated_at = NOW()
+                    WHERE quote_id = $2
+                      AND tenant_id = $3
+                      AND sales_order_id IS NULL
+                    """,
+                    so_id,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
+                logger.info(
+                    f"Quote->SO convert {quote_id}->{so_id}: deposit propagation {propagated}"
+                )
+
                 # Update quote status
                 await conn.execute(
                     """

@@ -690,6 +690,44 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # FIX_P3_BRIDGE 2026-06-16 (b): create idempotency. A deposit is
+                # money-in; a double-submit (double-click / retry) must NOT
+                # record cash twice. Law 13 advisory lock serializes concurrent
+                # creates that share an idempotency_key so the pre-check below is
+                # race-safe; the partial UNIQUE index (V179) is the backstop.
+                if body.idempotency_key:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"CUSTOMER_DEPOSIT_CREATE:{ctx['tenant_id']}:{body.idempotency_key}",
+                    )
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT id, deposit_number, amount, status
+                        FROM customer_deposits
+                        WHERE tenant_id = $1 AND idempotency_key = $2
+                        """,
+                        ctx["tenant_id"],
+                        body.idempotency_key,
+                    )
+                    if existing:
+                        logger.info(
+                            f"Customer deposit idempotent hit: key={body.idempotency_key} "
+                            f"-> existing {existing['deposit_number']} ({existing['id']})"
+                        )
+                        return {
+                            "success": True,
+                            "message": (
+                                f"Customer deposit {existing['deposit_number']} "
+                                "already exists (idempotent)"
+                            ),
+                            "data": {
+                                "id": str(existing["id"]),
+                                "deposit_number": existing["deposit_number"],
+                                "amount": int(existing["amount"]),
+                                "status": existing["status"],
+                            },
+                        }
+
                 # Validate account exists and is asset type
                 account = await conn.fetchrow(
                     """
@@ -718,29 +756,66 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                 )
 
                 # Insert deposit
-                dep_id = await conn.fetchval(
-                    """
-                    INSERT INTO customer_deposits (
-                        tenant_id, deposit_number, customer_id, customer_name,
-                        amount, deposit_date, payment_method,
-                        account_id, bank_account_id, reference, notes,
-                        status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12)
-                    RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    dep_number,
-                    body.customer_id,
-                    body.customer_name,
-                    body.amount,
-                    body.deposit_date,
-                    body.payment_method,
-                    UUID(body.account_id),
-                    UUID(body.bank_account_id) if body.bank_account_id else None,
-                    body.reference,
-                    body.notes,
-                    ctx["user_id"],
-                )
+                # FIX_P3_BRIDGE 2026-06-16 (a): persist spine linkage
+                # (quote_id / sales_order_id) and the create idempotency_key.
+                try:
+                    dep_id = await conn.fetchval(
+                        """
+                        INSERT INTO customer_deposits (
+                            tenant_id, deposit_number, customer_id, customer_name,
+                            amount, deposit_date, payment_method,
+                            account_id, bank_account_id, reference, notes,
+                            status, created_by,
+                            quote_id, sales_order_id, idempotency_key
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15)
+                        RETURNING id
+                    """,
+                        ctx["tenant_id"],
+                        dep_number,
+                        body.customer_id,
+                        body.customer_name,
+                        body.amount,
+                        body.deposit_date,
+                        body.payment_method,
+                        UUID(body.account_id),
+                        UUID(body.bank_account_id) if body.bank_account_id else None,
+                        body.reference,
+                        body.notes,
+                        ctx["user_id"],
+                        UUID(body.quote_id) if body.quote_id else None,
+                        UUID(body.sales_order_id) if body.sales_order_id else None,
+                        body.idempotency_key,
+                    )
+                except asyncpg.exceptions.UniqueViolationError:
+                    # FIX_P3_BRIDGE 2026-06-16 (b): lost the create race on the
+                    # idempotency_key (partial UNIQUE index V179). Re-fetch and
+                    # return the row the winning txn inserted (money-in stays
+                    # single-recorded). The advisory lock above usually prevents
+                    # reaching here, but the index is the hard guarantee.
+                    winner = await conn.fetchrow(
+                        """
+                        SELECT id, deposit_number, amount, status
+                        FROM customer_deposits
+                        WHERE tenant_id = $1 AND idempotency_key = $2
+                        """,
+                        ctx["tenant_id"],
+                        body.idempotency_key,
+                    )
+                    if winner:
+                        return {
+                            "success": True,
+                            "message": (
+                                f"Customer deposit {winner['deposit_number']} "
+                                "already exists (idempotent)"
+                            ),
+                            "data": {
+                                "id": str(winner["id"]),
+                                "deposit_number": winner["deposit_number"],
+                                "amount": int(winner["amount"]),
+                                "status": winner["status"],
+                            },
+                        }
+                    raise
 
                 logger.info(f"Customer deposit created: {dep_id}, number={dep_number}")
 

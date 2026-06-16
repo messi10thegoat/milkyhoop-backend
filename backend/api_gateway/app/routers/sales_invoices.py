@@ -2858,6 +2858,57 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 )
 
             # ============================================================
+            # FIX_P3_BRIDGE 2026-06-16: void-cascade guard for applied deposits
+            # ------------------------------------------------------------
+            # An applied customer deposit (Dr Uang Muka / Cr Piutang) settles
+            # this invoice's AR. Voiding the invoice while that application is
+            # still ACTIVE (non-reversed) would strand the application against a
+            # gone obligation (symmetric-state lesson #23). Block the void and
+            # point the user at the P1 un-apply remediation. Reversed
+            # applications (status='reversed') do NOT block.
+            active_deposit_apps = await conn.fetch(
+                """
+                SELECT cda.id AS application_id,
+                       cda.deposit_id,
+                       cda.amount_applied,
+                       cd.deposit_number
+                FROM customer_deposit_applications cda
+                LEFT JOIN customer_deposits cd ON cd.id = cda.deposit_id
+                WHERE cda.invoice_id = $1
+                  AND cda.tenant_id = $2
+                  AND cda.status = 'active'
+                  AND cda.reversed_by_id IS NULL
+                ORDER BY cda.created_at
+                """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+            if active_deposit_apps:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": (
+                            "Tidak bisa void: ada Uang Muka teralokasi ke faktur "
+                            "ini. Un-apply deposit dulu."
+                        ),
+                        "code": "DEPOSIT_APPLIED",
+                        "applications": [
+                            {
+                                "application_id": str(a["application_id"]),
+                                "deposit_id": str(a["deposit_id"]),
+                                "deposit_number": a["deposit_number"],
+                                "amount_applied": int(a["amount_applied"] or 0),
+                                "unapply_url": (
+                                    f"/api/customer-deposits/{a['deposit_id']}"
+                                    f"/applications/{a['application_id']}/reverse"
+                                ),
+                            }
+                            for a in active_deposit_apps
+                        ],
+                    },
+                )
+
+            # ============================================================
             # Fulfillment pre-checks (3-Event Revenue Recognition)
             # ============================================================
             fulfillments = await conn.fetch(
@@ -3380,6 +3431,147 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
     except Exception as e:
         logger.error(f"Error voiding invoice {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void invoice")
+
+
+# =============================================================================
+# FIX_P3_BRIDGE 2026-06-16: applicable customer deposits for an invoice
+# =============================================================================
+@router.get("/{invoice_id}/applicable-deposits")
+async def get_applicable_deposits(request: Request, invoice_id: UUID):
+    """List customer deposits with available balance applicable to this invoice.
+
+    P3 read endpoint. ZERO new accounting: the apply itself stays the existing
+    P1 POST /api/customer-deposits/{id}/apply (separate, idempotent txn).
+
+    available       : journal-derived (Law 1/16) net movement on
+                      CUSTOMER_DEPOSIT_LIABILITY per deposit, is_effective only
+                      (NOT the amount/amount_applied cache columns).
+    invoice_remaining : journal-derived via compute_ar_outstanding().
+    suggested_amount  : min(available, invoice_remaining).
+    match_type        : 'spine' if the deposit's quote_id/sales_order_id matches
+                        the invoice's quote_id/sales_order_id, else 'customer'.
+                        Spine matches are sorted first (auto-suggest order).
+    """
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            invoice = await conn.fetchrow(
+                """
+                SELECT id, customer_id, customer_name, quote_id, sales_order_id, status
+                FROM sales_invoices
+                WHERE id = $1 AND tenant_id = $2
+                """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+            if not invoice:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+            if invoice["customer_id"] is None:
+                return {"items": [], "total": 0}
+
+            # invoice_remaining — journal-derived. Use the P1 deposit-aware
+            # helper get_invoice_remaining_from_journal (counts INVOICE debit
+            # minus receive-payment, credit-note AND DEPOSIT_APPLICATION credits,
+            # is_effective only). compute_ar_outstanding() is NOT used here
+            # because it does not yet recognise customer_deposit_applications as
+            # AR settlements, so it would over-state remaining after a partial
+            # deposit apply (latent in the DB fn; documented as a P3 finding).
+            from .customer_deposits import get_invoice_remaining_from_journal
+
+            invoice_remaining = await get_invoice_remaining_from_journal(
+                conn, ctx["tenant_id"], invoice_id
+            )
+            invoice_remaining = int(invoice_remaining or 0)
+
+            # CUSTOMER_DEPOSIT_LIABILITY CoA — net-movement = available.
+            deposit_account_id = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
+            )
+
+            # Posted, non-void deposits for this customer, with journal-derived
+            # available > 0. Net movement (Cr - Dr) on the liability account,
+            # is_effective journals only => correct after un-apply/refund by
+            # construction. Multiple deposits per order are each listed with
+            # their own available (the sum is therefore correct).
+            rows = await conn.fetch(
+                """
+                SELECT
+                    cd.id            AS deposit_id,
+                    cd.deposit_number,
+                    cd.customer_id,
+                    cd.deposit_date,
+                    cd.quote_id,
+                    cd.sales_order_id,
+                    COALESCE((
+                        SELECT SUM(jl.credit) - SUM(jl.debit)
+                        FROM journal_lines jl
+                        JOIN journal_entries je ON je.id = jl.journal_id
+                        WHERE je.tenant_id = cd.tenant_id
+                          AND je.source_id = cd.id
+                          AND jl.account_id = $3
+                          AND is_effective_journal(je.id)
+                    ), 0) AS available
+                FROM customer_deposits cd
+                WHERE cd.tenant_id = $1
+                  AND cd.customer_id = $2
+                  AND cd.status NOT IN ('draft', 'void', 'voided')
+                """,
+                ctx["tenant_id"],
+                invoice["customer_id"],
+                deposit_account_id,
+            )
+
+            inv_quote_id = invoice["quote_id"]
+            inv_so_id = invoice["sales_order_id"]
+            items = []
+            for r in rows:
+                available = int(r["available"] or 0)
+                if available <= 0:
+                    continue
+                is_spine = (
+                    inv_quote_id is not None and r["quote_id"] == inv_quote_id
+                ) or (inv_so_id is not None and r["sales_order_id"] == inv_so_id)
+                items.append(
+                    {
+                        "deposit_id": str(r["deposit_id"]),
+                        "deposit_number": r["deposit_number"],
+                        "available": available,
+                        "suggested_amount": min(available, invoice_remaining),
+                        "match_type": "spine" if is_spine else "customer",
+                        "quote_id": str(r["quote_id"]) if r["quote_id"] else None,
+                        "sales_order_id": (
+                            str(r["sales_order_id"]) if r["sales_order_id"] else None
+                        ),
+                        "customer_id": r["customer_id"],
+                        "deposit_date": (
+                            r["deposit_date"].isoformat() if r["deposit_date"] else None
+                        ),
+                    }
+                )
+
+            # Spine matches first, then by deposit_date (oldest first).
+            items.sort(
+                key=lambda x: (
+                    0 if x["match_type"] == "spine" else 1,
+                    x["deposit_date"] or "",
+                )
+            )
+
+            return {
+                "items": items,
+                "total": len(items),
+                "invoice_remaining": invoice_remaining,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing applicable deposits: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to list applicable deposits"
+        )
 
 
 # =============================================================================
