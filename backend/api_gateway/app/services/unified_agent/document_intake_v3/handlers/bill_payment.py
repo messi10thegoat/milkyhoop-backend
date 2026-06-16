@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Optional
 from ...document_action_resolver import DocumentActionResolver, ResolvedAction
 from ...document_matcher import DocumentMatcher, SmartMatchResult
 from ..primitives.arap_matcher import ARAPMatcher
+from ..signals import classify_doc_number, extract_doc_numbers
 from ..transfer_types import TransferType
 from .base import ForcedOverride, HandlerMatchResult, HandlerResolveError
 
@@ -38,6 +39,23 @@ class BillPaymentHandler:
             amt = Decimal(str(amount))
         except Exception:
             return HandlerMatchResult(success=False, reasons=["bad_amount"])
+
+        # FIX_DOCNUM_MATCH: explicit bill number in caption → match THAT bill
+        # directly (partial amount allowed). Falls back to amount-based matching.
+        for _ref in extract_doc_numbers(caption or ""):
+            if classify_doc_number(_ref) != "ap":
+                continue
+            by_num = await self._arap.match_ap_by_number(_ref)
+            if by_num:
+                best = by_num[0]
+                best.confidence = 0.9
+                best.reasons = ["explicit_bill_reference", _ref]
+                return HandlerMatchResult(
+                    success=True,
+                    candidates=by_num,
+                    best=best,
+                    reasons=["ap_match_by_number", _ref],
+                )
 
         amt_min = amt * Decimal("0.98")
         amt_max = amt * Decimal("1.02")

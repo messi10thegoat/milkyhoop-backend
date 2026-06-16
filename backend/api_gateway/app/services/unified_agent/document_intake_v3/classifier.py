@@ -9,7 +9,12 @@ import re
 from .primitives.arap_matcher import ARAPMatcher
 from .primitives.bank_pair_detector import BankPairDetector
 from .primitives.employee_matcher import EmployeeMatcher
-from .signals import ClassificationResult, Signal
+from .signals import (
+    ClassificationResult,
+    Signal,
+    classify_doc_number,
+    extract_doc_numbers,
+)
 from .transfer_types import COMPATIBLE_PAIRS, TransferType
 
 logger = logging.getLogger(__name__)
@@ -257,6 +262,7 @@ class TransferClassifier:
             self._sig_customer_match(counterparty),
             self._sig_vendor_match(counterparty),
             self._sig_arap_amount(amount, counterparty),
+            self._sig_caption_doc_number(caption),
         ]
         try:
             results = await asyncio.wait_for(
@@ -462,4 +468,51 @@ class TransferClassifier:
                     targets={TransferType.BILL_PAYMENT: 0.6},
                 )
             )
+        return out or None
+
+    async def _sig_caption_doc_number(self, caption: str) -> list[Signal] | None:
+        """FIX_DOCNUM_MATCH: an explicit invoice/bill number in the caption that
+        resolves to an OPEN document is the strongest possible signal — it fixes
+        both the transfer type AND the direction (INV→receivable→in, PB→payable→
+        out), so the user usually won't even see a direction pill. Caption-only by
+        design → parity tests (caption="") never fire this → V2/V3 parity preserved.
+        """
+        nums = extract_doc_numbers(caption or "")
+        if not nums:
+            return None
+        out: list[Signal] = []
+        for n in nums:
+            kind = classify_doc_number(n)
+            if kind == "ar":
+                hits = await self._arap.match_ar_by_number(n)
+                if hits:
+                    out.append(
+                        Signal(
+                            source="db",
+                            name="caption_invoice_number_AR",
+                            strength=0.9,
+                            targets={TransferType.RECEIVE_PAYMENT: 0.9},
+                            excludes={
+                                TransferType.BILL_PAYMENT: 0.6,
+                                TransferType.INTERNAL_TRANSFER: 0.6,
+                                TransferType.PAYROLL: 0.6,
+                            },
+                        )
+                    )
+            elif kind == "ap":
+                hits = await self._arap.match_ap_by_number(n)
+                if hits:
+                    out.append(
+                        Signal(
+                            source="db",
+                            name="caption_bill_number_AP",
+                            strength=0.9,
+                            targets={TransferType.BILL_PAYMENT: 0.9},
+                            excludes={
+                                TransferType.RECEIVE_PAYMENT: 0.6,
+                                TransferType.INTERNAL_TRANSFER: 0.6,
+                                TransferType.PAYROLL: 0.6,
+                            },
+                        )
+                    )
         return out or None

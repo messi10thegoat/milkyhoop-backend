@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Optional
 from ...document_action_resolver import DocumentActionResolver, ResolvedAction
 from ...document_matcher import DocumentMatcher, SmartMatchResult
 from ..primitives.arap_matcher import ARAPMatcher
+from ..signals import classify_doc_number, extract_doc_numbers
 from ..transfer_types import TransferType
 from .base import ForcedOverride, HandlerMatchResult, HandlerResolveError
 
@@ -38,6 +39,24 @@ class ReceivePaymentHandler:
             amt = Decimal(str(amount))
         except Exception:
             return HandlerMatchResult(success=False, reasons=["bad_amount"])
+
+        # FIX_DOCNUM_MATCH: explicit invoice number in caption → match THAT invoice
+        # directly (partial amount allowed, e.g. a down payment / "uang panjar").
+        # Falls back to amount-based matching below when no usable reference.
+        for _ref in extract_doc_numbers(caption or ""):
+            if classify_doc_number(_ref) != "ar":
+                continue
+            by_num = await self._arap.match_ar_by_number(_ref)
+            if by_num:
+                best = by_num[0]
+                best.confidence = 0.9
+                best.reasons = ["explicit_invoice_reference", _ref]
+                return HandlerMatchResult(
+                    success=True,
+                    candidates=by_num,
+                    best=best,
+                    reasons=["ar_match_by_number", _ref],
+                )
 
         amt_min = amt * Decimal("0.98")
         amt_max = amt * Decimal("1.02")

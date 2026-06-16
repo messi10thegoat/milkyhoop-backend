@@ -23,3 +23,11 @@ class ARAPMatcher:
         self, amount_min, amount_max, counterparty: str
     ) -> list[MatchCandidate]:
         return await self._inner.match_ap(amount_min, amount_max, counterparty)
+
+    async def match_ar_by_number(self, number: str) -> list[MatchCandidate]:
+        # FIX_DOCNUM_MATCH: open AR invoice by exact number (partial amount ok)
+        return await self._inner.match_ar_by_number(number)
+
+    async def match_ap_by_number(self, number: str) -> list[MatchCandidate]:
+        # FIX_DOCNUM_MATCH: open AP bill by exact number (partial amount ok)
+        return await self._inner.match_ap_by_number(number)

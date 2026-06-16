@@ -7,6 +7,7 @@ to pick a winning type.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -14,6 +15,37 @@ from .transfer_types import TransferType
 
 
 SignalSource = Literal["ocr", "caption", "db", "forced"]
+
+
+# FIX_DOCNUM_MATCH: explicit document numbers a user may type in a caption.
+# INV-YYMM-NNNN = sales invoice (AR), PB-YYMM-NNNN = bill (AP). Used to resolve
+# transfer type/direction deterministically AND to match the specific document
+# even when the paid amount is partial (e.g. a down payment / "uang panjar").
+_DOC_NUM_RE = re.compile(r"\b(INV|PB)-\d{3,6}-\d{2,6}\b", re.IGNORECASE)
+
+
+def extract_doc_numbers(text: str) -> list[str]:
+    """Return unique INV-/PB- document numbers found in free text (upper-cased)."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _DOC_NUM_RE.finditer(text):
+        n = m.group(0).upper()
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def classify_doc_number(number: str) -> str:
+    """'ar' for sales-invoice numbers, 'ap' for bill numbers, else 'unknown'."""
+    u = (number or "").upper()
+    if u.startswith("INV-"):
+        return "ar"
+    if u.startswith("PB-"):
+        return "ap"
+    return "unknown"
 
 
 @dataclass

@@ -458,6 +458,19 @@ class DocumentMatcher:
         """
         return await self._find_open_payables(amount_min, amount_max, counterparty)
 
+    async def match_ar_by_number(self, number: str):
+        """FIX_DOCNUM_MATCH: find an open AR invoice by its exact number.
+
+        Used when the user explicitly names an invoice (e.g. "INV-2606-0008")
+        in the caption — the paid amount may be partial, so we DON'T filter by
+        amount. Journal-derived via compute_ar_outstanding (Iron Law / ARAP).
+        """
+        return await self._find_receivable_by_number(number)
+
+    async def match_ap_by_number(self, number: str):
+        """FIX_DOCNUM_MATCH: find an open AP bill by its exact number."""
+        return await self._find_payable_by_number(number)
+
     def score_match(
         self,
         candidate,
@@ -571,6 +584,70 @@ class DocumentMatcher:
                 else:
                     return []
 
+        return [
+            MatchCandidate(
+                source_type="bill",
+                source_id=str(row["bill_id"]),
+                label=row["bill_number"] or "",
+                counterparty=row["vendor_name"] or "",
+                amount=Decimal(str(row["bill_total"] or 0)),
+                outstanding=Decimal(str(row["outstanding"] or 0)),
+                due_date=row["due_date"],
+            )
+            for row in rows
+        ]
+
+    async def _find_receivable_by_number(self, number: str) -> List[MatchCandidate]:
+        """FIX_DOCNUM_MATCH: open AR invoice by exact number (no amount filter)."""
+        if not number or not number.strip():
+            return []
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
+                rows = await conn.fetch(
+                    """
+                    SELECT invoice_id, invoice_number, customer_name,
+                           invoice_total, outstanding, due_date
+                    FROM compute_ar_outstanding($1)
+                    WHERE outstanding > 0 AND invoice_number ILIKE $2
+                    ORDER BY outstanding DESC
+                    LIMIT 5
+                    """,
+                    self.tenant_id,
+                    number.strip(),
+                )
+        return [
+            MatchCandidate(
+                source_type="sales_invoice",
+                source_id=str(row["invoice_id"]),
+                label=row["invoice_number"] or "",
+                counterparty=row["customer_name"] or "",
+                amount=Decimal(str(row["invoice_total"] or 0)),
+                outstanding=Decimal(str(row["outstanding"] or 0)),
+                due_date=row["due_date"],
+            )
+            for row in rows
+        ]
+
+    async def _find_payable_by_number(self, number: str) -> List[MatchCandidate]:
+        """FIX_DOCNUM_MATCH: open AP bill by exact number (no amount filter)."""
+        if not number or not number.strip():
+            return []
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
+                rows = await conn.fetch(
+                    """
+                    SELECT bill_id, bill_number, vendor_name,
+                           bill_total, outstanding, due_date
+                    FROM compute_ap_outstanding($1)
+                    WHERE outstanding > 0 AND bill_number ILIKE $2
+                    ORDER BY outstanding DESC
+                    LIMIT 5
+                    """,
+                    self.tenant_id,
+                    number.strip(),
+                )
         return [
             MatchCandidate(
                 source_type="bill",
