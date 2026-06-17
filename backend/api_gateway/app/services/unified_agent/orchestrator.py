@@ -10599,6 +10599,40 @@ class UnifiedAgent:
                 )
         # ═══ END LLM ROUTER PRIMARY PATH ═══
 
+        # FIX_CRUD_NO_AGENTLOOP backstop (2026-06-17): a pipeline-enabled CRUD must
+        # NEVER reach the agent loop. Its propose_direct path skips _enrich_bill, so a
+        # purchase invoice pulls the SALES price (Iron Law 16) and bypasses the
+        # price-missing guard. The in-router guard above only fires when the router
+        # returned an extraction; when it ABSTAINS (None) we land here. Catch the
+        # code-classifier CRUD intent and route it to the deterministic pipeline.
+        if (
+            extraction is not None
+            and isinstance(getattr(extraction, "intent", None), str)
+            and extraction.intent.startswith(
+                ("create_", "update_", "delete_", "void_", "reverse_")
+            )
+        ):
+            from .entity_extractor import is_pipeline_enabled as _bp_is_pipe
+
+            if _bp_is_pipe(extraction.intent):
+                try:
+                    logger.warning(
+                        "[FIX_CRUD_NO_AGENTLOOP] backstop: routing CRUD %s to pipeline (pre agent loop)",
+                        extraction.intent,
+                    )
+                    return await self._handle_pipeline(
+                        user_text=user_text,
+                        context=context,
+                        extraction=extraction,
+                        conversation_history=conversation_history,
+                        tool_executor=tool_executor,
+                        event_callback=event_callback,
+                    )
+                except Exception as _bp_err:
+                    logger.warning(
+                        "[FIX_CRUD_NO_AGENTLOOP] backstop pipeline failed: %s", _bp_err
+                    )
+
         # Phase 2B-1.5: resolve userguide RAG flag for this tenant (cheap async lookup).
         userguide_enabled = False
         try:
