@@ -58,6 +58,25 @@ class ReceivePaymentHandler:
                     reasons=["ar_match_by_number", _ref],
                 )
 
+        # FIX_CAPTION_PARTY_PRIORITY (2026-06-18): if the caption explicitly names
+        # the payer ("dari Marwa Pahude"), match THAT customer's open invoice FIRST,
+        # before amount matching. A partial payment never equals an invoice total, so
+        # the +/-2% amount window can coincidentally hit a DIFFERENT customer's invoice
+        # and book under the wrong customer. The user told us who paid; honour it.
+        _cust_pri = extract_party_name(caption or "", "in")
+        if _cust_pri:
+            _by_cust_pri = await self._arap.match_ar_by_customer(_cust_pri)
+            if _by_cust_pri:
+                _best = _by_cust_pri[0]
+                _best.confidence = 0.88
+                _best.reasons = ["caption_customer_priority", _cust_pri]
+                return HandlerMatchResult(
+                    success=True,
+                    candidates=_by_cust_pri,
+                    best=_best,
+                    reasons=["ar_match_by_customer", _cust_pri],
+                )
+
         amt_min = amt * Decimal("0.98")
         amt_max = amt * Decimal("1.02")
         candidates = await self._arap.match_ar(amt_min, amt_max, counterparty)

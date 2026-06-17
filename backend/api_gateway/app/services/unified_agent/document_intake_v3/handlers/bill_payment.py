@@ -57,6 +57,23 @@ class BillPaymentHandler:
                     reasons=["ap_match_by_number", _ref],
                 )
 
+        # FIX_CAPTION_PARTY_PRIORITY (2026-06-18): caption names the payee
+        # ("ke vendor NONENG") -> match THAT vendor's open bill FIRST, before amount
+        # (a coincidental +/-2% amount hit must not override an explicit vendor name).
+        _vend_pri = extract_party_name(caption or "", "out")
+        if _vend_pri:
+            _by_vend_pri = await self._arap.match_ap_by_vendor(_vend_pri)
+            if _by_vend_pri:
+                _best = _by_vend_pri[0]
+                _best.confidence = 0.88
+                _best.reasons = ["caption_vendor_priority", _vend_pri]
+                return HandlerMatchResult(
+                    success=True,
+                    candidates=_by_vend_pri,
+                    best=_best,
+                    reasons=["ap_match_by_vendor", _vend_pri],
+                )
+
         amt_min = amt * Decimal("0.98")
         amt_max = amt * Decimal("1.02")
         candidates = await self._arap.match_ap(amt_min, amt_max, counterparty)
