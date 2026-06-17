@@ -1010,81 +1010,30 @@ class BillsService:
 
                         quantity = Decimal(str(item["quantity"]))
                         unit_cost = Decimal(str(item["unit_price"]))
-                        total_cost = quantity * unit_cost
 
-                        # Get current balance
-                        balance_row = await conn.fetchrow(
-                            """
-                            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                            FROM inventory_ledger
-                            WHERE tenant_id = $1 AND product_id = $2
-                            """,
-                            tenant_id,
-                            product_id,
-                        )
-                        current_balance = (
-                            Decimal(str(balance_row["balance"]))
-                            if balance_row
-                            else Decimal("0")
-                        )
-                        new_balance = current_balance + quantity
+                        # WAC + inventory_ledger inbound delegated to the
+                        # CANONICAL helper (milkyhoop-inventory Rule 3, L09
+                        # convergence). The helper computes net-on-hand WAC and
+                        # inserts the ledger row; we pass journal_id for the
+                        # dual-ledger link. legacy create_bill has no batches.
+                        from .inventory_helpers import record_inventory_inbound
 
-                        # Calculate weighted average cost
-                        avg_cost_row = await conn.fetchrow(
-                            """
-                            SELECT
-                                COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
-                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                            FROM inventory_ledger
-                            WHERE tenant_id = $1 AND product_id = $2
-                            """,
-                            tenant_id,
-                            product_id,
-                        )
-
-                        if avg_cost_row and avg_cost_row["total_qty"] > 0:
-                            old_value = Decimal(str(avg_cost_row["total_value"]))
-                            old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                            new_avg_cost = (old_value + total_cost) / (
-                                old_qty + quantity
-                            )
-                        else:
-                            new_avg_cost = unit_cost
-
-                        # Insert inventory_ledger entry
-                        await conn.execute(
-                            """
-                            INSERT INTO inventory_ledger (
-                                tenant_id, product_id, product_code, product_name,
-                                movement_type, movement_date, source_type, source_id, source_number,
-                                quantity_in, quantity_out, quantity_balance,
-                                unit_cost, total_cost, average_cost,
-                                warehouse_id, journal_id, created_by, notes, batch_id
-                            ) VALUES (
-                                $1, $2, $3, $4,
-                                'PURCHASE', $5, 'BILL', $6, $7,
-                                $8, 0, $9,
-                                $10, $11, $12,
-                                $13, $14, $15, $16, $17
-                            )
-                            """,
-                            tenant_id,
-                            product_id,
-                            product.get("item_code"),
-                            product.get("nama_produk"),
-                            issue_date,
-                            bill_id,
-                            invoice_number,
-                            quantity,
-                            new_balance,
-                            unit_cost,
-                            total_cost,
-                            new_avg_cost,
-                            warehouse_id,
-                            journal_id,
-                            user_id,
-                            f"Purchase from {vendor_name}",
-                            None,  # batch_id - legacy create_bill doesn't support batches
+                        await record_inventory_inbound(
+                            conn,
+                            tenant_id=tenant_id,
+                            product_id=product_id,
+                            product_code=product.get("item_code"),
+                            product_name=product.get("nama_produk"),
+                            warehouse_id=warehouse_id,
+                            quantity=quantity,
+                            unit_cost=unit_cost,
+                            source_type="BILL",
+                            source_id=bill_id,
+                            source_number=invoice_number,
+                            user_id=user_id,
+                            notes=f"Purchase from {vendor_name}",
+                            movement_date=issue_date,
+                            journal_id=journal_id,
                         )
 
                         logger.info(
@@ -3082,45 +3031,10 @@ class BillsService:
                             quantity = Decimal(str(inv_item["quantity"]))
                             unit_cost = Decimal(str(inv_item["unit_price"]))
                             total_cost = quantity * unit_cost
-
-                            # Get current balance for this product
-                            balance_row = await conn.fetchrow(
-                                """
-                                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                                FROM inventory_ledger
-                                WHERE tenant_id = $1 AND product_id = $2
-                                """,
-                                tenant_id,
-                                product_id,
-                            )
-                            current_balance = (
-                                Decimal(str(balance_row["balance"]))
-                                if balance_row
-                                else Decimal("0")
-                            )
-                            new_balance = current_balance + quantity
-
-                            # Calculate weighted average cost
-                            avg_cost_row = await conn.fetchrow(
-                                """
-                                SELECT
-                                    COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
-                                    COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                                FROM inventory_ledger
-                                WHERE tenant_id = $1 AND product_id = $2
-                                """,
-                                tenant_id,
-                                product_id,
-                            )
-
-                            if avg_cost_row and avg_cost_row["total_qty"] > 0:
-                                old_value = Decimal(str(avg_cost_row["total_value"]))
-                                old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                                new_avg_cost = (old_value + total_cost) / (
-                                    old_qty + quantity
-                                )
-                            else:
-                                new_avg_cost = unit_cost
+                            # WAC computed by record_inventory_inbound below
+                            # (CANONICAL source — milkyhoop-inventory Rule 3,
+                            # L09 convergence). Batch resolution runs first so
+                            # the resolved batch_id is passed to the helper.
 
                             # --- Batch resolution (Tahap 1.2) ---
                             batch_id = None
@@ -3190,40 +3104,26 @@ class BillsService:
                                     f"Batch created/updated: {inv_item['batch_no']} for product {product_id}, batch_id={batch_id}"
                                 )
 
-                            # Insert inventory_ledger entry
-                            await conn.execute(
-                                """
-                                INSERT INTO inventory_ledger (
-                                    tenant_id, product_id, product_code, product_name,
-                                    movement_type, movement_date, source_type, source_id, source_number,
-                                    quantity_in, quantity_out, quantity_balance,
-                                    unit_cost, total_cost, average_cost,
-                                    warehouse_id, journal_id, created_by, notes, batch_id
-                                ) VALUES (
-                                    $1, $2, $3, $4,
-                                    'PURCHASE', $5, 'BILL', $6, $7,
-                                    $8, 0, $9,
-                                    $10, $11, $12,
-                                    $13, $14, $15, $16, $17
-                                )
-                                """,
-                                tenant_id,
-                                product_id,
-                                inv_item.get("item_code"),
-                                inv_item.get("nama_produk"),
-                                issue_date,
-                                bill_id,
-                                invoice_number,
-                                quantity,
-                                new_balance,
-                                unit_cost,
-                                total_cost,
-                                new_avg_cost,
-                                warehouse_id,
-                                journal_id,
-                                user_id,
-                                f"Purchase from {vendor_name}",
-                                batch_id,
+                            # inventory_ledger inbound + WAC via CANONICAL helper
+                            from .inventory_helpers import record_inventory_inbound
+
+                            await record_inventory_inbound(
+                                conn,
+                                tenant_id=tenant_id,
+                                product_id=product_id,
+                                product_code=inv_item.get("item_code"),
+                                product_name=inv_item.get("nama_produk"),
+                                warehouse_id=warehouse_id,
+                                quantity=quantity,
+                                unit_cost=unit_cost,
+                                source_type="BILL",
+                                source_id=bill_id,
+                                source_number=invoice_number,
+                                user_id=user_id,
+                                notes=f"Purchase from {vendor_name}",
+                                movement_date=issue_date,
+                                journal_id=journal_id,
+                                batch_id=batch_id,
                             )
 
                             logger.info(
@@ -3607,41 +3507,10 @@ class BillsService:
                     unit_cost_raw_3 = Decimal(str(item["unit_price"]))
                     total_cost = transaction_quantity_3 * unit_cost_raw_3
                     unit_cost = total_cost / quantity if quantity else unit_cost_raw_3
-
-                    balance_row = await conn.fetchrow(
-                        """
-                        SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                        FROM inventory_ledger
-                        WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                        tenant_id,
-                        product_id,
-                    )
-                    current_balance = (
-                        Decimal(str(balance_row["balance"]))
-                        if balance_row
-                        else Decimal("0")
-                    )
-                    new_balance = current_balance + quantity
-
-                    avg_cost_row = await conn.fetchrow(
-                        """
-                        SELECT
-                            COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
-                            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                        FROM inventory_ledger
-                        WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                        tenant_id,
-                        product_id,
-                    )
-
-                    if avg_cost_row and avg_cost_row["total_qty"] > 0:
-                        old_value = Decimal(str(avg_cost_row["total_value"]))
-                        old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                        new_avg_cost = (old_value + total_cost) / (old_qty + quantity)
-                    else:
-                        new_avg_cost = unit_cost
+                    # WAC + inventory_ledger inbound delegated to CANONICAL
+                    # helper below (milkyhoop-inventory Rule 3, L09 convergence).
+                    # quantity/unit_cost are already base-unit converted; batch
+                    # resolution runs first so batch_id is passed to the helper.
 
                     # --- Batch resolution (Tahap 1.2) ---
                     batch_id = None
@@ -3714,44 +3583,28 @@ class BillsService:
                             f"Batch created/updated: {item['batch_no']} for product {product_id}, batch_id={batch_id}"
                         )
 
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, created_by, notes, batch_id,
-                            transaction_unit, transaction_quantity, conversion_factor
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            'PURCHASE', $5, 'BILL', $6, $7,
-                            $8, 0, $9,
-                            $10, $11, $12,
-                            $13, $14, $15, $16, $17,
-                            $18, $19, $20
-                        )
-                        """,
-                        tenant_id,
-                        product_id,
-                        item.get("item_code"),
-                        item.get("nama_produk"),
-                        bill["issue_date"],
-                        bill_id,
-                        bill["invoice_number"],
-                        quantity,
-                        new_balance,
-                        unit_cost,
-                        total_cost,
-                        new_avg_cost,
-                        warehouse_id,
-                        journal_id,
-                        user_id,
-                        f"Purchase from {bill['vendor_name']}",
-                        batch_id,
-                        transaction_unit_3,
-                        transaction_quantity_3,
-                        conversion_factor_3,
+                    from .inventory_helpers import record_inventory_inbound
+
+                    await record_inventory_inbound(
+                        conn,
+                        tenant_id=tenant_id,
+                        product_id=product_id,
+                        product_code=item.get("item_code"),
+                        product_name=item.get("nama_produk"),
+                        warehouse_id=warehouse_id,
+                        quantity=quantity,
+                        unit_cost=unit_cost,
+                        source_type="BILL",
+                        source_id=bill_id,
+                        source_number=bill["invoice_number"],
+                        user_id=user_id,
+                        notes=f"Purchase from {bill['vendor_name']}",
+                        movement_date=bill["issue_date"],
+                        journal_id=journal_id,
+                        batch_id=batch_id,
+                        transaction_unit=transaction_unit_3,
+                        transaction_quantity=transaction_quantity_3,
+                        conversion_factor=conversion_factor_3,
                     )
 
                     logger.info(

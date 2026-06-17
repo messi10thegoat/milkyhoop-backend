@@ -285,11 +285,33 @@ async def record_inventory_inbound(
     user_id: Optional[UUID],
     notes: str,
     movement_date=None,
+    journal_id: Optional[UUID] = None,
+    batch_id: Optional[UUID] = None,
+    movement_type: str = "PURCHASE",
+    storage_location_id: Optional[UUID] = None,
+    transaction_unit: Optional[str] = None,
+    transaction_quantity=None,
+    conversion_factor=None,
 ) -> dict:
     """
     Standard inbound flow: calculate new WAC, insert inventory_ledger.
     DB trigger auto-updates warehouse_stock.
-    GL journal is NOT created here — caller (bills_service) handles GL.
+
+    CANONICAL WAC source: this is the ONLY place inbound WAC is computed
+    (milkyhoop-inventory Rule 3, L09 convergence). bills_service create_bill /
+    create_bill_v2 / post_bill all delegate here.
+
+    Optional columns (passed by call sites):
+    - journal_id: link the ledger row to its GL journal (dual-ledger sync).
+    - batch_id: batch tracking linkage (resolved by caller before delegating).
+    - movement_type: ledger movement_type label (default 'PURCHASE'; stock
+      adjustments pass 'ADJUSTMENT', production FG receipt 'PRODUCTION_OUTPUT').
+    - storage_location_id: sub-location linkage (stock adjustments).
+    - transaction_unit / transaction_quantity / conversion_factor: unit-of-
+      measure conversion metadata (post_bill base-unit conversion).
+
+    `quantity` MUST be the base-unit quantity and `unit_cost` the per-base-unit
+    cost; callers that do UoM conversion convert BEFORE calling.
 
     Returns {"ledger_id": uuid, "new_average_cost": Decimal}.
     """
@@ -314,10 +336,18 @@ async def record_inventory_inbound(
     current_balance = Decimal(str(balance_row["balance"]))
     new_balance = current_balance + quantity_dec
 
+    # WAC numerator and denominator MUST both be NET on-hand (deplete on
+    # outbound). Bug fixed (golden-apparel Kain inflation): numerator used the
+    # gross SUM(quantity_in*unit_cost) which never depletes, while the
+    # denominator was net SUM(quantity_in)-SUM(quantity_out). With partial
+    # consumption before a restock, the un-depleted numerator inflated WAC.
+    # Both legs must subtract the outbound value/qty so WAC reflects only stock
+    # still on hand. milkyhoop-inventory Rule 3; Iron Law 25 (Decimal only).
     avg_cost_row = await conn.fetchrow(
         """
         SELECT
-            COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
+            COALESCE(SUM(quantity_in * unit_cost)
+                     - SUM(quantity_out * unit_cost), 0) as net_value,
             COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
         FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2
         """,
@@ -325,15 +355,27 @@ async def record_inventory_inbound(
         product_id,
     )
 
-    if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
-        old_value = Decimal(str(avg_cost_row["total_value"]))
-        old_qty = Decimal(str(avg_cost_row["total_qty"]))
+    old_qty = Decimal(str(avg_cost_row["total_qty"])) if avg_cost_row else Decimal("0")
+    old_value = Decimal(str(avg_cost_row["net_value"])) if avg_cost_row else Decimal("0")
+    # Division-by-zero guard (milkyhoop-inventory Rule 3 inv #5): when the
+    # post-inbound on-hand quantity is zero, fall back to the new unit cost.
+    if (old_qty + quantity_dec) == 0:
+        new_avg_cost = unit_cost_dec
+    elif old_qty > 0:
         new_avg_cost = (old_value + total_cost) / (old_qty + quantity_dec)
     else:
+        # No (or negative) prior on-hand: prior value is unreliable as a WAC
+        # base, anchor to the incoming unit cost (matches legacy zero-stock).
         new_avg_cost = unit_cost_dec
 
     # Insert inventory_ledger
     ledger_id = uuid4()
+    txn_qty_dec = (
+        Decimal(str(transaction_quantity)) if transaction_quantity is not None else None
+    )
+    conv_factor_dec = (
+        Decimal(str(conversion_factor)) if conversion_factor is not None else None
+    )
     await conn.execute(
         """
         INSERT INTO inventory_ledger (
@@ -341,13 +383,17 @@ async def record_inventory_inbound(
             movement_type, movement_date, source_type, source_id, source_number,
             quantity_in, quantity_out, quantity_balance,
             unit_cost, total_cost, average_cost,
-            warehouse_id, created_by, notes
+            warehouse_id, journal_id, created_by, notes, batch_id,
+            transaction_unit, transaction_quantity, conversion_factor,
+            storage_location_id
         ) VALUES (
             $1, $2, $3, $4, $5,
-            'PURCHASE', $6, $7, $8, $9,
+            $23, $6, $7, $8, $9,
             $10, 0, $11,
             $12, $13, $14,
-            $15, $16, $17
+            $15, $16, $17, $18, $19,
+            $20, $21, $22,
+            $24
         )
         """,
         ledger_id,
@@ -365,8 +411,15 @@ async def record_inventory_inbound(
         total_cost,
         new_avg_cost,
         warehouse_id,
+        journal_id,
         user_id,
         notes,
+        batch_id,
+        transaction_unit,
+        txn_qty_dec,
+        conv_factor_dec,
+        movement_type,
+        storage_location_id,
     )
 
     return {

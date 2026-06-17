@@ -2445,72 +2445,39 @@ async def report_output(
                         fg_journal_id,
                     )
 
-                    # inventory_ledger PRODUCTION_OUTPUT (FG inbound)
+                    # inventory_ledger PRODUCTION_OUTPUT (FG inbound).
+                    # WAC + ledger inbound delegated to the CANONICAL helper
+                    # (milkyhoop-inventory Rule 3, L09 convergence) — the helper
+                    # computes net-on-hand WAC (numerator AND denominator both
+                    # deplete on outbound) and inserts the ledger row, linking
+                    # journal_id for dual-ledger sync. FG inbound unit cost =
+                    # (material+labor+OH+subcontract)/qty computed above.
                     fg_warehouse = (
                         body.warehouse_id
                         or order["warehouse_id"]
                         or fg_product["default_warehouse_id"]
                     )
-                    current_bal_fg = await conn.fetchval(
-                        "SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id=$1 AND product_id=$2",
-                        ctx["tenant_id"],
-                        order["product_id"],
+                    from ..services.inventory_helpers import (
+                        record_inventory_inbound,
                     )
-                    new_bal_fg = Decimal(str(current_bal_fg)) + Decimal(
-                        str(body.good_quantity)
-                    )
-                    # WAC calc: ((old_value + new_value) / (old_qty + new_qty))
-                    wac_row = await conn.fetchrow(
-                        """
-                        SELECT COALESCE(SUM(quantity_in * unit_cost), 0) AS total_value,
-                               COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS total_qty
-                        FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                        ctx["tenant_id"],
-                        order["product_id"],
-                    )
-                    old_val = Decimal(str(wac_row["total_value"] or 0))
-                    old_qty = Decimal(str(wac_row["total_qty"] or 0))
-                    qty_in = Decimal(str(body.good_quantity))
-                    unit_cost_dec = Decimal(str(unit_cost))
-                    if old_qty + qty_in > 0:
-                        new_avg = (old_val + qty_in * unit_cost_dec) / (
-                            old_qty + qty_in
-                        )
-                    else:
-                        new_avg = unit_cost_dec
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            id, tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, created_by, notes, journal_id
-                        ) VALUES (
-                            gen_random_uuid(), $1, $2, $3, $4,
-                            'PRODUCTION_OUTPUT', $16, 'PRODUCTION_OUTPUT', $5, $6,
-                            $7, 0, $8,
-                            $9, $10, $11,
-                            $12, $13, $14, $15
-                        )
-                        """,
-                        ctx["tenant_id"],
-                        order["product_id"],
-                        fg_product["item_code"],
-                        fg_product["nama_produk"],
-                        order_id,
-                        order["order_number"],
-                        qty_in,
-                        new_bal_fg,
-                        unit_cost_dec,
-                        total_cost_dec,
-                        new_avg,
-                        fg_warehouse,
-                        ctx["user_id"],
-                        f"Penerimaan produksi {order['order_number']}",
-                        fg_journal_id,
-                        today_ro,
+
+                    await record_inventory_inbound(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        product_id=order["product_id"],
+                        product_code=fg_product["item_code"],
+                        product_name=fg_product["nama_produk"],
+                        warehouse_id=fg_warehouse,
+                        quantity=Decimal(str(body.good_quantity)),
+                        unit_cost=Decimal(str(unit_cost)),
+                        source_type="PRODUCTION_OUTPUT",
+                        source_id=order_id,
+                        source_number=order["order_number"],
+                        user_id=ctx["user_id"],
+                        notes=f"Penerimaan produksi {order['order_number']}",
+                        movement_date=today_ro,
+                        journal_id=fg_journal_id,
+                        movement_type="PRODUCTION_OUTPUT",
                     )
 
                     # Link journal to completion + WO

@@ -3093,6 +3093,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 )
                 journal_id = None
                 journal_note = None
+                created_by_uuid = None
 
                 if total_value == 0:
                     journal_note = (
@@ -3218,85 +3219,100 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         )
 
                 # --- Inventory Ledger (Inventory Rule 1: Dual Ledger Sync) ---
-                qty_in = adj_diff if adj_diff > 0 else Decimal("0")
-                qty_out = abs(adj_diff) if adj_diff < 0 else Decimal("0")
-
-                # Inventory Rule 3: WAC recalculation (identical to bills_service.py + inventory_helpers.py)
-                avg_cost_row = await conn.fetchrow(
-                    """
-                    SELECT
-                        COALESCE(SUM(quantity_in * unit_cost), 0) as total_value,
-                        COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                    FROM inventory_ledger
-                    WHERE tenant_id = $1 AND product_id = $2
-                """,
-                    ctx["tenant_id"],
-                    product_uuid,
-                )
-
-                if (
-                    adj_diff > 0
-                    and avg_cost_row
-                    and Decimal(str(avg_cost_row["total_qty"])) > 0
-                ):
-                    # Inbound: recalculate WAC
-                    old_value = Decimal(str(avg_cost_row["total_value"]))
-                    old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                    new_avg_cost = (old_value + (adjustment_qty * unit_cost)) / (
-                        old_qty + adjustment_qty
-                    )
-                elif avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
-                    # Outbound: WAC stays the same
-                    old_value = Decimal(str(avg_cost_row["total_value"]))
-                    old_qty = Decimal(str(avg_cost_row["total_qty"]))
-                    new_avg_cost = old_value / old_qty
-                else:
-                    new_avg_cost = unit_cost
-
-                adj_total_cost = (adjustment_qty * unit_cost).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-
                 # Resolve default warehouse for warehouse_stock trigger
                 warehouse_id = await conn.fetchval(
                     "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at ASC LIMIT 1",
                     ctx["tenant_id"],
                 )
 
-                await conn.execute(
-                    """
-                    INSERT INTO inventory_ledger (
-                        id, tenant_id, product_id, product_code, product_name,
-                        movement_type, movement_date,
-                        source_type, source_id, source_number,
-                        quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost,
-                        warehouse_id, journal_id, notes, created_at
-                    ) VALUES (
-                        gen_random_uuid(), $1, $2, $3, $4,
-                        'ADJUSTMENT', CURRENT_DATE,
-                        'STOCK_ADJUSTMENT', $5, $6,
-                        $7, $8, $9,
-                        $10, $11, $12,
-                        $13, $14, $15, NOW()
+                if adj_diff > 0:
+                    # INBOUND: WAC recompute + ledger insert delegated to the
+                    # CANONICAL helper (milkyhoop-inventory Rule 3, L09
+                    # convergence). Helper computes net-on-hand WAC (numerator
+                    # AND denominator both deplete on outbound) — fixes the
+                    # gross-numerator inflation bug — and inserts the ledger
+                    # row, linking journal_id for dual-ledger sync.
+                    from ..services.inventory_helpers import (
+                        record_inventory_inbound,
                     )
-                """,
-                    ctx["tenant_id"],
-                    product_uuid,
-                    item_code,
-                    item_name,
-                    product_uuid,
-                    f"QSA-{item_id[:8]}",
-                    qty_in,
-                    qty_out,
-                    new_stock,
-                    unit_cost,
-                    adj_total_cost,
-                    new_avg_cost,
-                    warehouse_id,
-                    journal_id,
-                    f"Penyesuaian stok: {reason}",
-                )
+
+                    await record_inventory_inbound(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        product_id=product_uuid,
+                        product_code=item_code,
+                        product_name=item_name,
+                        warehouse_id=warehouse_id,
+                        quantity=adjustment_qty,
+                        unit_cost=unit_cost,
+                        source_type="STOCK_ADJUSTMENT",
+                        source_id=product_uuid,
+                        source_number=f"QSA-{item_id[:8]}",
+                        user_id=created_by_uuid,
+                        notes=f"Penyesuaian stok: {reason}",
+                        journal_id=journal_id,
+                        movement_type="ADJUSTMENT",
+                    )
+                else:
+                    # OUTBOUND: WAC does NOT change (Rule 3). Snapshot current
+                    # WAC and insert the outbound ledger row inline.
+                    qty_out = abs(adj_diff)
+                    avg_cost_row = await conn.fetchrow(
+                        """
+                        SELECT
+                            COALESCE(SUM(quantity_in * unit_cost)
+                                     - SUM(quantity_out * unit_cost), 0) as net_value,
+                            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                        FROM inventory_ledger
+                        WHERE tenant_id = $1 AND product_id = $2
+                    """,
+                        ctx["tenant_id"],
+                        product_uuid,
+                    )
+                    if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
+                        new_avg_cost = Decimal(str(avg_cost_row["net_value"])) / Decimal(
+                            str(avg_cost_row["total_qty"])
+                        )
+                    else:
+                        new_avg_cost = unit_cost
+
+                    adj_total_cost = (qty_out * unit_cost).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                    await conn.execute(
+                        """
+                        INSERT INTO inventory_ledger (
+                            id, tenant_id, product_id, product_code, product_name,
+                            movement_type, movement_date,
+                            source_type, source_id, source_number,
+                            quantity_in, quantity_out, quantity_balance,
+                            unit_cost, total_cost, average_cost,
+                            warehouse_id, journal_id, notes, created_at
+                        ) VALUES (
+                            gen_random_uuid(), $1, $2, $3, $4,
+                            'ADJUSTMENT', CURRENT_DATE,
+                            'STOCK_ADJUSTMENT', $5, $6,
+                            0, $7, $8,
+                            $9, $10, $11,
+                            $12, $13, $14, NOW()
+                        )
+                    """,
+                        ctx["tenant_id"],
+                        product_uuid,
+                        item_code,
+                        item_name,
+                        product_uuid,
+                        f"QSA-{item_id[:8]}",
+                        qty_out,
+                        new_stock,
+                        unit_cost,
+                        adj_total_cost,
+                        new_avg_cost,
+                        warehouse_id,
+                        journal_id,
+                        f"Penyesuaian stok: {reason}",
+                    )
 
                 # --- Audit trail ---
                 reference_number = body.get(
