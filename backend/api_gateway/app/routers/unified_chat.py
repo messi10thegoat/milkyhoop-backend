@@ -2921,6 +2921,75 @@ Aturan:
                     if _ocr_text.startswith("```"):
                         _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
                     _ocr_data = _ocr_json.loads(_ocr_text)
+                    # FIX_TRANSFER_NOMINAL (2026-06-18): a bukti transfer shows BOTH
+                    # the nominal sent to the destination ("Kirim Uang"/"Nominal" =
+                    # the amount WE receive / the obligation settled) AND a larger
+                    # total debited from the sender ("Total Bayar"/"Total Transaksi"
+                    # = nominal + biaya admin). gpt-4o-mini non-deterministically puts
+                    # the TOTAL into total_amount (the admin fee is the sender's cost,
+                    # never ours) -> AR/AP settled by the wrong amount. Deterministically
+                    # prefer the labeled NOMINAL from the OCR text; only ever corrects
+                    # DOWN, and never on invoices (which have no nominal/kirim label).
+                    try:
+                        if _ocr_data.get("doc_type") in (
+                            "bank_transfer",
+                            "qris",
+                            "merchant_payment",
+                        ) and _ocr_data.get("total_amount"):
+                            import re as _re_amt
+
+                            _txt_amt = str(_ocr_data.get("extracted_text") or "")
+                            _cur_total = float(_ocr_data.get("total_amount") or 0)
+
+                            def _parse_idr(_s):
+                                _d = _re_amt.sub(r"[^\d]", "", _s.split(",")[0])
+                                return int(_d) if _d else 0
+
+                            # label = text between the previous amount and this one
+                            # (handles both "Nominal Rp X" inline and "Nominal\nRp X").
+                            _amts = []
+                            _prev_end = 0
+                            for _am in _re_amt.finditer(
+                                r"Rp\s*([\d][\d.,]*)", _txt_amt
+                            ):
+                                _seg = _txt_amt[_prev_end:_am.start()]
+                                _lbl = "".join(
+                                    c if (c.isalpha() or c.isspace()) else " "
+                                    for c in _seg
+                                ).lower()
+                                _val = _parse_idr(_am.group(1))
+                                if _val > 0:
+                                    _amts.append((_lbl, _val))
+                                _prev_end = _am.end()
+                            _nominal = next(
+                                (v for (l, v) in _amts if "kirim uang" in l or "nominal" in l),
+                                None,
+                            )
+                            _admin = next(
+                                (v for (l, v) in _amts if "biaya admin" in l or "admin" in l),
+                                None,
+                            )
+                            _total_lbl = next(
+                                (v for (l, v) in _amts if "total" in l), None
+                            )
+                            _corrected = None
+                            if _nominal and 0 < _nominal < _cur_total:
+                                _corrected = _nominal
+                            elif (
+                                _total_lbl
+                                and _admin
+                                and 0 < (_total_lbl - _admin) < _cur_total
+                            ):
+                                _corrected = _total_lbl - _admin
+                            if _corrected:
+                                logger.info(
+                                    "[FIX_TRANSFER_NOMINAL] corrected total_amount %s -> %s (admin fee excluded)",
+                                    _cur_total,
+                                    _corrected,
+                                )
+                                _ocr_data["total_amount"] = _corrected
+                    except Exception as _amt_err:
+                        logger.warning("[FIX_TRANSFER_NOMINAL] skip: %s", _amt_err)
                     _ocr_elapsed = _t_mod.perf_counter() - _t_start
                     logger.info(
                         f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed * 1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')} src_acct={_ocr_data.get('source_account_number')} dst_acct={_ocr_data.get('destination_account_number')}"
