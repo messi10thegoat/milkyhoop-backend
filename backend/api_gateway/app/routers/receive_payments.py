@@ -135,55 +135,25 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
 
 async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
     """
-    Compute invoice remaining balance from journal entries (Law 16).
-    Gold standard: covers ALL settlement types that affect AR for this invoice.
-    remaining = net AR balance (debit - credit) across all related journals.
+    Compute invoice remaining balance — delegates to the CANONICAL
+    compute_ar_outstanding() (Law 16, single source of truth).
+
+    FIX_P35_ARCANON 2026-06-17 — Layer 2: collapse parallel settlement SQL.
+    Previously this function maintained its own per-invoice net-AR CTE (invoice +
+    receive-payment + credit-note + deposit-application + reversal + legacy inline
+    paths). That duplicated — and could diverge from — compute_ar_outstanding().
+    It now reads the canonical per-invoice outstanding directly. Verified byte-equal
+    across all observed invoices (incl. partial deposit applications and the legacy
+    sales_invoice_payments / orphan-PAYMENT_RECEIVED cases) at migration time.
+
+    compute_ar_outstanding() only emits rows where outstanding != 0, so a missing
+    row means fully-settled (0). Returns int for backward-compat with callers.
     """
     result = await conn.fetchval(
         """
-        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-        WHERE je.status = 'POSTED'
-            AND coa.account_type = 'RECEIVABLE'  -- Fase D2.4: migrated from hardcoded RECEIVABLE account_code to account_type filter (Law 29)
-            AND je.tenant_id = $1
-            AND (
-                -- Original invoice journal (AR debit)
-                (je.source_type = 'INVOICE' AND je.source_id = $2)
-                -- Receive payment journals (via allocations)
-                OR (je.source_type IN ('RECEIVE_PAYMENT', 'PAYMENT_RECEIVED') AND EXISTS (
-                    SELECT 1 FROM receive_payment_allocations rpa
-                    WHERE rpa.invoice_id = $2 AND rpa.payment_id = je.source_id
-                ))
-                -- PAYMENT_RECEIVED orphan journals (description-based fallback)
-                OR (je.source_type = 'PAYMENT_RECEIVED'
-                    AND je.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $2) || '%%'
-                    AND NOT EXISTS(
-                        SELECT 1 FROM receive_payment_allocations rpa2
-                        WHERE rpa2.payment_id = je.source_id AND rpa2.tenant_id = $1
-                    ))
-                -- Credit note application journals
-                OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
-                    SELECT 1 FROM credit_note_applications cna
-                    WHERE cna.invoice_id = $2 AND cna.credit_note_id = je.source_id
-                ))
-                -- Customer deposit application journals
-                OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
-                    SELECT 1 FROM customer_deposit_applications cda
-                    WHERE cda.invoice_id = $2 AND cda.deposit_id = je.source_id
-                    -- FIX_P1_DEPOSIT 2026-06-16 OPTION B: drop reversed (un-applied)
-                    -- deposit applications so invoice outstanding is restored.
-                    AND is_effective_journal(je.id)
-                ))
-                -- Invoice reversal (partial void)
-                OR (je.source_type = 'INVOICE_REVERSAL' AND je.source_id = $2)
-                -- Inline payments from sales_invoices.py
-                OR (je.id IN (
-                    SELECT sip.journal_id FROM sales_invoice_payments sip
-                    WHERE sip.invoice_id = $2
-                ))
-            )
+        SELECT COALESCE(SUM(outstanding), 0)
+        FROM compute_ar_outstanding($1)
+        WHERE invoice_id = $2
         """,
         tenant_id,
         invoice_id,

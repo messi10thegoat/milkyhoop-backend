@@ -18,7 +18,7 @@ Output: analysis_result dict stored in uploaded_documents.analysis_result
 """
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +47,16 @@ KEYWORD_PATTERNS = [
     (["gaji", "salary", "upah", "honor", "honorarium"], "Beban Gaji"),
     (["telepon", "telkom", "internet", "wifi", "indihome"], "Beban Telepon"),
     (["asuransi", "insurance", "premi"], "Beban Asuransi"),
-    (["transport", "bensin", "solar", "tol", "parkir", "fuel", "grab", "gojek"], "Beban Transportasi"),
+    (
+        ["transport", "bensin", "solar", "tol", "parkir", "fuel", "grab", "gojek"],
+        "Beban Transportasi",
+    ),
     (["makan", "konsumsi", "catering", "meal", "snack"], "Beban Konsumsi"),
     (["atk", "alat tulis", "stationery", "kertas", "tinta"], "Beban ATK"),
-    (["pemeliharaan", "maintenance", "service", "servis", "perbaikan", "repair"], "Beban Pemeliharaan"),
+    (
+        ["pemeliharaan", "maintenance", "service", "servis", "perbaikan", "repair"],
+        "Beban Pemeliharaan",
+    ),
     (["pajak", "tax", "ppn", "pph"], "Beban Pajak"),
 ]
 
@@ -239,9 +245,7 @@ class FinancialIntelligence:
             try:
                 inventory_matches = []
                 for idx, item in enumerate(line_items):
-                    match = await self.match_line_item_to_product(
-                        tenant_id, item
-                    )
+                    match = await self.match_line_item_to_product(tenant_id, item)
                     match["line_index"] = idx
                     inventory_matches.append(match)
                 result["inventory_matches"] = inventory_matches
@@ -294,49 +298,44 @@ class FinancialIntelligence:
         amount: Decimal,
     ) -> List[Dict[str, Any]]:
         """
-        Find unpaid AR from journal_lines (Law 16).
-        Groups by source_id, computes outstanding = SUM(debit) - SUM(credit).
-        Scores by name similarity + amount proximity.
+        Find unpaid AR — FULL REROUTE to the canonical compute_ar_outstanding()
+        (Law 16, single source of truth).
+
+        FIX_P35_ARCANON 2026-06-17 — Layer 2 (Decision #4: full reroute, NOT mirror).
+        Previously this maintained its own AR CTE that grouped journal_lines by
+        je.source_id and did NOT count customer_deposit_applications — so after a
+        deposit was applied it would over-state the open receivable and mis-suggest
+        a match. It now reads canonical per-invoice outstanding (deposit-aware).
+
+        Suggestion-only / document-intake matching — ZERO ledger impact. Scores by
+        customer-name similarity + amount proximity. Return contract preserved:
+        source_id (= invoice_id), source_type ('INVOICE'), description, outstanding,
+        journal_date (= invoice_date), name_similarity, amount_score, score.
         """
         rows = await self.conn.fetch(
             """
-            WITH ar_balances AS (
-                SELECT
-                    je.source_id,
-                    je.source_type,
-                    je.description,
-                    je.journal_date::text AS journal_date,
-                    SUM(jl.debit) - SUM(jl.credit) AS outstanding
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1
-                  AND je.status = 'POSTED'
-                  AND coa.account_type = 'RECEIVABLE'
-                GROUP BY je.source_id, je.source_type, je.description, je.journal_date
-                HAVING SUM(jl.debit) - SUM(jl.credit) > 0
-            )
             SELECT
-                source_id::text,
-                source_type,
-                description,
-                journal_date,
-                outstanding,
-                similarity(COALESCE(description, ''), $2) AS name_sim,
+                o.invoice_id::text       AS source_id,
+                'INVOICE'                AS source_type,
+                (o.invoice_number || ' - ' || COALESCE(o.customer_name, '')) AS description,
+                o.invoice_date::text     AS journal_date,
+                o.outstanding            AS outstanding,
+                similarity(COALESCE(o.customer_name, ''), $2) AS name_sim,
                 CASE
-                    WHEN outstanding = $3 THEN 1.0
-                    WHEN outstanding BETWEEN $3 * 0.95 AND $3 * 1.05 THEN 0.8
-                    WHEN outstanding BETWEEN $3 * 0.80 AND $3 * 1.20 THEN 0.5
+                    WHEN o.outstanding = $3 THEN 1.0
+                    WHEN o.outstanding BETWEEN $3 * 0.95 AND $3 * 1.05 THEN 0.8
+                    WHEN o.outstanding BETWEEN $3 * 0.80 AND $3 * 1.20 THEN 0.5
                     ELSE 0.1
                 END AS amount_score
-            FROM ar_balances
+            FROM compute_ar_outstanding($1) o
+            WHERE o.outstanding > 0
             ORDER BY
-                (similarity(COALESCE(description, ''), $2) * 0.3
-                 + CASE WHEN outstanding = $3 THEN 0.4
-                        WHEN outstanding BETWEEN $3 * 0.95 AND $3 * 1.05 THEN 0.32
-                        WHEN outstanding BETWEEN $3 * 0.80 AND $3 * 1.20 THEN 0.2
+                (similarity(COALESCE(o.customer_name, ''), $2) * 0.3
+                 + CASE WHEN o.outstanding = $3 THEN 0.4
+                        WHEN o.outstanding BETWEEN $3 * 0.95 AND $3 * 1.05 THEN 0.32
+                        WHEN o.outstanding BETWEEN $3 * 0.80 AND $3 * 1.20 THEN 0.2
                         ELSE 0.04 END
-                 + CASE WHEN similarity(COALESCE(description, ''), $2) > 0.3 THEN 0.3 ELSE 0.0 END
+                 + CASE WHEN similarity(COALESCE(o.customer_name, ''), $2) > 0.3 THEN 0.3 ELSE 0.0 END
                 ) DESC
             LIMIT 10
             """,
@@ -349,17 +348,22 @@ class FinancialIntelligence:
         for row in rows:
             name_sim = float(row["name_sim"])
             amount_score = float(row["amount_score"])
-            combined = round(name_sim * 0.3 + amount_score * 0.4 + (0.3 if name_sim > 0.3 else 0.0), 4)
-            results.append({
-                "source_id": row["source_id"],
-                "source_type": row["source_type"],
-                "description": row["description"],
-                "journal_date": row["journal_date"],
-                "outstanding": _str_amount(row["outstanding"]),
-                "name_similarity": str(round(name_sim, 4)),
-                "amount_score": str(round(amount_score, 4)),
-                "score": str(combined),
-            })
+            combined = round(
+                name_sim * 0.3 + amount_score * 0.4 + (0.3 if name_sim > 0.3 else 0.0),
+                4,
+            )
+            results.append(
+                {
+                    "source_id": row["source_id"],
+                    "source_type": row["source_type"],
+                    "description": row["description"],
+                    "journal_date": row["journal_date"],
+                    "outstanding": _str_amount(row["outstanding"]),
+                    "name_similarity": str(round(name_sim, 4)),
+                    "amount_score": str(round(amount_score, 4)),
+                    "score": str(combined),
+                }
+            )
 
         return results
 
@@ -424,17 +428,22 @@ class FinancialIntelligence:
         for row in rows:
             name_sim = float(row["name_sim"])
             amount_score = float(row["amount_score"])
-            combined = round(name_sim * 0.3 + amount_score * 0.4 + (0.3 if name_sim > 0.3 else 0.0), 4)
-            results.append({
-                "source_id": row["source_id"],
-                "source_type": row["source_type"],
-                "description": row["description"],
-                "journal_date": row["journal_date"],
-                "outstanding": _str_amount(row["outstanding"]),
-                "name_similarity": str(round(name_sim, 4)),
-                "amount_score": str(round(amount_score, 4)),
-                "score": str(combined),
-            })
+            combined = round(
+                name_sim * 0.3 + amount_score * 0.4 + (0.3 if name_sim > 0.3 else 0.0),
+                4,
+            )
+            results.append(
+                {
+                    "source_id": row["source_id"],
+                    "source_type": row["source_type"],
+                    "description": row["description"],
+                    "journal_date": row["journal_date"],
+                    "outstanding": _str_amount(row["outstanding"]),
+                    "name_similarity": str(round(name_sim, 4)),
+                    "amount_score": str(round(amount_score, 4)),
+                    "score": str(combined),
+                }
+            )
 
         return results
 
@@ -570,9 +579,7 @@ class FinancialIntelligence:
                         }
                         for r in rows[1:4]
                     ],
-                    "suggestion": await self._suggest_new_product(
-                        tenant_id, line_item
-                    ),
+                    "suggestion": await self._suggest_new_product(tenant_id, line_item),
                 }
 
         # Strategy 3: No match
@@ -592,9 +599,7 @@ class FinancialIntelligence:
             "suggestion": suggestion,
         }
 
-    async def _get_stock_info(
-        self, tenant_id: str, product_id: str
-    ) -> Dict[str, Any]:
+    async def _get_stock_info(self, tenant_id: str, product_id: str) -> Dict[str, Any]:
         """Get current stock and avg cost from inventory_ledger."""
         # Current stock (sum of all movements)
         stock_row = await self.conn.fetchrow(
@@ -685,10 +690,16 @@ class FinancialIntelligence:
             "suggested_name": line_item.get("description", ""),
             "suggested_unit": line_item.get("unit") or "pcs",
             "suggested_initial_cost": str(line_item.get("unit_price") or "0"),
-            "suggested_inventory_account_id": inv_account["id"] if inv_account else None,
-            "suggested_inventory_account_code": inv_account["account_code"] if inv_account else None,
+            "suggested_inventory_account_id": inv_account["id"]
+            if inv_account
+            else None,
+            "suggested_inventory_account_code": inv_account["account_code"]
+            if inv_account
+            else None,
             "suggested_cogs_account_id": cogs_account["id"] if cogs_account else None,
-            "suggested_cogs_account_code": cogs_account["account_code"] if cogs_account else None,
+            "suggested_cogs_account_code": cogs_account["account_code"]
+            if cogs_account
+            else None,
             "missing_accounts": {
                 "inventory": inv_account is None,
                 "cogs": cogs_account is None,
@@ -726,16 +737,12 @@ class FinancialIntelligence:
 
         # Layer 2: Keyword detection
         combined_text = f"{counterparty_name} {description}".lower()
-        keyword_match = await self._match_keyword_account(
-            tenant_id, combined_text
-        )
+        keyword_match = await self._match_keyword_account(tenant_id, combined_text)
         if keyword_match:
             return keyword_match
 
         # Layer 3: Default by doc_type
-        default = await self._default_account_for_doc_type(
-            tenant_id, doc_type
-        )
+        default = await self._default_account_for_doc_type(tenant_id, doc_type)
         if default:
             return default
 
@@ -942,26 +949,30 @@ class FinancialIntelligence:
                         if avg_cost and invoice_price and avg_cost > 0:
                             ratio = invoice_price / avg_cost
                             if ratio > 3:
-                                anomalies.append({
-                                    "type": "price_anomaly",
-                                    "severity": "warning",
-                                    "message": (
-                                        f"Harga {line_items[li_idx].get('description', 'item')} "
-                                        f"({_str_amount(invoice_price)}) "
-                                        f"adalah {round(float(ratio), 1)}x lipat "
-                                        f"dari rata-rata ({_str_amount(avg_cost)})."
-                                    ),
-                                    "details": {
-                                        "line_index": li_idx,
-                                        "current_price": _str_amount(invoice_price),
-                                        "avg_price": _str_amount(avg_cost),
-                                        "ratio": str(round(float(ratio), 2)),
-                                    },
-                                })
+                                anomalies.append(
+                                    {
+                                        "type": "price_anomaly",
+                                        "severity": "warning",
+                                        "message": (
+                                            f"Harga {line_items[li_idx].get('description', 'item')} "
+                                            f"({_str_amount(invoice_price)}) "
+                                            f"adalah {round(float(ratio), 1)}x lipat "
+                                            f"dari rata-rata ({_str_amount(avg_cost)})."
+                                        ),
+                                        "details": {
+                                            "line_index": li_idx,
+                                            "current_price": _str_amount(invoice_price),
+                                            "avg_price": _str_amount(avg_cost),
+                                            "ratio": str(round(float(ratio), 2)),
+                                        },
+                                    }
+                                )
 
         # 2. Duplicate payment: same vendor + similar amount within 7 days
-        if counterparty and total_amount and doc_type in (
-            "invoice_purchase", "bank_transfer_out", "receipt"
+        if (
+            counterparty
+            and total_amount
+            and doc_type in ("invoice_purchase", "bank_transfer_out", "receipt")
         ):
             dup_rows = await self.conn.fetch(
                 """
@@ -985,24 +996,26 @@ class FinancialIntelligence:
                 total_amount,
             )
             if dup_rows:
-                anomalies.append({
-                    "type": "duplicate_payment",
-                    "severity": "warning",
-                    "message": (
-                        f"Ditemukan {len(dup_rows)} transaksi serupa "
-                        f"untuk '{counterparty}' dalam 7 hari terakhir."
-                    ),
-                    "details": {
-                        "similar_transactions": [
-                            {
-                                "source_id": r["source_id"],
-                                "description": r["description"],
-                                "journal_date": r["journal_date"],
-                            }
-                            for r in dup_rows
-                        ],
-                    },
-                })
+                anomalies.append(
+                    {
+                        "type": "duplicate_payment",
+                        "severity": "warning",
+                        "message": (
+                            f"Ditemukan {len(dup_rows)} transaksi serupa "
+                            f"untuk '{counterparty}' dalam 7 hari terakhir."
+                        ),
+                        "details": {
+                            "similar_transactions": [
+                                {
+                                    "source_id": r["source_id"],
+                                    "description": r["description"],
+                                    "journal_date": r["journal_date"],
+                                }
+                                for r in dup_rows
+                            ],
+                        },
+                    }
+                )
 
         # 3. New vendor/customer: first time seen
         if counterparty:
@@ -1030,17 +1043,19 @@ class FinancialIntelligence:
                     counterparty,
                 )
                 if not customer_exists:
-                    anomalies.append({
-                        "type": "new_counterparty",
-                        "severity": "info",
-                        "message": (
-                            f"'{counterparty}' belum terdaftar sebagai "
-                            f"vendor atau pelanggan."
-                        ),
-                        "details": {
-                            "counterparty_name": counterparty,
-                        },
-                    })
+                    anomalies.append(
+                        {
+                            "type": "new_counterparty",
+                            "severity": "info",
+                            "message": (
+                                f"'{counterparty}' belum terdaftar sebagai "
+                                f"vendor atau pelanggan."
+                            ),
+                            "details": {
+                                "counterparty_name": counterparty,
+                            },
+                        }
+                    )
 
         # 4. Missing master data (products not found)
         if matched_products:
@@ -1048,55 +1063,58 @@ class FinancialIntelligence:
                 1 for m in matched_products if m.get("match_type") == "none"
             )
             if no_match_count > 0:
-                anomalies.append({
-                    "type": "missing_master_data",
-                    "severity": "info",
-                    "message": (
-                        f"{no_match_count} item tidak ditemukan di master data produk."
-                    ),
-                    "details": {
-                        "unmatched_items": [
-                            {
-                                "line_index": m.get("line_index"),
-                                "description": (
-                                    line_items[m["line_index"]].get("description")
-                                    if m.get("line_index") is not None
-                                    and m["line_index"] < len(line_items)
-                                    else None
-                                ),
-                            }
-                            for m in matched_products
-                            if m.get("match_type") == "none"
-                        ],
-                    },
-                })
+                anomalies.append(
+                    {
+                        "type": "missing_master_data",
+                        "severity": "info",
+                        "message": (
+                            f"{no_match_count} item tidak ditemukan di master data produk."
+                        ),
+                        "details": {
+                            "unmatched_items": [
+                                {
+                                    "line_index": m.get("line_index"),
+                                    "description": (
+                                        line_items[m["line_index"]].get("description")
+                                        if m.get("line_index") is not None
+                                        and m["line_index"] < len(line_items)
+                                        else None
+                                    ),
+                                }
+                                for m in matched_products
+                                if m.get("match_type") == "none"
+                            ],
+                        },
+                    }
+                )
 
         # 5. Unit mismatch detected
         if matched_products:
             unit_mismatches = [
-                m for m in matched_products
-                if m.get("unit_mismatch") is True
+                m for m in matched_products if m.get("unit_mismatch") is True
             ]
             if unit_mismatches:
-                anomalies.append({
-                    "type": "unit_mismatch",
-                    "severity": "warning",
-                    "message": (
-                        f"{len(unit_mismatches)} item memiliki satuan "
-                        f"berbeda dari master data."
-                    ),
-                    "details": {
-                        "mismatches": [
-                            {
-                                "line_index": m.get("line_index"),
-                                "invoice_unit": m.get("invoice_unit"),
-                                "product_unit": m.get("product_unit"),
-                                "product_name": m.get("product_name"),
-                            }
-                            for m in unit_mismatches
-                        ],
-                    },
-                })
+                anomalies.append(
+                    {
+                        "type": "unit_mismatch",
+                        "severity": "warning",
+                        "message": (
+                            f"{len(unit_mismatches)} item memiliki satuan "
+                            f"berbeda dari master data."
+                        ),
+                        "details": {
+                            "mismatches": [
+                                {
+                                    "line_index": m.get("line_index"),
+                                    "invoice_unit": m.get("invoice_unit"),
+                                    "product_unit": m.get("product_unit"),
+                                    "product_name": m.get("product_name"),
+                                }
+                                for m in unit_mismatches
+                            ],
+                        },
+                    }
+                )
 
         # 6. No AP/AR match for payment-type documents
         if (
@@ -1104,14 +1122,16 @@ class FinancialIntelligence:
             and not matched_ap_ar.get("matched")
             and doc_type in ("bank_transfer_out", "bank_transfer_in")
         ):
-            anomalies.append({
-                "type": "no_obligation_match",
-                "severity": "info",
-                "message": (
-                    "Transfer ini tidak cocok dengan piutang/hutang yang ada. "
-                    "Mungkin pembayaran non-invoice."
-                ),
-                "details": {},
-            })
+            anomalies.append(
+                {
+                    "type": "no_obligation_match",
+                    "severity": "info",
+                    "message": (
+                        "Transfer ini tidak cocok dengan piutang/hutang yang ada. "
+                        "Mungkin pembayaran non-invoice."
+                    ),
+                    "details": {},
+                }
+            )
 
         return anomalies

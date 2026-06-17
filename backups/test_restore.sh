@@ -200,6 +200,25 @@ else
     fi
 fi
 
+# FIX_P35_ARCANON 2026-06-17 — Layer 3: monthly restore-test AR reconciliation hook.
+# Confirm AR sub-ledger == GL trust on the RESTORED data (enforce-with-grandfather).
+# Non-exempt drift or an exempt tenant whose drift moved off baseline => FAIL.
+HAS_RECON=$(psql_test "SELECT COUNT(*) FROM pg_proc WHERE proname = 'verify_ar_reconciliation_all';")
+if [ "$HAS_RECON" = "0" ]; then
+    log "      AR reconciliation: SKIP (verify_ar_reconciliation_all not in backup)"
+else
+    AR_FAILS=$(psql_test "SELECT COUNT(*) FROM verify_ar_reconciliation_all() WHERE verdict LIKE 'FAIL%';" || echo "ERROR")
+    if [ "$AR_FAILS" = "0" ]; then
+        log "      AR reconciliation: PASS (all tenants PASS/PASS_EXEMPT)"
+    elif [ "$AR_FAILS" = "ERROR" ]; then
+        log "      AR reconciliation: SKIP (function error)"
+    else
+        log "      AR reconciliation: FAIL ($AR_FAILS tenant(s) failing enforce)"
+        OVERALL="FAIL"
+        FAILURES="${FAILURES}AR reconciliation: $AR_FAILS failing tenant(s)\n"
+    fi
+fi
+
 # ---- Summary ----
 log ""
 log "=== Restore Test Results ==="

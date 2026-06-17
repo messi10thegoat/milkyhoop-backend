@@ -292,29 +292,37 @@ check_7_ap_invariant() {
     fi
 }
 
-check_8_ar_invariant() {
+# FIX_P35_ARCANON 2026-06-17 -- check_8_ar_invariant RETIRED.
+# It used an ASYMMETRIC identity (GL net == outstanding + adjustments) that
+# double-subtracted credit-note/deposit adjustments already netted into the
+# canonical compute_ar_outstanding(), producing false positives on
+# reverse-heavy tenants (golden-apparel, grapgrap, p3verify) AND missing the
+# real anthonius-iwan orphan (saw drift=0 where check_14 sees 1,000,000).
+# Superseded by check_14_ar_reconciliation_enforce (symmetric, per-customer,
+# is_effective, exemption-aware). Scope of check_14 strictly contains check_8.
+
+# FIX_P35_ARCANON 2026-06-17 — Layer 3: enforce-with-grandfather AR reconciliation.
+# Per-customer canonical compute_ar_outstanding == GL RECEIVABLE net (is_effective,
+# symmetric). Exemption store ar_reconciliation_exemptions grandfathers known drift:
+#   non-exempt drift!=0      -> FAIL_NON_EXEMPT   (critical, fail loud)
+#   exempt drift==baseline   -> PASS_EXEMPT       (shrinking debt, allowed)
+#   exempt drift!=baseline   -> FAIL_DRIFT_CHANGED (debt moved, fail loud)
+# This is the AUTHORITATIVE AR invariant. check_8 was RETIRED in this migration:
+# it was asymmetric for reverse-heavy tenants (Track-alpha); this is its symmetric
+# replacement (scope strictly contains check_8).
+check_14_ar_reconciliation_enforce() {
     local tenant="$1"
-    local drift
-    drift=$(psql_cmd "
-        SELECT ABS(
-            (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
-             FROM journal_lines jl
-             JOIN journal_entries je ON je.id = jl.journal_id
-             JOIN chart_of_accounts coa ON coa.id = jl.account_id
-             WHERE coa.account_type = 'RECEIVABLE'
-               AND is_effective_journal(je.id)  -- Rule 8.1
-               AND je.tenant_id = '$tenant')
-            - COALESCE((SELECT SUM(outstanding) FROM compute_ar_outstanding('$tenant')), 0)
-            - COALESCE((SELECT SUM(net) FROM compute_ar_adjustments('$tenant')), 0)
-        );
-    ")
-    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ -z "$drift" ]; then
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_ar_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
+        local drift
+        drift=$(psql_cmd "SELECT total_drift FROM verify_ar_reconciliation_all() WHERE tenant_id = '$tenant';")
         CHK_PASS=0
-        CHK_DETAIL="AR drift=$drift"
-        detail "[CHECK 8] $tenant: $CHK_DETAIL"
+        CHK_DETAIL="AR reconciliation $verdict (drift=$drift)"
+        detail "[CHECK 14] $tenant: $CHK_DETAIL"
     fi
 }
 
@@ -481,7 +489,7 @@ check_13_status_desync() {
         SELECT COUNT(*) FROM (
             -- Bills with journal but wrong accounting_status
             SELECT b.id FROM bills b
-            WHERE b.tenant_id = 
+            WHERE b.tenant_id =
               AND b.accounting_status != POSTED
               AND EXISTS (
                   SELECT 1 FROM journal_entries je
@@ -489,12 +497,12 @@ check_13_status_desync() {
                     AND je.source_type = BILL
                     AND je.status = POSTED
                     AND je.reversed_by_id IS NULL
-                    AND je.tenant_id = 
+                    AND je.tenant_id =
               )
             UNION ALL
             -- Sales invoices with journal but wrong accounting_status
             SELECT si.id FROM sales_invoices si
-            WHERE si.tenant_id = 
+            WHERE si.tenant_id =
               AND si.accounting_status != POSTED
               AND EXISTS (
                   SELECT 1 FROM journal_entries je
@@ -502,7 +510,7 @@ check_13_status_desync() {
                     AND je.source_type = INVOICE
                     AND je.status = POSTED
                     AND je.reversed_by_id IS NULL
-                    AND je.tenant_id = 
+                    AND je.tenant_id =
               )
         ) sub;
     ")
@@ -692,15 +700,15 @@ for TENANT in $TENANTS; do
         log "  CRITICAL [7] AP Invariant: $CHK_DETAIL"
     fi
 
-    # Check 8: AR Invariant
-    check_8_ar_invariant "$TENANT"
+    # Check 14: AR Reconciliation (enforce-with-grandfather, Layer 3) — AUTHORITATIVE
+    check_14_ar_reconciliation_enforce "$TENANT"
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
     else
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
-        SYNC_FAILS="${SYNC_FAILS}AR: $CHK_DETAIL; "
-        log "  CRITICAL [8] AR Invariant: $CHK_DETAIL"
+        SYNC_FAILS="${SYNC_FAILS}AR-recon: $CHK_DETAIL; "
+        log "  CRITICAL [14] AR Reconciliation: $CHK_DETAIL"
     fi
 
     # ---- VALUE INTEGRITY (HIGH) ----
@@ -771,7 +779,7 @@ for TENANT in $TENANTS; do
 
     # Sync layers line
     if [ "$SYNC_PASS" = "$SYNC_TOTAL" ]; then
-        TENANT_BLOCK="${TENANT_BLOCK}  ✅ Sync layers ($SYNC_PASS/$SYNC_TOTAL: bank, inv qty, AP, AR)\n"
+        TENANT_BLOCK="${TENANT_BLOCK}  ✅ Sync layers ($SYNC_PASS/$SYNC_TOTAL: bank, inv qty, AP, AR-recon)\n"
     else
         TENANT_BLOCK="${TENANT_BLOCK}  ⚠️ Sync layers ($SYNC_PASS/$SYNC_TOTAL) — ${SYNC_FAILS}\n"
     fi
