@@ -58,11 +58,17 @@ _PARTY_STOP = (
     r"transfer|tf|tgl|tanggal|no\b|nomor|faktur|invoice|tagihan|yang)\b)"
 )
 _PARTY_IN_RE = re.compile(
-    r"\bdari\s+(?:pelanggan|pelangan|customer|cust)\s+(.+?)" + _PARTY_STOP,
+    # FIX_PARTY_KEYWORD_OPTIONAL (2026-06-18): the party-type word
+    # (pelanggan/customer) is OPTIONAL — users write "dari Marwa Pahude"
+    # as often as "dari pelanggan Marwa". The downstream customer lookup
+    # (ILIKE on an OPEN invoice) self-validates, so a bare "dari X" that is
+    # not a real customer simply yields no match.
+    r"\bdari\s+(?:pelanggan|pelangan|customer|cust|pembeli)?\s*(.+?)" + _PARTY_STOP,
     re.IGNORECASE,
 )
 _PARTY_OUT_RE = re.compile(
-    r"\b(?:ke|kepada|untuk|bayar|bayar\s+ke)\s+(?:vendor|supplier|pemasok)\s+(.+?)"
+    # vendor/supplier word OPTIONAL — "ke NONENG" == "ke vendor NONENG".
+    r"\b(?:ke|kepada|bayar\s+ke|bayar|untuk)\s+(?:vendor|supplier|pemasok|toko)?\s*(.+?)"
     + _PARTY_STOP,
     re.IGNORECASE,
 )
