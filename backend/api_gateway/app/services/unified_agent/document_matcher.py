@@ -394,6 +394,27 @@ class DocumentMatcher:
         doc_type = (ocr.get("doc_type") or "").lower()
         tolerance = AMOUNT_TOLERANCE.get(doc_type, AMOUNT_TOLERANCE["default"])
 
+        # FIX_V2_CAPTION_PARTY (2026-06-18): the caption explicitly names the payer
+        # ("dari Marwa Pahude") / payee ("ke vendor X"). The OCR `counterparty` is the
+        # RECIPIENT shown on the bukti (often us), not the payer, so amount-only matching
+        # can book a partial payment under a DIFFERENT customer whose open invoice is
+        # within +/-2%. Match the named party's open doc FIRST (oldest), partial OK.
+        try:
+            from .document_intake_v3.signals import extract_party_name as _epn
+
+            _cap_party = _epn(ocr.get("user_caption") or "", direction) or ""
+        except Exception:
+            _cap_party = ""
+        if _cap_party:
+            _pcands = await self._find_open_by_party(
+                _cap_party, "ar" if direction == "in" else "ap"
+            )
+            if _pcands:
+                _pbest = _pcands[0]
+                _pbest.confidence = 0.88
+                _pbest.reasons = ["caption_party_priority", _cap_party]
+                return (_pbest, _pcands[1:5])
+
         candidates = []
 
         if amount is not None:
