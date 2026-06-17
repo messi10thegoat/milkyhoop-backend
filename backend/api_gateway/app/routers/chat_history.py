@@ -204,6 +204,7 @@ async def list_sessions(
                 cs.id, cs.summary, cs.status, cs.created_at, cs.updated_at,
                 last_msg.content AS last_message_preview,
                 last_msg.created_at AS last_message_at,
+                first_user.content AS first_user_message,
                 msg_count.cnt AS message_count
             FROM chat_sessions cs
             LEFT JOIN LATERAL (
@@ -212,6 +213,12 @@ async def list_sessions(
                 WHERE session_id = cs.id AND role = 'assistant'
                 ORDER BY created_at DESC LIMIT 1
             ) last_msg ON true
+            LEFT JOIN LATERAL (
+                SELECT content
+                FROM chat_messages
+                WHERE session_id = cs.id AND role = 'user'
+                ORDER BY created_at ASC LIMIT 1
+            ) first_user ON true
             LEFT JOIN LATERAL (
                 SELECT COUNT(*) AS cnt
                 FROM chat_messages
@@ -233,6 +240,7 @@ async def list_sessions(
                 cs.id, cs.summary, cs.status, cs.created_at, cs.updated_at,
                 last_msg.content AS last_message_preview,
                 last_msg.created_at AS last_message_at,
+                first_user.content AS first_user_message,
                 msg_count.cnt AS message_count
             FROM chat_sessions cs
             LEFT JOIN LATERAL (
@@ -241,6 +249,12 @@ async def list_sessions(
                 WHERE session_id = cs.id AND role = 'assistant'
                 ORDER BY created_at DESC LIMIT 1
             ) last_msg ON true
+            LEFT JOIN LATERAL (
+                SELECT content
+                FROM chat_messages
+                WHERE session_id = cs.id AND role = 'user'
+                ORDER BY created_at ASC LIMIT 1
+            ) first_user ON true
             LEFT JOIN LATERAL (
                 SELECT COUNT(*) AS cnt
                 FROM chat_messages
@@ -265,7 +279,7 @@ async def list_sessions(
             preview = preview[:120] + "..."
         result_sessions.append({
             "id": str(r["id"]),
-            "title": r["summary"] or _generate_title(preview),
+            "title": r["summary"] or _generate_title(r["first_user_message"] or preview),  # FIX_CHAT_TITLE_FIRSTUSER
             "status": r["status"],
             "message_count": r["message_count"] or 0,
             "last_message_preview": preview,

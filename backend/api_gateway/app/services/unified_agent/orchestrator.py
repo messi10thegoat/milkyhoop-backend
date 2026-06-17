@@ -1292,13 +1292,13 @@ class UnifiedAgent:
                                     )
                                     _hintm = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
                                 _ap2_lines.append(
-                                    f"**{_nmm}**{_qsm} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hintm}"
+                                    f"**{_nmm}**{_qsm} — {_mm.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hintm}"
                                 )
                             return AgentResponse(
                                 message_type="TEXT",
                                 content="\n\n".join(_ap2_lines)
                                 if _ap2_lines
-                                else "Harga jual item belum diset.",
+                                else "Harga item belum diset.",
                                 iterations=1,
                                 tool_calls_made=[],
                                 model_used="pipeline",
@@ -1853,13 +1853,13 @@ class UnifiedAgent:
                                 )
                                 _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
                             _ap_lines.append(
-                                f"**{_nm}**{_qty_str} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
+                                f"**{_nm}**{_qty_str} — {_m.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
                             )
                         _ap_text = (
                             "\n\n".join(_ap_lines)
                             if _ap_lines
                             else (
-                                "Harga jual item belum diset. Mohon sebutkan harga per pcs."
+                                "Harga item belum diset. Mohon sebutkan harga per pcs."
                             )
                         )
                         await emit(
@@ -2946,12 +2946,12 @@ class UnifiedAgent:
                     _opts = ", ".join(f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5]))
                     _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
                 _ap_lines.append(
-                    f"**{_nm}**{_qty_str} — harga jual per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
+                    f"**{_nm}**{_qty_str} — {_m.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
                 )
             _ap_text = (
                 "\n\n".join(_ap_lines)
                 if _ap_lines
-                else ("Harga jual item belum diset. Mohon sebutkan harga per pcs.")
+                else ("Harga item belum diset. Mohon sebutkan harga per pcs.")
             )
             await emit(
                 "THINKING_DONE",

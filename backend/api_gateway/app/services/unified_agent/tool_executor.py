@@ -4566,6 +4566,66 @@ class ToolExecutor:
                         continue
                     item_id = item.get("item_id") or item.get("product_id")
 
+                    # FIX_BILL_ITEM_RESOLVE 2026-06-17: the block below only
+                    # pulls master price when item_id ALREADY exists. A bill
+                    # created by item NAME (no product_id — e.g. a freshly-made
+                    # item) therefore landed at price=0 -> false "harga belum
+                    # diset" ask. Resolve product_id by name first (purchase
+                    # domain ONLY, Iron Law 16 — never sales_price fallback),
+                    # mirroring the shared _enrich_items resolver used by
+                    # sales/PO. Mention-gated to avoid vendor-name bleed.
+                    if not item_id:
+                        _bnm = item.get("product_name") or item.get("description")
+                        if isinstance(_bnm, str) and _bnm.strip():
+                            _bnm = _bnm.strip()
+                            _but = (getattr(self, "user_text", "") or "").lower()
+                            _btoks = [t for t in _bnm.lower().split() if len(t) >= 2]
+                            if _btoks and all(t in _but for t in _btoks):
+                                _bsr = await self._fetch_entity(
+                                    client,
+                                    f"/api/items?search={_bnm}&limit=5&status=active",
+                                )
+                                _brows = (
+                                    _bsr
+                                    if isinstance(_bsr, list)
+                                    else (_bsr.get("items", []) if _bsr else [])
+                                )
+                                if _brows:
+                                    _bexact = next(
+                                        (
+                                            r
+                                            for r in _brows
+                                            if (
+                                                r.get("name")
+                                                or r.get("nama_produk")
+                                                or ""
+                                            ).strip().lower()
+                                            == _bnm.lower()
+                                        ),
+                                        None,
+                                    )
+                                    _bres = _bexact or _brows[0]
+                                    _brid = _bres.get("id") or _bres.get("item_id")
+                                    if _brid:
+                                        item["product_id"] = _brid
+                                        item_id = _brid
+                                        item["product_name"] = (
+                                            _bres.get("name")
+                                            or _bres.get("nama_produk")
+                                            or _bnm
+                                        )
+                                        if not item.get("price") and not item.get(
+                                            "unit_price"
+                                        ):
+                                            item["price"] = (
+                                                _bres.get("purchase_price")
+                                                or _bres.get("harga_beli")
+                                                or 0
+                                            )
+                                        logger.info(
+                                            f"[FIX_BILL_ITEM_RESOLVE] resolved '{_bnm}' -> {_brid} price={item.get('price')}"
+                                        )
+
                     # FIX_AQUA_PRICE 2026-05-09 (port to bills/purchase domain):
                     # always fetch detail when name OR price still missing/0.
                     # Previous gate combined both checks → if LLM set product_name

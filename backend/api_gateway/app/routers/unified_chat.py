@@ -2781,11 +2781,15 @@ async def send_message_with_files(
                         _img_pil = _PILImage.open(_io_resize.BytesIO(_img_bytes))
                         if _img_pil.mode in ("RGBA", "LA", "P"):
                             _img_pil = _img_pil.convert("RGB")
-                        _max_dim = 768
+                        # FIX_OCR_ACCTNUM (2026-06-17): 768px + detail=low made account
+                        # numbers on bukti transfer unreadable (digits dropped to null) ->
+                        # bank could not auto-match -> always asked "rekening mana?". Bump
+                        # to 1280 + quality 85 + detail=high so the digits are legible.
+                        _max_dim = 1280
                         if max(_img_pil.size) > _max_dim:
                             _img_pil.thumbnail((_max_dim, _max_dim), _PILImage.LANCZOS)
                         _buf = _io_resize.BytesIO()
-                        _img_pil.save(_buf, format="JPEG", quality=75, optimize=True)
+                        _img_pil.save(_buf, format="JPEG", quality=85, optimize=True)
                         _img_bytes = _buf.getvalue()
                         _mime = "image/jpeg"
                         logger.info(
@@ -2903,7 +2907,7 @@ Aturan:
                                             "type": "image_url",
                                             "image_url": {
                                                 "url": f"data:{_mime};base64,{_img_b64}",
-                                                "detail": "low",
+                                                "detail": "high",  # FIX_OCR_ACCTNUM: low misreads account-number digits
                                             },
                                         },
                                     ],
@@ -2919,7 +2923,7 @@ Aturan:
                     _ocr_data = _ocr_json.loads(_ocr_text)
                     _ocr_elapsed = _t_mod.perf_counter() - _t_start
                     logger.info(
-                        f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed * 1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')}"
+                        f"[DocSimple] gpt-4o-mini extracted in {_ocr_elapsed * 1000:.0f}ms: type={_ocr_data.get('doc_type')} vendor={_ocr_data.get('vendor_name')} total={_ocr_data.get('total_amount')} src_acct={_ocr_data.get('source_account_number')} dst_acct={_ocr_data.get('destination_account_number')}"
                     )
 
                     # -- Smart Document Matching (bridge to Financial Intelligence) --
