@@ -2952,9 +2952,28 @@ class BillsService:
                                     accts["inventory_account_id"], net_dec, True
                                 )
                             else:
-                                # Service / non-tracked → expense/COGS CoA.
+                                # Service / non-tracked. V183: PREFER the
+                                # COGS_SERVICE role (5-10110 Beban Pokok Jasa)
+                                # so service purchases classify distinctly.
+                                # GRACEFUL FALLBACK (Law 27, no hardcode): if
+                                # the tenant has no COGS_SERVICE mapping
+                                # (existing tenants pre-V183), fall back to the
+                                # product cogs_account_id / COGS_SALES path —
+                                # byte-identical to D2. Resolved via a direct
+                                # account_roles lookup (non-raising; None when
+                                # unmapped) rather than resolve_account_id_by_role
+                                # which aborts posting on unmapped roles.
+                                svc_acct = await conn.fetchval(
+                                    "SELECT account_id FROM account_roles "
+                                    "WHERE tenant_id = $1 "
+                                    "AND role_key = $2",
+                                    tenant_id,
+                                    AccountRole.COGS_SERVICE,
+                                )
                                 _accumulate(
-                                    accts["cogs_account_id"], net_dec, False
+                                    svc_acct or accts["cogs_account_id"],
+                                    net_dec,
+                                    False,
                                 )
 
                         # Reconcile rounding residual into the inventory/default
