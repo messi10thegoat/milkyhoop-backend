@@ -372,7 +372,16 @@ class DocumentActionResolver:
                 if name_fragment:
                     # Strategy 1: fuzzy match — try name first, then numeric
                     name_frag_clean = name_fragment.strip()
-                    is_numeric = name_frag_clean.replace(" ", "").isdigit()
+                    # FIX_BANK_MASKED_ACCT (2026-06-18): masked/prefixed receipt
+                    # account numbers ("BCA ****2185", "0821****5368", "Ke
+                    # 8295032185") are NOT all-digits, so the old gate sent them to
+                    # the name-ILIKE branch (which fails) -> "list all" -> a needless
+                    # "rekening mana?" pill. Route to the digit matcher whenever >=4
+                    # digits are present; it already does substring + ratio + last-4
+                    # and only auto-picks on a UNIQUE match (>1 -> candidates, safe).
+                    is_numeric = (
+                        len("".join(c for c in name_frag_clean if c.isdigit())) >= 4
+                    )
 
                     if is_numeric:
                         # Numeric: bidirectional substring match (handles OCR digit errors)
