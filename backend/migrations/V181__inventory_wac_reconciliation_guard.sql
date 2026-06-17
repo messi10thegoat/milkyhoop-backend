@@ -84,13 +84,13 @@ BEGIN
     -- inventory_ledger value-on-hand = Σ over products
     --   ( current_on_hand_qty × current_WAC )
     -- current_on_hand_qty = SUM(quantity_in) - SUM(quantity_out)
-    -- current_WAC = average_cost of the latest movement (chronological) per product
+    -- current_WAC = average_cost of the last-APPLIED movement (application order: created_at, id) per product
     last_mv AS (
         SELECT DISTINCT ON (il.tenant_id, il.product_id)
                il.tenant_id, il.product_id, il.average_cost
         FROM inventory_ledger il
         ORDER BY il.tenant_id, il.product_id,
-                 il.movement_date DESC, il.created_at DESC, il.id DESC
+                 il.created_at DESC, il.id DESC
     ),
     onhand AS (
         SELECT il.tenant_id, il.product_id,
