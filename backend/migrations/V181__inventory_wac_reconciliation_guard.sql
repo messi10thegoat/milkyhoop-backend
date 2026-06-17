@@ -9,8 +9,15 @@
 -- Detects the WAC-inflation bug class (golden-apparel Kain) where average_cost
 -- snapshots drift from the GL inventory asset value.
 --
--- Tolerance: 0.01 (matches Check 14 / AR reconciliation). Exemptions table lets
--- a known frozen legacy drift be baselined (same pattern as AR exemptions).
+-- Tolerance: PRINCIPLED 2dp-rounding bound, NOT a flat constant. WAC is stored
+-- at 2 decimals, so each product contributes at most (on_hand_qty × 0.005) of
+-- pure-rounding drift between the full-precision GL value and the 2dp WAC value.
+-- Per tenant:  tolerance = Σ (ABS(on_hand_qty) × 0.005) over products + 0.01 ε.
+-- This tolerates EXACTLY the unavoidable rounding and no more: the WAC-inflation
+-- bug class (thousands→millions, 13×–6 orders of magnitude) stays far outside
+-- and is still flagged FAIL_NON_EXEMPT. (A flat 0.01 cried wolf on every healthy
+-- new tenant holding products with non-terminating WAC, e.g. 17142.857…)
+-- Exempt tenants keep their pinned baselines (baseline-change ε stays 0.01).
 --
 -- Iron Laws: read-only (STABLE), journal-derived (Law 1/16), Decimal precision
 -- via NUMERIC(18,2) (Law 25). Inventory CoA resolved via account_roles role_key
@@ -100,24 +107,36 @@ BEGIN
              AND lm.product_id = o.product_id
         GROUP BY o.tenant_id
     ),
+    -- PRINCIPLED rounding tolerance: each product's 2dp WAC rounding can be off by
+    -- at most 0.005 per on-hand unit, so the per-tenant rounding bound is
+    --   Σ ( ABS(on_hand_qty) × 0.005 ).  ABS guards negative-on-hand edge rows.
+    -- A small fixed epsilon (0.01) absorbs the GL/wac numeric(18,2) casts.
+    tol AS (
+        SELECT o.tenant_id AS tid,
+               (COALESCE(SUM(ABS(o.qty) * 0.005), 0) + 0.01)::numeric AS tolerance
+        FROM onhand o
+        GROUP BY o.tenant_id
+    ),
     per_tenant AS (
         SELECT t.tid,
                COALESCE(g.gl_value, 0)::numeric(18,2)  AS gl_value,
                COALESCE(w.wac_value, 0)::numeric(18,2) AS wac_value,
-               (COALESCE(g.gl_value, 0) - COALESCE(w.wac_value, 0))::numeric(18,2) AS drift
+               (COALESCE(g.gl_value, 0) - COALESCE(w.wac_value, 0))::numeric(18,2) AS drift,
+               COALESCE(tl.tolerance, 0.01)::numeric    AS tolerance
         FROM tenants t
         LEFT JOIN gl g  ON g.tid = t.tid
         LEFT JOIN wac w ON w.tid = t.tid
+        LEFT JOIN tol tl ON tl.tid = t.tid
     )
     SELECT p.tid,
            p.gl_value,
            p.wac_value,
            p.drift,
-           0.01::numeric AS tolerance,
+           p.tolerance,
            (e.tenant_id IS NOT NULL) AS is_exempt,
            CASE
-               WHEN e.tenant_id IS NULL AND ABS(p.drift) <= 0.01 THEN 'PASS'
-               WHEN e.tenant_id IS NULL AND ABS(p.drift) >  0.01 THEN 'FAIL_NON_EXEMPT'
+               WHEN e.tenant_id IS NULL AND ABS(p.drift) <= p.tolerance THEN 'PASS'
+               WHEN e.tenant_id IS NULL AND ABS(p.drift) >  p.tolerance THEN 'FAIL_NON_EXEMPT'
                WHEN e.tenant_id IS NOT NULL
                     AND ABS(p.drift - e.baseline_drift) <= 0.01 THEN 'PASS_EXEMPT'
                ELSE 'FAIL_DRIFT_CHANGED'
@@ -125,7 +144,7 @@ BEGIN
     FROM per_tenant p
     LEFT JOIN inventory_wac_reconciliation_exemptions e ON e.tenant_id = p.tid
     ORDER BY (CASE
-                WHEN e.tenant_id IS NULL AND ABS(p.drift) > 0.01 THEN 0
+                WHEN e.tenant_id IS NULL AND ABS(p.drift) > p.tolerance THEN 0
                 WHEN e.tenant_id IS NOT NULL
                      AND ABS(p.drift - e.baseline_drift) > 0.01 THEN 0
                 ELSE 1 END), p.tid;
