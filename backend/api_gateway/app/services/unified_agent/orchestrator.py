@@ -10559,6 +10559,39 @@ class UnifiedAgent:
                             "[LLM_ROUTER_PRIMARY] crud pipeline failed: %s", _crud_err
                         )
 
+                # FIX_CRUD_NO_AGENTLOOP (2026-06-17): the LLM router missed/misclassified
+                # a CRUD that the CODE classifier already caught with high confidence
+                # (e.g. create_bill). Falling to the agent loop here is unsafe: its
+                # propose_direct path SKIPS _enrich_bill, so a purchase invoice pulls the
+                # SALES price (Iron Law 16) and bypasses the price-missing guard. Route
+                # the CRUD to the deterministic pipeline using the code-classifier intent.
+                if (
+                    extraction is not None
+                    and isinstance(getattr(extraction, "intent", None), str)
+                    and extraction.intent.startswith(
+                        ("create_", "update_", "delete_", "void_", "reverse_")
+                    )
+                    and _llm_is_pipe(extraction.intent)
+                ):
+                    try:
+                        logger.warning(
+                            "[FIX_CRUD_NO_AGENTLOOP] router missed CRUD; routing code-classifier intent %s to pipeline (router said %s)",
+                            extraction.intent,
+                            _lr_intent,
+                        )
+                        return await self._handle_pipeline(
+                            user_text=user_text,
+                            context=context,
+                            extraction=extraction,
+                            conversation_history=conversation_history,
+                            tool_executor=tool_executor,
+                            event_callback=event_callback,
+                        )
+                    except Exception as _crud2_err:
+                        logger.warning(
+                            "[FIX_CRUD_NO_AGENTLOOP] pipeline failed: %s", _crud2_err
+                        )
+
                 # No pipeline match — fall through to agent loop with LLM Router intent
                 logger.warning(
                     "[LLM_ROUTER_PRIMARY] no pipeline match for %s, falling to agent loop",
