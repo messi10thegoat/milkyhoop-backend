@@ -358,6 +358,33 @@ check_9_inventory_value() {
     fi
 }
 
+# INV_WAC_GUARD_V181 2026-06-17 — Check 15: Inventory WAC reconciliation
+# (health-check level, NOT a close-time hard gate). Per-tenant: GL inventory
+# CoA 1-10600 balance (journal-derived, is_effective, symmetric reversals net)
+# vs Sum over products (on_hand_qty * current_WAC). Exemption store
+# inventory_wac_reconciliation_exemptions grandfathers known frozen drift,
+# mirroring Check 14 / verify_ar_reconciliation_all:
+#   non-exempt drift>tol     -> FAIL_NON_EXEMPT   (fail loud)
+#   exempt drift==baseline   -> PASS_EXEMPT       (frozen legacy, allowed)
+#   exempt drift!=baseline   -> FAIL_DRIFT_CHANGED (drift moved, fail loud)
+# Detects the WAC-inflation bug class (net-on-hand value WAC, milkyhoop-inventory
+# Rule 3). HIGH severity (value integrity), not CRITICAL — avoids over-reject.
+check_15_inventory_wac_reconciliation() {
+    local tenant="$1"
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        local drift
+        drift=$(psql_cmd "SELECT drift FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
+        CHK_PASS=0
+        CHK_DETAIL="inventory WAC reconciliation $verdict (drift=$drift)"
+        detail "[CHECK 15] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_10_cogs_orphans() {
     local tenant="$1"
     local count
@@ -721,6 +748,17 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}inv value: $CHK_DETAIL; "
         log "  HIGH [9] Inventory Value: $CHK_DETAIL"
+    fi
+
+    # Check 15: Inventory WAC Reconciliation (GL vs on_hand x WAC, grandfathered)
+    check_15_inventory_wac_reconciliation "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}inv WAC recon: $CHK_DETAIL; "
+        log "  HIGH [15] Inventory WAC Reconciliation: $CHK_DETAIL"
     fi
 
     # Check 10: COGS Orphans
