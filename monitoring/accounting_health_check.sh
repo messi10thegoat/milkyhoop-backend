@@ -385,6 +385,33 @@ check_15_inventory_wac_reconciliation() {
     fi
 }
 
+# DEFERRED_REV_GUARD_V182 2026-06-18 — Check 16: Deferred-revenue reconciliation
+# (P4 / PSAK-72 revenue-timing). Per-tenant: canonical Sum(allocated-recognized)
+# over effective posted invoices == GL net (Cr-Dr) of the per-tenant
+# REVENUE_DEFERRED role-mapped account (POSTED + is_effective). Exemption store
+# deferred_revenue_reconciliation_exemptions grandfathers known frozen drift,
+# mirroring Check 14/15:
+#   non-exempt drift>tol     -> FAIL_NON_EXEMPT   (fail loud)
+#   exempt drift==baseline   -> PASS_EXEMPT       (frozen legacy, allowed)
+#   exempt drift!=baseline   -> FAIL_DRIFT_CHANGED (drift moved, fail loud)
+# Detects early/late revenue recognition leaks (PSAK-72 contract-liability
+# integrity). CRITICAL severity (revenue integrity).
+check_16_deferred_revenue_reconciliation() {
+    local tenant="$1"
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_deferred_revenue_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        local drift
+        drift=$(psql_cmd "SELECT drift FROM verify_deferred_revenue_reconciliation_all() WHERE tenant_id = '$tenant';")
+        CHK_PASS=0
+        CHK_DETAIL="deferred-revenue reconciliation $verdict (drift=$drift)"
+        detail "[CHECK 16] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_10_cogs_orphans() {
     local tenant="$1"
     local count
@@ -736,6 +763,17 @@ for TENANT in $TENANTS; do
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
         SYNC_FAILS="${SYNC_FAILS}AR-recon: $CHK_DETAIL; "
         log "  CRITICAL [14] AR Reconciliation: $CHK_DETAIL"
+    fi
+
+    # Check 16: Deferred-revenue Reconciliation (PSAK-72 P4, grandfathered) — CRITICAL
+    check_16_deferred_revenue_reconciliation "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
+        SYNC_FAILS="${SYNC_FAILS}deferred-rev: $CHK_DETAIL; "
+        log "  CRITICAL [16] Deferred-Revenue Reconciliation: $CHK_DETAIL"
     fi
 
     # ---- VALUE INTEGRITY (HIGH) ----

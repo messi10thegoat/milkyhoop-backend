@@ -1413,7 +1413,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     invoice = await conn.fetchrow(
         """
         SELECT id, invoice_number, customer_id, customer_name, total_amount,
-               tax_amount, subtotal, invoice_date, due_date, warehouse_id
+               tax_amount, subtotal, invoice_date, due_date, warehouse_id,
+               recognize_at
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
         invoice_id,
@@ -1701,10 +1702,38 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 }
             )
 
+    # =============================================================
+    # P4 (PSAK-72 revenue-timing policy) — resolve EFFECTIVE policy.
+    # Per-invoice recognize_at overrides tenant_config; tenant_config
+    # overrides the global default 'invoice' (preserves legacy behavior).
+    #   'invoice'  -> recognize at post (auto-fulfill+recognize) — UNCHANGED
+    #   'delivery' -> defer; recognize at /fulfill (reuse make-to-order branch)
+    # =============================================================
+    effective_policy = invoice.get("recognize_at")
+    if not effective_policy:
+        effective_policy = await conn.fetchval(
+            "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id=$1",
+            ctx["tenant_id"],
+        )
+    if not effective_policy:
+        effective_policy = "invoice"
+
+    # P4 user-visible warnings (e.g. WAC=0 silent-defer). Returned in post result.
+    post_warnings = []
+
     fulfillment_status = "not_applicable"
     revenue_status = "recognized"
 
-    if has_inventory_items and all_have_cost:
+    if has_inventory_items and all_have_cost and effective_policy == "delivery":
+        # P4 DELIVERY MODE, sell-from-stock: DEFER. Route into the EXISTING
+        # make-to-order deferred branch verbatim — billing journal already
+        # credited Pendapatan Diterima Dimuka (2-10750/role) above; here we
+        # simply do NOT auto-fulfill: no COGS, no INVOICE_REVENUE at post.
+        # Recognition (+ COGS) happens at /fulfill (UNTOUCHED path).
+        fulfillment_status = "pending"
+        revenue_status = "deferred"
+
+    elif has_inventory_items and all_have_cost:
         # SELL-FROM-STOCK: auto-fulfill (zero UX change)
         from hashlib import sha256
 
@@ -1745,9 +1774,26 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         revenue_status = "recognized"
 
     elif has_inventory_items and not all_have_cost:
-        # MAKE-TO-ORDER: billing only, fulfill later
+        # MAKE-TO-ORDER / degrade-to-defer: billing only, fulfill later.
+        # WAC=0 on at least one tracked item -> revenue deferred (cannot post
+        # COGS without a cost). P4: surface this to the user (was silent).
         fulfillment_status = "pending"
         revenue_status = "deferred"
+        for itm in items:
+            if not itm.get("item_id"):
+                continue
+            avg_cost = await conn.fetchval(
+                "SELECT get_weighted_average_cost($1, $2)",
+                ctx["tenant_id"],
+                itm["item_id"],
+            )
+            if not avg_cost or avg_cost == 0:
+                _desc = itm.get("description") or itm.get("item_code") or "item"
+                post_warnings.append(
+                    f"Pendapatan ditangguhkan: {_desc} belum punya harga "
+                    f"pokok (WAC=0). Catat penerimaan barang dulu, lalu kirim "
+                    f"(fulfill) untuk mengakui pendapatan & HPP."
+                )
 
     else:
         # SERVICE: no inventory items, recognize revenue immediately
@@ -1852,6 +1898,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         "journal_number": journal_number,
         "fulfillment_status": fulfillment_status,
         "revenue_status": revenue_status,
+        "warnings": post_warnings,
     }
 
 
@@ -1957,8 +2004,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         invoice_date, due_date, ref_no, notes,
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
-                        status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15)
+                        status, created_by, recognize_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -1985,6 +2032,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     total_tax,
                     total_amount,
                     ctx["user_id"],
+                    body.recognize_at,
                 )
 
                 # Insert items
@@ -2094,6 +2142,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             "ar_id": post_result.get("ar_id"),
                             "cogs_journal_id": post_result.get("cogs_journal_id"),
                             "total_cogs": post_result.get("total_cogs", 0),
+                            "revenue_status": post_result.get("revenue_status"),
+                            "fulfillment_status": post_result.get("fulfillment_status"),
+                            "warnings": post_result.get("warnings", []),
                         },
                     }
 
@@ -2415,6 +2466,7 @@ async def post_invoice(
                         "journal_number": post_result.get("journal_number"),
                         "fulfillment_status": post_result.get("fulfillment_status"),
                         "revenue_status": post_result.get("revenue_status"),
+                        "warnings": post_result.get("warnings", []),
                     },
                 }
 

@@ -129,6 +129,23 @@ class CreateInvoiceRequest(BaseModel):
     tax_rate: float = Field(0, ge=0, le=100)
     auto_post: bool = False
 
+    # P4 (PSAK-72 revenue-timing policy): per-invoice override of the tenant
+    # revenue-recognition policy. None -> fall back to tenant_config
+    # .revenue_recognition_policy (which itself defaults to 'invoice').
+    #   'invoice'  -> recognize at post (auto-fulfill, parity with today)
+    #   'delivery' -> defer; recognize at fulfillment (/fulfill)
+    recognize_at: Optional[str] = None
+
+    @field_validator("recognize_at")
+    @classmethod
+    def validate_recognize_at(cls, v):
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if v not in ("invoice", "delivery"):
+            raise ValueError("recognize_at must be 'invoice' or 'delivery'")
+        return v
+
     @field_validator("customer_name")
     @classmethod
     def validate_customer_name(cls, v):
