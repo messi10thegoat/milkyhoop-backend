@@ -2854,22 +2854,147 @@ class BillsService:
                         user_id,
                     )
 
-                    # Line 1: Dr Inventory / WIP (net subtotal)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, 1, $3, $4, 0, $5)
-                        """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        debit_acct_id,
-                        subtotal_dec,
-                        f"{'WIP subkontrak' if is_subcontract_bill else 'Pembelian'} - {vendor_name}",
-                    )
+                    # ----------------------------------------------------------
+                    # Defect #D2 fix: PER-LINE debit resolution by item type.
+                    # OLD behavior debited the ENTIRE subtotal to a single
+                    # INVENTORY_MERCHANDISE line regardless of item type → the
+                    # service / non-tracked portion was mis-booked as inventory
+                    # asset with NO inventory_ledger row → GL(1-10600) > ledger
+                    # drift by construction (WAC-guard FAIL).
+                    #
+                    # NEW behavior (Law 1/4/16/25/27):
+                    #   - Goods (item_type='goods' AND track_inventory): debit
+                    #     the product's inventory CoA (resolve_inventory_accounts
+                    #     → product inventory_account_id → INVENTORY_MERCHANDISE
+                    #     role default). The inventory_ledger inbound row is
+                    #     written by the existing loop below (unchanged).
+                    #   - Service / non-tracked: debit the product's configured
+                    #     COGS/expense CoA (resolve_inventory_accounts cogs leg →
+                    #     product cogs_account_id → COGS_SALES role default). NO
+                    #     ledger row.
+                    #   - Free-text / no-product lines: fall back to the bill's
+                    #     default debit account (INVENTORY_MERCHANDISE) — same as
+                    #     legacy behavior for un-itemised cost.
+                    # Subcontract bills keep the single WIP_SUBCONTRACT debit
+                    # (cost is WIP, not per-line inventory/expense) → unchanged.
+                    #
+                    # Debits are AGGREGATED per resolved account so a goods-only
+                    # bill produces ONE inventory line for the full subtotal
+                    # (byte-identical to legacy structure & amount = PARITY).
+                    # Any rounding residual between Σ(line totals) and the
+                    # header-derived subtotal is absorbed into the first
+                    # (inventory/default) line to keep Σdebits == Cr AP (Law 4).
+                    # ----------------------------------------------------------
+                    line_num_v2 = 1
+                    if is_subcontract_bill:
+                        # Subcontract: cost is WIP, single debit (legacy parity).
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, $5, 0, $6)
+                            """,
+                            uuid_module.uuid4(),
+                            journal_id,
+                            line_num_v2,
+                            debit_acct_id,
+                            subtotal_dec,
+                            f"WIP subkontrak - {vendor_name}",
+                        )
+                        line_num_v2 += 1
+                    else:
+                        # Per-line classification. bill_items.total = post-
+                        # discount, pre-tax net for the line (Decimal, Law 25).
+                        from .inventory_helpers import resolve_inventory_accounts
 
-                    # Line 2: Dr PPN Masukan (if tax > 0)
+                        debit_rows = await conn.fetch(
+                            """
+                            SELECT bi.product_id, COALESCE(bi.total, 0) AS net,
+                                   p.item_type, p.track_inventory
+                            FROM bill_items bi
+                            LEFT JOIN products p ON p.id = bi.product_id
+                            WHERE bi.bill_id = $1
+                            ORDER BY bi.line_number
+                            """,
+                            bill_id,
+                        )
+
+                        # Accumulate net debit per resolved account_id.
+                        # default_acct = INVENTORY_MERCHANDISE (debit_acct_id) —
+                        # used for free-text lines AND as the residual sink so
+                        # goods-only bills stay byte-identical.
+                        acct_totals: dict = {}
+                        acct_is_inventory: dict = {}
+                        order: list = []
+
+                        def _accumulate(acct_id, amount, is_inv):
+                            if acct_id not in acct_totals:
+                                acct_totals[acct_id] = Decimal("0")
+                                acct_is_inventory[acct_id] = is_inv
+                                order.append(acct_id)
+                            acct_totals[acct_id] += amount
+
+                        for dr in debit_rows:
+                            net_dec = Decimal(str(dr["net"] or 0))
+                            pid = dr["product_id"]
+                            is_goods = (
+                                dr["item_type"] == "goods"
+                                and dr["track_inventory"]
+                            )
+                            if pid is None:
+                                # Free-text line → legacy default (inventory).
+                                _accumulate(debit_acct_id, net_dec, True)
+                                continue
+                            accts = await resolve_inventory_accounts(
+                                conn, tenant_id, pid
+                            )
+                            if is_goods:
+                                _accumulate(
+                                    accts["inventory_account_id"], net_dec, True
+                                )
+                            else:
+                                # Service / non-tracked → expense/COGS CoA.
+                                _accumulate(
+                                    accts["cogs_account_id"], net_dec, False
+                                )
+
+                        # Reconcile rounding residual into the inventory/default
+                        # line so Σdebits == subtotal_dec exactly (Law 4).
+                        summed = sum(acct_totals.values(), Decimal("0"))
+                        residual = subtotal_dec - summed
+                        if residual != Decimal("0"):
+                            sink = (
+                                debit_acct_id
+                                if debit_acct_id in acct_totals
+                                else (order[0] if order else debit_acct_id)
+                            )
+                            _accumulate(sink, residual, True)
+
+                        # Emit one journal line per distinct account.
+                        for acct_id in order:
+                            amt = acct_totals[acct_id]
+                            if amt == Decimal("0"):
+                                continue
+                            memo = (
+                                f"Pembelian - {vendor_name}"
+                                if acct_is_inventory.get(acct_id)
+                                else f"Pembelian jasa/beban - {vendor_name}"
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                                VALUES ($1, $2, $3, $4, $5, 0, $6)
+                                """,
+                                uuid_module.uuid4(),
+                                journal_id,
+                                line_num_v2,
+                                acct_id,
+                                amt,
+                                memo,
+                            )
+                            line_num_v2 += 1
+
+                    # Line: Dr PPN Masukan (if tax > 0)
                     ppn_journal_line_id = None
-                    line_num_v2 = 2
                     if tax_amount_dec > 0 and vat_input_acct_id:
                         ppn_journal_line_id = uuid_module.uuid4()
                         await conn.execute(
