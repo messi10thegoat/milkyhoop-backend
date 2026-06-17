@@ -2972,22 +2972,38 @@ Aturan:
                             _total_lbl = next(
                                 (v for (l, v) in _amts if "total" in l), None
                             )
-                            _corrected = None
-                            if _nominal and 0 < _nominal < _cur_total:
-                                _corrected = _nominal
-                            elif (
-                                _total_lbl
-                                and _admin
-                                and 0 < (_total_lbl - _admin) < _cur_total
-                            ):
-                                _corrected = _total_lbl - _admin
-                            if _corrected:
-                                logger.info(
-                                    "[FIX_TRANSFER_NOMINAL] corrected total_amount %s -> %s (admin fee excluded)",
-                                    _cur_total,
-                                    _corrected,
-                                )
-                                _ocr_data["total_amount"] = _corrected
+                            # Derive settlement (nominal received/transferred) +
+                            # admin fee = total debited - nominal (the user's rule:
+                            # works across banks; same-bank no-fee -> 0). Symmetric:
+                            # computed for BOTH directions; booking differs downstream
+                            # (incoming ignores it = sender's cost, outgoing books it).
+                            _settle = None
+                            _fee = 0
+                            if _nominal and _nominal > 0:
+                                _settle = _nominal
+                                if _total_lbl and _total_lbl > _nominal:
+                                    _fee = _total_lbl - _nominal
+                                elif _admin:
+                                    _fee = _admin
+                            elif _total_lbl and _admin and (_total_lbl - _admin) > 0:
+                                _settle = _total_lbl - _admin
+                                _fee = _admin
+                            if _settle and 0 < _settle <= _cur_total:
+                                if _settle != _cur_total:
+                                    logger.info(
+                                        "[FIX_TRANSFER_NOMINAL] total_amount %s -> %s (nominal received)",
+                                        _cur_total,
+                                        _settle,
+                                    )
+                                _ocr_data["total_amount"] = _settle
+                                if _fee and _fee > 0:
+                                    _ocr_data["admin_fee"] = int(_fee)
+                                    logger.info(
+                                        "[FIX_TRANSFER_NOMINAL] admin_fee=%s (total %s - nominal %s)",
+                                        int(_fee),
+                                        _cur_total,
+                                        _settle,
+                                    )
                     except Exception as _amt_err:
                         logger.warning("[FIX_TRANSFER_NOMINAL] skip: %s", _amt_err)
                     _ocr_elapsed = _t_mod.perf_counter() - _t_start

@@ -505,6 +505,21 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
             FieldSpec(name="session_id", label="Session ID", hidden=True),
             FieldSpec(name="statement_line_id", label="Statement Line ID", hidden=True),
+            # FIX_TRANSFER_ADMIN_FEE: carry transfer admin fee to the POST so the
+            # bill-payment journal books Dr Biaya Admin Bank / Cr Bank = nominal + fee.
+            FieldSpec(
+                name="bank_fee_amount",
+                label="Biaya Admin Bank",
+                field_type="number",
+            ),
+            FieldSpec(
+                name="bank_fee_account_id", label="Bank Fee Account ID", hidden=True
+            ),
+            FieldSpec(
+                name="bank_fee_account_name",
+                label="Akun Biaya Admin",
+                display_only=True,
+            ),
             # Display-only (user sees, stripped before REST call)
             FieldSpec(name="vendor_name", label="Vendor", display_only=True),
             FieldSpec(name="bill_number", label="No. Faktur", display_only=True),

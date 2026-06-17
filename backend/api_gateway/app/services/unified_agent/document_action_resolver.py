@@ -113,6 +113,28 @@ class DocumentActionResolver:
 
     # ─── Payload Builders ───────────────────────────────────────────────
 
+    async def _resolve_bank_fee_account(self):
+        """Resolve the 'Biaya Admin Bank' expense CoA (id, name) for transfer admin fees."""
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        f"SET LOCAL app.tenant_id = '{self.tenant_id}'"
+                    )
+                    row = await conn.fetchrow(
+                        "SELECT id, name FROM chart_of_accounts "
+                        "WHERE tenant_id = $1 AND ("
+                        "  account_code = '5-20800' OR name ILIKE '%admin bank%' "
+                        "  OR name ILIKE '%administrasi bank%')"
+                        " ORDER BY (account_code = '5-20800') DESC, account_code LIMIT 1",
+                        self.tenant_id,
+                    )
+                    if row:
+                        return str(row["id"]), row["name"]
+        except Exception:
+            pass
+        return None, None
+
     async def _build_bill_payment_payload(
         self, match_result, ocr_data: dict
     ) -> ResolvedAction:
@@ -172,6 +194,18 @@ class DocumentActionResolver:
             "payment_date": payment_date or "",
             "payment_method": "bank_transfer",
         }
+
+        # FIX_TRANSFER_ADMIN_FEE (2026-06-18): outgoing transfer admin fee is OUR
+        # cost (money left our bank = nominal + fee). Settle AP by nominal (total_amount
+        # above) and book the fee via bank_fee_amount -> the bill-payment journal posts
+        # Dr Biaya Admin Bank + Cr Bank = nominal + fee (banksync: bank = actual mutation).
+        _adm_fee = float(ocr_data.get("admin_fee") or 0)
+        if _adm_fee > 0:
+            _fee_id, _fee_name = await self._resolve_bank_fee_account()
+            if _fee_id:
+                payload["bank_fee_amount"] = int(_adm_fee)
+                payload["bank_fee_account_id"] = _fee_id
+                payload["bank_fee_account_name"] = _fee_name or "Biaya Admin Bank"
 
         return ResolvedAction(
             action_key="create_bill_payment",
