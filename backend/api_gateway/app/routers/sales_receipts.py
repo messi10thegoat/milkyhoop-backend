@@ -388,7 +388,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     status, created_by
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18, $19, $20, $21, $22, $23, 'completed', $24
+                    $15, $16, $17, $18, $19, $20, $21, $22, $23, 'draft', $24
                 )
                 RETURNING *
                 """,
@@ -716,6 +716,16 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     receipt_id,
                     ctx["tenant_id"],
                 )
+
+            # Finalize: flip draft -> completed now that items, journals
+            # (revenue + SALES_RECEIPT_COGS) and inventory_ledger links are all
+            # written. The header was created as 'draft' so the AFTER-INSERT
+            # totals trigger could populate it; OLD.status='draft' here passes
+            # prevent_sr_modification (which only blocks completed/void rows).
+            await conn.execute(
+                "UPDATE sales_receipts SET status = 'completed', updated_at = NOW() WHERE id = $1",
+                receipt_id,
+            )
 
             # Fetch final receipt
             final_row = await conn.fetchrow(

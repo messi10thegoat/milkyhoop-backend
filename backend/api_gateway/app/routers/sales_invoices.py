@@ -964,36 +964,23 @@ async def _execute_fulfillment(
                 409, f"Sisa qty {description} hanya {remaining_qty}, diminta {req_qty}"
             )
 
-        # 3. Atomic stock deduction
-        # Ensure warehouse_stock row exists
-        await conn.execute(
+        # 3. Availability gate ONLY (read-only).
+        # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger
+        # on inventory_ledger (trg_update_warehouse_stock). The ledger insert in
+        # step 7 below decrements warehouse_stock via that trigger. We MUST NOT
+        # manually UPDATE warehouse_stock here or the stock double-decrements
+        # (inventory Rule 1 / dual-ledger; trigger owns warehouse_stock).
+        available_stock = await conn.fetchval(
             """
-            INSERT INTO warehouse_stock (tenant_id, item_id, warehouse_id, quantity,
-                reserved_quantity)
-            VALUES ($1, $2, $3, 0, 0)
-            ON CONFLICT (tenant_id, warehouse_id, item_id) DO NOTHING
+            SELECT COALESCE(quantity, 0)
+            FROM warehouse_stock
+            WHERE item_id = $1 AND warehouse_id = $2 AND tenant_id = $3
         """,
-            tenant_id,
-            product_id,
-            warehouse_id,
-        )
-
-        stock_row = await conn.fetchrow(
-            """
-            UPDATE warehouse_stock
-            SET quantity = quantity - $1,
-
-                updated_at = NOW()
-            WHERE item_id = $2 AND warehouse_id = $3 AND tenant_id = $4
-              AND quantity >= $1
-            RETURNING quantity
-        """,
-            req_qty,
             product_id,
             warehouse_id,
             tenant_id,
         )
-        if not stock_row:
+        if available_stock is None or Decimal(str(available_stock)) < req_qty:
             raise HTTPException(409, f"Stok {description} tidak cukup")
 
         # 4. Get WAC

@@ -1295,7 +1295,19 @@ async def void_stock_adjustment(
                         sa["journal_id"],
                     )
 
-                    reversal_number = f"RV-{sa['adjustment_number']}"
+                    # Canonical reversal number via self-healing generator
+                    # (V176): GREATEST(counter+1, anchored-actual-max+1). Mirrors
+                    # sales_invoices.void_invoice -- avoids hardcoded RV-{num}
+                    # collisions and keeps the JV counter in sync. chain_sequence
+                    # is left NULL so the AFTER trigger (assign_hash_and_sequence)
+                    # assigns max+1 atomically (Law 22 -- no (tenant,seq) collision).
+                    reversal_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
+                        ctx["tenant_id"],
+                        "JV-REV",
+                        date.today(),
+                    )
+                    reversal_trace = str(uuid_module.uuid4())
 
                     # Step 1: INSERT reversal as DRAFT (Law 20)
                     await conn.execute(
@@ -1303,8 +1315,8 @@ async def void_stock_adjustment(
                         INSERT INTO journal_entries (
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'DRAFT', $7, $7, $8)
+                            trace_id, status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, $7, 'DRAFT', $8, $8, $9)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1312,6 +1324,7 @@ async def void_stock_adjustment(
                         f"Void {sa['adjustment_number']} - {body.reason}",
                         adjustment_id,
                         sa["journal_id"],
+                        reversal_trace,
                         sa["total_value"],  # Law 25: pass Decimal directly
                         ctx["user_id"],
                     )
@@ -1350,161 +1363,29 @@ async def void_stock_adjustment(
                         reversal_journal_id,
                     )
 
-                # Reverse inventory changes
-                items = await conn.fetch(
-                    """
-                    SELECT * FROM stock_adjustment_items
-                    WHERE stock_adjustment_id = $1
-                """,
-                    adjustment_id,
-                )
-
-                # NOTE: persediaan table writes removed - inventory_ledger is source of truth (Law 16)
-                # Get default warehouse for inventory_ledger (used in fallback below)
-                default_warehouse_id = await conn.fetchval(
-                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                    ctx["tenant_id"],
-                )
-                for item in items:
-                    # Reverse inventory_ledger entries (Law 16 compliant)
-                    product_row = await conn.fetchrow(
-                        """
-                        SELECT id, nama_produk, item_code, track_inventory, item_type
-                        FROM products WHERE id = $1 AND tenant_id = $2
-                    """,
-                        item["product_id"],
-                        ctx["tenant_id"],
+                # Reverse inventory changes via the canonical shared helper
+                # (milkyhoop-inventory Rule 9 / closes T7). The helper finds the
+                # original inventory_ledger rows by (source_type, source_id),
+                # mirrors them (swap qty_in<->qty_out), writes STOCK_ADJUSTMENT_VOID
+                # rows linked to the reversal journal, snapshots current WAC (no
+                # recalc on outbound, Rule 3), and lets the AFTER-INSERT trigger
+                # own warehouse_stock. Replaces the prior inline re-derive (which
+                # double-handled WAC and wrote STOCK_ADJUSTMENT source_type rows).
+                if reversal_journal_id:
+                    from ..services.inventory_helpers import (
+                        record_inventory_reversal,
                     )
 
-                    if (
-                        product_row
-                        and product_row["item_type"] == "goods"
-                        and product_row.get("track_inventory", True)
-                    ):
-                        orig_qty = Decimal(str(item["quantity_adjustment"]))
-                        unit_cost = Decimal(str(item["unit_cost"]))
-                        rev_warehouse_id = (
-                            sa.get("warehouse_id")
-                            or sa.get("storage_location_id")
-                            or default_warehouse_id
-                        )
-
-                        # Reverse: original increase (+) -> now outbound;
-                        # original decrease (-) -> now inbound.
-                        if orig_qty < 0:
-                            # INBOUND reversal (undo a decrease): WAC recompute +
-                            # ledger insert delegated to the CANONICAL helper
-                            # (milkyhoop-inventory Rule 3, L09 convergence). The
-                            # helper computes net-on-hand WAC (numerator AND
-                            # denominator both deplete on outbound) — fixes the
-                            # gross-numerator inflation bug — and links journal_id
-                            # to the reversal journal for dual-ledger sync. The
-                            # helper's balance = current + qty equals the prior
-                            # current - orig_qty (orig_qty < 0) — identical.
-                            from ..services.inventory_helpers import (
-                                record_inventory_inbound,
-                            )
-
-                            await record_inventory_inbound(
-                                conn,
-                                tenant_id=ctx["tenant_id"],
-                                product_id=item["product_id"],
-                                product_code=item["product_code"],
-                                product_name=item["product_name"],
-                                warehouse_id=rev_warehouse_id,
-                                quantity=abs(orig_qty),
-                                unit_cost=unit_cost,
-                                source_type="STOCK_ADJUSTMENT",
-                                source_id=adjustment_id,
-                                source_number=sa["adjustment_number"],
-                                user_id=ctx["user_id"],
-                                notes=f"Void Stock Adjustment {sa['adjustment_number']} - Reversal",
-                                journal_id=reversal_journal_id,
-                                movement_type="STOCK_ADJUSTMENT",
-                                storage_location_id=sa["storage_location_id"],
-                            )
-                            logger.info(
-                                f"Inventory reversal inbound (helper) for product {item['product_id']}: "
-                                f"qty_in={abs(orig_qty)}"
-                            )
-                        else:
-                            # OUTBOUND reversal (undo an increase): WAC does NOT
-                            # change (Rule 3). Snapshot current net-on-hand WAC,
-                            # insert outbound row.
-                            qty_out = abs(orig_qty)
-                            total_cost = unit_cost * qty_out
-                            balance_row = await conn.fetchrow(
-                                """
-                                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                                FROM inventory_ledger
-                                WHERE tenant_id = $1 AND product_id = $2
-                            """,
-                                ctx["tenant_id"],
-                                item["product_id"],
-                            )
-                            current_balance = (
-                                Decimal(str(balance_row["balance"]))
-                                if balance_row
-                                else Decimal("0")
-                            )
-                            new_balance = current_balance - orig_qty
-
-                            avg_cost_row = await conn.fetchrow(
-                                """
-                                SELECT
-                                    COALESCE(SUM(quantity_in * unit_cost)
-                                             - SUM(quantity_out * unit_cost), 0) as net_value,
-                                    COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                                FROM inventory_ledger
-                                WHERE tenant_id = $1 AND product_id = $2
-                            """,
-                                ctx["tenant_id"],
-                                item["product_id"],
-                            )
-                            if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
-                                new_avg_cost = Decimal(
-                                    str(avg_cost_row["net_value"])
-                                ) / Decimal(str(avg_cost_row["total_qty"]))
-                            else:
-                                new_avg_cost = unit_cost
-
-                            await conn.execute(
-                                """
-                                INSERT INTO inventory_ledger (
-                                    tenant_id, product_id, product_code, product_name,
-                                    movement_type, movement_date, source_type, source_id, source_number,
-                                    quantity_in, quantity_out, quantity_balance,
-                                    unit_cost, total_cost, average_cost,
-                                    warehouse_id, storage_location_id, journal_id, created_by, notes
-                                ) VALUES (
-                                    $1, $2, $3, $4,
-                                    'STOCK_ADJUSTMENT', CURRENT_DATE, 'STOCK_ADJUSTMENT', $5, $6,
-                                    0, $7, $8,
-                                    $9, $10, $11,
-                                    $12, $13, $14, $15, $16
-                                )
-                            """,
-                                ctx["tenant_id"],
-                                item["product_id"],
-                                item["product_code"],
-                                item["product_name"],
-                                adjustment_id,
-                                sa["adjustment_number"],
-                                qty_out,
-                                new_balance,
-                                unit_cost,
-                                total_cost,
-                                new_avg_cost,
-                                rev_warehouse_id,
-                                sa["storage_location_id"],
-                                reversal_journal_id,
-                                ctx["user_id"],
-                                f"Void Stock Adjustment {sa['adjustment_number']} - Reversal",
-                            )
-                            logger.info(
-                                f"Inventory reversal outbound for product {item['product_id']}: "
-                                f"qty_out={qty_out}, balance={new_balance}"
-                            )
+                    await record_inventory_reversal(
+                        conn,
+                        ctx["tenant_id"],
+                        source_type="STOCK_ADJUSTMENT",
+                        source_id=adjustment_id,
+                        reversal_journal_id=reversal_journal_id,
+                        created_by=ctx["user_id"],
+                        reversal_date=date.today(),
+                        notes_prefix=f"VOID {sa['adjustment_number']}",
+                    )
 
                 # Update status
                 await conn.execute(
