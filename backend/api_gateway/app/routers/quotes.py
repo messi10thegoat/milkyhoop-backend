@@ -694,6 +694,9 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     "footer": body.footer,
                     "opening_text": body.opening_text,
                     "closing_text": body.closing_text,
+                    "payment_bank_name": body.payment_bank_name,
+                    "payment_account_number": body.payment_account_number,
+                    "payment_account_holder": body.payment_account_holder,
                 }
 
                 for field, value in update_fields.items():
