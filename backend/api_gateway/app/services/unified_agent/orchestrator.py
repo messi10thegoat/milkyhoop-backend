@@ -1183,7 +1183,41 @@ class UnifiedAgent:
                     user_text[:60],
                 )
 
-            if _wf_query_intent and not _wf_slotanswer_collision:
+            # FIX_WF_CRUD_RESTATE_NOCANCEL (2026-06-18): apply CRUD-guard
+            # precedence inside the active-workflow branch. A user RE-STATING the
+            # in-flight CRUD action (e.g. repeating "bikinkan faktur pembelian ...
+            # dari vendor Vina Veronica ... jatuh tempo 10 hari" while a
+            # create_bill crud_form is active) trips the query classifier
+            # ("jatuh tempo"/"vendor" -> query_vendors_with_overdue) and would
+            # wrongly cancel the form + re-route. The NORMAL (non-active) path is
+            # immune because CRUD_GUARD re-promotes query->create_bill there; the
+            # active-workflow branch lacks that re-promotion. Mirror it: if the
+            # code CRUD classifier recognizes this message as the SAME intent the
+            # form is collecting, treat it as a re-state (continuation), NOT a
+            # query -> do not cancel on _wf_query_intent; fall through to the
+            # slot-fill path. Scoped to the same-intent case so genuine queries
+            # and genuine action-switches keep their existing behavior.
+            _wf_crud_restate = False
+            if _wf_query_intent and not _wf_slotanswer_collision and _wf_intent:
+                try:
+                    from .entity_extractor import (
+                        classify_crud_intent as _wf_cci,
+                    )
+
+                    _wf_crud_recheck = _wf_cci(user_text)[0]
+                except Exception:  # pragma: no cover - defensive
+                    _wf_crud_recheck = None
+                if _wf_crud_recheck and _wf_crud_recheck == _wf_intent:
+                    _wf_crud_restate = True
+                    logger.info(
+                        "[FIX_WF_CRUD_RESTATE_NOCANCEL] kept active crud_form "
+                        "intent=%s (re-state, not query=%s), text=%r",
+                        _wf_intent,
+                        _wf_query_intent,
+                        user_text[:60],
+                    )
+
+            if _wf_query_intent and not _wf_slotanswer_collision and not _wf_crud_restate:
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
                 logger.warning(
                     "[PIPELINE] Cancelled crud_form (query classifier): was %s, query=%s",
@@ -1212,12 +1246,20 @@ class UnifiedAgent:
             # the answer reaches the slot-fill else below.
             elif (
                 not _wf_slotanswer_collision
+                and not _wf_crud_restate
                 and extraction.intent
                 and extraction.intent not in ("ambiguous", "chitchat", "")
                 and _wf_intent
                 and extraction.intent != _wf_intent
                 and extraction.confidence > 0.7
             ):
+                # FIX_WF_CRUD_RESTATE_NOCANCEL: also skip the different-action
+                # cancel when the message is a same-intent re-state. The upstream
+                # extractor frequently mis-tags a repeated create_bill statement
+                # as create_vendor/create_item (it latches on the vendor name)
+                # at conf>0.7; the code CRUD classifier already confirmed it is
+                # the SAME intent the form collects, so fall through to slot-fill
+                # instead of cancelling + re-routing to the wrong CRUD.
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
                 logger.warning(
                     "[PIPELINE] Cancelled stale crud_form: was %s, now %s",
