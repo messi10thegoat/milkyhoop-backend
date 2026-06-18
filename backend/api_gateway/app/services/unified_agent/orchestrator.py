@@ -2310,6 +2310,48 @@ class UnifiedAgent:
                     if v is not None and k not in save_payload:
                         save_payload[k] = v
 
+            # FIX_RELDATE_PIPELINE_PATH (2026-06-18): capture an explicit
+            # "(jatuh) tempo N hari" offset from the CURRENT turn into the
+            # payload that is about to be saved as BOTH pending_payload AND the
+            # crud_form workflow data.payload below. This is the pipeline pending
+            # path ([PIPELINE] Saved pending / Created crud_form) that the owner's
+            # real two-turn create_bill flow actually traverses; the sibling
+            # FIX_BILL_RELDATE_PERSIST capture lives only on the
+            # _wf_engine.process branch which this flow never reaches, so the
+            # offset was silently lost and "jatuh tempo 10 hari" degraded to
+            # NET-30 / vendor terms. Captured here, _due_offset_days survives the
+            # FIX_WF_DEEPMERGE deep-merge to the later card-building turn (e.g.
+            # "ya lanjutkan"), where _enrich_purchase_invoice /
+            # _enrich_sales_invoice re-apply it against the resolved issue_date
+            # (already wired by 4ef8c339). Scoped to the three due-date-bearing
+            # CRUD intents; SAME regex as FIX_BILL_RELDATE_PERSIST. Idempotent
+            # (skip if already present). Metadata-only (due_date) — no
+            # amount/journal logic touched. The marker is stripped before the
+            # REST POST in unified_chat (FIX_BILL_RELDATE_PERSIST strip block) so
+            # no 422.
+            if extraction.intent in (
+                "create_bill",
+                "create_sales_invoice",
+                "create_quote",
+            ) and not save_payload.get("_due_offset_days"):
+                import re as _rdpp_re
+
+                _rdpp_m = _rdpp_re.search(
+                    r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari\b",
+                    (user_text or "").lower(),
+                )
+                if _rdpp_m:
+                    try:
+                        save_payload["_due_offset_days"] = int(_rdpp_m.group(1))
+                        logger.info(
+                            "[FIX_RELDATE_PIPELINE_PATH] captured due_offset=%s "
+                            "into pipeline pending payload (intent=%s)",
+                            save_payload["_due_offset_days"],
+                            extraction.intent,
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
             if (
                 tool_executor
                 and tool_executor.session_manager
@@ -3156,6 +3198,36 @@ class UnifiedAgent:
                 for k, v in resolution.payload.items():
                     if v is not None and k not in save_payload:
                         save_payload[k] = v
+
+            # FIX_RELDATE_PIPELINE_PATH (2026-06-18): twin capture for the
+            # VALIDATION_ERROR retry branch of the pipeline pending path. When
+            # propose fails on missing fields (rather than an up-front
+            # needs_clarification), this is the dict saved as pending_payload +
+            # crud_form data.payload for the retry turn. Same offset-loss risk,
+            # same idempotent capture, same regex/scope as above. Metadata-only.
+            if extraction.intent in (
+                "create_bill",
+                "create_sales_invoice",
+                "create_quote",
+            ) and not save_payload.get("_due_offset_days"):
+                import re as _rdpv_re
+
+                _rdpv_m = _rdpv_re.search(
+                    r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari\b",
+                    (user_text or "").lower(),
+                )
+                if _rdpv_m:
+                    try:
+                        save_payload["_due_offset_days"] = int(_rdpv_m.group(1))
+                        logger.info(
+                            "[FIX_RELDATE_PIPELINE_PATH] captured due_offset=%s "
+                            "into pipeline validation-retry payload (intent=%s)",
+                            save_payload["_due_offset_days"],
+                            extraction.intent,
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
             if (
                 tool_executor
                 and tool_executor.session_manager
