@@ -5129,6 +5129,18 @@ class ToolExecutor:
             "None",
         ):
             payload["payment_date"] = today
+        # FIX_RCV_CASH_METHOD (2026-06-18): honour an EXPLICIT payment method in the
+        # user text. Customers often pay CASH at the store ("pembayaran masuk secara
+        # cash / tunai"), but the receive-payment default is bank_transfer -> a cash
+        # payment was silently booked as a transfer. Explicit cash/tunai wins over the
+        # LLM default; an explicit transfer word sets bank_transfer.
+        _ut_rcv = (getattr(self, "user_text", "") or "").lower()
+        import re as _re_pm
+
+        if _re_pm.search(r"\b(cash|tunai|kontan)\b", _ut_rcv):
+            payload["payment_method"] = "cash"
+        elif _re_pm.search(r"\b(transfer|tf|m-?banking|qris|va)\b", _ut_rcv):
+            payload["payment_method"] = "bank_transfer"
         payload.setdefault("payment_method", "bank_transfer")
         # FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): the LLM/override can
         # set payment_method to a raw Indonesian phrase ("transfer bank",
