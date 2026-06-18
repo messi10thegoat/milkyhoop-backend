@@ -632,7 +632,34 @@ class EntityResolver:
                     payload[key] = value
 
         # Source 2: Memory state (fill gaps only)
-        if memory_state:
+        # FIX_ITEM_VENDOR_LEAK — gate counterparty (vendor/customer/invoice/bill)
+        # memory injection. A prior vendor/customer interaction leaves
+        # active_vendor_id / active_customer_id in chat_session_state. For
+        # master-data create/update intents (item, vendor, customer, warehouse,
+        # account) the counterparty has NO place in the payload — a vendor must
+        # never enter an item payload, a customer must never enter a vendor
+        # payload, etc. Injecting it leaked a stale "Terdeteksi dari vendor 'X'"
+        # onto create_item cards. Skip counterparty memory injection for these.
+        _MASTER_DATA_INTENTS = {
+            "create_item",
+            "update_item",
+            "create_vendor",
+            "update_vendor",
+            "create_customer",
+            "update_customer",
+            "create_warehouse",
+            "update_warehouse",
+            "create_account",
+            "update_account",
+        }
+        _skip_counterparty_memory = intent in _MASTER_DATA_INTENTS
+        if memory_state and _skip_counterparty_memory:
+            logger.debug(
+                "[FIX_ITEM_VENDOR_LEAK] skipping vendor/customer/invoice/bill "
+                "memory injection for master-data intent=%s",
+                intent,
+            )
+        if memory_state and not _skip_counterparty_memory:
             if "customer_id" not in payload and memory_state.get("active_customer_id"):
                 payload["customer_id"] = memory_state["active_customer_id"]
                 payload.setdefault(

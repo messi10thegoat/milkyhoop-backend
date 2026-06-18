@@ -1608,6 +1608,40 @@ class ToolExecutor:
                 ("account_name", "akun"),
                 ("name", "nama"),
             ]
+        elif action_key in (
+            "create_item",
+            "update_item",
+            "create_warehouse",
+            "update_warehouse",
+            "create_account",
+            "update_account",
+        ):
+            # FIX_DETECTION_PARTY_ITEM (2026-06-18): item / master-data flows
+            # have NO counterparty. The generic order put vendor_name /
+            # customer_name FIRST, so a stale/leaked vendor_name (e.g. from a
+            # prior vendor interaction left in session memory) surfaced as
+            # "Terdeteksi dari vendor 'NONENG'" on a create_item card. Put the
+            # item/entity name first and EXCLUDE vendor/customer entirely so a
+            # stray counterparty can never appear on a master-data card.
+            _det_party_order = [
+                ("item_name", "barang"),
+                ("name", "nama"),
+                ("account_name", "akun"),
+            ]
+        elif action_key in ("create_vendor", "update_vendor"):
+            # FIX_DETECTION_PARTY_ITEM: a vendor card's party IS the vendor's
+            # own name; never let a leaked customer_name surface.
+            _det_party_order = [
+                ("vendor_name", "vendor"),
+                ("name", "nama"),
+            ]
+        elif action_key in ("create_customer", "update_customer"):
+            # FIX_DETECTION_PARTY_ITEM: a customer card's party IS the
+            # customer's own name; never let a leaked vendor_name surface.
+            _det_party_order = [
+                ("customer_name", "pelanggan"),
+                ("name", "nama"),
+            ]
         else:
             _det_party_order = [
                 ("vendor_name", "vendor"),
@@ -4449,6 +4483,24 @@ class ToolExecutor:
                 payload["due_date"] = (
                     datetime.now() + timedelta(days=_bill_terms_days)
                 ).strftime("%Y-%m-%d")
+
+        # FIX_BILL_RELDATE (2026-06-18): parse Indonesian relative dates from
+        # user_text for the bill path (was sales-invoice-only). Resolves
+        # "tanggal faktur hari ini" / "kemarin" / "besok" / "lusa" -> a real
+        # issue_date (the bug stored the literal string "today" unresolved), and
+        # an explicit "jatuh tempo N hari" -> due_date = issue_date + N days,
+        # overriding the vendor.payment_terms_days / NET-30 default above. The
+        # helper's due branch is internally gated on the literal "tempo" keyword
+        # (preserving the FIX_AQUA_DUEDATE discipline: only set due_date from
+        # user_text when the user explicitly mentions jatuh tempo/tempo);
+        # otherwise the NET-30 / payment_terms_days fallback stands. Iron-Law
+        # clean: due_date / issue_date are source-object metadata, NOT ledger
+        # values — no amount or journal logic is touched.
+        _apply_relative_dates(
+            payload,
+            getattr(self, "user_text", "") or "",
+            invoice_date_key="issue_date",
+        )
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Guard: if vendor_id is not a UUID (LLM gave name), move to vendor_name

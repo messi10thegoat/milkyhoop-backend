@@ -1919,13 +1919,19 @@ class UnifiedAgent:
                             except Exception:
                                 pass
 
-                        # Cancel workflow (propose reached = done)
-                        try:
-                            await _wf_engine.cancel(
-                                tool_executor.session_id, "crud_form"
-                            )
-                        except Exception:
-                            pass
+                        # FIX_CRUDFORM_NOAUTOCOMPLETE (2026-06-18): do NOT cancel
+                        # the crud_form here. "Propose reached" is NOT "done" —
+                        # the user has only been SHOWN the card, not confirmed it.
+                        # Cancelling at propose time destroyed the workflow so any
+                        # further pre-confirm correction (turn 3+) lost its
+                        # accumulated slots (the same class of bug this fix
+                        # closes). The crud_form must stay `active` at PROPOSING
+                        # until actual confirm. It is closed in
+                        # unified_chat._confirm_direct_action after a successful
+                        # confirm (cancel crud_form), and abandoned ones are
+                        # reaped by the FIX_WF_STALE_REUSE idle TTL. The merged
+                        # payload is already persisted (ctx.data via process()
+                        # deep-merge + pending_payload above) for the Edit flow.
 
                         await emit(
                             "THINKING_DONE",

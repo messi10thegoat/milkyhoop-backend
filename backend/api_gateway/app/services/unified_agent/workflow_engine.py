@@ -139,6 +139,35 @@ async def check_always_pass(ctx: WorkflowContext, user_data: dict) -> Tuple[bool
     return (True, "")
 
 
+async def check_crud_user_confirmed(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
+    """FIX_CRUDFORM_NOAUTOCOMPLETE (2026-06-18): gate for the crud_form
+    PROPOSING -> COMPLETED transition.
+
+    A crud_form must NOT auto-advance to COMPLETED merely because all required
+    fields are present (which is what ``check_always_pass`` did). COMPLETED must
+    mean the user actually confirmed/posted the action. While the pipeline is
+    still proposing the card and awaiting the user's Konfirmasi tap, the
+    crud_form stays ``active`` in PROPOSING.
+
+    Previously PROPOSING used ``check_always_pass`` so the very first turn walked
+    COLLECTING -> PROPOSING -> COMPLETED and set status='completed'. On the next
+    turn the orchestrator's WORKFLOW-PRIMARY path discarded the (now non-active)
+    crud_form, ``_load_or_create`` Step 4 wiped data='{}' on re-activation, and
+    the accumulated slots (vendor/items/due_date) were lost -> bot re-asked.
+
+    This gate only passes when an explicit confirm signal is present in ctx.data
+    (set by ``WorkflowEngine.resume(confirmed_data={"_user_confirmed": True})``).
+    On the normal propose path no such flag exists, so the workflow remains
+    active at PROPOSING. Actual closure happens at confirm time in
+    ``unified_chat._confirm_direct_action`` (cancel crud_form after success);
+    abandoned workflows are reaped by the FIX_WF_STALE_REUSE idle TTL.
+    """
+    if ctx.data.get("_user_confirmed") or ctx.data.get("user_approved_complete"):
+        return (True, "")
+    # Stay at PROPOSING — card proposed, awaiting user confirmation.
+    return (False, "")
+
+
 async def check_has_balance(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
     """Gate: do we have statement_ending_balance?"""
     if ctx.data.get("statement_ending_balance") is not None:
@@ -1555,7 +1584,12 @@ CRUD_FORM_TRANSITIONS = {
         "not_ready_instruction": "",  # Dynamic from check fn
     },
     "PROPOSING": {
-        "check": check_always_pass,
+        # FIX_CRUDFORM_NOAUTOCOMPLETE: was check_always_pass (auto-completed the
+        # workflow on turn 1). Now gated on an explicit user-confirm signal so
+        # the crud_form stays `active` at PROPOSING until the user confirms the
+        # proposed card. Keeps the workflow alive across turns so slot-fill
+        # answers deep-merge onto the retained payload instead of a wiped base.
+        "check": check_crud_user_confirmed,
         "next": "COMPLETED",
         "not_ready_instruction": "",
     },
