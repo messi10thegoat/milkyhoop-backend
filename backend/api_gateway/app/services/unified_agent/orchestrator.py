@@ -36,7 +36,13 @@ from .intent_classifier import (  # noqa: E402
     RouteResult,
 )  # classify_and_route removed (Final Cleanup)  # noqa: E402
 from .tool_registry import get_tools, get_tools_for_domains, is_userguide_rag_enabled  # noqa: E402
-from .tool_executor import ToolExecutor, TenantContext, get_stage_label  # noqa: E402
+from .tool_executor import (  # noqa: E402
+    ToolExecutor,
+    TenantContext,
+    get_stage_label,
+    _parse_absolute_date_id,
+    _user_gave_absolute_date,
+)
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .citation_rewriter import (  # noqa: E402
     rewrite_citations,
@@ -1705,6 +1711,35 @@ class UnifiedAgent:
                         except (ValueError, TypeError):
                             pass
 
+                # FIX_BILL_ABSDATE_PERSIST (2026-06-18): capture an explicit
+                # ABSOLUTE issue date stated on the CURRENT turn ("15 februari",
+                # "tgl 15/02", ISO) into the workflow payload. Twin of the
+                # due-offset capture above: the deep-merge keeps it so the card,
+                # built on a LATER text-only turn ("ya lanjutkan"), uses the user's
+                # stated date instead of being clobbered to today by the
+                # _enrich_purchase_invoice stale-date gate. Stores the resolved ISO
+                # (_user_issue_date) AND a bool flag (_user_stated_issue_date, set
+                # whenever any absolute-date pattern is present, even if the exact
+                # parse fails — so the today-clobber is still suppressed). Scoped
+                # to the same due-date-bearing CRUD intents; metadata-only.
+                if _wf_intent in (
+                    "create_bill",
+                    "create_sales_invoice",
+                    "create_quote",
+                ) and not merged_for_wf.get("_user_issue_date"):
+                    _abs_d = _parse_absolute_date_id(user_text or "")
+                    if _abs_d is not None:
+                        merged_for_wf["_user_issue_date"] = _abs_d.isoformat()
+                        merged_for_wf["_user_stated_issue_date"] = True
+                        logger.info(
+                            "[FIX_BILL_ABSDATE_PERSIST] captured issue_date=%s "
+                            "into crud_form payload (intent=%s)",
+                            merged_for_wf["_user_issue_date"],
+                            _wf_intent,
+                        )
+                    elif _user_gave_absolute_date(user_text or ""):
+                        merged_for_wf["_user_stated_issue_date"] = True
+
                 # Process workflow with merged payload
                 _wf_result = await _wf_engine.process(
                     tool_executor.session_id,
@@ -2351,6 +2386,31 @@ class UnifiedAgent:
                         )
                     except (ValueError, TypeError):
                         pass
+
+            # FIX_BILL_ABSDATE_PERSIST (2026-06-18): twin absolute-issue-date
+            # capture for the pipeline pending path (the path the owner's real
+            # two-turn create_bill flow traverses). Same scope/idempotence as the
+            # due-offset capture above; persists the resolved ISO + bool flag so
+            # the later card-building turn's _enrich_purchase_invoice honors the
+            # user's stated date instead of clobbering to today. Metadata-only;
+            # markers stripped before POST in unified_chat.
+            if extraction.intent in (
+                "create_bill",
+                "create_sales_invoice",
+                "create_quote",
+            ) and not save_payload.get("_user_issue_date"):
+                _abs_dp = _parse_absolute_date_id(user_text or "")
+                if _abs_dp is not None:
+                    save_payload["_user_issue_date"] = _abs_dp.isoformat()
+                    save_payload["_user_stated_issue_date"] = True
+                    logger.info(
+                        "[FIX_BILL_ABSDATE_PERSIST] captured issue_date=%s "
+                        "into pipeline pending payload (intent=%s)",
+                        save_payload["_user_issue_date"],
+                        extraction.intent,
+                    )
+                elif _user_gave_absolute_date(user_text or ""):
+                    save_payload["_user_stated_issue_date"] = True
 
             if (
                 tool_executor
@@ -3227,6 +3287,28 @@ class UnifiedAgent:
                         )
                     except (ValueError, TypeError):
                         pass
+
+            # FIX_BILL_ABSDATE_PERSIST (2026-06-18): twin absolute-issue-date
+            # capture for the VALIDATION_ERROR retry branch of the pipeline
+            # pending path. Same offset-loss risk, same idempotent capture, same
+            # regex/scope. Metadata-only.
+            if extraction.intent in (
+                "create_bill",
+                "create_sales_invoice",
+                "create_quote",
+            ) and not save_payload.get("_user_issue_date"):
+                _abs_dv = _parse_absolute_date_id(user_text or "")
+                if _abs_dv is not None:
+                    save_payload["_user_issue_date"] = _abs_dv.isoformat()
+                    save_payload["_user_stated_issue_date"] = True
+                    logger.info(
+                        "[FIX_BILL_ABSDATE_PERSIST] captured issue_date=%s "
+                        "into pipeline validation-retry payload (intent=%s)",
+                        save_payload["_user_issue_date"],
+                        extraction.intent,
+                    )
+                elif _user_gave_absolute_date(user_text or ""):
+                    save_payload["_user_stated_issue_date"] = True
 
             if (
                 tool_executor

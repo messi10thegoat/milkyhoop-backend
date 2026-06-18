@@ -249,6 +249,117 @@ def _apply_relative_dates(
     return payload
 
 
+# FIX_BILL_ABSDATE_PARSE 2026-06-18: deterministic Indonesian month-name /
+# numeric absolute-date parser. Stage-2 LLM has no date parsing and hallucinates
+# the YEAR when the user states a bare "15 februari" (e.g. -> 2023/2024). This
+# helper resolves an explicit invoice date deterministically so the value is
+# correct, not LLM-chosen. Metadata-only (issue_date/invoice_date) — no
+# amount/journal logic touched.
+_ID_MONTHS = {
+    "januari": 1,
+    "februari": 2,
+    "pebruari": 2,  # common spelling
+    "maret": 3,
+    "april": 4,
+    "mei": 5,
+    "juni": 6,
+    "juli": 7,
+    "agustus": 8,
+    "september": 9,
+    "oktober": 10,
+    "november": 11,
+    "nopember": 11,  # common spelling
+    "desember": 12,
+    # abbreviations
+    "jan": 1,
+    "feb": 2,
+    "peb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "agu": 8,
+    "agt": 8,
+    "ags": 8,
+    "sep": 9,
+    "sept": 9,
+    "okt": 10,
+    "nov": 11,
+    "nop": 11,
+    "des": 12,
+}
+# month-name alternation, longest-first so "september" wins over "sep"
+_ID_MONTH_ALT = "|".join(sorted(_ID_MONTHS.keys(), key=len, reverse=True))
+# "15 februari" / "15 feb 2026" (optional year)
+_ABS_DATE_MONTHNAME_RE = re.compile(
+    r"\b(\d{1,2})\s+(" + _ID_MONTH_ALT + r")\b(?:\s+(\d{4}))?",
+    re.IGNORECASE,
+)
+# "15/02/2026" / "15-02-2026" / "15/02" (optional year)
+_ABS_DATE_NUMERIC_RE = re.compile(
+    r"\b(\d{1,2})[/\-](\d{1,2})(?:[/\-](\d{2,4}))?\b",
+)
+# ISO "2026-02-15"
+_ABS_DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+
+
+def _parse_absolute_date_id(text: str):
+    """Parse an explicit absolute invoice date out of Indonesian free text.
+
+    Recognized forms (first match wins, ISO -> month-name -> numeric):
+      - ISO: 2026-02-15
+      - month-name: "15 februari", "15 feb 2026", "tanggal faktur 15 februari"
+      - numeric: "15/02/2026", "15-02", "tgl 15/02"
+
+    Year rule: if the user supplies a year, honor it; if NOT, default to the
+    CURRENT year (a backdated purchase invoice is normal — do NOT roll forward).
+
+    Returns a datetime.date or None. Pure function, no LLM, no I/O.
+    """
+    if not text:
+        return None
+    try:
+        cur_year = _date_cls.today().year
+        # 1) ISO first (unambiguous)
+        m = _ABS_DATE_ISO_RE.search(text)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            try:
+                return _date_cls(y, mo, d)
+            except ValueError:
+                return None
+        # 2) Indonesian month-name
+        m = _ABS_DATE_MONTHNAME_RE.search(text)
+        if m:
+            d = int(m.group(1))
+            mo = _ID_MONTHS.get(m.group(2).lower())
+            y = int(m.group(3)) if m.group(3) else cur_year
+            if mo:
+                try:
+                    return _date_cls(y, mo, d)
+                except ValueError:
+                    return None
+        # 3) numeric DD/MM[/YYYY] (day-first, Indonesian convention)
+        m = _ABS_DATE_NUMERIC_RE.search(text)
+        if m:
+            d = int(m.group(1))
+            mo = int(m.group(2))
+            if m.group(3):
+                y = int(m.group(3))
+                if y < 100:  # 2-digit year -> 2000s
+                    y += 2000
+            else:
+                y = cur_year
+            try:
+                return _date_cls(y, mo, d)
+            except ValueError:
+                return None
+    except Exception as _e:  # never raise from a parser
+        logger.debug("[FIX_BILL_ABSDATE_PARSE] parse failed: %s", _e)
+        return None
+    return None
+
+
 def _safe_get_name(entity: dict, entity_type: str) -> str:
     """
     Safely extract vendor/customer name from bill/invoice entity.
@@ -3920,27 +4031,62 @@ class ToolExecutor:
           - Cleans up extraction artifacts (item_id, item_name, quantity, etc.)
         """
         today = datetime.now().strftime("%Y-%m-%d")
+        _ut_raw = getattr(self, "user_text", "") or ""
+
+        # FIX_BILL_ABSDATE_PARSE 2026-06-18 (sales-invoice twin): deterministically
+        # resolve an explicit invoice date from THIS turn's text + honor an
+        # absolute date persisted from an earlier turn. Mirrors the bill path so
+        # "tanggal faktur 15 februari" on turn 1 is not clobbered to today when
+        # the card is built on a later text-only converge turn. The sales path
+        # keys on invoice_date (not issue_date) and accepts the LLM "date" alias.
+        _parsed_abs = _parse_absolute_date_id(_ut_raw)
+        _persisted_issue_iso = payload.get("_user_issue_date")
+        _persisted_issue_flag = bool(payload.get("_user_stated_issue_date"))
 
         # Stale-date override (LLM hallucinates 2024 dates from training cutoff)
-        _id = payload.get("invoice_date")
-        _override = False
-        if not _id or _id in ("null", "", "-", "None"):
-            _override = True
-        else:
+        _date_alias = payload.pop("date", None)  # FIX_BILL_ABSDATE_PARSE: fold "date"
+        _id = payload.get("invoice_date") or _date_alias
+
+        _resolved_abs_iso = None
+        if _parsed_abs is not None:
+            _resolved_abs_iso = _parsed_abs.isoformat()
+        elif _persisted_issue_iso:
             try:
-                _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
-                _now = datetime.now()
-                if (
-                    (_now - _parsed).days > 30 or _parsed.year < _now.year
-                ) and not _user_gave_absolute_date(
-                    getattr(self, "user_text", "") or ""
-                ):
-                    _override = True
+                datetime.strptime(str(_persisted_issue_iso), "%Y-%m-%d")
+                _resolved_abs_iso = str(_persisted_issue_iso)
             except (ValueError, TypeError):
+                _resolved_abs_iso = None
+
+        if _resolved_abs_iso:
+            payload["invoice_date"] = _resolved_abs_iso
+            payload.pop("due_date", None)  # recompute against the user's date
+            logger.info(
+                "[FIX_BILL_ABSDATE_PARSE] (sales) invoice_date=%s (det=%s persisted=%s)",
+                _resolved_abs_iso,
+                _parsed_abs is not None,
+                bool(_persisted_issue_iso),
+            )
+        else:
+            _override = False
+            if not _id or _id in ("null", "", "-", "None"):
                 _override = True
-        if _override:
-            payload["invoice_date"] = today
-            payload.pop("due_date", None)  # force recompute since base date changed
+            else:
+                try:
+                    _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
+                    _now = datetime.now()
+                    if (
+                        (_now - _parsed).days > 30 or _parsed.year < _now.year
+                    ) and not (
+                        _user_gave_absolute_date(_ut_raw) or _persisted_issue_flag
+                    ):
+                        _override = True
+                except (ValueError, TypeError):
+                    _override = True
+            if _override:
+                payload["invoice_date"] = today
+                payload.pop("due_date", None)  # force recompute since base changed
+            else:
+                payload["invoice_date"] = _id
 
         # FIX_AQUA_DUEDATE 2026-05-09: drop LLM-injected due_date unless user
         # explicitly mentioned "jatuh tempo"/"due date". Stage-2 LLM tends to
@@ -3948,9 +4094,13 @@ class ToolExecutor:
         # The intent of the conversational form is: due_date is DERIVED from
         # invoice_date + customer.payment_terms_days, not LLM-extracted.
         _ut = (getattr(self, "user_text", "") or "").lower()
+        # FIX_BILL_ABSDATE_PERSIST (sales twin): a persisted relative due-offset
+        # counts as user-specified intent so the AQUA-pop below doesn't strip a
+        # due_date that will be (re-)derived from the offset.
+        _persisted_due_offset = payload.get("_due_offset_days")
         _user_specified_due = bool(
             re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
-        )
+        ) or _persisted_due_offset is not None
         if not _user_specified_due and payload.get("due_date"):
             payload.pop("due_date", None)
 
@@ -3972,6 +4122,36 @@ class ToolExecutor:
                     _terms_err,
                 )
         self._add_due_date(payload, days=_terms_days)
+
+        # FIX_BILL_RELDATE / RELDATE_PERSIST (sales twin, 2026-06-18): resolve
+        # relative dates from this turn's text + re-apply a persisted explicit
+        # due-offset against the (now correct) invoice_date, so an explicit
+        # "jatuh tempo N hari" stated on turn 1 survives to the converge turn.
+        # Symmetric with _enrich_purchase_invoice. Metadata-only.
+        _apply_relative_dates(
+            payload,
+            getattr(self, "user_text", "") or "",
+            invoice_date_key="invoice_date",
+        )
+        _po = payload.get("_due_offset_days")
+        if _po is not None:
+            try:
+                _po_base = datetime.strptime(payload["invoice_date"], "%Y-%m-%d")
+                payload["due_date"] = (
+                    _po_base + timedelta(days=int(_po))
+                ).strftime("%Y-%m-%d")
+                logger.info(
+                    "[FIX_BILL_RELDATE_PERSIST] (sales) re-applied due_offset=%s "
+                    "-> due_date=%s (invoice_date=%s)",
+                    _po,
+                    payload["due_date"],
+                    payload["invoice_date"],
+                )
+            except (ValueError, TypeError, KeyError) as _po_err:
+                logger.debug(
+                    "[FIX_BILL_RELDATE_PERSIST] (sales) offset re-apply skipped: %s",
+                    _po_err,
+                )
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Customer name lookup
@@ -4427,31 +4607,77 @@ class ToolExecutor:
           - Cleans up extraction artifacts
         """
         today = datetime.now().strftime("%Y-%m-%d")
+        _ut_raw = getattr(self, "user_text", "") or ""
+
+        # FIX_BILL_ABSDATE_PARSE 2026-06-18: deterministically resolve an explicit
+        # issue date the user stated in THIS turn's text ("15 februari", "15 feb
+        # 2026", "tgl 15/02", ISO). This kills the Stage-2 LLM year hallucination
+        # (bare "15 februari" -> 2023/2024). When found it overrides the
+        # LLM-extracted (possibly mis-yeared) date below.
+        _parsed_abs = _parse_absolute_date_id(_ut_raw)
+
+        # FIX_BILL_ABSDATE_PERSIST 2026-06-18: a date stated on an EARLIER turn is
+        # persisted as _user_issue_date (resolved ISO) / _user_stated_issue_date
+        # (bool) by the orchestrator capture sites and survives the workflow
+        # deep-merge. Prefer the persisted resolved ISO when the current turn's
+        # text has no date (e.g. the "ya lanjutkan" converge turn). This mirrors
+        # how _due_offset_days shields the relative due offset across turns.
+        _persisted_issue_iso = payload.get("_user_issue_date")
+        _persisted_issue_flag = bool(payload.get("_user_stated_issue_date"))
 
         # Stale-date override on issue_date (bills/v2 uses issue_date).
-        # Also accept invoice_date from LLM and migrate → issue_date.
+        # Also accept invoice_date / date from LLM and migrate → issue_date.
         _legacy_id = payload.pop("invoice_date", None)
-        _id = payload.get("issue_date") or _legacy_id
-        _override = False
-        if not _id or _id in ("null", "", "-", "None"):
-            _override = True
-        else:
+        _date_alias = payload.pop("date", None)  # FIX_BILL_ABSDATE_PARSE: fold "date" key
+        _id = payload.get("issue_date") or _legacy_id or _date_alias
+
+        # Deterministic / persisted wins outright — no override, no clobber.
+        _resolved_abs_iso = None
+        if _parsed_abs is not None:
+            _resolved_abs_iso = _parsed_abs.isoformat()
+        elif _persisted_issue_iso:
             try:
-                _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
-                _now = datetime.now()
-                if (
-                    (_now - _parsed).days > 30 or _parsed.year < _now.year
-                ) and not _user_gave_absolute_date(
-                    getattr(self, "user_text", "") or ""
-                ):
-                    _override = True
+                # validate it parses; tolerate already-ISO strings
+                datetime.strptime(str(_persisted_issue_iso), "%Y-%m-%d")
+                _resolved_abs_iso = str(_persisted_issue_iso)
             except (ValueError, TypeError):
-                _override = True
-        if _override:
-            payload["issue_date"] = today
-            payload.pop("due_date", None)  # force recompute since base date changed
+                _resolved_abs_iso = None
+
+        if _resolved_abs_iso:
+            payload["issue_date"] = _resolved_abs_iso
+            payload.pop("due_date", None)  # recompute against the user's date
+            logger.info(
+                "[FIX_BILL_ABSDATE_PARSE] issue_date=%s (deterministic=%s persisted=%s)",
+                _resolved_abs_iso,
+                _parsed_abs is not None,
+                bool(_persisted_issue_iso),
+            )
         else:
-            payload["issue_date"] = _id
+            _override = False
+            if not _id or _id in ("null", "", "-", "None"):
+                _override = True
+            else:
+                try:
+                    _parsed = datetime.strptime(str(_id), "%Y-%m-%d")
+                    _now = datetime.now()
+                    # FIX_BILL_ABSDATE_PERSIST: suppress the today-clobber when the
+                    # user stated an absolute date on THIS turn OR an earlier turn
+                    # (persisted flag). Parallel to _persisted_due_offset shielding
+                    # the due-date pop. Without this, a date stated turn-1 is
+                    # destroyed when the card is built on a later text-only turn.
+                    if (
+                        (_now - _parsed).days > 30 or _parsed.year < _now.year
+                    ) and not (
+                        _user_gave_absolute_date(_ut_raw) or _persisted_issue_flag
+                    ):
+                        _override = True
+                except (ValueError, TypeError):
+                    _override = True
+            if _override:
+                payload["issue_date"] = today
+                payload.pop("due_date", None)  # force recompute since base changed
+            else:
+                payload["issue_date"] = _id
 
         # FIX_AQUA_DUEDATE 2026-05-09 (port from _enrich_sales_invoice): drop
         # LLM-injected due_date unless user explicitly mentioned "jatuh tempo".

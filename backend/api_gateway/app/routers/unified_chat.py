@@ -4822,6 +4822,16 @@ async def _confirm_direct_action(
         # -> 422). The resolved due_date remains in the request body.
         if isinstance(clean_payload, dict):
             clean_payload.pop("_due_offset_days", None)
+        # FIX_BILL_ABSDATE_PERSIST (2026-06-18): _user_issue_date (resolved ISO of
+        # an explicit absolute date stated on an earlier turn) and
+        # _user_stated_issue_date (bool marker) are internal multi-turn carriers,
+        # same as _due_offset_days. They already did their job at enrich time
+        # (issue_date resolved); strip them so they never reach the create-bill /
+        # create-sales-invoice POST body (unknown field -> 422). The resolved
+        # issue_date remains in the request body.
+        if isinstance(clean_payload, dict):
+            clean_payload.pop("_user_issue_date", None)
+            clean_payload.pop("_user_stated_issue_date", None)
 
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}
