@@ -508,6 +508,37 @@ class TenantContext:
         self.tenant_name = tenant_name
 
 
+def _parse_idr_amount(text: str) -> float:
+    """Best-effort parse a Rupiah amount from free text; 0.0 if none.
+    Handles 'Rp 275.000', '275.000', '275 ribu', '1,5 juta', '80rb', '80k'.
+    Indonesian convention: '.' = thousands, ',' = decimal."""
+    if not text:
+        return 0.0
+    t = text.lower()
+    m = re.search(r"(?:rp\s*)?(\d+(?:[.,]\d+)?)\s*(juta|jt|ribu|rb|k)\b", t)
+    if m:
+        try:
+            n = float(m.group(1).replace(".", "").replace(",", "."))
+        except Exception:
+            n = 0.0
+        suf = m.group(2)
+        if suf in ("juta", "jt"):
+            return n * 1_000_000
+        if suf in ("ribu", "rb", "k"):
+            return n * 1000
+    m = re.search(r"rp\s*([\d][\d.]*\d|\d)", t)
+    if not m:
+        m = re.search(r"\b(\d{1,3}(?:\.\d{3})+)\b", t)
+    if m:
+        digits = re.sub(r"[^\d]", "", m.group(1))
+        if digits:
+            try:
+                return float(digits)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
 def _normalize_payment_method(value) -> str:
     """FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): coerce any incoming
     payment_method to the receive_payments enum {'cash', 'bank_transfer'}.
@@ -5160,6 +5191,53 @@ class ToolExecutor:
 
         _perf_t0 = time.perf_counter()
         async with httpx.AsyncClient(timeout=5.0) as client:
+            # FIX_RCV_BACKSTOP (2026-06-18): the LLM Stage-1/router intermittently
+            # returns empty amount/customer for a long sentence ("Ada pembayaran masuk
+            # secara cash Rp 275.000 dari pelanggan Marwa Pahude ...") -> the card
+            # degenerates to "Rp 0 dari -". Recover deterministically from the text.
+            _ut_bk = getattr(self, "user_text", "") or ""
+            if _ut_bk:
+                try:
+                    _have_amt = float(
+                        payload.get("total_amount") or payload.get("amount") or 0
+                    )
+                except Exception:
+                    _have_amt = 0.0
+                if _have_amt <= 0:
+                    _pa = _parse_idr_amount(_ut_bk)
+                    if _pa > 0:
+                        payload["total_amount"] = _pa
+                        logger.info("[FIX_RCV_BACKSTOP] amount from text -> %s", _pa)
+                if not payload.get("customer_id") and not payload.get("customer_name"):
+                    from .document_intake_v3.signals import (
+                        extract_party_name as _epn_bk,
+                    )
+
+                    _cust_nm = _epn_bk(_ut_bk, "in")
+                    if _cust_nm:
+                        _cr = await self._fetch_entity(
+                            client, f"/api/customers?search={_cust_nm}"
+                        )
+                        _crows = (
+                            _cr
+                            if isinstance(_cr, list)
+                            else (_cr.get("items") or _cr.get("data") or [])
+                            if isinstance(_cr, dict)
+                            else []
+                        )
+                        if _crows:
+                            _c0 = _crows[0]
+                            _cidv = _c0.get("id")
+                            if _cidv:
+                                payload["customer_id"] = str(_cidv)
+                                payload["customer_name"] = (
+                                    _c0.get("name") or _c0.get("nama") or _cust_nm
+                                )
+                                logger.info(
+                                    "[FIX_RCV_BACKSTOP] customer from text '%s' -> %s",
+                                    _cust_nm,
+                                    _cidv,
+                                )
             # Stage 0 (sequential, required): resolve customer_id from invoice_id if needed
             inv_id = payload.get("invoice_id")
             if inv_id and "customer_id" not in payload:
@@ -5349,6 +5427,14 @@ class ToolExecutor:
         # normalization for the bill-payment twin. bill_payments_v2 has no DB
         # CHECK on payment_method, but downstream bill schemas restrict it; a
         # raw phrase like "transfer bank" should map to bank_transfer here too.
+        # FIX_PAY_CASH_METHOD (2026-06-18): symmetric with receive — honour an
+        # explicit cash/tunai (or transfer) in the user text for outgoing payments
+        # ("bayar vendor X cash/tunai"), not just the default.
+        _ut_mp = (getattr(self, "user_text", "") or "").lower()
+        if re.search(r"\b(cash|tunai|kontan)\b", _ut_mp):
+            payload["payment_method"] = "cash"
+        elif re.search(r"\b(transfer|tf|m-?banking|qris|va)\b", _ut_mp):
+            payload["payment_method"] = "bank_transfer"
         if payload.get("payment_method"):
             payload["payment_method"] = _normalize_payment_method(
                 payload.get("payment_method")
