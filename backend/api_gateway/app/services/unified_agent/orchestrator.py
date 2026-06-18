@@ -3487,6 +3487,32 @@ class UnifiedAgent:
         collected_clean = {
             k: v for k, v in collected.items() if v is not None and k != "date"
         }
+
+        # FIX_CLARIFY_REAL_DISAMBIG (2026-06-18): when the entity resolver already
+        # computed the REAL disambiguation questions (fuzzy vendor "Maksud Anda
+        # Vina Feronica?", ambiguous item "Saya temukan 6 item ... Yang mana?"),
+        # those — NOT an LLM-invented field question — are the authoritative ask.
+        # Previously these arrived only as `missing_labels` (used solely in the
+        # non-LLM fallback); the LLM prompt was built from re-derived field_hints
+        # and so HALLUCINATED a field question (e.g. asking "nomor faktur / tanggal
+        # faktur" — fields that are already satisfied/optional). We surface the
+        # resolver's real clarifications instead, and suppress the field-hint path
+        # so no field already present in resolution.payload leaks into the ask.
+        # Routing/UX only — no journal/amount logic touched.
+        _real_clarifications = []
+        try:
+            if (
+                resolution is not None
+                and getattr(resolution, "needs_clarification", False)
+                and getattr(resolution, "clarifications", None)
+            ):
+                _real_clarifications = [
+                    str(c).strip()
+                    for c in resolution.clarifications
+                    if c and str(c).strip()
+                ]
+        except Exception:
+            _real_clarifications = []
         _field_labels = {
             "name": "nama",
             "item_name": "nama produk",
@@ -3535,7 +3561,11 @@ class UnifiedAgent:
 
         config = get_direct_action(intent)
         field_hints = {}
-        if config:
+        # FIX_CLARIFY_REAL_DISAMBIG: skip field-hint derivation entirely when the
+        # resolver produced real disambiguation questions — otherwise the LLM is
+        # handed field labels for slots that are already filled and invents a
+        # question about them (the reported bug).
+        if config and not _real_clarifications:
             for f in config.fields:
                 # FIX_DOGFOOD_RECEIVEPAY_RESOLVE (2026-06-09): NEVER ask the user
                 # for hidden/display_only fields. Hidden required fields
@@ -3602,7 +3632,23 @@ class UnifiedAgent:
             "- Bahasa Indonesia natural\n"
         )
 
-        if override_instruction:
+        if _real_clarifications and not override_instruction:
+            # FIX_CLARIFY_REAL_DISAMBIG: ask EXACTLY the resolver's disambiguation
+            # question(s). Feed them to the LLM only for light tone polish, and
+            # FORBID introducing any other field. Never mentions a field that is
+            # already present in resolution.payload because we do not pass
+            # field_hints / collected on this path.
+            _ask_list = "\n".join("- " + _c for _c in _real_clarifications)
+            user_prompt = (
+                "User minta: " + _action_desc + "\n"
+                "User perlu memilih / mengonfirmasi hal berikut (WAJIB, jangan ubah maksudnya, "
+                "jangan tambah pertanyaan lain, jangan tanya nomor/tanggal dokumen):\n"
+                + _ask_list + "\n\n"
+                "Sampaikan ulang pertanyaan di atas ke user secara natural & singkat "
+                "(boleh gabung jadi 1-2 kalimat), sebutkan pilihan/nama persis seperti tertulis. "
+                "JANGAN menambahkan field atau pertanyaan apa pun di luar daftar di atas."
+            )
+        elif override_instruction:
             user_prompt = (
                 "User minta: " + _action_desc + "\n\n" + override_instruction + "\n\n"
                 "Balas user secara natural, singkat (1-2 kalimat)."
@@ -3661,6 +3707,11 @@ class UnifiedAgent:
             logger.warning("[PIPELINE] Natural clarification LLM failed: %s", e)
 
         # Fallback
+        # FIX_CLARIFY_REAL_DISAMBIG: if the LLM polish failed but we have the
+        # resolver's real disambiguation, return those questions verbatim rather
+        # than a generic "butuh: ..." derived from field hints.
+        if _real_clarifications:
+            return " ".join(_real_clarifications)
         missing_str = ", ".join(missing_labels) if missing_labels else "beberapa info"
         if collected_display:
             collected_str = ", ".join(
