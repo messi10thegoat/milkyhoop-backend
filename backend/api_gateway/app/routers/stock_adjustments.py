@@ -1352,11 +1352,19 @@ async def void_stock_adjustment(
                         reversal_journal_id,
                     )
 
-                    # Law 26: Link reversal - set reversed_by_id on original, mark as VOID
+                    # Law 26 + Law 2: Link reversal -- set reversed_by_id (+
+                    # reversed_at) on the ORIGINAL journal and leave it
+                    # status='POSTED' (immutability). is_effective_journal()
+                    # drops it via reversed_by_id; the reversal carries
+                    # reversal_of_id. Mirrors sales_invoices.void_invoice exactly.
+                    # NOTE: previously this flipped the original to status='VOID',
+                    # which broke the DEFERRABLE chain trigger (MAX(chain_sequence)
+                    # WHERE status='POSTED' excluded the just-voided original ->
+                    # reversal reused its seq -> unique-index collision -> 500).
                     await conn.execute(
                         """
                         UPDATE journal_entries
-                        SET reversed_by_id = $2, status = 'VOID'
+                        SET reversed_by_id = $2, reversed_at = NOW()
                         WHERE id = $1
                     """,
                         sa["journal_id"],
