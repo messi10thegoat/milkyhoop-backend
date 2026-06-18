@@ -1304,7 +1304,7 @@ async def void_stock_adjustment(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'DRAFT', $7, $7, $8, $8)
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],

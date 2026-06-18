@@ -3334,6 +3334,93 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     logger.info(f"AR reversal journal created: {reversal_journal_id}")
 
                 # ============================================================
+                # 1b. FIX_VOID_REVREC_ORPHAN 2026-06-18: source-agnostic
+                # recognition-leg reversal. void_invoice reverses recognition
+                # only via invoice_fulfillments.revenue_journal_id (loop above),
+                # which is EMPTY for SERVICE invoices (no fulfillment row) ->
+                # their INVOICE_REVENUE journal (Dr Unearned / Cr Penjualan)
+                # survives orphaned + is_effective -> deferred-rev guard FAIL.
+                # Reverse any live INVOICE_REVENUE for this invoice not already
+                # reversed (reversed_by_id IS NULL naturally skips fulfilled
+                # invoices already handled by loop 0a; Law 26 max-1).
+                # ============================================================
+                orphan_rev = await conn.fetchrow(
+                    """
+                    SELECT id, total_debit FROM journal_entries
+                    WHERE source_type = 'INVOICE_REVENUE'
+                      AND source_id = $1
+                      AND tenant_id = $2
+                      AND status = 'POSTED'
+                      AND reversed_by_id IS NULL
+                    """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+                if orphan_rev:
+                    orphan_rev_rev_id = uuid.uuid4()
+                    orphan_rev_trace = str(uuid.uuid4())
+                    # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+                    orphan_rev_number = await conn.fetchval(
+                        "SELECT get_next_journal_number($1, $2, $3)",
+                        ctx["tenant_id"],
+                        "REV",
+                        today,
+                    )
+                    orphan_rev_amount = orphan_rev["total_debit"] or 0
+
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, trace_id,
+                            total_debit, total_credit,
+                            status, created_by, reversal_of_id, reversal_reason
+                        ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+                    """,
+                        orphan_rev_rev_id,
+                        ctx["tenant_id"],
+                        orphan_rev_number,
+                        today,
+                        f"VOID Revenue: {invoice['invoice_number']}",
+                        invoice_id,
+                        orphan_rev_trace,
+                        orphan_rev_amount,
+                        ctx["user_id"],
+                        orphan_rev["id"],
+                        body.reason,
+                    )
+                    # Reverse lines: flip debit/credit
+                    orphan_rev_lines = await conn.fetch(
+                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                        orphan_rev["id"],
+                    )
+                    for ln_num, ol in enumerate(orphan_rev_lines, 1):
+                        await conn.execute(
+                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                            uuid.uuid4(),
+                            orphan_rev_rev_id,
+                            ln_num,
+                            ol["account_id"],
+                            ol["credit"],
+                            ol["debit"],
+                            f"VOID: {ol['memo']}",
+                        )
+                    # Law 20: DRAFT->POSTED triggers hash chain
+                    await conn.execute(
+                        "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                        orphan_rev_rev_id,
+                    )
+                    # Law 26: mark original reversed (max-1 enforced)
+                    await conn.execute(
+                        "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+                        orphan_rev["id"],
+                        orphan_rev_rev_id,
+                    )
+                    logger.info(
+                        f"Orphan INVOICE_REVENUE reversal created: {orphan_rev_rev_id}"
+                    )
+
+                # ============================================================
                 # 2. Legacy COGS reversal (pre-3-event invoices only)
                 # For invoices that have cogs_journal_id but NO fulfillment records
                 # ============================================================
