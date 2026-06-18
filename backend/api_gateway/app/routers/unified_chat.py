@@ -4814,6 +4814,14 @@ async def _confirm_direct_action(
             if isinstance(clean_payload, dict)
             else None
         )
+        # FIX_BILL_RELDATE_PERSIST (2026-06-18): _due_offset_days is an internal
+        # marker carried across multi-turn slot-fill (so an explicit "jatuh tempo
+        # N hari" stated on an earlier turn re-applies when the card is built on a
+        # later turn). It already did its job at enrich time (due_date computed);
+        # strip it so it never reaches the create-bill POST body (unknown field
+        # -> 422). The resolved due_date remains in the request body.
+        if isinstance(clean_payload, dict):
+            clean_payload.pop("_due_offset_days", None)
 
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}

@@ -49,6 +49,38 @@ from .correlation import TurnContext  # noqa: E402
 
 logger = logging.getLogger("unified_agent.orchestrator")
 
+# ─── FIX_WF_SLOTANSWER_NOCANCEL (2026-06-18) ─────────────────────────────────
+# A bill/sales-invoice/quote multi-turn crud_form has a due-date slot. When the
+# user answers that slot with "(faktur) jatuh tempo N hari", the CODE query
+# classifier (classify_query_intent) matches an overdue-query intent on the
+# words "jatuh tempo" — which the intent-based workflow-cancellation path then
+# treats as a domain switch and WIPES the in-flight form (all slots lost).
+#
+# These two overdue-query intents are the ONLY ones that fire on the bare
+# "jatuh tempo"/"tempo"/"overdue" tokens that ALSO appear in a legitimate
+# due-date slot answer. We suppress cancellation ONLY for this exact overlap:
+# an active create_bill/create_sales_invoice/create_quote form (the doc types
+# that own a due-date slot) + one of these two intents. Every OTHER query intent
+# (e.g. "berapa piutang saya?" -> query_ar_outstanding) still cancels/branches
+# as before. Scope is the narrowest that kills the collision without disabling
+# legitimate mid-form domain switches.
+_DATE_AMBIGUOUS_QUERY_INTENTS = frozenset(
+    {"query_sales_invoices_overdue", "query_bills_overdue"}
+)
+_DUE_DATE_SLOT_CRUD_INTENTS = frozenset(
+    {"create_bill", "create_sales_invoice", "create_quote"}
+)
+
+
+def _is_due_date_slot_answer_collision(wf_intent, query_intent):
+    """True when an overdue-query classification collides with a due-date slot
+    answer inside an active due-date-bearing CRUD form -> must NOT cancel."""
+    return (
+        wf_intent in _DUE_DATE_SLOT_CRUD_INTENTS
+        and query_intent in _DATE_AMBIGUOUS_QUERY_INTENTS
+    )
+
+
 # ─── Phase 2A: Domain-Based Tool Loading ─────────────────────────────────────
 # Maps intent_bias modes → tool domains.
 # Uses get_intent_bias() return value to determine which tool domains to load.
@@ -1126,7 +1158,26 @@ class UnifiedAgent:
                 )
             ) or user_text.strip().endswith("?")
 
-            if _wf_query_intent:
+            # FIX_WF_SLOTANSWER_NOCANCEL (2026-06-18): a "(faktur) jatuh tempo N
+            # hari" slot answer matches an overdue-query intent (query classifier
+            # fires on "jatuh tempo"). Suppress the query-classifier cancellation
+            # ONLY for that exact overlap (active due-date-bearing CRUD form +
+            # one of the two overdue-query intents) so the chain falls through to
+            # the active-workflow slot-fill `else` below and the answer is
+            # consumed by the workflow. Every other query intent still cancels.
+            _wf_slotanswer_collision = bool(
+                _wf_query_intent
+            ) and _is_due_date_slot_answer_collision(_wf_intent, _wf_query_intent)
+            if _wf_slotanswer_collision:
+                logger.info(
+                    "[FIX_WF_SLOTANSWER_NOCANCEL] kept crud_form %s: overdue-query "
+                    "intent %s treated as due-date slot answer, text=%r",
+                    _wf_intent,
+                    _wf_query_intent,
+                    user_text[:60],
+                )
+
+            if _wf_query_intent and not _wf_slotanswer_collision:
                 await _wf_engine.cancel(tool_executor.session_id, "crud_form")
                 logger.warning(
                     "[PIPELINE] Cancelled crud_form (query classifier): was %s, query=%s",
@@ -1149,8 +1200,13 @@ class UnifiedAgent:
                 # Fall through to normal flow below
 
             # Check if user started a DIFFERENT action
+            # FIX_WF_SLOTANSWER_NOCANCEL: also skip this cancel when the message
+            # is the due-date slot-answer collision (the LLM extractor may have
+            # tagged "jatuh tempo 10 hari" as an overdue query at high conf) so
+            # the answer reaches the slot-fill else below.
             elif (
-                extraction.intent
+                not _wf_slotanswer_collision
+                and extraction.intent
                 and extraction.intent not in ("ambiguous", "chitchat", "")
                 and _wf_intent
                 and extraction.intent != _wf_intent
@@ -1616,6 +1672,38 @@ class UnifiedAgent:
                             "[WF_OCR] OCR inject failed (non-blocking): %s",
                             _ocr_inject_err,
                         )
+
+                # FIX_BILL_RELDATE_PERSIST (2026-06-18): capture an explicit
+                # "(jatuh) tempo N hari" offset from the CURRENT turn into the
+                # workflow payload, even on an incomplete turn that builds no
+                # card yet. The workflow deep-merge keeps _due_offset_days, so
+                # when the card is finally built on a LATER turn ("ya lanjutkan")
+                # whose user_text omits the tempo phrase, _enrich_purchase_invoice
+                # re-applies the offset against issue_date instead of falling
+                # back to the vendor NET-30 default. Scoped to the due-date-
+                # bearing CRUD intents; metadata-only (no amount/journal change).
+                if _wf_intent in (
+                    "create_bill",
+                    "create_sales_invoice",
+                    "create_quote",
+                ) and not merged_for_wf.get("_due_offset_days"):
+                    import re as _rdp_re
+
+                    _rdp_m = _rdp_re.search(
+                        r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari\b",
+                        (user_text or "").lower(),
+                    )
+                    if _rdp_m:
+                        try:
+                            merged_for_wf["_due_offset_days"] = int(_rdp_m.group(1))
+                            logger.info(
+                                "[FIX_BILL_RELDATE_PERSIST] captured due_offset=%s "
+                                "into crud_form payload (intent=%s)",
+                                merged_for_wf["_due_offset_days"],
+                                _wf_intent,
+                            )
+                        except (ValueError, TypeError):
+                            pass
 
                 # Process workflow with merged payload
                 _wf_result = await _wf_engine.process(
@@ -8367,7 +8455,38 @@ class UnifiedAgent:
                             )
                         )
 
-                        if _wfp_query or _wfp_is_question or _wfp_has_doc_ref:
+                        # FIX_WF_SLOTANSWER_NOCANCEL (2026-06-18): a "(faktur)
+                        # jatuh tempo N hari" slot answer makes the query
+                        # classifier fire query_sales_invoices_overdue /
+                        # query_bills_overdue. Don't let THAT cancel an active
+                        # due-date-bearing CRUD form (bill/sales-invoice/quote)
+                        # in the WF_PRIORITY pre-check either. Suppress only the
+                        # query-classifier trigger for this exact overlap;
+                        # genuine questions and doc-ref switches still cancel.
+                        _wfp_wf_intent = (
+                            _active_wf_p0.data.get("intent", "")
+                            if _active_wf_p0
+                            else ""
+                        )
+                        _wfp_slotanswer_collision = bool(
+                            _wfp_query
+                        ) and _is_due_date_slot_answer_collision(
+                            _wfp_wf_intent, _wfp_query
+                        )
+                        _wfp_query_cancel = bool(_wfp_query) and not (
+                            _wfp_slotanswer_collision
+                        )
+                        if _wfp_slotanswer_collision:
+                            logger.info(
+                                "[FIX_WF_SLOTANSWER_NOCANCEL] WF_PRIORITY kept "
+                                "crud_form %s: overdue-query %s treated as "
+                                "due-date slot answer, text=%r",
+                                _wfp_wf_intent,
+                                _wfp_query,
+                                user_text[:60],
+                            )
+
+                        if _wfp_query_cancel or _wfp_is_question or _wfp_has_doc_ref:
                             # User switched away from CRUD — cancel workflow, don't skip classification
                             await _wf_engine_p0.cancel(
                                 tool_executor.session_id, "crud_form"

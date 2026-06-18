@@ -218,18 +218,33 @@ def _apply_relative_dates(
     )
     if due_match:
         phrase = due_match.group(1).strip()
-        if re.match(r"^\d+\s+hari\b", phrase):
+        _n_hari = re.match(r"^(\d+)\s+hari\b", phrase)
+        if _n_hari:
             base_for_due = inv_base
         else:
             base_for_due = today
         computed = _parse_relative_date_phrase(phrase, base_for_due)
         if computed:
             payload["due_date"] = computed.isoformat()
+            # FIX_BILL_RELDATE_PERSIST (2026-06-18): when the user states an
+            # explicit "jatuh tempo N hari" offset, persist N as a hidden marker
+            # on the payload. The workflow deep-merge keeps it across turns, so
+            # the enrich step on a LATER turn (e.g. "ya lanjutkan") can re-apply
+            # the SAME offset against the issue_date instead of silently falling
+            # back to the vendor NET-30 default. Offset-relative only (an
+            # absolute "tempo 14 Juni" is already an absolute date, no offset to
+            # carry). Metadata only — no amount/journal logic touched.
+            if _n_hari:
+                try:
+                    payload["_due_offset_days"] = int(_n_hari.group(1))
+                except (ValueError, TypeError):
+                    pass
             logger.info(
-                "[FIX_AQUA_RELATIVE_DATE] due_date=%s from phrase=%s base=%s",
+                "[FIX_AQUA_RELATIVE_DATE] due_date=%s from phrase=%s base=%s offset=%s",
                 computed,
                 phrase,
                 base_for_due,
+                payload.get("_due_offset_days"),
             )
     return payload
 
@@ -4442,9 +4457,16 @@ class ToolExecutor:
         # LLM-injected due_date unless user explicitly mentioned "jatuh tempo".
         # Stage-2 LLM tends to hallucinate due_date=today.
         _ut = (getattr(self, "user_text", "") or "").lower()
+        # FIX_BILL_RELDATE_PERSIST (2026-06-18): a previously-stated explicit
+        # "jatuh tempo N hari" is persisted on the payload as _due_offset_days
+        # by _apply_relative_dates and survives the workflow deep-merge. Treat
+        # its presence as user-specified intent so the AQUA-pop below does NOT
+        # strip a persisted due_date on a later turn (e.g. "ya lanjutkan") whose
+        # user_text no longer contains the tempo phrase.
+        _persisted_due_offset = payload.get("_due_offset_days")
         _user_specified_due = bool(
             re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
-        )
+        ) or _persisted_due_offset is not None
         if not _user_specified_due and payload.get("due_date"):
             payload.pop("due_date", None)
 
@@ -4501,6 +4523,31 @@ class ToolExecutor:
             getattr(self, "user_text", "") or "",
             invoice_date_key="issue_date",
         )
+
+        # FIX_BILL_RELDATE_PERSIST (2026-06-18): re-apply a persisted explicit
+        # due-offset against the (now-finalized) issue_date on EVERY turn the
+        # card is built — even one whose user_text omits the tempo phrase. This
+        # closes the persistence gap where "tempo 14 hari" said on turn 1 was
+        # lost when the card was produced on the "ya lanjutkan" turn (NET-30 /
+        # vendor default won). Deterministic, metadata-only. NET-30 still applies
+        # untouched when no offset was ever stated (marker absent).
+        _po = payload.get("_due_offset_days")
+        if _po is not None:
+            try:
+                _po_base = datetime.strptime(payload["issue_date"], "%Y-%m-%d")
+                payload["due_date"] = (
+                    _po_base + timedelta(days=int(_po))
+                ).strftime("%Y-%m-%d")
+                logger.info(
+                    "[FIX_BILL_RELDATE_PERSIST] re-applied due_offset=%s -> due_date=%s (issue_date=%s)",
+                    _po,
+                    payload["due_date"],
+                    payload["issue_date"],
+                )
+            except (ValueError, TypeError, KeyError) as _po_err:
+                logger.debug(
+                    "[FIX_BILL_RELDATE_PERSIST] offset re-apply skipped: %s", _po_err
+                )
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Guard: if vendor_id is not a UUID (LLM gave name), move to vendor_name
