@@ -53,6 +53,8 @@ class AccountingSettingsResponse(BaseModel):
     # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
     default_dp_percent: Optional[float] = None
     default_uang_muka_account_id: Optional[str] = None
+    default_quote_opening_text: Optional[str] = None
+    default_quote_closing_text: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -73,12 +75,16 @@ class UpdateAccountingSettingsRequest(BaseModel):
     # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
     default_dp_percent: Optional[float] = None
     default_uang_muka_account_id: Optional[str] = None
+    default_quote_opening_text: Optional[str] = None
+    default_quote_closing_text: Optional[str] = None
 
 
 class CreateAccountingSettingsRequest(BaseModel):
     default_report_basis: str = "accrual"
     fiscal_year_start_month: int = 1
     base_currency_code: str = "IDR"
+    default_quote_opening_text: Optional[str] = None
+    default_quote_closing_text: Optional[str] = None
 
 
 class AgingType(str, Enum):
@@ -144,6 +150,8 @@ async def get_accounting_settings(request: Request):
                     default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
                     if row["default_uang_muka_account_id"] is not None
                     else None,
+                    default_quote_opening_text=row["default_quote_opening_text"],
+                    default_quote_closing_text=row["default_quote_closing_text"],
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -226,6 +234,8 @@ async def create_accounting_settings(
                     default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
                     if row["default_uang_muka_account_id"] is not None
                     else None,
+                    default_quote_opening_text=row["default_quote_opening_text"],
+                    default_quote_closing_text=row["default_quote_closing_text"],
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -322,6 +332,16 @@ async def update_accounting_settings(
                 params.append(uuid.UUID(data.default_uang_muka_account_id))
                 param_idx += 1
 
+            if data.default_quote_opening_text is not None:
+                updates.append(f"default_quote_opening_text = ${param_idx}")
+                params.append(data.default_quote_opening_text)
+                param_idx += 1
+
+            if data.default_quote_closing_text is not None:
+                updates.append(f"default_quote_closing_text = ${param_idx}")
+                params.append(data.default_quote_closing_text)
+                param_idx += 1
+
             if updates:
                 updates.append("updated_at = NOW()")
                 update_sql = f"""
@@ -354,6 +374,8 @@ async def update_accounting_settings(
                     default_uang_muka_account_id=str(row["default_uang_muka_account_id"])
                     if row["default_uang_muka_account_id"] is not None
                     else None,
+                    default_quote_opening_text=row["default_quote_opening_text"],
+                    default_quote_closing_text=row["default_quote_closing_text"],
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
