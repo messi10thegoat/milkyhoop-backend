@@ -568,7 +568,16 @@ def _infer_intent(user_text: str) -> str:
         "bisakah",
         "bolehkah",
     ]
-    if any(w in text for w in tutorial_words):
+    # FIX_TUTORIAL_WORDBOUNDARY (2026-06-18): match these as WHOLE WORDS, not
+    # substrings. "cara " as a substring matched "se-CARA cash" / "per-CARA" and
+    # mis-tiered a payment ("pembayaran masuk secara cash ...") as TUTORIAL ->
+    # bypassed the CRUD pipeline -> agent loop -> generic "masalah teknis".
+    import re as _re_tut
+
+    if any(
+        _re_tut.search(r"\b" + _re_tut.escape(w.strip()) + r"\b", text)
+        for w in tutorial_words
+    ):
         return "TUTORIAL"
 
     # Action (mutation requests) — word boundary matching
