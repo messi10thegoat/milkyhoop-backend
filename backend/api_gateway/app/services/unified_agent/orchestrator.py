@@ -2374,6 +2374,218 @@ class UnifiedAgent:
             except Exception as _bp_err:
                 logger.warning("[PIPELINE] Bank pills shortcut failed: %s", _bp_err)
 
+        # ── Entity pills shortcut (FIX_ENTITY_PILLS) ──────────────────────────
+        # Mirror of the bank-pills contract for AMBIGUOUS vendor / customer / item
+        # disambiguation. When the resolver surfaced >1 candidate (or a single
+        # fuzzy guess in the 0.5–0.85 band) for a counterparty/item, emit tappable
+        # CLARIFICATION pills built from resolution.resolved[*].candidates instead
+        # of the free-text _natural_clarification path. The FE renders the generic
+        # {question, options:[{label,value}]} and sends back the chosen `value`
+        # (an entity UUID) as the next chat message; the re-trigger handler in
+        # unified_chat.send_message (pending_entity_selection) injects it into the
+        # saved payload and re-proposes. Routing/UX only — no journal/amount logic.
+        #
+        # Gating mirrors the existing clarification gate below: skip update_*/delete_*
+        # (those resolve via memory + the show-current flow, not pills). If NO
+        # structured candidate ambiguity exists (only a genuine missing-required
+        # field, or only an unresolved name with zero candidates), DO NOT pill —
+        # fall through to the existing text clarification (FIX_CLARIFY_REAL_DISAMBIG)
+        # unchanged.
+        if (
+            resolution.needs_clarification
+            and not extraction.intent.startswith("update_")
+            and not extraction.intent.startswith("delete_")
+            and tool_executor
+            and tool_executor.session_manager
+            and tool_executor.session_id
+        ):
+            try:
+                _ep_resolved = resolution.resolved or {}
+
+                def _ep_is_ambiguous(_re):
+                    # >1 candidate, OR the single fuzzy-guess band (0.5–0.85) that
+                    # the resolver flagged for confirmation.
+                    _cands = getattr(_re, "candidates", None) or []
+                    if len(_cands) > 1:
+                        return True
+                    if len(_cands) == 1 and 0.5 <= getattr(_re, "confidence", 0.0) < 0.85:
+                        return True
+                    return False
+
+                # Slot mapping: resolver entity_type -> top-level payload slot.
+                _ep_slot_map = {
+                    "vendor": "vendor_id",
+                    "customer": "customer_id",
+                }
+
+                _ep_payload = {
+                    k: v
+                    for k, v in (resolution.payload or {}).items()
+                    if v is not None
+                }
+                _ep_items = _ep_payload.get("items")
+                if not isinstance(_ep_items, list):
+                    _ep_items = None
+
+                _entity_queue = []
+
+                # Vendor / customer (top-level slots).
+                for _et, _slot in _ep_slot_map.items():
+                    _re = _ep_resolved.get(_et)
+                    if _re is None or not _ep_is_ambiguous(_re):
+                        continue
+                    # Already resolved into payload? then nothing to pick.
+                    if _ep_payload.get(_slot):
+                        continue
+                    _cands = [
+                        {"id": str(c.get("id")), "name": c.get("name") or ""}
+                        for c in (getattr(_re, "candidates", None) or [])
+                        if c.get("id")
+                    ]
+                    if not _cands:
+                        continue
+                    _entity_queue.append(
+                        {
+                            "slot": _slot,
+                            "entity_type": _et,
+                            "line_index": None,
+                            "candidates": _cands,
+                            "allow_create": True,
+                        }
+                    )
+
+                # Item (single ambiguous line for v1). The resolver only ever
+                # surfaces ONE top-level item entity (from a single item_name),
+                # so multi-ambiguous-item-line is NOT representable here — those
+                # fall through to the existing text clarification (deferred).
+                _re_item = _ep_resolved.get("item")
+                if _re_item is not None and _ep_is_ambiguous(_re_item):
+                    _item_cands = [
+                        {"id": str(c.get("id")), "name": c.get("name") or ""}
+                        for c in (getattr(_re_item, "candidates", None) or [])
+                        if c.get("id")
+                    ]
+                    if _item_cands:
+                        # Map to the items[] line whose description/name matches
+                        # the resolver's entity_name; fall back to line 0 when an
+                        # items[] array exists, else None (top-level item_id, which
+                        # _finalize_* backfills into items[0]).
+                        _line_index = None
+                        if _ep_items:
+                            _hint = (
+                                getattr(_re_item, "entity_name", "") or ""
+                            ).strip().lower()
+                            for _li, _it in enumerate(_ep_items):
+                                if not isinstance(_it, dict):
+                                    continue
+                                _desc = (
+                                    _it.get("description")
+                                    or _it.get("item_name")
+                                    or _it.get("name")
+                                    or ""
+                                )
+                                if _hint and _hint in str(_desc).strip().lower():
+                                    _line_index = _li
+                                    break
+                            if _line_index is None:
+                                _line_index = 0
+                        _entity_queue.append(
+                            {
+                                "slot": "item_id",
+                                "entity_type": "item",
+                                "line_index": _line_index,
+                                "candidates": _item_cands,
+                                "allow_create": False,
+                            }
+                        )
+
+                if _entity_queue:
+                    # Persist FULL document_context (whole-column replace).
+                    _ep_state = {
+                        "pending_entity_selection": True,
+                        "resolved_action_key": extraction.intent,
+                        "resolved_payload": _ep_payload,
+                        "entity_queue": _entity_queue,
+                        "entity_cursor": 0,
+                    }
+                    # FK safety (FIX_DOCDIR_SESSION_FK class): ensure the parent
+                    # chat_sessions + chat_session_state rows exist before the
+                    # document_context write. update_state is UPDATE-only, so a
+                    # missing row would silently drop the state and leak the pill
+                    # answer to the orchestrator next turn.
+                    try:
+                        await tool_executor.session_manager.get_or_create_session(
+                            tool_executor.session_id
+                        )
+                    except Exception as _ep_fk_err:
+                        logger.warning(
+                            "[FIX_ENTITY_PILLS] session upsert failed (non-fatal): %s",
+                            _ep_fk_err,
+                        )
+                    await tool_executor.session_manager.update_state(
+                        tool_executor.session_id,
+                        document_context=_ep_state,
+                    )
+
+                    _ep_first = _entity_queue[0]
+                    _ep_options = [
+                        {
+                            "label": c["name"],
+                            "value": c["id"],
+                            "description": "",
+                        }
+                        for c in _ep_first["candidates"]
+                    ]
+                    if _ep_first.get("allow_create"):
+                        _ep_options.append(
+                            {
+                                "label": "➕ Buat baru",
+                                "value": f"create_new:{_ep_first['entity_type']}",
+                                "description": "",
+                            }
+                        )
+                    _ep_q_by_type = {
+                        "vendor": "Pilih vendor:",
+                        "customer": "Pilih pelanggan:",
+                        "item": "Pilih barang yang dimaksud:",
+                    }
+                    _ep_question = _ep_q_by_type.get(
+                        _ep_first["entity_type"], "Pilih yang dimaksud:"
+                    )
+                    logger.warning(
+                        "[PIPELINE] Entity pills shortcut: %d in queue, first=%s "
+                        "(%d options) for %s",
+                        len(_entity_queue),
+                        _ep_first["entity_type"],
+                        len(_ep_options),
+                        extraction.intent,
+                    )
+                    await emit(
+                        "THINKING_DONE",
+                        {
+                            "summary": "Pilih data",
+                            "total_ms": int((_time.time() - start_time) * 1000),
+                        },
+                    )
+                    return AgentResponse(
+                        message_type="CLARIFICATION",
+                        content=_ep_question,
+                        iterations=1,
+                        tool_calls_made=[],
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                        thinking_stages=["Menganalisis pesan"],
+                        extra_data={
+                            "question": _ep_question,
+                            "options": _ep_options,
+                            "allow_freetext": False,
+                        },
+                    )
+            except Exception as _ep_err:
+                logger.warning(
+                    "[PIPELINE] Entity pills shortcut failed: %s", _ep_err
+                )
+
         # Clarification needed? -> Natural LLM-driven question + save pending
         if (
             resolution.needs_clarification
