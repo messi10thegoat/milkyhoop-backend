@@ -153,6 +153,10 @@ def _parse_relative_date_phrase(phrase: str, base):
     m = re.search(r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari", p)
     if m:
         return base_d + timedelta(days=int(m.group(1)))
+    # "net 15" / "net30" — English NET-N payment term → base + N days
+    m = re.search(r"\bnet\s*(\d+)\b", p)
+    if m:
+        return base_d + timedelta(days=int(m.group(1)))
     m = re.search(r"(\d+)\s+hari\s+(?:yang\s+)?lalu", p)
     if m:
         return base_d - timedelta(days=int(m.group(1)))
@@ -218,8 +222,13 @@ def _apply_relative_dates(
     )
     if due_match:
         phrase = due_match.group(1).strip()
-        _n_hari = re.match(r"^(\d+)\s+hari\b", phrase)
-        if _n_hari:
+        # FIX_NET_TERM (2026-06-19): both "N hari" and "net N" (English NET-N
+        # payment term, e.g. "tempo net 15") are offsets RELATIVE TO the invoice
+        # date — not a today-relative phrase. Capture either form as the offset.
+        _n_off = re.match(r"^(\d+)\s+hari\b", phrase) or re.match(
+            r"^net\s*(\d+)\b", phrase
+        )
+        if _n_off:
             base_for_due = inv_base
         else:
             base_for_due = today
@@ -227,16 +236,16 @@ def _apply_relative_dates(
         if computed:
             payload["due_date"] = computed.isoformat()
             # FIX_BILL_RELDATE_PERSIST (2026-06-18): when the user states an
-            # explicit "jatuh tempo N hari" offset, persist N as a hidden marker
-            # on the payload. The workflow deep-merge keeps it across turns, so
-            # the enrich step on a LATER turn (e.g. "ya lanjutkan") can re-apply
-            # the SAME offset against the issue_date instead of silently falling
-            # back to the vendor NET-30 default. Offset-relative only (an
-            # absolute "tempo 14 Juni" is already an absolute date, no offset to
-            # carry). Metadata only — no amount/journal logic touched.
-            if _n_hari:
+            # explicit "jatuh tempo N hari" / "net N" offset, persist N as a
+            # hidden marker on the payload. The workflow deep-merge keeps it
+            # across turns, so the enrich step on a LATER turn (e.g. "ya
+            # lanjutkan") can re-apply the SAME offset against the issue_date
+            # instead of silently falling back to the customer/vendor NET-30
+            # default. Offset-relative only (an absolute "tempo 14 Juni" is
+            # already an absolute date, no offset to carry). Metadata only.
+            if _n_off:
                 try:
-                    payload["_due_offset_days"] = int(_n_hari.group(1))
+                    payload["_due_offset_days"] = int(_n_off.group(1))
                 except (ValueError, TypeError):
                     pass
             logger.info(
@@ -246,6 +255,27 @@ def _apply_relative_dates(
                 base_for_due,
                 payload.get("_due_offset_days"),
             )
+
+    # FIX_NET_TERM (2026-06-19): standalone "net N" payment term stated WITHOUT a
+    # "tempo" prefix (e.g. "... 32 pcs, net 15"). Only fires when no offset was
+    # already derived above. \bnet → won't match "internet". Invoice-relative.
+    if payload.get("_due_offset_days") is None:
+        _net_m = re.search(r"\bnet\s*(\d+)\b", txt)
+        if _net_m:
+            try:
+                _net_days = int(_net_m.group(1))
+                payload["due_date"] = (
+                    inv_base + timedelta(days=_net_days)
+                ).isoformat()
+                payload["_due_offset_days"] = _net_days
+                logger.info(
+                    "[FIX_NET_TERM] due_date=%s from 'net %s' (invoice_date=%s)",
+                    payload["due_date"],
+                    _net_days,
+                    inv_base,
+                )
+            except (ValueError, TypeError):
+                pass
     return payload
 
 
@@ -4099,7 +4129,9 @@ class ToolExecutor:
         # due_date that will be (re-)derived from the offset.
         _persisted_due_offset = payload.get("_due_offset_days")
         _user_specified_due = bool(
-            re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
+            re.search(
+                r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran|net\s*\d+)\b", _ut
+            )
         ) or _persisted_due_offset is not None
         if not _user_specified_due and payload.get("due_date"):
             payload.pop("due_date", None)
@@ -4691,7 +4723,9 @@ class ToolExecutor:
         # user_text no longer contains the tempo phrase.
         _persisted_due_offset = payload.get("_due_offset_days")
         _user_specified_due = bool(
-            re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
+            re.search(
+                r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran|net\s*\d+)\b", _ut
+            )
         ) or _persisted_due_offset is not None
         if not _user_specified_due and payload.get("due_date"):
             payload.pop("due_date", None)

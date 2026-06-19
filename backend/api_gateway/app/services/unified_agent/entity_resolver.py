@@ -855,6 +855,7 @@ class EntityResolver:
         """customers.id = VARCHAR, column = nama (Bahasa!)
         FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: thread actual pg_trgm sim; no blanket 1.0."""
         try:
+            search_term = name_fragment.strip()
             rows = await self.db.fetch(
                 """SELECT id, nama, telepon, email
                    FROM customers
@@ -863,8 +864,25 @@ class EntityResolver:
                    ORDER BY total_transaksi DESC NULLS LAST
                    LIMIT 5""",
                 self.tenant_id,
-                f"%{name_fragment}%",
+                f"%{search_term}%",
             )
+            # FIX_CUST_FIRSTWORD 2026-06-19: first-word fallback ILIKE (mirror
+            # _resolve_item Step 2). The LLM over-captures trailing descriptor
+            # words ("Pioh komunitas binsusto"); when the full phrase misses,
+            # retry with the leading token so "Pioh" resolves to the master
+            # instead of wrongly reporting "belum terdaftar".
+            if not rows and len(name_fragment.split()) > 1:
+                search_term = name_fragment.split()[0]
+                rows = await self.db.fetch(
+                    """SELECT id, nama, telepon, email
+                       FROM customers
+                       WHERE tenant_id = $1 AND is_active = true
+                         AND nama ILIKE $2
+                       ORDER BY total_transaksi DESC NULLS LAST
+                       LIMIT 5""",
+                    self.tenant_id,
+                    f"%{search_term}%",
+                )
             match_kind = "substring" if rows else None
             if not rows:
                 # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: raised 0.15 -> 0.5
@@ -897,8 +915,14 @@ class EntityResolver:
                     confidence = 0.5
             else:
                 confidence = 0.9  # substring ILIKE match
+            # Exact-name match → full confidence. Compare against the effective
+            # search term too, so a first-word hit on "Pioh" still counts exact.
             for c in candidates:
-                if c["name"].lower().strip() == name_fragment.lower().strip():
+                _cn = c["name"].lower().strip()
+                if (
+                    _cn == name_fragment.lower().strip()
+                    or _cn == search_term.lower().strip()
+                ):
                     best = c
                     confidence = 1.0
                     break
@@ -916,13 +940,25 @@ class EntityResolver:
     async def _resolve_vendor(self, name_fragment: str) -> Optional[ResolvedEntity]:
         """FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: thread actual pg_trgm sim; no blanket 1.0."""
         try:
+            search_term = name_fragment.strip()
             rows = await self.db.fetch(
                 """SELECT id, name FROM vendors
                    WHERE tenant_id = $1 AND is_active = true AND name ILIKE $2
                    ORDER BY name LIMIT 5""",
                 self.tenant_id,
-                f"%{name_fragment}%",
+                f"%{search_term}%",
             )
+            # FIX_CUST_FIRSTWORD 2026-06-19 (vendor twin): first-word fallback
+            # ILIKE when the full over-captured phrase misses the master.
+            if not rows and len(name_fragment.split()) > 1:
+                search_term = name_fragment.split()[0]
+                rows = await self.db.fetch(
+                    """SELECT id, name FROM vendors
+                       WHERE tenant_id = $1 AND is_active = true AND name ILIKE $2
+                       ORDER BY name LIMIT 5""",
+                    self.tenant_id,
+                    f"%{search_term}%",
+                )
             match_kind = "substring" if rows else None
             if not rows:
                 # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: raised 0.15 -> 0.5
@@ -956,7 +992,11 @@ class EntityResolver:
             else:
                 confidence = 0.9
             for c in candidates:
-                if c["name"].lower().strip() == name_fragment.lower().strip():
+                _cn = c["name"].lower().strip()
+                if (
+                    _cn == name_fragment.lower().strip()
+                    or _cn == search_term.lower().strip()
+                ):
                     best = c
                     confidence = 1.0
                     break
