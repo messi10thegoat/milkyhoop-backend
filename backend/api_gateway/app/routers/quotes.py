@@ -843,13 +843,15 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
 
 @router.delete("/{quote_id}", response_model=QuoteResponse)
 async def delete_quote(request: Request, quote_id: str):
-    """Delete a quote (draft only)."""
+    """Delete a quote (hard delete). Quotes are ledger-free (no journal entries),
+    so deletion is safe at any status EXCEPT 'converted' — a converted quote is
+    kept to preserve the lineage to its downstream Faktur/Pesanan."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check quote exists and is draft
+            # Check quote exists; ledger-free so deletable unless converted
             quote = await conn.fetchrow(
                 """
                 SELECT id, status, quote_number FROM quotes
@@ -862,9 +864,10 @@ async def delete_quote(request: Request, quote_id: str):
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
 
-            if quote["status"] != "draft":
+            if quote["status"] == "converted":
                 raise HTTPException(
-                    status_code=400, detail="Only draft quotes can be deleted"
+                    status_code=400,
+                    detail="Penawaran sudah dikonversi ke Faktur/Pesanan. Hapus dokumen turunannya terlebih dahulu.",
                 )
 
             # Delete (cascade deletes items)
