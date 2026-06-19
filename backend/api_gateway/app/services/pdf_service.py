@@ -490,6 +490,48 @@ class PDFService:
 
         return HTML(string=html_content).write_pdf(stylesheets=stylesheets)
 
+    def generate_receipt_pdf(self, receipt_data, tenant_info):
+        """
+        Generate PDF for a receipt (Bukti Penerimaan / Kwitansi).
+
+        Args:
+            receipt_data: Receipt data dict (receipt_number, receipt_date,
+                payer_name, amount, amount_words, method, bank_name,
+                purpose_label, purpose_ref, remaining, notes).
+            tenant_info: Tenant info dict with name, address, phone, email, logo_data.
+
+        Returns:
+            PDF content as bytes
+        """
+        template = self.jinja_env.get_template("kwitansi.html")
+
+        # Build company context matching template variable name
+        company = {
+            "name": tenant_info.get("name"),
+            "address": tenant_info.get("address"),
+            "phone": tenant_info.get("phone"),
+            "email": tenant_info.get("email"),
+            "logo_base64": tenant_info.get("logo_data"),
+        }
+
+        # Render HTML
+        html_content = template.render(
+            receipt=receipt_data,
+            company=company,
+            generated_at=datetime.now(),
+        )
+
+        # Load CSS
+        css_path = TEMPLATE_DIR / "invoice.css"
+        stylesheets = []
+        if css_path.exists():
+            stylesheets.append(CSS(filename=str(css_path)))
+
+        # Generate PDF
+        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+
+        return pdf_bytes
+
 
 # Singleton instance
 _pdf_service: Optional[PDFService] = None

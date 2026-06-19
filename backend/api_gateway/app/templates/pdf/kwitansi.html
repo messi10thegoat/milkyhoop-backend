@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Bukti Penerimaan {{ receipt.receipt_number or '-' }}</title></head>
+<body>
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Bukti Penerimaan</h1>
+            <div class="doc-subtitle">Kwitansi</div>
+        </div>
+        {% if company and company.logo_base64 %}
+        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
+
+    <!-- 2. Tenant header -->
+    {% if company %}
+    <div class="parties">
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}
+            <div class="party-detail">{{ company.address }}</div>
+            {% endif %}
+            {% if company.phone %}
+            <div class="party-detail">{{ company.phone }}</div>
+            {% endif %}
+            {% if company.email %}
+            <div class="party-detail">{{ company.email }}</div>
+            {% endif %}
+        </div>
+        <div class="party">
+            <div class="party-label">Diterima dari</div>
+            <div class="party-name">{{ receipt.payer_name or '-' }}</div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- 3. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">No. Kwitansi</td>
+                <td class="meta-value">{{ receipt.receipt_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ receipt.receipt_date | date_id }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- 4. Hero Amount -->
+    <div class="hero">
+        <div class="hero-amount">Jumlah Diterima Rp {{ receipt.amount | currency }}</div>
+    </div>
+
+    <!-- 5. Terbilang -->
+    {% if receipt.amount_words %}
+    <div class="notes-section">
+        <div class="notes-label">Terbilang</div>
+        <div class="notes-text">{{ receipt.amount_words }}</div>
+    </div>
+    {% endif %}
+
+    <div style="height: 12px;"></div>
+
+    <!-- 6. Detail -->
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Metode</td>
+                <td class="value">{{ receipt.method or '-' }}</td>
+            </tr>
+            {% if receipt.bank_name %}
+            <tr>
+                <td class="label">Bank / Rekening</td>
+                <td class="value">{{ receipt.bank_name }}</td>
+            </tr>
+            {% endif %}
+            {% if receipt.purpose_ref %}
+            <tr>
+                <td class="label">Untuk {{ receipt.purpose_label or 'Pembayaran' }}</td>
+                <td class="value">{{ receipt.purpose_ref }}</td>
+            </tr>
+            {% endif %}
+            {% if receipt.remaining is not none %}
+            <tr class="total-row">
+                <td class="label">Sisa / Saldo</td>
+                <td class="value">Rp {{ receipt.remaining | currency }}</td>
+            </tr>
+            {% endif %}
+        </table>
+    </div>
+
+    <!-- 7. Notes -->
+    {% if receipt.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ receipt.notes }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 8. Footer -->
+    <div class="footer-line">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
+</body>
+</html>

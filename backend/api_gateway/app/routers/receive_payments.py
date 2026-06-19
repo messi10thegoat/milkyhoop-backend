@@ -2298,3 +2298,189 @@ async def list_payment_attachments(request: Request, payment_id: str):
                 for r in rows
             ],
         }
+
+
+# =============================================================================
+# GENERATE PDF — Bukti Penerimaan / Kwitansi (Pelunasan Faktur)
+# =============================================================================
+from io import BytesIO as _BytesIO
+from fastapi.responses import StreamingResponse as _StreamingResponse
+from ..services.pdf_service import get_pdf_service as _get_pdf_service
+import base64 as _base64
+from pathlib import Path as _Path
+
+
+def _terbilang(n: int) -> str:
+    """Konversi bilangan bulat rupiah ke kata Bahasa Indonesia."""
+    n = int(n)
+    if n == 0:
+        return "Nol Rupiah"
+    satuan = [
+        "", "Satu", "Dua", "Tiga", "Empat", "Lima",
+        "Enam", "Tujuh", "Delapan", "Sembilan", "Sepuluh", "Sebelas",
+    ]
+
+    def _to_words(x: int) -> str:
+        if x < 12:
+            return satuan[x]
+        elif x < 20:
+            return _to_words(x - 10) + " Belas"
+        elif x < 100:
+            return _to_words(x // 10) + " Puluh" + (
+                " " + _to_words(x % 10) if x % 10 else ""
+            )
+        elif x < 200:
+            return "Seratus" + (" " + _to_words(x - 100) if x - 100 else "")
+        elif x < 1000:
+            return _to_words(x // 100) + " Ratus" + (
+                " " + _to_words(x % 100) if x % 100 else ""
+            )
+        elif x < 2000:
+            return "Seribu" + (" " + _to_words(x - 1000) if x - 1000 else "")
+        elif x < 1_000_000:
+            return _to_words(x // 1000) + " Ribu" + (
+                " " + _to_words(x % 1000) if x % 1000 else ""
+            )
+        elif x < 1_000_000_000:
+            return _to_words(x // 1_000_000) + " Juta" + (
+                " " + _to_words(x % 1_000_000) if x % 1_000_000 else ""
+            )
+        elif x < 1_000_000_000_000:
+            return _to_words(x // 1_000_000_000) + " Miliar" + (
+                " " + _to_words(x % 1_000_000_000) if x % 1_000_000_000 else ""
+            )
+        else:
+            return _to_words(x // 1_000_000_000_000) + " Triliun" + (
+                " " + _to_words(x % 1_000_000_000_000)
+                if x % 1_000_000_000_000
+                else ""
+            )
+
+    return _to_words(n).strip() + " Rupiah"
+
+
+@router.get("/{payment_id}/pdf")
+async def get_receive_payment_pdf(
+    request: Request,
+    payment_id: str,
+    format: Literal["url", "inline"] = Query(
+        "inline",
+        description="Response format: 'inline' returns PDF bytes",
+    ),
+):
+    """Generate Bukti Penerimaan (Kwitansi) PDF for a receive payment (Pelunasan Faktur)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            pay = await conn.fetchrow(
+                "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2",
+                uuid_module.UUID(payment_id),
+                ctx["tenant_id"],
+            )
+            if not pay:
+                raise HTTPException(status_code=404, detail="Receive payment not found")
+
+            # Bank account name: prefer stored column, fallback to join
+            bank_name = pay["bank_account_name"]
+            if not bank_name and pay["bank_account_id"]:
+                bank_row = await conn.fetchrow(
+                    "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
+                    pay["bank_account_id"],
+                )
+                if bank_row:
+                    bank_name = bank_row["account_name"] or bank_row["bank_name"]
+
+            # Linked invoice(s) + remaining from allocations
+            allocs = await conn.fetch(
+                """
+                SELECT invoice_number, remaining_after
+                FROM receive_payment_allocations
+                WHERE payment_id = $1
+                ORDER BY created_at
+                """,
+                uuid_module.UUID(payment_id),
+            )
+            invoice_number = None
+            remaining = None
+            if allocs:
+                _nums = [a["invoice_number"] for a in allocs if a["invoice_number"]]
+                if _nums:
+                    invoice_number = ", ".join(_nums)
+                if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
+                    remaining = int(allocs[0]["remaining_after"])
+
+            _amt = int(pay["total_amount"] or 0)
+            method_label = (
+                "Tunai" if (pay["payment_method"] or "").lower() == "cash"
+                else "Transfer Bank"
+            )
+            receipt_number = pay["payment_number"] or pay["reference_number"]
+
+            receipt_data = {
+                "receipt_number": receipt_number,
+                "receipt_date": pay["payment_date"].isoformat()
+                if pay["payment_date"] else None,
+                "payer_name": pay["customer_name"],
+                "amount": _amt,
+                "amount_words": _terbilang(_amt),
+                "method": method_label,
+                "bank_name": bank_name,
+                "purpose_label": "Pelunasan Faktur",
+                "purpose_ref": invoice_number,
+                "remaining": remaining,
+                "notes": pay["notes"],
+            }
+
+            # Tenant info for header
+            tenant_row = await conn.fetchrow(
+                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                ctx["tenant_id"],
+            )
+            if tenant_row:
+                tenant_info = {
+                    "name": tenant_row["display_name"],
+                    "address": tenant_row["address"],
+                    "phone": tenant_row["phone"],
+                    "logo_url": tenant_row["logo_url"],
+                }
+            else:
+                tenant_info = {
+                    "name": ctx["tenant_id"],
+                    "address": None,
+                    "phone": None,
+                    "logo_url": None,
+                }
+
+            _logo_data = None
+            _logo_filename = tenant_info.get("logo_url")
+            if _logo_filename:
+                _logo_path = (
+                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                )
+                if _logo_path.exists():
+                    with open(_logo_path, "rb") as _lf:
+                        _logo_b64 = _base64.b64encode(_lf.read()).decode()
+                    _logo_data = f"data:image/png;base64,{_logo_b64}"
+            tenant_info["logo_data"] = _logo_data
+
+        pdf_service = _get_pdf_service()
+        pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)
+
+        num = receipt_number or str(payment_id)[:8]
+        filename = f"Kwitansi-{num}.pdf"
+
+        return _StreamingResponse(
+            _BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating receive payment receipt PDF: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate receipt PDF")

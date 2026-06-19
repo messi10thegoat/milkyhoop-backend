@@ -67,6 +67,10 @@ from ..services.role_resolver import (
     resolve_account_id_by_role_if_pkp,  # FIX_P1_DEPOSIT 2026-06-16 (d)
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.bank_sync import (
+    create_bank_transaction_for_journal,
+    create_reversal_bank_transaction,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -2024,22 +2028,24 @@ async def refund_customer_deposit(
                     journal_id,
                 )
 
-                # Create bank transaction if bank account specified
+                # Create bank transaction if bank account specified — canonical
+                # BankSync helper (Rule 1). FIX: previous inline INSERT used columns
+                # reference/source_type/source_id that DO NOT EXIST on bank_transactions
+                # (real: reference_number/reference_type/reference_id) -> refund-to-bank 500.
                 if body.bank_account_id:
-                    await conn.execute(
-                        """
-                        INSERT INTO bank_transactions (
-                            tenant_id, bank_account_id, transaction_date, transaction_type,
-                            amount, reference, description, source_type, source_id
-                        ) VALUES ($1, $2, $3, 'withdrawal', $4, $5, $6, 'DEPOSIT_REFUND', $7)
-                    """,
-                        ctx["tenant_id"],
-                        UUID(body.bank_account_id),
-                        body.refund_date,
-                        body.amount,
-                        body.reference,
-                        f"Deposit Refund - {dep['customer_name']}",
-                        deposit_id,
+                    await create_bank_transaction_for_journal(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        bank_account_id=UUID(body.bank_account_id),
+                        journal_id=journal_id,
+                        transaction_date=body.refund_date,
+                        transaction_type="withdrawal",
+                        amount=-body.amount,
+                        reference_type="DEPOSIT_REFUND",
+                        reference_id=deposit_id,
+                        reference_number=body.reference,
+                        description=f"Deposit Refund - {dep['customer_name']}",
+                        created_by=ctx["user_id"],
                     )
 
                 # Create refund record
@@ -2246,64 +2252,47 @@ async def void_customer_deposit(
                         reversal_journal_id,
                     )
 
-                    # Mark original journal as reversed
+                    # Mark original journal as reversed -- Law 2: keep original
+                    # POSTED + reversed_by_id/reversed_at (NEVER flip to VOID, which
+                    # excludes it from the POSTED ledger sum and breaks BankSync R9
+                    # against the negating bank mirror). Matches sales_invoices void.
                     await conn.execute(
                         """
                         UPDATE journal_entries
-                        SET reversed_by_id = $2, status = 'VOID'
+                        SET reversed_by_id = $2, reversed_at = NOW()
                         WHERE id = $1
                     """,
                         dep["journal_id"],
                         reversal_journal_id,
                     )
 
-                # ── Bank mirror reversal (BankSync Rule 3) ──
-                orig_bank_txn = await conn.fetchrow(
-                    """
-                    SELECT * FROM bank_transactions
-                    WHERE reference_type = 'customer_deposit'
-                      AND reference_id = $1
-                      AND tenant_id = $2
-                      AND status != 'void'
-                    """,
-                    deposit_id,
-                    ctx["tenant_id"],
-                )
-                if orig_bank_txn:
-                    mirror_type = (
-                        "withdrawal"
-                        if orig_bank_txn["transaction_type"] == "deposit"
-                        else "deposit"
-                    )
-                    await conn.execute(
+                # ── Bank mirror reversal (BankSync Rule 3, canonical helper) ──
+                # FIX: locate the ORIGINAL bank_transaction by journal_id (reliable),
+                # NOT by reference_type='customer_deposit' (the create path writes
+                # 'CUSTOMER_DEPOSIT' -- casing mismatch left the mirror un-reversed ->
+                # inflated bank balance). The canonical helper inserts a NEGATING
+                # mirror linked to the reversal journal; we do NOT void the original
+                # row (negation nets to zero, matching the POSTED ledger).
+                if dep["journal_id"]:
+                    orig_bank_txn = await conn.fetchrow(
                         """
-                        INSERT INTO bank_transactions (
-                            id, tenant_id, bank_account_id, transaction_date,
-                            transaction_type, amount, description,
-                            reference_type, reference_id, journal_id,
-                            status, origin_type, source_module,
-                            created_by, created_at
-                        ) VALUES (
-                            gen_random_uuid(), $1, $2, CURRENT_DATE,
-                            $3, $4, $5,
-                            'customer_deposit', $6, $7,
-                            'posted', 'system', 'customer_deposit',
-                            $8, NOW()
-                        )
+                        SELECT id FROM bank_transactions
+                        WHERE journal_id = $1 AND tenant_id = $2
+                        ORDER BY created_at ASC
+                        LIMIT 1
                         """,
+                        dep["journal_id"],
                         ctx["tenant_id"],
-                        orig_bank_txn["bank_account_id"],
-                        mirror_type,
-                        abs(orig_bank_txn["amount"]),
-                        f"[VOID] {orig_bank_txn['description'] or ''}",
-                        deposit_id,
-                        reversal_journal_id if dep["journal_id"] else None,
-                        ctx.get("user_id"),
                     )
-                    await conn.execute(
-                        "UPDATE bank_transactions SET status = 'void', voided_at = NOW() WHERE id = $1",
-                        orig_bank_txn["id"],
-                    )
+                    if orig_bank_txn:
+                        await create_reversal_bank_transaction(
+                            conn,
+                            tenant_id=ctx["tenant_id"],
+                            original_bank_transaction_id=orig_bank_txn["id"],
+                            reversal_journal_id=reversal_journal_id,
+                            created_by=ctx["user_id"],
+                            description_prefix="[VOID]",
+                        )
 
                 # Update deposit status
                 await conn.execute(
@@ -2417,3 +2406,191 @@ async def list_customer_deposits_by_customer(
             f"Error listing deposits for customer {customer_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to list customer deposits")
+
+
+# =============================================================================
+# GENERATE PDF — Bukti Penerimaan / Kwitansi (Uang Muka)
+# =============================================================================
+from io import BytesIO as _BytesIO
+from fastapi.responses import StreamingResponse as _StreamingResponse
+from ..services.pdf_service import get_pdf_service as _get_pdf_service
+import base64 as _base64
+from pathlib import Path as _Path
+
+
+def _terbilang(n: int) -> str:
+    """Konversi bilangan bulat rupiah ke kata Bahasa Indonesia."""
+    n = int(n)
+    if n == 0:
+        return "Nol Rupiah"
+    satuan = [
+        "", "Satu", "Dua", "Tiga", "Empat", "Lima",
+        "Enam", "Tujuh", "Delapan", "Sembilan", "Sepuluh", "Sebelas",
+    ]
+
+    def _to_words(x: int) -> str:
+        if x < 12:
+            return satuan[x]
+        elif x < 20:
+            return _to_words(x - 10) + " Belas"
+        elif x < 100:
+            return _to_words(x // 10) + " Puluh" + (
+                " " + _to_words(x % 10) if x % 10 else ""
+            )
+        elif x < 200:
+            return "Seratus" + (" " + _to_words(x - 100) if x - 100 else "")
+        elif x < 1000:
+            return _to_words(x // 100) + " Ratus" + (
+                " " + _to_words(x % 100) if x % 100 else ""
+            )
+        elif x < 2000:
+            return "Seribu" + (" " + _to_words(x - 1000) if x - 1000 else "")
+        elif x < 1_000_000:
+            return _to_words(x // 1000) + " Ribu" + (
+                " " + _to_words(x % 1000) if x % 1000 else ""
+            )
+        elif x < 1_000_000_000:
+            return _to_words(x // 1_000_000) + " Juta" + (
+                " " + _to_words(x % 1_000_000) if x % 1_000_000 else ""
+            )
+        elif x < 1_000_000_000_000:
+            return _to_words(x // 1_000_000_000) + " Miliar" + (
+                " " + _to_words(x % 1_000_000_000) if x % 1_000_000_000 else ""
+            )
+        else:
+            return _to_words(x // 1_000_000_000_000) + " Triliun" + (
+                " " + _to_words(x % 1_000_000_000_000)
+                if x % 1_000_000_000_000
+                else ""
+            )
+
+    return _to_words(n).strip() + " Rupiah"
+
+
+@router.get("/{deposit_id}/pdf")
+async def get_customer_deposit_pdf(
+    request: Request,
+    deposit_id: str,
+    format: Literal["url", "inline"] = Query(
+        "inline",
+        description="Response format: 'inline' returns PDF bytes",
+    ),
+):
+    """Generate Bukti Penerimaan (Kwitansi) PDF for a customer deposit (Uang Muka)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            dep = await conn.fetchrow(
+                "SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+                uuid_module.UUID(deposit_id),
+                ctx["tenant_id"],
+            )
+            if not dep:
+                raise HTTPException(status_code=404, detail="Customer deposit not found")
+
+            # Bank account name (optional)
+            bank_name = None
+            if dep["bank_account_id"]:
+                bank_row = await conn.fetchrow(
+                    "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
+                    dep["bank_account_id"],
+                )
+                if bank_row:
+                    bank_name = bank_row["account_name"] or bank_row["bank_name"]
+
+            # Linked reference: sales order > quote > deposit number
+            purpose_ref = dep["deposit_number"]
+            if dep["sales_order_id"]:
+                so_row = await conn.fetchrow(
+                    "SELECT order_number FROM sales_orders WHERE id = $1",
+                    dep["sales_order_id"],
+                )
+                if so_row and so_row["order_number"]:
+                    purpose_ref = so_row["order_number"]
+            elif dep["quote_id"]:
+                q_row = await conn.fetchrow(
+                    "SELECT quote_number FROM quotes WHERE id = $1",
+                    dep["quote_id"],
+                )
+                if q_row and q_row["quote_number"]:
+                    purpose_ref = q_row["quote_number"]
+
+            # Remaining = amount - applied - refunded
+            _amt = int(dep["amount"] or 0)
+            _applied = int(dep["amount_applied"] or 0)
+            _refunded = int(dep["amount_refunded"] or 0)
+            remaining = _amt - _applied - _refunded
+
+            method_label = (
+                "Tunai" if (dep["payment_method"] or "").lower() == "cash"
+                else "Transfer Bank"
+            )
+
+            receipt_data = {
+                "receipt_number": dep["deposit_number"],
+                "receipt_date": dep["deposit_date"].isoformat()
+                if dep["deposit_date"] else None,
+                "payer_name": dep["customer_name"],
+                "amount": _amt,
+                "amount_words": _terbilang(_amt),
+                "method": method_label,
+                "bank_name": bank_name,
+                "purpose_label": "Uang Muka",
+                "purpose_ref": purpose_ref,
+                "remaining": remaining,
+                "notes": dep["notes"],
+            }
+
+            # Tenant info for header
+            tenant_row = await conn.fetchrow(
+                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                ctx["tenant_id"],
+            )
+            if tenant_row:
+                tenant_info = {
+                    "name": tenant_row["display_name"],
+                    "address": tenant_row["address"],
+                    "phone": tenant_row["phone"],
+                    "logo_url": tenant_row["logo_url"],
+                }
+            else:
+                tenant_info = {
+                    "name": ctx["tenant_id"],
+                    "address": None,
+                    "phone": None,
+                    "logo_url": None,
+                }
+
+            _logo_data = None
+            _logo_filename = tenant_info.get("logo_url")
+            if _logo_filename:
+                _logo_path = (
+                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+                )
+                if _logo_path.exists():
+                    with open(_logo_path, "rb") as _lf:
+                        _logo_b64 = _base64.b64encode(_lf.read()).decode()
+                    _logo_data = f"data:image/png;base64,{_logo_b64}"
+            tenant_info["logo_data"] = _logo_data
+
+        pdf_service = _get_pdf_service()
+        pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)
+
+        num = dep["deposit_number"] or str(deposit_id)[:8]
+        filename = f"Kwitansi-{num}.pdf"
+
+        return _StreamingResponse(
+            _BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating deposit receipt PDF: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate receipt PDF")
