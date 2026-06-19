@@ -486,7 +486,12 @@ async def list_invoices(
             query = f"""
                 SELECT si.id, si.invoice_number, si.customer_id, si.customer_name,
                        si.invoice_date, si.due_date, si.total_amount,
-                       si.total_amount - COALESCE(ar_fn.outstanding, 0) as journal_paid,
+                       -- B1 FIX_AR_LIST_DRAFTVOID (2026-06-19): mirror DETAIL endpoint.
+                       -- compute_ar_outstanding excludes draft/void -> LEFT JOIN NULL ->
+                       -- COALESCE 0 -> journal_paid=total (false "fully paid"). Gate by status.
+                       CASE WHEN si.status IN (draft,void) THEN 0
+                            ELSE si.total_amount - COALESCE(ar_fn.outstanding, 0)
+                       END as journal_paid,
                        si.status, si.operational_status, si.accounting_status, si.created_at
                 FROM sales_invoices si
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id

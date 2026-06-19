@@ -164,6 +164,14 @@ class ConvertToInvoiceRequest(BaseModel):
     invoice_date: Optional[date] = Field(None, description="Invoice date (defaults to today)")
     due_date: Optional[date] = Field(None, description="Invoice due date")
     items: Optional[List[Dict[str, Any]]] = Field(None, description="Specific items {so_item_id, quantity}")
+    # B2 (2026-06-19): allow caller to reach canonical PSAK-72 defer path.
+    # Null -> post-time fallback (tenant_config revenue_recognition_policy -> invoice).
+    recognize_at: Optional[Literal[invoice, delivery]] = Field(
+        None, description="Revenue recognition timing override; null=tenant default"
+    )
+    warehouse_id: Optional[str] = Field(
+        None, description="Header warehouse for the created invoice (uuid)"
+    )
 
 
 # ============================================================================
@@ -189,6 +197,14 @@ class SalesOrderListItem(BaseModel):
     created_at: str
 
 
+class SalesOrderDepositSummary(BaseModel):
+    """Linked customer deposit summary for a sales order (G2)."""
+    id: str
+    deposit_number: str
+    amount: Decimal
+    status: str
+
+
 class SalesOrderDetail(BaseModel):
     """Full detail schema for single sales order."""
     id: str
@@ -198,6 +214,7 @@ class SalesOrderDetail(BaseModel):
     customer_id: str
     customer_name: str
     quote_id: Optional[str] = None
+    quote_number: Optional[str] = None  # G4: human-readable quote ref
     reference: Optional[str] = None
     shipping_address: Optional[str] = None
     shipping_method: Optional[str] = None
@@ -214,6 +231,7 @@ class SalesOrderDetail(BaseModel):
     items: List[SalesOrderItemResponse] = []
     shipments: List[ShipmentDetail] = []
     invoices: List[Dict[str, Any]] = []  # List of related invoices
+    deposits: List[SalesOrderDepositSummary] = []  # G2: linked customer deposits
     created_at: str
     updated_at: str
     created_by: Optional[str] = None

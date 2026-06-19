@@ -24,6 +24,7 @@ from ..schemas.sales_orders import (
     PendingOrdersResponse,
     SalesOrderListItem,
     SalesOrderDetail,
+    SalesOrderDepositSummary,
     SalesOrderItemResponse,
     ShipmentDetail,
     ShipmentItemResponse,
@@ -346,10 +347,13 @@ async def get_sales_order_detail(request: Request, order_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Get order header
+            # Get order header (G4: join quotes for human-readable quote_number)
             order = await conn.fetchrow(
                 """
-                SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2
+                SELECT so.*, q.quote_number
+                FROM sales_orders so
+                LEFT JOIN quotes q ON q.id = so.quote_id
+                WHERE so.id = $1 AND so.tenant_id = $2
             """,
                 uuid_module.UUID(order_id),
                 ctx["tenant_id"],
@@ -422,6 +426,18 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 uuid_module.UUID(order_id),
             )
 
+            # G2: linked customer deposits (exclude void)
+            deposits = await conn.fetch(
+                """
+                SELECT id, deposit_number, amount, status
+                FROM customer_deposits
+                WHERE sales_order_id = $1 AND tenant_id = $2 AND status <> 'void'
+                ORDER BY created_at
+            """,
+                uuid_module.UUID(order_id),
+                ctx["tenant_id"],
+            )
+
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
@@ -434,6 +450,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     customer_id=str(order["customer_id"]),
                     customer_name=order["customer_name"],
                     quote_id=str(order["quote_id"]) if order["quote_id"] else None,
+                    quote_number=order["quote_number"],
                     reference=order["reference"],
                     shipping_address=order["shipping_address"],
                     shipping_method=order["shipping_method"],
@@ -482,6 +499,15 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             "status": inv["status"],
                         }
                         for inv in invoices
+                    ],
+                    deposits=[
+                        SalesOrderDepositSummary(
+                            id=str(dep["id"]),
+                            deposit_number=dep["deposit_number"],
+                            amount=dep["amount"],
+                            status=dep["status"],
+                        )
+                        for dep in deposits
                     ],
                     created_at=order["created_at"].isoformat(),
                     updated_at=order["updated_at"].isoformat(),
@@ -1266,14 +1292,22 @@ async def convert_to_invoice(
                     if items_to_invoice
                     else 0
                 )
+                # B2 (2026-06-19): pass recognize_at + warehouse_id from request so the
+                # caller can reach the canonical PSAK-72 defer path. Null -> existing
+                # post-time fallback (tenant_config policy -> 'invoice'), backward-safe.
+                _recognize_at = body.recognize_at if body else None
+                _warehouse_id = None
+                if body and getattr(body, "warehouse_id", None):
+                    _warehouse_id = uuid_module.UUID(body.warehouse_id)
                 await conn.execute(
                     """
                     INSERT INTO sales_invoices (
                         id, tenant_id, invoice_number, invoice_date, due_date,
                         customer_id, customer_name,
                         subtotal, tax_rate, tax_amount, total_amount,
-                        status, sales_order_id, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13)
+                        status, sales_order_id, created_by,
+                        recognize_at, warehouse_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15)
                 """,
                     invoice_id,
                     ctx["tenant_id"],
@@ -1288,6 +1322,8 @@ async def convert_to_invoice(
                     total,
                     uuid_module.UUID(order_id),
                     ctx["user_id"],
+                    _recognize_at,
+                    _warehouse_id,
                 )
 
                 for line_idx, item in enumerate(items_to_invoice, start=1):
