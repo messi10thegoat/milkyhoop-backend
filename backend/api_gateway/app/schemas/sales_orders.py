@@ -166,7 +166,7 @@ class ConvertToInvoiceRequest(BaseModel):
     items: Optional[List[Dict[str, Any]]] = Field(None, description="Specific items {so_item_id, quantity}")
     # B2 (2026-06-19): allow caller to reach canonical PSAK-72 defer path.
     # Null -> post-time fallback (tenant_config revenue_recognition_policy -> invoice).
-    recognize_at: Optional[Literal[invoice, delivery]] = Field(
+    recognize_at: Optional[Literal['invoice', 'delivery']] = Field(
         None, description="Revenue recognition timing override; null=tenant default"
     )
     warehouse_id: Optional[str] = Field(
