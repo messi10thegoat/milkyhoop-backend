@@ -2423,6 +2423,64 @@ class UnifiedAgent:
                     for k, v in (resolution.payload or {}).items()
                     if v is not None
                 }
+
+                # FIX_ENTITY_PILLS_DATEKEEP (2026-06-19): the entity-pills emit
+                # block runs BEFORE the text-clarification path (~L2620+) where
+                # FIX_RELDATE_PIPELINE_PATH / FIX_BILL_ABSDATE_PERSIST capture the
+                # user-stated date markers into the saved pending payload. So at
+                # this point resolution.payload does NOT yet carry
+                # _user_issue_date / _user_stated_issue_date / _due_offset_days,
+                # and the pill round-trip (re-trigger -> _execute_propose_direct
+                # -> _enrich_purchase_invoice) would re-clobber issue_date to today
+                # / due_date to NET-30. Mirror those captures HERE so the markers
+                # survive into resolved_payload (and thus the re-propose). The same
+                # markers are stripped in unified_chat._confirm_direct_action before
+                # the REST POST (no 422). Metadata-only (issue_date / due_date) —
+                # no amount/journal logic. Idempotent + scoped to the three
+                # date-bearing CRUD intents. Also forward-preserve any _user_* /
+                # _due_* marker that DID already ride on resolution.payload (the
+                # None-strip above keeps non-None ones; this re-derives from the
+                # current turn text when absent).
+                if extraction.intent in (
+                    "create_bill",
+                    "create_sales_invoice",
+                    "create_quote",
+                ):
+                    if not _ep_payload.get("_due_offset_days"):
+                        import re as _epd_re
+
+                        _epd_m = _epd_re.search(
+                            r"(?:jatuh\s+)?tempo\s+(\d+)\s+hari\b",
+                            (user_text or "").lower(),
+                        )
+                        if _epd_m:
+                            try:
+                                _ep_payload["_due_offset_days"] = int(
+                                    _epd_m.group(1)
+                                )
+                                logger.info(
+                                    "[FIX_ENTITY_PILLS_DATEKEEP] captured "
+                                    "due_offset=%s into entity-pill payload "
+                                    "(intent=%s)",
+                                    _ep_payload["_due_offset_days"],
+                                    extraction.intent,
+                                )
+                            except (ValueError, TypeError):
+                                pass
+                    if not _ep_payload.get("_user_issue_date"):
+                        _epd_abs = _parse_absolute_date_id(user_text or "")
+                        if _epd_abs is not None:
+                            _ep_payload["_user_issue_date"] = _epd_abs.isoformat()
+                            _ep_payload["_user_stated_issue_date"] = True
+                            logger.info(
+                                "[FIX_ENTITY_PILLS_DATEKEEP] captured issue_date=%s "
+                                "into entity-pill payload (intent=%s)",
+                                _ep_payload["_user_issue_date"],
+                                extraction.intent,
+                            )
+                        elif _user_gave_absolute_date(user_text or ""):
+                            _ep_payload["_user_stated_issue_date"] = True
+
                 _ep_items = _ep_payload.get("items")
                 if not isinstance(_ep_items, list):
                     _ep_items = None
@@ -2434,9 +2492,23 @@ class UnifiedAgent:
                     _re = _ep_resolved.get(_et)
                     if _re is None or not _ep_is_ambiguous(_re):
                         continue
-                    # Already resolved into payload? then nothing to pick.
-                    if _ep_payload.get(_slot):
-                        continue
+                    # FIX_ENTITY_PILLS_VENDOR (2026-06-19): do NOT skip a slot just
+                    # because it is populated. _build_payload writes vendor_id /
+                    # customer_id for ANY entity in resolution.resolved — including
+                    # a fuzzy-single guess in the 0.5-0.85 band that the resolver
+                    # flagged needs_clarification (FIX_AQUA_FUZZY_TIGHTEN). The
+                    # original `if _ep_payload.get(_slot): continue` therefore
+                    # silently swallowed every fuzzy/ambiguous vendor (the headline
+                    # case: "Vina Veronica" -> auto-resolved to "Vina Feronica" +
+                    # vendor_id set + needs_clarification=True) -> no pill, fell to
+                    # the legacy free-text "maksud Anda ...?" question. We are only
+                    # ever here when _ep_is_ambiguous(_re) is True (the outer guard
+                    # `continue`s otherwise), and a confidently-resolved entity
+                    # (confidence >= 0.85, <=1 candidate) is NOT ambiguous -> never
+                    # reaches this loop body -> exact "Vina Feronica" still goes
+                    # straight to the card (no regression). When the user taps the
+                    # candidate, the re-trigger re-injects this same id into the
+                    # slot (already correct) and the flow converges.
                     _cands = [
                         {"id": str(c.get("id")), "name": c.get("name") or ""}
                         for c in (getattr(_re, "candidates", None) or [])
