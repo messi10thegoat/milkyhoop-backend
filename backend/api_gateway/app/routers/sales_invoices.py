@@ -3654,10 +3654,12 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
             # invoice_remaining — journal-derived. Use the P1 deposit-aware
             # helper get_invoice_remaining_from_journal (counts INVOICE debit
             # minus receive-payment, credit-note AND DEPOSIT_APPLICATION credits,
-            # is_effective only). compute_ar_outstanding() is NOT used here
-            # because it does not yet recognise customer_deposit_applications as
-            # AR settlements, so it would over-state remaining after a partial
-            # deposit apply (latent in the DB fn; documented as a P3 finding).
+            # is_effective only). NOTE (2026-06-19): compute_ar_outstanding() DOES
+            # now recognise customer_deposit_applications as AR settlements (Branch 3:
+            # joins customer_deposit_applications on source_type='DEPOSIT_APPLICATION'
+            # and subtracts the Cr RECEIVABLE credits) — the earlier 'latent
+            # over-state' P3 finding is RESOLVED. This helper is kept here for the
+            # single-invoice fast path; both agree on partial-apply remaining.
             from .customer_deposits import get_invoice_remaining_from_journal
 
             invoice_remaining = await get_invoice_remaining_from_journal(
