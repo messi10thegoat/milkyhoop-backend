@@ -201,7 +201,7 @@ async def list_sessions(
         rows = await pool.fetch(
             """
             SELECT
-                cs.id, cs.summary, cs.status, cs.created_at, cs.updated_at,
+                cs.id, cs.title, cs.summary, cs.status, cs.created_at, cs.updated_at,
                 last_msg.content AS last_message_preview,
                 last_msg.created_at AS last_message_at,
                 first_user.content AS first_user_message,
@@ -237,7 +237,7 @@ async def list_sessions(
         rows = await pool.fetch(
             """
             SELECT
-                cs.id, cs.summary, cs.status, cs.created_at, cs.updated_at,
+                cs.id, cs.title, cs.summary, cs.status, cs.created_at, cs.updated_at,
                 last_msg.content AS last_message_preview,
                 last_msg.created_at AS last_message_at,
                 first_user.content AS first_user_message,
@@ -279,7 +279,11 @@ async def list_sessions(
             preview = preview[:120] + "..."
         result_sessions.append({
             "id": str(r["id"]),
-            "title": r["summary"] or _generate_title(r["first_user_message"] or preview),  # FIX_CHAT_TITLE_FIRSTUSER
+            # FIX_CHAT_TITLE_LIST — prefer the set-once AI title, then legacy summary, then derived
+            "title": (r["title"].strip() if r["title"] and r["title"].strip() else None)
+                     or r["summary"]
+                     or _generate_title(r["first_user_message"] or preview)
+                     or "Percakapan",
             "status": r["status"],
             "message_count": r["message_count"] or 0,
             "last_message_preview": preview,

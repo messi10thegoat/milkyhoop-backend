@@ -764,6 +764,10 @@ class SessionManager:
             summary = combined
 
         # Store in DB
+        # FIX_CHAT_TITLE_NOCLOBBER — rolling summary writes ONLY to chat_sessions.summary
+        # (legacy L4 memory column). It must NEVER touch chat_sessions.title, which is
+        # set-once by generate_title(). Tier-3 cross-session memory lives in final_summary
+        # (JSON dict via summary_generator.save_final_summary) and is intentionally untouched.
         await self.db.execute(
             "UPDATE chat_sessions SET summary = $1 WHERE id = $2::uuid",
             summary,
@@ -776,6 +780,91 @@ class SessionManager:
             len(summary),
         )
         return summary
+
+    async def generate_title(self, session_id: str) -> str:
+        """Set-once AI short title (3-5 words) for the session.
+
+        Mirrors generate_summary LLM infra (LLMRouter.SIMPLE_READ). Writes the
+        title ONLY if the session has no title yet (title IS NULL OR title='').
+        Falls back to the cleaned first user message if the LLM fails/empty.
+        Never raises into the caller (the orchestrator wraps it too).
+        # FIX_CHAT_TITLE_SETONCE
+        """
+        first_user = ""
+        first_assistant = ""
+        try:
+            urow = await self.db.fetchrow(
+                """SELECT content FROM chat_messages
+                   WHERE session_id = $1::uuid AND tenant_id = $2 AND role = 'user'
+                   ORDER BY created_at ASC LIMIT 1""",
+                session_id,
+                self.tenant_id,
+            )
+            arow = await self.db.fetchrow(
+                """SELECT content FROM chat_messages
+                   WHERE session_id = $1::uuid AND tenant_id = $2 AND role = 'assistant'
+                   ORDER BY created_at ASC LIMIT 1""",
+                session_id,
+                self.tenant_id,
+            )
+            first_user = (urow["content"] if urow and urow["content"] else "") or ""
+            first_assistant = (arow["content"] if arow and arow["content"] else "") or ""
+        except Exception as e:
+            logger.warning("[TITLE] failed to read first messages: %s", e)
+
+        if not first_user.strip():
+            return ""
+
+        def _clean(t: str) -> str:
+            t = (t or "").strip().strip('"').strip("'").strip()
+            t = t.rstrip(".!?:;,")
+            return t[:50].strip()
+
+        fallback = _clean(first_user) or "Percakapan"
+
+        title = ""
+        try:
+            title_system = (
+                "Buat judul singkat 3-5 kata untuk percakapan ini dalam "
+                "Bahasa Indonesia. Hanya judul, tanpa tanda kutip, tanpa "
+                "tanda baca akhir."
+            )
+            convo = f"User: {first_user[:300]}"
+            if first_assistant:
+                convo += f"\nAsisten: {first_assistant[:300]}"
+            router = self._get_llm_router()
+            client, model = router.get_client_and_model(TaskComplexity.SIMPLE_READ)
+            response = await client.chat(
+                messages=[
+                    LLMMessage(role="system", content=title_system),
+                    LLMMessage(role="user", content=convo),
+                ],
+                tools=[],
+                model=model,
+                temperature=0.3,
+                max_tokens=24,
+            )
+            title = _clean(response.content or "")
+        except Exception as e:
+            logger.warning("[TITLE] LLM title failed, using fallback: %s", e)
+            title = ""
+
+        if not title:
+            title = fallback
+
+        try:
+            await self.db.execute(
+                """UPDATE chat_sessions SET title = $1
+                   WHERE id = $2::uuid AND tenant_id = $3
+                     AND (title IS NULL OR title = '')""",
+                title,
+                session_id,
+                self.tenant_id,
+            )
+            logger.info("[TITLE] session %s title=%r", session_id[:8], title)
+        except Exception as e:
+            logger.warning("[TITLE] failed to store title: %s", e)
+        return title
 
     def _get_llm_router(self) -> LLMRouter:
         """Get or create cached LLMRouter instance."""

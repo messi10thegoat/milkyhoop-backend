@@ -215,6 +215,29 @@ class SessionAwareAgent:
         except Exception as e:
             logger.warning(f"[SUMMARY] Auto-summarize failed: {e}")
 
+        # === AI short-title: set-once after the FIRST exchange ===
+        # FIX_CHAT_TITLE_TRIGGER — fire only while title is still null, after
+        # the first user+assistant turn completed. generate_title is set-once
+        # (UPDATE ... WHERE title IS NULL) and never raises into the response.
+        try:
+            _trow = await session_manager.db.fetchrow(
+                """SELECT title,
+                          (SELECT COUNT(*) FROM chat_messages
+                             WHERE session_id = cs.id AND role = 'user') AS u,
+                          (SELECT COUNT(*) FROM chat_messages
+                             WHERE session_id = cs.id AND role = 'assistant') AS a
+                     FROM chat_sessions cs
+                    WHERE cs.id = $1::uuid AND cs.tenant_id = $2""",
+                session_id,
+                session_manager.tenant_id,
+            )
+            if _trow is not None:
+                _has_title = bool(_trow["title"] and str(_trow["title"]).strip())
+                if (not _has_title) and (_trow["u"] or 0) >= 1 and (_trow["a"] or 0) >= 1:
+                    await session_manager.generate_title(session_id)
+        except Exception as e:
+            logger.warning(f"[TITLE] auto-title failed: {e}")
+
         # === Phase B: Update Layer 2 + Layer 3 from tool calls ===
         if tool_calls_made:
             for tool_call in tool_calls_made:
