@@ -886,6 +886,62 @@ async def send_message(request: Request, body: ChatMessageRequest):
     """
     ctx = _get_user_context(request)
 
+    # FIX_MULTIDOC_WFC: document-queue continuation handler.
+    # After a multi-doc card is confirmed, the FE auto-sends the literal text
+    # "lanjut" (handleConfirmAction reads pendingAction.workflowContinuation).
+    # That auto-send hits THIS endpoint (POST /api/v3/chat/message — confirmed:
+    # both ChatPanel.handleConfirmAction and FloatingChatWidget use
+    # actionMode.sendMessage('lanjut') → ActionChatResource.sendMessage →
+    # /message, NOT the SSE stream). Intercept it here, BEFORE the pending-action
+    # guard (a 1-token "lanjut" is not a confirm/cancel keyword, so it would
+    # otherwise be swallowed by the "Ada aksi yang menunggu konfirmasi"
+    # fall-through if any pending row lingers) and BEFORE intent classification.
+    # Strictly gated on document_context.pending_document_queue so recon's own
+    # "lanjut" continuation (which never sets that key) is untouched. Leak-safe:
+    # any error falls through to normal handling.
+    if body.session_id and body.text:
+        try:
+            _wfc_text = body.text.lower().strip()
+            if _wfc_text in ("lanjut", "lanjutkan", "next", "lanjut."):
+                _wfc_pool = await get_session_db_pool()
+                _wfc_sm = SessionManager(
+                    db_pool=_wfc_pool,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                )
+                _wfc_state = await _wfc_sm.get_state(body.session_id)
+                _wfc_dc = getattr(_wfc_state, "document_context", None) or {}
+                if isinstance(_wfc_dc, str):
+                    try:
+                        _wfc_dc = json.loads(_wfc_dc)
+                    except Exception:
+                        _wfc_dc = {}
+                _wfc_queue = (
+                    _wfc_dc.get("pending_document_queue")
+                    if isinstance(_wfc_dc, dict)
+                    else None
+                )
+                if _wfc_queue:
+                    logger.info(
+                        "[FIX_MULTIDOC_WFC] doc-queue continuation: session=%s remaining=%d",
+                        body.session_id[:8],
+                        len(_wfc_queue),
+                    )
+                    _wfc_card = await _advance_document_queue(
+                        ctx,
+                        body.session_id,
+                        prev_note="Bukti sebelumnya diproses.",
+                    )
+                    if _wfc_card is not None:
+                        return _wfc_card
+                # Queue empty/absent → fall through to normal handling (recon
+                # and other flows also use "lanjut"; never swallow it here).
+        except Exception:
+            logger.exception(
+                "[FIX_MULTIDOC_WFC] doc-queue continuation failed (non-fatal)"
+            )
+            # Fall through to normal handling.
+
     # Pending Action Guard: check pending_actions table (single source of truth)
     # No more FSM state sync — pending_actions row is always accurate.
     #
@@ -3167,6 +3223,19 @@ async def _advance_document_queue(
             return None
         _note = f"{prev_note} Bukti {_k} dari {_total_n}:"
         _card.text = f"{_note}\n\n{_card.text or ''}"
+        # FIX_MULTIDOC_WFC: if the queue still has docs AFTER this pop, mark the
+        # card workflow_continuation so the FE auto-sends "lanjut" again after
+        # this card is confirmed. Set BOTH the top-level field and data dict —
+        # the FE reads `directData?.workflow_continuation || response.workflow_continuation`.
+        _wfc_more = bool(_queue)
+        try:
+            _card.workflow_continuation = True if _wfc_more else None
+            if isinstance(getattr(_card, "data", None), dict):
+                _card.data["workflow_continuation"] = _wfc_more
+        except Exception as _wfc_set_err:
+            logger.warning(
+                "[FIX_MULTIDOC_WFC] advance-card wfc set failed: %s", _wfc_set_err
+            )
         return _card
     except Exception as _adv_err:
         logger.error(
@@ -5140,6 +5209,18 @@ Aturan:
                     )
                 except Exception:
                     pass
+                # FIX_MULTIDOC_WFC: more docs are queued behind card 1 → mark
+                # workflow_continuation so the FE auto-sends "lanjut" after this
+                # card is confirmed, driving the queue. Set BOTH the top-level
+                # field and the data dict (FE reads either).
+                try:
+                    _doc_pipeline_result.workflow_continuation = True
+                    if isinstance(getattr(_doc_pipeline_result, "data", None), dict):
+                        _doc_pipeline_result.data["workflow_continuation"] = True
+                except Exception as _wfc1_err:
+                    logger.warning(
+                        "[FIX_MULTIDOC_WFC] card-1 wfc set failed: %s", _wfc1_err
+                    )
         except Exception as _mdq_err:
             logger.warning("[FIX_MULTIDOC] queue stash failed: %s", _mdq_err)
         return _doc_pipeline_result
@@ -6252,34 +6333,16 @@ async def _confirm_direct_action(
                         _hook_err,
                     )
 
-            # FIX_MULTIDOC: if this confirmed action originated from a multi-doc
-            # upload, advance to the next queued receipt and return its card
-            # (chained into this confirm success) instead of the plain message.
-            if session_id:
-                try:
-                    _md_auth = ""
-                    try:
-                        _md_auth = _get_user_context(http_request).get(
-                            "auth_token", ""
-                        )
-                    except Exception:
-                        _md_auth = ""
-                    _next_card = await _advance_document_queue(
-                        {
-                            "tenant_id": tenant_id,
-                            "user_id": user_id,
-                            "auth_token": _md_auth,
-                        },
-                        session_id,
-                        prev_note="Bukti sebelumnya tercatat.",
-                    )
-                    if _next_card is not None:
-                        return _next_card
-                except Exception as _adv_err:
-                    logger.warning(
-                        "[FIX_MULTIDOC] confirm-path queue advance failed: %s",
-                        _adv_err,
-                    )
+            # FIX_MULTIDOC_WFC: the multi-doc queue is NOT advanced here anymore.
+            # Returning the next card directly from the confirm response was
+            # dropped by the FE (it treats inline-card confirm success as inline
+            # success only and does not append a directly-returned card). The
+            # queue is now driven by workflow_continuation: the confirmed card
+            # carries workflow_continuation=True (set in the upload-stash path
+            # and in _advance_document_queue), so the FE auto-sends "lanjut",
+            # which the new doc-queue continuation handler in send_message picks
+            # up to advance the queue. (Removed the _advance_document_queue
+            # direct-return block that used to live here.)
 
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
@@ -6741,22 +6804,16 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         except Exception:
             pass  # Fall back to simple message
 
-        # FIX_MULTIDOC: if the cancelled action came from a multi-doc upload,
-        # advance to the next queued receipt and return its card so cancelling
-        # one receipt does NOT silently drop the rest.
-        if body.session_id:
-            try:
-                _next_card = await _advance_document_queue(
-                    ctx,
-                    body.session_id,
-                    prev_note="Bukti sebelumnya dilewati.",
-                )
-                if _next_card is not None:
-                    return _next_card
-            except Exception as _adv_err:
-                logger.warning(
-                    "[FIX_MULTIDOC] cancel-path queue advance failed: %s", _adv_err
-                )
+        # FIX_MULTIDOC_WFC: the multi-doc queue is NOT advanced on cancel here
+        # anymore (removed the _advance_document_queue direct-return block).
+        # Batal advancement will be driven by an FE auto-"lanjut" that the owner
+        # adds to handleCancelAction separately; until then, cancelling one
+        # receipt returns its plain text and does NOT auto-advance. The
+        # pending_document_queue is left intact by the edit/cancel branches, so
+        # the queue survives and can still be resumed by typing "lanjut" (the
+        # send_message continuation handler) or once the FE wires Batal→lanjut.
+        # Edit (is_edit=True) likewise no longer advances — correct, since the
+        # advance block (which previously gated on `not body.is_edit`) is gone.
 
         return ChatMessageResponse(
             message_type="TEXT",
