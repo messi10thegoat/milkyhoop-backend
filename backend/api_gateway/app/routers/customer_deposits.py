@@ -1124,25 +1124,44 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
     )
 
-    # Create bank transaction if bank account specified
-    if dep["bank_account_id"]:
-        await conn.execute(
-            """
-            INSERT INTO bank_transactions (
-                tenant_id, bank_account_id, transaction_date, transaction_type,
-                amount, reference_number, description, reference_type, reference_id, journal_id, created_by, running_balance
-            ) VALUES ($1, $2, $3, 'deposit', $4, $5, $6, 'CUSTOMER_DEPOSIT', $7, $8, $9, 0)
-        """,
-            ctx["tenant_id"],
-            dep["bank_account_id"],
-            dep["deposit_date"],
-            dep["amount"],
-            dep["reference"],
-            f"Customer Deposit - {dep['customer_name']}",
-            deposit_id,
+    # === bank_transaction mirror (BankSync Rule 1, R9) ===
+    # FIX_R9_DEP_MIRROR (2026-06-20): the old mirror was gated on dep["bank_account_id"]
+    # (the bank_accounts PK). But the FE nulls bank_account_id for cash/kas-method
+    # deposits while still debiting a bank-linked CoA (dep["account_id"]) -> orphan
+    # journal -> BankSync Rule 9 gap. Reverse-lookup the bank_accounts row by the
+    # DEBITED CoA (same pattern as receive_payments FIX_R9_RCV_MIRROR); this subsumes
+    # the old bank_account_id case (FE sets account_id = that account's coaId) AND
+    # catches the null-bank_account_id/account_id-only route. A plain cash/petty-cash
+    # CoA with no bank_accounts row legitimately gets no mirror. Idempotent: skip if a
+    # mirror for this journal already exists. Canonical helper computes running_balance
+    # via trigger (the old raw INSERT hardcoded running_balance=0).
+    bank_acct = await conn.fetchrow(
+        "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+        dep["account_id"],
+        ctx["tenant_id"],
+    )
+    if bank_acct:
+        already = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM bank_transactions WHERE journal_id = $1 AND bank_account_id = $2)",
             journal_id,
-            ctx["user_id"],
+            bank_acct["id"],
         )
+        if not already:
+            await create_bank_transaction_for_journal(
+                conn,
+                tenant_id=ctx["tenant_id"],
+                bank_account_id=bank_acct["id"],
+                journal_id=journal_id,
+                transaction_date=dep["deposit_date"],
+                transaction_type="deposit",
+                amount=dep["amount"],
+                reference_type="CUSTOMER_DEPOSIT",
+                reference_id=deposit_id,
+                reference_number=dep["reference"],
+                description=f"Customer Deposit - {dep['customer_name']}",
+                payee_payer=dep["customer_name"],
+                created_by=ctx["user_id"],
+            )
 
     # Update deposit status
     await conn.execute(

@@ -1034,7 +1034,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     """,
                         UUID(body.source_deposit_id),
                         ctx["tenant_id"],
-                        UUID(body.customer_id),
+                        body.customer_id,  # FIX_RCV_DEPOSIT_CUSTOMERID: customer_deposits.customer_id is VARCHAR (customers.id), passing UUID() -> asyncpg type-mismatch 500
                     )
 
                     if not deposit:
