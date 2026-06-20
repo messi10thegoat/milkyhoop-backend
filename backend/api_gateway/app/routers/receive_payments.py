@@ -51,6 +51,10 @@ from ..schemas.receive_payments import (
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.bank_sync import (
+    create_bank_transaction_for_journal,
+    create_reversal_bank_transaction,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1678,6 +1682,45 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         journal_id,
     )
 
+    # === ARTIFACT 4: bank_transaction mirror (BankSync Rule 1, R9) ===
+    # FIX_R9_RCV_MIRROR (2026-06-20): receive_payments previously created NO
+    # bank_transactions row, so a pelunasan that debits a bank-linked CoA left an
+    # orphan journal -> BankSync Rule 9 gap (ledger balance drift). Mirror it here,
+    # atomically inside the same advisory-locked transaction, using the canonical
+    # helper (same pattern as customer_deposits / bill_payments).
+    #   - Only when source_type='cash' (the branch that debits Bank/Cash). A
+    #     'deposit'-sourced payment debits Customer-Deposit-Liability, no bank move.
+    #   - Only when the debited CoA is bank-linked. receive_payments.bank_account_id
+    #     is normalized at create-time to the chart_of_accounts.id (see
+    #     create_receive_payment), so reverse-lookup the bank_accounts row by coa_id;
+    #     a plain cash/petty-cash CoA with no bank_accounts row legitimately has no
+    #     mirror.
+    #   - Direction: cash IN -> deposit, POSITIVE amount (contrast bill_payment
+    #     = payment_made / negative). Amount = total_amount (the Dr Bank line; the
+    #     discount line is a separate revenue debit, never bank).
+    if payment["source_type"] == "cash" and payment["bank_account_id"]:
+        bank_acct = await conn.fetchrow(
+            "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+            payment["bank_account_id"],
+            ctx["tenant_id"],
+        )
+        if bank_acct:
+            await create_bank_transaction_for_journal(
+                conn,
+                tenant_id=ctx["tenant_id"],
+                bank_account_id=bank_acct["id"],
+                journal_id=journal_id,
+                transaction_date=payment["payment_date"],
+                transaction_type="deposit",
+                amount=payment["total_amount"],
+                reference_type="RECEIVE_PAYMENT",
+                reference_id=payment_id,
+                reference_number=payment["payment_number"],
+                description=f"Penerimaan Pembayaran - {payment['customer_name']}",
+                payee_payer=payment["customer_name"],
+                created_by=ctx["user_id"],
+            )
+
     # Update invoices - reduce remaining, update status
     allocations = await conn.fetch(
         "SELECT * FROM receive_payment_allocations WHERE payment_id = $1", payment_id
@@ -1988,16 +2031,47 @@ async def void_receive_payment(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                         void_journal_id,
                     )
-                    # Mark original journal as reversed
+                    # Mark original journal as reversed -- Law 2: keep the
+                    # original POSTED + reversed_by_id/reversed_at (NEVER flip to
+                    # VOID: that excludes it from the POSTED ledger sum and breaks
+                    # BankSync R9 against the negating bank mirror, and collides on
+                    # chain_sequence). Matches customer_deposits / sales_invoices
+                    # void. is_effective_journal() drops it via reversed_by_id.
                     await conn.execute(
                         """
                         UPDATE journal_entries
-                        SET reversed_by_id = $2, status = 'VOID'
+                        SET reversed_by_id = $2, reversed_at = NOW()
                         WHERE id = $1
                     """,
                         payment["journal_id"],
                         void_journal_id,
                     )
+
+                    # === Bank mirror reversal (BankSync Rule 3, R9) ===
+                    # FIX_R9_RCV_MIRROR: if the original post created a bank_txn
+                    # (cash pelunasan on a bank-linked CoA), the void MUST create a
+                    # negating mirror linked to the reversal journal, else the void
+                    # re-introduces an R9 gap. Locate the original by journal_id
+                    # (reliable); canonical helper inserts the negating mirror.
+                    orig_bank_txn = await conn.fetchrow(
+                        """
+                        SELECT id FROM bank_transactions
+                        WHERE journal_id = $1 AND tenant_id = $2
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        payment["journal_id"],
+                        ctx["tenant_id"],
+                    )
+                    if orig_bank_txn:
+                        await create_reversal_bank_transaction(
+                            conn,
+                            tenant_id=ctx["tenant_id"],
+                            original_bank_transaction_id=orig_bank_txn["id"],
+                            reversal_journal_id=void_journal_id,
+                            created_by=ctx["user_id"],
+                            description_prefix="[VOID]",
+                        )
 
                 # Restore invoice balances
                 allocations = await conn.fetch(
