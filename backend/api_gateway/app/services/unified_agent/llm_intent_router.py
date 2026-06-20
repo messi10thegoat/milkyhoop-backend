@@ -73,8 +73,9 @@ ROUTER_SYSTEM_PROMPT = """Kamu intent router akuntansi Indonesia. Output JSON: i
 INTENT FORMAT — gunakan pattern berikut:
 
 CRUD: {{action}}_{{module}}
-  action: create, update, delete, void, reverse
+  action: create, update, delete, void, reverse, post
   module: vendor, customer, item, warehouse, bank_account, account, sales_invoice, bill, expense, journal_entry, receive_payment, bill_payment, credit_note, vendor_credit, quote, bank_transfer, customer_deposit, vendor_deposit, stock_adjustment, work_order, bom, work_center
+  POST = terbitkan/sahkan/posting sebuah DRAFT yang SUDAH ADA (BUKAN buat baru). "terbitkan faktur [pembelian] vendor X" / "posting tagihan X" → post_bill. "terbitkan faktur penjualan pelanggan Y" / "posting invoice Y" → post_sales_invoice.
 
 QUERY: query_{{module}}_{{type}}
   module: ar, ap, items, customers, vendors, bank, sales_invoices, bills, expenses, receive_payments, bill_payments, journals, accounts, credit_notes, vendor_credits, quotes, bank_transfers, customer_deposits, vendor_deposits, bom, work_order, production, work_center
@@ -102,6 +103,7 @@ SALES DOCUMENT DISTINCTION (CRITICAL — jangan tertukar):
 update_vendor, update_customer, update_item, update_bank_account, update_warehouse
 delete_vendor, delete_customer, delete_item, delete_warehouse, delete_bank_account
 void_sales_invoice, void_bill, void_expense, void_bill_payment, void_receive_payment, reverse_journal
+post_bill, post_sales_invoice
 query_ar_outstanding, query_ap_outstanding, query_ar_by_customer, query_ap_by_vendor, query_ar_invoices, query_ar_aging, query_ap_aging, query_customer_ar, query_vendor_ap, query_customers_with_overdue, query_vendors_with_overdue
 query_business_drivers
 query_items_search, query_items_list, query_item_detail, query_items_summary, query_items_low_stock, query_items_no_stock, query_warehouse_stock

@@ -996,6 +996,10 @@ async def send_message(request: Request, body: ChatMessageRequest):
     # pills — once we're handling an entity pill answer, the outer except MUST
     # return gracefully instead of leaking the tapped UUID to the orchestrator.
     _entity_pill_answer = False
+    # FIX_POST_DRAFT 2026-06-20: same leak-safety contract for post-draft pills
+    # (party:<id> or a draft doc id). Once handling a post pill answer, the block
+    # MUST return — never leak the tapped value to the generic orchestrator.
+    _post_pill_answer = False
     if _retrigger_sid and body.text:
         try:
             _retrigger_pool = await get_session_db_pool()
@@ -1518,6 +1522,216 @@ async def send_message(request: Request, body: ChatMessageRequest):
                     text=str(_ep_err) if _ep_err else "Gagal menyiapkan data.",
                     session_id=body.session_id,
                 )
+
+            # ── FIX_POST_DRAFT 2026-06-20: post-draft pill re-trigger ──────────
+            # Two stages: "party" (value "party:<id>" → fetch that party's drafts
+            # → 0 text / 1 propose / >1 draft pills) and "draft" (value = the
+            # chosen draft doc id → propose the post card). EVERY branch returns;
+            # the pending flag is cleared on resolve/error. Mirrors the bank +
+            # entity pill contract (leak-safe).
+            elif _doc_ctx.get("pending_post_selection"):
+                _post_pill_answer = True
+                from ..services.unified_agent.orchestrator import (
+                    fetch_post_drafts as _fpd,
+                    _fmt_idr_post as _fmt_post,
+                )
+
+                _post_value = body.text.strip()
+                _post_stage = _doc_ctx.get("post_stage", "draft")
+                _post_action_key = _doc_ctx.get("post_action_key", "")
+                _post_party_name = _doc_ctx.get("post_party_name", "")
+                _post_is_bill = _post_action_key == "post_bill"
+                _post_doc_label = (
+                    "faktur pembelian" if _post_is_bill else "faktur penjualan"
+                )
+
+                if not _post_action_key:
+                    try:
+                        await _retrigger_sm.update_state(
+                            _retrigger_sid,
+                            document_context={"pending_post_selection": False},
+                        )
+                    except Exception:
+                        pass
+                    return ChatMessageResponse(
+                        message_type="TEXT",
+                        text=(
+                            "Sesi pemilihan sudah berakhir. Silakan kirim ulang "
+                            "permintaannya."
+                        ),
+                        session_id=_retrigger_sid,
+                    )
+
+                _post_te = ToolExecutor(
+                    context=TenantContext(
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                        auth_token=ctx["auth_token"],
+                        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                    ),
+                    session_id=body.session_id,
+                )
+
+                # ── Stage: party pick → fetch that party's drafts ──
+                if _post_stage == "party" and _post_value.startswith("party:"):
+                    _post_party_id = _post_value.split(":", 1)[1]
+                    _post_drafts = await _fpd(
+                        ctx["auth_token"], _post_action_key, _post_party_id
+                    )
+                    if _post_drafts and not _post_party_name:
+                        _post_party_name = _post_drafts[0].get("party_name") or ""
+
+                    if not _post_drafts:
+                        try:
+                            await _retrigger_sm.update_state(
+                                _retrigger_sid,
+                                document_context={"pending_post_selection": False},
+                            )
+                        except Exception:
+                            pass
+                        return ChatMessageResponse(
+                            message_type="TEXT",
+                            text=(
+                                f"Tidak ada draft {_post_doc_label} untuk "
+                                f"{_post_party_name or 'mereka'} yang bisa "
+                                f"diterbitkan."
+                            ),
+                            session_id=_retrigger_sid,
+                        )
+
+                    if len(_post_drafts) > 1:
+                        _post_opts = [
+                            {
+                                "label": (
+                                    f"{_d['number'] or 'Draft'} · "
+                                    f"{_fmt_post(_d['amount'])}"
+                                ),
+                                "value": str(_d["id"]),
+                                "description": "",
+                            }
+                            for _d in _post_drafts
+                        ]
+                        try:
+                            await _retrigger_sm.get_or_create_session(_retrigger_sid)
+                        except Exception:
+                            pass
+                        await _retrigger_sm.update_state(
+                            _retrigger_sid,
+                            document_context={
+                                "pending_post_selection": True,
+                                "post_stage": "draft",
+                                "post_action_key": _post_action_key,
+                                "post_party_name": _post_party_name,
+                            },
+                        )
+                        _post_q = (
+                            f"Ada {len(_post_drafts)} draft {_post_doc_label}. "
+                            f"Mana yang mau diterbitkan?"
+                        )
+                        return ChatMessageResponse(
+                            message_type="CLARIFICATION",
+                            text=_post_q,
+                            data={
+                                "question": _post_q,
+                                "options": _post_opts,
+                                "allow_freetext": False,
+                            },
+                            session_id=_retrigger_sid,
+                        )
+
+                    # exactly 1 → propose
+                    _post_one = _post_drafts[0]
+                    _post_propose_payload = {
+                        "id": _post_one["id"],
+                        (
+                            "bill_number" if _post_is_bill else "invoice_number"
+                        ): _post_one["number"],
+                        (
+                            "vendor_name" if _post_is_bill else "customer_name"
+                        ): (_post_party_name or _post_one.get("party_name") or ""),
+                        "grand_total": _post_one["amount"],
+                    }
+                    try:
+                        _post_propose = await _post_te._execute_propose_direct(
+                            {
+                                "action_key": _post_action_key,
+                                "payload": _post_propose_payload,
+                            }
+                        )
+                    except Exception as _ppe:
+                        logger.error(
+                            "[PostRetrigger] propose EXCEPTION: %s", _ppe, exc_info=True
+                        )
+                        _post_propose = {"success": False, "error": str(_ppe)}
+                    try:
+                        await _retrigger_sm.update_state(
+                            _retrigger_sid,
+                            document_context={"pending_post_selection": False},
+                        )
+                    except Exception:
+                        pass
+                    if _post_propose.get("success"):
+                        return ChatMessageResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            text=(
+                                f"Terbitkan {_post_one['number']} · "
+                                f"{_fmt_post(_post_one['amount'])}?"
+                            ),
+                            data=_post_propose["data"],
+                            pending_action_id=_post_propose["data"].get(
+                                "pending_action_id"
+                            ),
+                            session_id=body.session_id,
+                        )
+                    _pe = _post_propose.get("error", "")
+                    if isinstance(_pe, dict):
+                        _pe = _pe.get("message", str(_pe))
+                    return ChatMessageResponse(
+                        message_type="TEXT",
+                        text=str(_pe) if _pe else "Gagal menyiapkan posting.",
+                        session_id=body.session_id,
+                    )
+
+                # ── Stage: draft pick → propose the post card ──
+                _post_doc_id = _post_value
+                _post_propose_payload = {"id": _post_doc_id}
+                try:
+                    _post_propose = await _post_te._execute_propose_direct(
+                        {
+                            "action_key": _post_action_key,
+                            "payload": _post_propose_payload,
+                        }
+                    )
+                except Exception as _ppe2:
+                    logger.error(
+                        "[PostRetrigger] propose EXCEPTION: %s", _ppe2, exc_info=True
+                    )
+                    _post_propose = {"success": False, "error": str(_ppe2)}
+                try:
+                    await _retrigger_sm.update_state(
+                        _retrigger_sid,
+                        document_context={"pending_post_selection": False},
+                    )
+                except Exception:
+                    pass
+                if _post_propose.get("success"):
+                    return ChatMessageResponse(
+                        message_type="DIRECT_ACTION_PREVIEW",
+                        text="Pilihan diterima.",
+                        data=_post_propose["data"],
+                        pending_action_id=_post_propose["data"].get(
+                            "pending_action_id"
+                        ),
+                        session_id=body.session_id,
+                    )
+                _pe2 = _post_propose.get("error", "")
+                if isinstance(_pe2, dict):
+                    _pe2 = _pe2.get("message", str(_pe2))
+                return ChatMessageResponse(
+                    message_type="TEXT",
+                    text=str(_pe2) if _pe2 else "Gagal menyiapkan posting.",
+                    session_id=body.session_id,
+                )
         except Exception as _retrigger_err:
             # FIX_DOCDIR_NORESOLVE: if this was a direction-pill answer, the re-run
             # threw — return gracefully instead of leaking "direction:in" to the
@@ -1566,6 +1780,29 @@ async def send_message(request: Request, body: ChatMessageRequest):
                     text=(
                         "Maaf, aku belum bisa memproses pilihan tadi. Coba kirim "
                         "ulang permintaannya."
+                    ),
+                    session_id=_retrigger_sid,
+                )
+            # FIX_POST_DRAFT: a post-draft pill answer that threw MUST return
+            # gracefully — never leak the tapped value to the orchestrator.
+            if _post_pill_answer:
+                logger.warning(
+                    "[PostRetrigger] post-draft re-trigger failed: %s",
+                    _retrigger_err,
+                    exc_info=True,
+                )
+                try:
+                    await _retrigger_sm.update_state(
+                        _retrigger_sid,
+                        document_context={"pending_post_selection": False},
+                    )
+                except Exception:
+                    pass
+                return ChatMessageResponse(
+                    message_type="TEXT",
+                    text=(
+                        "Maaf, aku belum bisa memproses pilihan tadi. Coba "
+                        "sebutkan nomor fakturnya."
                     ),
                     session_id=_retrigger_sid,
                 )

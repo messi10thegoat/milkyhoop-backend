@@ -527,12 +527,13 @@ class EntityResolver:
             r = resolved["invoice"]
             payload["invoice_id"] = r.entity_id
             payload["invoice_number"] = r.entity_name
-            # Void/update sales_invoice|sales_order use registry field `id`.
+            # Void/update/post sales_invoice|sales_order use registry field `id`.
             if (
                 intent
                 in (
                     "void_sales_invoice",
                     "update_sales_invoice",
+                    "post_sales_invoice",  # FIX_POST_DRAFT 2026-06-20
                     "void_sales_order",
                     "update_sales_order",
                 )
@@ -678,6 +679,7 @@ class EntityResolver:
                 if intent in (
                     "void_sales_invoice",
                     "update_sales_invoice",
+                    "post_sales_invoice",  # FIX_POST_DRAFT 2026-06-20
                     "void_sales_order",
                     "update_sales_order",
                 ):

@@ -1279,6 +1279,12 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             "posting tagihan",
             "approve bill",
             "posting faktur pembelian",
+            # FIX_POST_DRAFT 2026-06-20
+            "terbitkan",
+            "menerbitkan",
+            "terbitkan faktur pembelian",
+            "terbitkan tagihan",
+            "sahkan faktur pembelian",
         ],
         entity_name_field="bill_number",
         loading_message_template="Memposting faktur {entity_name}…",
@@ -1294,6 +1300,51 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(name="id", label="ID", required=True, hidden=True),
             FieldSpec(name="bill_number", label="No. Faktur", display_only=True),
             FieldSpec(name="vendor_name", label="Vendor", display_only=True),
+            FieldSpec(
+                name="grand_total",
+                label="Total",
+                field_type="number",
+                display_only=True,
+            ),
+        ],
+    ),
+    # FIX_POST_DRAFT 2026-06-20 — post an EXISTING DRAFT sales invoice. Mirrors
+    # post_bill: hits the proven /post endpoint (draft -> posted, AR + journal),
+    # never creates a new doc. Payload field `invoice_id` is mapped to `id` by
+    # entity_resolver._build_payload (post_sales_invoice branch).
+    "post_sales_invoice": DirectActionConfig(
+        action_key="post_sales_invoice",
+        display_name="Posting Faktur Penjualan",
+        rest_endpoint="/api/sales-invoices/{id}/post",
+        rest_method="POST",
+        entity_type="sales_invoice",
+        risk_level="medium",
+        creates_journal=True,
+        ttl_seconds=120,
+        action_type_key="POST_SALES_INVOICE",
+        signal_words=[
+            "posting invoice",
+            "posting faktur penjualan",
+            "post invoice",
+            "approve invoice",
+            "terbitkan faktur penjualan",
+            "menerbitkan faktur penjualan",
+            "sahkan faktur penjualan",
+        ],
+        entity_name_field="invoice_number",
+        loading_message_template="Memposting faktur {entity_name}…",
+        success_message_template="Faktur '{entity_name}' berhasil diposting ke ledger.",
+        impact_rules=[
+            ImpactRule(
+                field="grand_total",
+                condition="always",
+                message_template="Jurnal: Dr Piutang Usaha + Cr Pendapatan sebesar {formatted_value}",
+            ),
+        ],
+        fields=[
+            FieldSpec(name="id", label="ID", required=True, hidden=True),
+            FieldSpec(name="invoice_number", label="No. Faktur", display_only=True),
+            FieldSpec(name="customer_name", label="Pelanggan", display_only=True),
             FieldSpec(
                 name="grand_total",
                 label="Total",

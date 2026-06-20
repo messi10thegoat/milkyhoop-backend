@@ -794,6 +794,84 @@ def _safe_num(val, decimals=0):
         return 0
 
 
+# ── FIX_POST_DRAFT 2026-06-20 ─────────────────────────────────────────────
+# Shared draft-fetch helper for post_bill / post_sales_invoice. Both the
+# orchestrator (_handle_pipeline) and the unified_chat re-trigger call this so
+# the "find the existing draft" logic lives in ONE place. Returns a list of
+# {id, number, amount, party_name} for the party's DRAFT docs (oldest data
+# unchanged — pure read). NEVER creates anything.
+def _fmt_idr_post(amount) -> str:
+    try:
+        return "Rp {:,.0f}".format(float(amount or 0)).replace(",", ".")
+    except (ValueError, TypeError):
+        return "Rp 0"
+
+
+async def fetch_post_drafts(auth_token: str, action_key: str, party_id: str) -> list:
+    """Fetch DRAFT documents for a vendor (post_bill) / customer
+    (post_sales_invoice). Returns [{id, number, amount, party_name}]."""
+    import httpx as _httpx
+
+    _headers = (
+        {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+    )
+    _drafts = []
+    async with _httpx.AsyncClient(
+        base_url="http://localhost:8000", timeout=8.0
+    ) as _hc:
+        if action_key == "post_bill":
+            # Bills list returns doc_status (draft/posted/void) + nested vendor +
+            # invoice_number + amount. No literal status=draft → use status=all
+            # then filter client-side on doc_status.
+            _r = await _hc.get(
+                f"/api/bills?status=all&vendor_id={party_id}&limit=100",
+                headers=_headers,
+            )
+            _r.raise_for_status()
+            _items = (_r.json() or {}).get("items") or []
+            for _it in _items:
+                if (_it.get("doc_status") or "").lower() != "draft":
+                    continue
+                _v = _it.get("vendor") or {}
+                _drafts.append(
+                    {
+                        "id": str(_it.get("id")),
+                        "number": _it.get("invoice_number")
+                        or _it.get("bill_number")
+                        or "",
+                        "amount": _it.get("amount")
+                        or _it.get("grand_total")
+                        or 0,
+                        "party_name": (_v.get("name") if isinstance(_v, dict) else "")
+                        or "",
+                    }
+                )
+        elif action_key == "post_sales_invoice":
+            # Sales-invoices list supports status=draft directly (si.status='draft')
+            # and returns flat customer_name + total_amount.
+            _r = await _hc.get(
+                f"/api/sales-invoices?status=draft&customer_id={party_id}&limit=100",
+                headers=_headers,
+            )
+            _r.raise_for_status()
+            _items = (_r.json() or {}).get("items") or []
+            for _it in _items:
+                # Defensive: confirm draft (endpoint already filtered).
+                if (_it.get("status") or "").lower() not in ("draft", ""):
+                    continue
+                _drafts.append(
+                    {
+                        "id": str(_it.get("id")),
+                        "number": _it.get("invoice_number") or "",
+                        "amount": _it.get("total_amount")
+                        or _it.get("amount")
+                        or 0,
+                        "party_name": _it.get("customer_name") or "",
+                    }
+                )
+    return _drafts
+
+
 def _strip_draft_void_rows(text: str) -> str:
     """Post-process: remove Draft/Void rows from markdown tables in bot responses.
     Only applies to tables that contain financial data (hutang/piutang/tagihan/faktur)."""
@@ -1113,6 +1191,294 @@ class UnifiedAgent:
                 "category": "search",
             },
         )
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ── FIX_POST_DRAFT 2026-06-20: POST an EXISTING DRAFT ──
+        # "terbitkan/posting faktur vendor X" must find the EXISTING draft bill
+        # (or sales-invoice) and propose POSTING it — never create a new doc.
+        # Flow: explicit id → propose directly; else resolve party → fetch their
+        # DRAFT docs → 0 (friendly text) / 1 (propose post card) / >1 (pills).
+        # Mirrors the bank/entity-pill 2-part contract: emit pills +
+        # pending_post_selection here, re-trigger in unified_chat.send_message.
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if extraction.intent in ("post_bill", "post_sales_invoice"):
+            try:
+                _pd_action = extraction.intent
+                _pd_payload = {
+                    k: v
+                    for k, v in (resolution.payload or {}).items()
+                    if v is not None
+                }
+                _pd_is_bill = _pd_action == "post_bill"
+                _pd_party_type = "vendor" if _pd_is_bill else "customer"
+                _pd_party_slot = "vendor_id" if _pd_is_bill else "customer_id"
+                _pd_doc_label = (
+                    "faktur pembelian" if _pd_is_bill else "faktur penjualan"
+                )
+
+                # (1) Explicit doc id already resolved (doc number / memory) →
+                # fall through to the normal propose path below (skip this block).
+                _pd_explicit_id = (
+                    _pd_payload.get("id")
+                    or _pd_payload.get("bill_id")
+                    or _pd_payload.get("invoice_id")
+                )
+                if not _pd_explicit_id:
+                    # (2) Resolve the party. Prefer resolver candidates.
+                    _pd_re = (resolution.resolved or {}).get(_pd_party_type)
+                    _pd_cands = list(getattr(_pd_re, "candidates", None) or [])
+                    _pd_party_id = None
+                    _pd_party_name = ""
+                    if _pd_re is not None:
+                        _pd_party_name = getattr(_pd_re, "entity_name", "") or ""
+                    # Fall back to a party id that may already be in the payload.
+                    if _pd_payload.get(_pd_party_slot):
+                        _pd_party_id = str(_pd_payload[_pd_party_slot])
+
+                    # >1 candidate → ask which party first (party-stage pills).
+                    if len(_pd_cands) > 1 and not _pd_party_id:
+                        _pd_party_opts = [
+                            {
+                                "label": c.get("name") or "",
+                                "value": f"party:{c.get('id')}",
+                                "description": "",
+                            }
+                            for c in _pd_cands
+                            if c.get("id")
+                        ]
+                        if _pd_party_opts and (
+                            tool_executor
+                            and tool_executor.session_manager
+                            and tool_executor.session_id
+                        ):
+                            try:
+                                await tool_executor.session_manager.get_or_create_session(
+                                    tool_executor.session_id
+                                )
+                            except Exception:
+                                pass
+                            await tool_executor.session_manager.update_state(
+                                tool_executor.session_id,
+                                document_context={
+                                    "pending_post_selection": True,
+                                    "post_stage": "party",
+                                    "post_action_key": _pd_action,
+                                },
+                            )
+                            _pd_q = (
+                                "Vendor mana?" if _pd_is_bill else "Pelanggan mana?"
+                            )
+                            await emit(
+                                "THINKING_DONE",
+                                {
+                                    "summary": "Pilih data",
+                                    "total_ms": int(
+                                        (_time.time() - start_time) * 1000
+                                    ),
+                                },
+                            )
+                            return AgentResponse(
+                                message_type="CLARIFICATION",
+                                content=_pd_q,
+                                iterations=1,
+                                tool_calls_made=[],
+                                model_used="pipeline",
+                                total_latency_ms=int(
+                                    (_time.time() - start_time) * 1000
+                                ),
+                                thinking_stages=["Menganalisis pesan"],
+                                extra_data={
+                                    "question": _pd_q,
+                                    "options": _pd_party_opts,
+                                    "allow_freetext": False,
+                                },
+                            )
+
+                    # Single confident candidate → take it.
+                    if not _pd_party_id and len(_pd_cands) == 1:
+                        _pd_party_id = str(_pd_cands[0].get("id"))
+                        _pd_party_name = (
+                            _pd_cands[0].get("name") or _pd_party_name
+                        )
+
+                    # No party resolvable → friendly text (never crash/create).
+                    if not _pd_party_id:
+                        _pd_who = "vendor" if _pd_is_bill else "pelanggan"
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=(
+                                f"Mau terbitkan {_pd_doc_label} yang mana? "
+                                f"Sebutkan nama {_pd_who}-nya, mis. "
+                                f"“terbitkan {_pd_doc_label} "
+                                f"{_pd_who} <nama>”."
+                            ),
+                            iterations=1,
+                            model_used="pipeline",
+                            total_latency_ms=int(
+                                (_time.time() - start_time) * 1000
+                            ),
+                        )
+
+                    # (3) Fetch the party's DRAFT docs.
+                    _pd_auth = getattr(context, "auth_token", "") or ""
+                    _pd_drafts = await fetch_post_drafts(
+                        _pd_auth, _pd_action, _pd_party_id
+                    )
+                    if not _pd_party_name and _pd_drafts:
+                        _pd_party_name = _pd_drafts[0].get("party_name") or ""
+
+                    # 0 drafts → friendly text, create nothing.
+                    if not _pd_drafts:
+                        return AgentResponse(
+                            message_type="TEXT",
+                            content=(
+                                f"Tidak ada draft {_pd_doc_label} untuk "
+                                f"{_pd_party_type} "
+                                f"{_pd_party_name or 'tersebut'} yang bisa "
+                                f"diterbitkan."
+                            ),
+                            iterations=1,
+                            model_used="pipeline",
+                            total_latency_ms=int(
+                                (_time.time() - start_time) * 1000
+                            ),
+                        )
+
+                    # >1 drafts → tappable draft pills.
+                    if len(_pd_drafts) > 1:
+                        _pd_opts = []
+                        for _d in _pd_drafts:
+                            _pd_opts.append(
+                                {
+                                    "label": (
+                                        f"{_d['number'] or 'Draft'} · "
+                                        f"{_fmt_idr_post(_d['amount'])}"
+                                    ),
+                                    "value": str(_d["id"]),
+                                    "description": "",
+                                }
+                            )
+                        if (
+                            tool_executor
+                            and tool_executor.session_manager
+                            and tool_executor.session_id
+                        ):
+                            try:
+                                await tool_executor.session_manager.get_or_create_session(
+                                    tool_executor.session_id
+                                )
+                            except Exception:
+                                pass
+                            await tool_executor.session_manager.update_state(
+                                tool_executor.session_id,
+                                document_context={
+                                    "pending_post_selection": True,
+                                    "post_stage": "draft",
+                                    "post_action_key": _pd_action,
+                                    "post_party_name": _pd_party_name,
+                                },
+                            )
+                        _pd_q = (
+                            f"Ada {len(_pd_drafts)} draft {_pd_doc_label} untuk "
+                            f"{_pd_party_name or 'mereka'}. Mana yang mau "
+                            f"diterbitkan?"
+                        )
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Pilih draft",
+                                "total_ms": int(
+                                    (_time.time() - start_time) * 1000
+                                ),
+                            },
+                        )
+                        return AgentResponse(
+                            message_type="CLARIFICATION",
+                            content=_pd_q,
+                            iterations=1,
+                            tool_calls_made=[],
+                            model_used="pipeline",
+                            total_latency_ms=int(
+                                (_time.time() - start_time) * 1000
+                            ),
+                            thinking_stages=["Menganalisis pesan"],
+                            extra_data={
+                                "question": _pd_q,
+                                "options": _pd_opts,
+                                "allow_freetext": False,
+                            },
+                        )
+
+                    # Exactly 1 draft → propose the post confirmation card.
+                    _pd_one = _pd_drafts[0]
+                    _pd_propose_payload = {
+                        "id": _pd_one["id"],
+                        ("bill_number" if _pd_is_bill else "invoice_number"): _pd_one[
+                            "number"
+                        ],
+                        ("vendor_name" if _pd_is_bill else "customer_name"): (
+                            _pd_party_name or _pd_one.get("party_name") or ""
+                        ),
+                        "grand_total": _pd_one["amount"],
+                    }
+                    _pd_propose = await tool_executor._execute_propose_direct(
+                        {"action_key": _pd_action, "payload": _pd_propose_payload}
+                    )
+                    if _pd_propose.get("success"):
+                        await emit(
+                            "THINKING_DONE",
+                            {
+                                "summary": "Konfirmasi posting",
+                                "total_ms": int(
+                                    (_time.time() - start_time) * 1000
+                                ),
+                            },
+                        )
+                        _pd_data = _pd_propose["data"]
+                        return AgentResponse(
+                            message_type="DIRECT_ACTION_PREVIEW",
+                            content=(
+                                f"Terbitkan {_pd_one['number']} "
+                                f"({_pd_party_name or _pd_one.get('party_name', '')}"
+                                f" · {_fmt_idr_post(_pd_one['amount'])})?"
+                            ),
+                            iterations=1,
+                            tool_calls_made=[],
+                            model_used="pipeline",
+                            total_latency_ms=int(
+                                (_time.time() - start_time) * 1000
+                            ),
+                            extra_data=_pd_data,
+                            pending_action_id=_pd_data.get("pending_action_id"),
+                        )
+                    # propose failed → friendly text.
+                    _pd_err = _pd_propose.get("error", "")
+                    if isinstance(_pd_err, dict):
+                        _pd_err = _pd_err.get("message", str(_pd_err))
+                    return AgentResponse(
+                        message_type="TEXT",
+                        content=str(_pd_err)
+                        or "Gagal menyiapkan posting draft.",
+                        iterations=1,
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                    )
+            except Exception as _pd_exc:
+                logger.warning(
+                    "[FIX_POST_DRAFT] draft-resolution failed (non-fatal): %s",
+                    _pd_exc,
+                    exc_info=True,
+                )
+                return AgentResponse(
+                    message_type="TEXT",
+                    content=(
+                        "Maaf, saya belum bisa menemukan draft fakturnya. "
+                        "Coba sebutkan nomor fakturnya atau buka modul terkait."
+                    ),
+                    iterations=1,
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ── WORKFLOW PRIMARY PATH: check active crud_form ──

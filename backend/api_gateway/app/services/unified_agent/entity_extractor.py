@@ -235,6 +235,8 @@ EXTRACTION_SCHEMAS = {
                             "void_bill_payment",
                             "void_expense",
                             "reverse_journal",
+                            "post_bill",
+                            "post_sales_invoice",
                             "update_customer",
                             "update_vendor",
                             "update_item",
@@ -840,6 +842,9 @@ PIPELINE_ENABLED_INTENTS = {
     "void_receive_payment",
     "void_bill_payment",
     "reverse_journal",
+    # Posting an existing DRAFT (FIX_POST_DRAFT 2026-06-20)
+    "post_bill",
+    "post_sales_invoice",
     # Updates
     "update_item",
     "update_customer",
@@ -966,6 +971,19 @@ _ACTION_KEYWORDS = {
         "batal",
         "cancel",
         "anulir",
+    ],
+    # FIX_POST_DRAFT 2026-06-20 — "terbitkan/posting an EXISTING DRAFT" action.
+    # Longest/most-specific phrases first so "posting faktur" matches before a
+    # bare "post". Word-boundary anchored by the caller (rf"^{kw}\b" patterns).
+    "post": [
+        "terbitkan",
+        "menerbitkan",
+        "terbitin",
+        "posting",
+        "sahkan",
+        "approve",
+        "issue",
+        "post",
     ],
 }
 
@@ -2053,6 +2071,72 @@ def classify_crud_intent(user_text: str) -> tuple:
 
     intent = f"{action}{entity_suffix}"
 
+    # FIX_POST_DRAFT 2026-06-20 — POST action entity disambiguation.
+    # "terbitkan/posting" targets an EXISTING DRAFT bill or sales-invoice, NOT a
+    # new doc. The generic Step-2 entity match can land on the wrong suffix:
+    #  - "terbitkan faktur dengan vendor HARI SABLON ..." → "vendor" keyword wins
+    #    (bare "faktur" is not an entity keyword) → would build post_vendor.
+    #  - the trailing "untuk item KAOS" is just a descriptor — must NOT make this
+    #    a create.
+    # Rules (in priority order):
+    #   explicit "faktur penjualan"/"invoice penjualan" OR pelanggan/customer →
+    #     sales_invoice → post_sales_invoice
+    #   explicit "faktur pembelian"/"tagihan"/"bill" OR vendor/pemasok/supplier →
+    #     bill → post_bill
+    #   bare "faktur" with neither → default to bill (vendor flow is the common
+    #     posting case).
+    # We re-anchor entity_end_pos so the downstream name extractor reads the text
+    # AFTER the party keyword (the vendor/customer NAME), not after "faktur".
+    if action == "post":
+        _post_l = text_lower
+        _has_sales = bool(
+            _re.search(
+                r"\b(faktur\s+penjualan|invoice\s+penjualan|sales\s+invoice)\b",
+                _post_l,
+            )
+        )
+        _has_purchase = bool(
+            _re.search(
+                r"\b(faktur\s+pembelian|purchase\s+invoice|tagihan|bill)\b", _post_l
+            )
+        )
+        _customer_kw = _re.search(r"\b(pelanggan|customer|klien|pembeli)\b", _post_l)
+        _vendor_kw = _re.search(r"\b(vendor|pemasok|supplier|suplier)\b", _post_l)
+
+        if _has_sales or (_customer_kw and not _has_purchase and not _vendor_kw):
+            entity_suffix = "_sales_invoice"
+            entity_config = _ENTITY_KEYWORDS["_sales_invoice"]
+            # Anchor name after the customer keyword if present (the party name),
+            # else after the "faktur penjualan" phrase.
+            if _customer_kw:
+                entity_end_pos = _customer_kw.end()
+            else:
+                _m = _re.search(
+                    r"\b(faktur\s+penjualan|invoice\s+penjualan|sales\s+invoice)\b",
+                    _post_l,
+                )
+                entity_end_pos = _m.end() if _m else entity_end_pos
+        else:
+            # bill (vendor flow) — default for "faktur" + vendor context, or bare.
+            entity_suffix = "_bill"
+            entity_config = _ENTITY_KEYWORDS["_bill"]
+            if _vendor_kw:
+                entity_end_pos = _vendor_kw.end()
+            else:
+                _m = _re.search(
+                    r"\b(faktur\s+pembelian|purchase\s+invoice|tagihan|bill)\b",
+                    _post_l,
+                )
+                entity_end_pos = _m.end() if _m else entity_end_pos
+        # entity_end_pos above is an index into text_lower; the name extractor
+        # below slices `remaining` (= text_lower[action_end_pos:]). Re-express the
+        # anchor relative to `remaining` so Step 4 reads the right tail.
+        _rel = entity_end_pos - action_end_pos
+        if _rel < 0:
+            _rel = 0
+        entity_end_pos = _rel
+        intent = f"{action}{entity_suffix}"
+
     # Step 4: Extract entity name
     remaining_after_entity = remaining[entity_end_pos:].strip()
     remaining_after_entity = _re.sub(
@@ -2090,6 +2174,23 @@ def classify_crud_intent(user_text: str) -> tuple:
     # truncation discarded everything after menjadi/jadi/ke (the new name).
     # Strip a leading separator (: - – —) then split on the connector so the
     # left = OLD name (for lookup) and right = NEW name (new_value).
+    # FIX_POST_DRAFT 2026-06-20 — truncate the POST party name at trailing
+    # descriptor connectors. "HARI SABLON untuk item KAOS" → "HARI SABLON";
+    # "BAJIGUR dengan total ..." → "BAJIGUR". The remainder ("item KAOS") is just
+    # context for finding the draft, not a create instruction.
+    if action == "post" and remaining_after_entity:
+        if "," in remaining_after_entity:
+            remaining_after_entity = remaining_after_entity.split(",")[0].strip()
+        _pt = _re.split(
+            r"\s+(?:untuk|buat|dengan|sebesar|senilai|total|tagihan|"
+            r"item|barang|produk|jumlah|nominal|sejumlah|atas)\s+",
+            remaining_after_entity,
+            maxsplit=1,
+            flags=_re.IGNORECASE,
+        )
+        if len(_pt) > 1 and _pt[0].strip():
+            remaining_after_entity = _pt[0].strip()
+
     _rename_new = None
     if action == "update" and remaining_after_entity:
         # Strip a leading separator like "EDIT ITEM : RIB 24S ..."
@@ -2153,6 +2254,15 @@ def classify_crud_intent(user_text: str) -> tuple:
 
     entity_name = remaining_after_entity if remaining_after_entity else None
     name_field = entity_config["name_field"]
+
+    # FIX_POST_DRAFT 2026-06-20 — the POST name we extracted is the PARTY name
+    # (vendor/customer), NOT a document number. Map it to the party field so the
+    # orchestrator resolves the vendor/customer (and the draft-resolution block
+    # finds their draft) instead of polluting bill_number/invoice_number.
+    if action == "post":
+        name_field = (
+            "customer_name" if entity_suffix == "_sales_invoice" else "vendor_name"
+        )
 
     logger.warning(
         "[INTENT_CLASSIFIER] text='%s' -> action=%s entity=%s intent=%s name='%s' new='%s'",
