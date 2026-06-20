@@ -2629,6 +2629,553 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
 
 
 # =============================================================================
+# FIX_MULTIDOC — Reusable single-document OCR→match→propose helper
+# =============================================================================
+# When a user uploads MULTIPLE receipts in one message, only the first was
+# processed inline (the big block in send_message_with_files); the rest were
+# stored but silently dropped. This helper re-runs the SAME core pipeline
+# (OCR → DocumentIntakePipeline → propose_direct / clarification / fallback
+# draft) for ONE file_meta and returns the SAME card shape the inline block
+# returns today. It is invoked for queued docs (2..N) when the user confirms
+# or cancels the current doc-origin action. Each document is OCR'd/matched
+# INDEPENDENTLY (no cross-contamination) and NEVER auto-posted — each still
+# requires its own user confirm.
+async def _process_one_document(
+    _fm: dict,
+    *,
+    ctx: dict,
+    session_id: Optional[str],
+    caption: str = "",
+) -> Optional[ChatMessageResponse]:
+    """FIX_MULTIDOC: process ONE document file_meta end-to-end → card.
+
+    Returns a ChatMessageResponse (DIRECT_ACTION_PREVIEW, CLARIFICATION, or
+    CONFIRM_DOCUMENT_DRAFT fallback) or None if the file could not be read.
+    Mirrors the inline single-document pipeline in send_message_with_files.
+    """
+    import uuid as _ocr_uuid
+    import json as _ocr_json
+    import os as _ocr_os
+
+    text = caption or ""
+    try:
+        from ..services.unified_agent.db_utils import (
+            get_session_db_pool as _get_ocr_pool,
+        )
+
+        _ocr_pool = await _get_ocr_pool()
+
+        _stored_path = _fm.get("stored_path", "")
+        if not (_stored_path and os.path.exists(_stored_path)):
+            logger.warning(
+                "[FIX_MULTIDOC] queued doc has no readable stored_path: %s",
+                _fm.get("filename"),
+            )
+            return None
+
+        import base64 as _b64
+
+        with open(_stored_path, "rb") as _img_f:
+            _img_bytes = _img_f.read()
+        _mime = _fm.get("content_type", "image/jpeg")
+        try:
+            from PIL import Image as _PILImage
+            import io as _io_resize
+
+            _img_pil = _PILImage.open(_io_resize.BytesIO(_img_bytes))
+            if _img_pil.mode in ("RGBA", "LA", "P"):
+                _img_pil = _img_pil.convert("RGB")
+            _max_dim = 1280  # FIX_OCR_ACCTNUM parity
+            if max(_img_pil.size) > _max_dim:
+                _img_pil.thumbnail((_max_dim, _max_dim), _PILImage.LANCZOS)
+            _buf = _io_resize.BytesIO()
+            _img_pil.save(_buf, format="JPEG", quality=85, optimize=True)
+            _img_bytes = _buf.getvalue()
+            _mime = "image/jpeg"
+        except Exception as _resize_err:
+            logger.warning("[FIX_MULTIDOC] resize failed: %s", _resize_err)
+        _img_b64 = _b64.b64encode(_img_bytes).decode()
+
+        from openai import AsyncOpenAI as _OCR_OpenAI
+
+        _ocr_client = _OCR_OpenAI(api_key=_ocr_os.environ.get("OPENAI_API_KEY", ""))
+        _ocr_prompt = f"""Ekstrak data dari dokumen finansial Indonesia ini. User caption: "{text}"
+
+Return JSON ONLY:
+{{
+  "is_financial_document": true,
+  "extracted_text": "teks utama yang terbaca dari gambar, apa adanya",
+  "doc_type": "expense|bank_transfer|qris|merchant_payment|purchase_invoice|sales_invoice|receipt|unknown",
+  "transfer_direction": "masuk|keluar|null",
+  "vendor_name": "nama vendor",
+  "customer_name": "nama customer atau null",
+  "document_number": "no faktur/no ref",
+  "document_date": "YYYY-MM-DD atau null",
+  "total_amount": 0,
+  "tax_amount": 0,
+  "source_account_number": "nomor rek pengirim atau null",
+  "destination_account_number": "nomor rek penerima atau null",
+  "reference_note": "berita/keterangan",
+  "confidence": 0.9
+}}
+
+Aturan:
+- Struk PLN: doc_type="expense", total_amount=field "RP BAYAR", vendor_name="PLN"
+- QRIS/merchant payment: doc_type="qris", NOT bank_transfer.
+- Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
+- Semua angka Rupiah tanpa desimal
+- is_financial_document: true jika dokumen keuangan. false jika non-keuangan.
+- extracted_text: WAJIB diisi meskipun is_financial_document=false."""
+
+        _ocr_response = await _ocr_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _ocr_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{_mime};base64,{_img_b64}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.1,
+        )
+        _ocr_text = _ocr_response.choices[0].message.content or "{}"
+        if _ocr_text.startswith("```"):
+            _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
+        _ocr_data = _ocr_json.loads(_ocr_text)
+
+        # FIX_TRANSFER_NOMINAL parity (prefer labeled nominal over total+admin)
+        try:
+            if _ocr_data.get("doc_type") in (
+                "bank_transfer",
+                "qris",
+                "merchant_payment",
+            ) and _ocr_data.get("total_amount"):
+                import re as _re_amt
+
+                _txt_amt = str(_ocr_data.get("extracted_text") or "")
+                _cur_total = float(_ocr_data.get("total_amount") or 0)
+
+                def _parse_idr(_s):
+                    _d = _re_amt.sub(r"[^\d]", "", _s.split(",")[0])
+                    return int(_d) if _d else 0
+
+                _amts = []
+                _prev_end = 0
+                for _am in _re_amt.finditer(r"Rp\s*([\d][\d.,]*)", _txt_amt):
+                    _seg = _txt_amt[_prev_end:_am.start()]
+                    _lbl = "".join(
+                        c if (c.isalpha() or c.isspace()) else " " for c in _seg
+                    ).lower()
+                    _val = _parse_idr(_am.group(1))
+                    if _val > 0:
+                        _amts.append((_lbl, _val))
+                    _prev_end = _am.end()
+                _nominal = next(
+                    (v for (l, v) in _amts if "kirim uang" in l or "nominal" in l),
+                    None,
+                )
+                _admin = next(
+                    (v for (l, v) in _amts if "biaya admin" in l or "admin" in l),
+                    None,
+                )
+                _total_lbl = next((v for (l, v) in _amts if "total" in l), None)
+                _settle = None
+                _fee = 0
+                if _nominal and _nominal > 0:
+                    _settle = _nominal
+                    if _total_lbl and _total_lbl > _nominal:
+                        _fee = _total_lbl - _nominal
+                    elif _admin:
+                        _fee = _admin
+                elif _total_lbl and _admin and (_total_lbl - _admin) > 0:
+                    _settle = _total_lbl - _admin
+                    _fee = _admin
+                if _settle and 0 < _settle <= _cur_total:
+                    _ocr_data["total_amount"] = _settle
+                    if _fee and _fee > 0:
+                        _ocr_data["admin_fee"] = int(_fee)
+        except Exception as _amt_err:
+            logger.warning("[FIX_MULTIDOC] transfer-nominal skip: %s", _amt_err)
+
+        if text:
+            _ocr_data["user_caption"] = text
+            _existing_raw = _ocr_data.get("raw_text") or ""
+            _ocr_data["raw_text"] = f"{_existing_raw} {text}".strip()
+
+        # ── Intake pipeline (V2 default) ──
+        _intake_version = _ocr_os.environ.get("DOC_INTAKE_VERSION", "v2")
+        if _intake_version == "v3":
+            from ..services.unified_agent.document_intake_v3.pipeline import (
+                DocumentIntakePipelineV3 as _IntakePipeline,
+            )
+        else:
+            from ..services.unified_agent.document_intake import (
+                DocumentIntakePipeline as _IntakePipeline,
+            )
+
+        _intake = _IntakePipeline(_ocr_pool, ctx["tenant_id"])
+        try:
+            _intake_result = await _intake.process(_ocr_data, caption=text or "")
+        except Exception as _ir_err:
+            logger.warning("[FIX_MULTIDOC] intake failed: %s", _ir_err)
+            _intake_result = None
+
+        _resolved_action = (
+            getattr(_intake_result, "resolved_action", None)
+            if _intake_result
+            else None
+        )
+
+        # ── Case A: resolved cleanly → propose_direct → DIRECT_ACTION_PREVIEW ──
+        if _resolved_action and not _resolved_action.needs_clarification:
+            _te = ToolExecutor(
+                context=TenantContext(
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                    auth_token=ctx["auth_token"],
+                    tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+                ),
+                session_id=session_id,
+            )
+            if _fm.get("document_id"):
+                _resolved_action.payload["_uploaded_document_id"] = _fm["document_id"]
+            _propose_result = await _te._execute_propose_direct(
+                {
+                    "action_key": _resolved_action.action_key,
+                    "payload": _resolved_action.payload,
+                }
+            )
+            if _propose_result.get("success"):
+                _doc_type = _ocr_data.get("doc_type", "unknown")
+                _type_labels = {
+                    "purchase_invoice": "Faktur Pembelian",
+                    "sales_invoice": "Faktur Penjualan",
+                    "receipt": "Kwitansi",
+                    "bank_transfer": "Transfer Bank",
+                    "expense": "Biaya/Pengeluaran",
+                    "qris": "Pembayaran QRIS",
+                    "merchant_payment": "Pembayaran Merchant",
+                    "e_wallet": "Pembayaran E-Wallet",
+                }
+                _type_display = _type_labels.get(_doc_type, _doc_type)
+                _counterparty = (
+                    _intake_result.best_match.counterparty
+                    if _intake_result and _intake_result.best_match
+                    else (
+                        _ocr_data.get("vendor_name")
+                        or _ocr_data.get("customer_name")
+                        or "Unknown"
+                    )
+                )
+                _total = float(_ocr_data.get("total_amount", 0))
+                _total_fmt = f"Rp {_total:,.0f}".replace(",", ".")
+                _dir = _intake_result.direction if _intake_result else None
+                if _dir == "in" and _intake_result and _intake_result.best_match:
+                    _narration = (
+                        f"Pembayaran masuk dari **{_counterparty}** sebesar {_total_fmt}. "
+                        f"Cocok dengan **{_intake_result.best_match.label}**."
+                    )
+                elif _dir == "out" and _intake_result and _intake_result.best_match:
+                    _narration = (
+                        f"Pembayaran keluar ke **{_counterparty}** sebesar {_total_fmt}. "
+                        f"Cocok dengan **{_intake_result.best_match.label}**."
+                    )
+                else:
+                    _dw = "ke" if _dir == "out" else "dari"
+                    _narration = (
+                        f"Saya baca {_type_display.lower()} {_dw} **{_counterparty}**. "
+                        f"Total {_total_fmt}."
+                    )
+                if _intake_result and getattr(
+                    _intake_result, "bank_display_name", None
+                ):
+                    _narration += f" Rekening: **{_intake_result.bank_display_name}**."
+                # Persist document_context with the new pending_action_id so the
+                # next confirm/cancel can locate + advance the queue again.
+                try:
+                    _sm_persist = SessionManager(
+                        db_pool=_ocr_pool,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx["user_id"],
+                    )
+                    _doc_ctx = {
+                        "document_id": str(_ocr_uuid.uuid4()),
+                        "doc_type": _doc_type,
+                        "vendor_name": _counterparty,
+                        "total_amount": _total,
+                        "resolved_action": _resolved_action.action_key,
+                        "pending_action_id": _propose_result["data"].get(
+                            "pending_action_id"
+                        ),
+                    }
+                    if session_id:
+                        await _sm_persist.update_state(
+                            session_id, document_context=_doc_ctx
+                        )
+                except Exception:
+                    pass
+                return ChatMessageResponse(
+                    message_type="DIRECT_ACTION_PREVIEW",
+                    text=_narration,
+                    data=_propose_result["data"],
+                    pending_action_id=_propose_result["data"].get("pending_action_id"),
+                    session_id=session_id,
+                )
+
+        # ── Case B: needs direction/bank clarification → surface CLARIFICATION ──
+        # The existing pill re-trigger machinery (pending_bank_selection) resumes
+        # the intake when the user answers; the multidoc queue is re-stashed by
+        # the caller alongside this state so it survives the clarification.
+        if _intake_result is not None and (
+            getattr(_intake_result, "needs_direction_clarification", False)
+            or (
+                getattr(_intake_result, "needs_bank_clarification", False)
+                and getattr(_intake_result, "bank_candidates", None)
+            )
+        ):
+            if getattr(_intake_result, "needs_direction_clarification", False):
+                _cl_options = [
+                    {
+                        "label": "Pembayaran Masuk (dari pelanggan)",
+                        "value": "direction:in",
+                        "description": "",
+                    },
+                    {
+                        "label": "Pembayaran Keluar (ke vendor)",
+                        "value": "direction:out",
+                        "description": "",
+                    },
+                ]
+                _q = "Ini pembayaran masuk (dari pelanggan) atau keluar (ke vendor)?"
+            else:
+                _cl_options = [
+                    {
+                        "label": c.get("label", c.get("display_name", "")),
+                        "value": c.get("id", c.get("value", "")),
+                        "description": "",
+                    }
+                    for c in _intake_result.bank_candidates
+                ]
+                _q = (
+                    "Diterima di rekening mana?"
+                    if _intake_result.direction == "in"
+                    else "Dibayar dari rekening mana?"
+                )
+            # Persist bank-selection state so the pill answer re-enters intake.
+            try:
+                _doc_ctx_cl = {
+                    "pending_bank_selection": True,
+                    "resolved_action_key": _resolved_action.action_key
+                    if _resolved_action
+                    else "",
+                    "resolved_payload": (
+                        {
+                            **_resolved_action.payload,
+                            "_uploaded_document_id": _fm.get("document_id"),
+                        }
+                        if _resolved_action and _fm.get("document_id")
+                        else (_resolved_action.payload if _resolved_action else {})
+                    ),
+                    "doc_type": _ocr_data.get("doc_type", "unknown"),
+                    "vendor_name": _ocr_data.get("vendor_name")
+                    or _ocr_data.get("customer_name")
+                    or "Unknown",
+                    "total_amount": float(_ocr_data.get("total_amount", 0)),
+                    "saved_ocr_data": {
+                        k: v for k, v in _ocr_data.items() if k != "image_bytes"
+                    },
+                }
+                if session_id:
+                    _sid_uuid = _ocr_uuid.UUID(session_id)
+                    _tid = ctx["tenant_id"]
+                    _doc_json = _ocr_json.dumps(_doc_ctx_cl, default=str)
+                    async with _ocr_pool.acquire() as _rls_conn:
+                        await _rls_conn.execute(
+                            "SELECT set_config('app.tenant_id', $1, true)", _tid
+                        )
+                        await _rls_conn.execute(
+                            "INSERT INTO chat_sessions (id, tenant_id, user_id) "
+                            "VALUES ($1::uuid, $2, $3::uuid) "
+                            "ON CONFLICT (id) DO NOTHING",
+                            _sid_uuid,
+                            _tid,
+                            ctx["user_id"],
+                        )
+                        await _rls_conn.execute(
+                            "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
+                            "VALUES ($1::uuid, $2, $3::jsonb) "
+                            "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
+                            _sid_uuid,
+                            _tid,
+                            _doc_json,
+                        )
+            except Exception as _store_err:
+                logger.error("[FIX_MULTIDOC] clarification persist failed: %s", _store_err)
+            return ChatMessageResponse(
+                message_type="CLARIFICATION",
+                text=_q,
+                data={
+                    "question": _q,
+                    "options": _cl_options,
+                    "allow_freetext": False,
+                },
+                session_id=session_id,
+            )
+
+        # ── Case C: fallback CONFIRM_DOCUMENT_DRAFT card ──
+        _pending_id = str(_ocr_uuid.uuid4())
+        _doc_type = _ocr_data.get("doc_type", "unknown")
+        _vendor = (
+            _ocr_data.get("vendor_name")
+            or _ocr_data.get("customer_name")
+            or "Unknown"
+        )
+        _total = float(_ocr_data.get("total_amount", 0))
+        _tax = float(_ocr_data.get("tax_amount", 0))
+        _items = _ocr_data.get("items", [])
+        _doc_number = _ocr_data.get("document_number", "-")
+        _doc_date = _ocr_data.get("document_date", "-")
+        _confidence = float(_ocr_data.get("confidence", 0))
+        _type_labels = {
+            "purchase_invoice": "Faktur Pembelian",
+            "sales_invoice": "Faktur Penjualan",
+            "receipt": "Kwitansi",
+            "bank_transfer": "Transfer Bank",
+            "expense": "Biaya/Pengeluaran",
+            "qris": "Pembayaran QRIS",
+            "merchant_payment": "Pembayaran Merchant",
+            "e_wallet": "Pembayaran E-Wallet",
+        }
+        _type_display = _type_labels.get(_doc_type, _doc_type)
+        _table_lines = ["| Field | Value |", "|---|---|"]
+        _table_lines.append(f"| Tipe | {_type_display} |")
+        _table_lines.append(f"| Vendor | {_vendor} |")
+        if _doc_number != "-":
+            _table_lines.append(f"| No. Dokumen | {_doc_number} |")
+        if _doc_date != "-":
+            _table_lines.append(f"| Tanggal | {_doc_date} |")
+        if _items:
+            _table_lines.append(f"| Items | {len(_items)} item |")
+        _table_lines.append(f"| Total | Rp {_total:,.0f} |".replace(",", "."))
+        if _tax > 0:
+            _table_lines.append(f"| Pajak | Rp {_tax:,.0f} |".replace(",", "."))
+        _table_lines.append(f"| Confidence | {_confidence * 100:.0f}% |")
+        _preview = {
+            "pending_action_id": _pending_id,
+            "action_type": "CONFIRM_DOCUMENT_DRAFT",
+            "action_key": "confirm_document_draft",
+            "display_name": f"Konfirmasi {_type_display}",
+            "confirmation_table": "\n".join(_table_lines),
+            "payload": {
+                "document_id": _fm.get("file_hash", str(_ocr_uuid.uuid4())),
+                "doc_type": _doc_type,
+                "vendor_name": _vendor,
+                "document_number": _doc_number,
+                "document_date": _doc_date,
+                "total_amount": _total,
+                "tax_amount": _tax,
+                "items": _items,
+            },
+            "loading_message": f"Memproses {_type_display.lower()} dari {_vendor}...",
+            "entity_type": "document",
+        }
+        _narration = (
+            f"Saya baca {_type_display.lower()} dari **{_vendor}**. "
+            f"Total Rp {_total:,.0f}.".replace(",", ".")
+        )
+        return ChatMessageResponse(
+            message_type="DIRECT_ACTION_PREVIEW",
+            text=_narration,
+            data=_preview,
+            pending_action_id=_pending_id,
+            session_id=session_id,
+        )
+    except Exception as _doc_err:
+        logger.error(
+            "[FIX_MULTIDOC] _process_one_document failed: %s", _doc_err, exc_info=True
+        )
+        return None
+
+
+# FIX_MULTIDOC: advance the pending_document_queue (called from confirm/cancel).
+async def _advance_document_queue(
+    ctx: dict, session_id: Optional[str], prev_note: str = "Bukti sebelumnya tercatat."
+) -> Optional[ChatMessageResponse]:
+    """Pop the next queued doc from document_context.pending_document_queue,
+    process it, and return its card. Returns None when the queue is empty/absent.
+    The queue + cursor is re-armed/cleared each step. Used to chain processing
+    of multi-receipt uploads across confirm/cancel.
+    """
+    if not session_id:
+        return None
+    try:
+        _pool = await get_session_db_pool()
+        _sm = SessionManager(
+            db_pool=_pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
+        )
+        _state = await _sm.get_state(session_id)
+        _dc = getattr(_state, "document_context", None) or {}
+        if isinstance(_dc, str):
+            try:
+                _dc = json.loads(_dc)
+            except Exception:
+                _dc = {}
+        _queue = _dc.get("pending_document_queue") if isinstance(_dc, dict) else None
+        if not _queue:
+            return None
+        _total_n = _dc.get("pending_document_total") or (len(_queue) + 1)
+        _next_fm = _queue.pop(0)
+        _k = _total_n - len(_queue)  # 1-based index of the doc we are about to show
+        _card = await _process_one_document(
+            _next_fm, ctx=ctx, session_id=session_id, caption=_dc.get("queue_caption", "")
+        )
+        # Re-arm: persist the (shrunken) queue so the NEXT confirm/cancel resumes.
+        # NOTE: _process_one_document overwrote document_context (with the new
+        # pending_action_id / bank-selection state); re-attach the remaining queue.
+        try:
+            _state2 = await _sm.get_state(session_id)
+            _dc2 = getattr(_state2, "document_context", None) or {}
+            if isinstance(_dc2, str):
+                _dc2 = json.loads(_dc2)
+            if not isinstance(_dc2, dict):
+                _dc2 = {}
+            if _queue:
+                _dc2["pending_document_queue"] = _queue
+                _dc2["pending_document_total"] = _total_n
+                _dc2["queue_caption"] = _dc.get("queue_caption", "")
+            else:
+                _dc2.pop("pending_document_queue", None)
+                _dc2.pop("pending_document_total", None)
+                _dc2.pop("queue_caption", None)
+            await _sm.update_state(session_id, document_context=_dc2)
+        except Exception as _rearm_err:
+            logger.warning("[FIX_MULTIDOC] queue re-arm failed: %s", _rearm_err)
+        if _card is None:
+            # Never silently drop — surface a skip note and keep advancing.
+            logger.warning("[FIX_MULTIDOC] queued doc produced no card; skipping")
+            if _queue:
+                return await _advance_document_queue(ctx, session_id, prev_note)
+            return None
+        _note = f"{prev_note} Bukti {_k} dari {_total_n}:"
+        _card.text = f"{_note}\n\n{_card.text or ''}"
+        return _card
+    except Exception as _adv_err:
+        logger.error(
+            "[FIX_MULTIDOC] _advance_document_queue failed: %s", _adv_err, exc_info=True
+        )
+        return None
+
+
+# =============================================================================
 # POST /message/upload — Send message with file attachments (multipart)
 # =============================================================================
 
@@ -3224,6 +3771,15 @@ async def send_message_with_files(
                     )
 
                 # Read first image file
+                # FIX_MULTIDOC: build the full list of image/PDF docs so docs
+                # beyond the first are queued (not silently dropped) and
+                # processed one-by-one on subsequent confirm/cancel.
+                _doc_fms = [
+                    fm
+                    for fm in file_metas
+                    if fm.get("content_type", "").startswith("image/")
+                    or fm.get("extension", "").lower() == ".pdf"
+                ]
                 _fm = next(
                     (
                         fm
@@ -4529,6 +5085,63 @@ Aturan:
             logger.info(f"[DocSimple] TOTAL pipeline: {_total_elapsed:.0f}ms")
         except Exception:
             pass
+        # FIX_MULTIDOC: if the user uploaded >1 image/PDF, the first was just
+        # processed into _doc_pipeline_result above. Stash the REMAINING docs
+        # into document_context.pending_document_queue so they get processed
+        # one-by-one as the user confirms/cancels each card. Mirror the
+        # entity_queue (pending_entity_selection) persistence pattern.
+        try:
+            _dfms = locals().get("_doc_fms") or []
+            if len(_dfms) > 1 and session_id:
+                _remaining = [
+                    {
+                        "document_id": _q.get("document_id"),
+                        "stored_path": _q.get("stored_path"),
+                        "content_type": _q.get("content_type"),
+                        "extension": _q.get("extension"),
+                        "filename": _q.get("filename"),
+                        "file_hash": _q.get("file_hash"),
+                    }
+                    for _q in _dfms[1:]
+                ]
+                _total_n = len(_dfms)
+                _md_pool = await get_session_db_pool()
+                _md_sm = SessionManager(
+                    db_pool=_md_pool,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx["user_id"],
+                )
+                # Merge into whatever document_context the pipeline just wrote
+                # (e.g. the propose pending_action_id / bank-selection state).
+                _md_state = await _md_sm.get_state(session_id)
+                _md_dc = getattr(_md_state, "document_context", None) or {}
+                if isinstance(_md_dc, str):
+                    try:
+                        _md_dc = json.loads(_md_dc)
+                    except Exception:
+                        _md_dc = {}
+                if not isinstance(_md_dc, dict):
+                    _md_dc = {}
+                _md_dc["pending_document_queue"] = _remaining
+                _md_dc["pending_document_total"] = _total_n
+                _md_dc["queue_caption"] = text or ""
+                await _md_sm.update_state(session_id, document_context=_md_dc)
+                logger.info(
+                    "[FIX_MULTIDOC] queued %d additional docs (total=%d)",
+                    len(_remaining),
+                    _total_n,
+                )
+                # Prefix the first card narration so the user knows more follow.
+                try:
+                    _doc_pipeline_result.text = (
+                        f"Ada {_total_n} bukti — saya proses satu per satu. "
+                        f"Bukti 1 dari {_total_n}:\n\n"
+                        f"{_doc_pipeline_result.text or ''}"
+                    )
+                except Exception:
+                    pass
+        except Exception as _mdq_err:
+            logger.warning("[FIX_MULTIDOC] queue stash failed: %s", _mdq_err)
         return _doc_pipeline_result
 
     # ── Cancel stale crud_form workflows when new file upload arrives ──
@@ -5476,7 +6089,34 @@ async def _confirm_direct_action(
                     _clear_sm = _ClearSM(
                         db_pool=pool, tenant_id=tenant_id, user_id=user_id
                     )
-                    await _clear_sm.update_state(session_id, document_context=None)
+                    # FIX_MULTIDOC: preserve a pending_document_queue across the
+                    # clear so the next queued receipt is not lost on confirm.
+                    _pre_state = await _clear_sm.get_state(session_id)
+                    _pre_dc = getattr(_pre_state, "document_context", None) or {}
+                    if isinstance(_pre_dc, str):
+                        try:
+                            _pre_dc = json.loads(_pre_dc)
+                        except Exception:
+                            _pre_dc = {}
+                    if isinstance(_pre_dc, dict) and _pre_dc.get(
+                        "pending_document_queue"
+                    ):
+                        _keep_dc = {
+                            "pending_document_queue": _pre_dc[
+                                "pending_document_queue"
+                            ],
+                            "pending_document_total": _pre_dc.get(
+                                "pending_document_total"
+                            ),
+                            "queue_caption": _pre_dc.get("queue_caption", ""),
+                        }
+                        await _clear_sm.update_state(
+                            session_id, document_context=_keep_dc
+                        )
+                    else:
+                        await _clear_sm.update_state(
+                            session_id, document_context=None
+                        )
                 except Exception as _e:
                     logger.warning(
                         f"[DocConfirm] Failed to clear document_context: {_e}"
@@ -5610,6 +6250,35 @@ async def _confirm_direct_action(
                         "[HOOK] after_confirm (direct) failed: session=%s err=%s",
                         session_id[:8] if session_id else "-",
                         _hook_err,
+                    )
+
+            # FIX_MULTIDOC: if this confirmed action originated from a multi-doc
+            # upload, advance to the next queued receipt and return its card
+            # (chained into this confirm success) instead of the plain message.
+            if session_id:
+                try:
+                    _md_auth = ""
+                    try:
+                        _md_auth = _get_user_context(http_request).get(
+                            "auth_token", ""
+                        )
+                    except Exception:
+                        _md_auth = ""
+                    _next_card = await _advance_document_queue(
+                        {
+                            "tenant_id": tenant_id,
+                            "user_id": user_id,
+                            "auth_token": _md_auth,
+                        },
+                        session_id,
+                        prev_note="Bukti sebelumnya tercatat.",
+                    )
+                    if _next_card is not None:
+                        return _next_card
+                except Exception as _adv_err:
+                    logger.warning(
+                        "[FIX_MULTIDOC] confirm-path queue advance failed: %s",
+                        _adv_err,
                     )
 
             return ChatMessageResponse(
@@ -6071,6 +6740,23 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                         cancel_text = 'Ok, dilewati. Itu item terakhir — ketik "lanjut" untuk selesaikan rekonsiliasi.'
         except Exception:
             pass  # Fall back to simple message
+
+        # FIX_MULTIDOC: if the cancelled action came from a multi-doc upload,
+        # advance to the next queued receipt and return its card so cancelling
+        # one receipt does NOT silently drop the rest.
+        if body.session_id:
+            try:
+                _next_card = await _advance_document_queue(
+                    ctx,
+                    body.session_id,
+                    prev_note="Bukti sebelumnya dilewati.",
+                )
+                if _next_card is not None:
+                    return _next_card
+            except Exception as _adv_err:
+                logger.warning(
+                    "[FIX_MULTIDOC] cancel-path queue advance failed: %s", _adv_err
+                )
 
         return ChatMessageResponse(
             message_type="TEXT",

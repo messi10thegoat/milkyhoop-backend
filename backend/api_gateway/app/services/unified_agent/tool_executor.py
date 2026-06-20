@@ -4114,7 +4114,7 @@ class ToolExecutor:
                     _cust = await self._fetch_entity(
                         _terms_client, f"/api/customers/{_early_cid}"
                     )
-                    if _cust and _cust.get("payment_terms_days") is not None:
+                    if _cust and _cust.get("payment_terms_days"):  # FIX_NET0_DEFAULT
                         _terms_days = int(_cust["payment_terms_days"])
             except Exception as _terms_err:
                 logger.debug(
@@ -4203,7 +4203,7 @@ class ToolExecutor:
                                 )
                                 if (
                                     _cust2
-                                    and _cust2.get("payment_terms_days") is not None
+                                    and _cust2.get("payment_terms_days")  # FIX_NET0_DEFAULT
                                 ):
                                     _terms2 = int(_cust2["payment_terms_days"])
                             except Exception:
@@ -4712,7 +4712,7 @@ class ToolExecutor:
                     _vendor = await self._fetch_entity(
                         _bv_client, f"/api/vendors/{_early_vid}"
                     )
-                    if _vendor and _vendor.get("payment_terms_days") is not None:
+                    if _vendor and _vendor.get("payment_terms_days"):  # FIX_NET0_DEFAULT
                         _bill_terms_days = int(_vendor["payment_terms_days"])
             except Exception as _bv_err:
                 logger.debug(
@@ -4832,7 +4832,7 @@ class ToolExecutor:
                                 )
                                 if (
                                     _vendor2
-                                    and _vendor2.get("payment_terms_days") is not None
+                                    and _vendor2.get("payment_terms_days")  # FIX_NET0_DEFAULT
                                 ):
                                     _terms2 = int(_vendor2["payment_terms_days"])
                             except Exception:
