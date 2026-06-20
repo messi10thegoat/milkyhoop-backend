@@ -31,6 +31,7 @@ from ..schemas.vendor_deposits import (
     VendorDepositStatus,
 )
 from ..services.resolve_account import resolve_account_id
+from ..services.bank_sync import create_bank_transaction_for_journal
 
 router = APIRouter()
 
@@ -538,6 +539,31 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
                 journal["id"],
             )
 
+            # BankSync Rule 1: mirror the Cr Bank leg into bank_transactions so the
+            # R9 ledger<->register invariant holds. Reverse-lookup the bank_account from
+            # the cash/bank CoA actually used in the journal (NOT vd["bank_account_id"],
+            # which is NULL when the deposit defaults to cash account 1-10100).
+            mirror_bank_id = await conn.fetchval(
+                "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2 LIMIT 1",
+                cash_account,
+                ctx["tenant_id"],
+            )
+            if mirror_bank_id:
+                await create_bank_transaction_for_journal(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    bank_account_id=mirror_bank_id,
+                    journal_id=journal["id"],
+                    transaction_date=vd["deposit_date"],
+                    transaction_type="withdrawal",
+                    amount=-vd["amount"],
+                    reference_type="vendor_deposit",
+                    reference_id=deposit_id,
+                    created_by=ctx.get("user_id"),
+                    reference_number=vd["deposit_number"],
+                    description=f"Vendor Deposit - {vd['deposit_number']}",
+                )
+
             return PostDepositResponse(
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
@@ -879,6 +905,30 @@ async def refund_vendor_deposit(
                 "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                 journal["id"],
             )
+
+            # BankSync Rule 1: mirror the Dr Bank leg (cash returning IN) into
+            # bank_transactions -- the twin deposit of the post withdrawal -- so R9 holds.
+            # Reverse-lookup the bank_account from the CoA used (handles default-cash NULL).
+            mirror_bank_id = await conn.fetchval(
+                "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2 LIMIT 1",
+                bank_account_coa,
+                ctx["tenant_id"],
+            )
+            if mirror_bank_id:
+                await create_bank_transaction_for_journal(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    bank_account_id=mirror_bank_id,
+                    journal_id=journal["id"],
+                    transaction_date=data.refund_date,
+                    transaction_type="deposit",
+                    amount=data.amount,
+                    reference_type="vendor_deposit_refund",
+                    reference_id=deposit_id,
+                    created_by=ctx.get("user_id"),
+                    reference_number=vd["deposit_number"],
+                    description=f"Refund Deposit {vd['deposit_number']}",
+                )
 
             # Create refund record
             refund = await conn.fetchrow(
