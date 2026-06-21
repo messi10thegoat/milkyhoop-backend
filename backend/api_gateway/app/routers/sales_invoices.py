@@ -4781,7 +4781,7 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
                 """
                 SELECT f.id, f.fulfillment_number, f.fulfillment_date, f.warehouse_id,
                        w.name AS warehouse_name, f.journal_id, f.revenue_journal_id,
-                       f.status, f.notes, f.created_at, f.voided_at, f.void_reason
+                       f.status, f.notes, f.created_at, f.voided_at, f.voided_reason
                 FROM invoice_fulfillments f
                 LEFT JOIN warehouses w ON w.id = f.warehouse_id
                 WHERE f.invoice_id = $1 AND f.tenant_id = $2
