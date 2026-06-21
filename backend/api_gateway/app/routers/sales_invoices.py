@@ -4796,9 +4796,10 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
                 # Get items per fulfillment
                 f_items = await conn.fetch(
                     """
-                    SELECT fi.id, fi.invoice_item_id, fi.product_id, fi.product_name,
-                           fi.quantity, fi.unit_cost, fi.total_cost, fi.revenue_amount
+                    SELECT fi.id, fi.invoice_item_id, fi.product_id, sii.description AS product_name,
+                           fi.quantity, fi.unit_cost, fi.total_cost, sii.recognized_amount AS revenue_amount
                     FROM invoice_fulfillment_items fi
+                    LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
                     WHERE fi.fulfillment_id = $1
                 """,
                     f["id"],
