@@ -2835,12 +2835,16 @@ Aturan:
                     if _val > 0:
                         _amts.append((_lbl, _val))
                     _prev_end = _am.end()
-                _nominal = next(
-                    (v for (l, v) in _amts if "kirim uang" in l or "nominal" in l),
+                _nominal = next(  # FIX_TRANSFER_NOMINAL_EN
+                    (v for (l, v) in _amts
+                     if "kirim uang" in l or "nominal" in l
+                     or "send money" in l or "amount sent" in l or "transfer amount" in l),
                     None,
                 )
-                _admin = next(
-                    (v for (l, v) in _amts if "biaya admin" in l or "admin" in l),
+                _admin = next(  # FIX_TRANSFER_NOMINAL_EN
+                    (v for (l, v) in _amts
+                     if "biaya admin" in l or "admin" in l
+                     or "admin fee" in l or "service fee" in l or "transaction fee" in l),
                     None,
                 )
                 _total_lbl = next((v for (l, v) in _amts if "total" in l), None)
@@ -4053,12 +4057,18 @@ Aturan:
                                 if _val > 0:
                                     _amts.append((_lbl, _val))
                                 _prev_end = _am.end()
-                            _nominal = next(
-                                (v for (l, v) in _amts if "kirim uang" in l or "nominal" in l),
+                            _nominal = next(  # FIX_TRANSFER_NOMINAL_EN
+                                (v for (l, v) in _amts
+                                 if "kirim uang" in l or "nominal" in l
+                                 or "send money" in l or "amount sent" in l
+                                 or "transfer amount" in l),
                                 None,
                             )
-                            _admin = next(
-                                (v for (l, v) in _amts if "biaya admin" in l or "admin" in l),
+                            _admin = next(  # FIX_TRANSFER_NOMINAL_EN
+                                (v for (l, v) in _amts
+                                 if "biaya admin" in l or "admin" in l
+                                 or "admin fee" in l or "service fee" in l
+                                 or "transaction fee" in l),
                                 None,
                             )
                             _total_lbl = next(
@@ -5705,6 +5715,41 @@ async def _confirm_direct_action(
     )
     if payload_overrides:
         payload.update(payload_overrides)
+
+        # FIX_OVERRIDE_REALLOC: an inline edit of total_amount on a payment card only
+        # overwrites the top-level amount; the frozen allocations[] (each amount_applied =
+        # matched invoice outstanding) are left as-is, so POST rejects when the new total is
+        # lower (sum(allocations) > total_amount → 400 "Total allocation exceeds payment
+        # amount"). Re-cap the allocations oldest-first to the overridden total.
+        if (
+            payload_overrides
+            and "total_amount" in payload_overrides
+            and action_key in ("create_receive_payment", "create_bill_payment")
+        ):
+            try:
+                _new_total = payload.get("total_amount")
+                _allocs = payload.get("allocations")
+                if isinstance(_new_total, (int, float)) and isinstance(_allocs, list) and _allocs:
+                    _remaining = int(_new_total)
+                    _rebuilt = []
+                    for _a in _allocs:
+                        if not isinstance(_a, dict):
+                            continue
+                        _cap = int(_a.get("amount_applied") or 0)
+                        _give = max(0, min(_cap, _remaining))
+                        if _give > 0:
+                            _a2 = dict(_a)
+                            _a2["amount_applied"] = _give
+                            _rebuilt.append(_a2)
+                            _remaining -= _give
+                    if _rebuilt:
+                        payload["allocations"] = _rebuilt
+                        logger.info(
+                            "[FIX_OVERRIDE_REALLOC] re-capped %d allocations to total=%s (leftover unapplied=%s)",
+                            len(_rebuilt), _new_total, _remaining,
+                        )
+            except Exception:
+                logger.warning("[FIX_OVERRIDE_REALLOC] realloc skipped", exc_info=True)
 
     # ── FIX_PHONE_COERCE (2026-05-09) ──
     # Defensive: phone fields may be int (LLM JSON loss-of-leading-zero).
