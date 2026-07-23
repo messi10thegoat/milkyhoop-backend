@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gap Patch for milkydb_dryrun — idempotent fixes for schema gaps not covered by v9 migrations
-DB="milkydb_dryrun"
+DB="${PGDB:-milkydb_dryrun}"
 PG() { docker exec -i milkyhoop-dev-postgres-1 psql -U postgres -d "$DB" -v ON_ERROR_STOP=1 "$@" 2>&1; }
 
 echo "=== GAP PATCH START ==="
@@ -153,6 +153,56 @@ echo "Gap 6 (V115 sales_invoice_items.unit_cost data_type): $RESULT"
 # Gap 7: audit_logs indexes — deferred
 echo ""
 echo "Gap 7 (audit_logs indexes): DEFERRED — functional stub exists from Step 0"
+
+# -----------------------------------------------------------------------
+# Gap 8: Prisma NextAuth tables (Account, Session, VerificationToken)
+# Step 0 creates Tenant/User/UserSecurity but not these 3 NextAuth tables.
+echo ""
+echo "--- Gap 8: Prisma NextAuth tables ---"
+PG << 'SQL'
+CREATE TABLE IF NOT EXISTS "Account" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "type" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "providerAccountId" TEXT NOT NULL,
+    "access_token" TEXT,
+    "expires_at" INTEGER,
+    "id_token" TEXT,
+    "refresh_token" TEXT,
+    "scope" TEXT,
+    "session_state" TEXT,
+    "token_type" TEXT,
+    CONSTRAINT "Account_pkey" PRIMARY KEY ("id")
+);
+CREATE TABLE IF NOT EXISTS "Session" (
+    "id" TEXT NOT NULL,
+    "sessionToken" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "expires" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Session_pkey" PRIMARY KEY ("id")
+);
+CREATE TABLE IF NOT EXISTS "VerificationToken" (
+    "identifier" TEXT NOT NULL,
+    "token" TEXT NOT NULL,
+    "expires" TIMESTAMP(3) NOT NULL
+);
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='Account_userId_fkey') THEN
+        ALTER TABLE "Account" ADD CONSTRAINT "Account_userId_fkey"
+          FOREIGN KEY ("userId") REFERENCES "User"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='Session_userId_fkey') THEN
+        ALTER TABLE "Session" ADD CONSTRAINT "Session_userId_fkey"
+          FOREIGN KEY ("userId") REFERENCES "User"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS "Account_provider_providerAccountId_key" ON "Account"("provider", "providerAccountId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Session_sessionToken_key" ON "Session"("sessionToken");
+CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_token_key" ON "VerificationToken"("token");
+CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_identifier_token_key" ON "VerificationToken"("identifier", "token");
+SQL
+echo "Gap 8 (NextAuth tables): OK"
 
 echo ""
 echo "=== GAP PATCH DONE ==="
