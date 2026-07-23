@@ -1,5 +1,5 @@
 #!/bin/bash
-PGDB="milkydb_dryrun"
+PGDB="${PGDB:-milkydb_dryrun}"
 PGUSER="postgres"
 MIGDIR="/root/milkyhoop-dev/backend/migrations"
 FIXDIR="/tmp/migration_fixes"
