@@ -184,7 +184,7 @@ services:
     - ACTION_EXECUTOR_GRPC_PORT=5092
     - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
     - MINIO_ENDPOINT=minio:9000
-    - MINIO_PUBLIC_ENDPOINT=159.89.197.131:9000
+    - MINIO_PUBLIC_ENDPOINT=159.89.202.160:9000
     - MINIO_ACCESS_KEY=milkyhoop
     - MINIO_SECRET_KEY=milkyhoop2024
     - MINIO_BUCKET=milkyhoop-documents
@@ -363,7 +363,7 @@ services:
     - internal
     environment:
     - GRPC_PORT=5001
-    - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+    - DATABASE_URL=postgresql://postgres:${DB_PASSWORD}@postgres:5432/milkydb
     - PRISMA_QUERY_ENGINE_BINARY=/app/prisma-query-engine-debian-openssl-3.0.x
     env_file:
     - .env
@@ -1336,7 +1336,7 @@ services:
     - DB_HOST=postgres
     - DB_PORT=5432
     - DB_USER=postgres
-    - DB_PASSWORD=Proyek771977
+    - DB_PASSWORD=${DB_PASSWORD}
     - DB_NAME=milkydb
     env_file:
     - .env
@@ -1373,7 +1373,7 @@ services:
     - DB_HOST=postgres
     - DB_PORT=5432
     - DB_USER=postgres
-    - DB_PASSWORD=Proyek771977
+    - DB_PASSWORD=${DB_PASSWORD}
     - DB_NAME=milkydb
     - API_GATEWAY_URL=http://api_gateway:8000
     env_file:

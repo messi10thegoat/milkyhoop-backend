@@ -2030,9 +2030,10 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 # Insert items
                 for item in calculated_items:
                     item_uuid = None
-                    if item.get("item_id"):
+                    _raw_item_id = item.get("item_id") or item.get("product_id")
+                    if _raw_item_id:
                         try:
-                            item_uuid = UUID(item["item_id"])
+                            item_uuid = UUID(str(_raw_item_id))
                         except ValueError:
                             pass
 

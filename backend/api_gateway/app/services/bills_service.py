@@ -839,25 +839,25 @@ class BillsService:
                 if vendor_id and not vendor_name:
                     # Look up vendor name from suppliers table
                     vendor_row = await conn.fetchrow(
-                        "SELECT nama_supplier FROM suppliers WHERE id = $1",
+                        "SELECT name FROM vendors WHERE id = $1",
                         str(vendor_id),
                     )
                     if vendor_row:
-                        vendor_name = vendor_row["nama_supplier"]
+                        vendor_name = vendor_row["name"]
 
                 # Phase 4 hardening (Iron Law 30 mirror): resolve name → id, reject if unresolved.
                 # Mirrors sales_invoices BUG-02 fix. Without this, bill is saved with vendor_id=NULL
                 # whenever vendor_name is provided without id — orphan that breaks AP aggregation.
                 if vendor_name and not vendor_id:
                     resolved_id = await conn.fetchval(
-                        "SELECT id FROM suppliers WHERE tenant_id = $1 AND nama_supplier = $2 LIMIT 1",
+                        "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2 LIMIT 1",
                         tenant_id,
                         vendor_name,
                     )
                     if not resolved_id:
                         # ILIKE fallback for case-insensitive match
                         resolved_id = await conn.fetchval(
-                            "SELECT id FROM suppliers WHERE tenant_id = $1 AND nama_supplier ILIKE $2 LIMIT 1",
+                            "SELECT id FROM vendors WHERE tenant_id = $1 AND name ILIKE $2 LIMIT 1",
                             tenant_id,
                             vendor_name,
                         )
