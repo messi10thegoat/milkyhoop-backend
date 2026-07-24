@@ -7,8 +7,8 @@ Two distinct classes were found and closed:
 ### A. Table referenced by code, DDL in NO migration (reconstructed from code, arbiter=code)
 - **V212** `withholding_tax_records` — PPh report.
 - **V213** `chat_attachments` — chat history per-session 500 (OBSERVED in gateway log). Verified real 200 after fix.
-- **V214** `sales_invoice_attachments`, `user_explicit_preferences` — user-facing (invoice Lampiran, Tier-2 chat memory). Tables created; NOT yet HTTP-proven.
-- **V215** `master_data_audit_log`, `product_units`, `journal_sequences`, `tool_call_logs` — ⚠️ borderline-SPECULATIVE (no observed failure). Simple/low-risk schemas, but per policy below these should ideally have waited for an observed failure.
+- **V214** `sales_invoice_attachments`, `user_explicit_preferences` — user-facing (invoice Lampiran, Tier-2 chat memory). Tables created; NOT yet HTTP-proven. KEPT (chat_attachments proved the class real; both are user-facing with anticipatable failures).
+- **~~V215~~ ROLLED BACK 2026-07-25** `master_data_audit_log`, `product_units`, `journal_sequences`, `tool_call_logs` — these were created from a code-grep scan with NO observed failure. Rolled back on owner directive — NOT because the schemas were wrong, but because the precedent ("scan found it → I built it") blurs the line between "recovered from repo" and "invented from grep", and that line is what has saved us repeatedly. Tables dropped (all were empty), migration removed. Moved to backlog below.
 
 ### B. "Half-aborted migration" — DDL IS in the repo, migration ran partially
 Root cause: the fresh-install runner **continues past a failed statement inside a migration file yet records the file OK** (no `ON_ERROR_STOP` / only file-level success check). So a migration can leave some objects behind.
@@ -35,6 +35,10 @@ Create only on an observed failure, reconstructing carefully with code as arbite
 | `expense_claims`, `expense_claim_lines`, `expense_policies`, `recurring_expenses` | Expense claims (expense_extended.py) | Only if the expense-claims feature is used. |
 | `granular_permissions` | Layer-2 permissions (permission_service.py) | Multi-shape INSERT + `module` column + ON CONFLICT — needs careful read. Reachable via Team & Access. |
 | `action_patterns`, `chat_telemetry` | Chat learning/telemetry (action_memory.py, telemetry.py) | Fire-and-forget (try/except) — will not hard-500. |
+| `master_data_audit_log` | audit_log.py + vendors.py (master-data edit audit) | Ex-V215 (rolled back). Create on observed failure. |
+| `product_units` | units.py (item unit master) | Ex-V215 (rolled back). Create on observed failure. |
+| `journal_sequences` | fixed_assets.py (per-tenant counter) | Ex-V215 (rolled back). Create on observed failure. |
+| `tool_call_logs` | unified_agent/observability.py (fire-and-forget) | Ex-V215 (rolled back). Will not hard-500. |
 | `kds_order_history`, `menu_item_modifiers`, `recipe_modifier_groups`, `recipe_modifier_options`, `reservations` | Resto/POS (kds.py, recipes.py, tables.py) | IRRELEVANT to a konveksi/garment tenant. Do not create. |
 | `notifications` | **Go notification-service** (services/notification-service) | Other-service-owned — its schema belongs to that service's own migrations, NOT the gateway. |
 | `policy_audit_log` | **policy_engine service** | Other-service-owned. |
