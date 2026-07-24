@@ -69,8 +69,12 @@ def d(val) -> Decimal:
     return Decimal(str(val))
 
 
-def round2(val: Decimal) -> Decimal:
-    return val.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+def round2(val) -> Decimal:
+    # V204-era golden-path fix: coerce via d() sebelum quantize. sum() atas
+    # generator KOSONG mengembalikan int 0 (start default), dan int/float/None
+    # tidak punya .quantize -> AttributeError. d() sudah menangani semua kasus.
+    # Menutup kelas: 20 pemanggil round2 kini aman terhadap int/None/float.
+    return d(val).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 async def lookup_ter_rate(
