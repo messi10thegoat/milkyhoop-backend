@@ -204,5 +204,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS "VerificationToken_identifier_token_key" ON "V
 SQL
 echo "Gap 8 (NextAuth tables): OK"
 
+
+# -----------------------------------------------------------------------
+# Gap 10: SCHEMA DRIFT DITEMUKAN SAAT E2E GOLDEN PATH (2026-07-23/24)
+# Objek di bawah ADA di milkydb (state yang terbukti hijau E2E) tapi TIDAK
+# dihasilkan oleh migrasi V002-V194 maupun Step 0 stub. Asalnya = migrasi
+# pasca-V194 di droplet lama yang tidak pernah ter-push ke GitHub (hilang
+# bersama droplet). Tanpa blok ini, fresh install GAGAL di titik yang sama:
+#   - payroll create  -> 500 (pay_groups / employees.is_active)
+#   - invoice create  -> item_id NULL, PSAK-72 tidak pernah defer
+#   - fulfillment     -> INSERT gagal (payload_hash / revenue_journal_id)
+echo ""
+echo "--- Gap 10: E2E-proven schema drift (payroll + invoice + fulfillment) ---"
+RESULT=$(PG << 'SQL'
+-- 8a. pay_groups: tidak ada sumbernya di repo sama sekali (Layer-3 pay-group filtering)
+CREATE TABLE IF NOT EXISTS pay_groups (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE pay_groups ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+CREATE INDEX IF NOT EXISTS idx_pay_groups_tenant ON pay_groups(tenant_id);
+
+-- 8b. employees: V129 memperluas tabel tapi TIDAK menambahkan 2 kolom ini
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS pay_group_id UUID;
+
+-- 8c. sales_invoice_items: 8 kolom. Tanpa warehouse_id/uom dll, create_invoice gagal.
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS batch_no VARCHAR(100);
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS exp_date DATE;
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS tax_code_id UUID;
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS dpp NUMERIC(18,2);
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS serial_no VARCHAR(100);
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS warehouse_id UUID;
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS uom VARCHAR(50);
+ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS conversion_rate NUMERIC(18,6) DEFAULT 1;
+
+-- 8d. invoice_fulfillments: V137 membuat tabel tanpa 2 kolom ini (PSAK-72 Event 2)
+ALTER TABLE invoice_fulfillments ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+ALTER TABLE invoice_fulfillments ADD COLUMN IF NOT EXISTS revenue_journal_id UUID;
+SQL
+)
+RC=$?
+if [[ $RC -eq 0 ]]; then
+    echo "Gap 10 (E2E schema drift): OK"
+else
+    echo "Gap 10 (E2E schema drift): ERROR: $RESULT"
+fi
+
+# -----------------------------------------------------------------------
+# Gap 11: VERIFIKASI — bukan tambalan. account_roles memakai role_key (BUKAN
+# role_code). Kalau assertion ini gagal, kode router akan salah kolom.
+echo ""
+echo "--- Gap 11: account_roles.role_key assertion ---"
+RESULT=$(PG -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='account_roles' AND column_name='role_key';")
+if [[ "$RESULT" == "1" ]]; then
+    echo "Gap 11 (account_roles.role_key): OK"
+else
+    echo "Gap 11 (account_roles.role_key): FAIL — kolom role_key tidak ditemukan (got: $RESULT)"
+fi
+
 echo ""
 echo "=== GAP PATCH DONE ==="
