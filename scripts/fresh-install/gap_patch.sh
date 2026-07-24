@@ -206,55 +206,40 @@ echo "Gap 8 (NextAuth tables): OK"
 
 
 # -----------------------------------------------------------------------
-# Gap 10: SCHEMA DRIFT DITEMUKAN SAAT E2E GOLDEN PATH (2026-07-23/24)
-# Objek di bawah ADA di milkydb (state yang terbukti hijau E2E) tapi TIDAK
-# dihasilkan oleh migrasi V002-V194 maupun Step 0 stub. Asalnya = migrasi
-# pasca-V194 di droplet lama yang tidak pernah ter-push ke GitHub (hilang
-# bersama droplet). Tanpa blok ini, fresh install GAGAL di titik yang sama:
-#   - payroll create  -> 500 (pay_groups / employees.is_active)
-#   - invoice create  -> item_id NULL, PSAK-72 tidak pernah defer
-#   - fulfillment     -> INSERT gagal (payload_hash / revenue_journal_id)
+# Gap 10: DIGANTI OLEH MIGRASI V195 (2026-07-24).
+# Blok tambalan lama DIHAPUS: sebagian isinya ternyata mengabadikan karangan
+# agen E2E (sales_invoice_items.serial_no/uom/conversion_rate = nol referensi
+# di SELURUH backend; employees.basic_salary/salary_type idem). Skema yang sah
+# sekarang datang dari V195 yang diturunkan dari KODE, bukan dari isi milkydb.
+# Di sini tinggal assertion fail-loud.
 echo ""
-echo "--- Gap 10: E2E-proven schema drift (payroll + invoice + fulfillment) ---"
-RESULT=$(PG << 'SQL'
--- 8a. pay_groups: tidak ada sumbernya di repo sama sekali (Layer-3 pay-group filtering)
-CREATE TABLE IF NOT EXISTS pay_groups (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    is_default BOOLEAN DEFAULT FALSE,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-ALTER TABLE pay_groups ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
-CREATE INDEX IF NOT EXISTS idx_pay_groups_tenant ON pay_groups(tenant_id);
-
--- 8b. employees: V129 memperluas tabel tapi TIDAK menambahkan 2 kolom ini
-ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
-ALTER TABLE employees ADD COLUMN IF NOT EXISTS pay_group_id UUID;
-
--- 8c. sales_invoice_items: 8 kolom. Tanpa warehouse_id/uom dll, create_invoice gagal.
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS batch_no VARCHAR(100);
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS exp_date DATE;
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS tax_code_id UUID;
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS dpp NUMERIC(18,2);
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS serial_no VARCHAR(100);
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS warehouse_id UUID;
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS uom VARCHAR(50);
-ALTER TABLE sales_invoice_items ADD COLUMN IF NOT EXISTS conversion_rate NUMERIC(18,6) DEFAULT 1;
-
--- 8d. invoice_fulfillments: V137 membuat tabel tanpa 2 kolom ini (PSAK-72 Event 2)
-ALTER TABLE invoice_fulfillments ADD COLUMN IF NOT EXISTS payload_hash TEXT;
-ALTER TABLE invoice_fulfillments ADD COLUMN IF NOT EXISTS revenue_journal_id UUID;
-SQL
-)
-RC=$?
-if [[ $RC -eq 0 ]]; then
-    echo "Gap 10 (E2E schema drift): OK"
+echo "--- Gap 10: assertion objek V195 ---"
+MISSING=""
+chk_col() {
+    local n
+    n=$(PG -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='$1' AND column_name='$2';")
+    [[ "$n" == "1" ]] || MISSING="$MISSING $1.$2"
+}
+chk_tbl() {
+    local n
+    n=$(PG -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='$1';")
+    [[ "$n" == "1" ]] || MISSING="$MISSING table:$1"
+}
+chk_col journal_entries chain_sequence
+chk_col journal_entries content_hash
+chk_col journal_entries previous_hash
+chk_col employees is_active
+chk_col employees pay_group_id
+chk_col invoice_fulfillments payload_hash
+chk_col sales_invoice_items dpp
+chk_tbl pay_groups
+chk_tbl user_pay_group_access
+FN=$(PG -tAc "SELECT COUNT(*) FROM pg_proc WHERE proname='compute_journal_hash';")
+[[ "$FN" == "1" ]] || MISSING="$MISSING func:compute_journal_hash"
+if [[ -z "$MISSING" ]]; then
+    echo "Gap 10 (assertion V195): OK"
 else
-    echo "Gap 10 (E2E schema drift): ERROR: $RESULT"
+    echo "Gap 10 (assertion V195): FAIL — V195 belum jalan? Hilang:$MISSING"
 fi
 
 # -----------------------------------------------------------------------

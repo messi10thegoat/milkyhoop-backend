@@ -149,10 +149,14 @@ CREATE TABLE IF NOT EXISTS bin_stock (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
-    CONSTRAINT uq_bin_item_batch UNIQUE(tenant_id, bin_id, item_id, COALESCE(batch_id, '00000000-0000-0000-0000-000000000000'::uuid)),
     CONSTRAINT chk_bin_stock_qty CHECK (quantity >= 0),
     CONSTRAINT chk_bin_stock_reserved CHECK (reserved_quantity >= 0)
 );
+
+-- FIX 2026-07-24: constraint UNIQUE tidak boleh memuat ekspresi (COALESCE) di PostgreSQL.
+-- Semantik asli dipertahankan lewat unique INDEX berekspresi.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_bin_item_batch
+    ON bin_stock (tenant_id, bin_id, item_id, COALESCE(batch_id, '00000000-0000-0000-0000-000000000000'::uuid));
 
 -- Add default bin reference to products
 ALTER TABLE products ADD COLUMN IF NOT EXISTS default_bin_id UUID REFERENCES warehouse_bins(id);
