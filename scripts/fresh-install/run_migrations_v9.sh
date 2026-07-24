@@ -2,7 +2,7 @@
 PGDB="${PGDB:-milkydb_dryrun}"
 PGUSER="postgres"
 MIGDIR="/root/milkyhoop-dev/backend/migrations"
-FIXDIR="/tmp/migration_fixes"
+FIXDIR="${FIXDIR:-/root/milkyhoop-dev/scripts/fresh-install/migration_fixes}"
 LOG="/tmp/migration_results_v9.log"
 
 > "$LOG"
