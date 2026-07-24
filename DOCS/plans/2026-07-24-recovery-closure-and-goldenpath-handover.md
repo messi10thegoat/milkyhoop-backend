@@ -386,3 +386,33 @@ TERSISA (follow-up):
 ### KEPUTUSAN yang masih menunggu owner (dari §11)
 D1 reconcile-basis (kelas V199) · D2 rotasi DB_PASSWORD · D3 Lapis 3 UI E2E.
 
+---
+
+## 13. CHATMODE dipulihkan (2026-07-24) + isu API key
+
+Chatmode MATI TOTAL di DB murni-resep (skema chat tak lengkap). Diperbaiki:
+| Migrasi | Fix |
+|---|---|
+| V207 | chat_messages stub Prisma lama -> skema baru (session_id/role/content/…); chat_sessions.status |
+| V208 | chat_events (tabel absen; log_event sinkron, tak try/except -> crash tool paths) |
+| V209 | pending_actions.is_direct; intent_decision_log partisi DEFAULT (partisi bulan berjalan hilang) |
+
+Verifikasi HTTP nyata (milkyhoop.com, tenant konveksi-cemerlang): chitchat,
+query pipeline (Gemini polish), agent-loop, CREATE (propose card) — semua jalan.
+
+### API key (bukan bug skema — untuk owner)
+- **OPENAI_API_KEY lama MATI (401 Incorrect API key).** Diganti key baru owner
+  (valid, tested gpt-4o-mini 200). Dipakai: agent-loop, vision OCR, chitchat
+  greeting, title gen.
+- **GOOGLE_API_KEY (Gemini) ditambah** (var yang dibaca kode = GOOGLE_API_KEY).
+  Works, TAPI **FREE TIER limit 20 req/hari** -> 429 saat pemakaian berat.
+  Dipakai: extraction, query polish, chitchat. **Owner perlu setup billing
+  Gemini** (AI Studio: Set up prepay) utk pemakaian produksi; sementara
+  circuit-breaker fallback ke OpenAI menutup sebagian.
+- Kedua key di /root/milkyhoop-dev/.env (bukan git, ter-gitignore). Rotasi
+  DB_PASSWORD (D2) masih terpisah.
+
+### Sisa non-fatal (tak blokir chat, telemetri/UI)
+chat_telemetry (fire-and-forget), user_profiles + users/tenants.logo_url
+(profil/UI), tool_call_logs. Tercatat di backlog §8/§9 (tabel absen).
+
