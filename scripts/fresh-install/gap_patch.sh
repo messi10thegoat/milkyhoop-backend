@@ -254,5 +254,19 @@ else
     echo "Gap 11 (account_roles.role_key): FAIL — kolom role_key tidak ditemukan (got: $RESULT)"
 fi
 
+# -----------------------------------------------------------------------
+# Gap 12: KONTRAK SEED (V200) — fail-loud.
+# Menutup kelas bug "redefinisi seed menghapus akun/role orang lain secara
+# diam-diam" (V165 dihapus V168/V173/V183 -> BANK_FEE hilang). Di titik ini
+# belum ada tenant, jadi yang diperiksa = sumber fungsi seed.
+echo ""
+echo "--- Gap 12: kontrak seed (V200) ---"
+SEED_RES=$(PG -tAc "SELECT assert_seed_contract();" 2>&1)
+if [[ "$SEED_RES" == *"KONTRAK SEED OK"* ]]; then
+    echo "Gap 12 (kontrak seed): OK — $SEED_RES"
+else
+    echo "Gap 12 (kontrak seed): FAIL — $SEED_RES"
+fi
+
 echo ""
 echo "=== GAP PATCH DONE ==="
