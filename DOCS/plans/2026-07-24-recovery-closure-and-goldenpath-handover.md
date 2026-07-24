@@ -269,3 +269,50 @@ Semua PERIPHERAL / kemungkinan kode mati, NOL di jalur core:
   last_transaction_at (members.py) · products.content_unit/stock_quantity
   (transactions.py, opening_balance.py) · reconciliation_sessions.* · table_sessions.*
 
+---
+
+## 10. GOLDEN PATH SELESAI — HIJAU PENUH (2026-07-24)
+
+Tenant `konveksi-cemerlang`, DB murni-resep, HTTP nyata. 8 langkah signup->period close.
+
+### 7 migrasi + 1 fix kode dari golden path (semua sudah di origin/master)
+| # | Bug (500 di jalur nyata) | Kelas |
+|---|---|---|
+| V201 | POST /customers — name NOT NULL vestige V024 | constraint pada kolom mati |
+| V202 | bill_items pajak + bill_payments_v2 dual-status | drift kolom (INSERT) |
+| V203 | trigger inventory rujuk NEW.item_id/quantity_change fiktif | trigger V043 vs skema |
+| V204 | pengeluaran stok ditolak chk_ws_quantity | pola upsert (logika, bukan kolom) |
+| round2 (kode Python) | payroll calculate int.quantize | sum([])=int |
+| V205 | void invoice — revenue_status not_applicable | CHECK asimetris sibling |
+| V206 | pelunasan penjualan — receive_payments.bank_transaction_id | drift kolom (UPDATE) |
+
+### 15 invariant final — SEMUA LULUS
+TB seimbang (147.443.200) · 0 jurnal tak-seimbang · 0 orphan · Law-4 (2-10300)=0 ·
+WIP net 0 · Deferred net 0 · applied labor/OH=0 · AR GL==helper (0) · AP GL==helper (0) ·
+verify_chain_integrity 26/26 valid · bank==GL · inventory GL==warehouse_stock×WAC
+(2.555.000) · PPN GL-derived · **Neraca seimbang** (Aset 50.103.000 = Kew 10.229.100
++ Ekuitas 39.873.900) · P&L residual pasca-closing 0. is_effective 18/26.
+
+### Angka kunci yang benar (bukti non-trivial)
+- FG WAC 71.500/pcs = bahan 67.500 + konversi 4.000 (WIP net 0 NON-trivial)
+- PPN Masukan 495.000 (11%×4.5jt) · PPN Keluaran 280.500 (11%×2.55jt)
+- BANK_FEE 5-20850 = 6.500 pada bank transfer nyata (V198 terbukti end-to-end)
+- Payroll multi-line: BPJS EE 360k + ER 948.6k, PPh21=0 sah (di bawah PTKP)
+- Void-cascade: 3 reversal, stok pulih, 4 akun net 0, original tetap POSTED
+
+### Catatan (bukan bug — untuk owner)
+- Selisih Produksi 8.8jt di closing = unabsorbed labor variance yang JUJUR:
+  bayar gaji sebulan (9jt) tapi hanya 1 WO 10-jam menyerap 200k. Reconcile
+  mereklasifikasi 100% 5-20100 ke produksi (desain agresif). Di bulan nyata,
+  banyak WO menyerap labor itu.
+- JV liar 1.000 (uji lock pra-close) bocor ke periode; artefak, seimbang.
+- Sales invoice header tax_rate TIDAK dipropagate ke item (beda dari bill V2
+  yang header-driven); PPN penjualan HARUS di-set per-item. Footgun, bukan blocker.
+- work_centers: tabel + dipakai BoM tapi endpoint create ada di /api/bom/work-centers
+  (bukan /api/production) — KOREKSI catatan §8 sebelumnya yang bilang "nol endpoint".
+
+### Status DoD
+[x] Golden path hijau + 15 invariant  [x] V201-V206 + round2 commit & push
+[x] Rebuild bersih terakhir: 184 OK / 0 FAIL / 15 SKIP dari DB kosong, V201-V206 semua OK, Gap 10/11/12 OK
+[ ] Jalur B: nginx + FE + Origin Cert (milkyhoop.com masih 521)
+
