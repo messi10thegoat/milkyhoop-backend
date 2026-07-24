@@ -348,3 +348,41 @@ tapi butuh payroll posting sadar-tipe-karyawan. Owner putuskan.
 
 ### D3 — Lapis 3: UI E2E (belum pernah tersentuh). Backend terbukti; drive A-Z dari browser setelah web hidup.
 
+---
+
+## 12. JALUR B — milkyhoop.com HIDUP (2026-07-24)
+
+Arsitektur web dipulihkan:
+
+
+Yang dikerjakan:
+- CF Origin Cert (*.milkyhoop.com, valid s/d 2041) di /etc/ssl/cloudflare/
+  (key chmod 600). Pasangan cert/key diverifikasi cocok (modulus hash).
+- Host nginx 1.24 dipasang: config /etc/nginx/sites-available/milkyhoop.conf,
+  real-IP Cloudflare, 80->443 redirect, /api proxy 300s (chat/LLM), SW no-cache.
+- Frontend container di- (image sudah ter-build 144MB, build React 23-Jul).
+- nginx enabled + container restart=always (survive reboot).
+
+VERIFIKASI:
+- Via Cloudflare: HTTP 200, <title>MilkyHoop, bundle main.6a02fcc0.js.
+- 80->443: 301. /api via CF: gateway tercapai. 521 HILANG.
+- Signup register lewat domain: {"success":true} — rantai CF->nginx->gateway->DB
+  bekerja end-to-end lewat URL publik.
+
+TERSISA (follow-up):
+- **Deploy key**: keypair /root/.ssh/id_ed25519_deploy dibuat + remote 
+  (git@github-deploy:...) diset. PUBLIC KEY perlu ditambahkan owner ke GitHub
+  repo Settings -> Deploy keys (Allow write). Sesudah itu droplet push langsung
+  tanpa lewat Mac.
+- **DB milkydb masih berisi data golden-path** (tenant konveksi-cemerlang +
+  konveksi-bintang-timur + e2e-*). Bukan "production bersih". Kalau mau mulai
+  bersih untuk customer: /milkyhoop-clean atau rebuild fresh.
+- **Frontend container nginx.conf punya X-Frame-Options: DENY** -> akan blokir
+  PDF-preview iframe (blob:) milik app sendiri (gotcha #12). Belum di-fix; tak
+  blokir login/signup. Perlu longgarkan ke frame-src blob: saat PDF dipakai.
+- **IP skill 159.89.197.131 -> 159.89.202.160**: SUDAH diupdate (26 kemunculan,
+  7 file) + sync Dropbox.
+
+### KEPUTUSAN yang masih menunggu owner (dari §11)
+D1 reconcile-basis (kelas V199) · D2 rotasi DB_PASSWORD · D3 Lapis 3 UI E2E.
+
