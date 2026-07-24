@@ -283,7 +283,7 @@ async def get_outstanding_summary(request: Request):
                     COALESCE(SUM(ar.outstanding), 0) AS total_outstanding
                 FROM ar
                 LEFT JOIN customers c
-                       ON c.id = ar.customer_id AND c.tenant_id = $1
+                       ON c.id::text = ar.customer_id AND c.tenant_id = $1
                 GROUP BY ar.customer_id
                 HAVING COALESCE(SUM(ar.outstanding), 0) > 0
                 ORDER BY total_outstanding DESC
