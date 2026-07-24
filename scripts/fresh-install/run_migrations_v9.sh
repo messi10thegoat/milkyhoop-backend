@@ -369,12 +369,12 @@ SKIP_REASON["V139__rule8_invariant_fix.sql"]="SKIP — unquoted SQL identifiers 
 # Intermediate step: after V013 adds COA, add missing columns
 SKIP_REASON["V006__add_search_gin_indexes.sql"]="SKIP — GIN indexes on customers/products; customers not yet created at V006, indexes added later"
 SKIP_REASON["V020__ap_reconciliation.sql"]="SKIP — references tenant.nama (old Prisma Tenant schema), sejarah mati"
-SKIP_REASON["V057__audit_trail.sql"]="SKIP — audit_logs created in Step 0 stub; stub provides functional audit_logs"
+SKIP_REASON["V057__audit_trail.sql"]="SKIP — audit_logs created in Step 0 stub; stub provides functional audit_logs; V057 SIBLING tables sensitive_data_access/login_history/audit_retention_policies salvaged by V216 (idempotent)"
 SKIP_REASON["V101__backfill_dual_status_bill_payments.sql"]="SKIP — backfill references old status column that never existed in fresh install"
 SKIP_REASON["V125__products_tax_indexes.sql"]="SKIP — indexes on sales_tax_id (column is sales_tax in our schema), sejarah mati"
 SKIP_REASON["V008__recalculate_persediaan_stock.sql"]="SKIP — references p.base_unit; RE-EVALUASI setelah V007 dicabut"
 SKIP_REASON["V194__create_unit_conversions_item_pricing.sql"]="SKIP — references p.base_unit; RE-EVALUASI setelah V007 dicabut"
-SKIP_REASON["V041__multi_currency.sql"]="SKIP — currencies+exchange_rates created in Step 0 stub; DML UPDATEs fail on empty fresh DB"
+SKIP_REASON["V041__multi_currency.sql"]="SKIP — currencies+exchange_rates created in Step 0 stub; DML UPDATEs fail on empty fresh DB; forex_gain_loss salvaged by V217 (idempotent)"
 SKIP_REASON["V007__add_unit_conversion_fields.sql"]="SKIP — DIUJI 2026-07-24: gagal ERROR column it.satuan does not exist (item_transaksi era Prisma). Konsekuensi: products.base_unit tidak pernah dibuat -> V008/V194 ikut mati."
 # DICABUT 2026-07-24: V090 — FIXDIR dipatch (UNIQUE berekspresi -> unique INDEX). Diuji hijau.
 add_coa_columns_if_needed() {
@@ -401,7 +401,7 @@ run_migration() {
     local src="$file"
     [[ -f "$FIXDIR/$basename" ]] && src="$FIXDIR/$basename"
     
-    ERR=$(docker exec -i milkyhoop-dev-postgres-1 psql -U "$PGUSER" -d "$PGDB" -v ON_ERROR_STOP=1 < "$src" 2>&1)
+    ERR=$(docker exec -i milkyhoop-dev-postgres-1 psql -U "$PGUSER" -d "$PGDB" -v ON_ERROR_STOP=1 --single-transaction < "$src" 2>&1)
     RC=$?
     
     if [[ $RC -eq 0 ]]; then
