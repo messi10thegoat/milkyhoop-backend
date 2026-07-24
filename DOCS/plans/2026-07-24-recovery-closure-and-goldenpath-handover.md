@@ -171,3 +171,70 @@ dijalankan. Tapi fondasinya sekarang **lebih kuat daripada sebelum droplet
 hilang**: fresh install-nya **terbukti**, bukan diasumsikan. Sebelum ini tak
 seorang pun pernah menjalankan resep dari DB kosong, dan itulah sebabnya lima
 bug di §3 bisa hidup berdampingan tanpa terdeteksi.
+
+---
+
+## 8. Backlog drift skema (hasil audit sistematis 2026-07-24)
+
+Dihasilkan `scripts/audit/audit_insert_schema_drift.py` (419 file .py vs 261
+tabel). **SUDAH ditriase — jangan tambal borongan.** Yang terbukti dipakai
+jalur hidup sudah masuk V202. Sisanya di bawah, BELUM diverifikasi hidup/mati.
+
+### Sudah diperbaiki
+| Tabel | Kolom | Migrasi |
+|---|---|---|
+| `bill_items` | tax_rate, tax_amount, dpp | V202 |
+| `bill_payments_v2` | operational_status, accounting_status | V202 |
+| `customers` | jaminan nama dipindah ke kolom kanonik | V201 |
+| `inventory_ledger` (trigger) | 2 trigger merujuk kolom NEW fiktif | V203 |
+
+### Belum ditriase — 26 tabel
+Kemungkinan besar KODE MATI (nama terlarang Iron Laws — kanonik `journal_id` /
+`journal_date`, bukan `journal_entry_id` / `posting_date`):
+`journal_entries` (created_by_name, entry_date, journal_type, memo,
+posting_date, updated_by → branches.py, cheques.py, payment_request_service.py) ·
+`journal_lines` (description, journal_entry_id → idem)
+
+Modul pinggir, belum tersentuh golden path:
+`accounts_payable` + `accounts_receivable` (balance, created_by, total_amount,
+vendor_id → opening_balance.py — **OB per-entity akan 500**) ·
+`bank_transactions` (account_id, contact_id, is_credit, reference, source_id,
+source_type, updated_at → bank_reconciliation.py, cheques.py) ·
+`inventory_ledger` (item_id, quantity_change, total_value, transaction_date →
+stock_transfers.py) · `sales_invoice_items` (item_name, line_total,
+sales_invoice_id, tax_id → recurring_invoices.py) · `quotes` (5 kolom teks/bank) ·
+`products` (is_active → kernel_document_executor.py) · `chat_messages` (7 kolom) ·
+`exchange_rates` · `cost_pools` · `overhead_allocations` · `pending_actions` ·
+modul KDS/restoran (`kds_orders`, `kds_order_items`, `kds_stations`,
+`menu_categories`, `menu_items`, `recipes`, `recipe_ingredients`,
+`recipe_instructions`, `restaurant_tables`, `table_areas`, `table_sessions`)
+
+### 32 tabel yang DIRUJUK kode tapi TIDAK ADA di DB
+`action_patterns, chat_attachments, chat_events, chat_telemetry, efaktur_exports,
+expense_claim_lines, expense_claims, expense_policies, granular_permissions,
+journal_sequences, kds_order_history, master_data_audit_log, menu_item_modifiers,
+nsfp_assignments, product_djp_mapping, product_units, recipe_modifier_groups,
+recipe_modifier_options, recurring_expenses, reservations,
+sales_invoice_attachments, sensitive_data_access, tax_group_items, tax_groups,
+tax_info, tax_invoice_items, tax_invoice_sources, tax_invoices, tool_call_logs,
+user_explicit_preferences, user_preferences, user_profiles, waitlist,
+withholding_tax_records`
+
+Beberapa jelas fitur yang belum di-deploy; beberapa (mis. `user_explicit_preferences`
+untuk memori bot Tier 2, `tax_invoices` untuk e-Faktur) mungkin migrasinya ikut
+hilang bersama droplet. **Perlu triase terpisah, bukan asumsi.**
+
+### UNKNOWN yang sengaja tidak dikarang
+Tidak dapat dipastikan apakah trigger `update_warehouse_stock_from_ledger`
+(V043) pernah berfungsi di droplet lama — mungkin ada migrasi hilang yang dulu
+menambahkan `inventory_ledger.item_id`/`quantity_change`. Yang PASTI: pada resep
+saat ini dia rusak, dan `product_id`/`quantity_in`/`quantity_out` terbukti
+kanonik dari 3 call-site penulis. Dicatat sebagai unknown, bukan kesimpulan.
+
+### Gap lain yang tercatat saat golden path
+- `work_centers` punya tabel + dipakai BoM, tapi **NOL endpoint API** (tidak di
+  `main.py` maupun `production.py`). Dibuat via SQL sebagai fixture E2E.
+- Skill `milkyhoop-e2e` masih menunjuk dunia lama: IP `159.89.197.131`,
+  base URL `https://milkyhoop.com/api` (masih 521), kredensial
+  `grapmanado@gmail.com` / tenant `grapgrap` (hilang bersama droplet).
+
