@@ -238,3 +238,34 @@ kanonik dari 3 call-site penulis. Dicatat sebagai unknown, bukan kesimpulan.
   base URL `https://milkyhoop.com/api` (masih 521), kredensial
   `grapmanado@gmail.com` / tenant `grapgrap` (hilang bersama droplet).
 
+---
+
+## 9. Golden path progress (2026-07-24) + backlog UPDATE-drift
+
+### Migrasi/fix dari golden path DB murni-resep
+| # | Bug | Perbaikan |
+|---|---|---|
+| V201 | POST /customers 500 (name NOT NULL vestige) | pindah jaminan ke kolom kanonik nama |
+| V202 | bill_items pajak + bill_payments_v2 dual-status | tambah kolom (tiru sibling AR) |
+| V203 | trigger inventory rujuk kolom NEW fiktif | perbaiki 2 trigger (product_id/quantity_in/out) |
+| V204 | pengeluaran stok ditolak chk_ws_quantity | trigger UPDATE-dulu-baru-INSERT |
+| round2 (kode) | payroll calculate 500 int.quantize | round2 coerce via d() |
+| V205 | void invoice 500 (revenue_status not_applicable) | perlebar CHECK (simetris fulfillment) |
+| V206 | pelunasan penjualan 500 (bank_transaction_id) | tambah kolom (tiru bill_payments_v2) |
+
+### Langkah golden path yang HIJAU (tenant konveksi-cemerlang, fresh)
+1 signup+seed (CoA 71, roles 38, BANK_FEE ok) · 2 master data · 3 pembelian
++PPN Masukan +pelunasan (5-artifact) · 4 manufaktur WIP net 0 NON-trivial
+(FG WAC 71.500 benar) · 5 payroll multi-line (BPJS EE+ER, PPh21=0 sah) ·
+6 PSAK-72 3-event +PPN Keluaran +pelunasan +VOID-CASCADE.
+BELUM: 7 expense+bank transfer(BANK_FEE)+JV · 8 period close · invariant akhir.
+
+### Backlog UPDATE-drift (audit_update_schema_drift.py, 2026-07-24) — TRIASE, jangan tambal borongan
+Semua PERIPHERAL / kemungkinan kode mati, NOL di jalur core:
+- journal_entries.posted_at/posted_by (cheques.py:219) — core posting TIDAK pakai
+- bills.paid_amount (vendor_deposits.py) · branch_transfers/menu_categories/
+  table_areas.updated_at · chat_sessions.final_summary/status · credit_notes/
+  vendor_credits.tax_invoice_id · customers.points/total_nilai/total_transaksi/
+  last_transaction_at (members.py) · products.content_unit/stock_quantity
+  (transactions.py, opening_balance.py) · reconciliation_sessions.* · table_sessions.*
+

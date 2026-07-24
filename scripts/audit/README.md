@@ -73,3 +73,19 @@ Keluaran 6 baris: 5 PASS + ringkasan. Bila ada FAIL -> RAISE EXCEPTION
 (self-verifying, exit non-zero). Aman di DB manapun dgn >=1 baris
 warehouse_stock qty>=50.
 
+## audit_update_schema_drift.py
+
+Sama seperti audit_insert_schema_drift.py tapi memindai `UPDATE <tabel> SET
+col = ...`. Ada karena drift V206 (receive_payments.bank_transaction_id lewat
+UPDATE) lolos audit INSERT-only.
+
+```bash
+python3 scripts/audit/audit_update_schema_drift.py
+```
+
+TRIASE WAJIB (sama seperti INSERT). Contoh dari run 2026-07-24: 13 tabel,
+mayoritas KODE MATI / modul pinggir. journal_entries.posted_at/posted_by
+(cheques.py:219) TERBUKTI hilang tapi PERIPHERAL — core posting path
+(journals.py) tidak memakainya (semua post bill/payroll/invoice/payment jalan
+tanpa kolom itu); hanya cheques.py merujuknya. Backlog, bukan blocker.
+
