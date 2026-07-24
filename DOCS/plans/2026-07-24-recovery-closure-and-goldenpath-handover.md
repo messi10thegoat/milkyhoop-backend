@@ -316,3 +316,35 @@ verify_chain_integrity 26/26 valid · bank==GL · inventory GL==warehouse_stock�
 [x] Rebuild bersih terakhir: 184 OK / 0 FAIL / 15 SKIP dari DB kosong, V201-V206 semua OK, Gap 10/11/12 OK
 [ ] Jalur B: nginx + FE + Origin Cert (milkyhoop.com masih 521)
 
+---
+
+## 11. KEPUTUSAN DIPERLUKAN SEBELUM CUSTOMER (jangan terkubur di backlog)
+
+### D1 — Reconcile mereklasifikasi 100% Beban Gaji ke produksi (kelas V199: salah-diam)
+`POST /production/month-end-reconcile` menyapu SELURUH 5-20100 Beban Gaji
+sebagai actual production labor, lalu selisih vs applied-labor -> 5-90200
+Selisih Produksi. Di skenario uji (semua karyawan = produksi) itu BENAR.
+
+**Di konveksi nyata SALAH:** ada gaji admin, sales, owner yang BUKAN biaya
+produksi. Konsekuensi: gaji non-produksi ikut tersapu ke Selisih Produksi ->
+**OpEx understated, variance produksi overstated.** Buku tetap seimbang,
+angka tetap rapi -> tidak melapor dirinya sendiri (persis kelas V199 rasio
+salah-saji).
+
+Bukti dari golden path: payroll 9jt (2 operator), applied labor 200k,
+Selisih Produksi 8,8jt. Kalau salah satu dari dua itu admin, 8,8jt itu memuat
+gaji admin yang seharusnya OpEx.
+
+**Opsi desain (keputusan owner, BUKAN agen):**
+- (a) flag `employees.is_production` -> reconcile hanya sapu labor karyawan produksi
+- (b) akun terpisah: 5-20100 Gaji Produksi vs 5-20110 Gaji Admin/Umum;
+  payroll posting route by employee type; reconcile hanya sentuh 5-20100
+- (c) alokasi berbasis jam kerja aktual ke WO
+
+Rekomendasi teknis: (b) paling bersih + auditable + sejajar pola CoA existing,
+tapi butuh payroll posting sadar-tipe-karyawan. Owner putuskan.
+
+### D2 — Rotasi DB_PASSWORD (Proyek771977 ada di git history). Sudah ${DB_PASSWORD} di compose, nilai belum dirotasi.
+
+### D3 — Lapis 3: UI E2E (belum pernah tersentuh). Backend terbukti; drive A-Z dari browser setelah web hidup.
+
