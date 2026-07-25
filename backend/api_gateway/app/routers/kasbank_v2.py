@@ -273,7 +273,7 @@ async def list_accounts(request: Request, include_inactive: bool = Query(False))
                       AND bt.tenant_id = ba.tenant_id
                       AND bt.transaction_type != 'opening'
                 ) txc ON true
-                WHERE ba.tenant_id = $1 AND ba.deleted_at IS NULL {active_filter}
+                WHERE ba.tenant_id = $1 {active_filter}
                 ORDER BY ba.account_name
                 """,
                 ctx["tenant_id"],
@@ -335,7 +335,7 @@ async def get_account_detail(request: Request, account_id: UUID):
                       AND je.status = 'POSTED'
                       AND jl.account_id = ba.coa_id
                 ) bal ON true
-                WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.deleted_at IS NULL
+                WHERE ba.id = $1 AND ba.tenant_id = $2
                 """,
                 account_id,
                 ctx["tenant_id"],
@@ -399,7 +399,7 @@ async def list_transactions(
         async with pool.acquire() as conn:
             # Validate account exists and belongs to tenant
             acct = await conn.fetchrow(
-                "SELECT id FROM bank_accounts WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+                "SELECT id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
                 account_id,
                 ctx["tenant_id"],
             )
@@ -568,7 +568,7 @@ async def create_manual_transaction(
                     """
                     SELECT id, account_name, coa_id, is_active
                     FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+                    WHERE id = $1 AND tenant_id = $2
                     """,
                     account_id,
                     ctx["tenant_id"],
@@ -1456,7 +1456,7 @@ async def create_transfer(request: Request, body: CreateTransferRequest):
                     """
                     SELECT id, account_name, coa_id, is_active
                     FROM bank_accounts
-                    WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL
+                    WHERE id = $1::uuid AND tenant_id = $2
                     """,
                     body.from_bank_account_id,
                     ctx["tenant_id"],
@@ -1475,7 +1475,7 @@ async def create_transfer(request: Request, body: CreateTransferRequest):
                     """
                     SELECT id, account_name, coa_id, is_active
                     FROM bank_accounts
-                    WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL
+                    WHERE id = $1::uuid AND tenant_id = $2
                     """,
                     body.to_bank_account_id,
                     ctx["tenant_id"],

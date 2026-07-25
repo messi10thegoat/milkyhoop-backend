@@ -1227,7 +1227,6 @@ class DraftPlanGenerator:
             JOIN chart_of_accounts coa ON coa.id = ba.coa_id
             WHERE ba.tenant_id = $1
               AND ba.is_active = true
-              AND ba.deleted_at IS NULL
               AND (
                   ba.bank_name ILIKE '%' || $2 || '%'
                   OR ba.account_name ILIKE '%' || $2 || '%'
@@ -1269,7 +1268,6 @@ class DraftPlanGenerator:
             JOIN chart_of_accounts coa ON coa.id = ba.coa_id
             WHERE ba.tenant_id = $1
               AND ba.is_active = true
-              AND ba.deleted_at IS NULL
             ORDER BY ba.is_default DESC, ba.created_at ASC
             LIMIT 1
             """,

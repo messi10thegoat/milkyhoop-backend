@@ -427,7 +427,7 @@ class DocumentActionResolver:
                         # Numeric: bidirectional substring match (handles OCR digit errors)
                         all_active = await conn.fetch(
                             "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
-                            "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
+                            "WHERE tenant_id = $1 AND is_active = true "
                             "AND account_number IS NOT NULL "
                             "ORDER BY is_default DESC NULLS LAST, account_name",
                             self.tenant_id,
@@ -463,7 +463,7 @@ class DocumentActionResolver:
                         # Text: ILIKE on name fields only
                         rows = await conn.fetch(
                             "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
-                            "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
+                            "WHERE tenant_id = $1 AND is_active = true "
                             "AND (account_name ILIKE $2 OR bank_name ILIKE $2) "
                             "ORDER BY is_default DESC NULLS LAST, account_name LIMIT 5",
                             self.tenant_id,
@@ -485,7 +485,7 @@ class DocumentActionResolver:
                 # If exactly 1 → auto-select. If >1 → return as candidates (NO blind default pick)
                 rows = await conn.fetch(
                     "SELECT id, account_name, bank_name, account_number FROM bank_accounts "
-                    "WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL "
+                    "WHERE tenant_id = $1 AND is_active = true "
                     "ORDER BY is_default DESC NULLS LAST, account_name LIMIT 5",
                     self.tenant_id,
                 )
