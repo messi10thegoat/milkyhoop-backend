@@ -266,3 +266,31 @@ STEP0_STUB + GAP_PATCH on live schema_migrations (211 total; untracked-external;
 the creating script). migrate.sh CHECK widened + verify() skips them (verify OK, no drift).
 Inventory in UNTRACKED_EXTERNAL_SCHEMA.md. build_fresh.sh-into-repo DEFERRED to post-E2E (off-path;
 window stays open — FASE 4/5 use scratch clone, live stays 0-tenant).
+
+---
+
+# ROUND 7 — sentinel survival, served-bundle, deploy delta
+
+## Sentinels now survive rebuild (cond 1)
+(a) backfill() auto-inserts STEP0_STUB + GAP_PATCH (idempotent; checksum=sha256 of the
+    creating script). No longer a manual ad-hoc INSERT that a rebuild would lose.
+(b) PROVEN: fresh empty DB -> migrate.sh backfill = 194/15/209 (+2 sentinels); the
+    schema_migrations CHECK on the fresh DB == live exactly (both include untracked-external).
+    Bootstrap DDL and live DDL match.
+(c) verify() WARNs (not fails) if a sentinel's script checksum changed -> non-decorative.
+    (WARNING not DRIFT because those scripts live outside the VNNN set.)
+
+## Served FE bundle (cond 2, read-only)
+FE is served by container milkyhoop-dev-frontend-1 (3001->80) behind host nginx
+(/etc/nginx/sites-enabled/milkyhoop.conf) -> Cloudflare -> milkyhoop.com. The bundle is
+BAKED INTO image milkyhoop-dev-frontend (no mounts; built 2026-07-24 08:38), serving
+main.5558c404.js -- DIFFERENT from HEAD's main.6a02fcc0.js. The owner's Penawaran screenshot
+is from an unknown-provenance build; deploy (compose up api_gateway) never rebuilds this
+image. All UI-screen inferences carry that caveat. FASE-5 UI gate: rebuild FE image from a
+PINNED commit. (Corrects "compose = backend only" -> there IS a frontend container, just not
+rebuilt by the api_gateway deploy.)
+
+## Deploy delta (cond 4)
+main-tree HEAD == origin/master == f71db830; api_gateway running f71db830 since 07:39; ZERO
+commits on origin/master since f71db830 (no other-session drift). Deploy delta = exactly our
+fix/dp-readiness commits. Round-6 rollback plan accepted + stands.
