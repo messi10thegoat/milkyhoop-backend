@@ -1275,7 +1275,7 @@ async def apply_customer_deposit(
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT_APPLY:{deposit_id}",
+                    f"DEPOSIT:{deposit_id}",
                 )
 
                 # Get deposit
@@ -1573,7 +1573,7 @@ async def reverse_customer_deposit_application(
     - reversed_by_id on customer_deposit_applications row (Law 26 single
       reversal pointer) + status='reversed' + reversed_at.
     - IDEMPOTENT: if already reversed, returns existing reversal (HTTP 200).
-    - Law 5 period-open check; Law 13 advisory lock reuses DEPOSIT_APPLY key.
+    - Law 5 period-open check; Law 13 advisory lock reuses unified DEPOSIT:{deposit_id} key (B1b).
     - After un-apply the deposit available balance rises again and a
       previously-blocked void becomes possible.
     """
@@ -1593,7 +1593,7 @@ async def reverse_customer_deposit_application(
                 # un-apply on the same deposit serialize and cannot race.
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT_APPLY:{deposit_id}",
+                    f"DEPOSIT:{deposit_id}",
                 )
 
                 # Fetch the application (scoped to deposit + tenant)
@@ -1905,7 +1905,7 @@ async def refund_customer_deposit(
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT_REFUND:{deposit_id}",
+                    f"DEPOSIT:{deposit_id}",
                 )
 
                 # Get deposit
@@ -2151,7 +2151,7 @@ async def void_customer_deposit(
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT_VOID:{deposit_id}",
+                    f"DEPOSIT:{deposit_id}",
                 )
 
                 # Get deposit
