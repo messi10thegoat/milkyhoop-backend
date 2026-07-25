@@ -87,3 +87,20 @@ gateway at a clone does not isolate; the WHOLE stack must repoint. Options:
   (C) Parallel mini-stack (2nd gateway + 2nd auth + clone) on separate ports — cleanest isolation,
       most setup.
 Decide before FASE 4 starts (does not block this deploy).
+
+---
+## HARNESS DB MECHANISM (FINAL) — snapshot-restore, not delete-tenant
+Decision A confirmed (0-tenant window value already discharged), BUT the reset is
+snapshot-restore, NOT tenant-delete. Rationale: no tenant-delete operation exists; a manual
+cascade across ~279 tables + per-tenant hash chain + sequences + RLS on the LIVE DB would be
+the single riskiest hand-run step in the plan, and any imperfection means the first real tenant
+is born on the debris of a test tenant.
+
+Mechanism (repeatable every FASE-5 iteration):
+  1. After deploy is GREEN (post-migration, still 0-tenant): take a NEW snapshot
+     milkydb_preharness_<ts>.sql.gz. This is the restore point.
+  2. Run the harness against live milkydb with a throwaway tenant (signup -> steps 0-9).
+  3. To reset / re-iterate: RESTORE the snapshot (drop+recreate milkydb or restore into it) ->
+     guaranteed pristine, ZERO manual DELETE.
+  4. Verify restore: table count, schema_migrations = 214 tracked + 2 sentinels, zero tenant rows.
+Deterministic, verifiable, repeatable. (B)/(C) not worth it for the same outcome.
