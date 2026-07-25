@@ -118,6 +118,18 @@ for d in DIRS:
         if f:
             allf[p] = f
 
+if '--signatures' in sys.argv:
+    # Stable, line-number-independent signatures for the CI ratchet:
+    # one per distinct (relpath, kind, table.col). Location changes don't churn it.
+    sigs = set()
+    for p, items in allf.items():
+        rel = p.replace('/root/milkyhoop-dev/backend/api_gateway/app/', '')
+        for _line, kind, tbl, col, _ctx in items:
+            sigs.add(f'{rel}|{kind}|{tbl}.{col}')
+    for s in sorted(sigs):
+        print(s)
+    sys.exit(0)
+
 total = sum(len(v) for v in allf.values())
 print(f'GHOST-COLUMN REFERENCES: {total} across {len(allf)} files\n')
 for p in sorted(allf):

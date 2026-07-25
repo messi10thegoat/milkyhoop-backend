@@ -122,3 +122,53 @@ accounts. Retirement collapses all three onto compute_ap/compute_ar — not re-s
 remaining_before for allocations = audit trail + likely overpayment guard. A wrong value
 does not paint a bad number on screen — it can REJECT a legitimate payment or corrupt the
 audit trail. Not a reason to escalate; a reason to ACCELERATE retirement onto canonical fns.
+
+---
+
+# ROUND 4 — V219 (quotes columns), oracle-3, CI ratchet, audit-matrix corrections
+
+## FE oracle authority (cond 1)
+useQuoteForm.ts + both ItemFormSheet.tsx are UNMODIFIED on Mac (= git master). The recovered
+server has NO FE source tree (/root/milkyhoop/frontend/web missing; useQuoteForm found nowhere)
+-> only Mac/master exist and are identical for these files; the audit's "72 uncommitted server FE
+files" does not apply to this server (FE served as a prebuilt bundle).
+RAISED to FASE-5 prerequisite: UI E2E must run against a FE built from a PINNED git commit;
+the deployed bundle's provenance cannot be diffed on the server.
+
+## items autocomplete — DO NOT STRIP (cond 2 reversed the earlier plan)
+SalesInvoice CreateInvoice/ItemFormSheet.tsx CONSUMES sales_tax_id/sales_tax_name/sales_tax_rate
+from /items/autocomplete (types L117-119; prefills invoice-line tax L376-378). Per the FE rule this
+is built-but-unmigrated (like quotes), NOT a strip. products has sales_tax(varchar), no sales_tax_id.
+DECISION DEFERRED, NOT in V219 scope. Options: (a) add products.sales_tax_id/purchase_tax_id (uuid FK
+tax_codes) + populate on create + map; (b) return NULL-shaped tax fields to fix the 500 while keeping
+the FE contract (DP flow is non-PKP -> tax null anyway; the broken picker is the real blocker).
+
+## V219 proof (cond 3)
+5 columns added; the EXACT quotes.py:502 INSERT (all 27 params + status literal) now succeeds
+(INSERT 0 1, valid discount_type) -> column-clean, NO second ghost IN THE STATEMENT. Residual
+scanner-invisible surfaces NOT yet tested: quote_items INSERT + GET/response serializer SELECT.
+Value-CHECK noted: quotes.discount_type IN {fixed, percentage} only -> quote-create 500s if FE sends
+'none'/empty; verify FE default in FASE 4 (value concern, not schema).
+
+## Oracle-3 vs LIVE copy (round-3 condition, now closed)
+Re-ran the invariant with the LIVE per-bill code (bill_payments.py role-based AP_TRADE; account_roles
+seeded). Per bill: BILL-1..4 == compute_ap (1M/600k/0/400k); BILL-5 500k vs 1M (reversed-case
+divergence reproduces). V218 confirmed against the code users actually hit. The earlier caveat
+(case-5 oracle used the DEAD copy) is closed.
+
+## CI ratchet (approved) — scripts/schema-contract/
+schema_scan.py --signatures + ci_check.sh + baseline_signatures.txt (147 distinct signatures).
+Proven: clean -> exit 0; a new ghost -> exit 1 (prints the added signature). Grandfathers the existing
+set, fails only on INCREASE, baseline shrinks on cleanup. Prereq: cols.txt refreshed from target DB.
+Portability (hardcoded /root paths) = follow-up.
+
+## AUDIT-MATRIX CORRECTIONS (cond 4)
+- Step 1 Penawaran: earlier verdict READY is WRONG. Evidence was "[SQL] quotes has N columns" =
+  schema-exists used as a proxy for works. Reality: static INSERT, 500 on ANY payload, 0 quotes rows
+  in EVERY DB -> the Penawaran module has NEVER created a single quote. (Addressed by V219 + residual
+  checks pending.)
+- RALAT B4 (2nd time): "required_deposit quote-anchored" does NOT hold — quotes never had rows ->
+  dp_amount/dp_percent never populated -> DP was never anchored to anything. Required-deposit-at-quote
+  has never existed in practice.
+- After V219, step 1 is the RISKIEST E2E step: the only one never executed. Anticipate follow-on
+  findings (quote_items, serializer, discount_type default).
