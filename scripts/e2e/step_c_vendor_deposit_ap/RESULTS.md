@@ -294,3 +294,30 @@ rebuilt by the api_gateway deploy.)
 main-tree HEAD == origin/master == f71db830; api_gateway running f71db830 since 07:39; ZERO
 commits on origin/master since f71db830 (no other-session drift). Deploy delta = exactly our
 fix/dp-readiness commits. Round-6 rollback plan accepted + stands.
+
+---
+# ROUND 8 — DEPLOY (green-for-scope) + redis investigation + archive correction
+
+## Deploy result
+migrate.sh apply -> V218/V219/V220 applied to live milkydb (newly-applied=3). Cleared __pycache__;
+`docker restart milkyhoop-dev-api_gateway` (restart, NOT force-recreate — code-only change, config-
+neutral). StartedAt 07:39:15 -> 14:47:20 (new code loaded). Verify: /health 200, /version 200,
+migrate.sh verify OK 214 tracked 0 drift, smoke unauth GET /api/sales-invoices = 401 MISSING_TOKEN
+(== baseline, no shadowing regression), deposit rules present (sanity). Live still 0-tenant.
+/ready = 503 (redis) — PRE-EXISTING (see redis ticket), not a regression; nothing depends on /ready
+(healthcheck uses /healthz).
+
+## Redis investigation (before FASE 4) — harness path is CLEAN
+- auth: redis-INDEPENDENT (session-authority check `if False`, disabled) -> JWT-signature only.
+- onboarding: redis session-set try/except non-blocking -> signup completes with redis down.
+- steps 0-9 idempotency = DB (Law 14 already-posted); policy_engine (B1) = in-process from DB truth
+  -> consistent across the 2 workers. rate_limit = per-worker in-memory (sequential harness safe).
+- Peripheral redis users (dashboard-cache/waf/device/chat) not on the ledger path.
+- Conclusion: redis-down does NOT threaten steps 0-9 correctness or provisioning; no ledger
+  split-state. Tickets filed: redis parse bug + observability gap.
+
+## Archive correction (audit had "recreated during recovery")
+Container milkyhoop-dev-api_gateway: Created 2026-07-24 09:10:55, RestartCount=0, StartedAt (pre-
+our-work) 2026-07-25 07:39:15. So it was CREATED once (07-24) and stop/started (07-25 07:39) — NOT
+recreated during a recovery deploy. RestartCount=0 is consistent (manual start doesn't increment).
+Does not change conclusions; corrects the record.
