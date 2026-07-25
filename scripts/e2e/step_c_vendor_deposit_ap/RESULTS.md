@@ -94,3 +94,31 @@ WRITE paths to compute `remaining_before` for an allocation: bill_payments.py:12
 uses compute_ap/compute_ar, not this function. No user-facing exposure from the
 divergence, and the live write-path consumers do not hit the DEPOSIT_APPLICATION-
 reversal case.
+
+---
+
+# CORRECTIONS (round 2)
+
+## Case 5 covers convention (ii) ONLY
+The fixture set reversed_by_id on the original apply journal by hand — i.e. it exercised
+ONLY the reversed_by_id convention, the one this CTE needs. It did NOT exercise the
+dominant source-reuse-netting convention (i). Had un-apply been written in style (i) — a
+reversal journal with source_type='DEPOSIT_APPLICATION' NOT inserted into
+vendor_deposit_applications — the CTE JOIN would never see it, the original would stay
+counted, and the deposit would settle the bill forever, silently. V218's REVERSAL
+CONTRACT comment now states this (SET reversed_by_id mandatory; do NOT copy
+void_bill_payment here). The green is narrower than it looked: correct GIVEN (ii).
+
+## The three copies of get_bill_remaining_from_journal HAVE diverged (item 2)
+Not identical — a 4th instance of the ghost/drift class, two on live write paths:
+- bill_payments.py:123 (live at :1245) — AP by ROLE: account_roles.role_key='AP_TRADE' (Fase D2.3)
+- vendor_credits.py:116 (live at :1338) — same role form, tagged Fase D2.2 (version drift)
+- vendor_deposits.py:54 (dead at :604) — STILL hardcoded coa.account_code='2-10100' (Law 27 gap)
+On a tenant whose AP_TRADE role != code 2-10100, the copies compute against different
+accounts. Retirement collapses all three onto compute_ap/compute_ar — not re-sync 3 copies.
+
+## Reframe of consumer analysis (item 3)
+"No user-facing exposure" is true for URGENCY but misleading in kind. This function fills
+remaining_before for allocations = audit trail + likely overpayment guard. A wrong value
+does not paint a bad number on screen — it can REJECT a legitimate payment or corrupt the
+audit trail. Not a reason to escalate; a reason to ACCELERATE retirement onto canonical fns.

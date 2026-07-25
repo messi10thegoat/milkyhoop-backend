@@ -25,14 +25,25 @@
 -- journal_id, or multiple PAYABLE debit lines) would fan this CTE out. Keep apply =
 -- one journal per bill, or switch this CTE to SUM(vda.amount).
 --
--- REVERSAL CONTRACT (LOCKED by je.reversed_by_id IS NULL): vendor_deposit_applications
--- has NO status/reversed_by_id column (unlike customer_deposit_applications). The ONLY
--- lever that removes an applied vendor deposit from this computation is the journal's
--- reversed_by_id being set by a Law-2 reversing journal. Therefore any future
--- vendor-deposit un-apply MUST post a reversing journal — it must NOT DELETE the vda
--- row and must NOT add a status flag that this function does not read. (Today this is
--- moot: void is blocked while applications exist and no un-apply endpoint exists — the
--- known vendor-deposit dead-end, tracked separately.)
+-- REVERSAL CONTRACT — READ THIS BEFORE IMPLEMENTING VENDOR-DEPOSIT UN-APPLY.
+-- The codebase has TWO live reversal conventions, and only ONE works for this CTE:
+--   (i)  source-reuse netting  — e.g. void_bill_payment: the reversing journal reuses
+--        source_type='BILL_PAYMENT' + source_id=payment_id, so per-bill readers that
+--        key on source_id count BOTH legs and they net to zero. This is the DOMINANT
+--        convention and the nearest pattern someone will copy.
+--   (ii) reversed_by_id flagging — the original journal gets reversed_by_id set; readers
+--        filter `reversed_by_id IS NULL`. This is what compute_ar/compute_ap use.
+-- THIS CTE REQUIRES (ii) AND ONLY (ii). It attributes per-bill via a JOIN on
+-- vendor_deposit_applications.journal_id, and a reversing journal is NEVER inserted into
+-- vendor_deposit_applications — so the JOIN can never see it. Convention (i) therefore
+-- SILENTLY FAILS here: the reversal is invisible, the original is never excluded, and the
+-- deposit settles the bill FOREVER with no error.
+-- MANDATORY for any future vendor-deposit un-apply: SET reversed_by_id on the ORIGINAL
+-- apply journal (Law-2). Do NOT copy the void_bill_payment source-reuse pattern here.
+-- Do NOT DELETE the vda row. Do NOT add a status flag this function does not read.
+-- (Moot today: apply itself is broken — writes non-existent bills.paid_amount/
+-- total_amount — and there is no un-apply endpoint. Vendor-deposit feature is a
+-- consciously-deferred dead end; this CTE is the ready read path for when it is fixed.)
 --
 -- TENANT SCOPING: vendor_deposit_applications has no tenant_id column (customer side
 -- does). Scope is enforced via je.tenant_id = p_tenant_id (the journal is tenant-
