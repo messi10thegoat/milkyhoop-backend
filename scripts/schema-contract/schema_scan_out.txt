@@ -1,0 +1,269 @@
+GHOST-COLUMN REFERENCES: 209 across 29 files
+
+### routers/bank_reconciliation.py
+  L715   [WRITE] reconciliation_sessions.cleared_count   <- UPDATE reconciliation_sessions SET cleared_count
+  L715   [WRITE] reconciliation_sessions.total_statement_lines   <- UPDATE reconciliation_sessions SET total_statement_lines
+  L2288  [WRITE] bank_transactions.account_id   <- INSERT bank_transactions(account_id)
+  L2288  [WRITE] bank_transactions.contact_id   <- INSERT bank_transactions(contact_id)
+  L2288  [WRITE] bank_transactions.is_credit   <- INSERT bank_transactions(is_credit)
+  L2288  [WRITE] bank_transactions.reference   <- INSERT bank_transactions(reference)
+  L2288  [WRITE] bank_transactions.source_type   <- INSERT bank_transactions(source_type)
+  L2288  [WRITE] bank_transactions.updated_at   <- INSERT bank_transactions(updated_at)
+
+### routers/bill_payments.py
+  L1983  [read ] audit_logs.user_id   <- audit_logs.user_id
+
+### routers/branches.py
+  L853   [WRITE] journal_entries.entry_date   <- INSERT journal_entries(entry_date)
+  L871   [WRITE] journal_lines.description   <- INSERT journal_lines(description)
+  L883   [WRITE] journal_lines.description   <- INSERT journal_lines(description)  (dup)
+  L923   [read ] products.name   <- p.name
+  L999   [WRITE] branch_transfers.updated_at   <- UPDATE branch_transfers SET updated_at
+  L1051  [WRITE] branch_transfers.updated_at   <- UPDATE branch_transfers SET updated_at  (dup)
+  L1098  [WRITE] journal_entries.entry_date   <- INSERT journal_entries(entry_date)  (dup)
+  L1116  [WRITE] journal_lines.description   <- INSERT journal_lines(description)  (dup)
+  L1128  [WRITE] journal_lines.description   <- INSERT journal_lines(description)  (dup)
+  L1154  [WRITE] branch_transfers.updated_at   <- UPDATE branch_transfers SET updated_at  (dup)
+  L1212  [read ] journal_entries.entry_date   <- je.entry_date
+  L1266  [read ] chart_of_accounts.code   <- coa.code
+  L1274  [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+  L1277  [read ] chart_of_accounts.code   <- coa.code  (dup)
+  L1279  [read ] chart_of_accounts.code   <- coa.code  (dup)
+  L1337  [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+  L1412  [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+  L1437  [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+
+### routers/cheques.py
+  L160   [WRITE] journal_entries.memo   <- INSERT journal_entries(memo)
+  L160   [WRITE] journal_entries.updated_by   <- INSERT journal_entries(updated_by)
+  L181   [WRITE] journal_entries.memo   <- INSERT journal_entries(memo)  (dup)
+  L181   [WRITE] journal_entries.updated_by   <- INSERT journal_entries(updated_by)  (dup)
+  L219   [WRITE] journal_entries.posted_at   <- UPDATE journal_entries SET posted_at
+  L219   [WRITE] journal_entries.posted_by   <- UPDATE journal_entries SET posted_by
+  L1132  [WRITE] bank_transactions.source_id   <- INSERT bank_transactions(source_id)
+  L1132  [WRITE] bank_transactions.source_type   <- INSERT bank_transactions(source_type)
+
+### routers/consolidation.py
+  L1095  [read ] chart_of_accounts.code   <- coa.code
+  L1102  [read ] journal_entries.entry_date   <- je.entry_date
+  L1104  [read ] chart_of_accounts.code   <- coa.code  (dup)
+  L1105  [read ] chart_of_accounts.code   <- coa.code  (dup)
+
+### routers/cost_centers.py
+  L451   [read ] journal_entries.entry_date   <- je.entry_date
+  L452   [read ] journal_entries.reference   <- je.reference
+  L463   [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+  L464   [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+
+### routers/credit_notes.py
+  L201   [read ] sales_invoices.py   <- sales_invoices.py
+
+### routers/currencies.py
+  L311   [read ] exchange_rates.from_currency_id   <- er.from_currency_id
+  L312   [read ] exchange_rates.to_currency_id   <- er.to_currency_id
+  L314   [read ] exchange_rates.rate_date   <- er.rate_date
+  L360   [read ] exchange_rates.from_currency_id   <- er.from_currency_id  (dup)
+  L360   [read ] exchange_rates.to_currency_id   <- er.to_currency_id  (dup)
+  L361   [read ] exchange_rates.rate_date   <- er.rate_date  (dup)
+  L363   [read ] exchange_rates.from_currency_id   <- er.from_currency_id  (dup)
+  L364   [read ] exchange_rates.to_currency_id   <- er.to_currency_id  (dup)
+  L366   [read ] exchange_rates.from_currency_id   <- er.from_currency_id  (dup)
+  L366   [read ] exchange_rates.rate_date   <- er.rate_date  (dup)
+  L366   [read ] exchange_rates.to_currency_id   <- er.to_currency_id  (dup)
+  L419   [WRITE] exchange_rates.created_by   <- INSERT exchange_rates(created_by)
+  L419   [WRITE] exchange_rates.from_currency_id   <- INSERT exchange_rates(from_currency_id)
+  L419   [WRITE] exchange_rates.rate_date   <- INSERT exchange_rates(rate_date)
+  L419   [WRITE] exchange_rates.source   <- INSERT exchange_rates(source)
+  L419   [WRITE] exchange_rates.to_currency_id   <- INSERT exchange_rates(to_currency_id)
+
+### routers/device.py
+  L110   [read ] bills.bill_date   <- b.bill_date
+
+### routers/expense_extended.py
+  L1023  [read ] bill_payments_v2.memo   <- bp.memo
+  L1028  [read ] bill_payments_v2.payment_account_id   <- bp.payment_account_id
+
+### routers/items.py
+  L1684  [read ] products.sales_tax_id   <- p.sales_tax_id
+  L1685  [read ] products.purchase_tax_id   <- p.purchase_tax_id
+  L1687  [read ] products.sales_tax_id   <- p.sales_tax_id  (dup)
+  L1688  [read ] products.purchase_tax_id   <- p.purchase_tax_id  (dup)
+
+### routers/kasbank.py
+  L205   [read ] journal_entries.source_number   <- je.source_number
+
+### routers/kds.py
+  L157   [WRITE] kds_stations.code   <- INSERT kds_stations(code)
+  L157   [WRITE] kds_stations.created_by   <- INSERT kds_stations(created_by)
+  L157   [WRITE] kds_stations.name   <- INSERT kds_stations(name)
+  L157   [WRITE] kds_stations.sort_order   <- INSERT kds_stations(sort_order)
+  L249   [read ] menu_categories.code   <- mc.code
+  L396   [WRITE] kds_orders.created_by   <- INSERT kds_orders(created_by)
+  L396   [WRITE] kds_orders.notes   <- INSERT kds_orders(notes)
+  L396   [WRITE] kds_orders.server_name   <- INSERT kds_orders(server_name)
+  L396   [WRITE] kds_orders.source_reference   <- INSERT kds_orders(source_reference)
+  L396   [WRITE] kds_orders.source_type   <- INSERT kds_orders(source_type)
+  L421   [read ] menu_items.name   <- mi.name
+  L451   [WRITE] kds_order_items.menu_item_id   <- INSERT kds_order_items(menu_item_id)
+  L451   [WRITE] kds_order_items.notes   <- INSERT kds_order_items(notes)
+  L451   [WRITE] kds_order_items.priority   <- INSERT kds_order_items(priority)
+  L499   [read ] kds_order_items.menu_item_id   <- koi.menu_item_id
+  L499   [read ] menu_items.name   <- mi.name  (dup)
+  L500   [read ] kds_order_items.notes   <- koi.notes
+  L500   [read ] kds_order_items.priority   <- koi.priority
+  L507   [read ] kds_order_items.menu_item_id   <- koi.menu_item_id  (dup)
+  L589   [read ] kds_orders.server_name   <- ko.server_name
+  L628   [read ] menu_items.name   <- mi.name  (dup)
+  L629   [read ] kds_order_items.notes   <- koi.notes  (dup)
+  L629   [read ] kds_order_items.priority   <- koi.priority  (dup)
+  L634   [read ] kds_order_items.menu_item_id   <- koi.menu_item_id  (dup)
+  L924   [read ] kds_alerts.severity   <- ka.severity
+  L925   [read ] kds_alerts.item_id   <- ka.item_id
+
+### routers/opening_balance.py
+  L805   [WRITE] accounts_receivable.balance   <- INSERT accounts_receivable(balance)
+  L805   [WRITE] accounts_receivable.created_by   <- INSERT accounts_receivable(created_by)
+  L805   [WRITE] accounts_receivable.total_amount   <- INSERT accounts_receivable(total_amount)
+  L838   [WRITE] accounts_payable.balance   <- INSERT accounts_payable(balance)
+  L838   [WRITE] accounts_payable.created_by   <- INSERT accounts_payable(created_by)
+  L838   [WRITE] accounts_payable.total_amount   <- INSERT accounts_payable(total_amount)
+  L838   [WRITE] accounts_payable.vendor_id   <- INSERT accounts_payable(vendor_id)
+  L876   [WRITE] products.stock_quantity   <- UPDATE products SET stock_quantity
+
+### routers/production_costing.py
+  L253   [read ] products.unit_cost   <- p.unit_cost
+  L355   [read ] cost_pools.nama_produk   <- cp.nama_produk
+  L415   [WRITE] cost_pools.created_by   <- INSERT cost_pools(created_by)
+  L579   [read ] production_order_materials.actual_quantity   <- pom.actual_quantity
+  L579   [read ] production_order_materials.unit_cost   <- pom.unit_cost
+  L583   [read ] production_orders.start_date   <- po.start_date
+  L584   [read ] production_orders.start_date   <- po.start_date  (dup)
+  L594   [read ] production_order_labor.labor_cost   <- pol.labor_cost
+  L598   [read ] production_orders.start_date   <- po.start_date  (dup)
+  L599   [read ] production_orders.start_date   <- po.start_date  (dup)
+  L713   [read ] production_order_labor.hours_worked   <- pol.hours_worked
+  L717   [read ] production_order_labor.work_date   <- pol.work_date
+  L718   [read ] production_order_labor.work_date   <- pol.work_date  (dup)
+  L748   [WRITE] overhead_allocations.created_by   <- INSERT overhead_allocations(created_by)
+  L748   [WRITE] overhead_allocations.rate_applied   <- INSERT overhead_allocations(rate_applied)
+
+### routers/quotes.py
+  L545   [WRITE] quotes.closing_text   <- INSERT quotes(closing_text)
+  L545   [WRITE] quotes.opening_text   <- INSERT quotes(opening_text)
+  L545   [WRITE] quotes.payment_account_holder   <- INSERT quotes(payment_account_holder)
+  L545   [WRITE] quotes.payment_account_number   <- INSERT quotes(payment_account_number)
+  L545   [WRITE] quotes.payment_bank_name   <- INSERT quotes(payment_bank_name)
+  L1191  [WRITE] quotes.closing_text   <- INSERT quotes(closing_text)  (dup)
+  L1191  [WRITE] quotes.opening_text   <- INSERT quotes(opening_text)  (dup)
+
+### routers/recipes.py
+  L152   [WRITE] menu_categories.code   <- INSERT menu_categories(code)
+  L152   [WRITE] menu_categories.created_by   <- INSERT menu_categories(created_by)
+  L208   [WRITE] menu_categories.updated_at   <- UPDATE menu_categories SET updated_at
+  L355   [read ] recipes.category_id   <- r.category_id
+  L369   [read ] products.code   <- p.code
+  L369   [read ] recipe_ingredients.product_id   <- ri.product_id
+  L370   [read ] products.unit_cost   <- p.unit_cost
+  L371   [read ] products.unit_cost   <- p.unit_cost  (dup)
+  L372   [read ] recipe_ingredients.notes   <- ri.notes
+  L374   [read ] recipe_ingredients.product_id   <- ri.product_id  (dup)
+  L470   [WRITE] recipes.category_id   <- INSERT recipes(category_id)
+  L470   [WRITE] recipes.code   <- INSERT recipes(code)
+  L470   [WRITE] recipes.difficulty_level   <- INSERT recipes(difficulty_level)
+  L470   [WRITE] recipes.name   <- INSERT recipes(name)
+  L470   [WRITE] recipes.output_quantity   <- INSERT recipes(output_quantity)
+  L470   [WRITE] recipes.output_unit   <- INSERT recipes(output_unit)
+  L497   [WRITE] recipe_ingredients.notes   <- INSERT recipe_ingredients(notes)
+  L497   [WRITE] recipe_ingredients.product_id   <- INSERT recipe_ingredients(product_id)
+  L514   [WRITE] recipe_instructions.notes   <- INSERT recipe_instructions(notes)
+  L514   [WRITE] recipe_instructions.temperature   <- INSERT recipe_instructions(temperature)
+  L596   [WRITE] recipe_ingredients.notes   <- INSERT recipe_ingredients(notes)  (dup)
+  L596   [WRITE] recipe_ingredients.product_id   <- INSERT recipe_ingredients(product_id)  (dup)
+  L667   [WRITE] recipe_instructions.notes   <- INSERT recipe_instructions(notes)  (dup)
+  L667   [WRITE] recipe_instructions.temperature   <- INSERT recipe_instructions(temperature)  (dup)
+  L718   [read ] products.unit_cost   <- p.unit_cost  (dup)
+  L719   [read ] products.unit_cost   <- p.unit_cost  (dup)
+  L721   [read ] recipe_ingredients.product_id   <- ri.product_id  (dup)
+  L957   [read ] menu_items.code   <- mi.code
+  L957   [read ] menu_items.description   <- mi.description
+  L957   [read ] menu_items.name   <- mi.name
+  L959   [read ] menu_items.tax_rate   <- mi.tax_rate
+  L960   [read ] recipes.name   <- r.name
+  L961   [read ] products.unit_cost   <- p.unit_cost  (dup)
+  L961   [read ] recipes.output_quantity   <- r.output_quantity
+  L963   [read ] recipe_ingredients.product_id   <- ri.product_id  (dup)
+  L970   [read ] menu_items.name   <- mi.name  (dup)
+  L1031  [WRITE] menu_items.code   <- INSERT menu_items(code)
+  L1031  [WRITE] menu_items.created_by   <- INSERT menu_items(created_by)
+  L1031  [WRITE] menu_items.description   <- INSERT menu_items(description)
+  L1031  [WRITE] menu_items.is_taxable   <- INSERT menu_items(is_taxable)
+  L1031  [WRITE] menu_items.name   <- INSERT menu_items(name)
+  L1031  [WRITE] menu_items.tax_rate   <- INSERT menu_items(tax_rate)
+  L1086  [read ] recipes.name   <- r.name  (dup)
+  L1105  [read ] products.unit_cost   <- p.unit_cost  (dup)
+  L1105  [read ] recipes.output_quantity   <- r.output_quantity  (dup)
+  L1107  [read ] recipe_ingredients.product_id   <- ri.product_id  (dup)
+
+### routers/recurring_invoices.py
+  L524   [WRITE] sales_invoice_items.item_name   <- INSERT sales_invoice_items(item_name)
+  L524   [WRITE] sales_invoice_items.line_total   <- INSERT sales_invoice_items(line_total)
+  L524   [WRITE] sales_invoice_items.sales_invoice_id   <- INSERT sales_invoice_items(sales_invoice_id)
+  L524   [WRITE] sales_invoice_items.tax_id   <- INSERT sales_invoice_items(tax_id)
+
+### routers/reports.py
+  L3511  [read ] journal_entries.entry_date   <- je.entry_date
+  L3546  [read ] journal_entries.entry_date   <- je.entry_date  (dup)
+
+### routers/stock_adjustments.py
+  L1492  [read ] journal_entries.memo   <- je.memo
+
+### routers/stock_transfers.py
+  L595   [WRITE] inventory_ledger.item_id   <- INSERT inventory_ledger(item_id)
+  L595   [WRITE] inventory_ledger.quantity_change   <- INSERT inventory_ledger(quantity_change)
+  L595   [WRITE] inventory_ledger.total_value   <- INSERT inventory_ledger(total_value)
+  L595   [WRITE] inventory_ledger.transaction_date   <- INSERT inventory_ledger(transaction_date)
+
+### routers/tables.py
+  L161   [WRITE] table_areas.code   <- INSERT table_areas(code)
+  L161   [WRITE] table_areas.created_by   <- INSERT table_areas(created_by)
+  L161   [WRITE] table_areas.name   <- INSERT table_areas(name)
+  L218   [WRITE] table_areas.updated_at   <- UPDATE table_areas SET updated_at
+  L345   [WRITE] restaurant_tables.created_by   <- INSERT restaurant_tables(created_by)
+  L345   [WRITE] restaurant_tables.is_reservable   <- INSERT restaurant_tables(is_reservable)
+  L848   [WRITE] table_sessions.created_by   <- INSERT table_sessions(created_by)
+  L986   [WRITE] table_sessions.created_by   <- INSERT table_sessions(created_by)  (dup)
+  L1020  [WRITE] table_sessions.closed_at   <- UPDATE table_sessions SET closed_at
+  L1020  [WRITE] table_sessions.status   <- UPDATE table_sessions SET status
+  L1053  [read ] table_areas.name   <- ta.name
+  L1178  [WRITE] table_sessions.created_by   <- INSERT table_sessions(created_by)  (dup)
+  L1375  [read ] table_areas.name   <- ta.name  (dup)
+
+### routers/tax_invoices.py
+  L902   [read ] credit_notes.tax_invoice_id   <- cn.tax_invoice_id
+  L926   [read ] vendor_credits.tax_invoice_id   <- vc.tax_invoice_id
+
+### routers/transactions.py
+  L102   [read ] sales_receipts.py   <- sales_receipts.py
+  L716   [WRITE] products.content_unit   <- UPDATE products SET content_unit
+
+### routers/unified_chat.py
+  L6280  [WRITE] reconciliation_sessions.matched_count   <- UPDATE reconciliation_sessions SET matched_count
+
+### routers/vendor_deposits.py
+  L718   [WRITE] bills.paid_amount   <- UPDATE bills SET paid_amount
+
+### routers/warehouse_bins.py
+  L48    [read ] warehouse_bins.biN_type   <- wb.biN_type
+
+### services/kernel_document_executor.py
+  L967   [WRITE] products.is_active   <- INSERT products(is_active)
+
+### services/payment_request_service.py
+  L404   [WRITE] journal_entries.created_by_name   <- INSERT journal_entries(created_by_name)
+  L404   [WRITE] journal_entries.journal_type   <- INSERT journal_entries(journal_type)
+  L404   [WRITE] journal_entries.posting_date   <- INSERT journal_entries(posting_date)
+  L430   [WRITE] journal_lines.description   <- INSERT journal_lines(description)
+  L430   [WRITE] journal_lines.journal_entry_id   <- INSERT journal_lines(journal_entry_id)
+  L436   [WRITE] journal_lines.description   <- INSERT journal_lines(description)  (dup)
+  L436   [WRITE] journal_lines.journal_entry_id   <- INSERT journal_lines(journal_entry_id)  (dup)
+
