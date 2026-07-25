@@ -118,6 +118,55 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/journals/[^/]+$", ["GET"], "journal", "R"),
     (r"^/api/journals/[^/]+/post$", ["POST"], "journal", "P"),
     (r"^/api/journals/[^/]+/reverse$", ["POST"], "journal", "V"),
+    # =========================================================================
+    # Customer & Vendor Deposits (Uang Muka) — B1 security fix.
+    # These routes were UNMAPPED = unguarded: an unmapped route falls through the
+    # middleware (fail-open), so ANY authenticated user could apply/refund/void a
+    # deposit. Mapping them moves deposits onto the policy-engine (fail-closed).
+    #
+    # ACTION-CHOICE RATIONALE — do NOT "simplify" these; each is deliberate:
+    #   refund -> V (NOT C/P): a refund is a NEW cash-OUT transaction. It is gated
+    #       at the void tier ON PURPOSE — paying money out must require more
+    #       privilege than receiving it. Downgrading refund to C or P silently
+    #       weakens the cash-out gate.
+    #   apply  -> P: applying a deposit POSTS a DEPOSIT_APPLICATION journal, so it
+    #       is a posting action (same tier as posting an invoice/payment).
+    #   post   -> P: draft -> posted is also a posting action.
+    #   void / reverse-application -> V ; create (terima) -> C ; read -> R ;
+    #   update draft -> U ; delete draft -> D.
+    #   A (approve) is intentionally NOT used: the deposit lifecycle has no
+    #   /approve endpoint (verified — customer: post/apply/refund/void/reverse;
+    #   vendor: post/apply/refund/void).
+    #
+    # CONSEQUENCE: OWNER keeps access (unconditional policy-engine bypass); ALL
+    # non-owner roles (incl. admin/accountant business roles) are DENIED until
+    # CUSTOMER_DEPOSIT / VENDOR_DEPOSIT grants are seeded (Tim & Akses UI = follow-up).
+    # This is the intended security posture, not a regression.
+    (r"^/api/customer-deposits$", ["POST"], "customer_deposit", "C"),
+    (r"^/api/customer-deposits$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/summary$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/customer/[^/]+$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/[^/]+/pdf$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/[^/]+/post$", ["POST"], "customer_deposit", "P"),
+    (r"^/api/customer-deposits/[^/]+/apply$", ["POST"], "customer_deposit", "P"),
+    (r"^/api/customer-deposits/[^/]+/applications/[^/]+/reverse$", ["POST"], "customer_deposit", "V"),
+    (r"^/api/customer-deposits/[^/]+/refund$", ["POST"], "customer_deposit", "V"),
+    (r"^/api/customer-deposits/[^/]+/void$", ["POST"], "customer_deposit", "V"),
+    (r"^/api/customer-deposits/[^/]+$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/[^/]+$", ["PATCH", "PUT"], "customer_deposit", "U"),
+    (r"^/api/customer-deposits/[^/]+$", ["DELETE"], "customer_deposit", "D"),
+    (r"^/api/vendor-deposits$", ["POST"], "vendor_deposit", "C"),
+    (r"^/api/vendor-deposits$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/summary$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/by-vendor/[^/]+$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/available/[^/]+$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+/post$", ["POST"], "vendor_deposit", "P"),
+    (r"^/api/vendor-deposits/[^/]+/apply$", ["POST"], "vendor_deposit", "P"),
+    (r"^/api/vendor-deposits/[^/]+/refund$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+/void$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+$", ["PATCH", "PUT"], "vendor_deposit", "U"),
+    (r"^/api/vendor-deposits/[^/]+$", ["DELETE"], "vendor_deposit", "D"),
     # Chart of Accounts
     (r"^/api/accounts$", ["GET"], "chart_of_accounts", "R"),
     (r"^/api/accounts$", ["POST"], "chart_of_accounts", "C"),
