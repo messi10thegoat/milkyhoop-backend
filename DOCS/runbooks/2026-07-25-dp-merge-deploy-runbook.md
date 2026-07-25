@@ -54,3 +54,36 @@ migrations are additive + idempotent.
    unknown-provenance; rebuild frontend image from a known commit before claiming "works for a
    user"). Open question to resolve here: does the live UI still have the 4 components whose
    .tsx are deleted on the server tree (ChatPanel, PurchaseInvoiceForm, AddItemForm)?
+
+---
+## ADDENDUM (pre-flight)
+
+### Shadowing test (pre-flight #1) — PASS
+Full ROUTE_PERMISSIONS first-match, PRE vs POST the 25-entry insert, over a non-deposit sample
+(sales-invoices list/detail/post/void/payments/fulfillments/fulfill, receive-payments, bills,
+bill-payments, quotes, items, autocomplete, products, journals, customers, vendors, expenses):
+PRE=183 rules, POST=208 (+25 exactly), sample diffs = 0. No existing route re-resolves.
+
+### FASE-4 gate — voided_reason (pre-flight #3), 2-sided, EXPLICIT
+Commit f5cd41a5 (fulfillments voided_reason) was never proven via HTTP (needs an invoice in a
+tenant; live is 0-tenant). Gate for FASE 4:
+  GET /api/sales-invoices/{id}/fulfillments -> 200 AND:
+    - invoice not yet shipped  -> shippable items appear
+    - invoice fully shipped    -> "semua dikirim" (nothing shippable)
+If not asserted here it passes as an assumption — the exact failure mode that started this session.
+
+### Harness DB mechanism (pre-flight #2) — DECISION PENDING (owner)
+Finding: the gateway is NOT the only consumer of milkydb — auth_service (grpc) + other
+microservices share it. A harness signup/login round-trips auth_service, so pointing ONLY the
+gateway at a clone does not isolate; the WHOLE stack must repoint. Options:
+  (A) RECOMMENDED — run FASE-4 harness on live milkydb as a THROWAWAY tenant, then DELETE it
+      (restore 0-tenant). Tests the exact shipped code + real prod state; simplest; 0-tenant is
+      restorable. Rationale it's now acceptable: the 0-tenant window's original value
+      (rebuild-vs-diff) is already discharged — the column-diff proved live==saved (0 drift) and
+      sentinels are in place. Revert = delete the tenant (cascade) post-run.
+  (B) Clone milkydb + repoint the WHOLE dev stack (gateway + auth + grpc) to the clone; run
+      harness; repoint back. True isolation, heavier, downtime for milkyhoop.com (0-tenant so no
+      users). Revert = recreate stack against milkydb.
+  (C) Parallel mini-stack (2nd gateway + 2nd auth + clone) on separate ports — cleanest isolation,
+      most setup.
+Decide before FASE 4 starts (does not block this deploy).
