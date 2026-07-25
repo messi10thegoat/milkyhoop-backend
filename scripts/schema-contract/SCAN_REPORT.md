@@ -55,3 +55,52 @@ Three instances of this class were previously found by accident (`f.void_reason`
 via seeding, inline divergence via case 5). This scan found 207 by looking on purpose — most in features the
 DP flow never touches, but TIER 1 includes at least two guaranteed-500 kernel/provisioning paths. **CI check
 is the durable fix (proposed, not built): run this scan in CI and fail on TIER-1 regressions.**
+
+---
+
+# RECLASSIFICATION by path membership (round 2) + key reframe
+
+## Item 1 — bill_payments.py:1983 audit_logs.user_id is OFF the write path
+It is the "Activities tab" READ endpoint (SELECT from audit_logs; also ghost `action`,
+`description`, `created_at` → real `createdAt`/`userId`). Step 0b (create bill payment)
+does NOT depend on it. Not a blocker → the Activities tab itself 500s. Class C.
+
+## Item 2 — hit membership (from committed scan; ZEROs stated explicitly)
+- **A. ON E2E PATH (steps 0-9):** bills.py=0, sales_orders.py=0, customer_deposits.py=0,
+  sales_invoices.py=0, receive_payments.py=0  → CORE HAPPY PATH IS CLEAN.
+  Non-zero on path: quotes.py (step 1) and items.py (step 0 usage). bill_payments.py's
+  only hit is the off-write-path Activities read above.
+- **B. PROVISIONING:** items.py (step 0), opening_balance.py, transactions.py (best-effort,
+  try/except → silent). vendors/customers/warehouses/bank_accounts = 0.
+- **C. OFF PATH:** everything else, incl. kernel_document_executor:967 (item create uses
+  items.py POST /items, NOT the kernel — confirmed), payment_request_service, F&B vertical.
+
+## KEY REFRAME — the on-path hits are RECOVERY-DRIFT, not code-ghosts
+Two distinct classes hide in the 207:
+1. **Code-ghost** — code names a column that never existed in any migration (real name differs).
+   e.g. journal_entries.entry_date→journal_date, audit_logs.user_id→userId, F&B vertical,
+   payment_request_service. Fix = edit code.
+2. **Recovery-drift** — code + migrations INTEND the column, but the rebuilt DB lacks it
+   (skipped migration or out-of-band ALTER never captured as a VNNN). Fix = migration to ADD.
+The two ON-PATH items are class 2:
+   - quotes: POST /quotes (quotes.py:502) writes opening_text, closing_text, payment_bank_name,
+     payment_account_number, payment_account_holder — 5 columns absent from live `quotes`.
+     V186 added the *default* text to accounting_settings but nothing added these to `quotes`.
+     → step 1 (Penawaran) 500s on live TODAY.
+   - products.sales_tax_id / purchase_tax_id: referenced by items.py search + JOIN tax_codes;
+     backing migration V125 is in the 15-SKIP list → columns never created. → item search 500s.
+Fix approach for A+B = a VNNN (V219) adding the missing columns IF NOT EXISTS — this IS the
+untracked-schema regression root the mission targets, not a code patch.
+
+## Item 5 — 207 is a FLOOR, not a ceiling
+54 files under routers/+services/ build SQL dynamically (f-string interpolation, .format(),
+string concat). The regex scanner cannot resolve columns inside those → they are NOT covered.
+Ghost columns hidden in dynamic SQL are invisible to this pass.
+
+## STRATEGIC — this scan is a DEAD-SURFACE detector
+A guaranteed-500 ghost = code that has never executed against this schema. Confirmed never-run:
+apply_vendor_deposit, payment_request→journal, the F&B vertical (~70 refs), likely opening_balance.
+The apply_vendor_deposit pattern proves the chain: write path dead → zero data → read-path bug
+undetected. The F&B vertical likely hides the same.
+**F&B vertical decision (like vendor deposit): CONSCIOUS DEFER with written status — either dead
+code to delete, or a vertical that will 500 when attempted. Not merely "not urgent."**
