@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 SQL
 }
 
+# Sentinel rows: honesty markers for schema created OUTSIDE any VNNN (Step-0 stub in
+# run_migrations_v9.sh + gap_patch.sh). Idempotent; checksum = sha256 of the creating
+# script so edits to those scripts are detectable by verify(). Called from backfill() so
+# every bootstrapped DB gets them automatically — they no longer depend on a manual insert.
+insert_sentinels() {
+    local ver scr cs
+    for pair in "STEP0_STUB:run_migrations_v9.sh" "GAP_PATCH:gap_patch.sh"; do
+        ver="${pair%%:*}"; scr="$SELF_DIR/${pair##*:}"
+        [ -f "$scr" ] || { echo "WARN: sentinel source missing, skipped: $scr" >&2; continue; }
+        cs="$(checksum "$scr")"
+        PGT >/dev/null -c "INSERT INTO schema_migrations(version,checksum,status,applied_by)
+                           VALUES('$ver','$cs','untracked-external','sentinel')
+                           ON CONFLICT (version) DO NOTHING;"
+    done
+}
+
 backfill() {
     ensure_table
     local n_app=0 n_skip=0 base cs st
@@ -75,7 +91,8 @@ backfill() {
                            ON CONFLICT (version) DO NOTHING;"
         if [ "$st" = "applied" ]; then n_app=$((n_app+1)); else n_skip=$((n_skip+1)); fi
     done
-    echo "BACKFILL done on $PGDB: applied=$n_app skipped=$n_skip total=$((n_app+n_skip))"
+    insert_sentinels
+    echo "BACKFILL done on $PGDB: applied=$n_app skipped=$n_skip total=$((n_app+n_skip)) (+2 sentinels)"
 }
 
 apply() {
@@ -139,6 +156,16 @@ verify() {
         [ -z "$v" ] && continue
         [ -f "$MIGDIR/$v" ] || { echo "DRIFT: tracked but file MISSING        : $v"; drift=$((drift+1)); }
     done < <(PGT -c "SELECT version FROM schema_migrations WHERE status <> 'untracked-external' ORDER BY version;")
+    # Sentinel checksums: external-script files are outside VNNN, so a mismatch is a WARNING
+    # (informational), never a drift failure. Makes the recorded checksum non-decorative.
+    for pair in "STEP0_STUB:run_migrations_v9.sh" "GAP_PATCH:gap_patch.sh"; do
+        v="${pair%%:*}"; base="$SELF_DIR/${pair##*:}"
+        row="$(PGT -c "SELECT checksum FROM schema_migrations WHERE version='$v';")"
+        [ -z "$row" ] && continue
+        [ -f "$base" ] || { echo "WARN: sentinel $v recorded but source missing: $base"; continue; }
+        cs="$(checksum "$base")"
+        [ "$row" != "$cs" ] && echo "WARN: sentinel $v checksum changed (external script edited): recorded=$row disk=$cs"
+    done
     if [ "$drift" -eq 0 ]; then
         echo "VERIFY OK on $PGDB: no drift ($(PGT -c "SELECT count(*) FROM schema_migrations;") tracked)"
     else
