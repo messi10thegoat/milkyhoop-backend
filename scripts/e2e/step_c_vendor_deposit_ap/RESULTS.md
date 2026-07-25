@@ -225,3 +225,44 @@ cleaned-up (GONE); refresh cols.txt + shrink baseline post-deploy.
 The picker 500 is the first UI-class instance. A curl-scripted FASE-4 harness BYPASSES the picker
 entirely and proves the LEDGER, not the UX. SECOND FASE-5 gate required: one UI pass before any
 claim that "the flow works for a user."
+
+---
+
+# ROUND 6 — corrections + sentinels
+
+## Deploy does NOT rebuild FE (cond 1)
+docker-compose + deploy scripts = backend only (postgres/redis/api_gateway/...); no npm/react
+build anywhere. FE served as a static bundle -> the deleted .tsx in milkyhoop-dev/frontend/web/src
+are IRRELEVANT to deploy. Mechanic correction: `git pull` does NOT restore unstaged deletions
+(only checkout/restore/reset do) — moot here since deploy neither rebuilds FE nor reads that source.
+
+## Live FE bundle is server-unique, provenance unknown (cond 2)
+git diff HEAD -- frontend/ = 72 files. asset-manifest main bundle: disk=main.5558c404.js,
+HEAD=main.6a02fcc0.js -> DIFFERENT builds. The deployed bundle was built/copied outside git; no
+commit maps to it. FE-ORACLE SCOPE CORRECTED: proved source@master sends the 5 quote fields, NOT
+that the live bundle does. ADD stands (deliberate in source). FASE-5 UI GATE: build FE from a
+PINNED commit; do not trust the existing bundle.
+
+## discount_type — my error, not a blocker (cond 3)
+FE (useQuoteForm.ts:584, types default) only uses 'fixed'/'percentage' — both pass the CHECK. My
+'percent' was an invented test literal. Step 1 is NOT blocked by it.
+VALUE-DOMAIN DRIFT (honest): BOTH CHECK violations I hit (discount_type='percent',
+vendor_credits.reason='uji') were MY OWN test literals, not application code -> ZERO confirmed code
+instances. The sub-class is a hypothesis, not two findings. PROPOSAL (not now): extend the scanner
+to match code string-literals written to a column against that column's CHECK/enum. ~0.5 day.
+
+## V007 — correct reason (cond 4)
+RESOLVED support = the CLEAN SCAN, not mere existence: ZERO ghost hits on unit_conversions /
+item_pricing / products.base_unit in schema_scan_out.txt, AND all three exist.
+
+## Step 1 claim DOWNGRADED (cond 4)
+NOT "SQL-proven end-to-end". Proven: two INSERT statements (quotes header + quote_items) are
+column-clean in psql. NOT proven: the handler, incl. the quote-number generator (never produced a
+number — 0 quotes in any DB), pydantic schema, and the transaction. FASE-4 GATE: POST /quotes-with-
+items -> 201 via the app.
+
+## Sentinels — DONE
+STEP0_STUB + GAP_PATCH on live schema_migrations (211 total; untracked-external; checksum=sha256 of
+the creating script). migrate.sh CHECK widened + verify() skips them (verify OK, no drift).
+Inventory in UNTRACKED_EXTERNAL_SCHEMA.md. build_fresh.sh-into-repo DEFERRED to post-E2E (off-path;
+window stays open — FASE 4/5 use scratch clone, live stays 0-tenant).
