@@ -48,3 +48,49 @@
 
 ## Provisioning dry-run (FASE-4 preview) — what broke
 Seeding a minimal tenant surfaced, in order: (a) accounting tables FK `tenant_id → "Tenant"(id)` for `chart_of_accounts`/`fiscal_periods` (must create Tenant first); (b) `vendor_credits.reason` CHECK enum (`return|pricing_error|discount|damaged|other`); (c) the `bills` column drift above. None block Step C; all are provisioning-path notes for FASE 4.
+
+---
+
+# CORRECTIONS (post-review)
+
+## Ralat verdict (was "active latent")
+The AP bug is **NOT "active latent" — it is UNREACHABLE behind a broken write path.**
+`apply_vendor_deposit` has never successfully run once (it writes `bills.paid_amount`
+/`bills.total_amount`, columns that do not exist → 500). That is *why* the bug was
+never exposed in production.
+
+**Explicit decision:** the vendor-deposit feature is **dead end-to-end**. The DP
+target flow does not use it → **conscious DEFER**, filed here so it does not hang
+undecided. **V218 still ships and is still correct**: the `UNIQUE(journal_id)`
+constraints protect the *live* AR side (customer_deposit_applications / Branch 3),
+and the AP read path is ready the moment the vendor write path is repaired.
+
+## Refinement of the Invariant-2 (inline) finding — is it active? NO (checked)
+Question raised: `get_bill_remaining_from_journal` filters `status=POSTED` without
+`reversed_by_id IS NULL`; does that mis-state a LIVE flow (e.g. voided bill payment)?
+
+Checked `void_bill_payment` (bill_payments.py:1587): the reversing journal is created
+with **`source_type=BILL_PAYMENT` and `source_id=payment_id`** (same source as the
+original), posted POSTED, and `reversed_by_id` set on the original. Consequence:
+- inline counts BOTH original (Dr PAYABLE) and reversal (Cr PAYABLE) via its
+  `BILL_PAYMENT` branch (which keys on `source_id`) → they **net to 0** → correct.
+- compute_ap excludes the original via `reversed_by_id IS NULL`; the reversal is not
+  `bpv2.journal_id` → not in payment_debits → also nets to 0 → correct.
+
+So the inline is correct for voided bill payments (and, by the same source-reuse
+netting, voided vendor credits). **The divergence is genuinely dormant** — but the
+precise reason is sharper than "no reversal endpoint": the inline handles reversals
+by *source-reuse netting*, and the **`DEPOSIT_APPLICATION` branch is the one branch
+that keys on `je.id IN (vda.journal_id)` instead of `source_id`** — a reversal journal
+is never in `vendor_deposit_applications`, so that branch **can never net a reversal**.
+The moment vendor-deposit un-apply is implemented (in ANY style) the inline breaks.
+Same conclusion, same owner: it lives behind the dead vendor-deposit write path.
+
+## Consumers of get_bill_remaining_from_journal (question b)
+NOT a user-facing display. It is **copy-pasted in 3 routers** (bill_payments.py:123,
+vendor_deposits.py:54, vendor_credits.py:116 — DRY/drift hazard) and consumed in
+WRITE paths to compute `remaining_before` for an allocation: bill_payments.py:1245
+(live), vendor_credits.py:1338 (live), vendor_deposits.py:604 (dead). AP/AR *aging*
+uses compute_ap/compute_ar, not this function. No user-facing exposure from the
+divergence, and the live write-path consumers do not hit the DEPOSIT_APPLICATION-
+reversal case.
