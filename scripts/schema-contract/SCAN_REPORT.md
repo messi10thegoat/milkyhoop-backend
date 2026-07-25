@@ -104,3 +104,30 @@ The apply_vendor_deposit pattern proves the chain: write path dead → zero data
 undetected. The F&B vertical likely hides the same.
 **F&B vertical decision (like vendor deposit): CONSCIOUS DEFER with written status — either dead
 code to delete, or a vertical that will 500 when attempted. Not merely "not urgent."**
+
+---
+
+# COLUMN-LEVEL DIFF: live milkydb vs milkydb_saved_20260725 (authoritative pre-swap oracle)
+
+**Result — the recovery-drift hypothesis is DISPROVEN by the oracle:**
+- Columns in SAVED missing from LIVE (would = silently-dropped): **0.**
+- Columns in LIVE not in SAVED: **5 — and all 5 are `schema_migrations.*`** (the tracking table
+  this mission created). Nothing else differs.
+- Therefore **recovery dropped ZERO columns**; live is a column-level superset of saved. Table-level
+  parity (271==271) did NOT hide column drift — there is none. The earlier anticipated note
+  ("recovery rebuild silently dropped in-use columns") is NOT supported by evidence and is retracted.
+
+**Consequence for the on-path hits — they are CODE-GHOSTS, not recovery-drift:**
+- `quotes` opening_text/closing_text/payment_bank_name/payment_account_number/payment_account_holder:
+  absent in SAVED too. Never lived. → strip from quotes.py:502 (only quote-CREATE endpoint), do NOT
+  add columns. (The passing quote-DP E2E on `saved` did not exercise these columns.)
+- `products.sales_tax_id/purchase_tax_id`: absent in SAVED; SAVED has `sales_tax`,`purchase_tax`
+  (varchar). GET /items/autocomplete tested on live → ERROR "column p.sales_tax_id does not exist"
+  (confirmed 500). Code-ghost: the column model is `sales_tax`(varchar), code still names `sales_tax_id`.
+- **V125 contradiction resolved:** V125 (products_tax_indexes) indexes the OLD `sales_tax_id` name;
+  the model changed to `sales_tax` varchar, so V125 is correctly DEAD (skip stands). The GHOST is the
+  code (items.py), not the migration. No contradiction.
+
+**Implication for build_fresh.sh urgency:** the "rebuild silently drops in-use columns" argument is NOT
+evidence-backed (0 dropped). build_fresh-into-repo still matters for the untracked Step-0 stub +
+gap_patch schema (schema created outside any VNNN), but NOT because recovery drops columns — it doesn't.
