@@ -53,7 +53,7 @@ ensure_table() {
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     TEXT PRIMARY KEY,
     checksum    TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'applied' CHECK (status IN ('applied','skipped')),
+    status      TEXT NOT NULL DEFAULT 'applied' CHECK (status IN ('applied','skipped','untracked-external')),
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     applied_by  TEXT NOT NULL DEFAULT 'runner'
 );
@@ -138,7 +138,7 @@ verify() {
     while read -r v; do
         [ -z "$v" ] && continue
         [ -f "$MIGDIR/$v" ] || { echo "DRIFT: tracked but file MISSING        : $v"; drift=$((drift+1)); }
-    done < <(PGT -c "SELECT version FROM schema_migrations ORDER BY version;")
+    done < <(PGT -c "SELECT version FROM schema_migrations WHERE status <> 'untracked-external' ORDER BY version;")
     if [ "$drift" -eq 0 ]; then
         echo "VERIFY OK on $PGDB: no drift ($(PGT -c "SELECT count(*) FROM schema_migrations;") tracked)"
     else
