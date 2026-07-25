@@ -172,3 +172,56 @@ Portability (hardcoded /root paths) = follow-up.
   has never existed in practice.
 - After V219, step 1 is the RISKIEST E2E step: the only one never executed. Anticipate follow-on
   findings (quote_items, serializer, discount_type default).
+
+---
+
+# ROUND 5 — V007 cascade, FE 72-file resolution, items ADD (V220), step-1 sequence proof
+
+## V007 cascade — RESOLVED (not a blocker)
+products.base_unit EXISTS, unit_conversions EXISTS, item_pricing EXISTS on live. The old V007
+cascade (memory: base_unit never created -> V008/V194 dead) was HEALED by the recovery patches
+(V213-217). Step 0's unit handling has its columns/tables. The memory note is outdated.
+
+## FE 72-file "drift" — CLOSED, no incident, deploy is safe (cond 2)
+Correct tree is /root/milkyhoop-dev (NOT /root/milkyhoop = production; my earlier search was the
+wrong tree). Findings:
+- HEAD == origin/master (f71db830) -> committed state is fully in GitHub.
+- 72 porcelain entries = build artifacts + deletions: 51 png (icons), 3 js + 2 css + maps
+  (hashed bundles), 3 json + 2 html (manifests), and 4 DELETED .tsx/.ts source files.
+- The 4 source entries are DELETIONS; all present in git HEAD (git cat-file -e confirmed) ->
+  a deploy `git pull`/reset RESTORES them, does not lose them.
+- ZERO untracked frontend files (earlier "1" was a grep-count artifact of an empty string).
+- Snapshot taken first (non-destructive): /root/fe-uncommitted-20260725.patch (15 MB, all M/D).
+- CONCLUSION: no server-unique source; the restore-agent left nothing unique. Deploy git pull is
+  SAFE. Correction to audit + my earlier claim: milkyhoop-dev/frontend/ is the SERVED built
+  bundle (+ a partial vendored src/ tracked in git with on-disk deletions); "no FE source tree"
+  was imprecise, "72 uncommitted files" = artifacts/deletions, not an incident.
+
+## items autocomplete — ADD (V220), proven (cond 1 of this round)
+DECISION: ADD (FE Faktur sheet consumes sales_tax_id/name/rate). Confirmed pre-write:
+(a) tax_codes has id/name/rate (+ more); (b) products.sales_tax/purchase_tax = varchar, 0 product
+rows on live (no seed) -> clean add; (c) items.py JOINs tax_codes ON st.id = p.sales_tax_id,
+selects st.name/st.rate. V220 adds products.sales_tax_id/purchase_tax_id uuid REFERENCES
+tax_codes(id). SEPARATE migration (not editing committed V219): immutability + clean provenance.
+Legacy varchar sales_tax/purchase_tax left untouched (backlog).
+PROOF: after V220 on clone, the EXACT items.py autocomplete query EXECUTES (0 rows, no error) —
+[SQL]-level; was a hard 500 (p.sales_tax_id does not exist) before. True HTTP GET /items/
+autocomplete -> 200 is a FASE-4 gate (gateway points at live; live-apply held).
+
+## Step-1 create — sequence proven (cond 3)
+- quote_items INSERT (quotes.py:599) is STATIC (14 cols). On clone: quotes header INSERT +
+  quote_items INSERT both succeed (INSERT 0 1 each) -> step-1 create is SQL-provable end-to-end.
+- Create response serializer is SAFE: returns a static dict {id, quote_number, total_amount,
+  dp_amount, dp_percent} — reads back no ghost/new column.
+- Remaining as a FASE-4 GATE (not residual footnote): POST /quotes with items -> 201 via the app
+  (exercises pydantic schema, discount_type default, and the full transaction).
+
+## CI ratchet note
+Baseline (147) was built vs LIVE cols. After V219/V220 apply to live, items.py sales_tax_id/
+purchase_tax_id (and quotes.* once V219 lands) stop being ghosts -> ci_check reports them as
+cleaned-up (GONE); refresh cols.txt + shrink baseline post-deploy.
+
+## STRATEGIC (write-once): every audit-matrix READY verdict is API/journal-level; NONE test UI.
+The picker 500 is the first UI-class instance. A curl-scripted FASE-4 harness BYPASSES the picker
+entirely and proves the LEDGER, not the UX. SECOND FASE-5 gate required: one UI pass before any
+claim that "the flow works for a user."
