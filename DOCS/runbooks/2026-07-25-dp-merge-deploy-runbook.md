@@ -104,3 +104,24 @@ Mechanism (repeatable every FASE-5 iteration):
      guaranteed pristine, ZERO manual DELETE.
   4. Verify restore: table count, schema_migrations = 214 tracked + 2 sentinels, zero tenant rows.
 Deterministic, verifiable, repeatable. (B)/(C) not worth it for the same outcome.
+
+---
+## HARNESS RESET PROCEDURE (named; TESTED green 2026-07-25)
+Precondition: milkydb_preharness_<ts>.sql.gz (post-migration, 0-tenant restore point).
+Why this method: api_gateway + auth + grpc hold a superuser connection pool to milkydb, so a plain
+DROP DATABASE races their reconnects. `ALTER DATABASE ... ALLOW_CONNECTIONS false` blocks ALL new
+connections INCLUDING superuser -> the drop wins deterministically. Chosen over stop-all-containers
+(would need to enumerate every milkydb consumer) and over terminate-only (racy).
+
+Steps (all via `docker exec milkyhoop-dev-postgres-1 psql -U postgres`):
+  1. -d postgres -c "ALTER DATABASE milkydb WITH ALLOW_CONNECTIONS false;"
+  2. -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                     WHERE datname='milkydb' AND pid<>pg_backend_pid();"
+  3. -d postgres -c "DROP DATABASE milkydb;"   # if it fails, connections leaked in -> re-run 1+2
+  4. -d postgres -c "CREATE DATABASE milkydb;" # new DB defaults allowconn=true
+  5. gunzip -c milkydb_preharness_<ts>.sql.gz | docker exec -i ... psql -U postgres -d milkydb
+  6. docker restart milkyhoop-dev-api_gateway  # fresh pool; wait /health 200 (curl --retry)
+
+Verify after: tenants=0; schema_migrations=214 (incl 2 sentinels); migrate.sh verify OK 0 drift;
+compute_ap_outstanding contains 'vd_applied_debits' (V218 present).
+TEST RESULT 2026-07-25: terminated=5, DROP+CREATE ok, 0 restore errors, /health 200, all verify green.
