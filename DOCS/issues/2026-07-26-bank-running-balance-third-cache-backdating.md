@@ -54,3 +54,25 @@ stay 0. Only the per-row `running_balance` display column is wrong.
    on read from the journal in date order, stop storing it.
 3. Interim: the harness enforces correct chronology (explicit date plan, opening balance first)
    so this never masks a real bug during E2E.
+
+---
+## ADDENDUM (2026-07-26) — deprecation not enforced + reconciliation severity
+
+### (a) The DEPRECATED cache is still ACTIVELY maintained by a DB trigger
+`update_bank_account_balance()` does `UPDATE bank_accounts SET current_balance = current_balance
++ NEW.amount` on every bank_transactions insert. So `current_balance` — the column Law 21 /
+BankSync Rule 6 declared deprecated (balance is journal-derived) — is **not** dormant: a DB
+trigger keeps writing it, and `running_balance` (shown to users) is derived from it. **A
+deprecation enforced only in the read path (routers prefer `lb.ledger_balance`) but not at the
+DB level is an aspiration, not a rule** — the stale cache stays live and leaks into the UI.
+
+OPEN QUESTION (do not chase now): are there OTHER triggers maintaining deprecated caches on
+financial tables (e.g. amount_paid / current_balance / *_cache columns)? A trigger audit would
+tell whether "journal is the source of truth" holds at the DB layer or only by router convention.
+
+### (b) SEVERITY RAISED — reconciliation MATCHING consumes running_balance
+`bank_reconciliation.py` uses `running_balance` in statement matching (multiple sites), not just
+display. So a backdated transaction does not merely show a wrong number — it can **mis-match
+during bank reconciliation** (the imported statement line reconciled against a wrong computed
+balance). For an accounting product, incorrect reconciliation matching is a heavy defect, above
+"cosmetic wrong number in a list". Severity: MEDIUM -> MEDIUM-HIGH.

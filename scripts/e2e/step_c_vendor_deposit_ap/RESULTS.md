@@ -323,3 +323,34 @@ Repair, when scheduled, must resolve BOTH legs by role (AP_TRADE debit +
 VENDOR_DEPOSIT_ASSET/prepayment credit), never by hardcoded code. Still a conscious
 DEFER (DP target flow does not touch vendor deposits), but the severity is raised from
 "broken, latent" to "broken AND accounting-incorrect if naively un-broken."
+
+---
+# B4 VERDICT — CLOSED (runtime, 2026-07-26) + quote endpoint correction
+
+## Quote-create endpoint CORRECTION (supersedes earlier "/quotes-with-items")
+The FE user path for quote create is **`POST /api/quotes`** (useQuoteForm.ts:649), NOT
+`/quotes-with-items` (zero FE references). The original "quotes.py POST '' is the only
+create endpoint" reading was correct; `/quotes-with-items` was an error that also leaked into
+the FASE-4 runbook gate (now corrected there). V219's columns ARE consumed by `POST /api/quotes`
+— proven: QUO-2607-0001 persisted opening_text/closing_text/payment_* and dp_amount/dp_percent.
+
+## B4 — does the quote's DP survive conversions? FINAL verdict
+DP on a quote is explicitly **NO-LEDGER, display-only** (quotes.py detail comment "FIX_P2_QUOTEDP
+... down-payment (NO-LEDGER, display only)").
+
+- **Conversion 1 (quote -> Sales Order, step 2 `/api/quotes/{id}/to-order`): DP EVAPORATES.**
+  Runtime-proven: `sales_orders` has **0** dp/deposit/down columns. The quote held dp 1.500.000 /
+  30%; the SO (SO-2607-0001) carries none — it only links back via `quote_id`. There is no
+  first-class DP field on the SO and thus no `required_deposit` to "confirm" (my earlier
+  "confirm with required_deposit 30%" was impossible — no such column). Confirmed by column scan
+  + the created SO row.
+- **Conversion 2 (SO -> invoice, step 5 `/api/sales-orders/{id}/to-invoice`): pending runtime
+  test at step 5** (grep says it does not carry dp; will prove there).
+
+## CONSEQUENCE for step 4 (customer pays DP) — CLOSED decision
+Because conversion 1 already dropped the DP (and step 4 precedes step 5), **nothing pre-fills the
+deposit**. Step 4 must enter the DP amount MANUALLY into `POST /api/customer-deposits`
+(1.500.000). This is still a valid E2E path (matches the canonical "DP @ Sales Order, apply
+MANUAL" design) — it just means the harness supplies the 1.500.000 explicitly rather than reading
+it from an SO field. This is the FINAL answer to B4 (revised twice before from grep alone; now
+runtime-anchored for conversion 1).

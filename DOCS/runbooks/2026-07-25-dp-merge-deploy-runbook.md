@@ -44,7 +44,7 @@ migrations are additive + idempotent.
       seed one low business-role user; POST /api/customer-deposits/{id}/refund -> EXPECT 403;
       GET /api/customer-deposits -> EXPECT 403 (module not granted). Without this, D ships with
       zero runtime proof of the one thing it does (deny the unauthorized).
-- [ ] Step-1 handler gate: POST /quotes-with-items -> 201 (quote-number generator has never
+- [ ] Step-1 handler gate: POST /api/quotes -> 201 [CORRECTED endpoint; NOT /quotes-with-items] — PROVEN 2026-07-26 (QUO-2607-0001, first quote number ever in any DB; generator was untested
       produced a number; 0 quotes in any DB).
 - [ ] Step-0 gate: GET /items/autocomplete -> 200.
 
