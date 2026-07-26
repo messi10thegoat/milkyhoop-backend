@@ -383,3 +383,17 @@ simply sits invisible.
 proves the WRITE path, not a working feature. **FE-sends is not evidence of a complete feature.**
 A column is only "done" when write AND read/render both exist and a human can see the value. Verify
 the read path (API response + PDF/print), not just the 201 on create.
+
+---
+## B4 — FULLY CLOSED (both conversions, runtime, 2026-07-26)
+- **Conversion 1 (quote → SO, step 2):** DP EVAPORATES — sales_orders has 0 dp/deposit columns
+  (proven step 2). SO links back only via quote_id.
+- **Conversion 2 (SO → invoice, step 5):** DP EVAPORATES — sales_invoices has 0 dp/deposit columns;
+  `/to-invoice` carried no dp; the Event-1 journal is Dr 1-10400 / Cr 2-10750 with no dp reference.
+  The invoice links via sales_order_id (spine).
+- **Net:** the quote's dp_amount/dp_percent are NEVER carried as a first-class field beyond the
+  quote. The DP lives solely as the `customer_deposits` record, spine-linked (quote_id +
+  sales_order_id), and is surfaced for **manual** apply at step 6 via `get_applicable_deposits`
+  (a GET; there is no auto-apply). This matches the canonical "DP @ Sales Order, apply MANUAL"
+  design. B4 verdict (revised twice before from grep alone) is now runtime-anchored on BOTH
+  conversions and closed.

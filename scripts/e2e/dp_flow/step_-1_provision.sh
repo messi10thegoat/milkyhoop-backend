@@ -84,6 +84,21 @@ PSQL "UPDATE \"Tenant\" SET is_pkp=false WHERE id='$TEN' AND is_pkp IS DISTINCT 
 echo "is_pkp: was=$BEFORE_PKP now=$(PSQL "SELECT is_pkp FROM \"Tenant\" WHERE id='$TEN';") (non-PKP for the DP spec)"
 
 # ---------------------------------------------------------------------------
+# DELIVERY-MODE revenue recognition (documented API-gap workaround)
+# FINDING (DOCS/issues/2026-07-26-delivery-mode-revenue-recognition-unreachable.md): the defer
+# lever tenant_config.revenue_recognition_policy has NO write path (no API, no settings UI, no
+# onboarding row; FE never sends per-invoice recognize_at). Default 'invoice' -> sell-from-stock
+# AUTO-FULFILLS (3 events at post), contradicting the konveksi "stock leaves at Pengiriman" model.
+# A konveksi delivery-mode tenant can only get it via this raw write. Verified safe: the only other
+# gateway reader (userguide_rag_enabled) behaves identically for no-row vs default-row; no CHECK
+# constraint; code matches exact lowercase 'delivery'. REMOVE this once a real control is built.
+# Idempotent via ON CONFLICT (tenant_id). Minimal columns; the rest take safe table defaults.
+BEFORE_POL=$(PSQL "SELECT COALESCE((SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN'),'<no-row>');")
+PSQL "INSERT INTO tenant_config (tenant_id, revenue_recognition_policy) VALUES ('$TEN','delivery')
+      ON CONFLICT (tenant_id) DO UPDATE SET revenue_recognition_policy='delivery', updated_at=now();" >/dev/null
+echo "revenue_recognition_policy: was=$BEFORE_POL now=$(PSQL "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN';") (delivery mode: defer revenue to Pengiriman)"
+
+# ---------------------------------------------------------------------------
 # MASTER DATA — lookup-before-create (idempotent).
 # ---------------------------------------------------------------------------
 hdr "MASTER DATA"
@@ -124,23 +139,15 @@ echo "ITEM=$ITEM"
 # every run via login-first. Credentials themselves are documented as EMAIL/PASS
 # defaults in this script's header, so the committed script fully reproduces state.)
 # ---------------------------------------------------------------------------
-cat > "$STATE" <<EOF
-# DP-flow harness state — written by step_-1_provision.sh $(date -u +%Y-%m-%dT%H:%M:%SZ)
-export B="$B"
-export DB="$DB"
-export CONTAINER="$CONTAINER"
-export EMAIL="$EMAIL"
-export PASS="$PASS"
-export TEN="$TEN"
-export TOK="$TOK"
-export BANK="$BANK"
-export BANK_COA="$BANK_COA"
-export WH="$WH"
-export VND="$VND"
-export CUS="$CUS"
-export ITEM="$ITEM"
-EOF
-echo; echo "state -> $STATE"
+# UPSERT each var — never truncate (a re-run of step_-1 must NOT wipe downstream step IDs
+# like QID/SOID/DEPID/INVID that steps 1-5 append to this file).
+[ -f "$STATE" ] || printf '# DP-flow harness state — step_-1_provision.sh %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE"
+set_state(){ local k=$1 v=$2; grep -q "^export $k=" "$STATE" 2>/dev/null && sed -i "s|^export $k=.*|export $k=\"$v\"|" "$STATE" || echo "export $k=\"$v\"" >> "$STATE"; }
+set_state B "$B"; set_state DB "$DB"; set_state CONTAINER "$CONTAINER"
+set_state EMAIL "$EMAIL"; set_state PASS "$PASS"; set_state TEN "$TEN"; set_state TOK "$TOK"
+set_state BANK "$BANK"; set_state BANK_COA "$BANK_COA"; set_state WH "$WH"
+set_state VND "$VND"; set_state CUS "$CUS"; set_state ITEM "$ITEM"
+echo; echo "state -> $STATE (upsert, downstream IDs preserved)"
 
 # ---------------------------------------------------------------------------
 # COMPLETENESS GATE

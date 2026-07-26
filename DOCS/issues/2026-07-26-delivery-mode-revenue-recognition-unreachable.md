@@ -48,3 +48,35 @@ To run step 5 deferred (per spec) the harness must force 'delivery' by one of:
 - (B) pass `recognize_at='delivery'` per-invoice to /to-invoice — API-supported but the FE never
   does this, so it diverges from the user path.
 Neither is a user-reachable path; this is the product blocker itself.
+
+---
+## HARDENING (2026-07-26, post step-5 proof)
+
+### (a) Pengiriman module is DEAD for every fresh tenant — closes the loop to this session's origin bug
+Delivery/fulfill (Pengiriman) is only reachable for an invoice in `revenue_status=deferred`
+(fulfillment_status=pending). With no user-reachable way to set delivery mode, a fresh tenant's
+invoices always auto-fulfill at post → **nothing is ever `pending` → the Pengiriman module has no
+input → it is unreachable.** This closes the loop to the bug that STARTED this whole effort: the
+`GET /fulfillments` 500 we called "universal, all tenants". It is universal only among tenants that
+can *reach* the fulfillment form — and on a fresh install, none can. The fix f5cd41a5 has still
+never been exercised over HTTP; step 7 (this harness, forced delivery mode) is the first real chance.
+
+### (b) PSAK-72: correct engine, wrong default, no control
+The 3-event engine recognizes revenue at transfer of control — correct. For pure sell-from-stock,
+`'invoice'` (recognize at billing) is defensible. But for **bill-first / ship-later** businesses
+(konveksi, mebel, custom manufacturing — a large share of production UMKM) revenue is recognized
+**too early** (at faktur, before delivery) and there is **no control to correct it**. The engine is
+compliant; the default is not, and the knob is unreachable. This is a compliance-posture defect for
+the exact segment the product targets.
+
+### (c) Regression check — NOT a regression, it is never-wired
+git history: `revenue_recognition_policy` was introduced **read-only** in P4 (68926f96) and the
+`/to-invoice` recognize_at pass-through in c1ce92d1; **no INSERT/UPDATE to tenant_config was ever
+committed**, and no old DB (milkydb_saved / milkydb_goldenpath_green) has ever held a tenant_config
+row. So the write path was never built (not lost in recovery). Ticket title stands: "never wired".
+
+### Proof that the workaround is correct (not just green)
+With `tenant_config.revenue_recognition_policy='delivery'` set, the REAL FE `/to-invoice` payload
+(no recognize_at) produced Event 1 ONLY: Dr 1-10400 5.000.000 / Cr 2-10750 5.000.000,
+fulfillment_status=pending, revenue_status=deferred, 4-10100=0, 5-10100=0, inventory untouched.
+This confirms both the defer branch AND that the sole missing piece for real users is the control.
