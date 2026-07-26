@@ -1,0 +1,68 @@
+#!/bin/bash
+# =============================================================================
+# step_1_quote.sh — DP-flow STEP 1: create Penawaran (quote) via POST /api/quotes
+# (the REAL FE useQuoteForm submit endpoint — NOT /quotes-with-items). Sends the FULL
+# FE payload shape, incl. the V219 columns (opening_text/closing_text/payment_*) and DP
+# (dp_amount canonical=1.500.000, dp_percent=30) so this exercises exactly what V219 fixed
+# and sets up the B4 test (does DP survive to SO/invoice) at step 2.
+# Item: Kaos Biru 30s, 100 pcs @ 50.000, non-PKP (tax_rate 0, tax_id null). Grand total 5.000.000.
+# HIGH-RISK: quote_sequences has never produced a number in any DB. A broken generator is a
+# FINDING, reported as-is.
+# EXPECT: quote_number generated (sane format), quote_items saved, ZERO journal, drift AR/AP=0,
+# BANK_GAP=0.
+# =============================================================================
+set -u
+DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$DIR/state.env"; source "$DIR/dates.env"
+H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
+J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
+gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
+PSQL(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
+PSQLm(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -c "$1"; }
+
+echo "===== STEP 1 — QUOTE (Penawaran) 100 pcs @ 50.000, DP 30% ====="
+JE_BEFORE=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
+echo "journal_entries before: $JE_BEFORE"
+
+QID=$(PSQL "SELECT id FROM quotes WHERE tenant_id='$TEN' AND reference='QUO-KB-01';")
+if [ -n "$QID" ]; then
+  echo "quote exists (idempotent reuse): $QID"
+else
+  RESP=$(J POST /quotes "{
+    \"customer_id\":\"$CUS\",\"customer_name\":\"Toko Merdeka\",
+    \"quote_date\":\"$D_QUOTE\",\"expiry_date\":\"2026-07-31\",
+    \"reference\":\"QUO-KB-01\",\"subject\":\"Penawaran Kaos Biru 100 pcs\",
+    \"discount_type\":\"percentage\",\"discount_value\":0,
+    \"dp_amount\":1500000,\"dp_percent\":30,
+    \"notes\":\"Catatan pelanggan\",\"terms\":\"Syarat & ketentuan\",
+    \"opening_text\":\"Dengan hormat, berikut penawaran kami.\",
+    \"closing_text\":\"Demikian, terima kasih.\",
+    \"payment_bank_name\":\"Bank BCA\",\"payment_account_number\":\"1111222233\",\"payment_account_holder\":\"Kaos Biru Konveksi\",
+    \"items\":[{\"item_id\":\"$ITEM\",\"description\":\"Kaos Biru 30s\",\"quantity\":100,\"unit\":\"pcs\",\"unit_price\":50000,\"discount_percent\":0,\"tax_rate\":0,\"tax_id\":null,\"sort_order\":0}],
+    \"status\":\"draft\"
+  }")
+  echo "resp: $(echo "$RESP" | head -c 220)"
+  QID=$(echo "$RESP" | gid)
+  [ -z "$QID" ] && { echo "!!! quote create FAILED (FINDING — inspect resp above) — ABORT"; exit 1; }
+fi
+grep -q '^export QID=' "$DIR/state.env" && sed -i "s|^export QID=.*|export QID=\"$QID\"|" "$DIR/state.env" || echo "export QID=\"$QID\"" >> "$DIR/state.env"
+echo "QID=$QID"
+
+echo; echo "--- quote row: number/format + V219 columns + DP (all must be persisted) ---"
+PSQLm "SELECT quote_number, status, quote_date, dp_amount, dp_percent,
+              opening_text, closing_text, payment_bank_name, payment_account_number, payment_account_holder,
+              subtotal, total_amount
+       FROM quotes WHERE id='$QID';"
+
+echo "--- quote_items (expect 1 row, qty 100 @ 50.000) ---"
+PSQLm "SELECT description, quantity, unit, unit_price, tax_rate, tax_id, line_total FROM quote_items WHERE quote_id='$QID' ORDER BY sort_order;"
+
+echo "--- quote_sequences row (the generator that had never produced a number) ---"
+PSQLm "SELECT * FROM quote_sequences WHERE tenant_id='$TEN';" 2>&1 | head
+
+echo; echo "--- ZERO JOURNAL check (quote must not post) ---"
+JE_AFTER=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
+echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE) -> $([ "$JE_AFTER" = "$JE_BEFORE" ] && echo 'PASS (no new journal)' || echo 'FAIL (quote created a journal!)')"
+
+echo; echo "===== DRIFT + BANK GAP (must stay 0) ====="
+docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
