@@ -294,3 +294,32 @@ rebuilt by the api_gateway deploy.)
 main-tree HEAD == origin/master == f71db830; api_gateway running f71db830 since 07:39; ZERO
 commits on origin/master since f71db830 (no other-session drift). Deploy delta = exactly our
 fix/dp-readiness commits. Round-6 rollback plan accepted + stands.
+
+---
+
+# CORRECTIONS (round 3) — SEVERITY UPGRADE: vendor-deposit credits the WRONG ACCOUNT CLASS
+
+The apply journal (line 8 above) is `Dr 2-10100 (PAYABLE) / Cr 1-10800`. Re-checked
+`1-10800` against the golden-path oracle (milkydb_goldenpath_green, tenant
+konveksi-cemerlang): **1-10800 = "PPN Masukan" — a TAX ASSET (input VAT receivable),
+account_type ASSET.** It is NOT "Uang Muka Vendor" (vendor advance / prepayment).
+
+Consequence — the vendor-deposit write path is worse than "dead write path (500 on a
+missing column)". Even if the bills.paid_amount/total_amount column bug were fixed and
+the journal posted, it would be **accounting-wrong**: crediting a vendor advance settles
+it against **input-VAT receivable** instead of the vendor-deposit-asset / prepayment
+role. That is a class error (asset-of-the-wrong-kind), not a code-typo:
+- `Cr 1-10800` reduces PPN Masukan → understates recoverable input VAT, and
+- the vendor advance is never parked in its own asset account → no VENDOR_DEPOSIT_ASSET
+  role resolution (Law 27) at all — it is hardcoded to a tax account.
+
+So the vendor-deposit feature has THREE stacked defects, not one:
+  1. write path 500s (bills.paid_amount/total_amount do not exist) — reachability bug;
+  2. `get_bill_remaining_from_journal` copy hardcodes `2-10100` (Law 27 gap, line 116);
+  3. **NEW/upgraded:** the credit leg hardcodes `1-10800` = PPN Masukan = WRONG ACCOUNT
+     CLASS. Repairing (1) alone would ship a silently mis-posting feature.
+
+Repair, when scheduled, must resolve BOTH legs by role (AP_TRADE debit +
+VENDOR_DEPOSIT_ASSET/prepayment credit), never by hardcoded code. Still a conscious
+DEFER (DP target flow does not touch vendor deposits), but the severity is raised from
+"broken, latent" to "broken AND accounting-incorrect if naively un-broken."
