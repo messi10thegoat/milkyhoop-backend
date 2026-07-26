@@ -49,6 +49,10 @@ migrations are additive + idempotent.
 - [ ] Step-0 gate: GET /items/autocomplete -> 200.
 
 ## FASE-5 GATES (two)
+### MANDATORY PREREQUISITES before the UI pass (fixes required or the UI dies mid-flow)
+- [ ] FIX applicable-deposits 500 (customer_id UUID->VARCHAR, sales_invoices.py:3686) — WITHOUT it the ApplyDepositPanel is empty and DP apply (step 6) is unreachable in the UI. See DOCS/issues/2026-07-26-applicable-deposits-500-uuid-varchar.md.
+- [ ] FIX members AR overstatement (get_ar_balances_by_customer misses DEPOSIT_APPLICATION -> derive from compute_ar). See DOCS/issues/2026-07-26-members-ar-overstates-deposit-application.md.
+- [ ] (recommended) quote payment_* read/render (detail API + PDF) so bank-transfer info surfaces.
 1. Ledger via the FASE-4 harness (backend truth).
 2. ONE UI pass with the FE BUILT FROM A PINNED COMMIT (the live bundle main.5558c404.js is
    unknown-provenance; rebuild frontend image from a known commit before claiming "works for a

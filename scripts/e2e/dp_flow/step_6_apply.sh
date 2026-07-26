@@ -38,7 +38,11 @@ echo; echo "--- ★ TEST 3(a): GET applicable-deposits BEFORE apply (FE panel sp
 GET "/sales-invoices/$INVID/applicable-deposits" -o /tmp/appdep.json 2>/dev/null; GET "/sales-invoices/$INVID/applicable-deposits" > /tmp/appdep.json
 python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') or d;items=r if isinstance(r,list) else (r.get('deposits') or r.get('items') or []);print('applicable deposits:',len(items));[print('  ',{k:v for k,v in x.items() if k in ('deposit_number','deposit_id','id','amount','available_amount','available_balance','remaining')}) for x in items]" 2>&1 | head
 APPCOUNT=$(python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') or d;items=r if isinstance(r,list) else (r.get('deposits') or r.get('items') or []);print(len(items))" 2>/dev/null)
-[ "$APPCOUNT" = "0" ] && { echo "!!! applicable-deposits EMPTY — spine broken, apply unreachable via UI — STOP (FINDING)"; exit 1; }
+# KNOWN BUG (filed HIGH, 2026-07-26-applicable-deposits-500-uuid-varchar): this endpoint 500s
+# (customer_id UUID bound to VARCHAR). The FE apply panel is broken. Per owner decision (A) we do
+# NOT abort — the ledger/Branch-3 proof runs via apply-by-ID below. This confirms the UI path is
+# broken while the backend apply operation is still testable.
+[ "$APPCOUNT" = "0" ] && echo "  ^ applicable-deposits returned error/empty (KNOWN filed bug) — UI apply path broken; proceeding via apply-by-ID (ledger proof only)"
 
 APPCNT=$(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';")
 if [ "$APPCNT" != "0" ]; then

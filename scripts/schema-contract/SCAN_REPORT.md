@@ -131,3 +131,25 @@ code to delete, or a vertical that will 500 when attempted. Not merely "not urge
 **Implication for build_fresh.sh urgency:** the "rebuild silently drops in-use columns" argument is NOT
 evidence-backed (0 dropped). build_fresh-into-repo still matters for the untracked Step-0 stub +
 gap_patch schema (schema created outside any VNNN), but NOT because recovery drops columns — it doesn't.
+
+---
+## SCANNER EXTENSION PROPOSAL — sub-class: parameter-binding type compatibility (2026-07-26)
+
+Existing scanner classes: (1) missing-column / schema drift (column referenced but absent);
+(2) proposed value-domain drift (literal value not in the code's accepted set).
+
+**NEW sub-class — type-compatibility between a query parameter binding and the column's type.**
+Motivating live bug: `get_applicable_deposits` binds `customer_id` as a Python `UUID` to a
+**VARCHAR** column → asyncpg `TypeError: expected str, got UUID` → endpoint 500s
+(sales_invoices.py:3686). The column EXISTS, so an existence-only scanner is blind to it.
+
+Why documentation alone is insufficient: "customer_id is VARCHAR not UUID" is ALREADY a documented
+gotcha in the skill docs, and it STILL shipped a 500. A doc is a memory aid; a scanner is a gate.
+
+Proposed check: for each `conn.fetch/execute(sql, *params)`, map each `$n` to its column
+(from the SQL) and flag when a param is constructed via `UUID(...)`/`uuid`-typed but the target
+column is `text/varchar` (or vice-versa: a str bound to a `uuid` column). Start with the known
+hot columns: `customer_id`, `vendor_id`, `receive_payments.customer_id`, any `*_id` that is VARCHAR
+in the schema. Even a lint limited to those would have caught this.
+
+Bundle with the value-domain-drift proposal as "scanner v2: existence + value-domain + bind-type".

@@ -397,3 +397,31 @@ the read path (API response + PDF/print), not just the 201 on create.
   (a GET; there is no auto-apply). This matches the canonical "DP @ Sales Order, apply MANUAL"
   design. B4 verdict (revised twice before from grep alone) is now runtime-anchored on BOTH
   conversions and closed.
+
+---
+# STEP 6 (apply DP) — LEDGER PROVEN, user path NOT (2026-07-26)
+
+## B0 / Branch 3 — the question that started this workstream: PROVEN
+Apply 1.500.000 via POST /api/customer-deposits/{id}/apply (apply-by-ID; the FE discovery panel is
+broken — see below). Separate journal DEPOSIT_APPLICATION: Dr 2-10500 1.500.000 / Cr 1-10400
+1.500.000 (source_id=deposit), 2 lines, date 2026-07-09 (after invoice 07-08).
+- **raw RECEIVABLE ledger = compute_ar_outstanding = 3.500.000, drift 0.** Branch 3 works: applying
+  a deposit REDUCES AR; no phantom. (The scenario feared at kickoff — raw 3.5M but compute 5M — does
+  NOT occur for the canonical function.)
+- customer_deposit_applications: 1 row (FIRST cda in ANY DB ever), status='active', reversed_by_id
+  NULL, journal_id set. uq_cda_journal_id (V218) exercised for the first time — not violated.
+- 2-10500 → 0. amount_paid=1.500.000. No new bank_transaction (ledger-only). BANK_GAP=0, bank 18M.
+
+## But the USER PATH is broken — step 6 is NOT "fully green"
+- **Discovery 500:** GET /api/sales-invoices/{id}/applicable-deposits 500s (customer_id UUID vs
+  VARCHAR, sales_invoices.py:3686). The FE ApplyDepositPanel lists deposits from this endpoint →
+  a user cannot pick a deposit to apply. Apply is unreachable via the UI. (Filed; backend bug.)
+- **Members AR overstates:** get_ar_balances_by_customer = 5.000.000 vs compute_ar 3.500.000 —
+  overstated by the applied deposit (source_id join misses DEPOSIT_APPLICATION). FASE-1 [INFER] →
+  confirmed fact. (Filed.)
+- **Status inconsistency (minor):** sales_invoices.status stays 'posted' post-apply while
+  accounts_receivable.status='PARTIAL'.
+
+So: the LEDGER is correct and Branch 3 is proven; the customer-facing surfaces around apply are
+broken. Recorded here so step 6 is not misread as end-to-end green. Two backend fixes are FASE-5
+UI-gate prerequisites (see runbook).

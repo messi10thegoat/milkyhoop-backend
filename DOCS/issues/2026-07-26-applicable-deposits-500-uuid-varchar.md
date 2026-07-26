@@ -40,3 +40,29 @@ Step 6's core assertion (does apply reduce AR via Branch 3?) is testable via POS
 /customer-deposits/{id}/apply directly (apply-by-ID), which does not depend on this broken discovery
 endpoint. The discovery bug is filed here; whether to proceed with apply-by-ID to complete the B0 /
 Branch-3 runtime proof is an owner decision (the FE panel path is broken regardless).
+
+---
+## ESCALATION (2026-07-26) — bigger than a type bug: DP apply is unreachable end-to-end via UI
+
+Combine with the step-3 gap (tagih-DP absent by design): the canonical DP lifecycle is
+Terima DP (receive) → Apply DP (use it against a faktur). Receive works. **Apply does NOT via the
+UI**: the ApplyDepositPanel must first LIST applicable deposits to let the user pick one, and that
+list endpoint (`GET /api/sales-invoices/{id}/applicable-deposits`) 500s. **A user can TAKE a down
+payment but cannot USE it.** This is a half-wired feature, not an isolated endpoint bug.
+
+### Classification correction: BACKEND bug, not FE
+The FE panel is only the consumer. The defect is an asyncpg parameter-binding type mismatch in the
+backend query (customer_id UUID bound to a VARCHAR column, sales_invoices.py:3686). Fix belongs in
+the backend router, not the FE. Important for routing the fix.
+
+### PATTERN — third instance of "engine built, UI wiring unfinished"
+1. `apply_vendor_deposit` — write path 500s (bills.paid_amount/total_amount don't exist); feature
+   dead end-to-end (and mis-posts if naively fixed — 1-10800 wrong class).
+2. Quote `payment_*` (V219) — stored on write, never rendered (detail API + PDF both drop them);
+   the customer never sees where to pay.
+3. `applicable-deposits` — deposit stored + posted + spine-linked, but the discovery query 500s,
+   so it can never be applied via the UI.
+Three separate capabilities where the ledger/engine side works and the last-mile read/UI wiring was
+never finished. **Owner should see this as a pattern**, not three incidents: the accounting engine
+is ahead of the product surface. Recommend a "read/render/UI reachability" pass per money feature
+(write 201 is not "done").
