@@ -80,3 +80,38 @@ With `tenant_config.revenue_recognition_policy='delivery'` set, the REAL FE `/to
 (no recognize_at) produced Event 1 ONLY: Dr 1-10400 5.000.000 / Cr 2-10750 5.000.000,
 fulfillment_status=pending, revenue_status=deferred, 4-10100=0, 5-10100=0, inventory untouched.
 This confirms both the defer branch AND that the sole missing piece for real users is the control.
+
+---
+## CORRECTION to hardening (a) — withdrawn overclaim (2026-07-26, evidence from milkydb_saved)
+
+Hardening point (a) above claimed "Pengiriman module is DEAD for every fresh tenant / GET
+/fulfillments unreachable on fresh install." **That is WRONG — withdrawn.** Evidence from
+milkydb_saved (the only DBs with real tenant activity):
+
+- Only 2 tenants ever existed there: konveksi-cemerlang, konveksi-bintang-timur (no grapgrap).
+- konveksi-cemerlang invoices: 2 `fulfilled/recognized` + 1 `not_applicable`. **Zero deferred.**
+  Its items had WAC > 0 (45.000, 71.500) → they **AUTO-FULFILLED** at post (default 'invoice').
+- Auto-fulfill **DOES create invoice_fulfillments rows**: konveksi-cemerlang has **3** such rows.
+
+Therefore `GET /fulfillments` (and the schema-drift 500 that started this whole effort) is
+reachable from **any posted inventory invoice** via its auto-created fulfillment record — it is
+**more** universal, not gated on delivery mode. No delivery-mode / deferred invoice is required to
+hit it. (My "loop-closing" framing had the direction backwards.)
+
+### What IS genuinely unreachable (the ticket's real, narrower point — stands)
+The **delivery-mode workflow itself**: post an invoice that STAYS `pending`/`deferred` and is
+shipped later via a separate Pengiriman action (stock leaves at delivery, not at faktur). No
+user-reachable control sets that policy, and **no tenant in any saved DB ever ran it** (0 deferred
+invoices anywhere). So the capability is real in code, inert in product — but do not conflate that
+with "the fulfillment list/endpoint is unreachable".
+
+### Independent corroboration that the control is missing
+`goldenpath.sh` itself must pass `recognize_at:"delivery"` **per invoice** (line 83) to exercise
+deferral — precisely because there is no tenant-level way to set it. The project's own golden
+harness working around the gap is independent evidence the control was never built.
+
+### Step-7 relevance (unchanged)
+This DP harness forces delivery mode, so INV-2607-0001 is `pending`/`deferred` with a shippable
+line. Step 7 (manual /fulfill + the voided_reason / GET-fulfillments gate) therefore exercises the
+DEFERRED-then-manually-ship path specifically — the path a real user cannot currently reach without
+the missing control. That gate value is preserved; the "module is dead" justification for it is not.
