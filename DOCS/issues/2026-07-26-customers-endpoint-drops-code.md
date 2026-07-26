@@ -36,3 +36,13 @@ split (`nama` vs `name`, `code` present-but-unwritten) is the underlying drift.
 ## Harness workaround (in place)
 `step_-1_provision.sh` keys customer idempotency on the persisted `email`, not `code`, with a
 comment pointing here. The product bug remains live.
+
+---
+## CORRECTION (2026-07-26): code is not DROPPED — it is mapped to `nomor_member`
+Re-inspected the persisted row: request `"code":"CUS-KB-01"` landed in **`customers.nomor_member`**
+('CUS-KB-01'), while `customers.code` and `customers.name` are NULL (label stored in `nama`). So the
+endpoint does not silently discard `code` — it maps it to the wrong column (`nomor_member`) relative
+to vendors/items (which use `code`). Net effect for a caller keying on `code` is the same (code stays
+NULL → lookup misses), so the email-keyed idempotency workaround stands, but the accurate defect is a
+**field-mapping inconsistency** (code→nomor_member), not a dropped field. Fix should map request
+`code`→`customers.code` for parity with vendors/items.

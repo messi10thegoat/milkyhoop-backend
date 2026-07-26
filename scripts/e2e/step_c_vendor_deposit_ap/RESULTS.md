@@ -425,3 +425,21 @@ broken — see below). Separate journal DEPOSIT_APPLICATION: Dr 2-10500 1.500.00
 So: the LEDGER is correct and Branch 3 is proven; the customer-facing surfaces around apply are
 broken. Recorded here so step 6 is not misread as end-to-end green. Two backend fixes are FASE-5
 UI-gate prerequisites (see runbook).
+
+---
+# STEP 7 (Pengiriman/fulfill) — GREEN, incl. f5cd41a5 HTTP proof (2026-07-26)
+Fulfilled 60 then 40 (two calls) to make the GET /fulfillments gate 3-sided AND exercise partial.
+- ★ f5cd41a5 FIRST HTTP PROOF: GET /api/sales-invoices/{id}/fulfillments -> HTTP 200 (not 500),
+  shippable(remaining_qty)=100 before any fulfill. The voided_reason schema-drift fix works over
+  HTTP — the discriminator FASE 0.3(a) asked for. 3-sided: 100 -> 40 -> 0, each distinguishable
+  from the 500/empty error (fulfillment_status pending->partial->fulfilled).
+- Journals (two separate per fulfill): fulfill 60 -> COGS Dr 5-10100 2.100.000 / Cr 1-10600
+  2.100.000 + Revenue Dr 2-10750 3.000.000 / Cr 4-10100 3.000.000. fulfill 40 -> COGS 1.400.000 +
+  Revenue 2.000.000. Last fulfillment absorbed remainder: allocated=recognized=5.000.000,
+  fulfilled_qty=100 (recognized <= allocated satisfied).
+- Partial path exercised: fulfillment_status/revenue_status='partial' after 60.
+- END: revenue 5.000.000, COGS 3.500.000, gross profit 1.500.000, inventory 0, stock 0,
+  2-10750=0, 2-10500=0, AR stays 3.500.000, no new bank_transactions, BANK_GAP=0, bank 18M,
+  drift AR/AP=0. fulfillment dates 07-12 / 07-14 (after apply 07-09, advancing).
+- This validates the delivery-mode branch end-to-end: deferred at faktur -> COGS+revenue at
+  Pengiriman, exactly the konveksi model the whole delivery-mode ticket is about.
