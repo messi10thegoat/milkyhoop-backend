@@ -354,3 +354,32 @@ deposit**. Step 4 must enter the DP amount MANUALLY into `POST /api/customer-dep
 MANUAL" design) — it just means the harness supplies the 1.500.000 explicitly rather than reading
 it from an SO field. This is the FINAL answer to B4 (revised twice before from grep alone; now
 runtime-anchored for conversion 1).
+
+---
+# V219 payment_* — NEEDED BUT NOT SUFFICIENT (read/render path never built)
+
+Runtime trace of the three V219 payment columns (payment_bank_name / payment_account_number /
+payment_account_holder) across write + every read/render path:
+
+| path | payment_* present? | evidence |
+|---|---|---|
+| POST /api/quotes (write) | YES — persisted | DB row: Bank BCA / 1111222233 / Kaos Biru Konveksi |
+| GET /api/quotes/{id} (detail API) | **NO** — returns None | QuoteResponse never maps them (quotes.py ~420-452) |
+| GET /api/quotes/{id}/pdf (customer-facing) | **NO** — never rendered | quote_data dict carries them (quotes.py ~1740) but pdf_service.generate_quote_pdf never references payment_* (grep empty) |
+| PATCH /api/quotes/{id} (edit) | preserved (not destroyed) | dynamic UPDATE skips None fields (quotes.py:56 `if value is not None`); FE sends `undefined` for empty-loaded values → not overwritten |
+
+## Conclusion
+V219 was **necessary** (the columns must exist for the write to persist) but **not sufficient**:
+the write path was patched while the **read/render path was never implemented**. The bank-transfer
+info a customer needs (where to pay the DP) is stored and reaches **no one** — not the detail
+screen, not the PDF. This must NOT be recorded as "V219 done". Remaining work: map payment_* into
+QuoteResponse AND render them in pdf_service (and verify the FE detail/print surfaces them).
+
+Edit is NOT destructive (skip-None guard + FE undefined-coalescing), so no data is lost — the data
+simply sits invisible.
+
+## Lesson (corrects our ADD-decision reasoning)
+"FE sends the field → DB stores it" was our justification for ADDing these columns (V219). That
+proves the WRITE path, not a working feature. **FE-sends is not evidence of a complete feature.**
+A column is only "done" when write AND read/render both exist and a human can see the value. Verify
+the read path (API response + PDF/print), not just the 201 on create.
