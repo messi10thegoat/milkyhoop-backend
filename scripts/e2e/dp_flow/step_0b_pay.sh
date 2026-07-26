@@ -11,6 +11,7 @@
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/state.env"
+source "$DIR/dates.env"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
@@ -22,7 +23,7 @@ PAYID=$(PSQL "SELECT bpv.id FROM bill_payments_v2 bpv JOIN bill_payment_allocati
 if [ -n "$PAYID" ]; then
   echo "payment exists (idempotent reuse): $PAYID"
 else
-  RESP=$(J POST /bill-payments "{\"vendor_id\":\"$VND\",\"payment_date\":\"2026-07-06\",\"payment_method\":\"bank_transfer\",\"bank_account_id\":\"$BANK\",\"total_amount\":3500000,\"reference_number\":\"PAY-KB-01\",\"allocations\":[{\"bill_id\":\"$BILL\",\"amount_applied\":3500000}]}")
+  RESP=$(J POST /bill-payments "{\"vendor_id\":\"$VND\",\"payment_date\":\"$D_PAYSUP\",\"payment_method\":\"bank_transfer\",\"bank_account_id\":\"$BANK\",\"total_amount\":3500000,\"reference_number\":\"PAY-KB-01\",\"allocations\":[{\"bill_id\":\"$BILL\",\"amount_applied\":3500000}]}")
   echo "resp: $(echo "$RESP" | head -c 160)"
   PAYID=$(echo "$RESP" | gid)
   [ -z "$PAYID" ] && { echo "!!! payment create failed — ABORT"; exit 1; }

@@ -23,6 +23,7 @@ B=${B:-http://localhost:8001/api}
 DB=${DB:-milkydb}
 CONTAINER=${CONTAINER:-milkyhoop-dev-postgres-1}
 DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$DIR/dates.env"   # explicit forward-ordered date plan (opening balance first)
 STATE=${STATE:-$DIR/state.env}
 EMAIL=${EMAIL:-owner@kaosbiru.co.id}
 PASS=${PASS:-KaosBiru2026!}
@@ -89,7 +90,9 @@ hdr "MASTER DATA"
 
 # Bank (opening 20.000.000 — covers supplier pay 3.5M + DP flow)
 BANK=$(PSQL "SELECT id FROM bank_accounts WHERE tenant_id='$TEN' AND account_number='1111222233';")
-[ -z "$BANK" ] && BANK=$(J POST /bank-accounts '{"account_name":"BCA Operasional","account_number":"1111222233","bank_name":"Bank BCA","account_type":"bank","opening_balance":20000000,"is_default":true}' | gid)
+# opening_date = D_OPENING (earliest in the plan) so the opening bank_transaction is
+# chronologically first and running_balance stays date-consistent (see backdating issue).
+[ -z "$BANK" ] && BANK=$(J POST /bank-accounts "{\"account_name\":\"BCA Operasional\",\"account_number\":\"1111222233\",\"bank_name\":\"Bank BCA\",\"account_type\":\"bank\",\"opening_balance\":20000000,\"opening_date\":\"$D_OPENING\",\"is_default\":true}" | gid)
 echo "BANK=$BANK"
 BANK_COA=$(PSQL "SELECT coa_id FROM bank_accounts WHERE id='$BANK';")
 echo "BANK_COA=$BANK_COA"

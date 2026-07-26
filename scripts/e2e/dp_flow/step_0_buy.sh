@@ -9,6 +9,7 @@
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/state.env"
+source "$DIR/dates.env"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
@@ -20,7 +21,7 @@ BILL=$(PSQL "SELECT id FROM bills WHERE tenant_id='$TEN' AND ref_no='BUY-KB-01';
 if [ -n "$BILL" ]; then
   echo "BILL exists (idempotent reuse): $BILL"
 else
-  BILL=$(J POST /bills/v2 "{\"vendor_id\":\"$VND\",\"issue_date\":\"2026-07-05\",\"due_date\":\"2026-08-04\",\"ref_no\":\"BUY-KB-01\",\"tax_rate\":0,\"tax_inclusive\":false,\"status\":\"draft\",\"notes\":\"Beli Kaos Biru 100 pcs\",\"items\":[{\"product_id\":\"$ITEM\",\"product_name\":\"Kaos Biru 30s\",\"qty\":100,\"unit\":\"pcs\",\"price\":35000}]}" | gid)
+  BILL=$(J POST /bills/v2 "{\"vendor_id\":\"$VND\",\"issue_date\":\"$D_BUY\",\"due_date\":\"$D_BUY_DUE\",\"ref_no\":\"BUY-KB-01\",\"tax_rate\":0,\"tax_inclusive\":false,\"status\":\"draft\",\"notes\":\"Beli Kaos Biru 100 pcs\",\"items\":[{\"product_id\":\"$ITEM\",\"product_name\":\"Kaos Biru 30s\",\"qty\":100,\"unit\":\"pcs\",\"price\":35000}]}" | gid)
   echo "BILL created: $BILL"
   [ -z "$BILL" ] && { echo "!!! bill create failed — ABORT"; exit 1; }
 fi
