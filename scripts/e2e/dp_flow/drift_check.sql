@@ -35,3 +35,28 @@ UNION ALL
 SELECT 'AP', (SELECT bal FROM ap_ledger), (SELECT tot FROM ap_compute),
        (SELECT bal FROM ap_ledger)-(SELECT tot FROM ap_compute),
        CASE WHEN (SELECT bal FROM ap_ledger)-(SELECT tot FROM ap_compute)=0 THEN 'PASS' ELSE 'FAIL' END;
+
+-- BANK GAP (BankSync Rule 9): for EVERY bank account, the journal net on its coa_id must
+-- equal the latest bank_transactions.running_balance. Opening balance is INCLUDED (it creates
+-- a bank_transaction of type 'opening'), so no exclusion is needed — the gap must be 0 from
+-- the very first step. A bank whose journal moved but has no matching bank_transaction (or a
+-- stale running_balance) surfaces here immediately, not at close.
+-- NOTE: compare ledger vs SIGNED SUM(bank_transactions.amount), NOT the latest
+-- running_balance. running_balance is seeded in insertion order, but entries are BACKDATED
+-- (opening dated today, payments dated earlier), so "latest by transaction_date" is wrong.
+-- bank_transactions.amount is already signed (payment_made = -3.500.000), so the sum is
+-- order-independent and equals the journal net on the bank's coa when the gap is 0.
+WITH per_bank AS (
+  SELECT ba.id, ba.coa_id,
+    COALESCE((SELECT SUM(jl.debit-jl.credit) FROM journal_lines jl
+              JOIN journal_entries je ON je.id=jl.journal_id
+              WHERE je.tenant_id=:ten AND je.status='POSTED' AND je.reversed_by_id IS NULL
+                AND jl.account_id=ba.coa_id),0) AS ledger,
+    COALESCE((SELECT SUM(bt.amount) FROM bank_transactions bt
+              WHERE bt.bank_account_id=ba.id AND bt.status='POSTED'),0) AS bank_txn_sum
+  FROM bank_accounts ba WHERE ba.tenant_id=:ten
+)
+SELECT 'BANK_GAP' AS side, SUM(ledger) AS ledger, SUM(bank_txn_sum) AS compute,
+       SUM(ledger-bank_txn_sum) AS drift,
+       CASE WHEN SUM(ledger-bank_txn_sum)=0 THEN 'PASS' ELSE 'FAIL' END AS result
+FROM per_bank;

@@ -16,6 +16,11 @@
 --    Querying the role account would read a never-touched account -> ghost zero. So the
 --    bank check reads :bankcoa and is a DELTA (end - opening), because opening balance
 --    (Dr 1-10201 / Cr 3-50000 EQUITY) makes the absolute balance 21.500.000, not 1.5jt.
+--    WRITTEN EXCEPTION (not an anomaly): the opening balance ALSO creates a matching
+--    bank_transactions row (type 'opening', running_balance seeded to 20.000.000), so the
+--    BankSync Rule 9 gap (ledger vs bank_transactions) = 0 from step 0. Opening balance is
+--    INCLUDED in the gap and only SUBTRACTED for the business DELTA check — never excluded
+--    from the gap. The per-step gap is enforced in drift_check.sql (BANK_GAP row).
 --  * Gross profit == net cash ONLY in delta terms, not absolute.
 --  * Non-PKP tenant -> zero VAT lines expected (VAT roles resolve to None).
 --
