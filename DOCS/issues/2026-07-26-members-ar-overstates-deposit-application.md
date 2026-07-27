@@ -1,8 +1,24 @@
 # BUG: get_ar_balances_by_customer overstates AR by any applied deposit (misses DEPOSIT_APPLICATION)
 
-**Date:** 2026-07-26
-**Severity:** MEDIUM-HIGH (customer-facing AR balance is wrong whenever a deposit has been applied)
-**Status:** was [INFER] from FASE 1 → now RUNTIME-CONFIRMED FACT (step 6).
+**Date:** 2026-07-26 (severity revised 2026-07-27, step 8)
+**Severity:** ~~MEDIUM-HIGH~~ → **LOW** — see revision below.
+**Status:** was [INFER] from FASE 1 → RUNTIME-CONFIRMED FACT (step 6) → SCOPE NARROWED (step 8).
+
+## SEVERITY REVISION (2026-07-27) — the main Pelanggan screen is CORRECT
+Item-3 on-path check: `GET /api/customers` (list) and `GET /api/customers/{id}` (detail) — the
+endpoints behind Kontak → Pelanggan — both return **`outstanding_balance: 3.500.000`**, the CORRECT
+deposit-aware value (matches compute_ar). The 5.000.000 overstatement is confined to
+`get_ar_balances_by_customer`, which backs the **/members module (loyalty/membership), NOT the
+Pelanggan screen**. Our customer isn't even enrolled there (`/members` list = 0 while `/customers`
+list = 1 — a customer is not automatically a "member"). So the wrong figure never reaches the
+primary customer-facing AR surface. Downgraded to LOW: an isolated secondary module disagreeing
+with the ledger, low blast radius. Fix still valid (derive from compute_ar_outstanding) but no
+longer a UI-gate blocker.
+
+Bonus (refines `2026-07-26-customers-endpoint-drops-code.md`): `GET /api/customers` DOES return
+`code: "CUS-KB-01"` on both list and detail — the code persists and is readable on the on-path
+endpoint. The earlier "drops code" symptom was on the create echo only, not on read. Minor.
+
 
 ## What
 Two AR computations diverge after a customer-deposit application:
@@ -44,24 +60,3 @@ After DP apply: `sales_invoices.status` stays `'posted'` (the apply path sets `'
 settlement, else keeps prior status), while `accounts_receivable.status` correctly shows `PARTIAL`.
 Status-model inconsistency between the two tables (not a ledger error — amount_paid is correct on
 both). Note for whoever fixes the display.
-
----
-## SEVERITY NUANCE + cross-reader class (2026-07-26)
-- **Real in SQL, HTTP reachability uncertain.** The divergence is proven by running the exact
-  `get_ar_balances_by_customer` query (→5.000.000 vs compute_ar 3.500.000). But GET /api/members/list
-  returned `{"members":[],"total":0}` for the tenant despite 1 customer existing (the test customer
-  has tipe='BADAN'; list_members is `FROM customers WHERE tenant_id` with no default tipe filter, yet
-  returned empty — a separate data/filter quirk). So I could NOT reproduce the 5M through the HTTP
-  endpoint for this customer. Severity: real bug, but possibly **dormant/limited reachability** —
-  parallel to apply_vendor_deposit (correct-in-isolation, unreachable-in-practice). Downgrade from
-  "customer-facing wrong number, definitely live" to "confirmed at query level; endpoint exposure
-  unverified (members/list returned empty for the test customer)".
-- **Cross-reader divergence class — now confirmed on BOTH sides of the balance sheet.**
-  AP: 4 readers of remaining (3 copies of get_bill_remaining diverged; compute_ap canonical).
-  AR: 3 readers — compute_ar_outstanding (correct, Branch 3) and get_invoice_remaining_from_journal
-  (correct, delegates to compute_ar via FIX_P35_ARCANON) vs get_ar_balances_by_customer (WRONG,
-  source_id join misses DEPOSIT_APPLICATION). So 1-of-3 AR readers diverges.
-- **Proposed (POST-FIX, not a mid-run gate):** a cross-reader invariant
-  `compute_ar_outstanding(tenant) total == SUM(get_ar_balances_by_customer(tenant))` in the test
-  suite. Do NOT add as a harness gate now — it would fail mid-run on this known bug; add it after the
-  fix so it guards against regression.

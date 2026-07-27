@@ -443,3 +443,54 @@ Fulfilled 60 then 40 (two calls) to make the GET /fulfillments gate 3-sided AND 
   drift AR/AP=0. fulfillment dates 07-12 / 07-14 (after apply 07-09, advancing).
 - This validates the delivery-mode branch end-to-end: deferred at faktur -> COGS+revenue at
   Pengiriman, exactly the konveksi model the whole delivery-mode ticket is about.
+
+---
+# STEP 8 (pelunasan / final settlement) — GREEN (2026-07-27)
+
+## FE path (confirmed by reading FE, not assumed)
+Penerimaan Pembayaran -> `useReceivePaymentForm.submit` -> `useCreateReceivePayment` ->
+**POST /api/receive-payments** with `save_as_draft:false`, `allocations:[{invoice_id, amount_applied}]`.
+Single call — backend auto-posts (receive_payments.py:1201 `_post_payment`); NO separate `/post`
+or `/confirm` in the submit flow. `bank_account_id` = bank_accounts.id (resolved to coa_id
+internally at :985). This is the path exercised.
+
+## COVERAGE GAP (logged, per owner instruction #4)
+The OTHER AR-settlement path — shortcut **POST /sales-invoices/{id}/payments** — is NOT used by the
+Penerimaan Pembayaran screen. Since this is the final settlement in the run, that path is **never
+exercised by this harness**. Recorded as a coverage gap; would need its own scenario to cover.
+
+## Overpayment guard (test a) — PASS
+Requested 3.500.001 -> **HTTP 400 `Allocation (3500001) exceeds invoice remaining (3500000)`**.
+Cap = 3.500.000 = the DEPOSIT-AWARE remaining (compute_ar_outstanding via
+get_invoice_remaining_from_journal), NOT the 5.000.000 gross invoice. Guard fires at
+receive_payments.py:1090-1096 BEFORE any INSERT, inside the txn -> full rollback: JE stayed 10,
+BT stayed 3, receive_payments stayed 0. Zero pollution.
+
+## Real settle (test b) — PASS
+POST 3.500.000 -> HTTP 201, payment RCV-2026-0001, status=posted.
+Journal (source_type RECEIVE_PAYMENT, POSTED, date 2026-07-20 = AFTER last fulfill 07-14):
+- Dr 1-10201 BCA Operasional (ASSET) 3.500.000
+- Cr 1-10400 Piutang (RECEIVABLE) 3.500.000
+
+## AR fully settled — the closing target
+raw RECEIVABLE ledger = compute_ar_outstanding = **0**, drift 0. AR is now zero: 1.500.000 (DP
+apply, Branch 3) + 3.500.000 (this settlement) = 5.000.000 = full invoice.
+
+## 5-artifact contract (ARAP Rule 1) — all present
+1. journal_entries: 1 RECEIVE_PAYMENT, status POSTED.
+2. receive_payments: 1 row, status='posted', total 3.500.000, date 07-20.
+3. receive_payment_allocations: 1 row — applied 3.500.000, **remaining_before 3.500.000**
+   (P35_ARCANON deposit-aware proof), remaining_after 0.
+4. bank_transactions: 4 total (was 3); newest +3.500.000 POSTED 07-20.
+5. sales_invoices cache: amount_paid=5.000.000, status=**paid** (recomputed from
+   compute_ar_outstanding at :1738, not a bespoke counter).
+
+## Bank + counts
+1-10201 ledger balance = **21.500.000** (20M opening − 3.5M bill pay + 1.5M DP + 3.5M settle;
+**delta from opening +1.500.000** = the gross profit, in delta terms). BANK_GAP=0. journal_entries
+10->11, bank_transactions 3->4. DRIFT AR=0 / AP=0. BANK_GAP compute==ledger==21.500.000.
+
+## Minor observation (not a ledger defect, not filed as its own ticket)
+The create RESPONSE returned `accounting_status: null` while receive_payments.status='posted' and
+the journal is POSTED in the DB. Response-serialization quirk on the create envelope only — the DB
+is correct (status POSTED). LOW; noted for whoever touches the response mapper.
