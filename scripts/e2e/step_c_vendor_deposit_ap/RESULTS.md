@@ -662,3 +662,51 @@ a non-owner user, so this run proves NOTHING about permission gating.
 ### One-line verdict
 **The ledger engine is proven correct; the product surface that would let a user move it is not.**
 Batch fix awaits owner decision on ordering.
+
+---
+# BATCH FIX #1 — DP path reachable via UI (2026-07-27)
+
+## Owner correction adopted: "tagih DP" was a MIS-CLASSIFICATION
+PENAWARAN (quote) IS the DP billing instrument in Indonesian UMKM practice — it already carries
+dp_amount/dp_percent + payment_bank_name/account_number/account_holder, and the customer transfers
+against it. So the long-standing "tagih DP absent" note was WRONG: the feature EXISTS; only the
+RENDER was incomplete. No new document needed. Harness step 3 message reframed accordingly; the
+applicable-deposits + quote-detail tickets reframed/closed (below).
+
+## ITEM A — applicable-deposits 500 → FIXED
+- A1: `sales_invoices.py` get_applicable_deposits bound `invoice["customer_id"]` (a UUID from
+  sales_invoices) to the VARCHAR `customer_deposits.customer_id` → asyncpg "expected str, got UUID"
+  → 500. Fix: bind `str(invoice["customer_id"])` (no column change). Endpoint now 200.
+- A2: audited the whole class (see DOCS/issues/2026-07-27-uuid-varchar-bind-class-audit.md).
+  asyncpg only breaks UUID→VARCHAR, and the ONLY VARCHAR *_id column is customer_deposits.
+  customer_id (lone drift; every sibling is uuid). One live site (A1) — fixed. All others already
+  defensive/safe. One DEAD helper (compute_customer_deposit_balance, no callers) flagged, not fixed.
+
+## ITEM B — quote payment_* / dp_* rendering
+- B1 (FIXED): `get_quote_detail` never mapped payment_bank_name/_account_number/_account_holder into
+  QuoteDetail (the model already declared them) → GET /api/quotes/{id} returned None. Now mapped.
+- B2/B3 (ALREADY DONE — earlier finding was stale): `quote.html` ALREADY renders the Rekening
+  Pembayaran block AND the Uang Muka / Sisa Pembayaran block (FIX_P2_QUOTEDP 2026-06-16), and the
+  PDF handler's quote_data already carries payment_* + dp_*. Verified empirically: GET /pdf → 200,
+  real %PDF, and the DB row it renders carries bank + account + dp. Template UNTOUCHED (per pdf skill).
+
+## ITEM C — harness gates (so neither bug can regress silently)
+- C1: step 6 applicable-deposits is now a REAL assertion (HTTP 200 + our deposit present + available
+  1.500.000 + suggested_amount 1.500.000), not a KNOWN-500 pass-through.
+- C2: step 1 read-back — GET /api/quotes/{id} returns all 5 V219 columns NON-NULL
+  (opening_text, closing_text, payment_bank_name/_account_number/_account_holder).
+- C3: step 1 PDF — GET /api/quotes/{id}/pdf → 200 + %PDF magic; PDF binary text is FlateDecode-
+  compressed so (per owner) the render CONTENT is asserted from the supplying DB row (bank + account
+  + dp) rather than the binary — stated plainly, not pretended.
+
+## VERIFICATION (D) — tested on an ISOLATED gateway, live master untouched
+The dev gateway bind-mounts /root/milkyhoop-dev (master, read-only, no reload), so to test the
+worktree fix WITHOUT deploying to live I ran a second api_gateway container (`mh-test-gw`, port
+8002) bind-mounting the worktree, same network + milkydb (disposable, no real users). Then:
+- D1/D2: restore preharness → run_all single-shot vs 8002 → GREEN (28s, all children exit 0). New
+  gates C1/C2/C3 PASS. Closing invariant ALL PASS with numbers IDENTICAL to the prior run (COGS
+  3.5M, revenue -5M, BANK_DELTA +1.5M, gross profit 1.5M, trial balance 47M=47M, AR/AP 0, VAT 0,
+  hash chain 0). Nothing shifted → the fix touched only what it should.
+- D3: broke C1's expected (1500000→1500001) → run STOPPED at step 6 (rc=1, clear message) → reverted
+  → final clean run GREEN. New gate proven to catch.
+`mh-test-gw` is a throwaway test rig, torn down after verification.

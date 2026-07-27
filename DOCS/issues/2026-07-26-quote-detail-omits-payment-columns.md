@@ -1,3 +1,5 @@
+> **RESOLVED 2026-07-27 (BATCH1 B1).** Fixed: `get_quote_detail` now maps payment_bank_name/_account_number/_account_holder into QuoteDetail (model already declared them). REFRAME: the 'PDF never renders payment_*/dp_*' part was STALE — `quote.html` already renders both the Rekening Pembayaran and Uang Muka blocks (FIX_P2_QUOTEDP), verified via GET /pdf (200 + real PDF + supplying data). Regression-gated by harness step 1 (C2/C3).
+
 # BUG: GET /api/quotes/{id} omits 3 of the 5 V219 quote columns (write-only read gap)
 
 **Date:** 2026-07-26

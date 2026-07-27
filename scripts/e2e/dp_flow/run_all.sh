@@ -82,8 +82,10 @@ step  "0b" step_0b_pay.sh
 step  "1"  step_1_quote.sh
 step  "2"  step_2_convert.sh
 echo; echo "############################## STEP 3 ##############################"
-echo "STEP 3 — SKIPPED: no tagih-DP (DP invoice) endpoint exists — documented gap."
-echo "  (DP is received at the SALES ORDER; there is no 'tagih uang muka' faktur step by design.)"
+echo "STEP 3 — TAGIH DP via PENAWARAN (quote) — NOT a separate document (owner correction 2026-07-27)."
+echo "  In UMKM practice the quote IS the DP billing instrument: it carries dp_amount/dp_percent +"
+echo "  payment bank/account/holder (created in step 1; surfaced via GET + PDF, gated by C2/C3)."
+echo "  There is no separate 'faktur DP' endpoint BY DESIGN — this is not a gap."
 step  "4"  step_4_dp.sh
 step  "5"  step_5_invoice.sh
 step  "6"  step_6_apply.sh

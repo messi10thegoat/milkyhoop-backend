@@ -3707,7 +3707,7 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
                   AND cd.status NOT IN ('draft', 'void', 'voided')
                 """,
                 ctx["tenant_id"],
-                invoice["customer_id"],
+                str(invoice["customer_id"]),  # BATCH1 A1: cd.customer_id is VARCHAR (lone drift) -> bind str, not UUID
                 deposit_account_id,
             )
 

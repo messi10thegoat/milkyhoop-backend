@@ -48,6 +48,29 @@ fi
 grep -q '^export QID=' "$DIR/state.env" && sed -i "s|^export QID=.*|export QID=\"$QID\"|" "$DIR/state.env" || echo "export QID=\"$QID\"" >> "$DIR/state.env"
 echo "QID=$QID"
 
+echo; echo "--- ★ C2 GATE: read-back GET /api/quotes/{id} — 5 V219 columns NON-NULL (BATCH1 B1 fix) ---"
+curl -s "$B/quotes/$QID" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" > /tmp/qdetail.json
+echo "  detail keys: $(python3 -c "import json;d=json.load(open('/tmp/qdetail.json'));print({k:v for k,v in (d.get('data') or {}).items() if k in ('opening_text','closing_text','payment_bank_name','payment_account_number','payment_account_holder')})" 2>&1 | head -c 300)"
+for col in opening_text closing_text payment_bank_name payment_account_number payment_account_holder; do
+  v=$(python3 -c "import json;d=json.load(open('/tmp/qdetail.json'));print((d.get('data') or {}).get('$col') or '')" 2>/dev/null)
+  ane "quote detail V219 col: $col non-null" "$v" ""
+done
+
+echo; echo "--- ★ C3 GATE: GET /api/quotes/{id}/pdf — 200 + real PDF + supplies bank/account/dp ---"
+PDFCODE=$(curl -s -o /tmp/quote.pdf -w "%{http_code}" "$B/quotes/$QID/pdf" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN")
+HDR=$(head -c 4 /tmp/quote.pdf 2>/dev/null)
+aeq "quote PDF HTTP 200" "$PDFCODE" "200"
+aeq "quote PDF is a real PDF (%PDF magic)" "$HDR" "%PDF"
+# PDF text is FlateDecode-compressed -> per owner note, assert the DATA that feeds the template
+# (which the template DOES render: quote.html has the Rekening Pembayaran + Uang Muka blocks),
+# not the binary. C2 already proves payment_* reach the API; here assert the DB row the PDF renders.
+PBANK=$(PSQL "SELECT COALESCE(payment_bank_name,'') FROM quotes WHERE id='$QID';")
+PACCT=$(PSQL "SELECT COALESCE(payment_account_number,'') FROM quotes WHERE id='$QID';")
+PDP=$(PSQL "SELECT COALESCE(dp_amount,0)::bigint FROM quotes WHERE id='$QID';")
+ane "PDF render source: payment_bank_name present" "$PBANK" ""
+ane "PDF render source: payment_account_number present" "$PACCT" ""
+aeq "PDF render source: dp_amount present (1.5M)" "$PDP" "1500000"
+
 echo; echo "--- quote row: number/format + V219 columns + DP (all must be persisted) ---"
 PSQLm "SELECT quote_number, status, quote_date, dp_amount, dp_percent,
               opening_text, closing_text, payment_bank_name, payment_account_number, payment_account_holder,

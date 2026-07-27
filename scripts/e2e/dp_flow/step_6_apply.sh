@@ -34,15 +34,19 @@ JE_BEFORE=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
 BT_BEFORE=$(PSQL "SELECT count(*) FROM bank_transactions WHERE tenant_id='$TEN';")
 echo "journal_entries before: $JE_BEFORE | bank_transactions before: $BT_BEFORE"
 
-echo; echo "--- ★ TEST 3(a): GET applicable-deposits BEFORE apply (FE panel spine path) ---"
-GET "/sales-invoices/$INVID/applicable-deposits" -o /tmp/appdep.json 2>/dev/null; GET "/sales-invoices/$INVID/applicable-deposits" > /tmp/appdep.json
-python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') or d;items=r if isinstance(r,list) else (r.get('deposits') or r.get('items') or []);print('applicable deposits:',len(items));[print('  ',{k:v for k,v in x.items() if k in ('deposit_number','deposit_id','id','amount','available_amount','available_balance','remaining')}) for x in items]" 2>&1 | head
-APPCOUNT=$(python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') or d;items=r if isinstance(r,list) else (r.get('deposits') or r.get('items') or []);print(len(items))" 2>/dev/null)
-# KNOWN BUG (filed HIGH, 2026-07-26-applicable-deposits-500-uuid-varchar): this endpoint 500s
-# (customer_id UUID bound to VARCHAR). The FE apply panel is broken. Per owner decision (A) we do
-# NOT abort — the ledger/Branch-3 proof runs via apply-by-ID below. This confirms the UI path is
-# broken while the backend apply operation is still testable.
-[ "$APPCOUNT" = "0" ] && echo "  ^ applicable-deposits returned error/empty (KNOWN filed bug) — UI apply path broken; proceeding via apply-by-ID (ledger proof only)"
+echo; echo "--- ★ C1 GATE: GET applicable-deposits BEFORE apply — REAL assertion (BATCH1 A1 fix) ---"
+# Was a KNOWN-500 (customer_id UUID bound to VARCHAR cd.customer_id). A1 binds str -> must be 200
+# now, our deposit must appear with available 1.500.000 and suggested = min(available, remaining).
+AD=$(curl -s -w "\n%{http_code}" "$B/sales-invoices/$INVID/applicable-deposits" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN")
+ADCODE=$(echo "$AD" | tail -1); ADBODY=$(echo "$AD" | sed '$d')
+echo "  HTTP=$ADCODE  body=$(echo "$ADBODY" | head -c 300)"
+aeq "applicable-deposits HTTP 200 (no more UUID/VARCHAR 500)" "$ADCODE" "200"
+echo "$ADBODY" > /tmp/appdep.json
+ADAVAIL=$(python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') if isinstance(d,dict) and 'data' in d else d;items=r.get('items',[]) if isinstance(r,dict) else (r or []);m=[x for x in items if x.get('deposit_id')=='$DEPID'];print(m[0].get('available') if m else 'MISSING')" 2>/dev/null)
+ADSUG=$(python3 -c "import json;d=json.load(open('/tmp/appdep.json'));r=d.get('data') if isinstance(d,dict) and 'data' in d else d;items=r.get('items',[]) if isinstance(r,dict) else (r or []);m=[x for x in items if x.get('deposit_id')=='$DEPID'];print(m[0].get('suggested_amount') if m else 'MISSING')" 2>/dev/null)
+aeq "our deposit available in applicable-deposits" "$ADAVAIL" "1500000"
+aeq "suggested_amount = min(available, invoice_remaining)" "$ADSUG" "1500000"
+APPCOUNT=1
 
 APPCNT=$(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';")
 if [ "$APPCNT" != "0" ]; then

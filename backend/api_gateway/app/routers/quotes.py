@@ -449,6 +449,10 @@ async def get_quote_detail(request: Request, quote_id: str):
                     footer=quote["footer"],
                     opening_text=quote["opening_text"],
                     closing_text=quote["closing_text"],
+                    # BATCH1 B1: quote IS the DP tagih instrument -> surface the transfer rekening
+                    payment_bank_name=quote["payment_bank_name"],
+                    payment_account_number=quote["payment_account_number"],
+                    payment_account_holder=quote["payment_account_holder"],
                     items=[
                         QuoteItemResponse(
                             id=str(item["id"]),

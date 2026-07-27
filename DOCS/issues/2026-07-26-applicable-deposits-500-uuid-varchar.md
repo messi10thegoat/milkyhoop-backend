@@ -1,3 +1,5 @@
+> **RESOLVED 2026-07-27 (BATCH1 A1).** Fixed: `sales_invoices.py` binds `str(invoice['customer_id'])` (customer_deposits.customer_id is the lone VARCHAR *_id; every sibling is uuid). Endpoint now returns 200. Full class audit: `2026-07-27-uuid-varchar-bind-class-audit.md`. Regression-gated by harness step 6 (C1).
+
 # BUG: GET /api/sales-invoices/{id}/applicable-deposits 500s (UUID bound to VARCHAR customer_id)
 
 **Date:** 2026-07-26
