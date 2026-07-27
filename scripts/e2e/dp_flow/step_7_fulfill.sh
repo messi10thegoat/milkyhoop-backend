@@ -14,7 +14,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 PSQL(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
@@ -71,9 +71,20 @@ for pair in "4-10100:revenue(5000000)" "5-10100:COGS(3500000)" "1-10600:inventor
 done
 REV=$(PSQL "SELECT COALESCE(-SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='4-10100';")
 COGS=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='5-10100';")
-echo "  gross profit = $((REV-COGS)) (expect 1500000) | stock=$(PSQL "SELECT COALESCE(SUM(quantity_in-quantity_out),0) FROM inventory_ledger WHERE tenant_id='$TEN' AND product_id='$ITEM';") (expect 0)"
+STOCK7=$(PSQL "SELECT COALESCE(SUM(quantity_in-quantity_out),0)::bigint FROM inventory_ledger WHERE tenant_id='$TEN' AND product_id='$ITEM';")
+INV7=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='1-10600';")
+DEF7=$(PSQL "SELECT COALESCE(SUM(jl.credit-jl.debit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='2-10750';")
+echo "  gross profit = $((REV-COGS)) | stock=$STOCK7"
 BT_AFTER=$(PSQL "SELECT count(*) FROM bank_transactions WHERE tenant_id='$TEN';")
-echo "  bank_transactions: before=$BT_BEFORE after=$BT_AFTER (expect equal — fulfill never touches bank)"
+echo "  bank_transactions: before=$BT_BEFORE after=$BT_AFTER"
+aeq "revenue recognized (4-10100)" "$REV" "5000000"
+aeq "COGS recognized (5-10100)" "$COGS" "3500000"
+aeq "gross profit" "$((REV-COGS))" "1500000"
+aeq "inventory 1-10600 depleted to 0" "$INV7" "0"
+aeq "deferred revenue 2-10750 fully recognized to 0" "$DEF7" "0"
+aeq "stock depleted to 0" "$STOCK7" "0"
+aeq "no bank movement on fulfill" "$BT_AFTER" "$BT_BEFORE"
 
 echo; echo "===== DRIFT + BANK GAP (AR stays 3.5M, bank 18M, gap 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+finish

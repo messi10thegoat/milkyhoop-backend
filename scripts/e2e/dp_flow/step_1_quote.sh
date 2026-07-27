@@ -13,7 +13,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
@@ -60,9 +60,14 @@ PSQLm "SELECT description, quantity, unit, unit_price, tax_rate, tax_id, line_to
 echo "--- quote_sequences row (the generator that had never produced a number) ---"
 PSQLm "SELECT * FROM quote_sequences WHERE tenant_id='$TEN';" 2>&1 | head
 
-echo; echo "--- ZERO JOURNAL check (quote must not post) ---"
+echo; echo "--- ZERO JOURNAL check (quote must not post) + quote_number generated ---"
 JE_AFTER=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
-echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE) -> $([ "$JE_AFTER" = "$JE_BEFORE" ] && echo 'PASS (no new journal)' || echo 'FAIL (quote created a journal!)')"
+QNUM=$(PSQL "SELECT COALESCE(quote_number,'') FROM quotes WHERE id='$QID';")
+QITEMS=$(PSQL "SELECT count(*) FROM quote_items WHERE quote_id='$QID';")
+aeq "no new journal (quote must not post)" "$JE_AFTER" "$JE_BEFORE"
+ane "quote_number generated" "$QNUM" ""
+aeq "quote_items rows" "$QITEMS" "1"
 
 echo; echo "===== DRIFT + BANK GAP (must stay 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+finish

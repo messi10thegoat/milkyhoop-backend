@@ -9,7 +9,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 PSQL(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
@@ -53,9 +53,14 @@ echo "  (quote still holds dp for reference: $(PSQL "SELECT dp_amount||' / '||dp
 echo "--- quote status after convert (expect 'converted') ---"
 PSQL "SELECT status||' converted_to='||COALESCE(converted_to_type,'?')||':'||COALESCE(converted_to_id::text,'?') FROM quotes WHERE id='$QID';"
 
-echo; echo "--- ZERO JOURNAL check (convert/confirm must not post) ---"
+echo; echo "--- ZERO JOURNAL check (convert/confirm must not post) + SO confirmed ---"
 JE_AFTER=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
-echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE) -> $([ "$JE_AFTER" = "$JE_BEFORE" ] && echo 'PASS (no new journal)' || echo 'FAIL (SO created a journal!)')"
+SOSTATUS=$(PSQL "SELECT status FROM sales_orders WHERE id='$SOID';")
+QSTATUS=$(PSQL "SELECT status FROM quotes WHERE id='$QID';")
+aeq "no new journal (convert/confirm must not post)" "$JE_AFTER" "$JE_BEFORE"
+aeq "SO status confirmed" "$SOSTATUS" "confirmed"
+aeq "quote status converted" "$QSTATUS" "converted"
 
 echo; echo "===== DRIFT + BANK GAP (must stay 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+finish

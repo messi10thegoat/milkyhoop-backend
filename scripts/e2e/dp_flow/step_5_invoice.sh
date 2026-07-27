@@ -13,7 +13,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 PSQL(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
@@ -61,18 +61,29 @@ for pair in "4-10100:Penjualan(expect 0)" "5-10100:HPP(expect 0)" "1-10600:Perse
   v=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='$code';")
   echo "  $code $lbl -> net=$v"
 done
-echo "  stock (expect 100): $(PSQL "SELECT COALESCE(SUM(quantity_in-quantity_out),0) FROM inventory_ledger WHERE tenant_id='$TEN' AND product_id='$ITEM';")"
+STOCK=$(PSQL "SELECT COALESCE(SUM(quantity_in-quantity_out),0)::bigint FROM inventory_ledger WHERE tenant_id='$TEN' AND product_id='$ITEM';")
+REV0=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='4-10100';")
+COGS0=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='5-10100';")
+INV35=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='1-10600';")
+echo "  stock (expect 100): $STOCK"
+aeq "revenue 4-10100 untouched at step 5" "$REV0" "0"
+aeq "COGS 5-10100 untouched at step 5" "$COGS0" "0"
+aeq "inventory 1-10600 still 3.5M (not yet shipped)" "$INV35" "3500000"
+aeq "stock still 100" "$STOCK" "100"
 
 echo; echo "--- ★ AR first meaningful read: raw RECEIVABLE ledger == compute_ar == 5.000.000 ---"
 AR_LEDGER=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_type='RECEIVABLE';")
 AR_COMPUTE=$(PSQL "SELECT COALESCE(SUM(outstanding),0)::bigint FROM compute_ar_outstanding('$TEN');")
-echo "  AR raw RECEIVABLE ledger=$AR_LEDGER | compute_ar_outstanding=$AR_COMPUTE | $([ "$AR_LEDGER" = "5000000" ] && [ "$AR_COMPUTE" = "5000000" ] && echo 'PASS (both 5.000.000)' || echo 'CHECK')"
+echo "  AR raw RECEIVABLE ledger=$AR_LEDGER | compute_ar_outstanding=$AR_COMPUTE"
+aeq "AR raw RECEIVABLE ledger (Event 1)" "$AR_LEDGER" "5000000"
+aeq "AR compute_ar_outstanding == raw (drift 0)" "$AR_COMPUTE" "$AR_LEDGER"
 echo "  2-10500 Uang Muka Pelanggan (expect 1.500.000, unapplied): $(PSQL "SELECT COALESCE(SUM(jl.credit-jl.debit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='2-10500';")"
 echo "  customer_deposit_applications (expect 0, no apply yet): $(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';")"
 
 echo; echo "--- JOURNAL COUNT (expect +1) ---"
 JE_AFTER=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
-echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE) -> $([ "$JE_AFTER" = "$((JE_BEFORE+1))" ] && echo 'PASS (+1, Event 1 only)' || echo 'FAIL — more than one journal (auto-fulfill?) — STOP')"
+aeq "journal_entries +1 (Event 1 only, NOT auto-fulfill)" "$JE_AFTER" "$((JE_BEFORE+1))"
 
 echo; echo "===== DRIFT + BANK GAP (AR now 5M drift 0, bank 18M, gap 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+finish

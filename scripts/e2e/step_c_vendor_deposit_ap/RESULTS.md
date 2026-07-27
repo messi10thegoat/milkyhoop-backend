@@ -596,3 +596,69 @@ never the flow (the flow logic passed unchanged throughout):
   child scripts signal logical failures as printed text, not exit codes.
 - scripts/e2e/dp_flow/restore_preharness.sh — restore + pristine verification (Tenant/mig/pending/
   User/JE).
+
+---
+# NEGATIVE TESTS + rc-HARDENING + MISSION CLOSE (2026-07-27)
+
+## Detection mechanism changed: rc-PRIMARY (was string-matching only)
+Owner directive: token matching is a silent-fallback risk — a real failure whose format drifts
+would pass silently. Now every child EXITS NON-ZERO on failure:
+- `verdict.sh` (new, shared): step scripts assert via aeq/ane/atrue; `finish()` exits 1 if any
+  assertion failed. All 11 steps retrofitted (step_0/0b only printed before — now assert
+  grand_total, journal sides, remaining_before, bank deltas, etc.).
+- `drift_check.sql` + `closing_invariant.sql`: end in a division-by-zero rc-gate under
+  `ON_ERROR_STOP` → psql exits 3 on ANY drift/invariant failure. Denominator depends on a column
+  so Postgres can't constant-fold it away when the count is 0.
+- `run_all.sh`: gates each step AND its post-step drift on EXIT CODE first (captures PIPESTATUS);
+  the token scan is now only a safety belt. Clean hardened run stayed GREEN (29–30s, all children
+  exit 0, closing_rc_gate=1).
+
+## NEGATIVE TESTS — the suite is proven as a DETECTOR (restore between each, injection reverted after)
+A suite that only ever passes is not proven to catch anything. Injected one fault at a time and
+confirmed run_all STOPS at the right step, via rc, with a clear message:
+| # | injection | expected stop | result |
+|---|-----------|---------------|--------|
+| (a) | step_0 grand_total expected 3500000→3500001 | step 0 | STOP at STEP 0, child exit 1, "FAIL — bill grand_total: got '3500000' want '3500001'" ✓ |
+| (b) | drift_check.sql AR ledger +1 (printed CTE + rc-gate) | first drift | STOP at "step -1-drift", rc=3 (division by zero), printed `AR 1|0|1 FAIL` ✓ |
+| (c) | closing_invariant.sql GROSS_PROFIT expected 1500000→1500001 (display + gate) | closing | STOP at closing, GROSS_PROFIT display FAIL, gate rc=3 ✓ |
+Each caught via the PRIMARY rc path (not just the token belt). After reverting all three: final
+clean run GREEN, run_all exit 0 — zero corruption left behind.
+
+## CI OPPORTUNITY (proposal — NOT implemented, owner decision)
+The full flow runs in ~30s from pristine → viable as a per-deploy CI gate rather than a manual
+occasional check. Paired with the schema-contract "ghost column" CI ratchet, that is two nets:
+one catches SCHEMA drift, one catches a LEDGER that does not close.
+Prerequisites to wire it: (1) a scratch Postgres in CI seeded from the preharness snapshot (or a
+migrations-only build) — never the live DB; (2) the api_gateway reachable from the CI job
+(compose up, or a service container) + the signup magic-link path enabled; (3) CI secret for DB
+superuser (restore) — kept out of logs; (4) a stable tenant slug per job to avoid cross-run
+collisions; (5) budget the restore (~20s) + run (~30s) ≈ 1 min/gate. Suggested trigger: on PRs
+touching backend/ (accounting, banksync, inventory, sales) + nightly.
+
+## ══════════ MISSION CLOSE — DP cash-to-cash ledger ══════════
+### PROVEN
+- The DP cash-to-cash LEDGER is correct AND reproducible from zero (run_all.sh, single shot,
+  rc-gated, negative-tested): buy→pay→quote→SO→DP→faktur(deferred)→apply→ship→settle→close.
+- Branch 3 (applying a DP REDUCES AR, no phantom): raw RECEIVABLE == compute_ar throughout.
+- Law 29/30 (DP is a LIABILITY, never touches RECEIVABLE): zero RECEIVABLE lines in the DP journal.
+- f5cd41a5 (GET /fulfillments schema-drift) fixed and proven over HTTP (200, 3-sided gate).
+- B4 closed (DP evaporates at quote→SO conversion — no destination column; received at SO instead).
+- Audit finding #4 upgraded [CODE]→RUNTIME: sales_orders.shipped_qty stays 0 after full delivery.
+- Closing invariant ALL PASS, numbers identical run-to-run: trial balance 25M=25M (net) / 47M=47M
+  (gross), gross profit 1.5M, hash chain intact, drift AR/AP=0, bank delta +1.5M.
+
+### NOT PROVEN — the USER-FACING PATH
+The ledger engine is proven; the product surfaces that let a user DRIVE it are not. Five things a
+real user CANNOT do today (three require raw DB writes, which is how the harness had to do them):
+1. Create a non-PKP tenant — no API to set Tenant.is_pkp (raw UPDATE). [issue: no-api-for-tenant-is_pkp]
+2. Set delivery-mode revenue recognition — no API for tenant_config.revenue_recognition_policy (raw INSERT). [delivery-mode-...unreachable]
+3. See applicable deposits to apply — GET /applicable-deposits 500s (UUID vs VARCHAR). [applicable-deposits-500]
+4. "Tagih DP" — no DP-billing endpoint exists (documented gap; DP is received straight off the SO).
+5. Invite a team member who can log in — invite 400 "Invalid role_id" (tenant-scoped vs __SYSTEM__
+   roles) + no team_invitations writer. [team-invite-broken-no-loggable-user]
+AND: permission dimension D (role-based 403 enforcement) is UNVALIDATED — there is no way to create
+a non-owner user, so this run proves NOTHING about permission gating.
+
+### One-line verdict
+**The ledger engine is proven correct; the product surface that would let a user move it is not.**
+Batch fix awaits owner decision on ordering.

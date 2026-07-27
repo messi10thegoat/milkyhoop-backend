@@ -12,11 +12,13 @@
 #   3. bash run_all.sh
 #   4. On failure: fix, restore again, rerun from zero (NEVER resume mid-flow).
 #
-# FAILURE DETECTION — deliberately NOT a bare `set -e`: the child step scripts print
-# "FAIL" as TEXT (result column) and mostly exit 0 even on a logical assertion failure.
-# A bare set -e would sail past those. So each step is gated on: child exit code != 0
-# OR the step/drift output contains a failure token (\bFAIL\b | \bABORT\b | !!!). That is
-# the real single-point-of-failure guarantee the suite promises.
+# FAILURE DETECTION — rc-PRIMARY (owner directive; string matching alone is a silent-fallback
+# risk). Every child now EXITS NON-ZERO on failure: step scripts source verdict.sh and call
+# finish() (exit 1 if any assertion failed); drift_check.sql and closing_invariant.sql end in a
+# division-by-zero rc-gate under ON_ERROR_STOP. So each step AND its drift are gated on exit
+# code != 0 FIRST. The token scan (FAILRE below) is only a SAFETY BELT for any legacy printed
+# verdict that a future edit forgets to route through finish(). A bare `set -e` is still not
+# enough on its own (the child pipes through tee), so we capture PIPESTATUS and gate explicitly.
 # =============================================================================
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -66,12 +68,12 @@ step(){ # $1=label  $2=script
   local t0; t0=$(date +%s)
   bash "$DIR/$script" 2>&1 | tee "$log"; local rc=${PIPESTATUS[0]}
   echo; echo "-------- [run_all] drift_check after step $label --------"
-  drift 2>&1 | tee "$LOGDIR/drift_${label}.log"
+  drift 2>&1 | tee "$LOGDIR/drift_${label}.log"; local drc=${PIPESTATUS[0]}
   local t1; t1=$(date +%s); local dur=$((t1-t0))
   printf '%-4s  %3ss  (child exit %s)\n' "$label" "$dur" "$rc" >> "$LOGDIR/timing.txt"
   echo "-------- step $label finished in ${dur}s (child exit $rc) --------"
   gate "$label" "$log" "$rc"
-  gate "$label-drift" "$LOGDIR/drift_${label}.log" 0
+  gate "$label-drift" "$LOGDIR/drift_${label}.log" "$drc"
 }
 
 step  "-1" step_-1_provision.sh

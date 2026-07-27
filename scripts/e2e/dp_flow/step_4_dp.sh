@@ -21,7 +21,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
@@ -77,7 +77,7 @@ PSQLm "SELECT c.account_type, count(*) AS lines, COALESCE(SUM(jl.debit+jl.credit
          AND c.account_type='RECEIVABLE'
        GROUP BY c.account_type;"
 RCV=$(PSQL "SELECT COALESCE(count(*),0) FROM journal_lines jl JOIN chart_of_accounts c ON c.id=jl.account_id WHERE jl.journal_id=(SELECT journal_id FROM customer_deposits WHERE id='$DEPID') AND c.account_type='RECEIVABLE';")
-echo "RECEIVABLE lines in DP journal: $RCV -> $([ "$RCV" = "0" ] && echo 'PASS (Law 29/30: DP is a LIABILITY, touches no AR)' || echo 'FAIL — DP touched a RECEIVABLE account!')"
+aeq "ZERO RECEIVABLE lines in DP journal (Law 29/30: DP is a LIABILITY)" "$RCV" "0"
 
 echo; echo "--- artifacts that must be ABSENT at receive (belong to APPLY/step 6) ---"
 echo "customer_deposit_applications for this deposit: $(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';") (expect 0 — no apply yet)"
@@ -91,3 +91,11 @@ echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE, expect +1)"
 
 echo; echo "===== DRIFT + BANK GAP (AR stays 0, deposit liability 1.5M, gap 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+
+echo; echo "--- assertions ---"
+BANKLED=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND jl.account_id='$BANK_COA';")
+DEPLIAB=$(PSQL "SELECT COALESCE(SUM(jl.credit-jl.debit),0)::bigint FROM journal_lines jl JOIN chart_of_accounts c ON c.id=jl.account_id JOIN journal_entries je ON je.id=jl.journal_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='2-10500';")
+aeq "bank ledger after DP (18M)" "$BANKLED" "18000000"
+aeq "2-10500 Uang Muka liability (1.5M)" "$DEPLIAB" "1500000"
+aeq "journal_entries +1 (DP posted)" "$JE_AFTER" "$((JE_BEFORE+1))"
+finish

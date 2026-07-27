@@ -24,6 +24,7 @@ DB=${DB:-milkydb}
 CONTAINER=${CONTAINER:-milkyhoop-dev-postgres-1}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/dates.env"   # explicit forward-ordered date plan (opening balance first)
+source "$DIR/verdict.sh"
 STATE=${STATE:-$DIR/state.env}
 EMAIL=${EMAIL:-owner@kaosbiru.co.id}
 PASS=${PASS:-KaosBiru2026!}
@@ -156,3 +157,12 @@ for kv in "BANK=$BANK" "BANK_COA=$BANK_COA" "WH=$WH" "VND=$VND" "CUS=$CUS" "ITEM
   [ -z "${kv#*=}" ] && { echo "!!! master data incomplete: $kv — ABORT"; exit 1; }
 done
 echo "PROVISION OK — all master data present."
+
+echo; echo "--- spec-precondition assertions (non-PKP + delivery mode) ---"
+ISPKP=$(PSQL "SELECT is_pkp FROM \"Tenant\" WHERE id='$TEN';")
+POLICY=$(PSQL "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN';")
+OPENBAL=$(PSQL "SELECT COALESCE(opening_balance,0)::bigint FROM bank_accounts WHERE id='$BANK';")
+aeq "tenant is_pkp = false (non-PKP spec)" "$ISPKP" "f"
+aeq "revenue_recognition_policy = delivery" "$POLICY" "delivery"
+aeq "bank opening_balance = 20.000.000" "$OPENBAL" "20000000"
+finish

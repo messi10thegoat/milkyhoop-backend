@@ -129,3 +129,65 @@ SELECT 'HASH_CHAIN' AS check, COUNT(*) FILTER (WHERE chain_sequence>1 AND previo
        CASE WHEN COUNT(*) FILTER (WHERE chain_sequence>1 AND previous_hash IS DISTINCT FROM expected_prev)=0
             THEN 'PASS' ELSE 'FAIL' END AS result
 FROM ch;
+
+-- =============================================================================
+-- rc GATE (PRIMARY detection): division-by-zero -> psql exits non-zero (ON_ERROR_STOP) if ANY
+-- of the 8 invariants above fails. Recomputes them independently and sums the failures; the
+-- printed tables above stay untouched (human-facing + safety belt). Denominator depends on a
+-- column so Postgres cannot constant-fold the 1/0 when failcnt=0.
+-- =============================================================================
+SELECT 1 / (CASE WHEN failcnt = 0 THEN 1 ELSE 0 END) AS closing_rc_gate
+FROM (
+  SELECT
+    -- (1) role balances: count roles whose net (D-C) != expected
+    (SELECT COUNT(*) FROM (
+       SELECT e.role_key, COALESCE(rb.net,0) AS actual, e.want
+       FROM (VALUES ('AR_TRADE',0::numeric),('AP_TRADE',0),('CUSTOMER_DEPOSIT_LIABILITY',0),
+                    ('REVENUE_DEFERRED',0),('INVENTORY_MERCHANDISE',0),
+                    ('REVENUE_SALES_GOODS',-5000000),('COGS_SALES',3500000)) e(role_key,want)
+       LEFT JOIN (
+         SELECT ar.role_key, COALESCE(SUM(jl.debit-jl.credit),0) AS net
+         FROM account_roles ar
+         LEFT JOIN journal_lines jl ON jl.account_id=ar.account_id
+         LEFT JOIN journal_entries je ON je.id=jl.journal_id AND je.status='POSTED'
+              AND je.reversed_by_id IS NULL AND je.tenant_id=:ten
+         WHERE ar.tenant_id=:ten GROUP BY ar.role_key
+       ) rb ON rb.role_key=e.role_key
+     ) x WHERE actual <> want)
+    -- (2) bank delta (excl opening) != 1,500,000
+  + (CASE WHEN (SELECT COALESCE(SUM(jl.debit-jl.credit),0) - (:openbal)::numeric
+                FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                WHERE je.tenant_id=:ten AND je.status='POSTED' AND je.reversed_by_id IS NULL
+                  AND jl.account_id=:bankcoa) <> 1500000 THEN 1 ELSE 0 END)
+    -- (3) gross profit != 1,500,000
+  + (CASE WHEN (SELECT COALESCE(-SUM(CASE WHEN ar.role_key='REVENUE_SALES_GOODS' THEN jl.debit-jl.credit END),0)
+                     - COALESCE(SUM(CASE WHEN ar.role_key='COGS_SALES' THEN jl.debit-jl.credit END),0)
+                FROM account_roles ar
+                JOIN journal_lines jl ON jl.account_id=ar.account_id
+                JOIN journal_entries je ON je.id=jl.journal_id AND je.status='POSTED'
+                     AND je.reversed_by_id IS NULL AND je.tenant_id=:ten
+                WHERE ar.tenant_id=:ten AND ar.role_key IN ('REVENUE_SALES_GOODS','COGS_SALES')) <> 1500000
+          THEN 1 ELSE 0 END)
+    -- (4) trial balance: total debit != total credit
+  + (CASE WHEN (SELECT COALESCE(SUM(jl.debit),0)-COALESCE(SUM(jl.credit),0)
+                FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                WHERE je.tenant_id=:ten AND je.status='POSTED' AND je.reversed_by_id IS NULL) <> 0
+          THEN 1 ELSE 0 END)
+    -- (5) AR outstanding != 0
+  + (CASE WHEN (SELECT COALESCE(SUM(outstanding),0) FROM compute_ar_outstanding(:ten)) <> 0 THEN 1 ELSE 0 END)
+    -- (6) AP outstanding != 0
+  + (CASE WHEN (SELECT COALESCE(SUM(outstanding),0) FROM compute_ap_outstanding(:ten)) <> 0 THEN 1 ELSE 0 END)
+    -- (7) VAT lines != 0 (non-PKP)
+  + (CASE WHEN (SELECT COUNT(*) FROM journal_lines jl
+                JOIN journal_entries je ON je.id=jl.journal_id
+                JOIN account_roles ar ON ar.account_id=jl.account_id AND ar.tenant_id=:ten
+                WHERE je.tenant_id=:ten AND je.status='POSTED' AND je.reversed_by_id IS NULL
+                  AND ar.role_key IN ('VAT_INPUT','VAT_OUTPUT')) <> 0 THEN 1 ELSE 0 END)
+    -- (8) hash chain breaks != 0
+  + (CASE WHEN (SELECT COUNT(*) FROM (
+                  SELECT chain_sequence, previous_hash,
+                         LAG(content_hash) OVER (ORDER BY chain_sequence) AS expected_prev
+                  FROM journal_entries WHERE tenant_id=:ten) c
+                WHERE chain_sequence>1 AND previous_hash IS DISTINCT FROM expected_prev) <> 0
+          THEN 1 ELSE 0 END) AS failcnt
+) g;

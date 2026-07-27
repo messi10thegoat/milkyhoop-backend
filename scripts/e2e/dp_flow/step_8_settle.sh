@@ -23,7 +23,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 PSQL(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
 PSQLm(){ docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -c "$1"; }
@@ -43,8 +43,11 @@ OVER=$(curl -s -w "\n%{http_code}" -X POST "$B/receive-payments" "${H[@]}" -d "{
   \"save_as_draft\":false,\"idempotency_key\":\"settle-kb-OVERPROBE\"}")
 OCODE=$(echo "$OVER" | tail -1); OBODY=$(echo "$OVER" | sed '$d')
 echo "  HTTP=$OCODE  body=$(echo "$OBODY" | head -c 220)"
-[ "$OCODE" = "400" ] && echo "  PASS (rejected)" || echo "  !!! expected 400 — guard did not fire as expected"
-echo "  no artifacts from probe? JE=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';") BT=$(PSQL "SELECT count(*) FROM bank_transactions WHERE tenant_id='$TEN';") RP=$(PSQL "SELECT count(*) FROM receive_payments WHERE tenant_id='$TEN';") (expect $JE_BEFORE/$BT_BEFORE/$RP_BEFORE — txn rollback)"
+aeq "overpayment 3.500.001 rejected (deposit-aware cap)" "$OCODE" "400"
+JE_PROBE=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
+RP_PROBE=$(PSQL "SELECT count(*) FROM receive_payments WHERE tenant_id='$TEN';")
+aeq "probe left zero new journal (txn rollback)" "$JE_PROBE" "$JE_BEFORE"
+aeq "probe left zero receive_payments (txn rollback)" "$RP_PROBE" "$RP_BEFORE"
 
 echo; echo "--- ★ TEST (b): REAL SETTLE 3.500.000 ---"
 if [ "$RP_BEFORE" != "0" ]; then
@@ -74,7 +77,9 @@ PSQLm "SELECT je.source_type, je.journal_date, je.status, c.account_code, c.acco
 echo "--- ★★ AR (raw RECEIVABLE ledger == compute_ar == 0) ---"
 AR_LEDGER=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_type='RECEIVABLE';")
 AR_COMPUTE=$(PSQL "SELECT COALESCE(SUM(outstanding),0)::bigint FROM compute_ar_outstanding('$TEN');")
-echo "  raw RECEIVABLE=$AR_LEDGER | compute_ar=$AR_COMPUTE | $([ "$AR_LEDGER" = "0" ] && [ "$AR_COMPUTE" = "0" ] && echo 'PASS (AR fully settled, drift 0)' || echo 'FAIL')"
+echo "  raw RECEIVABLE=$AR_LEDGER | compute_ar=$AR_COMPUTE"
+aeq "AR raw RECEIVABLE fully settled" "$AR_LEDGER" "0"
+aeq "AR compute_ar == raw (drift 0)" "$AR_COMPUTE" "$AR_LEDGER"
 
 echo "--- 5 ARTIFACTS ---"
 echo "  1 journal_entries RECEIVE_PAYMENT POSTED: $(PSQL "SELECT count(*)||' status='||COALESCE(max(status),'-') FROM journal_entries WHERE tenant_id='$TEN' AND source_type='RECEIVE_PAYMENT';")"
@@ -93,3 +98,14 @@ echo "  journal_entries: $JE_BEFORE -> $JE_AFTER (expect 11) | bank_transactions
 
 echo; echo "===== DRIFT + BANK GAP (AR 0, bank 21.5M, gap 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+
+echo; echo "--- assertions ---"
+BANK8=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='1-10201';")
+INVPAID=$(PSQL "SELECT COALESCE(amount_paid,0)::bigint FROM sales_invoices WHERE id='$INVID';")
+INVSTATUS=$(PSQL "SELECT status FROM sales_invoices WHERE id='$INVID';")
+JE8=$(PSQL "SELECT count(*) FROM journal_entries WHERE tenant_id='$TEN';")
+aeq "bank 1-10201 balance (21.5M = delta +1.5M from opening)" "$BANK8" "21500000"
+aeq "invoice amount_paid cache" "$INVPAID" "5000000"
+aeq "invoice status paid" "$INVSTATUS" "paid"
+aeq "journal_entries = 11 (RECEIVE_PAYMENT added)" "$JE8" "11"
+finish

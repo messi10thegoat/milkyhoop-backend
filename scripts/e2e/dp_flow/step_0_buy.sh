@@ -10,6 +10,7 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/state.env"
 source "$DIR/dates.env"
+source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 gid(){ python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('data') or d).get('id',''))" 2>/dev/null; }
@@ -37,7 +38,8 @@ fi
 grep -q '^export BILL=' "$DIR/state.env" && sed -i "s|^export BILL=.*|export BILL=\"$BILL\"|" "$DIR/state.env" || echo "export BILL=\"$BILL\"" >> "$DIR/state.env"
 
 echo; echo "--- grand_total (expect 3500000, no PPN) ---"
-PSQL "SELECT COALESCE(grand_total,0)::bigint FROM bills WHERE id='$BILL';"
+GT=$(PSQL "SELECT COALESCE(grand_total,0)::bigint FROM bills WHERE id='$BILL';")
+aeq "bill grand_total (no PPN)" "$GT" "3500000"
 
 echo; echo "===== JOURNAL (BILL) — accounts/sides/amounts ====="
 PSQLm "SELECT je.source_type, je.status, c.account_code, LEFT(c.name,28) akun, c.account_type, jl.debit, jl.credit
@@ -45,3 +47,10 @@ PSQLm "SELECT je.source_type, je.status, c.account_code, LEFT(c.name,28) akun, c
        JOIN chart_of_accounts c ON c.id=jl.account_id
        WHERE je.tenant_id='$TEN' AND je.source_id::text=(SELECT id::text FROM bills WHERE id='$BILL')
        ORDER BY je.chain_sequence, jl.line_number;"
+
+echo "--- assertions (journal Dr 1-10600 3.5M / Cr 2-10100 3.5M) ---"
+INV=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='1-10600';")
+AP=$(PSQL "SELECT COALESCE(SUM(jl.credit-jl.debit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='2-10100';")
+aeq "1-10600 Persediaan debit" "$INV" "3500000"
+aeq "2-10100 Hutang Usaha credit" "$AP" "3500000"
+finish

@@ -22,7 +22,7 @@
 # =============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$DIR/state.env"; source "$DIR/dates.env"
+source "$DIR/state.env"; source "$DIR/dates.env"; source "$DIR/verdict.sh"
 H=(-H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN" -H "Content-Type: application/json")
 J(){ local m=$1 p=$2 d=${3:-'{}'}; curl -s -X "$m" "$B$p" "${H[@]}" -d "$d"; }
 GET(){ curl -s "$B$1" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN"; }
@@ -60,7 +60,9 @@ PSQLm "SELECT je.source_type, (je.source_id::text='$DEPID') AS src_is_deposit, c
 echo "--- ★★ BRANCH 3 (the core question): raw RECEIVABLE ledger == compute_ar == 3.500.000 ---"
 AR_LEDGER=$(PSQL "SELECT COALESCE(SUM(jl.debit-jl.credit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_type='RECEIVABLE';")
 AR_COMPUTE=$(PSQL "SELECT COALESCE(SUM(outstanding),0)::bigint FROM compute_ar_outstanding('$TEN');")
-echo "  raw RECEIVABLE ledger=$AR_LEDGER | compute_ar_outstanding=$AR_COMPUTE | $([ "$AR_LEDGER" = "3500000" ] && [ "$AR_COMPUTE" = "3500000" ] && echo 'PASS (Branch 3 works: both 3.500.000, drift 0)' || echo 'FAIL — Branch 3 broken (raw!=compute)')"
+echo "  raw RECEIVABLE ledger=$AR_LEDGER | compute_ar_outstanding=$AR_COMPUTE"
+aeq "Branch 3 raw RECEIVABLE ledger (after DP apply)" "$AR_LEDGER" "3500000"
+aeq "Branch 3 compute_ar == raw (drift 0)" "$AR_COMPUTE" "$AR_LEDGER"
 
 echo "--- artifacts present: customer_deposit_applications (active, reversed_by_id NULL, journal_id) ---"
 PSQLm "SELECT status, reversed_by_id IS NULL AS effective, journal_id IS NOT NULL AS has_journal, amount_applied FROM customer_deposit_applications WHERE deposit_id='$DEPID';"
@@ -69,7 +71,7 @@ echo "  2-10500 Uang Muka Pelanggan (expect 0): $(PSQL "SELECT COALESCE(SUM(jl.c
 
 echo "--- artifacts ABSENT: no new bank_transaction (apply = ledger-only) ---"
 BT_AFTER=$(PSQL "SELECT count(*) FROM bank_transactions WHERE tenant_id='$TEN';")
-echo "  bank_transactions: before=$BT_BEFORE after=$BT_AFTER -> $([ "$BT_AFTER" = "$BT_BEFORE" ] && echo 'PASS (no bank movement)' || echo 'FAIL')"
+aeq "no bank movement on apply (ledger-only)" "$BT_AFTER" "$BT_BEFORE"
 
 echo "--- uq_cda_journal_id (first cda row ever) not violated ---"
 PSQL "SELECT 'cda rows='||count(*)||' distinct journal_id='||count(DISTINCT journal_id) FROM customer_deposit_applications WHERE deposit_id='$DEPID';"
@@ -84,3 +86,11 @@ echo "journal_entries after: $JE_AFTER (before=$JE_BEFORE) | apply date: $(PSQL 
 
 echo; echo "===== DRIFT + BANK GAP (AR 3.5M drift 0 via Branch3, bank 18M, gap 0) ====="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+
+echo; echo "--- assertions ---"
+DEPBAL=$(PSQL "SELECT COALESCE(SUM(jl.credit-jl.debit),0)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND c.account_code='2-10500';")
+CDAROWS=$(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';")
+aeq "2-10500 Uang Muka drawn down to 0" "$DEPBAL" "0"
+aeq "customer_deposit_applications row created" "$CDAROWS" "1"
+aeq "journal_entries +1 (DEPOSIT_APPLICATION)" "$JE_AFTER" "$((JE_BEFORE+1))"
+finish
