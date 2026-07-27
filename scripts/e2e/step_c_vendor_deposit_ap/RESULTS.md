@@ -494,3 +494,59 @@ apply, Branch 3) + 3.500.000 (this settlement) = 5.000.000 = full invoice.
 The create RESPONSE returned `accounting_status: null` while receive_payments.status='posted' and
 the journal is POSTED in the DB. Response-serialization quirk on the create envelope only — the DB
 is correct (status POSTED). LOW; noted for whoever touches the response mapper.
+
+---
+# STEP 9 (tutup SO) + FASE 6 (closing invariant) — GREEN (2026-07-27)
+
+## CORRECTION to STEP 8 note — accounting_status symmetry HOLDS (item 1)
+Step-8 wording ("DB is POSTED while response is null") was imprecise and I withdraw it. Actual DB:
+`receive_payments.accounting_status='UNPOSTED'` AND `bill_payments_v2.accounting_status='UNPOSTED'`
+— both at the column DEFAULT ('UNPOSTED'), neither post path writes it. What is POSTED is
+`journal_entries.status`; both wrappers also carry `status='posted'`. So AR and AP behave
+IDENTICALLY — the benign-symmetric classification stands. The create response's `accounting_status:
+null` is just the response mapper not selecting that column; the ledger source of truth is correct.
+
+## STEP 9 — tutup SO (POST /api/sales-orders/{id}/close), FE-confirmed
+FE SalesOrderDetailDesktop.tsx:205 -> POST /api/sales-orders/{id}/close ("Pesanan ditutup").
+Backend sales_orders.py:950: precondition status IN ('invoiced','shipped'); sets 'completed'; NO
+ledger. Result: HTTP 200, status invoiced->completed. **ZERO new journal (11->11)**, no bank
+movement (4->4). fiscal period 2026-07 = **OPEN** (period NOT closed — deliberately; closing would
+lock July, Law 5). drift AR/AP=0, BANK_GAP=0.
+
+### ★ Runtime proof for audit finding #4 (independent counters, no cross-reconciliation)
+Pre- and post-close: `sales_orders.shipped_qty = 0` despite 100 pcs fully delivered, while
+`invoiced_qty = 100`. Fulfillment ran via `sales-invoices/{id}/fulfill` (updates invoice, not SO);
+`/to-invoice` filled invoiced_qty but nothing fills shipped_qty, and `/close` does not reconcile it.
+Was [CODE]-only; now RUNTIME-CONFIRMED. Product consequence: the Pesanan page shows an order as
+"belum dikirim / shipped 0" when its goods have entirely left the warehouse. Upgrade the ticket.
+
+## B — non-owner permission probe: BLOCKED (see 2026-07-27-team-invite-broken-no-loggable-user.md)
+No API path to provision a loggable low-role user: invite 400 "Invalid role_id" (tenant-scoped role
+lookup vs global `__SYSTEM__` roles) AND no `team_invitations` writer anywhere (accept/set-password
+orphaned). Dimension D (role-based 403) is NOT validated this session; stated openly, not skipped.
+
+## FASE 6 — CLOSING INVARIANT (closing_invariant.sql, run as-is) — ALL PASS
+| metric | expected | actual | result |
+|---|---|---|---|
+| AR_TRADE (1-10400) | 0 | 0 | PASS |
+| AP_TRADE (2-10100) | 0 | 0 | PASS |
+| CUSTOMER_DEPOSIT_LIABILITY (2-10500) | 0 | 0 | PASS |
+| REVENUE_DEFERRED (2-10750) | 0 | 0 | PASS |
+| INVENTORY_MERCHANDISE (1-10600) | 0 | 0 | PASS |
+| COGS_SALES (5-10100) | 3.500.000 | 3.500.000 | PASS |
+| REVENUE_SALES_GOODS (4-10100) | -5.000.000 | -5.000.000 | PASS |
+| BANK_DELTA (excl opening 20M) | +1.500.000 | +1.500.000 (net 21.5M) | PASS |
+| GROSS_PROFIT (rev 5M - cogs 3.5M) | 1.500.000 | 1.500.000 | PASS |
+| TRIAL_BALANCE (gross line-sum Dr=Cr) | balanced | 47.000.000 = 47.000.000 | PASS |
+| TRIAL_BALANCE (net account balances Dr=Cr) | 25M=25M | 25.000.000 = 25.000.000 | PASS |
+| AR_OUTSTANDING (compute_ar) | 0 | 0 | PASS |
+| AP_OUTSTANDING (compute_ap) | 0 | 0 | PASS |
+| VAT_LINES (non-PKP) | 0 | 0 | PASS |
+| HASH_CHAIN breaks | 0 | 0 | PASS |
+| JE count | 11 | 11 | PASS |
+
+Note: the SQL's TRIAL_BALANCE row sums line-level debits/credits (gross, 47M) proving every journal
+balances; the net-account version (25M=25M: Dr bank 21.5M + COGS 3.5M ; Cr equity 20M + revenue 5M)
+was computed separately and also balances. No FAIL, no rounding, no tolerated delta.
+
+## Remaining (needs separate GO): D — clean single-shot run (run_all.sh from preharness restore).
