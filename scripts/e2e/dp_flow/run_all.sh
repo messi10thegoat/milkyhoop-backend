@@ -1,0 +1,107 @@
+#!/bin/bash
+# =============================================================================
+# run_all.sh — DP-flow SINGLE-SHOT regression runner (FASE 5 deliverable).
+# Runs the full cash-to-cash DP flow end to end, ONE shot, no intervention:
+#   step -1 -> 0 -> 0b -> 1 -> 2 -> [3 SKIP] -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> closing_invariant
+# drift_check.sql runs AFTER every step. Stops at the FIRST failure with a clear message
+# (which step, the offending lines, exit code). Records per-step + total duration.
+#
+# PROCEDURE (run BEFORE this script — kept separate so this stays a pure flow test):
+#   1. Restore milkydb from the preharness snapshot (ALLOW_CONNECTIONS-false procedure).
+#   2. Verify pristine: "Tenant"=0, schema_migrations=214, pending_registrations=0.
+#   3. bash run_all.sh
+#   4. On failure: fix, restore again, rerun from zero (NEVER resume mid-flow).
+#
+# FAILURE DETECTION — deliberately NOT a bare `set -e`: the child step scripts print
+# "FAIL" as TEXT (result column) and mostly exit 0 even on a logical assertion failure.
+# A bare set -e would sail past those. So each step is gated on: child exit code != 0
+# OR the step/drift output contains a failure token (\bFAIL\b | \bABORT\b | !!!). That is
+# the real single-point-of-failure guarantee the suite promises.
+# =============================================================================
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+STATE="$DIR/state.env"
+LOGDIR="$DIR/.run_all_logs"
+# A genuine verdict token: "FAIL" followed by EOL / whitespace / "(" (table cells, inline
+# verdicts, "FAIL — reason", "FAIL (reason)"), plus "!!!" and uppercase ABORT. Deliberately
+# does NOT match "FAIL)" — that only occurs in DESCRIPTIVE echoes like "(expect ... FAIL)".
+FAILRE='FAIL([[:space:]]|$|\()|!!!|ABORT'
+CONTAINER=${CONTAINER:-milkyhoop-dev-postgres-1}
+DB=${DB:-milkydb}
+
+rm -rf "$LOGDIR"; mkdir -p "$LOGDIR"
+rm -f "$STATE"          # RISK: no stale IDs from a previous run leak in.
+
+RUN_T0=$(date +%s)
+echo "======================================================================"
+echo " DP-FLOW SINGLE-SHOT RUN  —  $(date -u +%FT%TZ)"
+echo "======================================================================"
+
+drift(){ # authoritative drift after each step (per spec). Needs TEN from state.env.
+  [ -f "$STATE" ] || { echo "  (no state.env yet — drift skipped for this step)"; return 0; }
+  # shellcheck disable=SC1090
+  local TEN; TEN=$(grep -E '^export TEN=' "$STATE" | head -1 | sed -E 's/^export TEN="?([^"]*)"?/\1/')
+  [ -n "$TEN" ] || { echo "  (TEN unset — drift skipped)"; return 0; }
+  docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
+}
+
+gate(){ # $1=label  $2=logfile  $3=child-exit-code   -> exit 1 on first failure
+  local label=$1 log=$2 rc=$3
+  if [ "$rc" -ne 0 ]; then
+    echo; echo "!!!!! STOP — step $label exited non-zero (rc=$rc). First failure. !!!!!"
+    tail -20 "$log"; exit 1
+  fi
+  if grep -Eq "$FAILRE" "$log"; then
+    echo; echo "!!!!! STOP — step $label reported a FAILURE. First failure. !!!!!"
+    echo "----- offending lines: -----"
+    grep -nE "$FAILRE" "$log" | head -20
+    exit 1
+  fi
+}
+
+step(){ # $1=label  $2=script
+  local label=$1 script=$2
+  local log="$LOGDIR/step_${label}.log"
+  echo; echo "############################## STEP $label ($script) ##############################"
+  local t0; t0=$(date +%s)
+  bash "$DIR/$script" 2>&1 | tee "$log"; local rc=${PIPESTATUS[0]}
+  echo; echo "-------- [run_all] drift_check after step $label --------"
+  drift 2>&1 | tee "$LOGDIR/drift_${label}.log"
+  local t1; t1=$(date +%s); local dur=$((t1-t0))
+  printf '%-4s  %3ss  (child exit %s)\n' "$label" "$dur" "$rc" >> "$LOGDIR/timing.txt"
+  echo "-------- step $label finished in ${dur}s (child exit $rc) --------"
+  gate "$label" "$log" "$rc"
+  gate "$label-drift" "$LOGDIR/drift_${label}.log" 0
+}
+
+step  "-1" step_-1_provision.sh
+step  "0"  step_0_buy.sh
+step  "0b" step_0b_pay.sh
+step  "1"  step_1_quote.sh
+step  "2"  step_2_convert.sh
+echo; echo "############################## STEP 3 ##############################"
+echo "STEP 3 — SKIPPED: no tagih-DP (DP invoice) endpoint exists — documented gap."
+echo "  (DP is received at the SALES ORDER; there is no 'tagih uang muka' faktur step by design.)"
+step  "4"  step_4_dp.sh
+step  "5"  step_5_invoice.sh
+step  "6"  step_6_apply.sh
+step  "7"  step_7_fulfill.sh
+step  "8"  step_8_settle.sh
+step  "9"  step_9_close.sh
+
+echo; echo "############################## FASE 6 — CLOSING INVARIANT ##############################"
+# shellcheck disable=SC1090
+source "$STATE"
+CLOG="$LOGDIR/closing.log"
+docker exec -i "$CONTAINER" psql -U postgres -d "$DB" \
+  -v ten="'$TEN'" -v bankcoa="'$BANK_COA'" -v openbal=20000000 \
+  -f - < "$DIR/closing_invariant.sql" 2>&1 | tee "$CLOG"
+CRC=${PIPESTATUS[0]}
+gate "closing" "$CLOG" "$CRC"
+
+RUN_T1=$(date +%s); TOTAL=$((RUN_T1-RUN_T0))
+echo; echo "======================================================================"
+echo " ✅ SINGLE-SHOT RUN COMPLETE — ALL STEPS PASS, closing invariant clean."
+echo "======================================================================"
+echo "Per-step timing:"; cat "$LOGDIR/timing.txt"
+echo "TOTAL: ${TOTAL}s"

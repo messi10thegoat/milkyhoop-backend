@@ -550,3 +550,49 @@ balances; the net-account version (25M=25M: Dr bank 21.5M + COGS 3.5M ; Cr equit
 was computed separately and also balances. No FAIL, no rounding, no tolerated delta.
 
 ## Remaining (needs separate GO): D — clean single-shot run (run_all.sh from preharness restore).
+
+---
+# FASE 5 — CLEAN SINGLE-SHOT RUN (run_all.sh) — PASS (2026-07-27)
+
+## Result: the harness is a reproducible regression suite, not 9 scripts that once worked.
+Restore preharness → verify pristine → `bash run_all.sh` → ran -1→0→0b→1→2→[3 SKIP]→4→5→6→7→8→9
+→ closing invariant, ONE shot, NO intervention. **ALL steps PASS, closing invariant clean.**
+
+## Timing (total 24s)
+-1=4s, 0=1s, 0b=1s, 1=2s, 2=1s, 4=2s, 5=3s, 6=2s, 7=3s, 8=4s, 9=1s. Total 24s.
+
+## Reproducibility proof (fresh from pristine, identical to the staged run)
+- Sequences reset correctly (RISK 2): QUO-2607-0001, SO-2607-0001, INV-2607-0001,
+  PAY-202607-0001, RCV-2026-0001, dp_percent 30.0. No number leaked outside the snapshot.
+- journal_entries = 11.
+- Closing invariant numbers byte-identical to the earlier run: COGS 3.500.000, revenue
+  -5.000.000, CUSTOMER_DEPOSIT_LIABILITY/REVENUE_DEFERRED/INVENTORY/AR/AP = 0, BANK_DELTA
+  +1.500.000 (net 21.5M), GROSS_PROFIT 1.500.000, TRIAL_BALANCE 47.000.000=47.000.000,
+  AR/AP outstanding 0, VAT 0, HASH_CHAIN 0 breaks. drift AR/AP=0 after every step.
+
+## How many restores/reruns before clean: 3 runs, 3 restores. Both failures were in the RUNNER,
+never the flow (the flow logic passed unchanged throughout):
+1. `local label=$1 script=$2 log="...${label}..."` — bash expands ALL `local` argument words
+   BEFORE assigning, so `${label}` was read while still unset → `set -u` abort. Fixed: split the
+   `local` into two statements.
+2. FAIL-token false positive — the detector matched the word "FAIL" inside step 5's DESCRIPTIVE
+   echo `"(expect +1 ... +2/+3 => auto-fulfill FAIL)"`. Fixed: match only genuine verdicts
+   (`FAIL` followed by EOL / whitespace / "("), never `FAIL)`; audited all child scripts to
+   confirm the only always-printed FAIL token is that one descriptive line.
+
+## Risks checked up front (not discovered by surprise)
+- EMAIL/pending_registrations: preharness snapshot has pending_registrations=0 → signup register
+  for owner@kaosbiru.co.id does not conflict. (restore_preharness.sh asserts it.)
+- SEQUENCES: verified reset to -0001 above.
+- state.env: run_all.sh `rm`s it at start; step_-1 bootstraps config from env defaults (does not
+  source state.env), so no stale IDs.
+- RACE: all posting (bill/invoice/fulfill/receive-payment/deposit) is synchronous in-request
+  (journal POSTED before the response). Steps run back-to-back with no sleeps and no read saw stale
+  state — 24s end to end, zero flakiness.
+
+## Deliverables committed
+- scripts/e2e/dp_flow/run_all.sh — the single-shot runner (per-step drift, first-failure stop,
+  timing). Failure gate is explicit (rc!=0 OR verdict token) rather than bare `set -e`, because the
+  child scripts signal logical failures as printed text, not exit codes.
+- scripts/e2e/dp_flow/restore_preharness.sh — restore + pristine verification (Tenant/mig/pending/
+  User/JE).
