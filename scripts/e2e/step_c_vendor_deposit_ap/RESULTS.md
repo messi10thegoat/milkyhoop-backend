@@ -710,3 +710,42 @@ worktree fix WITHOUT deploying to live I ran a second api_gateway container (`mh
 - D3: broke C1's expected (1500000→1500001) → run STOPPED at step 6 (rc=1, clear message) → reverted
   → final clean run GREEN. New gate proven to catch.
 `mh-test-gw` is a throwaway test rig, torn down after verification.
+
+---
+# BATCH FIX #1 — CORRECTIONS (2026-07-27, post owner review)
+
+## B2/B3 now GENUINELY PROVEN (was overclaimed)
+Earlier I wrote "verified empirically" while C3 only checked 200 + %PDF + the DB supplying data —
+that does NOT prove the PDF displays the values (a `payment_bank_name` vs `bank_name` template
+mismatch would render BLANK with no error — silent-fallback class). Corrected: extracted the
+rendered PDF text with pdfminer.six (WeasyPrint embeds SUBSETTED fonts → glyph IDs, so zlib/grep on
+raw bytes finds NOTHING and would falsely pass — verified that failure mode too). The extracted
+text DOES contain: `Bank BCA`, `1111222233`, `a.n. Kaos Biru Konveksi`, `Uang Muka (30%)`,
+`Rp 1.500.000`, `Sisa Pembayaran Rp 3.500.000`. So B2/B3 = PROVEN. No var-name mismatch; template
+untouched.
+
+## C3 rewritten to assert on REAL extracted text
+Harness step 1 C3 now runs `scripts/e2e/pdf_text.sh` (pdfminer) on the returned PDF and asserts the
+rendered text CONTAINS 1111222233 + Bank BCA + 1.500.000 + Uang Muka — replacing the weaker
+supplying-data check. New helper `acontains` in verdict.sh. Full suite re-run GREEN (32s), C1/C2/C3
+all PASS, closing invariant identical.
+
+## A2 audit overclaim corrected (information_schema, not grep)
+"the only VARCHAR *_id column" was WRONG. Corrected via information_schema: the accurate class is
+"VARCHAR columns referencing a uuid PK" — TWO exist, both → customers.id (uuid):
+`customer_deposits.customer_id` AND `credit_notes.customer_id`. (tenant_id is VARCHAR but
+"Tenant".id is `text` = consistent; tax_id is not an FK.) The second site is a LIVE bug
+(credit_notes.py:256 binds UUID→VARCHAR on the by-customer list filter) — FILED
+(2026-07-27-credit-notes-customer-id-uuid-varchar.md), out of BATCH1 scope. This recurring class
+strengthens the column-conversion decision (2026-07-27-DECISION-customer-id-varchar-to-uuid.md).
+
+## Test-gateway pattern made permanent + guarded
+`scripts/e2e/test_gateway.sh` (up/down) + `scripts/e2e/pdf_text.sh`. HAZARD documented (writes to
+LIVE milkydb — safe only pre-launch); GUARD refuses to start if milkydb has >1 tenant or any tenant
+outside the harness slug. Runbook: 2026-07-27-batch2-deploy-runbook.md. (Also to be added to the
+milkyhoop-e2e skill.)
+
+## E1/E2 owner decisions recorded
+E1: DEPLOY NOW, do not batch with team-invite (blast radius; cheapest window is now). E2: deploy →
+restore pristine → run step -1 ONLY (tenant + master data, zero transactions) as the UI-walkthrough
+basis. Both in the runbook. Deploy awaits explicit GO.

@@ -56,20 +56,20 @@ for col in opening_text closing_text payment_bank_name payment_account_number pa
   ane "quote detail V219 col: $col non-null" "$v" ""
 done
 
-echo; echo "--- ★ C3 GATE: GET /api/quotes/{id}/pdf — 200 + real PDF + supplies bank/account/dp ---"
-PDFCODE=$(curl -s -o /tmp/quote.pdf -w "%{http_code}" "$B/quotes/$QID/pdf" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN")
-HDR=$(head -c 4 /tmp/quote.pdf 2>/dev/null)
+echo; echo "--- ★ C3 GATE: GET /api/quotes/{id}/pdf — 200 + RENDERED TEXT shows bank/account/dp ---"
+PDFCODE=$(curl -s -o /tmp/quote_c3.pdf -w "%{http_code}" "$B/quotes/$QID/pdf" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN")
 aeq "quote PDF HTTP 200" "$PDFCODE" "200"
-aeq "quote PDF is a real PDF (%PDF magic)" "$HDR" "%PDF"
-# PDF text is FlateDecode-compressed -> per owner note, assert the DATA that feeds the template
-# (which the template DOES render: quote.html has the Rekening Pembayaran + Uang Muka blocks),
-# not the binary. C2 already proves payment_* reach the API; here assert the DB row the PDF renders.
-PBANK=$(PSQL "SELECT COALESCE(payment_bank_name,'') FROM quotes WHERE id='$QID';")
-PACCT=$(PSQL "SELECT COALESCE(payment_account_number,'') FROM quotes WHERE id='$QID';")
-PDP=$(PSQL "SELECT COALESCE(dp_amount,0)::bigint FROM quotes WHERE id='$QID';")
-ane "PDF render source: payment_bank_name present" "$PBANK" ""
-ane "PDF render source: payment_account_number present" "$PACCT" ""
-aeq "PDF render source: dp_amount present (1.5M)" "$PDP" "1500000"
+aeq "quote PDF is a real PDF (%PDF magic)" "$(head -c4 /tmp/quote_c3.pdf)" "%PDF"
+# WeasyPrint embeds SUBSETTED fonts (glyph IDs, not ASCII) -> raw zlib/grep CANNOT read the text
+# and would falsely pass. pdf_text.sh extracts via pdfminer (glyph->Unicode). Assert the customer-
+# facing values actually RENDER — this catches a silent template var-name mismatch that would blank
+# the Rekening/DP block with no error.
+PTEXT=$(bash "$DIR/../pdf_text.sh" /tmp/quote_c3.pdf 2>/dev/null)
+echo "  extracted text length: ${#PTEXT} chars"
+acontains "PDF renders account number 1111222233" "$PTEXT" "1111222233"
+acontains "PDF renders bank name Bank BCA" "$PTEXT" "Bank BCA"
+acontains "PDF renders DP amount Rp 1.500.000" "$PTEXT" "1.500.000"
+acontains "PDF renders Uang Muka label" "$PTEXT" "Uang Muka"
 
 echo; echo "--- quote row: number/format + V219 columns + DP (all must be persisted) ---"
 PSQLm "SELECT quote_number, status, quote_date, dp_amount, dp_percent,

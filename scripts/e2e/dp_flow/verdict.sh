@@ -13,6 +13,7 @@ _fail(){ echo "  FAIL — $1"; VERDICT_FAILS=$((VERDICT_FAILS+1)); }
 aeq(){   [ "$2" = "$3" ]  && _pass "$1 (=$2)"                    || _fail "$1: got '$2' want '$3'"; }
 ane(){   [ "$2" != "$3" ] && _pass "$1 (=$2, differs from $3)"  || _fail "$1: '$2' must differ from '$3'"; }
 atrue(){ case "$2" in t|true|TRUE|True|1|yes) _pass "$1 (=$2)";; *) _fail "$1: got '$2' want truthy";; esac; }
+acontains(){ case "$2" in *"$3"*) _pass "$1 (contains '$3')";; *) _fail "$1: '$3' NOT found in output";; esac; }
 finish(){
   if [ "${VERDICT_FAILS:-0}" -ne 0 ]; then
     echo "STEP RESULT: FAILED — $VERDICT_FAILS assertion(s) failed"; exit 1
