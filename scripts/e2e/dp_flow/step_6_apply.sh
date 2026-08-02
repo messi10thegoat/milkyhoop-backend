@@ -48,6 +48,12 @@ aeq "our deposit available in applicable-deposits" "$ADAVAIL" "1500000"
 aeq "suggested_amount = min(available, invoice_remaining)" "$ADSUG" "1500000"
 APPCOUNT=1
 
+echo; echo "--- BATCH1 guard: credit_notes by-customer filter 200 (A2-sibling VARCHAR fix) ---"
+# credit_notes.customer_id is VARCHAR (same class as cd.customer_id); the list filter wrapped the
+# str in UUID() -> 500. Reachable with zero credit-note data, so guard it here (customer in scope).
+CNCODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/credit-notes?customer_id=$CUS" -H "Authorization: Bearer $TOK" -H "X-Tenant-Slug: $TEN")
+aeq "credit-notes by-customer filter HTTP 200 (not UUID/VARCHAR 500)" "$CNCODE" "200"
+
 APPCNT=$(PSQL "SELECT count(*) FROM customer_deposit_applications WHERE deposit_id='$DEPID';")
 if [ "$APPCNT" != "0" ]; then
   echo "apply already done (idempotent): $APPCNT application(s)"

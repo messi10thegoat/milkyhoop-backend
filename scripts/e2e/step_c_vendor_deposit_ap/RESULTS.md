@@ -749,3 +749,48 @@ milkyhoop-e2e skill.)
 E1: DEPLOY NOW, do not batch with team-invite (blast radius; cheapest window is now). E2: deploy →
 restore pristine → run step -1 ONLY (tenant + master data, zero transactions) as the UI-walkthrough
 basis. Both in the runbook. Deploy awaits explicit GO.
+
+---
+# BATCH FIX #1 — round 2 (items 1-4 after owner review, 2026-08-03)
+
+## Permanent lesson recorded
+"Every new assertion must be proven able to FAIL, not just to pass — the verification tool itself
+can be silently broken." Two session instances: BANK_GAP order-by, and the subsetted-font PDF grep
+(zlib/grep would falsely pass on a blank PDF). Saved to memory + applied below (both new gates
+negative-tested).
+
+## Item 1 — credit_notes IN SCOPE (curl-testable without data) → FIXED + GATED
+Determination: `GET /api/credit-notes?customer_id=<uuid>` 500s with ZERO credit-note data (the
+UUID→VARCHAR bind fails before any row eval), so it is curl-testable → per owner rule it joins this
+batch. Fix: `credit_notes.py:256` `UUID(customer_id)` → `customer_id` (bind str; same class as A1).
+- Proof it flips (same DB/customer): 8001 (unfixed) → 500; 8002 (fixed) → 200.
+- Gate added: step 6 asserts `credit-notes by-customer filter HTTP 200`. Negative test = Proof A
+  above (unfixed=500 ⇒ gate RED). credit_notes.py is identical on master vs branch (4 master-ahead
+  commits are docs-only), so the fix merges cleanly.
+
+## Item 2 — branch contents (reviewed; full report in the deploy runbook)
+18 commits ahead of origin/master, **4 BEHIND** (master has a prior `merge(dp-readiness)` 78280162
++ 3 docs). vs CURRENT origin/master the CODE delta is exactly THREE files:
+`quotes.py` (+4, B1 map payment_*), `sales_invoices.py` (+2/−1, A1 str-bind),
+`credit_notes.py` (+1/−1, item-1 str-bind). Everything else = docs/harness/scripts. **NO
+migrations to apply** — V218/V219/V220 are already on master AND in schema_migrations AND applied
+in milkydb (my earlier runbook "apply V218-220" was WRONG — corrected). Confirmed: NO code change
+outside A1/B1/credit_notes.
+
+## Item 3 — FE walkthrough hazard (planned in runbook; NOT executed)
+Corrected premise: the "deletions" are in the SERVER FE build tree (`/root/milkyhoop-dev/frontend`,
+served by `milkyhoop-dev-frontend-1`), and they are built ASSETS (`main.6a02fcc0.js`,
+`main.69e627e7.css`, `web/icons/*`) — NOT 4 .tsx source files. `git ls-files --deleted` shows the
+committed HEAD build (6a02fcc0) missing while the live bundle is 5558c404 → live bundle provenance
+≠ HEAD (unknown source). FE SOURCE (Mac /Users/antoniwan/milkyhoop/frontend/web) is CLEAN + complete
+at 2bd845159, node v18.20.8, builds via react-scripts, `.env.local REACT_APP_API_URL=` (empty →
+relative), no `.env.production`. Numbered rebuild-from-pinned-source plan is in the runbook.
+
+## Item 4 — C3 portability + fail-hard (clarified + enforced)
+`pdf_text.sh` runs in: (1) the running `mh-test-gw` (pdfminer pre-installed at `up`), else (2) a
+throwaway container from the gateway image (pip-installs pdfminer; needs internet). **If neither
+yields text it EXITS 3 with a clear stderr message** (proven: non-PDF input → exit 3, empty stdout,
+"NO PDF text extractor available… FAILING HARD"). C3 now guards `[ -z "$PTEXT" ] → _fail` so an
+absent extractor is a LOUD failure, never a silent pass. CI prerequisite (added to runbook): the CI
+env MUST provide pdfminer.six (bake into the image, or run the test-gateway which pre-installs it) —
+running run_all against a gateway without pdfminer makes C3 fail hard by design, not skip.

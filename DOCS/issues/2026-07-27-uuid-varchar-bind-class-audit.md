@@ -50,3 +50,7 @@ asyncpg tolerates str→uuid anyway. Vendor side is all-uuid (vendor_deposits.ve
 Two live sites in this class have now been found (A1 + credit_notes). Patching per-site fixes
 INSTANCES; converting the columns fixes the CLASS. See the conversion decision:
 `2026-07-27-DECISION-customer-id-varchar-to-uuid.md`.
+
+
+## UPDATE 2026-08-03
+credit_notes.customer_id site is now FIXED in BATCH1 (it proved curl-testable without credit-note data). Both live sites of the class (applicable-deposits + credit_notes list filter) are fixed; the column-conversion decision still stands to close the class at the schema level.

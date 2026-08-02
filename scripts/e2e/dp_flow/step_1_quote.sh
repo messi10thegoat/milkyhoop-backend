@@ -64,12 +64,17 @@ aeq "quote PDF is a real PDF (%PDF magic)" "$(head -c4 /tmp/quote_c3.pdf)" "%PDF
 # and would falsely pass. pdf_text.sh extracts via pdfminer (glyph->Unicode). Assert the customer-
 # facing values actually RENDER — this catches a silent template var-name mismatch that would blank
 # the Rekening/DP block with no error.
-PTEXT=$(bash "$DIR/../pdf_text.sh" /tmp/quote_c3.pdf 2>/dev/null)
+PTEXT=$(bash "$DIR/../pdf_text.sh" /tmp/quote_c3.pdf) || true   # pdf_text.sh exits non-zero if no extractor
 echo "  extracted text length: ${#PTEXT} chars"
-acontains "PDF renders account number 1111222233" "$PTEXT" "1111222233"
-acontains "PDF renders bank name Bank BCA" "$PTEXT" "Bank BCA"
-acontains "PDF renders DP amount Rp 1.500.000" "$PTEXT" "1.500.000"
-acontains "PDF renders Uang Muka label" "$PTEXT" "Uang Muka"
+if [ -z "$PTEXT" ]; then
+  # FAIL HARD, not silently: absent extractor must NOT read as "no match / pass".
+  _fail "PDF text extraction produced NO output — pdfminer unavailable; render NOT verified"
+else
+  acontains "PDF renders account number 1111222233" "$PTEXT" "1111222233"
+  acontains "PDF renders bank name Bank BCA" "$PTEXT" "Bank BCA"
+  acontains "PDF renders DP amount Rp 1.500.000" "$PTEXT" "1.500.000"
+  acontains "PDF renders Uang Muka label" "$PTEXT" "Uang Muka"
+fi
 
 echo; echo "--- quote row: number/format + V219 columns + DP (all must be persisted) ---"
 PSQLm "SELECT quote_number, status, quote_date, dp_amount, dp_percent,

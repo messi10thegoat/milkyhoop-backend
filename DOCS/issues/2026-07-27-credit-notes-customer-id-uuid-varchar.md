@@ -1,3 +1,5 @@
+> **RESOLVED 2026-08-03 (BATCH1, brought in-scope).** Curl-testable without data (GET /credit-notes?customer_id=<uuid> 500s regardless of rows), so fixed with the rest: credit_notes.py:256 binds str, not UUID(...). Proven: 8001(unfixed)=500 vs 8002(fixed)=200. Regression-gated in harness step 6.
+
 # BUG (FILED, out of BATCH1 scope): credit_notes list filter 500 — UUID bound to VARCHAR customer_id
 
 **Date:** 2026-07-27

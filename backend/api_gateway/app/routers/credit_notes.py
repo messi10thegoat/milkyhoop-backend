@@ -253,7 +253,7 @@ async def list_credit_notes(
 
             if customer_id:
                 conditions.append(f"customer_id = ${param_idx}")
-                params.append(UUID(customer_id))
+                params.append(customer_id)  # BATCH1: credit_notes.customer_id is VARCHAR -> bind str, not UUID(...)
                 param_idx += 1
 
             if search:
