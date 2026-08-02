@@ -819,3 +819,35 @@ Container milkyhoop-dev-api_gateway: Created 2026-07-24 09:10:55, RestartCount=0
 our-work) 2026-07-25 07:39:15. So it was CREATED once (07-24) and stop/started (07-25 07:39) — NOT
 recreated during a recovery deploy. RestartCount=0 is consistent (manual start doesn't increment).
 Does not change conclusions; corrects the record.
+
+---
+# DEPLOY #2 — EXECUTED GREEN (2026-08-03)
+
+Merged fix/dp-readiness → master (merge commit 90a38207; RESULTS.md union-resolved, zero content
+dropped, 3 code files untouched). Verified the MERGED tree on the isolated test gateway (run_all
+single-shot GREEN, closing invariant clean). Then:
+- master advanced on deploy remote (ef7a504e..90a38207, fast-forward).
+- main tree /root/milkyhoop-dev advanced by **ff-only merge** (NOT reset --hard — frontend/ is
+  dirty and is the live-bundle evidence; reset would clobber it). frontend/ preserved (72 dirty
+  files), frontend container NOT touched.
+- pycache cleared; **docker restart milkyhoop-dev-api_gateway** only. NO migrations applied.
+
+## Post-deploy verify on LIVE 8001 — all green
+- StartedAt shifted 18:06:48 → 18:09:05 (restart took).
+- migrate verify: 214 PRE == 214 POST (zero drift, nothing applied).
+- A1 GET /sales-invoices/{id}/applicable-deposits → 200 (was 500).
+- credit_notes GET /credit-notes?customer_id=<uuid> → 200 (was 500).
+- B1 GET /quotes/{id} → payment_bank_name/_account_number/_account_holder all non-null (was null).
+- smoke GET /sales-invoices unauth → 401 MISSING_TOKEN.
+- NOTE: /api/health and /api/version return 401 (auth-gated in this deployment, pre-existing — the
+  change touched only 3 routers). Gateway liveness proven by login+authed-200s+smoke, not by a
+  literal health-200.
+
+## Rollback (nol DB rollback; nothing to reverse-DDL)
+git revert 90a38207 (or reset master to ef7a504e) → main tree ff/checkout backend → docker restart
+api_gateway. Zero migration = zero schema risk. Pre-deploy DB snapshot:
+/root/milkydb_predeploy2_20260802_175145.sql.gz.
+
+## Still pending (separate decision): restore pristine + step -1 (UI-walkthrough basis) + FE
+rebuild-from-pinned-source (see 2026-08-03-fe-bundle-provenance.md — live bundle 5558c404 exists
+ONLY in the frontend image, no git provenance).
