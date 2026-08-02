@@ -16,3 +16,12 @@ intermittent, hard-to-diagnose behavior (exactly the harness-flakiness risk).
 - Alert on /ready != 200 (or redis:false) via the existing Prometheus/Alertmanager.
 - Reconsider using /ready (not just /healthz) for at least one monitored probe so "healthy while
   degraded" cannot recur.
+
+
+## PROBE MAP + gate correction (appended 2026-08-03, during deploy #2)
+Live gateway (8001->8000) probe truth table:
+- `/healthz` -> 200 unauth `{"status":"healthy","phase":"2","middleware":"active"}` = the compose healthcheck (`curl -f :8000/healthz`); container State.Health=healthy LEGITIMATELY.
+- `/health` -> 200 unauth.
+- `/api/health`, `/api/healthz`, `/api/ready` -> 401 (auth middleware) -> UNUSABLE as gates.
+- `/ready` -> 503 `{"status":"not_ready","checks":{"db":true,"redis":false}}` -> STILL failing 2026-08-03. Root: redis health check FALSE (db ok). Cross-ref 2026-07-25-redis-password-as-port.md + memory redis-misconf-capdrop-20260725.
+Two-layer gap (one ticket): a broken readiness probe (redis:false) AND zero alarm. Separately, the deploy runbook gated on `/api/health -> 200`, which is IMPOSSIBLE (auth-gated) — corrected to `/healthz`. NOT fixed here (diagnosis only, per owner): the /api/* auth-gating and the redis:false readiness.

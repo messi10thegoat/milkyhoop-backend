@@ -31,7 +31,10 @@ it closes when early adopters arrive. So: ship BATCH1 (+ the already-accumulated
    `--force-recreate`. Clear `__pycache__` if stale.
 
 ## POST-DEPLOY VERIFY
-- `curl -s -o /dev/null -w '%{http_code}' localhost:8001/api/health` → 200.
+- `curl -sf localhost:8001/healthz` → 200 (REAL liveness gate; unauth; this is what the compose
+  healthcheck probes: `curl -f :8000/healthz`). NOTE: `/api/health*` are AUTH-GATED (401) and were
+  an IMPOSSIBLE gate in the original runbook — corrected 2026-08-03. Do NOT gate on `/ready` (503,
+  redis:false — see observability-gap ticket).
 - `migrate.sh` verify: schema_migrations = 214 tracked (or the expected count post V218-V220).
 - `docker inspect milkyhoop-dev-api_gateway --format '{{.State.StartedAt}}'` shifted (restart took).
 - Smoke a NON-deposit route (e.g. GET /api/customers, GET /api/sales-invoices) → 200.
