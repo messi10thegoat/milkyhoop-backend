@@ -26,7 +26,10 @@ from ..schemas.bill_payments import (
     OpenBillsResponse,
     OpenBillItem,
 )
-from ..services.resolve_account import resolve_account_id  # noqa: F401
+from ..services.resolve_account import (  # noqa: F401
+    resolve_account_id,
+    resolve_account_id_or_none,
+)
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
@@ -336,6 +339,30 @@ async def create_bill_payment_journal(
         )
 
     # Dr. Bank Fee (expense)
+    # Law 4 + Law 27: kalau FE tak mengirim akun biaya, JANGAN buang barisnya —
+    # cash_out di bawah tetap memasukkan bank_fee_amount, jadi membuang baris ini
+    # membuat jurnal timpang. Resolusi runtime by account_code, fail-closed.
+    if bank_fee_amount > 0 and not bank_fee_account_id:
+        for _code in ("5-20850", "5-20800"):
+            bank_fee_account_id = await resolve_account_id_or_none(
+                conn, ctx["tenant_id"], _code
+            )
+            if bank_fee_account_id:
+                logger.info(
+                    f"bank_fee_account_id absent from payload; resolved {_code} "
+                    f"for tenant={ctx['tenant_id']}"
+                )
+                break
+        if not bank_fee_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Biaya bank diisi tetapi akun biaya bank tidak ditemukan "
+                    "(5-20850/5-20800). Tambahkan akun tersebut di Daftar Akun "
+                    "atau kosongkan biaya bank."
+                ),
+            )
+
     if bank_fee_amount > 0 and bank_fee_account_id:
         line_number += 1
         await conn.execute(
@@ -438,6 +465,26 @@ async def create_bill_payment_journal(
             pph_coa_id,
             pph_amount,
             "PPh dipotong dari pembayaran vendor",
+        )
+
+    # Law 4 GUARD: baris HARUS seimbang dan HARUS sama dengan header, sebelum POSTED.
+    # CHECK(total_debit=total_credit) hanya menguji header — header bisa konsisten
+    # sendiri di atas baris yang timpang (persis bug biaya bank 2.500). Guard ini
+    # menangkap SEMUA jalur `if ... and account_id` yang diam-diam membuang baris.
+    sums = await conn.fetchrow(
+        "SELECT COALESCE(SUM(debit),0) AS d, COALESCE(SUM(credit),0) AS c "
+        "FROM journal_lines WHERE journal_id = $1",
+        journal_id,
+    )
+    _ld, _lc = Decimal(str(sums["d"])), Decimal(str(sums["c"]))
+    _hdr = Decimal(str(total_debit))
+    if _ld != _lc or _ld != _hdr:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Law 4: jurnal pembayaran tidak seimbang — "
+                f"baris D={_ld} K={_lc}, header={_hdr}. Pembayaran dibatalkan."
+            ),
         )
 
     # Law 20: DRAFT->POSTED after all journal lines inserted
