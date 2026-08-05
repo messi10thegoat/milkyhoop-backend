@@ -162,8 +162,7 @@ async def get_product_by_barcode(request: Request, barcode: str):
                     kategori as category,
                     harga_jual as price,
                     deskripsi as description,
-                    barcode,
-                    content_unit
+                    barcode
                 FROM public.products
                 WHERE tenant_id = $1 AND barcode = $2
                 LIMIT 1
@@ -752,7 +751,6 @@ async def search_products_for_kulakan(
                         COALESCE(p.harga_jual, 0)::int as harga_jual,
                         COALESCE(p.purchase_price, 0)::int as purchase_price,
                         p.base_unit,
-                        p.content_unit,
                         p.track_batches,
                         p.track_expiry,
                         p.sales_tax,
@@ -784,7 +782,6 @@ async def search_products_for_kulakan(
                         0 as harga_jual,
                         0 as purchase_price,
                         NULL::text as base_unit,
-                        NULL as content_unit,
                         NULL::boolean as track_batches,
                         NULL::boolean as track_expiry,
                         NULL::text as sales_tax,
@@ -812,7 +809,7 @@ async def search_products_for_kulakan(
                 -- Deduplicate by name, prefer products table (source='products' comes first alphabetically)
                 deduped AS (
                     SELECT DISTINCT ON (LOWER(name))
-                        id, name, barcode, category, harga_jual, purchase_price, base_unit, content_unit, track_batches, track_expiry, sales_tax, sales_tax_id, purchase_tax, purchase_tax_id, source, score
+                        id, name, barcode, category, harga_jual, purchase_price, base_unit, track_batches, track_expiry, sales_tax, sales_tax_id, purchase_tax, purchase_tax_id, source, score
                     FROM combined
                     ORDER BY LOWER(name), source ASC, score DESC
                 )
