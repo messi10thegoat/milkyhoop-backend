@@ -961,13 +961,19 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 )
 
                 # ── DUA lock, sengaja. LOCK cegah RACE; IDEMPOTENCY cegah DUPLIKAT. ──
-                # (1) DOMAIN lock per-customer: men-serialkan pembayaran BERBEDA ke
-                #     pelanggan/faktur yang sama, sehingga guard overpayment tak bisa
-                #     dilewati dua request konkuren yang sama-sama membaca remaining
-                #     lama. JANGAN diganti idem_key: alokasi berbeda punya kunci
-                #     berbeda -> tak antre -> over-application.
+                # (1) DOMAIN lock per-customer — LAPIS KEDUA, bukan penjaga utama.
+                #     ⚠️ KOREKSI 2026-08-06: pada jalur AP yang setara, uji-merah
+                #     membuktikan anti-over-application dijaga oleh row-lock
+                #     `FOR UPDATE` atas dokumen + remaining journal-derived, BUKAN
+                #     oleh advisory lock ini. Jalur AR belum diuji-merah setara —
+                #     perlakukan pembenarannya sebagai BELUM TERBUKTI, bukan fakta.
+                #     Dipertahankan: nol biaya, pertahanan berlapis.
+                #     Tetap JANGAN diganti idem_key — alokasi berbeda punya kunci
+                #     berbeda, jadi idem_key tak pernah menjadi pengganti yang sah
+                #     untuk lock domain (LOCK cegah RACE, IDEMPOTENCY cegah DUPLIKAT).
                 # (2) IDEM lock per-kunci: men-serialkan request IDENTIK supaya
                 #     keduanya tak sama-sama MISS SELECT di execute_idempotent.
+                #     INI yang benar-benar diperlukan oleh mekanisme idempotency.
                 # URUTAN TETAP: domain dulu, baru idem — sama di bill_payments,
                 # supaya tak ada deadlock silang.
                 await conn.execute(
