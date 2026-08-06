@@ -50,10 +50,18 @@ yang tak pernah jalan di `startup_event`. **TIDAK TERKONFIRMASI.**
   Yaitu **URL Redis salah bentuk — password ter-parse sebagai port**. (Bandingkan memory
   `redis-misconf-capdrop-20260725`: password redis memang `x66dii8…`.)
 
-**Jadi `/ready` 503 lolos seminggu BUKAN karena lognya dibuang** — lognya ada, dan berulang. Yang
-tidak ada adalah **orang atau alarm yang membacanya**. Itu akar yang berbeda dari tiket ini, dan
-tidak boleh digabung: menggabungkannya akan membuat perbaikan logging terasa seperti menyelesaikan
-observability gap, padahal tidak.
+**Jadi `/ready` 503 lolos seminggu BUKAN karena lognya dibuang** — lognya ADA, terlihat, dan
+BERULANG sejak awal. Yang tidak ada adalah **PEMBACANYA**.
+
+⚠️ **JANGAN salah baca temuan ini sebagai "log tak terlihat".** Justru sebaliknya: sinyalnya hadir
+sepanjang waktu di tempat yang benar, dan tetap tak ada yang bertindak. Itu **MEMPERKUAT** tiket
+observability gap, bukan melemahkannya — karena membuktikan bahwa **menambah visibilitas tidak akan
+menyelesaikannya**. Masalahnya bukan sinyal yang hilang, melainkan **ketiadaan pembaca**:
+nol alerting, nol yang memantau, nol yang menagih.
+
+Konsekuensi praktis: memperbaiki konfigurasi logging (tiket ini) akan menambah 522 baris INFO ke
+aliran yang **sudah tidak dibaca siapa pun**. Tanpa alerting, itu menambah kebisingan, bukan
+kemampuan melihat. Karena itu keduanya berakar berbeda dan tidak boleh digabung.
 
 ## Hubungan dengan observability gap (silang-rujuk, BUKAN gabung)
 
