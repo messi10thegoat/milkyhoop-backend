@@ -1,8 +1,18 @@
 # P0 SECURITY: kunci OpenAI ter-inline di bundle FE publik sejak 24 Juli 2026
 
 **Tanggal:** 2026-08-04  **Severity:** **P0 — kunci rahasia terekspos publik**
-**Status:** OPEN. Rotasi = tindakan owner (sedang dikerjakan paralel). Fix arsitektural BELUM dibangun.
-**JANGAN diperbaiki di tengah walkthrough** — ini pekerjaan tersendiri.
+**Status:** OPEN. **URUTAN DIUBAH 2026-08-06 atas keputusan owner: PROXY DULU, ROTASI MENYUSUL.**
+
+> **Owner memutuskan TIDAK merotasi kunci sekarang.** Alasannya nol-downtime: merotasi lebih dulu
+> mematikan input suara sampai proxy selesai. Urutan baru:
+> **1) bangun `POST /api/voice/transcribe` → 2) FE pindah memanggil proxy → 3) hapus
+> `REACT_APP_OPENAI_API_KEY` dari `.env.local` → 4) build+deploy → 5) BARU rotasi kunci lama.**
+> Setelah langkah 4, kunci lama tak lagi ada di bundle mana pun, sehingga rotasi di langkah 5
+> menutup paparan tanpa memutus fitur sedetik pun.
+>
+> **Konsekuensi yang diterima owner:** paparan berlanjut sampai proxy live. Ini keputusan sadar,
+> bukan kelalaian. **JANGAN mengangkat ini lagi sebagai P0 yang menuntut rotasi segera** — yang
+> P0 sekarang adalah **menyelesaikan proxy**, karena itulah yang membuka jalan rotasi.
 
 ## Fakta
 
