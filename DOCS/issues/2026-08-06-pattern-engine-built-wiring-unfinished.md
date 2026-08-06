@@ -63,3 +63,36 @@ sebagai pola, bukan enam kejadian tak berhubungan.
 Ini bukan kritik terhadap kualitas kode — engine-enginenya justru ditulis benar. Masalahnya
 **ekonomi perhatian**: bagian terakhir yang membuat fitur benar-benar hidup adalah bagian yang paling
 tidak memuaskan untuk dikerjakan, dan tidak ada satu pun sinyal otomatis yang menagihnya.
+
+---
+
+# KATEGORI TERPISAH: "kode terpasang benar, dimatikan DIAM-DIAM oleh semantik framework"
+
+Instance di bawah **BUKAN** varian dari enam di atas dan jangan dicampur. Bedanya mendasar:
+
+| | Enam instance di atas | Kategori ini |
+|---|---|---|
+| Siapa yang salah | wiring memang tak pernah dibuat / salah sambung | **nol yang salah tulis** |
+| Penyebab | pekerjaan tak diselesaikan | **framework mengabaikan kode yang benar** |
+| Terlihat saat review? | ya, kalau diperiksa | **tidak** — kodenya benar dibaca mata |
+
+**Instance 1 — handler startup diabaikan oleh parameter lifespan** (2026-08-06)
+
+`main.py:252` membuat app dengan `lifespan=prisma_lifespan`. Starlette **mengabaikan seluruh**
+handler `on_event("startup")` / `on_event("shutdown")` bila parameter `lifespan=` dipakai. Kodenya
+benar, penulisnya benar, review-nya wajar — framework yang diam-diam tak memanggilnya.
+
+Akibat: poller Tier-3 summary **tidak pernah hidup** (memory proyek mencatatnya "berjalan tiap 5
+menit" — keliru), dan koneksi auth saat startup tak pernah dibangun.
+
+Bukti: string `API Gateway starting up` NOL kemunculan di log sejak 2026-07-24, sementara
+`Prisma connected.` (dari lifespan) muncul normal.
+Detail: `2026-08-06-startup-event-never-runs.md`
+
+**Cara mencarinya:** cari tempat framework menyediakan DUA mekanisme untuk hal yang sama, di mana
+memakai satu me-disable yang lain tanpa peringatan — handler startup vs lifespan, middleware vs
+dependency, dua konfigurasi logging (lihat `2026-08-06-stdlib-logging-never-configured.md`:
+structlog dikonfigurasi, stdlib logging tidak, sehingga 522 pemanggilan level INFO hilang).
+
+**Penangkal:** smoke test startup yang **menegaskan baris log tertentu muncul**. "Poller start"
+adalah klaim yang bisa diuji; selama ini ia hanya diasumsikan.
