@@ -49,6 +49,12 @@ from ..schemas.receive_payments import (
     UpdateReceivePaymentRequest,
     VoidPaymentRequest,
 )
+from ..utils.idempotency import (  # Law 14
+    _norm_amount,
+    build_idempotency_default,
+    execute_idempotent,
+    get_idempotency_key,
+)
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
 from ..services.bank_sync import (
@@ -934,277 +940,300 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
                 # Law 13: Advisory lock
-                lock_key = f"RECEIVE_PAYMENT_CREATE:{ctx['tenant_id']}:{body.idempotency_key or body.customer_id}"
+                # ── Law 14: kunci idempotency (server-default deterministik) ──
+                # Header X-Idempotency-Key MENIMPA default bila klien mengirim.
+                # Nominal WAJIB lewat _norm_amount (di build_idempotency_default):
+                # f"{x}" bergantung tipe -> int/float/Decimal menghasilkan string
+                # berbeda untuk jumlah sama -> dedup gagal DIAM-DIAM.
+                idem_key = get_idempotency_key(
+                    request,
+                    build_idempotency_default(
+                        "RCV",
+                        [
+                            body.customer_id,
+                            body.payment_date,
+                            body.bank_account_id,
+                            _norm_amount(body.total_amount),
+                            _norm_amount(getattr(body, "discount_amount", None)),
+                        ],
+                        [(a.invoice_id, a.amount_applied) for a in body.allocations],
+                    ),
+                )
+
+                # ── DUA lock, sengaja. LOCK cegah RACE; IDEMPOTENCY cegah DUPLIKAT. ──
+                # (1) DOMAIN lock per-customer: men-serialkan pembayaran BERBEDA ke
+                #     pelanggan/faktur yang sama, sehingga guard overpayment tak bisa
+                #     dilewati dua request konkuren yang sama-sama membaca remaining
+                #     lama. JANGAN diganti idem_key: alokasi berbeda punya kunci
+                #     berbeda -> tak antre -> over-application.
+                # (2) IDEM lock per-kunci: men-serialkan request IDENTIK supaya
+                #     keduanya tak sama-sama MISS SELECT di execute_idempotent.
+                # URUTAN TETAP: domain dulu, baru idem — sama di bill_payments,
+                # supaya tak ada deadlock silang.
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    lock_key,
+                    f"RECEIVE_PAYMENT_CREATE:{ctx['tenant_id']}:{body.customer_id}",
+                )
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"IDEM:{ctx['tenant_id']}:{idem_key}",
                 )
 
-                # Idempotency check (Law 14)
-                if body.idempotency_key:
-                    existing = await conn.fetchrow(
-                        "SELECT id, payment_number, status FROM receive_payments WHERE tenant_id = $1 AND idempotency_key = $2",
-                        ctx["tenant_id"],
-                        body.idempotency_key,
-                    )
-                    if existing:
-                        return ReceivePaymentDetailResponse(
-                            success=True,
-                            message=f"Payment {existing['payment_number']} already exists (idempotent)",
-                            data=ReceivePaymentDetail(
-                                id=str(existing["id"]),
-                                payment_number=existing["payment_number"],
-                                status=existing["status"],
-                            ),
+                # Law 14: seluruh operasi dibungkus supaya request kedua me-REPLAY
+                # hasilnya, bukan menerima error atas sesuatu yang sudah berhasil.
+                async def _op():
+                    # Check if accounting period is open (only if not saving as draft)
+                    if not body.save_as_draft:
+                        await check_period_is_open(
+                            conn, ctx["tenant_id"], body.payment_date
                         )
 
-                # Check if accounting period is open (only if not saving as draft)
-                if not body.save_as_draft:
-                    await check_period_is_open(
-                        conn, ctx["tenant_id"], body.payment_date
-                    )
-
-                # Validate bank account exists and is asset type
-                # Support both CoA UUID and bank_accounts UUID
-                bank_account_uuid = UUID(body.bank_account_id)
-                bank_account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code, name, account_type
-                    FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                """,
-                    bank_account_uuid,
-                    ctx["tenant_id"],
-                )
-
-                # If not found in CoA, try bank_accounts table (frontend sends bank_accounts.id)
-                if not bank_account:
-                    ba_row = await conn.fetchrow(
+                    # Validate bank account exists and is asset type
+                    # Support both CoA UUID and bank_accounts UUID
+                    bank_account_uuid = UUID(body.bank_account_id)
+                    bank_account = await conn.fetchrow(
                         """
-                        SELECT ba.coa_id, ca.id, ca.account_code, ca.name, ca.account_type
-                        FROM bank_accounts ba
-                        JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
-                        WHERE ba.id = $1 AND ba.tenant_id = $2
-                        """,
+                        SELECT id, account_code, name, account_type
+                        FROM chart_of_accounts
+                        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+                    """,
                         bank_account_uuid,
                         ctx["tenant_id"],
                     )
-                    if ba_row:
-                        bank_account = ba_row
-                        body.bank_account_id = str(ba_row["coa_id"])
 
-                if not bank_account:
-                    raise HTTPException(
-                        status_code=400, detail="Bank account not found"
-                    )
+                    # If not found in CoA, try bank_accounts table (frontend sends bank_accounts.id)
+                    if not bank_account:
+                        ba_row = await conn.fetchrow(
+                            """
+                            SELECT ba.coa_id, ca.id, ca.account_code, ca.name, ca.account_type
+                            FROM bank_accounts ba
+                            JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
+                            WHERE ba.id = $1 AND ba.tenant_id = $2
+                            """,
+                            bank_account_uuid,
+                            ctx["tenant_id"],
+                        )
+                        if ba_row:
+                            bank_account = ba_row
+                            body.bank_account_id = str(ba_row["coa_id"])
 
-                if bank_account["account_type"] != "ASSET":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Bank account must be an asset account (Kas/Bank)",
-                    )
-
-                # Validate customer exists (customers.id is VARCHAR, not UUID)
-                customer = await conn.fetchrow(
-                    """
-                    SELECT id, nama FROM customers
-                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                """,
-                    body.customer_id,
-                    ctx["tenant_id"],
-                )
-
-                if not customer:
-                    raise HTTPException(status_code=400, detail="Customer not found")
-                # Auto-fill names if not provided
-                if not body.customer_name:
-                    body.customer_name = customer["nama"] or body.customer_id
-                if not body.bank_account_name:
-                    body.bank_account_name = (
-                        bank_account["name"] or bank_account["account_code"]
-                    )
-
-                # Validate source deposit if source_type='deposit'
-                if body.source_type == "deposit":
-                    deposit = await conn.fetchrow(
-                        """
-                        SELECT id, deposit_number, amount, amount_applied, amount_refunded, status
-                        FROM customer_deposits
-                        WHERE id = $1 AND tenant_id = $2 AND customer_id = $3
-                    """,
-                        UUID(body.source_deposit_id),
-                        ctx["tenant_id"],
-                        body.customer_id,  # FIX_RCV_DEPOSIT_CUSTOMERID: customer_deposits.customer_id is VARCHAR (customers.id), passing UUID() -> asyncpg type-mismatch 500
-                    )
-
-                    if not deposit:
+                    if not bank_account:
                         raise HTTPException(
-                            status_code=400, detail="Source deposit not found"
+                            status_code=400, detail="Bank account not found"
                         )
 
-                    if deposit["status"] not in ("posted", "partial"):
+                    if bank_account["account_type"] != "ASSET":
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Cannot use deposit with status '{deposit['status']}'",
+                            detail="Bank account must be an asset account (Kas/Bank)",
                         )
 
-                    deposit_remaining = (
-                        deposit["amount"]
-                        - (deposit["amount_applied"] or 0)
-                        - (deposit["amount_refunded"] or 0)
-                    )
-                    if body.total_amount > deposit_remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Payment amount ({body.total_amount}) exceeds deposit remaining ({deposit_remaining})",
-                        )
-
-                # Validate allocations
-                total_allocated = 0
-                validated_allocations = []
-
-                for alloc in body.allocations:
-                    invoice = await conn.fetchrow(
+                    # Validate customer exists (customers.id is VARCHAR, not UUID)
+                    customer = await conn.fetchrow(
                         """
-                        SELECT id, invoice_number, total_amount, status, customer_id
-                        FROM sales_invoices
+                        SELECT id, nama FROM customers
                         WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                     """,
-                        UUID(alloc.invoice_id),
+                        body.customer_id,
                         ctx["tenant_id"],
                     )
 
-                    if not invoice:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {alloc.invoice_id} not found",
+                    if not customer:
+                        raise HTTPException(status_code=400, detail="Customer not found")
+                    # Auto-fill names if not provided
+                    if not body.customer_name:
+                        body.customer_name = customer["nama"] or body.customer_id
+                    if not body.bank_account_name:
+                        body.bank_account_name = (
+                            bank_account["name"] or bank_account["account_code"]
                         )
 
-                    if str(invoice["customer_id"]) != body.customer_id:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
+                    # Validate source deposit if source_type='deposit'
+                    if body.source_type == "deposit":
+                        deposit = await conn.fetchrow(
+                            """
+                            SELECT id, deposit_number, amount, amount_applied, amount_refunded, status
+                            FROM customer_deposits
+                            WHERE id = $1 AND tenant_id = $2 AND customer_id = $3
+                        """,
+                            UUID(body.source_deposit_id),
+                            ctx["tenant_id"],
+                            body.customer_id,  # FIX_RCV_DEPOSIT_CUSTOMERID: customer_deposits.customer_id is VARCHAR (customers.id), passing UUID() -> asyncpg type-mismatch 500
                         )
 
-                    # Law 16: compute remaining from journal, not amount_paid
-                    invoice_remaining = await get_invoice_remaining_from_journal(
-                        conn, ctx["tenant_id"], invoice["id"]
-                    )
-                    if alloc.amount_applied > invoice_remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Allocation ({alloc.amount_applied}) exceeds invoice remaining ({invoice_remaining})",
+                        if not deposit:
+                            raise HTTPException(
+                                status_code=400, detail="Source deposit not found"
+                            )
+
+                        if deposit["status"] not in ("posted", "partial"):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Cannot use deposit with status '{deposit['status']}'",
+                            )
+
+                        deposit_remaining = (
+                            deposit["amount"]
+                            - (deposit["amount_applied"] or 0)
+                            - (deposit["amount_refunded"] or 0)
+                        )
+                        if body.total_amount > deposit_remaining:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Payment amount ({body.total_amount}) exceeds deposit remaining ({deposit_remaining})",
+                            )
+
+                    # Validate allocations
+                    total_allocated = 0
+                    validated_allocations = []
+
+                    for alloc in body.allocations:
+                        invoice = await conn.fetchrow(
+                            """
+                            SELECT id, invoice_number, total_amount, status, customer_id
+                            FROM sales_invoices
+                            WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+                        """,
+                            UUID(alloc.invoice_id),
+                            ctx["tenant_id"],
                         )
 
-                    validated_allocations.append(
-                        {
-                            "invoice_id": invoice["id"],
-                            "invoice_number": invoice["invoice_number"],
-                            "invoice_amount": invoice["total_amount"],
-                            "remaining_before": invoice_remaining,
-                            "amount_applied": alloc.amount_applied,
-                            "remaining_after": invoice_remaining - alloc.amount_applied,
-                        }
+                        if not invoice:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Invoice {alloc.invoice_id} not found",
+                            )
+
+                        if str(invoice["customer_id"]) != body.customer_id:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
+                            )
+
+                        # Law 16: compute remaining from journal, not amount_paid
+                        invoice_remaining = await get_invoice_remaining_from_journal(
+                            conn, ctx["tenant_id"], invoice["id"]
+                        )
+                        if alloc.amount_applied > invoice_remaining:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Allocation ({alloc.amount_applied}) exceeds invoice remaining ({invoice_remaining})",
+                            )
+
+                        validated_allocations.append(
+                            {
+                                "invoice_id": invoice["id"],
+                                "invoice_number": invoice["invoice_number"],
+                                "invoice_amount": invoice["total_amount"],
+                                "remaining_before": invoice_remaining,
+                                "amount_applied": alloc.amount_applied,
+                                "remaining_after": invoice_remaining - alloc.amount_applied,
+                            }
+                        )
+                        total_allocated += alloc.amount_applied
+
+                    # Calculate amounts
+                    allocated_amount = total_allocated
+                    # Effective amount after discount
+                    effective_amount = body.total_amount + body.discount_amount
+                    unapplied_amount = effective_amount - allocated_amount
+
+                    if unapplied_amount < 0:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Total allocation ({allocated_amount}) exceeds payment amount ({effective_amount})",
+                        )
+
+                    # Generate payment number
+                    payment_number = await conn.fetchval(
+                        "SELECT generate_receive_payment_number($1)", ctx["tenant_id"]
                     )
-                    total_allocated += alloc.amount_applied
 
-                # Calculate amounts
-                allocated_amount = total_allocated
-                # Effective amount after discount
-                effective_amount = body.total_amount + body.discount_amount
-                unapplied_amount = effective_amount - allocated_amount
-
-                if unapplied_amount < 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Total allocation ({allocated_amount}) exceeds payment amount ({effective_amount})",
-                    )
-
-                # Generate payment number
-                payment_number = await conn.fetchval(
-                    "SELECT generate_receive_payment_number($1)", ctx["tenant_id"]
-                )
-
-                # Insert payment
-                payment_id = await conn.fetchval(
-                    """
-                    INSERT INTO receive_payments (
-                        tenant_id, payment_number, customer_id, customer_name,
-                        payment_date, payment_method, bank_account_id, bank_account_name,
-                        source_type, source_deposit_id,
-                        total_amount, allocated_amount, unapplied_amount,
-                        discount_amount, discount_account_id,
-                        reference_number, notes, status, created_by, idempotency_key
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18, $19)
-                    RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    payment_number,
-                    body.customer_id,  # customers.id is VARCHAR, not UUID
-                    body.customer_name,
-                    body.payment_date,
-                    body.payment_method,
-                    UUID(body.bank_account_id),
-                    body.bank_account_name,
-                    body.source_type,
-                    UUID(body.source_deposit_id) if body.source_deposit_id else None,
-                    body.total_amount,
-                    allocated_amount,
-                    unapplied_amount,
-                    body.discount_amount,
-                    UUID(body.discount_account_id)
-                    if body.discount_account_id
-                    else None,
-                    body.reference_number,
-                    body.notes,
-                    ctx["user_id"],
-                    body.idempotency_key,
-                )
-
-                # Insert allocations
-                for alloc in validated_allocations:
-                    await conn.execute(
+                    # Insert payment
+                    payment_id = await conn.fetchval(
                         """
-                        INSERT INTO receive_payment_allocations (
-                            tenant_id, payment_id, invoice_id, invoice_number,
-                            invoice_amount, remaining_before, amount_applied, remaining_after
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        INSERT INTO receive_payments (
+                            tenant_id, payment_number, customer_id, customer_name,
+                            payment_date, payment_method, bank_account_id, bank_account_name,
+                            source_type, source_deposit_id,
+                            total_amount, allocated_amount, unapplied_amount,
+                            discount_amount, discount_account_id,
+                            reference_number, notes, status, created_by, idempotency_key
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18, $19)
+                        RETURNING id
                     """,
                         ctx["tenant_id"],
-                        payment_id,
-                        alloc["invoice_id"],
-                        alloc["invoice_number"],
-                        alloc["invoice_amount"],
-                        alloc["remaining_before"],
-                        alloc["amount_applied"],
-                        alloc["remaining_after"],
+                        payment_number,
+                        body.customer_id,  # customers.id is VARCHAR, not UUID
+                        body.customer_name,
+                        body.payment_date,
+                        body.payment_method,
+                        UUID(body.bank_account_id),
+                        body.bank_account_name,
+                        body.source_type,
+                        UUID(body.source_deposit_id) if body.source_deposit_id else None,
+                        body.total_amount,
+                        allocated_amount,
+                        unapplied_amount,
+                        body.discount_amount,
+                        UUID(body.discount_account_id)
+                        if body.discount_account_id
+                        else None,
+                        body.reference_number,
+                        body.notes,
+                        ctx["user_id"],
+                        body.idempotency_key,
                     )
 
-                logger.info(
-                    f"Receive payment created: {payment_id}, number={payment_number}"
+                    # Insert allocations
+                    for alloc in validated_allocations:
+                        await conn.execute(
+                            """
+                            INSERT INTO receive_payment_allocations (
+                                tenant_id, payment_id, invoice_id, invoice_number,
+                                invoice_amount, remaining_before, amount_applied, remaining_after
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        """,
+                            ctx["tenant_id"],
+                            payment_id,
+                            alloc["invoice_id"],
+                            alloc["invoice_number"],
+                            alloc["invoice_amount"],
+                            alloc["remaining_before"],
+                            alloc["amount_applied"],
+                            alloc["remaining_after"],
+                        )
+
+                    logger.info(
+                        f"Receive payment created: {payment_id}, number={payment_number}"
+                    )
+
+                    result = {
+                        "success": True,
+                        "message": "Receive payment created successfully",
+                        "data": {
+                            "id": str(payment_id),
+                            "payment_number": payment_number,
+                            "total_amount": body.total_amount,
+                            "allocated_amount": allocated_amount,
+                            "unapplied_amount": unapplied_amount,
+                            "status": "draft",
+                        },
+                    }
+
+                    # Auto post if not draft
+                    if not body.save_as_draft:
+                        post_result = await _post_payment(conn, ctx, payment_id)
+                        result["data"]["status"] = "posted"
+                        result["data"]["journal_id"] = post_result.get("journal_id")
+                        result["message"] = "Receive payment created and posted"
+
+                    return result
+
+                _res = await execute_idempotent(
+                    conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _op
                 )
-
-                result = {
-                    "success": True,
-                    "message": "Receive payment created successfully",
-                    "data": {
-                        "id": str(payment_id),
-                        "payment_number": payment_number,
-                        "total_amount": body.total_amount,
-                        "allocated_amount": allocated_amount,
-                        "unapplied_amount": unapplied_amount,
-                        "status": "draft",
-                    },
-                }
-
-                # Auto post if not draft
-                if not body.save_as_draft:
-                    post_result = await _post_payment(conn, ctx, payment_id)
-                    result["data"]["status"] = "posted"
-                    result["data"]["journal_id"] = post_result.get("journal_id")
-                    result["message"] = "Receive payment created and posted"
-
-                return result
+                return {**_res.data, "was_cached": _res.was_cached}
 
     except HTTPException:
         raise
