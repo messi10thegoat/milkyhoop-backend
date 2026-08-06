@@ -1,5 +1,43 @@
 # Issue (LARGER): degraded >1 day, zero alerts — observability gap
 
+---
+
+## ⚖️ KEPUTUSAN URUTAN (2026-08-06): ALERTING MENDAHULUI PERBAIKAN LOGGING
+
+**Bukan catatan — ini menentukan urutan kerja, dan ia MEMBALIK urutan yang tampak wajar.**
+
+Temuan terkait (`2026-08-06-stdlib-logging-never-configured.md`): stdlib logging tak pernah
+dikonfigurasi, sehingga **522 pemanggilan level INFO** (357 routers + 165 services) tak pernah
+terlihat. Refleks wajarnya: "perbaiki logging dulu supaya kita bisa melihat".
+
+**Refleks itu salah untuk kasus ini.**
+
+Bukti dari `/ready` 503: sinyalnya **ADA sepanjang waktu**, di tempat yang benar, **berulang** sejak
+2026-07-24 —
+```
+Redis connection failed: Port could not be cast to integer value as 'x66dii8PjJ7ADL094'
+```
+dan **tetap nol yang bertindak selama lebih dari seminggu**. Degradasinya bukan tak terlihat; ia
+**tak terbaca**.
+
+**Konsekuensi:** menyalakan 522 baris INFO ke aliran yang **sudah tidak dibaca siapa pun** akan
+menambah **kebisingan**, bukan **kemampuan melihat**. Lebih buruk: volume yang naik membuat sinyal
+yang benar-benar penting makin tenggelam, sehingga perbaikan logging tanpa alerting justru
+**memperburuk** keadaan yang hendak diperbaiki.
+
+**Urutan yang benar:**
+1. **Alerting dulu** — `/ready != 200` → Alertmanager (stack Prometheus/Grafana/Loki SUDAH jalan).
+   Setidaknya satu probe terpantau harus memakai `/ready`, bukan hanya `/healthz`.
+2. **Baru** konfigurasi logging, bertahap per-modul, setelah audit isi pesan
+   (sebagian `logger.info` mungkin mencetak payload sensitif yang selama ini "aman karena tak
+   terlihat").
+
+**Aturan umum yang bisa dipakai ulang:** *visibilitas tanpa pembaca bukan observability.* Sebelum
+menambah sinyal, pastikan ada yang membaca sinyal yang sudah ada. Kalau tidak ada, menambah sinyal
+adalah pekerjaan yang terasa produktif tetapi nol dampak.
+
+---
+
 ## Observation
 /ready returned 503 (redis down) continuously since 2026-07-24 with NOBODY notified, while
 Prometheus/Grafana/Loki are running. The system ran degraded and undetected. Worse: the compose
