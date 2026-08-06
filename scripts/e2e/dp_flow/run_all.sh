@@ -6,11 +6,28 @@
 # drift_check.sql runs AFTER every step. Stops at the FIRST failure with a clear message
 # (which step, the offending lines, exit code). Records per-step + total duration.
 #
-# PROCEDURE (run BEFORE this script — kept separate so this stays a pure flow test):
-#   1. Restore milkydb from the preharness snapshot (ALLOW_CONNECTIONS-false procedure).
-#   2. Verify pristine: "Tenant"=0, schema_migrations=214, pending_registrations=0.
-#   3. bash run_all.sh
-#   4. On failure: fix, restore again, rerun from zero (NEVER resume mid-flow).
+# PRASYARAT — DIJALANKAN OTOMATIS oleh skrip ini (blok PREFLIGHT di bawah):
+#   1. restore_preharness.sh  — milkydb kembali pristine (Tenant=0, journal=0)
+#   2. migrate.sh apply       — jalankan RANTAI MIGRASI di atas snapshot
+#   3. migrate.sh verify      — gate keras: nol V*.sql on-disk yang belum tracked
+#   4. run flow -> on failure: perbaiki, jalankan ulang dari nol (JANGAN resume mid-flow)
+#
+# KENAPA restore->apply, BUKAN "bikin snapshot baru ber-skema master":
+#   Snapshot ber-skema master menghapus properti terpenting harness ini — ia
+#   MENJALANKAN RANTAI MIGRASI setiap run. Snapshot baru hanya menguji skema
+#   AKHIR tanpa pernah menguji JALAN menuju ke sana; migrasi yang rusak/tak
+#   idempoten tak akan pernah ketahuan. Godaan "bikin snapshot baru biar tak
+#   perlu apply" HARUS DITOLAK.
+#
+# SEJARAH (2026-08-06): header lama menjanjikan langkah 1-2 sebagai "run BEFORE
+# this script" tetapi skrip ini NOL memanggilnya, dan tak ada gate yang
+# memeriksanya. Akibatnya (a) menjalankan run_all di atas DB kotor menghasilkan
+# kegagalan yang tampak seperti regresi produk — nyaris salah lapor regresi
+# V221; dan (b) karena restore_preharness memundurkan skema ke tanggal snapshot
+# (26 Juli, s/d V220), migrasi yang lebih baru DIAM-DIAM hilang sehingga harness
+# menguji skema LAMA sambil melaporkan hijau. Law 33 instance kelima:
+# mekanismenya bukan gate yang bisu, melainkan PRASYARAT yang tak dijalankan —
+# sehingga hasil hijau/merahnya tak sah sama sekali.
 #
 # FAILURE DETECTION — rc-PRIMARY (owner directive; string matching alone is a silent-fallback
 # risk). Every child now EXITS NON-ZERO on failure: step scripts source verdict.sh and call
@@ -38,6 +55,41 @@ RUN_T0=$(date +%s)
 echo "======================================================================"
 echo " DP-FLOW SINGLE-SHOT RUN  —  $(date -u +%FT%TZ)"
 echo "======================================================================"
+
+# ============================ PREFLIGHT ============================
+# Prasyarat yang dulu hanya dijanjikan header. SKIP_PREFLIGHT=1 hanya untuk
+# rerun cepat di DB yang SUDAH disiapkan tangan — bukan untuk CI/verdict.
+REPO_ROOT="$(cd "$DIR/../../.." && pwd)"
+if [ "${SKIP_PREFLIGHT:-0}" = "1" ]; then
+  echo "!!! PREFLIGHT DILEWATI (SKIP_PREFLIGHT=1) — hasil run ini TIDAK SAH sebagai verdict."
+else
+  echo "--- PREFLIGHT 1/3: restore preharness ---"
+  bash "$DIR/restore_preharness.sh" || { echo "!!! PREFLIGHT GAGAL: restore_preharness"; exit 9; }
+
+  if [ "${PREFLIGHT_SKIP_APPLY:-0}" = "1" ]; then
+    # HOOK UJI-MERAH (Law 33) — mensimulasikan bug nyata: restore memundurkan
+    # skema lalu apply tak dijalankan. Gate 3/3 di bawah HARUS menangkapnya.
+    echo "!!! PREFLIGHT 2/3 DILEWATI SENGAJA (PREFLIGHT_SKIP_APPLY=1) — uji-merah"
+  else
+    echo "--- PREFLIGHT 2/3: migrate.sh apply (jalankan rantai migrasi) ---"
+    ( cd "$REPO_ROOT" && bash scripts/fresh-install/migrate.sh apply ) \
+      || { echo "!!! PREFLIGHT GAGAL: migrate.sh apply"; exit 9; }
+  fi
+
+  echo "--- PREFLIGHT 3/3: gate skema (nol V*.sql on-disk yang belum tracked) ---"
+  # Assert memakai migrate.sh verify, BUKAN "count(tracked) == count(file)":
+  # schema_migrations memuat entri pembukuan non-VNNN (GAP_PATCH, STEP0_STUB),
+  # jadi kesamaan jumlah TIDAK PERNAH benar (213 file vs 215 tracked) dan
+  # assert bentuk itu akan gagal-palsu selamanya.
+  if ! ( cd "$REPO_ROOT" && bash scripts/fresh-install/migrate.sh verify ); then
+    echo "!!! PREFLIGHT GAGAL: skema tertinggal dari MIGDIR."
+    echo "    Ini gejala 'restore memundurkan skema tanpa apply'."
+    echo "    Hasil run apa pun setelah ini TIDAK SAH — dihentikan."
+    exit 9
+  fi
+  echo "--- PREFLIGHT OK: DB pristine + skema = MIGDIR ---"
+fi
+# ========================== /PREFLIGHT =============================
 
 drift(){ # authoritative drift after each step (per spec). Needs TEN from state.env.
   [ -f "$STATE" ] || { echo "  (no state.env yet — drift skipped for this step)"; return 0; }
