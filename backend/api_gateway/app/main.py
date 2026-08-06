@@ -233,6 +233,21 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as pe_err:
         print(f"Failed to init PolicyEngine: {pe_err}")
 
+    # Law 14: pembersih baris kedaluwarsa idempotency_keys.
+    # Tabel bertambah 1 baris per transaksi uang; `expires_at` hanya dipakai
+    # sebagai filter BACA, jadi tanpa pembersih ia tumbuh selamanya.
+    # DIPASANG DI SINI, bukan di @app.on_event("startup") — handler itu tak
+    # pernah berjalan karena app memakai lifespan= (lihat catatan di sana).
+    try:
+        from .services.db_pool import get_db_pool as _get_pool_idem
+        from .services.idempotency_cleanup import idempotency_cleanup_loop
+
+        _pool_idem = await _get_pool_idem()
+        asyncio.create_task(idempotency_cleanup_loop(_pool_idem))
+        print("Idempotency cleanup poller started")
+    except Exception as _idem_err:
+        print(f"Idempotency cleanup poller failed to start (non-fatal): {_idem_err}")
+
     yield
     try:
         await prisma.disconnect()
@@ -323,6 +338,15 @@ app.add_middleware(
 )
 
 
+# HANDLER INI TIDAK PERNAH BERJALAN (terverifikasi 2026-08-06).
+# FastAPI dibuat dengan `lifespan=prisma_lifespan`; ketika `lifespan=` dipakai,
+# Starlette MENGABAIKAN SEMUA @app.on_event("startup").
+# Bukti: "API Gateway starting up..." NOL kemunculan di log gateway sejak
+# 2026-07-24, sementara "Prisma connected." (dari prisma_lifespan) muncul normal.
+# Akibatnya poller Tier-3 summary di dalam blok ini JUGA tak pernah start,
+# dan auth_client.connect() saat startup tak pernah dipanggil.
+# JANGAN menambah kode startup di sini — taruh di prisma_lifespan.
+# Lihat DOCS/issues/2026-08-06-startup-event-never-runs.md
 @app.on_event("startup")
 async def startup_event():
     """Initialize auth service connection on startup"""
@@ -344,6 +368,7 @@ async def startup_event():
         logger.info("Bot memory summary poller started")
     except Exception as e:
         logger.warning(f"Summary poller failed to start (non-fatal): {e}")
+
 
 
 @app.on_event("shutdown")
