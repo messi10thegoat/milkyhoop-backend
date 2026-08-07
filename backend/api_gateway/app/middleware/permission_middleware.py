@@ -306,6 +306,9 @@ SKIP_PATTERNS = [
 ]
 
 
+from ..services.role_resolution import MSG_INACTIVE
+
+
 class PermissionMiddleware(BaseHTTPMiddleware):
     """
     Middleware that enforces RBAC permissions based on route patterns.
@@ -364,6 +367,25 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                     tenant_id=user["tenant_id"],
                     subscription_role=user.get("role", "USER"),
                 )
+
+                # Keanggotaan dicabut -> jawaban yang JELAS, bukan "izin
+                # kurang". Bedanya penting bagi pengguna: "kamu tak punya izin
+                # untuk ini" menyuruh orang minta izin tambahan; "aksesmu
+                # dinonaktifkan" menyuruh orang menghubungi pemilik bisnis.
+                if not context.membership_active:
+                    logger.warning(
+                        f"Akses ditolak (keanggotaan nonaktif): "
+                        f"user={user['user_id']} tenant={user['tenant_id']} path={path}"
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": {
+                                "error_code": "ROLE_INACTIVE",
+                                "message": MSG_INACTIVE,
+                            }
+                        },
+                    )
 
                 # Check permission
                 allowed = await policy_engine.can(context, action, module)

@@ -32,7 +32,7 @@ Lihat DOCS/issues/BE-AUTH-ROLE-LOOKUP-CASE-MISMATCH-MASKING-001.md
 
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 # Bentuk kanonik = DEFAULT kolom di skema. Kode TIDAK memilih; skema yang
 # memutuskan. Pembacaan tetap case-insensitive supaya baris lama tak putus.
@@ -132,3 +132,37 @@ async def has_active_membership(conn, user_id: str, tenant_id: str) -> bool:
     dihapus di SETIAP login dan pemulihan sesi multi-tenant tak pernah bekerja.
     """
     return await try_resolve_business_role(conn, user_id, tenant_id) is not None
+
+
+async def require_active_membership(request: Request) -> str:
+    """Dependency FastAPI: tuntut keanggotaan AKTIF di tenant pada token.
+
+    KENAPA ADA, padahal PermissionMiddleware sudah menegakkan hal yang sama:
+    beberapa prefix rute MELEWATI middleware itu lewat SKIP_PATTERNS —
+    `/api/dashboard` salah satunya, dengan komentar "Dashboard has own FCL
+    rules". Aturan itu tidak pernah ada. Dibuktikan 2026-08-07: anggota
+    berstatus SUSPENDED, memakai token yang diterbitkan sebelum ia
+    dinonaktifkan, tetap menerima HTTP 200 berisi laba-rugi, pendapatan, dan
+    piutang dari `/api/dashboard/all`.
+
+    Dipasang di level ROUTER supaya berlaku untuk SELURUH endpoint di router
+    itu, termasuk yang ditambahkan besok. Memasangnya per-endpoint berarti
+    endpoint berikutnya lahir tanpa pagar dan tak ada yang menyadarinya.
+
+    Raises:
+        401 — token tak membawa identitas (mestinya sudah disaring auth middleware)
+        409 ROLE_NOT_PROVISIONED / 403 ROLE_INACTIVE — lihat resolve_business_role
+    """
+    # `get_db_pool` — BUKAN `get_pool`. Yang terakhir itu helper LOKAL milik
+    # team_members.py, bukan nama publik db_pool. Percobaan pertama mengimpornya
+    # dari sini dan MELEDAK dengan ImportError -> SELURUH dashboard 500.
+    from .db_pool import get_db_pool
+
+    user = getattr(request.state, "user", None) or {}
+    user_id, tenant_id = user.get("user_id"), user.get("tenant_id")
+    if not user_id or not tenant_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return await resolve_business_role(conn, user_id, tenant_id)

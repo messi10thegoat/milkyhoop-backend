@@ -4,7 +4,7 @@ Combines data from: P&L, AR aging, AP aging, and Kas/Bank balances
 
 Pure Ledger: All financial data queries journal_entries + journal_lines
 """
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
@@ -12,9 +12,14 @@ from datetime import datetime, timedelta, date
 
 # Import centralized config
 from ..services.db_pool import get_db_pool
+from ..services.role_resolution import require_active_membership
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Pagar keanggotaan dipasang di level ROUTER: berlaku untuk KE-15 endpoint
+# di file ini dan untuk setiap endpoint yang ditambahkan kemudian. Router ini
+# dilewati PermissionMiddleware (SKIP_PATTERNS `^/api/dashboard`), jadi tanpa
+# baris ini ia tak punya pagar sama sekali.
+router = APIRouter(dependencies=[Depends(require_active_membership)])
 
 
 # ========================================
