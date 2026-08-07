@@ -11,6 +11,12 @@ import logging
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 import asyncpg
+from .role_resolution import (
+    MSG_INACTIVE,
+    MSG_NOT_PROVISIONED,
+    is_active_status,
+)
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +320,7 @@ class PolicyEngineClient:
             # Get user's business role
             role_row = await conn.fetchrow(
                 """
-                SELECT r.id, r.code
+                SELECT r.id, r.code, utr.status
                 FROM user_tenant_roles utr
                 JOIN roles r ON r.id = utr.role_id
                 WHERE utr.user_id = $1::uuid AND utr.tenant_id = $2
@@ -326,7 +332,25 @@ class PolicyEngineClient:
             )
 
             if not role_row:
-                return {"role_code": "VIEWER", "effective_permissions": {}}
+                # DULU: return {"role_code": "VIEWER", "effective_permissions": {}}
+                # "Peran tak ditemukan" dijawab dengan peran terendah, lalu
+                # dibungkus success:True oleh pemanggil. Klien tak punya cara
+                # membedakan "kamu memang VIEWER" dari "aku tak menemukan
+                # peranmu" — dan cache frontend menyimpan kebohongan itu.
+                # Bukti lapangan: localStorage owner berisi
+                # {success:true, role_code:"VIEWER", effective_permissions:{}}.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "ROLE_NOT_PROVISIONED",
+                        "message": MSG_NOT_PROVISIONED,
+                    },
+                )
+            if not is_active_status(role_row["status"]):
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error_code": "ROLE_INACTIVE", "message": MSG_INACTIVE},
+                )
 
             role_code = role_row["code"]
 

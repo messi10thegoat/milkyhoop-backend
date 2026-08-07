@@ -1,0 +1,47 @@
+PREFLIGHT: gateway uji hidup (healthz=200)
+=== SEED: menyiapkan pengguna sekali-pakai ===
+ redtest+norole@kaosbiru.co.id    | (nol baris) | 
+ redtest+suspended@kaosbiru.co.id | CASHIER     | SUSPENDED
+(3 rows)
+
+=== 0. PAGAR KESELAMATAN — owner normal WAJIB HIJAU ===
+  HIJAU ✓ login owner -> business_role_code (OWNER)
+  HIJAU ✓ permissions/me role_code (OWNER)
+  HIJAU ✓ permissions/me jumlah modul >0 (ya)
+
+=== 1. (B) peran di-LOOKUP, bukan ditebak ===
+    Peran di DB: BENDAHARA
+  HIJAU ✓ BENDAHARA login -> business_role_code (PRA-FIX: OWNER) (BENDAHARA)
+
+=== 2. (A) token masih hidup tapi peran DICABUT -> /permissions/me harus GALAT ===
+    DELETE /team-members/{id} -> HTTP 200   (token lama masih dipegang klien)
+    /permissions/me -> HTTP 409 role_code=None
+  HIJAU ✓ peran dicabut -> /permissions/me HTTP (PRA-FIX: 200) (409)
+  HIJAU ✓ peran dicabut -> BUKAN VIEWER (PRA-FIX: VIEWER) (bukan-viewer)
+
+=== 3. (C) anggota DIHAPUS -> login berikutnya BUKAN OWNER ===
+    HTTP 409  business_role_code=None  error_code=ROLE_NOT_PROVISIONED
+  HIJAU ✓ anggota terhapus -> HTTP 409 (PRA-FIX: 200) (409)
+  HIJAU ✓ anggota terhapus -> BUKAN OWNER (PRA-FIX: OWNER) (bukan-owner)
+  HIJAU ✓ error_code bisa ditindaklanjuti (ROLE_NOT_PROVISIONED)
+
+=== 4. keanggotaan DINONAKTIFKAN (SUSPENDED) -> 403 ===
+    status di DB: SUSPENDED
+    HTTP 403  error_code=ROLE_INACTIVE
+  HIJAU ✓ SUSPENDED -> HTTP 403 (PRA-FIX: 200 + OWNER) (403)
+  HIJAU ✓ SUSPENDED -> error_code (ROLE_INACTIVE)
+
+=== 5. (pembaca kelima, auth.py:237) last_active_tenant_id BERTAHAN ===
+    sebelum login: redtest-tenant-kedua  (keanggotaan di sana: 1 baris ACTIVE)
+    sesudah login: redtest-tenant-kedua
+  HIJAU ✓ last_active BERTAHAN (PRA-FIX: di-NULL-kan tiap login) (redtest-tenant-kedua)
+
+=== 6. switch-tenant ke tenant UTAMA tak boleh otomatis OWNER ===
+    switch-tenant -> role_code=BENDAHARA
+  HIJAU ✓ switch ke tenant utama -> peran NYATA (PRA-FIX: OWNER) (BENDAHARA)
+
+=== 7. daftar tenant tak boleh menyuntik OWNER ===
+    daftar tenant -> role_code=BENDAHARA
+  HIJAU ✓ daftar tenant -> peran NYATA (PRA-FIX: OWNER) (BENDAHARA)
+
+===== HASIL: 14 lulus, 0 gagal =====

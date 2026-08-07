@@ -155,17 +155,17 @@ async def _get_user_role_hierarchy(conn, tenant_id: str, user_id: str) -> int:
 
 
 async def _get_user_role_code(conn, user_id: str, tenant_id: str) -> Optional[str]:
-    """Get user's primary role code in tenant"""
-    return await conn.fetchval(
-        """
-        SELECT r.code FROM user_tenant_roles utr
-        JOIN roles r ON r.id = utr.role_id
-        WHERE utr.user_id = $1::uuid AND utr.tenant_id = $2
-        ORDER BY utr.is_primary DESC LIMIT 1
-    """,
-        user_id,
-        tenant_id,
-    )
+    """Kode peran utama pengguna di tenant, atau None.
+
+    DULU: query ini TIDAK memfilter status sama sekali, sehingga keanggotaan
+    yang dinonaktifkan tetap menghasilkan peran untuk pemeriksaan otorisasi di
+    baris 681/705 (caller_role / target_role). Sekarang memakai query kanonik
+    yang menghormati status DAN roles.is_active.
+    None = tidak boleh; pemanggil sudah memperlakukannya begitu.
+    """
+    from ..services.role_resolution import try_resolve_business_role
+
+    return await try_resolve_business_role(conn, user_id, tenant_id)
 
 
 # Reverse map: DB module -> access level string
@@ -766,25 +766,43 @@ async def get_my_permissions(request: Request):
         engine = get_policy_engine()
         result = await engine.get_effective_permissions(user_id, tenant_id)
         return {"success": True, **result}
-    except RuntimeError:
-        # PolicyEngine not initialized — fallback to direct DB query
+    except HTTPException:
+        # 409/403 dari PolicyEngine adalah JAWABAN, bukan kecelakaan.
+        raise
+    except RuntimeError as e:
+        # Dipersempit: HANYA "engine belum ter-inisialisasi", bukan semua
+        # RuntimeError. Dulu `except RuntimeError` menangkap apa pun lalu
+        # membalasnya dengan success:True + izin kosong.
+        if "not initialized" not in str(e):
+            logger.error(f"Error getting permissions (RuntimeError): {e}")
+            raise HTTPException(status_code=500, detail="Failed to get permissions")
+
+        # Fallback memakai resolusi KANONIK yang sama (menghormati status +
+        # roles.is_active), dan TIDAK lagi mengembalikan izin kosong sebagai
+        # keberhasilan: izin diambil sungguhan dari role_permissions.
         pool = await get_pool()
         async with pool.acquire() as conn:
-            role_row = await conn.fetchrow(
+            role_code = await resolve_business_role(conn, user_id, tenant_id)
+            perm_rows = await conn.fetch(
                 """
-                SELECT r.code FROM user_tenant_roles utr
-                JOIN roles r ON r.id = utr.role_id
-                WHERE utr.user_id = $1::uuid AND utr.tenant_id = $2
-                ORDER BY utr.is_primary DESC LIMIT 1
+                SELECT rp.module, rp.actions
+                FROM role_permissions rp
+                JOIN roles r ON r.id = rp.role_id
+                WHERE r.code = $1 AND r.is_active = TRUE
             """,
-                user_id,
-                tenant_id,
+                role_code,
             )
-            role_code = role_row["code"] if role_row else "VIEWER"
+            effective = {
+                row["module"]: {
+                    "actions": [a.strip() for a in row["actions"]],
+                    "source": "role",
+                }
+                for row in perm_rows
+            }
             return {
                 "success": True,
                 "role_code": role_code,
-                "effective_permissions": {},
+                "effective_permissions": effective,
             }
     except Exception as e:
         logger.error(f"Error getting permissions: {e}")

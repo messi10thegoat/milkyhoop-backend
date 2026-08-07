@@ -30,13 +30,20 @@ async def get_accessible_pay_group_ids(
 
 
 async def get_user_role_code(user_id: str, tenant_id: str, conn) -> str:
-    """Get user's business role code from user_tenant_roles."""
-    row = await conn.fetchrow(
-        """SELECT r.code FROM user_tenant_roles utr
-           JOIN roles r ON r.id = utr.role_id
-           WHERE utr.user_id = $1 AND utr.tenant_id = $2 AND LOWER(utr.status) = 'active'
-           LIMIT 1""",
-        user_id,
-        tenant_id,
-    )
-    return row["code"] if row else "VIEWER"
+    """Kode peran bisnis, atau "VIEWER" bila tak ada keanggotaan aktif.
+
+    Fungsi INI sudah benar sebelum batch 2026-08-07 (satu-satunya pembaca yang
+    memakai LOWER). Sekarang ia memanggil query kanonik supaya definisi "peran
+    aktif" hidup di SATU tempat — perilakunya untuk owner sehat TIDAK berubah,
+    dan itu diuji eksplisit.
+
+    ⚠️ Fallback "VIEWER" DIPERTAHANKAN DI SINI, sengaja, berbeda dari auth.py.
+    Ini jalur PEMBATASAN (filter payroll), bukan jalur pemberian akses: menebak
+    ke peran paling sempit di sini mempersempit, tidak membuka. Mengubahnya
+    jadi raise akan mengubah perilaku endpoint payroll yang belum ada dalam
+    lingkup batch ini dan belum punya ujinya. Lihat catatan di
+    DOCS/issues/BE-AUTH-ROLE-LOOKUP-CASE-MISMATCH-MASKING-001.md.
+    """
+    from .role_resolution import try_resolve_business_role
+
+    return await try_resolve_business_role(conn, user_id, tenant_id) or "VIEWER"

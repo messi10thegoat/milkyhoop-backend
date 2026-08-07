@@ -1,0 +1,24 @@
+=== 0. PAGAR KESELAMATAN — owner normal WAJIB HIJAU ===
+  HIJAU ✓ login owner -> business_role_code (OWNER)
+  HIJAU ✓ permissions/me role_code (OWNER)
+  HIJAU ✓ permissions/me jumlah modul >0 (ya)
+    Peran di DB: BENDAHARA
+  !! PAGAR JEBOL BENDAHARA login -> business_role_code (PRA-FIX: OWNER): dapat=OWNER harap=BENDAHARA
+    DELETE /team-members/{id} -> HTTP 200   (token lama masih dipegang klien)
+    /permissions/me -> HTTP 200 role_code=VIEWER
+  !! PAGAR JEBOL peran dicabut -> /permissions/me HTTP (PRA-FIX: 200): dapat=200 harap=409
+  !! PAGAR JEBOL peran dicabut -> BUKAN VIEWER (PRA-FIX: VIEWER): dapat=VIEWER harap=bukan-viewer
+    HTTP 200  business_role_code=OWNER  error_code=None
+  !! PAGAR JEBOL anggota terhapus -> HTTP 409 (PRA-FIX: 200): dapat=200 harap=409
+  !! PAGAR JEBOL anggota terhapus -> BUKAN OWNER (PRA-FIX: OWNER): dapat=OWNER harap=bukan-owner
+  !! PAGAR JEBOL error_code bisa ditindaklanjuti: dapat=None harap=ROLE_NOT_PROVISIONED
+    status di DB: SUSPENDED
+    HTTP 200  error_code=None
+  !! PAGAR JEBOL SUSPENDED -> HTTP 403 (PRA-FIX: 200 + OWNER): dapat=200 harap=403
+  !! PAGAR JEBOL SUSPENDED -> error_code: dapat=None harap=ROLE_INACTIVE
+  !! PAGAR JEBOL last_active BERTAHAN (PRA-FIX: di-NULL-kan tiap login): dapat=(NULL) harap=redtest-tenant-kedua
+    switch-tenant -> role_code=OWNER
+  !! PAGAR JEBOL switch ke tenant utama -> peran NYATA (PRA-FIX: OWNER): dapat=OWNER harap=BENDAHARA
+    daftar tenant -> role_code=OWNER
+  !! PAGAR JEBOL daftar tenant -> peran NYATA (PRA-FIX: OWNER): dapat=OWNER harap=BENDAHARA
+===== HASIL: 3 lulus, 11 gagal =====
