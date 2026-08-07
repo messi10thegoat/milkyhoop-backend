@@ -1,0 +1,27 @@
+PREFLIGHT: http://localhost:8002/api hidup (200)
+fixture: anggota CASHIER ACTIVE dibuat ulang
+
+--- PAGAR: keadaan sehat harus TETAP jalan (uji dua arah) ---
+  ✓ owner role_code: OWNER
+  ✓ owner /dashboard/all: 200
+  ✓ anggota AKTIF /dashboard/all: 200
+  ✓ anggota AKTIF /sales-invoices: 200
+
+--- GUARD: yang TIDAK boleh dinonaktifkan ---
+  ✓ OWNER ditolak mutlak: 403
+  ✓ owner nonaktifkan diri sendiri: 403
+
+--- INTI: deactivate lalu TOKEN YANG SAMA ---
+  ✓ PATCH deactivate: 200
+  ✓ status di DB: SUSPENDED
+  ✓ ★ token SAMA /sales-invoices: 403
+  ✓ ★ token SAMA /dashboard/all: 403
+  ✓ token SAMA /permissions/me: 403
+
+--- PULIH: reactivate mengembalikan akses ---
+  ✓ PATCH reactivate: 200
+  ✓ status di DB: ACTIVE
+  ✓ token SAMA pulih /sales-invoices: 200
+  ✓ token SAMA pulih /dashboard/all: 200
+
+===== 15 sesuai, 0 menyimpang =====

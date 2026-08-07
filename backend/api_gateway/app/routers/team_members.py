@@ -665,6 +665,104 @@ async def remove_team_member(request: Request, member_id: str):
 # =====================================================
 
 
+async def _set_member_status(request: Request, member_id: str, new_status: str, verb: str):
+    """Inti bersama deactivate/reactivate. Satu jalur, satu set guard.
+
+    CATATAN CACHE: `user_tenant_roles.status` TIDAK di-cache di mana pun.
+    PolicyEngine membacanya lewat query langsung di `get_user_context` yang
+    dipanggil PER REQUEST; `_permission_cache` hanya menyimpan role_permissions
+    (kunci role_id) dan overrides (kunci user:tenant) — keduanya tak bergantung
+    pada status. Karena itu perubahan di sini berlaku pada request BERIKUTNYA,
+    tanpa invalidasi dan tanpa restart gateway.
+    """
+    _validate_uuid(member_id, "member ID")
+
+    user = _get_user_context(request)
+    tenant_id = user["tenant_id"]
+    current_user_id = user["user_id"]
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await _check_owner_or_manager(conn, tenant_id, current_user_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Hanya Pemilik atau Manajer yang dapat {verb} anggota tim",
+            )
+
+        member_row = await conn.fetchrow(
+            """
+            SELECT utr.id, utr.user_id, utr.status, r.code AS role_code,
+                   r.hierarchy_level, u.email
+            FROM user_tenant_roles utr
+            JOIN roles r ON r.id = utr.role_id
+            LEFT JOIN "User" u ON u.id = utr.user_id::text
+            WHERE utr.id = $1 AND utr.tenant_id = $2
+            """,
+            member_id,
+            tenant_id,
+        )
+        if not member_row:
+            raise HTTPException(status_code=404, detail="Anggota tim tidak ditemukan")
+
+        # OWNER: larangan MUTLAK, bukan "kecuali dia satu-satunya".
+        # Aturan bersyarat harus MENGHITUNG untuk memutuskan, dan hitungan itu
+        # bisa salah (race, roles.is_active, status). Larangan tanpa syarat tak
+        # punya syarat yang bisa salah. Pergantian pemilik punya jalurnya
+        # sendiri: POST /transfer-ownership.
+        if member_row["role_code"] == "OWNER":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Pemilik bisnis tidak dapat dinonaktifkan. "
+                    "Gunakan Transfer Kepemilikan bila ingin mengganti pemilik."
+                ),
+            )
+
+        if str(member_row["user_id"]) == current_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Anda tidak dapat {verb} akses Anda sendiri.",
+            )
+
+        member_hierarchy = member_row["hierarchy_level"]
+        user_hierarchy = await _get_user_role_hierarchy(conn, tenant_id, current_user_id)
+        if member_hierarchy < user_hierarchy:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Tidak dapat {verb} anggota dengan peran lebih tinggi dari Anda",
+            )
+
+        await conn.execute(
+            "UPDATE user_tenant_roles SET status = $1 WHERE id = $2 AND tenant_id = $3",
+            new_status,
+            member_id,
+            tenant_id,
+        )
+
+    return {
+        "success": True,
+        "data": {
+            "member_id": member_id,
+            "email": member_row["email"],
+            "status": new_status,
+            "previous_status": member_row["status"],
+        },
+    }
+
+
+@router.patch("/{member_id}/deactivate")
+async def deactivate_team_member(request: Request, member_id: str):
+    """Cabut akses anggota tim. Berlaku pada request BERIKUTNYA milik anggota
+    itu — termasuk sesi yang sedang berjalan, bukan hanya login berikutnya."""
+    return await _set_member_status(request, member_id, "SUSPENDED", "menonaktifkan")
+
+
+@router.patch("/{member_id}/reactivate")
+async def reactivate_team_member(request: Request, member_id: str):
+    """Pulihkan akses anggota tim yang sebelumnya dinonaktifkan."""
+    return await _set_member_status(request, member_id, "ACTIVE", "mengaktifkan")
+
+
 @router.patch("/{member_id}/overrides")
 async def update_member_overrides(
     member_id: str, body: UpdateOverridesRequest, request: Request

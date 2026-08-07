@@ -30,6 +30,10 @@ class UserContext:
     business_role_code: Optional[str] = None
     visibility_levels: List[str] = None  # [L1, L2, L3]
     approval_limit: Optional[int] = None
+    # False = baris peran ADA tapi statusnya bukan ACTIVE (mis. SUSPENDED).
+    # DIBEDAKAN dari "tak ada baris" (business_role_id None): yang satu berarti
+    # "aksesmu dicabut", yang lain "kamu belum pernah diberi akses".
+    membership_active: bool = True
 
 
 # Module name mapping (frontend/API -> database)
@@ -175,7 +179,7 @@ class PolicyEngineClient:
             async with self.pool.acquire() as conn:
                 role_row = await conn.fetchrow(
                     """
-                    SELECT r.id, r.code, r.approval_limit
+                    SELECT r.id, r.code, r.approval_limit, utr.status
                     FROM user_tenant_roles utr
                     JOIN roles r ON r.id = utr.role_id
                     WHERE utr.user_id = $1::uuid AND utr.tenant_id = $2
@@ -187,7 +191,18 @@ class PolicyEngineClient:
                     tenant_id,
                 )
 
-            if role_row:
+            if role_row and not is_active_status(role_row["status"]):
+                # Keanggotaan DICABUT. Konteks sengaja dibiarkan TANPA peran,
+                # dan bendera dinyalakan supaya pemanggil bisa membedakan ini
+                # dari "belum pernah punya peran".
+                #
+                # JANGAN raise di sini: blok ini dibungkus `except Exception`
+                # di bawah, sehingga HTTPException apa pun akan DITELAN dan
+                # berubah jadi konteks kosong tanpa jejak. Keputusannya
+                # dikembalikan sebagai DATA, ditegakkan oleh pemanggil.
+                context.membership_active = False
+                context.visibility_levels = []
+            elif role_row:
                 context.business_role_id = str(role_row["id"])
                 context.business_role_code = role_row["code"]
                 context.approval_limit = role_row["approval_limit"]
@@ -238,6 +253,14 @@ class PolicyEngineClient:
         Actions: C (Create), R (Read), U (Update), D (Delete),
                  V (Void), A (Approve), P (Post), E (Export)
         """
+        # PALING AWAL, sebelum apa pun. Baris di bawah ini jatuh kembali ke
+        # `subscription_role` — dan itu PLAN TIER dari JWT (FREE/BUSINESS/PRO/
+        # ADMIN), bukan peran tim. Anggota SUSPENDED yang tenant-nya ber-plan
+        # ADMIN akan lolos lewat celah itu kalau kita hanya mengosongkan
+        # perannya. Mengosongkan peran saja BUKAN pencabutan akses.
+        if not user_context.membership_active:
+            return False
+
         if not user_context.business_role_id:
             return user_context.subscription_role in ["ADMIN", "OWNER"]
 
