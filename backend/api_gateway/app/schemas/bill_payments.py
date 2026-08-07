@@ -280,6 +280,11 @@ class BillPaymentDetail(BaseModel):
 class BillPaymentResponse(BaseModel):
     """Generic bill payment operation response."""
 
+    # Law 14: true bila request ini di-REPLAY dari idempotency_keys
+    # (bukan transaksi baru). FE memakainya untuk menawarkan
+    # "Catat Sebagai Transaksi Terpisah".
+    was_cached: bool = False
+
     success: bool
     message: str
     data: Optional[dict] = None

@@ -35,6 +35,12 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,  # noqa: F401
 )
+from ..utils.idempotency import (  # Law 14
+    _norm_amount,
+    build_idempotency_default,
+    execute_idempotent,
+    get_idempotency_key,
+)
 from ..services.role_precondition import assert_required_roles_for_path
 
 # Fase D2-wrap B: PURCHASE_DISCOUNT + AP_PREPAID now resolved at runtime via
@@ -1134,338 +1140,369 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Law 13: Advisory lock — UNCONDITIONAL (ARAP Rule 1, BankSync Rule 4)
-                lock_key = (
-                    f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.idempotency_key}"
-                    if payload.idempotency_key
-                    else f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.vendor_id}:{payload.payment_date}"
+                # ── Law 14: kunci idempotency (server-default deterministik) ──
+                # Header X-Idempotency-Key MENIMPA default bila klien mengirim.
+                # bank_fee_amount & pph IKUT hash: dua pembayaran yang hanya beda
+                # biaya transfer adalah transaksi BERBEDA (jurnalnya berbeda).
+                idem_key = get_idempotency_key(
+                    request,
+                    build_idempotency_default(
+                        "BP",
+                        [
+                            payload.vendor_id,
+                            payload.payment_date,
+                            payload.bank_account_id,
+                            _norm_amount(payload.total_amount),
+                            _norm_amount(payload.discount_amount),
+                            _norm_amount(payload.bank_fee_amount),
+                            _norm_amount(payload.pph_amount),
+                        ],
+                        [(a.bill_id, a.amount_applied) for a in payload.allocations],
+                    ),
+                )
+
+                # ── DUA lock, sengaja. LOCK cegah RACE; IDEMPOTENCY cegah DUPLIKAT. ──
+                # (1) DOMAIN lock per-vendor — LAPIS KEDUA, bukan penjaga utama.
+                #     ⚠️ KOREKSI 2026-08-06 (uji-merah): anti-over-application pada
+                #     jalur ini SEBENARNYA dijaga oleh row-lock
+                #     `SELECT ... FROM bills WHERE id=$1 FOR UPDATE` (lihat bawah)
+                #     + remaining yang dihitung journal-derived sesudahnya.
+                #     Terbukti: dengan domain-lock DILUMPUHKAN, dua request konkuren
+                #     tetap menghasilkan tepat SATU sukses (400/201).
+                #     Jadi JANGAN mewarisi klaim "tanpa lock ini terjadi
+                #     over-application" — itu tidak benar untuk jalur ini.
+                #     Dipertahankan karena nol biaya dan menjadi pertahanan berlapis
+                #     bila FOR UPDATE hilang saat refactor.
+                # (2) IDEM lock per-kunci: men-serialkan request IDENTIK supaya
+                #     keduanya tak sama-sama MISS SELECT di execute_idempotent.
+                #     INI yang benar-benar diperlukan oleh mekanisme idempotency.
+                # URUTAN TETAP: domain dulu, baru idem — SAMA seperti
+                # receive_payments, supaya tak ada deadlock silang.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.vendor_id}",
                 )
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    lock_key,
+                    f"IDEM:{ctx['tenant_id']}:{idem_key}",
                 )
 
-                # Idempotency check (Law 14)
-                if payload.idempotency_key:
-                    existing = await conn.fetchrow(
-                        "SELECT id, payment_number, status FROM bill_payments_v2 WHERE tenant_id = $1 AND idempotency_key = $2",
-                        ctx["tenant_id"],
-                        payload.idempotency_key,
-                    )
-                    if existing:
-                        return BillPaymentResponse(
-                            success=True,
-                            message=f"Payment {existing['payment_number']} already exists (idempotent)",
-                            data={
-                                "id": str(existing["id"]),
-                                "payment_number": existing["payment_number"],
-                                "status": existing["status"],
-                            },
+                # Law 14: bungkus seluruh operasi -> request kedua me-REPLAY hasil,
+                # bukan menerima error atas sesuatu yang sudah berhasil.
+                async def _op():
+                    if not payload.save_as_draft:
+                        await check_period_is_open(
+                            conn, ctx["tenant_id"], payload.payment_date
                         )
 
-                if not payload.save_as_draft:
-                    await check_period_is_open(
-                        conn, ctx["tenant_id"], payload.payment_date
+                    # Validate optional UUID fields before INSERT
+                    for _field_name, _field_val in [
+                        ("discount_account_id", payload.discount_account_id),
+                        ("bank_fee_account_id", payload.bank_fee_account_id),
+                        ("source_deposit_id", payload.source_deposit_id),
+                    ]:
+                        if _field_val:
+                            validate_uuid(_field_val, _field_name)
+
+                    # Auto-lookup vendor_name if not provided
+                    if not payload.vendor_name:
+                        vendor = await conn.fetchrow(
+                            "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
+                            validate_uuid(payload.vendor_id, "vendor_id"),
+                            ctx["tenant_id"],
+                        )
+                        if not vendor:
+                            raise HTTPException(status_code=400, detail="Vendor not found")
+                        vendor_name = vendor["name"]
+                    else:
+                        vendor_name = payload.vendor_name
+
+                    # Auto-lookup bank_account_name if not provided
+                    if not payload.bank_account_name:
+                        bank = await conn.fetchrow(
+                            "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                            validate_uuid(payload.bank_account_id, "bank_account_id"),
+                            ctx["tenant_id"],
+                        )
+                        if not bank:
+                            raise HTTPException(
+                                status_code=400, detail="Bank account not found"
+                            )
+                        bank_account_name = bank["account_name"]
+                    else:
+                        bank_account_name = payload.bank_account_name
+
+                    payment_number = await generate_payment_number(conn, ctx["tenant_id"])
+                    allocated_amount = sum(a.amount_applied for a in payload.allocations)
+                    # Law 4 fix: unapplied = total_amount + discount - allocated
+                    # Mirrors receive_payments formula for balanced journal
+                    unapplied_amount = (
+                        payload.total_amount + payload.discount_amount - allocated_amount
                     )
 
-                # Validate optional UUID fields before INSERT
-                for _field_name, _field_val in [
-                    ("discount_account_id", payload.discount_account_id),
-                    ("bank_fee_account_id", payload.bank_fee_account_id),
-                    ("source_deposit_id", payload.source_deposit_id),
-                ]:
-                    if _field_val:
-                        validate_uuid(_field_val, _field_name)
-
-                # Auto-lookup vendor_name if not provided
-                if not payload.vendor_name:
-                    vendor = await conn.fetchrow(
-                        "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                        validate_uuid(payload.vendor_id, "vendor_id"),
-                        ctx["tenant_id"],
-                    )
-                    if not vendor:
-                        raise HTTPException(status_code=400, detail="Vendor not found")
-                    vendor_name = vendor["name"]
-                else:
-                    vendor_name = payload.vendor_name
-
-                # Auto-lookup bank_account_name if not provided
-                if not payload.bank_account_name:
-                    bank = await conn.fetchrow(
-                        "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        validate_uuid(payload.bank_account_id, "bank_account_id"),
-                        ctx["tenant_id"],
-                    )
-                    if not bank:
+                    if allocated_amount > payload.total_amount + payload.discount_amount:
                         raise HTTPException(
-                            status_code=400, detail="Bank account not found"
-                        )
-                    bank_account_name = bank["account_name"]
-                else:
-                    bank_account_name = payload.bank_account_name
-
-                payment_number = await generate_payment_number(conn, ctx["tenant_id"])
-                allocated_amount = sum(a.amount_applied for a in payload.allocations)
-                # Law 4 fix: unapplied = total_amount + discount - allocated
-                # Mirrors receive_payments formula for balanced journal
-                unapplied_amount = (
-                    payload.total_amount + payload.discount_amount - allocated_amount
-                )
-
-                if allocated_amount > payload.total_amount + payload.discount_amount:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Allocations exceed payment amount plus discount",
-                    )
-
-                status = "draft" if payload.save_as_draft else "posted"
-                payment_id = uuid_module.uuid4()
-
-                await conn.execute(
-                    """
-                    INSERT INTO bill_payments_v2 (
-                        id, tenant_id, payment_number, vendor_id, vendor_name, payment_date,
-                        payment_method, bank_account_id, bank_account_name, total_amount,
-                        allocated_amount, unapplied_amount, discount_amount, discount_account_id,
-                        bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
-                        amount_in_base_currency, check_number, check_due_date, check_bank_name,
-                        source_type, source_deposit_id, reference_number, notes, tags, status,
-                        created_by, created_at, updated_at, posted_at, posted_by, idempotency_key,
-                        pph_tax_code_id, pph_amount
-                    ) VALUES (
-                        $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
-                        $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
-                        $29, NOW(), NOW(),
-                        CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
-                        CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30,
-                        $31::uuid, $32
-                    )""",
-                    payment_id,
-                    ctx["tenant_id"],
-                    payment_number,
-                    payload.vendor_id,
-                    vendor_name,
-                    payload.payment_date,
-                    payload.payment_method,
-                    payload.bank_account_id,
-                    bank_account_name,
-                    payload.total_amount,
-                    allocated_amount,
-                    unapplied_amount,
-                    payload.discount_amount,
-                    payload.discount_account_id,
-                    payload.bank_fee_amount,
-                    payload.bank_fee_account_id,
-                    payload.currency_code,
-                    payload.exchange_rate,
-                    int(
-                        Decimal(str(payload.total_amount))
-                        * Decimal(str(payload.exchange_rate))
-                    ),
-                    payload.check_number,
-                    payload.check_due_date,
-                    payload.check_bank_name,
-                    payload.source_type,
-                    payload.source_deposit_id,
-                    payload.reference_number,
-                    payload.notes,
-                    payload.tags,
-                    status,
-                    ctx["user_id"],
-                    payload.idempotency_key,
-                    UUID(payload.pph_tax_code_id) if payload.pph_tax_code_id else None,
-                    Decimal(str(payload.pph_amount or 0)),
-                )
-
-                for alloc in payload.allocations:
-                    bill = await conn.fetchrow(
-                        "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid FOR UPDATE",
-                        alloc.bill_id,
-                    )
-                    if not bill:
-                        raise HTTPException(
-                            status_code=400, detail=f"Bill {alloc.bill_id} not found"
+                            status_code=400,
+                            detail="Allocations exceed payment amount plus discount",
                         )
 
-                    # Law 16: compute remaining from journal, not amount_paid
-                    remaining_before = await get_bill_remaining_from_journal(
-                        conn, ctx["tenant_id"], alloc.bill_id
-                    )
-                    if alloc.amount_applied > remaining_before:
-                        raise HTTPException(
-                            status_code=400, detail="Amount exceeds remaining"
-                        )
-
-                    remaining_after = remaining_before - alloc.amount_applied
+                    status = "draft" if payload.save_as_draft else "posted"
+                    payment_id = uuid_module.uuid4()
 
                     await conn.execute(
                         """
-                        INSERT INTO bill_payment_allocations (id, payment_id, bill_id, remaining_before, amount_applied, remaining_after, created_at)
-                        VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, $5, NOW())""",
+                        INSERT INTO bill_payments_v2 (
+                            id, tenant_id, payment_number, vendor_id, vendor_name, payment_date,
+                            payment_method, bank_account_id, bank_account_name, total_amount,
+                            allocated_amount, unapplied_amount, discount_amount, discount_account_id,
+                            bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
+                            amount_in_base_currency, check_number, check_due_date, check_bank_name,
+                            source_type, source_deposit_id, reference_number, notes, tags, status,
+                            created_by, created_at, updated_at, posted_at, posted_by, idempotency_key,
+                            pph_tax_code_id, pph_amount
+                        ) VALUES (
+                            $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
+                            $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
+                            $29, NOW(), NOW(),
+                            CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
+                            CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30,
+                            $31::uuid, $32
+                        )""",
                         payment_id,
-                        alloc.bill_id,
-                        remaining_before,
-                        alloc.amount_applied,
-                        remaining_after,
+                        ctx["tenant_id"],
+                        payment_number,
+                        payload.vendor_id,
+                        vendor_name,
+                        payload.payment_date,
+                        payload.payment_method,
+                        payload.bank_account_id,
+                        bank_account_name,
+                        payload.total_amount,
+                        allocated_amount,
+                        unapplied_amount,
+                        payload.discount_amount,
+                        payload.discount_account_id,
+                        payload.bank_fee_amount,
+                        payload.bank_fee_account_id,
+                        payload.currency_code,
+                        payload.exchange_rate,
+                        int(
+                            Decimal(str(payload.total_amount))
+                            * Decimal(str(payload.exchange_rate))
+                        ),
+                        payload.check_number,
+                        payload.check_due_date,
+                        payload.check_bank_name,
+                        payload.source_type,
+                        payload.source_deposit_id,
+                        payload.reference_number,
+                        payload.notes,
+                        payload.tags,
+                        status,
+                        ctx["user_id"],
+                        payload.idempotency_key,
+                        UUID(payload.pph_tax_code_id) if payload.pph_tax_code_id else None,
+                        Decimal(str(payload.pph_amount or 0)),
                     )
 
-                    if not payload.save_as_draft:
-                        await conn.execute(
-                            """
-                            UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
-                                status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
-                                              WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
-                                updated_at = NOW()
-                            WHERE id = $2::uuid""",
-                            alloc.amount_applied,
+                    for alloc in payload.allocations:
+                        bill = await conn.fetchrow(
+                            "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid FOR UPDATE",
                             alloc.bill_id,
                         )
+                        if not bill:
+                            raise HTTPException(
+                                status_code=400, detail=f"Bill {alloc.bill_id} not found"
+                            )
 
-                # Create journal entry for posted payments
-                journal_id = None
-                journal_number = None
-                if not payload.save_as_draft:
-                    journal_id, journal_number = await create_bill_payment_journal(
-                        conn=conn,
-                        ctx=ctx,
-                        payment_id=payment_id,
-                        payment_number=payment_number,
-                        payment_date=payload.payment_date,
-                        vendor_name=vendor_name,
-                        bank_account_id=payload.bank_account_id,
-                        total_amount=payload.total_amount,
-                        allocated_amount=allocated_amount,
-                        discount_amount=payload.discount_amount,
-                        discount_account_id=payload.discount_account_id,
-                        bank_fee_amount=payload.bank_fee_amount,
-                        bank_fee_account_id=payload.bank_fee_account_id,
-                        source_type=payload.source_type,
-                        source_deposit_id=payload.source_deposit_id,
-                        unapplied_amount=unapplied_amount,
-                        pph_tax_code_id=payload.pph_tax_code_id,
-                        pph_amount=payload.pph_amount or 0,
-                    )
+                        # Law 16: compute remaining from journal, not amount_paid
+                        remaining_before = await get_bill_remaining_from_journal(
+                            conn, ctx["tenant_id"], alloc.bill_id
+                        )
+                        if alloc.amount_applied > remaining_before:
+                            raise HTTPException(
+                                status_code=400, detail="Amount exceeds remaining"
+                            )
 
-                    # Update payment with journal info
-                    await conn.execute(
-                        """UPDATE bill_payments_v2
-                           SET journal_id = $1, journal_number = $2
-                           WHERE id = $3""",
-                        journal_id,
-                        journal_number,
-                        payment_id,
-                    )
-
-                    # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
-                    if (payload.pph_amount or 0) > 0 and payload.pph_tax_code_id:
-                        pph_tc = await conn.fetchrow(
-                            "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
-                            UUID(payload.pph_tax_code_id),
-                        )
-                        vendor_npwp = None  # vendors table has no npwp column yet
-                        pph_rate = (
-                            Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
-                        )
-                        pph_dpp = (
-                            (
-                                Decimal(str(payload.pph_amount)) / pph_rate * 100
-                            ).quantize(Decimal("1"))
-                            if pph_rate > 0
-                            else Decimal("0")
-                        )
-                        tax_period = (
-                            payload.payment_date.strftime("%Y%m")
-                            if hasattr(payload.payment_date, "strftime")
-                            else str(payload.payment_date)[:7].replace("-", "")
-                        )
+                        remaining_after = remaining_before - alloc.amount_applied
 
                         await conn.execute(
                             """
-                            INSERT INTO withholding_tax_records (
-                                id, tenant_id, direction, tax_code_id,
-                                document_type, document_id, payment_id, journal_id,
-                                vendor_id, npwp, tax_period,
-                                base_amount, tax_amount, status
-                            ) VALUES (
-                                $1, $2, 'cut', $3,
-                                'BILL_PAYMENT', $4, $5, $6,
-                                $7, $8, $9,
-                                $10, $11, 'recorded'
-                            )
-                            """,
-                            uuid_module.uuid4(),
-                            ctx["tenant_id"],
-                            UUID(payload.pph_tax_code_id),
+                            INSERT INTO bill_payment_allocations (id, payment_id, bill_id, remaining_before, amount_applied, remaining_after, created_at)
+                            VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, $5, NOW())""",
                             payment_id,
-                            payment_id,
-                            journal_id,
-                            UUID(payload.vendor_id) if payload.vendor_id else None,
-                            vendor_npwp,
-                            tax_period,
-                            pph_dpp,
-                            payload.pph_amount,
+                            alloc.bill_id,
+                            remaining_before,
+                            alloc.amount_applied,
+                            remaining_after,
                         )
 
-                    # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
-                    if payload.bank_account_id:
-                        bank_acct = await conn.fetchrow(
-                            "SELECT id, account_name, account_type FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                            validate_uuid(
-                                str(payload.bank_account_id), "bank_account_id"
-                            ),
-                            ctx["tenant_id"],
+                        if not payload.save_as_draft:
+                            await conn.execute(
+                                """
+                                UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
+                                    status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
+                                                  WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
+                                    updated_at = NOW()
+                                WHERE id = $2::uuid""",
+                                alloc.amount_applied,
+                                alloc.bill_id,
+                            )
+
+                    # Create journal entry for posted payments
+                    journal_id = None
+                    journal_number = None
+                    if not payload.save_as_draft:
+                        journal_id, journal_number = await create_bill_payment_journal(
+                            conn=conn,
+                            ctx=ctx,
+                            payment_id=payment_id,
+                            payment_number=payment_number,
+                            payment_date=payload.payment_date,
+                            vendor_name=vendor_name,
+                            bank_account_id=payload.bank_account_id,
+                            total_amount=payload.total_amount,
+                            allocated_amount=allocated_amount,
+                            discount_amount=payload.discount_amount,
+                            discount_account_id=payload.discount_account_id,
+                            bank_fee_amount=payload.bank_fee_amount,
+                            bank_fee_account_id=payload.bank_fee_account_id,
+                            source_type=payload.source_type,
+                            source_deposit_id=payload.source_deposit_id,
+                            unapplied_amount=unapplied_amount,
+                            pph_tax_code_id=payload.pph_tax_code_id,
+                            pph_amount=payload.pph_amount or 0,
                         )
-                        if bank_acct:
-                            pph_amt = payload.pph_amount or 0
-                            actual_transfer = payload.total_amount - pph_amt
-                            if bank_acct["account_type"] == "credit_card":
-                                bt_amount = actual_transfer
-                                bt_type = "charge"
-                            else:
-                                bt_amount = -actual_transfer
-                                bt_type = "payment_made"
+
+                        # Update payment with journal info
+                        await conn.execute(
+                            """UPDATE bill_payments_v2
+                               SET journal_id = $1, journal_number = $2
+                               WHERE id = $3""",
+                            journal_id,
+                            journal_number,
+                            payment_id,
+                        )
+
+                        # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
+                        if (payload.pph_amount or 0) > 0 and payload.pph_tax_code_id:
+                            pph_tc = await conn.fetchrow(
+                                "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
+                                UUID(payload.pph_tax_code_id),
+                            )
+                            vendor_npwp = None  # vendors table has no npwp column yet
+                            pph_rate = (
+                                Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
+                            )
+                            pph_dpp = (
+                                (
+                                    Decimal(str(payload.pph_amount)) / pph_rate * 100
+                                ).quantize(Decimal("1"))
+                                if pph_rate > 0
+                                else Decimal("0")
+                            )
+                            tax_period = (
+                                payload.payment_date.strftime("%Y%m")
+                                if hasattr(payload.payment_date, "strftime")
+                                else str(payload.payment_date)[:7].replace("-", "")
+                            )
 
                             await conn.execute(
                                 """
-                                INSERT INTO bank_transactions (
-                                    id, tenant_id, bank_account_id, transaction_date,
-                                    transaction_type, amount, running_balance,
-                                    reference_type, reference_id, reference_number,
-                                    description, payee_payer, journal_id,
-                                    status, origin_type, source_module,
-                                    created_by, posted_by, posted_at
+                                INSERT INTO withholding_tax_records (
+                                    id, tenant_id, direction, tax_code_id,
+                                    document_type, document_id, payment_id, journal_id,
+                                    vendor_id, npwp, tax_period,
+                                    base_amount, tax_amount, status
                                 ) VALUES (
-                                    $1, $2, $3, $4, $5, $6, 0,
-                                    'bill_payment', $7::uuid, $8,
-                                    $9, $10, $11,
-                                    'POSTED', 'MANUAL', 'bill_payment',
-                                    $12, $12, NOW()
+                                    $1, $2, 'cut', $3,
+                                    'BILL_PAYMENT', $4, $5, $6,
+                                    $7, $8, $9,
+                                    $10, $11, 'recorded'
                                 )
                                 """,
                                 uuid_module.uuid4(),
                                 ctx["tenant_id"],
-                                bank_acct["id"],
-                                payload.payment_date,
-                                bt_type,
-                                bt_amount,
+                                UUID(payload.pph_tax_code_id),
                                 payment_id,
-                                payment_number,
-                                f"Payment to {vendor_name}",
-                                vendor_name,
+                                payment_id,
                                 journal_id,
-                                ctx["user_id"],
+                                UUID(payload.vendor_id) if payload.vendor_id else None,
+                                vendor_npwp,
+                                tax_period,
+                                pph_dpp,
+                                payload.pph_amount,
                             )
 
-                return BillPaymentResponse(
-                    success=True,
-                    message=f"Payment {payment_number} {'created as draft' if payload.save_as_draft else 'posted'}",
-                    data={
-                        "id": str(payment_id),
-                        "payment_number": payment_number,
-                        "status": status,
-                    },
+                        # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
+                        if payload.bank_account_id:
+                            bank_acct = await conn.fetchrow(
+                                "SELECT id, account_name, account_type FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                                validate_uuid(
+                                    str(payload.bank_account_id), "bank_account_id"
+                                ),
+                                ctx["tenant_id"],
+                            )
+                            if bank_acct:
+                                pph_amt = payload.pph_amount or 0
+                                actual_transfer = payload.total_amount - pph_amt
+                                if bank_acct["account_type"] == "credit_card":
+                                    bt_amount = actual_transfer
+                                    bt_type = "charge"
+                                else:
+                                    bt_amount = -actual_transfer
+                                    bt_type = "payment_made"
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO bank_transactions (
+                                        id, tenant_id, bank_account_id, transaction_date,
+                                        transaction_type, amount, running_balance,
+                                        reference_type, reference_id, reference_number,
+                                        description, payee_payer, journal_id,
+                                        status, origin_type, source_module,
+                                        created_by, posted_by, posted_at
+                                    ) VALUES (
+                                        $1, $2, $3, $4, $5, $6, 0,
+                                        'bill_payment', $7::uuid, $8,
+                                        $9, $10, $11,
+                                        'POSTED', 'MANUAL', 'bill_payment',
+                                        $12, $12, NOW()
+                                    )
+                                    """,
+                                    uuid_module.uuid4(),
+                                    ctx["tenant_id"],
+                                    bank_acct["id"],
+                                    payload.payment_date,
+                                    bt_type,
+                                    bt_amount,
+                                    payment_id,
+                                    payment_number,
+                                    f"Payment to {vendor_name}",
+                                    vendor_name,
+                                    journal_id,
+                                    ctx["user_id"],
+                                )
+
+                    # dict, BUKAN BillPaymentResponse: execute_idempotent
+                    # menyimpan hasil sebagai JSON untuk di-replay.
+                    return {
+                        "success": True,
+                        "message": (
+                            f"Payment {payment_number} "
+                            f"{'created as draft' if payload.save_as_draft else 'posted'}"
+                        ),
+                        "data": {
+                            "id": str(payment_id),
+                            "payment_number": payment_number,
+                            "status": status,
+                        },
+                    }
+
+                _res = await execute_idempotent(
+                    conn, ctx["tenant_id"], idem_key, "BILL_PAYMENT", _op
                 )
+                return {**_res.data, "was_cached": _res.was_cached}
     except HTTPException:
         raise
     except Exception as e:
