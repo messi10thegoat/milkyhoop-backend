@@ -8,8 +8,8 @@ fixture: anggota CASHIER ACTIVE dibuat ulang
   ✓ anggota AKTIF /sales-invoices: 200
 
 --- GUARD: yang TIDAK boleh dinonaktifkan ---
-  ✗ OWNER ditolak mutlak: dapat=000 HARAP=403
-  ✗ owner nonaktifkan diri sendiri: dapat=000 HARAP=403
+  ✗ OWNER ditolak mutlak: dapat=404 HARAP=403
+  ✗ owner nonaktifkan diri sendiri: dapat=404 HARAP=403
 
 --- INTI: deactivate lalu TOKEN YANG SAMA ---
   ✗ PATCH deactivate: dapat=404 HARAP=200
