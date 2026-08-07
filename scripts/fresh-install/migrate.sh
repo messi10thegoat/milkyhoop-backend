@@ -29,9 +29,24 @@ MODE="${1:-}"
 PGDB="${PGDB:-milkydb}"
 PGUSER="${PGUSER:-postgres}"
 CONTAINER="${CONTAINER:-milkyhoop-dev-postgres-1}"
-MIGDIR="${MIGDIR:-/root/milkyhoop-dev/backend/migrations}"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+# MIGDIR mengikuti TREE TEMPAT SKRIP INI BERADA (scripts/fresh-install -> ../..).
+#
+# DULU: di-hardcode ke /root/milkyhoop-dev/backend/migrations (main tree).
+# Akibatnya migrasi yang HANYA ada di worktree TIDAK PERNAH diterapkan oleh
+# harness — dan `verify` tetap LULUS, karena ia juga membandingkan terhadap
+# main tree. Gate melaporkan hijau atas sesuatu yang tak pernah diperiksanya.
+# V222 adalah korban pertamanya (2026-08-07): run_all dilaporkan "menerapkan
+# V222" padahal constraint-nya tak pernah ada di DB.
+# Ini Law 33 dengan mekanisme baru: bukan gate yang bisu, melainkan gate yang
+# MEMERIKSA TARGET YANG SALAH lalu melaporkan hijau.
+#
+# Override eksplisit tetap dihormati: MIGDIR=/path/lain bash migrate.sh ...
+MIGDIR="${MIGDIR:-$(cd "$SELF_DIR/../.." && pwd)/backend/migrations}"
 SKIPLIST="${SKIPLIST:-$SELF_DIR/migration_skip_list.sh}"
+
+# Selalu umumkan target — supaya "tree mana yang diperiksa" tak pernah jadi tebakan.
+echo "MIGDIR yang dipakai: $MIGDIR"
 
 declare -A SKIP_REASON
 if [ -f "$SKIPLIST" ]; then
