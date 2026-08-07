@@ -72,7 +72,11 @@ else
     echo "!!! PREFLIGHT 2/3 DILEWATI SENGAJA (PREFLIGHT_SKIP_APPLY=1) — uji-merah"
   else
     echo "--- PREFLIGHT 2/3: migrate.sh apply (jalankan rantai migrasi) ---"
-    ( cd "$REPO_ROOT" && bash scripts/fresh-install/migrate.sh apply ) \
+    # MIGDIR dipaksa ke tree yang SEDANG DIUJI. migrate.sh sudah relatif
+    # terhadap dirinya sendiri sejak 2026-08-07, tapi ini sabuk kedua yang
+    # membuat niatnya terbaca di tempat kejadian.
+    ( cd "$REPO_ROOT" && MIGDIR="$REPO_ROOT/backend/migrations" \
+        bash scripts/fresh-install/migrate.sh apply ) \
       || { echo "!!! PREFLIGHT GAGAL: migrate.sh apply"; exit 9; }
   fi
 
@@ -81,7 +85,8 @@ else
   # schema_migrations memuat entri pembukuan non-VNNN (GAP_PATCH, STEP0_STUB),
   # jadi kesamaan jumlah TIDAK PERNAH benar (213 file vs 215 tracked) dan
   # assert bentuk itu akan gagal-palsu selamanya.
-  if ! ( cd "$REPO_ROOT" && bash scripts/fresh-install/migrate.sh verify ); then
+  if ! ( cd "$REPO_ROOT" && MIGDIR="$REPO_ROOT/backend/migrations" \
+         bash scripts/fresh-install/migrate.sh verify ); then
     echo "!!! PREFLIGHT GAGAL: skema tertinggal dari MIGDIR."
     echo "    Ini gejala 'restore memundurkan skema tanpa apply'."
     echo "    Hasil run apa pun setelah ini TIDAK SAH — dihentikan."

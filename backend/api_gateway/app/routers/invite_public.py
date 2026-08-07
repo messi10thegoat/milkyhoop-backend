@@ -287,7 +287,7 @@ async def accept_invite(token: str, request: Request):
                 is_external = row["role_code"] == "COLLABORATOR"
                 await conn.execute(
                     """INSERT INTO user_tenant_roles (user_id, tenant_id, role_id, assigned_by, is_external, status)
-                    VALUES ($1::uuid, $2, $3, $4::uuid, $5, 'active')""",
+                    VALUES ($1::uuid, $2, $3, $4::uuid, $5, 'ACTIVE')""",
                     user_id,
                     tenant_id,
                     row["role_id"],

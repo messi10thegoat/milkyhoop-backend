@@ -9,6 +9,12 @@ from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
 from backend.api_gateway.app.services.session_manager import session_manager
+from backend.api_gateway.app.services.role_resolution import (
+    has_active_membership,
+    list_active_tenant_roles,
+    resolve_business_role,
+    try_resolve_business_role,
+)
 import os
 import asyncpg
 from datetime import datetime, timedelta
@@ -217,7 +223,10 @@ async def login_user(request: LoginRequest, http_request: Request):
             # --- Resolve tenant: last_active > primary ---
             raw_tenant_id = result["tenant_id"]
             resolved_tenant_id = raw_tenant_id
-            business_role_code = "OWNER"
+            # DULU: = "OWNER". Itu membuat SETIAP kegagalan di blok bawah —
+            # termasuk exception apa pun — berakhir sebagai OWNER. Jalur ini
+            # gagal KE ATAS, arah yang salah untuk otorisasi.
+            business_role_code = None
 
             try:
                 _tpool = await get_pool()
@@ -232,11 +241,11 @@ async def login_user(request: LoginRequest, http_request: Request):
                     )
 
                     if last_active and last_active != raw_tenant_id:
-                        has_access = await conn.fetchval(
-                            "SELECT EXISTS(SELECT 1 FROM user_tenant_roles "
-                            "WHERE user_id = $1 AND tenant_id = $2 AND status = 'active')",
-                            result["user_id"],
-                            last_active,
+                        # Pembaca KELIMA — ditulis tanpa prefix `utr.` sehingga
+                        # luput dari grep pertama. Karena predikatnya selalu
+                        # miss, last_active_tenant_id dihapus di SETIAP login.
+                        has_access = await has_active_membership(
+                            conn, result["user_id"], last_active
                         )
                         if has_access:
                             tenant_ok = await conn.fetchval(
@@ -256,22 +265,28 @@ async def login_user(request: LoginRequest, http_request: Request):
                                 result["user_id"],
                             )
 
-                    # Resolve business role for resolved tenant
-                    role_row = await conn.fetchrow(
-                        "SELECT r.code FROM user_tenant_roles utr "
-                        "JOIN roles r ON r.id = utr.role_id "
-                        "WHERE utr.user_id = $1 AND utr.tenant_id = $2 AND utr.status = 'active'",
-                        result["user_id"],
-                        resolved_tenant_id,
+                    # Resolusi peran — SATU sumber, NOL tebakan.
+                    # Cabang lama `elif resolved_tenant_id == raw_tenant_id:
+                    # "OWNER"` DIHAPUS, bukan diperbaiki: ia menjawab
+                    # "aku tak tahu" dengan hak tertinggi, dan itulah mekanisme
+                    # eskalasi saat anggota dihapus (User.tenantId tak ikut
+                    # dibersihkan, jadi syaratnya selalu terpenuhi).
+                    # Cabang `else: "VIEWER"` juga dihapus — menebak ke bawah
+                    # tetap menebak.
+                    business_role_code = await resolve_business_role(
+                        conn, result["user_id"], resolved_tenant_id
                     )
-                    if role_row:
-                        business_role_code = role_row["code"]
-                    elif resolved_tenant_id == raw_tenant_id:
-                        business_role_code = "OWNER"
-                    else:
-                        business_role_code = "VIEWER"
+            except HTTPException:
+                # 409/403 dari resolve_business_role adalah JAWABAN, bukan
+                # kecelakaan. Menelannya di sini akan mengembalikan
+                # gagal-ke-atas lewat pintu belakang.
+                raise
             except Exception as e:
                 logger.warning(f"[login] Failed to resolve last_active_tenant: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Gagal memuat peran akun. Silakan coba lagi.",
+                )
 
             # Re-generate tokens if tenant changed
             if resolved_tenant_id != raw_tenant_id:
@@ -495,15 +510,9 @@ async def list_user_tenants(request: Request):
             'SELECT "tenantId" FROM "User" WHERE id = $1', user_id
         )
         primary_tenant_id = user_row["tenantId"] if user_row else None
-        utr_rows = await conn.fetch(
-            "SELECT utr.tenant_id, r.code as role_code "
-            "FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id "
-            "WHERE utr.user_id = $1 AND utr.status = 'active'",
-            user_id,
-        )
-        tenant_roles = {row["tenant_id"]: row["role_code"] for row in utr_rows}
-        if primary_tenant_id and primary_tenant_id not in tenant_roles:
-            tenant_roles[primary_tenant_id] = "OWNER"
+        # Tebakan KEDUA (dulu): tenant utama tanpa baris peran diberi "OWNER".
+        # Dihapus — daftar tenant harus mencerminkan keanggotaan NYATA.
+        tenant_roles = await list_active_tenant_roles(conn, user_id)
         tenant_ids = list(tenant_roles.keys())
         if not tenant_ids:
             return {"tenants": [], "current_tenant_id": tenant_id}
@@ -555,19 +564,9 @@ async def switch_tenant(request: Request, body: SwitchTenantRequest):
         if not tenant_row:
             raise HTTPException(status_code=404, detail="Tenant not found or suspended")
 
-        role_code = None
-        if target_tenant_id == primary_tenant_id:
-            role_code = "OWNER"
-        else:
-            utr_row = await conn.fetchrow(
-                "SELECT r.code as role_code FROM user_tenant_roles utr "
-                "JOIN roles r ON r.id = utr.role_id "
-                "WHERE utr.user_id = $1 AND utr.tenant_id = $2 AND utr.status = 'active'",
-                user_id,
-                target_tenant_id,
-            )
-            if utr_row:
-                role_code = utr_row["role_code"]
+        # Tebakan KETIGA (dulu): pindah ke tenant utama otomatis jadi "OWNER"
+        # tanpa memeriksa baris peran. Dihapus.
+        role_code = await try_resolve_business_role(conn, user_id, target_tenant_id)
 
         if not role_code:
             raise HTTPException(status_code=403, detail="No access to this tenant")
