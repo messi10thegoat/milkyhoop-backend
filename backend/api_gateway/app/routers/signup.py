@@ -107,9 +107,19 @@ def decode_setup_token(token: str) -> dict:
 # ENDPOINTS
 # =====================================================
 
+# Kanal kontak nyata. SATU tempat, sengaja dibuat konstanta supaya penggantinya
+# tak perlu mencari-cari string di dalam pesan.
+#
+# JANGAN diganti dengan alur "minta undangan" berbentuk formulir: alur itu harus
+# memberi tahu pemilik lewat email — yaitu hal yang justru sedang rusak.
+# Hasilnya cuma formulir yang menulis ke basis data dan tak ada yang membacanya.
+# Kanal yang dipakai harus kanal yang SUDAH dibaca manusia hari ini.
+KONTAK_UNDANGAN = os.getenv("SIGNUP_CONTACT_CHANNEL", "").strip()
+
 MSG_EMAIL_DOWN = (
     "Pendaftaran mandiri sedang tidak tersedia karena layanan email kami belum "
-    "aktif. Hubungi kami untuk mendapatkan undangan langsung."
+    "aktif. Hubungi kami untuk mendapatkan undangan langsung"
+    + (f": {KONTAK_UNDANGAN}." if KONTAK_UNDANGAN else ".")
 )
 
 
