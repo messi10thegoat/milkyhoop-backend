@@ -157,12 +157,51 @@ class AuthClient:
                 else None,
             }
 
-        except Exception as e:
-            # Log full error for debugging, but sanitize response to prevent info disclosure
-            logger.error(f"Login error: {str(e)}")
+        except grpc.aio.AioRpcError as e:
+            # PENTING: kredensial salah JUGA tiba sebagai AioRpcError
+            # (StatusCode.UNAUTHENTICATED) — bukan sebagai success=False.
+            # Karena itu pembedanya harus KODE gRPC, bukan sekadar
+            # "apakah ini exception". Versi pertama tambalan ini keliru dan
+            # mengubah setiap password salah menjadi 503; ditangkap pagar dua-arah.
+            code = e.code()
+            credential_codes = {
+                grpc.StatusCode.UNAUTHENTICATED,
+                grpc.StatusCode.PERMISSION_DENIED,
+                grpc.StatusCode.NOT_FOUND,
+                grpc.StatusCode.INVALID_ARGUMENT,
+            }
+            if code in credential_codes:
+                logger.info(f"Login ditolak: code={code}")
+                return {
+                    "success": False,
+                    "error_code": "INVALID_CREDENTIALS",
+                    "message": "Email atau kata sandi salah.",
+                    "access_token": None,
+                    "refresh_token": None,
+                    "user_id": None,
+                }
+
+            # Sisanya = layanan auth tak terjangkau / kelebihan beban / timeout.
+            # Ini BUKAN salah pengguna.
+            logger.error(f"Login transport error: code={code} detail={e.details()}")
             return {
                 "success": False,
-                "message": "Invalid credentials or service temporarily unavailable.",
+                "error_code": "AUTH_SERVICE_UNAVAILABLE",
+                "message": "Layanan autentikasi sedang tidak tersedia.",
+                "access_token": None,
+                "refresh_token": None,
+                "user_id": None,
+            }
+
+        except Exception as e:
+            # Bug internal gateway. Tetap disanitasi untuk pengguna, tapi
+            # JANGAN menyebutnya "kredensial salah" — itu menyalahkan pengguna
+            # atas kesalahan kita, dan menyembunyikan bug dari yang membaca log.
+            logger.exception(f"Login internal error: {type(e).__name__}: {e}")
+            return {
+                "success": False,
+                "error_code": "AUTH_INTERNAL_ERROR",
+                "message": "Terjadi kesalahan internal saat memproses login.",
                 "access_token": None,
                 "refresh_token": None,
                 "user_id": None,
