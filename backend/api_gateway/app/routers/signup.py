@@ -17,7 +17,10 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 
 from ..services.db_pool import get_db_pool
+from fastapi.responses import JSONResponse
 from ..services.email_service import (
+    email_delivery_configured,
+    EmailDeliveryUnavailable,
     send_verification_email,
     send_login_suggestion_email,
     FRONTEND_URL,
@@ -104,12 +107,71 @@ def decode_setup_token(token: str) -> dict:
 # ENDPOINTS
 # =====================================================
 
+# Kanal kontak nyata. SATU tempat, sengaja dibuat konstanta supaya penggantinya
+# tak perlu mencari-cari string di dalam pesan.
+#
+# JANGAN diganti dengan alur "minta undangan" berbentuk formulir: alur itu harus
+# memberi tahu pemilik lewat email — yaitu hal yang justru sedang rusak.
+# Hasilnya cuma formulir yang menulis ke basis data dan tak ada yang membacanya.
+# Kanal yang dipakai harus kanal yang SUDAH dibaca manusia hari ini.
+KONTAK_UNDANGAN = os.getenv("SIGNUP_CONTACT_CHANNEL", "").strip()
+
+MSG_EMAIL_DOWN = (
+    "Pendaftaran mandiri sedang tidak tersedia karena layanan email kami belum "
+    "aktif. Hubungi kami untuk mendapatkan undangan langsung"
+    + (f": {KONTAK_UNDANGAN}." if KONTAK_UNDANGAN else ".")
+)
+
+
+def _email_precondition():
+    """Prasyarat pengiriman email — diperiksa SEBELUM menyentuh basis data.
+
+    KENAPA DI DEPAN, BUKAN SAAT MENGIRIM
+    ------------------------------------
+    `send_verification_email` dipanggil SESUDAH baris pending_registrations
+    ditulis DAN di luar blok koneksi — jadi kegagalan kirim meninggalkan
+    BARIS YATIM setiap kali pendaftaran dicoba. Memeriksa di depan membuat
+    kegagalan tak menyentuh basis data sama sekali; itu lebih kuat daripada
+    rollback, karena tak ada yang perlu dibatalkan.
+
+    Bentuk responsnya SENGAJA {success, message}, bukan {detail} bawaan
+    HTTPException: frontend yang TAYANG membaca `data.message` dan jatuh ke
+    "Terjadi kesalahan." bila hanya ada `detail`. Dengan bentuk ini pesan
+    jujurnya tampil apa adanya TANPA perlu deploy frontend.
+
+    Anti-enumerasi tetap utuh: pemeriksaan ini berjalan sebelum pencarian
+    email, jadi jawabannya identik untuk email yang ada maupun tidak.
+    """
+    if not email_delivery_configured():
+        logger.error(
+            "PENDAFTARAN DITOLAK: RESEND_API_KEY tidak terpasang. "
+            "Tak seorang pun dapat mendaftar mandiri sampai ini dipasang."
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "message": MSG_EMAIL_DOWN,
+                # error_code MEMBEDAKAN sebab; `message` sengaja SAMA untuk
+                # keduanya — pengguna tak perlu tahu apakah kunci belum
+                # dipasang atau penyedia menolak, dan detail penyedia tak boleh
+                # bocor ke publik. Operator membedakannya lewat error_code + log.
+                "error_code": "EMAIL_NOT_CONFIGURED",
+            },
+        )
+    return None
+
+
 @router.post("/register")
 async def signup_register(request: SignupRegisterRequest, http_request: Request):
     """
     Unified register endpoint — anti-enumeration.
     Always returns same response regardless of email existence.
     """
+    blocked = _email_precondition()
+    if blocked:
+        return blocked
+
     email = request.email.lower().strip()
 
     try:
@@ -176,7 +238,38 @@ async def signup_register(request: SignupRegisterRequest, http_request: Request)
 
         # Send verification email
         magic_link = f"{FRONTEND_URL}/api/auth/signup/verify-link/{magic_token}"
-        await send_verification_email(email, code, magic_link)
+        try:
+            await send_verification_email(email, code, magic_link)
+        except EmailDeliveryUnavailable as e:
+            # Baris pending_registrations SUDAH ditulis di atas. Kalau email tak
+            # jadi terkirim, baris itu YATIM: pengguna tak punya kode, tapi
+            # indeks menganggap ada pendaftaran tertunda untuk emailnya.
+            # Karena itu dihapus di sini — hasil akhirnya sama dengan rollback:
+            # gagal kirim = tak ada jejak.
+            # Log WAJIB memuat galat mentah penyedia: itulah satu-satunya yang
+            # membedakan kunci-salah (401/403) dari kuota-habis (429) dari
+            # penerima-ditolak (422 / domain tak ada). Ketiganya menghasilkan
+            # 503 yang sama bagi pengguna — dan memang seharusnya begitu.
+            logger.error(
+                f"PENDAFTARAN DIBATALKAN — penyedia email menolak. "
+                f"email={email} sebab_mentah={e!r}"
+            )
+            try:
+                async with pool.acquire() as c2:
+                    await c2.execute(
+                        "DELETE FROM pending_registrations WHERE email = $1 AND status = 'pending'",
+                        email,
+                    )
+            except Exception as cleanup_err:
+                logger.error(f"Gagal membersihkan pendaftaran tertunda: {cleanup_err}")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "message": MSG_EMAIL_DOWN,
+                    "error_code": "EMAIL_SEND_FAILED",
+                },
+            )
 
         return {
             "success": True,
@@ -184,6 +277,10 @@ async def signup_register(request: SignupRegisterRequest, http_request: Request)
         }
 
     except Exception as e:
+        # CATATAN: blok ini mengembalikan success:True demi anti-enumerasi —
+        # jadi ia MENELAN galat apa pun menjadi "Cek email Anda". Itu sebabnya
+        # kegagalan email ditangani di atas, SEBELUM sampai ke sini, dan
+        # prasyarat kunci diperiksa SEBELUM `try` dimulai.
         logger.error(f"Signup register error: {e}")
         # Still return same response to prevent information leakage
         return {
@@ -447,6 +544,10 @@ async def signup_resend_code(request: ResendCodeRequest):
     Resend verification code.
     Anti-enumeration: always returns same response.
     """
+    blocked = _email_precondition()
+    if blocked:
+        return blocked
+
     email = request.email.lower().strip()
 
     try:

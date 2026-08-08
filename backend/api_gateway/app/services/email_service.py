@@ -9,6 +9,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+
+
+class EmailDeliveryUnavailable(RuntimeError):
+    """Pengiriman email tak bisa dilakukan — konfigurasinya tidak ada.
+
+    KENAPA INI DILEMPAR, BUKAN DIKEMBALIKAN SEBAGAI False/True
+    ----------------------------------------------------------
+    Sebelum ini, kunci yang kosong dijawab dengan `return True` — SUKSES —
+    disertai `logger.warning`. Akibatnya seluruh sistem meyakini email
+    terkirim: layar pendaftaran menampilkan "Cek email Anda", tak ada email
+    yang datang, dan aplikasi melaporkan berhasil.
+
+    [LOG] 32 baris "RESEND_API_KEY not set, skipping email send" terkumpul
+    selama berminggu-minggu. Sinyalnya ADA, TERLIHAT, dan BERULANG — yang tak
+    ada adalah pembacanya. Persis pola /ready 503 (lihat tiket observability):
+    memperbaiki logging tanpa alerting hanya menambah baris yang tak dibaca
+    siapa pun. Karena itu urutannya tetap: ALERTING MENDAHULUI LOGGING.
+
+    Ini instance lain dari "kegagalan dilaporkan sebagai keberhasilan" —
+    kelas yang sama dengan bug A (`success:true` + `role_code:"VIEWER"` untuk
+    peran yang tak ditemukan).
+    """
+
+
+def email_delivery_configured() -> bool:
+    """Prasyarat, bisa diperiksa SEBELUM menulis apa pun ke basis data."""
+    return bool(RESEND_API_KEY)
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://milkyhoop.com")
 FROM_EMAIL = "MilkyHoop <noreply@milkyhoop.com>"
 
@@ -23,10 +50,12 @@ async def send_verification_email(email: str, code: str, magic_link: str) -> boo
         resend.api_key = RESEND_API_KEY
 
         if not RESEND_API_KEY:
-            logger.warning("RESEND_API_KEY not set, skipping email send")
-            logger.warning(f"[DEV] Verification code for {email}: {code}")
-            logger.warning(f"[DEV] Magic link: {magic_link}")
-            return True
+            # Dulu di sini: dua baris warning berisi KODE VERIFIKASI dan MAGIC
+            # LINK, lalu `return True`. Dua cacat sekaligus — sukses palsu, dan
+            # rahasia tertulis ke log. Keduanya hilang bersama lemparan ini.
+            raise EmailDeliveryUnavailable(
+                "RESEND_API_KEY tidak terpasang — email verifikasi tidak dapat dikirim."
+            )
 
         html_content = f"""
 <!DOCTYPE html>
@@ -79,9 +108,17 @@ async def send_verification_email(email: str, code: str, magic_link: str) -> boo
         logger.info(f"Verification email sent to {email}")
         return True
 
+    except EmailDeliveryUnavailable:
+        raise
     except Exception as e:
-        logger.error(f"Failed to send verification email to {email}: {e}")
-        return False
+        # DULU: return False — dan pemanggil TIDAK PERNAH memeriksanya, jadi
+        # kunci yang ada tapi ditolak (salah, dicabut, kredit habis) tetap
+        # menghasilkan "Cek email Anda". Kunci kosong hanyalah satu cara jalur
+        # ini gagal diam-diam; ini caranya yang akan datang.
+        logger.error(f"Gagal mengirim email verifikasi ke {email}: {e}")
+        raise EmailDeliveryUnavailable(
+            f"Layanan email menolak permintaan: {e}"
+        ) from e
 
 
 async def send_login_suggestion_email(email: str) -> bool:
@@ -94,7 +131,9 @@ async def send_login_suggestion_email(email: str) -> bool:
         resend.api_key = RESEND_API_KEY
 
         if not RESEND_API_KEY:
-            logger.warning("RESEND_API_KEY not set, skipping email send")
+            raise EmailDeliveryUnavailable(
+                "RESEND_API_KEY tidak terpasang — email saran-masuk tidak dapat dikirim."
+            )
             logger.warning(f"[DEV] Login suggestion email for existing user: {email}")
             return True
 
@@ -142,6 +181,8 @@ async def send_login_suggestion_email(email: str) -> bool:
         logger.info(f"Login suggestion email sent to {email}")
         return True
 
+    except EmailDeliveryUnavailable:
+        raise
     except Exception as e:
-        logger.error(f"Failed to send login suggestion email to {email}: {e}")
-        return False
+        logger.error(f"Gagal mengirim email saran-masuk ke {email}: {e}")
+        raise EmailDeliveryUnavailable(f"Layanan email menolak permintaan: {e}") from e
