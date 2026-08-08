@@ -339,8 +339,20 @@ async def login_user(request: LoginRequest, http_request: Request):
                 },
             )
         else:
+            # Status mengikuti SEBAB, bukan satu ukuran untuk semua.
+            # 401 hanya untuk kredensial yang memang salah; kegagalan layanan
+            # bukan salah pengguna dan tak boleh menyuruhnya membetulkan ketikan.
+            _ec = result.get("error_code")
+            _status = {
+                "AUTH_SERVICE_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+                "AUTH_INTERNAL_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
+            }.get(_ec, status.HTTP_401_UNAUTHORIZED)
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=result["message"]
+                status_code=_status,
+                detail={
+                    "error_code": _ec or "INVALID_CREDENTIALS",
+                    "message": result["message"],
+                },
             )
 
     except HTTPException as http_exc:
