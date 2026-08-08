@@ -39,7 +39,7 @@ INV="inv+$(date +%s)@kaosbiru.co.id"
 
 HZ=$(curl -s -o /dev/null -w '%{http_code}' "${B%/api}/healthz"); [ "$HZ" = "200" ] || { echo "!! healthz=$HZ"; exit 2; }
 echo "PREFLIGHT: $B hidup · undangan untuk $INV"
-OT="$(login owner@kaosbiru.co.id "$PW")"; OT="${OT%%|*}"
+OT="$(login delivered+owner@resend.dev "$PW")"; OT="${OT%%|*}"
 abort; [ -z "$OT" ] && { echo "!! login owner gagal = ALAT"; exit 2; }
 RID=$(Q "SELECT id FROM roles WHERE code='CASHIER' LIMIT 1;")
 UTR0=$(Q "SELECT count(*) FROM user_tenant_roles;"); USR0=$(Q "SELECT count(*) FROM \"User\";")

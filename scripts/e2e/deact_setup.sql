@@ -6,7 +6,7 @@ DELETE FROM "User" WHERE email LIKE 'deact+%';
 INSERT INTO "User" (id, email, name, "passwordHash", "isVerified", role, "tenantId", "createdAt", "updatedAt")
 SELECT gen_random_uuid()::text, 'deact+kasir@kaosbiru.co.id', 'Deact Kasir',
        u."passwordHash", true, u.role, u."tenantId", now(), now()
-FROM "User" u WHERE u.email='owner@kaosbiru.co.id';
+FROM "User" u WHERE u.email='delivered+owner@resend.dev';
 
 INSERT INTO user_tenant_roles (user_id, tenant_id, role_id, is_primary, status)
 SELECT u.id::uuid, 'kaos-biru-konveksi', r.id, true, 'ACTIVE'

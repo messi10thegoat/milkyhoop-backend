@@ -2,7 +2,7 @@
 # UJI ENAM ARAH lapis 1+3 (Law 33). Gateway uji :8002 melayani worktree.
 B=http://localhost:8002/api
 T=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"owner@kaosbiru.co.id","password":"KaosBiru2026!"}' \
+  -d '{"email":"delivered+owner@resend.dev","password":"KaosBiru2026!"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['access_token'])")
 H=(-H "Authorization: Bearer $T" -H "Content-Type: application/json")
 VEND=57b00d79-c627-4dc6-9014-ee33a08102c4

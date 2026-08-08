@@ -8,12 +8,12 @@ DELETE FROM "User" WHERE email LIKE 'redtest+%@kaosbiru.co.id';
 INSERT INTO "User" (id, email, name, "passwordHash", "isVerified", role, "tenantId", "createdAt", "updatedAt")
 SELECT gen_random_uuid()::text, 'redtest+bendahara@kaosbiru.co.id', 'Red Bendahara',
        u."passwordHash", true, u.role, u."tenantId", now(), now()
-FROM "User" u WHERE u.email = 'owner@kaosbiru.co.id';
+FROM "User" u WHERE u.email = 'delivered+owner@resend.dev';
 
 INSERT INTO "User" (id, email, name, "passwordHash", "isVerified", role, "tenantId", "createdAt", "updatedAt")
 SELECT gen_random_uuid()::text, 'redtest+norole@kaosbiru.co.id', 'Red NoRole',
        u."passwordHash", true, u.role, u."tenantId", now(), now()
-FROM "User" u WHERE u.email = 'owner@kaosbiru.co.id';
+FROM "User" u WHERE u.email = 'delivered+owner@resend.dev';
 
 -- BENDAHARA, status 'ACTIVE' (bentuk yang ditulis onboarding_service).
 INSERT INTO user_tenant_roles (user_id, tenant_id, role_id, is_primary, status)
@@ -24,7 +24,7 @@ WHERE u.email = 'redtest+bendahara@kaosbiru.co.id' AND r.code = 'BENDAHARA';
 INSERT INTO "User" (id, email, name, "passwordHash", "isVerified", role, "tenantId", "createdAt", "updatedAt")
 SELECT gen_random_uuid()::text, 'redtest+suspended@kaosbiru.co.id', 'Red Suspended',
        u."passwordHash", true, u.role, u."tenantId", now(), now()
-FROM "User" u WHERE u.email = 'owner@kaosbiru.co.id';
+FROM "User" u WHERE u.email = 'delivered+owner@resend.dev';
 
 -- Keanggotaan ADA tapi DINONAKTIFKAN. Tanpa baris ini, cabang 403 di helper
 -- lahir sebagai [INFER] — kode yang tak pernah dieksekusi. Satu baris seed
@@ -48,7 +48,7 @@ VALUES ('redtest-tenant-kedua', 'Redtest Tenant Kedua', 'active', now(), now());
 INSERT INTO user_tenant_roles (user_id, tenant_id, role_id, is_primary, status)
 SELECT u.id::uuid, 'redtest-tenant-kedua', r.id, false, 'ACTIVE'
 FROM "User" u, roles r
-WHERE u.email = 'owner@kaosbiru.co.id' AND r.code = 'OWNER' AND r.tenant_id = '__SYSTEM__';
+WHERE u.email = 'delivered+owner@resend.dev' AND r.code = 'OWNER' AND r.tenant_id = '__SYSTEM__';
 
 -- last_active DIKOSONGKAN di seed, di-set hanya oleh uji 5.
 -- Kalau di-set di sini, login owner (uji 0) akan BENAR-BENAR berpindah ke
@@ -57,7 +57,7 @@ WHERE u.email = 'owner@kaosbiru.co.id' AND r.code = 'OWNER' AND r.tenant_id = '_
 -- daftar tenant KEDUA. Uji 2/3 lalu gagal mencari member_id.
 -- (Efek samping ini justru bukti tambahan bahwa perbaikan reader-5 bekerja.)
 UPDATE "User" SET last_active_tenant_id = NULL
-WHERE email = 'owner@kaosbiru.co.id';
+WHERE email = 'delivered+owner@resend.dev';
 
 SELECT u.email, COALESCE(r.code,'(nol baris)') AS peran, utr.status
 FROM "User" u

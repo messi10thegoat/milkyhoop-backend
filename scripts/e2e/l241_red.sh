@@ -38,7 +38,7 @@ echo "PREFLIGHT: $B hidup"
 scp -q "$(dirname "$0")/deact_setup.sql" root@159.89.202.160:/tmp/deact_setup.sql
 ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' >/dev/null
 
-OT=$(tok owner@kaosbiru.co.id "$PW"); [ -z "$OT" ] && { echo "!! login owner gagal = ALAT"; exit 2; }
+OT=$(tok delivered+owner@resend.dev "$PW"); [ -z "$OT" ] && { echo "!! login owner gagal = ALAT"; exit 2; }
 KT=$(tok deact+kasir@kaosbiru.co.id "$PW"); [ -z "$KT" ] && { echo "!! login anggota gagal = ALAT"; exit 2; }
 
 echo; echo "--- PAGAR: keadaan sehat ---"
