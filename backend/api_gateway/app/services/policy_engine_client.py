@@ -261,8 +261,35 @@ class PolicyEngineClient:
         if not user_context.membership_active:
             return False
 
+        # LAPIS 1 dari 2. Middleware juga menolak keadaan ini dengan 409, tapi
+        # kebijakan tidak boleh hidup di satu lapisan saja: siapa pun yang
+        # memanggil can() di luar middleware harus mendapat jawaban yang sama.
+        #
+        # DULU:
+        #     return user_context.subscription_role in ["ADMIN", "OWNER"]
+        #
+        # `subscription_role` adalah PLAN TIER dari JWT, bukan peran tim — jadi
+        # baris itu menjawab "boleh atau tidak" dengan APA YANG DIBAYAR
+        # PELANGGAN. Dan signup meng-hardcode role="ADMIN" ke dalam token
+        # (onboarding_service, "6. Generate tokens locally"), sehingga [SQL]
+        # SELURUH "User" ber-tier ADMIN. Fallback ini mengembalikan True untuk
+        # siapa pun yang mencapainya: lubangnya menganga BY CONSTRUCTION, bukan
+        # kebetulan.
+        #
+        # Yang mencapainya: anggota yang DIHAPUS dari tim. DELETE membuang baris
+        # user_tenant_roles dan MENYISAKAN baris "User" — jadi ia bukan kasus
+        # SUSPENDED, membership_active tetap True, dan sebelum perubahan ini ia
+        # tetap punya akses PENUH sampai tokennya kedaluwarsa (hingga 7 hari).
+        # "Hapus dari Tim" adalah mekanisme pencabutan yang dipakai HARI INI.
+        #
+        # Sensus sebelum mengubah ALLOW->DENY: nol "User" tanpa baris peran di
+        # KETUJUH basis data, dan satu-satunya jalur yang menghasilkan populasi
+        # itu adalah DELETE anggota — persis kasus yang memang harus ditolak.
+        # Signup tidak menghasilkannya: INSERT "User" dan INSERT
+        # user_tenant_roles berada dalam SATU transaksi, dan token baru dibuat
+        # SESUDAH commit -> tak ada jendela.
         if not user_context.business_role_id:
-            return user_context.subscription_role in ["ADMIN", "OWNER"]
+            return False
 
         # OWNER bypass
         if user_context.business_role_code == "OWNER":
