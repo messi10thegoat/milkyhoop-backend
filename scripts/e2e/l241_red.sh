@@ -9,9 +9,26 @@ ok(){ if [ "$2" = "$3" ]; then echo "  ✓ $1: $2"; PASS=$((PASS+1));
 Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
 c(){ local x=$(curl -s -o /dev/null -w '%{http_code}' "$@"); [ "$x" = "000" ] && { echo "!! HTTP 000 = KEGAGALAN ALAT" >&2; touch /tmp/l241_abort; }; printf '%s' "$x"; }
 abort(){ [ -f /tmp/l241_abort ] && { echo; echo "===== DIHENTIKAN: kegagalan alat, TIDAK ADA HASIL SAH ====="; exit 2; }; }
-tok(){ sleep 6; local t=$(curl -s -X POST "$B/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}"|python3 -c 'import sys,json
-try: print(json.load(sys.stdin).get("data",{}).get("access_token") or "")
-except Exception: print("")'); printf '%s' "$t"; }
+# 429 = pembatas laju yang dipicu gate ini sendiri (empat harness beruntun),
+# BUKAN "pengguna tak bisa login". Tanpa pemeriksaan ini, token kosong terkirim
+# sebagai "Bearer " dan endpoint membalas 401 — yang lalu terbaca sebagai
+# kegagalan PRODUK. Tertangkap 2026-08-08; kemunculan KETIGA dari kelas yang
+# sama (000, lalu 429 di invite_red, lalu ini).
+LOGIN_GAP=${LOGIN_GAP:-12}
+tok(){ local code i
+  for i in 1 2; do
+    sleep "$LOGIN_GAP"
+    code=$(curl -s -o /tmp/l241_login -w '%{http_code}' -X POST "$B/auth/login" \
+      -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}")
+    [ "$code" = "429" ] || break
+    echo "    (429 pembatas laju — menunggu, satu kali coba lagi)" >&2; sleep 45
+  done
+  if [ "$code" = "429" ] || [ "$code" = "000" ]; then
+    echo "!! login $1 -> HTTP $code = KEGAGALAN ALAT" >&2; touch /tmp/l241_abort; printf ''; return
+  fi
+  python3 -c 'import sys,json
+try: print(json.load(open("/tmp/l241_login")).get("data",{}).get("access_token") or "")
+except Exception: print("")'; }
 
 HZ=$(curl -s -o /dev/null -w '%{http_code}' "${B%/api}/healthz")
 [ "$HZ" = "200" ] || { echo "!! healthz=$HZ — TIDAK ADA HASIL SAH"; exit 2; }
@@ -63,7 +80,7 @@ if [ -n "$NT" ]; then
   ok "pengguna BARU /permissions/me role" "$(curl -s "$B/permissions/me" -H "Authorization: Bearer $NT"|python3 -c 'import sys,json;print(json.load(sys.stdin).get("role_code"))')" "OWNER"
   ok "pengguna BARU /dashboard/all" "$(c "$B/dashboard/all" -H "Authorization: Bearer $NT")" "200"
   ok "pengguna BARU /sales-invoices" "$(c "$B/sales-invoices" -H "Authorization: Bearer $NT")" "200"
-  NT2=$(tok "$NEWMAIL" "$NEWPW")
+  NT2=$(tok "$NEWMAIL" "$NEWPW"); abort
   ok "pengguna BARU login ULANG lalu dashboard" "$(c "$B/dashboard/all" -H "Authorization: Bearer $NT2")" "200"
 fi
 abort

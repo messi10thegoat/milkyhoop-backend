@@ -8,6 +8,10 @@ Tables:
 - User: User profile data (name, email, avatar)
 - user_permission_overrides: Per-user per-module access overrides
 """
+import json
+import os
+import secrets
+from asyncpg.exceptions import UniqueViolationError
 import logging
 import uuid
 from typing import Optional, List
@@ -327,6 +331,114 @@ async def list_roles(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to list roles: {str(e)}")
 
 
+# CATATAN URUTAN RUTE: ketiga endpoint /invitations HARUS berada SEBELUM
+# @router.get("/{member_id}") — kalau tidak, "/invitations" akan tertangkap
+# sebagai member_id dan tak pernah sampai ke sini.
+@router.get("/invitations")
+async def list_invitations(request: Request):
+    """Undangan yang masih menunggu, dengan link-nya (email tidak dikirim)."""
+    user = _get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await _check_owner_or_manager(conn, user["tenant_id"], user["user_id"]):
+            raise HTTPException(status_code=403, detail="Hanya Pemilik atau Manajer")
+        rows = await conn.fetch(
+            """SELECT ti.id, ti.email, ti.name, ti.status, ti.expires_at, ti.created_at,
+                      ti.invite_token, r.code AS role_code, r.name AS role_name
+               FROM team_invitations ti JOIN roles r ON r.id = ti.role_id
+               WHERE ti.tenant_id = $1 AND ti.status = 'pending'
+               ORDER BY ti.created_at DESC""",
+            user["tenant_id"],
+        )
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": str(r["id"]),
+                "email": r["email"],
+                "name": r["name"],
+                "role_code": r["role_code"],
+                "role_name": r["role_name"],
+                "expires_at": r["expires_at"].isoformat(),
+                "created_at": r["created_at"].isoformat(),
+                "invite_link": _invite_link(r["invite_token"]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.delete("/invitations/{invitation_id}")
+async def revoke_invitation(request: Request, invitation_id: str):
+    """Batalkan undangan. Token lama langsung mati (410)."""
+    _validate_uuid(invitation_id, "invitation ID")
+    user = _get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await _check_owner_or_manager(conn, user["tenant_id"], user["user_id"]):
+            raise HTTPException(status_code=403, detail="Hanya Pemilik atau Manajer")
+        row = await conn.fetchrow(
+            """UPDATE team_invitations SET status = 'revoked', revoked_at = NOW()
+               WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
+               RETURNING id, email""",
+            invitation_id,
+            user["tenant_id"],
+        )
+    if not row:
+        raise HTTPException(
+            status_code=404, detail="Undangan tidak ditemukan atau sudah tidak menunggu"
+        )
+    return {"success": True, "data": {"id": str(row["id"]), "email": row["email"]}}
+
+
+@router.post("/invitations/{invitation_id}/resend")
+async def resend_invitation(request: Request, invitation_id: str):
+    """Terbitkan ulang undangan: token DIPUTAR, token lama MATI.
+
+    KENAPA DIPUTAR, bukan menampilkan ulang token yang sama:
+    alasan orang menekan "kirim ulang" biasanya karena link yang lama bermasalah
+    — salah kirim, diteruskan ke orang lain, tercecer di riwayat chat. Kalau
+    token lama tetap hidup, tombol ini TIDAK MEMPERBAIKI APA PUN; ia hanya
+    menambah satu link yang sama-sama berlaku. Memutar token membuatnya benar-
+    benar sebuah pemulihan, dan namanya jujur.
+    Konsekuensi yang diuji di gate: token LAMA -> 410.
+    """
+    _validate_uuid(invitation_id, "invitation ID")
+    user = _get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await _check_owner_or_manager(conn, user["tenant_id"], user["user_id"]):
+            raise HTTPException(status_code=403, detail="Hanya Pemilik atau Manajer")
+        row = await conn.fetchrow(
+            """UPDATE team_invitations
+               SET invite_token = $3, expires_at = NOW() + INTERVAL '7 days'
+               WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
+               RETURNING id, email, expires_at""",
+            invitation_id,
+            user["tenant_id"],
+            secrets.token_urlsafe(32)[:64],
+        )
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Undangan tidak ditemukan atau sudah tidak menunggu",
+            )
+        token = await conn.fetchval(
+            "SELECT invite_token FROM team_invitations WHERE id = $1", row["id"]
+        )
+    return {
+        "success": True,
+        "message": "Link undangan baru dibuat. Link yang lama sudah tidak berlaku.",
+        "data": {
+            "id": str(row["id"]),
+            "email": row["email"],
+            "invite_link": _invite_link(token),
+            "expires_at": row["expires_at"].isoformat(),
+            "email_sent": False,
+        },
+    }
+
+
 @router.get("/{member_id}")
 async def get_team_member(request: Request, member_id: str):
     """Get team member detail by user_tenant_role ID"""
@@ -387,101 +499,133 @@ async def get_team_member(request: Request, member_id: str):
         )
 
 
+def _invite_link(token: str) -> str:
+    base = os.getenv("APP_BASE_URL", "https://milkyhoop.com").rstrip("/")
+    return f"{base}/invite/{token}"
+
+
+async def _load_invitable_role(conn, role_id: str, tenant_id: str, current_user_id: str):
+    """Peran + guard hierarki. Dipakai invite dan resend supaya tak bisa beda.
+
+    AKAR BUG LAMA (400 Invalid role_id, sejak endpoint ini ditulis): query
+    memakai `WHERE id = $1 AND tenant_id = $2` dengan tenant PEMANGGIL. Tapi
+    [SQL] SELECT tenant_id, count(*) FROM roles GROUP BY 1 -> `__SYSTEM__ | 14`:
+    ke-14 peran sistem hidup di '__SYSTEM__', tak satu pun di bawah tenant.
+    Query itu TAK PERNAH BISA COCOK — untuk siapa pun, selamanya. Undangan tak
+    pernah sekali pun berhasil.
+    """
+    row = await conn.fetchrow(
+        """SELECT id, hierarchy_level, code, name, is_active FROM roles
+           WHERE id = $1 AND tenant_id IN ('__SYSTEM__', $2)""",
+        role_id,
+        tenant_id,
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Peran tidak dikenal")
+    if not row["is_active"]:
+        raise HTTPException(status_code=400, detail="Peran sedang tidak aktif")
+    if row["code"] == "OWNER":
+        # OWNER = satu per tenant, NON_ASSIGNABLE. Gunakan Transfer Kepemilikan.
+        raise HTTPException(
+            status_code=403,
+            detail="Peran Pemilik tidak dapat diundang. Gunakan Transfer Kepemilikan.",
+        )
+    user_hierarchy = await _get_user_role_hierarchy(conn, tenant_id, current_user_id)
+    if row["hierarchy_level"] < user_hierarchy:
+        raise HTTPException(
+            status_code=403, detail="Tidak dapat memberi peran lebih tinggi dari Anda"
+        )
+    return row
+
+
 @router.post("/invite")
 async def invite_team_member(request: Request, data: InviteMemberRequest):
-    """Invite a new team member. Only OWNER/MANAGER can invite."""
-    try:
-        user = _get_user_context(request)
-        tenant_id = user["tenant_id"]
-        current_user_id = user["user_id"]
+    """Undang anggota: TULIS UNDANGAN, JANGAN berikan keanggotaan.
 
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            has_permission = await _check_owner_or_manager(
-                conn, tenant_id, current_user_id
+    PERILAKU LAMA (diganti, bukan ditambal):
+        1. INSERT "User" TANPA passwordHash  -> akun yang tak akan pernah bisa login
+        2. INSERT user_tenant_roles langsung -> keanggotaan penuh TANPA persetujuan
+    Nol baris team_invitations ditulis; jalur terima/tolak tak pernah dilalui.
+    Yang menahan jalur itu selama ini justru galat 400 di atas — sehingga
+    MEMPERBAIKI 400 SAJA berarti MENGAKTIFKAN pembuatan anggota hantu.
+
+    Keanggotaan sekarang lahir HANYA di invite_public.accept_invite.
+    Dua pagar di gate menjaga sifat itu: sesudah endpoint ini dipanggil,
+    user_tenant_roles TIDAK bertambah dan NOL "User" tanpa passwordHash tercipta.
+
+    EMAIL: tidak dikirim. RESEND_API_KEY tidak terpasang di lingkungan ini, dan
+    email_service mengembalikan SUKSES saat kunci kosong (hanya mencatat
+    warning) — jadi memanggilnya akan menghasilkan "terkirim" ke ruang hampa.
+    Endpoint mengembalikan `invite_link` untuk disalin pemilik. Menaikkannya ke
+    pengiriman email nanti = menambah satu pemanggilan; kontrak, skema, dan
+    alurnya tidak berubah. Lihat BE-SIGNUP-EMAIL-NEVER-SENT-001.
+    """
+    user = _get_user_context(request)
+    tenant_id = user["tenant_id"]
+    current_user_id = user["user_id"]
+
+    email = (data.email or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Alamat email tidak valid")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await _check_owner_or_manager(conn, tenant_id, current_user_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Hanya Pemilik atau Manajer yang dapat mengundang anggota",
             )
-            if not has_permission:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Only Owner or Manager can invite team members",
-                )
+        role_row = await _load_invitable_role(conn, data.role_id, tenant_id, current_user_id)
 
-            role_row = await conn.fetchrow(
-                "SELECT id, hierarchy_level, code, name, is_active FROM roles WHERE id = $1 AND tenant_id = $2",
-                data.role_id,
+        already = await conn.fetchval(
+            """SELECT 1 FROM user_tenant_roles utr
+               JOIN "User" u ON u.id::uuid = utr.user_id
+               WHERE lower(u.email) = $1 AND utr.tenant_id = $2""",
+            email,
+            tenant_id,
+        )
+        if already:
+            raise HTTPException(
+                status_code=409, detail="Orang ini sudah menjadi anggota tim"
+            )
+
+        token = secrets.token_urlsafe(32)[:64]
+        try:
+            inv = await conn.fetchrow(
+                """INSERT INTO team_invitations
+                       (tenant_id, email, name, role_id, module_overrides,
+                        invite_token, expires_at, status, invited_by)
+                   VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW() + INTERVAL '7 days',
+                           'pending', $7)
+                   RETURNING id, expires_at""",
                 tenant_id,
-            )
-
-            if not role_row:
-                raise HTTPException(status_code=400, detail="Invalid role_id")
-            if not role_row["is_active"]:
-                raise HTTPException(status_code=400, detail="Role is not active")
-
-            user_hierarchy = await _get_user_role_hierarchy(
-                conn, tenant_id, current_user_id
-            )
-            if role_row["hierarchy_level"] < user_hierarchy:
-                raise HTTPException(
-                    status_code=403, detail="Cannot assign role higher than your own"
-                )
-
-            user_row = await conn.fetchrow(
-                'SELECT id FROM "User" WHERE email = $1', data.email
-            )
-
-            if user_row:
-                target_user_id = user_row["id"]
-            else:
-                from uuid import uuid4
-
-                new_user_id = str(uuid4())
-                await conn.execute(
-                    'INSERT INTO "User" (id, email, name, "createdAt", "updatedAt", "tenantId") VALUES ($1, $2, $3, NOW(), NOW(), $4)',
-                    new_user_id,
-                    data.email,
-                    data.name or data.email.split("@")[0],
-                    tenant_id,
-                )
-                target_user_id = new_user_id
-
-            existing = await conn.fetchval(
-                "SELECT id FROM user_tenant_roles WHERE user_id = $1::uuid AND tenant_id = $2",
-                target_user_id,
-                tenant_id,
-            )
-
-            if existing:
-                raise HTTPException(
-                    status_code=400, detail="User is already a member of this tenant"
-                )
-
-            new_role_id = await conn.fetchval(
-                "INSERT INTO user_tenant_roles (user_id, tenant_id, role_id, assigned_by) VALUES ($1::uuid, $2, $3, $4::uuid) RETURNING id",
-                target_user_id,
-                tenant_id,
-                data.role_id,
+                email,
+                data.name,
+                role_row["id"],
+                json.dumps(getattr(data, "module_overrides", None) or {}),
+                token,
                 current_user_id,
             )
+        except UniqueViolationError:
+            # Indeks parsial (tenant_id, email) WHERE status='pending'.
+            raise HTTPException(
+                status_code=409,
+                detail="Sudah ada undangan aktif untuk email ini. Batalkan dulu bila ingin mengganti perannya.",
+            )
 
-            return {
-                "success": True,
-                "message": f"Successfully invited {data.email} as {role_row['name']}",
-                "data": {
-                    "id": str(new_role_id),
-                    "user_id": str(target_user_id),
-                    "email": data.email,
-                    "role_code": role_row["code"],
-                    "role_name": role_row["name"],
-                },
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error inviting team member: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to invite team member: {str(e)}"
-        )
+    return {
+        "success": True,
+        "message": f"Undangan untuk {email} dibuat. Salin dan kirimkan link di bawah.",
+        "data": {
+            "invitation_id": str(inv["id"]),
+            "email": email,
+            "role_code": role_row["code"],
+            "role_name": role_row["name"],
+            "invite_link": _invite_link(token),
+            "expires_at": inv["expires_at"].isoformat(),
+            "email_sent": False,
+        },
+    }
 
 
 @router.patch("/{member_id}/role")

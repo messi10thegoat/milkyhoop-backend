@@ -76,11 +76,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Check if path matches signup verify-link (has dynamic token)"""
         return bool(re.match(r"^/api/auth/signup/verify-link/[^/]+/?$", path))
 
+    def _is_public_invite(self, path: str, method: str) -> bool:
+        """Tiga rute undangan yang WAJIB publik — dan hanya tiga.
+
+        Orang yang diundang BELUM PUNYA AKUN: ia mustahil membawa token JWT.
+        Kalau ketiganya menuntut autentikasi, undangan tak akan pernah bisa
+        dibuka oleh orang yang dituju. Sebelum ini `/api/invite/*` memang
+        tertahan di sini dan menjawab 401 — bukan 404 — sehingga tampak seperti
+        "rute tak ada" padahal middleware yang menahannya.
+
+        Pola SENGAJA dibuat per-rute, BUKAN prefix lebar `^/api/invite`.
+        Prefix lebar akan otomatis membuka setiap rute undangan yang
+        ditambahkan besok, tanpa siapa pun memutuskannya.
+        """
+        return bool(
+            (method == "GET" and re.match(r"^/api/invite/[^/]+/?$", path))
+            or (method == "POST" and re.match(r"^/api/invite/[^/]+/accept/?$", path))
+            or (method == "POST" and re.match(r"^/api/invite/[^/]+/decline/?$", path))
+        )
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
         try:
             # Allow public paths
+            if self._is_public_invite(path, request.method):
+                return await call_next(request)
+
             if path in self.public_paths:
                 return await call_next(request)
 
