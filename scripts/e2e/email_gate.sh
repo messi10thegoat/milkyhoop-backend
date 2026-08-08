@@ -40,7 +40,7 @@ ok "★ NOL baris yatim" "$(Q "SELECT count(*) FROM pending_registrations;")" "$
 C2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/auth/signup/resend-code" -H 'Content-Type: application/json' -d "{\"email\":\"$M\"}")
 ok "resend-code -> HTTP" "$C2" "503"
 echo "    ANTI-ENUMERASI: email yang SUDAH ADA harus dijawab sama"
-C3=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/auth/signup/register" -H 'Content-Type: application/json' -d "{\"email\":\"owner@kaosbiru.co.id\"}")
+C3=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/auth/signup/register" -H 'Content-Type: application/json' -d "{\"email\":\"delivered+owner@resend.dev\"}")
 ok "email terdaftar -> HTTP sama" "$C3" "503"
 
 echo

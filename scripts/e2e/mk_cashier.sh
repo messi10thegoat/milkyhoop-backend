@@ -5,7 +5,7 @@ Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64
 Q "DELETE FROM user_tenant_roles utr USING \"User\" u WHERE u.id::uuid=utr.user_id AND u.email='$M';
    DELETE FROM \"User\" WHERE email='$M'; DELETE FROM team_invitations WHERE email='$M';" >/dev/null
 sleep 12
-OT=$(curl -s -X POST "$B/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"owner@kaosbiru.co.id\",\"password\":\"$PW\"}"|python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("access_token") or "")')
+OT=$(curl -s -X POST "$B/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"delivered+owner@resend.dev\",\"password\":\"$PW\"}"|python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("access_token") or "")')
 [ -z "$OT" ] && { echo "!! login owner gagal"; exit 2; }
 RID=$(Q "SELECT id FROM roles WHERE code='CASHIER' LIMIT 1;")
 R=$(curl -s -X POST "$B/team-members/invite" -H "Authorization: Bearer $OT" -H 'Content-Type: application/json' -d "{\"email\":\"$M\",\"role_id\":\"$RID\",\"name\":\"Kasir Uji\"}")

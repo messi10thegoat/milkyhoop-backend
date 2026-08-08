@@ -28,7 +28,7 @@ scp -q "$(dirname "$0")/deact_setup.sql" root@159.89.202.160:/tmp/deact_setup.sq
 ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' >/dev/null
 echo "fixture: anggota CASHIER ACTIVE dibuat ulang"
 
-OT=$(tok owner@kaosbiru.co.id); abort
+OT=$(tok delivered+owner@resend.dev); abort
 KT=$(tok deact+kasir@kaosbiru.co.id); abort     # <-- TOKEN INI dipakai sebelum & sesudah suspend
 # WAJIB difilter tenant DAN dibatasi 1 baris. Owner punya keanggotaan di LEBIH
 # DARI SATU tenant sesudah red_abc (redtest-tenant-kedua), dan Q() membuang
@@ -37,7 +37,7 @@ KT=$(tok deact+kasir@kaosbiru.co.id); abort     # <-- TOKEN INI dipakai sebelum 
 # yang salah. Bentuk UUID diperiksa supaya kegagalan seperti ini BERTERIAK.
 TEN=kaos-biru-konveksi
 MID=$(Q "SELECT utr.id FROM user_tenant_roles utr JOIN \"User\" u ON u.id::uuid=utr.user_id WHERE u.email='deact+kasir@kaosbiru.co.id' AND utr.tenant_id='$TEN' LIMIT 1;")
-OMID=$(Q "SELECT utr.id FROM user_tenant_roles utr JOIN \"User\" u ON u.id::uuid=utr.user_id WHERE u.email='owner@kaosbiru.co.id' AND utr.tenant_id='$TEN' LIMIT 1;")
+OMID=$(Q "SELECT utr.id FROM user_tenant_roles utr JOIN \"User\" u ON u.id::uuid=utr.user_id WHERE u.email='delivered+owner@resend.dev' AND utr.tenant_id='$TEN' LIMIT 1;")
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 for v in "$MID" "$OMID"; do
   [[ "$v" =~ $UUID_RE ]] || { echo "!! id bukan UUID tunggal: [$v] = KEGAGALAN ALAT"; exit 2; }
@@ -71,4 +71,18 @@ ok "token SAMA pulih /dashboard/all" "$(code "$B/dashboard/all" -H "Authorizatio
 
 abort
 echo; echo "===== $PASS sesuai, $FAIL menyimpang ====="
+
+# --- BERSIH-BERSIH (ditambah 2026-08-08) ---
+# Gate ini dulu MENINGGALKAN fixture-nya. Residu itu bukan kotoran kosmetik:
+# baris tenant-kedua milik owner yang ditinggalkan red_abc membuat lookup
+# tanpa filter tenant mengembalikan DUA uuid, yang lalu menyambung jadi URL
+# tak sah dan dibaca gate lain sebagai kegagalan PRODUK. Gate yang tak
+# membersihkan diri membuat gate BERIKUTNYA berbohong.
+_bersih(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/c.sql && docker cp /tmp/c.sql milkyhoop-dev-postgres-1:/tmp/c.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/c.sql'" >/dev/null 2>&1; }
+_bersih "DELETE FROM user_permission_overrides WHERE user_id IN (SELECT id FROM \"User\" WHERE email LIKE 'redtest+%' OR email LIKE 'deact+%');
+DELETE FROM user_tenant_roles utr USING \"User\" u WHERE u.id::uuid=utr.user_id AND (u.email LIKE 'redtest+%' OR u.email LIKE 'deact+%');
+DELETE FROM user_tenant_roles WHERE tenant_id='redtest-tenant-kedua';
+DELETE FROM \"User\" WHERE email LIKE 'redtest+%' OR email LIKE 'deact+%';"
+echo "  (fixture dibersihkan)"
+
 [ $FAIL -eq 0 ]

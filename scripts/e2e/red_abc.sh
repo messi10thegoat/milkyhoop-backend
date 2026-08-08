@@ -76,7 +76,7 @@ red(){ if [ "$2" = "$3" ]; then echo "  MERAH ✓ $1 (dapat: $2)"; PASS=$((PASS+
 grn(){ if [ "$2" = "$3" ]; then echo "  HIJAU ✓ $1 ($2)"; PASS=$((PASS+1)); else echo "  !! PAGAR JEBOL $1: dapat=$2 harap=$3"; FAIL=$((FAIL+1)); fi; }
 
 echo "=== 0. PAGAR KESELAMATAN — owner normal WAJIB HIJAU ==="
-R=$(login owner@kaosbiru.co.id); abort_if_tool_failed
+R=$(login delivered+owner@resend.dev); abort_if_tool_failed
 OROLE=$(echo "$R" | jq_ business_role_code)
 OTOK=$(echo "$R" | jq_ access_token)
 grn "login owner -> business_role_code" "$OROLE" "OWNER"
@@ -141,11 +141,11 @@ grn "SUSPENDED -> error_code" "$(errcode)" "ROLE_INACTIVE"
 
 echo
 echo "=== 5. (pembaca kelima, auth.py:237) last_active_tenant_id BERTAHAN ==="
-Q "UPDATE \"User\" SET last_active_tenant_id='redtest-tenant-kedua' WHERE email='owner@kaosbiru.co.id';" >/dev/null
-LA_BEFORE=$(Q "SELECT COALESCE(last_active_tenant_id,'(NULL)') FROM \"User\" WHERE email='owner@kaosbiru.co.id';")
+Q "UPDATE \"User\" SET last_active_tenant_id='redtest-tenant-kedua' WHERE email='delivered+owner@resend.dev';" >/dev/null
+LA_BEFORE=$(Q "SELECT COALESCE(last_active_tenant_id,'(NULL)') FROM \"User\" WHERE email='delivered+owner@resend.dev';")
 echo "    sebelum login: $LA_BEFORE  (keanggotaan di sana: $(Q "SELECT count(*) FROM user_tenant_roles WHERE tenant_id='redtest-tenant-kedua';") baris ACTIVE)"
-login owner@kaosbiru.co.id >/dev/null; abort_if_tool_failed
-LA_AFTER=$(Q "SELECT COALESCE(last_active_tenant_id,'(NULL)') FROM \"User\" WHERE email='owner@kaosbiru.co.id';")
+login delivered+owner@resend.dev >/dev/null; abort_if_tool_failed
+LA_AFTER=$(Q "SELECT COALESCE(last_active_tenant_id,'(NULL)') FROM \"User\" WHERE email='delivered+owner@resend.dev';")
 echo "    sesudah login: $LA_AFTER"
 grn "last_active BERTAHAN (PRA-FIX: di-NULL-kan tiap login)" "$LA_AFTER" "redtest-tenant-kedua"
 
@@ -188,4 +188,18 @@ grn "daftar tenant -> peran NYATA (PRA-FIX: OWNER)" "$TLROLE" "BENDAHARA"
 
 echo
 echo "===== HASIL: $PASS lulus, $FAIL gagal ====="
+
+# --- BERSIH-BERSIH (ditambah 2026-08-08) ---
+# Gate ini dulu MENINGGALKAN fixture-nya. Residu itu bukan kotoran kosmetik:
+# baris tenant-kedua milik owner yang ditinggalkan red_abc membuat lookup
+# tanpa filter tenant mengembalikan DUA uuid, yang lalu menyambung jadi URL
+# tak sah dan dibaca gate lain sebagai kegagalan PRODUK. Gate yang tak
+# membersihkan diri membuat gate BERIKUTNYA berbohong.
+_bersih(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/c.sql && docker cp /tmp/c.sql milkyhoop-dev-postgres-1:/tmp/c.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/c.sql'" >/dev/null 2>&1; }
+_bersih "DELETE FROM user_permission_overrides WHERE user_id IN (SELECT id FROM \"User\" WHERE email LIKE 'redtest+%' OR email LIKE 'deact+%');
+DELETE FROM user_tenant_roles utr USING \"User\" u WHERE u.id::uuid=utr.user_id AND (u.email LIKE 'redtest+%' OR u.email LIKE 'deact+%');
+DELETE FROM user_tenant_roles WHERE tenant_id='redtest-tenant-kedua';
+DELETE FROM \"User\" WHERE email LIKE 'redtest+%' OR email LIKE 'deact+%';"
+echo "  (fixture dibersihkan)"
+
 [ "$FAIL" -eq 0 ] || exit 1

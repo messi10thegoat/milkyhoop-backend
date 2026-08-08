@@ -2,7 +2,7 @@
 # Menutup DUA lubang uji: bank_account_id discrimination + RACE konkuren.
 B=http://localhost:8002/api
 T=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"owner@kaosbiru.co.id","password":"KaosBiru2026!"}' \
+  -d '{"email":"delivered+owner@resend.dev","password":"KaosBiru2026!"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['access_token'])")
 H=(-H "Authorization: Bearer $T" -H "Content-Type: application/json")
 VEND=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"SELECT id FROM vendors LIMIT 1\"" | tr -d '[:space:]')

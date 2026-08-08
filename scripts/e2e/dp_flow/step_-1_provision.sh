@@ -26,7 +26,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/dates.env"   # explicit forward-ordered date plan (opening balance first)
 source "$DIR/verdict.sh"
 STATE=${STATE:-$DIR/state.env}
-EMAIL=${EMAIL:-owner@kaosbiru.co.id}
+EMAIL=${EMAIL:-delivered+owner@resend.dev}
 PASS=${PASS:-KaosBiru2026!}
 BIZ=${BIZ:-Kaos Biru Konveksi}
 
