@@ -306,7 +306,7 @@ SKIP_PATTERNS = [
 ]
 
 
-from ..services.role_resolution import MSG_INACTIVE
+from ..services.role_resolution import MSG_INACTIVE, MSG_NOT_PROVISIONED
 
 
 class PermissionMiddleware(BaseHTTPMiddleware):
@@ -383,6 +383,31 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                             "detail": {
                                 "error_code": "ROLE_INACTIVE",
                                 "message": MSG_INACTIVE,
+                            }
+                        },
+                    )
+
+                # LAPIS 2 dari 2. can() juga menolak keadaan ini (return False),
+                # tapi jawaban generik "izin kurang" salah menggambarkannya:
+                # orangnya tidak kekurangan izin, ia tidak punya keanggotaan.
+                #
+                # 409, BUKAN 403 — konsisten dengan jawaban yang SUDAH tayang:
+                # require_active_membership (pagar dashboard) mengembalikan 409
+                # ROLE_NOT_PROVISIONED untuk pengguna yang sama. Kalau di sini
+                # 403, satu pengguna mendapat DUA jawaban berbeda tergantung
+                # rute — kelas cacat yang sama dengan 'active' vs 'ACTIVE' dan
+                # 'INACTIVE' tanpa aturan: dua penulis memilih berbeda.
+                if context.business_role_id is None and context.membership_active:
+                    logger.warning(
+                        f"Akses ditolak (tanpa baris peran): "
+                        f"user={user['user_id']} tenant={user['tenant_id']} path={path}"
+                    )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "detail": {
+                                "error_code": "ROLE_NOT_PROVISIONED",
+                                "message": MSG_NOT_PROVISIONED,
                             }
                         },
                     )

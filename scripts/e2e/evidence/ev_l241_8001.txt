@@ -1,0 +1,24 @@
+PREFLIGHT: http://localhost:8001/api hidup
+
+--- PAGAR: keadaan sehat ---
+  ✓ owner /sales-invoices: 200
+  ✓ owner /dashboard/all: 200
+  ✓ anggota AKTIF /sales-invoices: 200
+
+--- ★ INTI: anggota DIHAPUS, token masih hidup ---
+  ✓ baris peran tersisa: 0
+  ✗ ★ token SAMA /sales-invoices: dapat=200 HARAP=409
+  ✓ ★ token SAMA /dashboard/all: 409
+
+--- ★ PAGAR ONBOARDING PENUH: signup NYATA -> login -> dashboard ---
+    register -> {"success":true,"message":"Cek email Anda"}
+  ✓ signup NYATA menerbitkan token: ya
+  ✓ pengguna BARU /permissions/me role: OWNER
+  ✓ pengguna BARU /dashboard/all: 200
+  ✓ pengguna BARU /sales-invoices: 200
+  ✓ pengguna BARU login ULANG lalu dashboard: 200
+
+--- bersih-bersih ---
+    user tersisa: 1  baris peran: 1
+
+===== 10 sesuai, 1 menyimpang =====
