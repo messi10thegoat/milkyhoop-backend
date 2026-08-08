@@ -124,7 +124,11 @@ async def validate_invite(token: str):
                     status_code=404,
                     detail={
                         "error_code": "INVITE_NOT_FOUND",
-                        "message": "Undangan tidak ditemukan. Pastikan link yang Anda buka lengkap dan benar.",
+                        "message": (
+                            "Undangan tidak ditemukan. Link ini mungkin sudah "
+                            "diperbarui — mintalah link terbaru dari pemilik bisnis, "
+                            "atau pastikan link yang Anda buka lengkap."
+                        ),
                     },
                 )
 

@@ -1,20 +1,20 @@
-PREFLIGHT: http://localhost:8002/api hidup · undangan untuk inv+1786158309@kaosbiru.co.id
-    baseline: user_tenant_roles=1  User=1  role CASHIER=1f7addde-6112-4269-a2a7-754225f531ea
+PREFLIGHT: http://localhost:8002/api hidup · undangan untuk inv+1786160279@kaosbiru.co.id
+    baseline: user_tenant_roles=5  User=5  role CASHIER=1f7addde-6112-4269-a2a7-754225f531ea
 
 --- 1. POST /invite MENULIS team_invitations ---
-    respons: {"success":true,"message":"Undangan untuk inv+1786158309@kaosbiru.co.id dibuat. Salin dan kirimkan link di bawah.","data
+    respons: {"success":true,"message":"Undangan untuk inv+1786160279@kaosbiru.co.id dibuat. Salin dan kirimkan link di bawah.","data
   ✓ undangan tertulis: 1
   ✓ token undangan terbentuk: ada
 
 --- ★ BATAS: keanggotaan LAHIR HANYA saat accept ---
-  ✓ ★ user_tenant_roles TIDAK bertambah sebelum accept: 1
+  ✓ ★ user_tenant_roles TIDAK bertambah sebelum accept: 5
   ✓ ★ NOL User tanpa passwordHash: 0
 
 --- 2. GET /api/invite/{token} ---
   ✓ validasi undangan: 200
 
 --- 3. accept -> keanggotaan lahir, status ACTIVE ---
-  ✓ keanggotaan bertambah: 2
+  ✓ keanggotaan bertambah: 6
   ✓ status lolos V223: ACTIVE
   ✓ undangan jadi accepted: accepted
 
@@ -41,6 +41,6 @@ PREFLIGHT: http://localhost:8002/api hidup · undangan untuk inv+1786158309@kaos
   ✓ owner /dashboard/all: 200
 
 --- bersih-bersih ---
-    user=1 peran=1 undangan=0
+    user=5 peran=5 undangan=0
 
 ===== 20 sesuai, 0 menyimpang =====
