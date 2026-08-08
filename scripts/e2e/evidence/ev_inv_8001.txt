@@ -1,0 +1,45 @@
+PREFLIGHT: http://localhost:8001/api hidup · undangan untuk inv+1786158351@kaosbiru.co.id
+    baseline: user_tenant_roles=1  User=1  role CASHIER=1f7addde-6112-4269-a2a7-754225f531ea
+
+--- 1. POST /invite MENULIS team_invitations ---
+    respons: {"detail":"Invalid role_id"}
+  ✗ undangan tertulis: dapat=0 HARAP=1
+  ✗ token undangan terbentuk: dapat=kosong HARAP=ada
+
+--- ★ BATAS: keanggotaan LAHIR HANYA saat accept ---
+  ✓ ★ user_tenant_roles TIDAK bertambah sebelum accept: 1
+  ✓ ★ NOL User tanpa passwordHash: 0
+
+--- 2. GET /api/invite/{token} ---
+  ✗ validasi undangan: dapat=401 HARAP=200
+
+--- 3. accept -> keanggotaan lahir, status ACTIVE ---
+  ✗ keanggotaan bertambah: dapat=1 HARAP=2
+  ✗ status lolos V223: dapat= HARAP=ACTIVE
+  ✗ undangan jadi accepted: dapat= HARAP=accepted
+
+--- 4/5. anggota login: peran YANG DIUNDANG, izin TERBATAS ---
+  ✗ business_role_code: dapat=None HARAP=CASHIER
+  ✗ anggota bisa login: dapat=tidak HARAP=ya
+
+--- 7. undangan dicabut -> token mati ---
+  ✗ token yang dicabut ditolak: dapat=401 HARAP=410
+
+--- 8. resend MEMUTAR token: yang LAMA harus mati ---
+  ✗ token lama berlaku sebelum resend: dapat=401 HARAP=200
+  ✗ token BERUBAH sesudah resend: dapat=sama HARAP=berubah
+  ✗ ★ token LAMA mati: dapat=401 HARAP=404
+  ✗ token BARU berlaku: dapat=401 HARAP=200
+
+--- daftar undangan menunggu ---
+  ✗ list memuat undangan: dapat=0 HARAP=1
+
+--- 9. PAGAR ---
+  ✓ owner tetap OWNER: OWNER
+  ✓ owner tetap 35 modul: 35
+  ✓ owner /dashboard/all: 200
+
+--- bersih-bersih ---
+    user=1 peran=1 undangan=0
+
+===== 5 sesuai, 14 menyimpang =====

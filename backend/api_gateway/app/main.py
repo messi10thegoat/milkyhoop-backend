@@ -19,6 +19,7 @@ from .routers import chat
 from .routers import session
 from .routers import auth
 from .routers import signup
+from .routers import invite_public
 from .routers import google_auth
 from .routers import customer
 from .routers import transactions
@@ -431,6 +432,11 @@ app.include_router(items.router, prefix="/api", tags=["items"])
 app.include_router(members.router, prefix="/api/members", tags=["members"])
 app.include_router(team_members.router, tags=["team-members"])
 app.include_router(team_members.permissions_router, tags=["permissions"])
+# invite_public SUDAH ADA sejak lama (validate/accept/decline lengkap dengan
+# FOR UPDATE + kedaluwarsa-malas + audit log) tapi TIDAK PERNAH TERPASANG:
+# tak diimpor, tak muncul di include_router mana pun. Jadi seluruh jalur
+# terima/tolak undangan tak pernah dijalankan sekali pun.
+app.include_router(invite_public.router, tags=["invite-public"])
 app.include_router(pay_groups.router, tags=["pay-groups"])
 app.include_router(employees.router, prefix="/api/employees", tags=["employees"])
 

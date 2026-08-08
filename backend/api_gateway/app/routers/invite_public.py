@@ -86,6 +86,21 @@ async def _generate_jwt_tokens(
 # --- Endpoints ---
 
 
+_GONE_MESSAGES = {
+    "expired": "Undangan ini sudah kedaluwarsa. Minta pemilik bisnis mengirim undangan baru.",
+    "revoked": "Undangan ini sudah dibatalkan. Minta pemilik bisnis mengirim undangan baru.",
+    "accepted": "Undangan ini sudah diterima. Silakan masuk dengan akun Anda.",
+    "declined": "Undangan ini sudah ditolak. Minta pemilik bisnis mengirim undangan baru.",
+}
+
+
+def _gone(status: str) -> dict:
+    return {
+        "error_code": f"INVITE_{status.upper()}",
+        "message": _GONE_MESSAGES.get(status, _GONE_MESSAGES["expired"]),
+    }
+
+
 @router.get("/{token}")
 async def validate_invite(token: str):
     """Validate invite token and return invitation info. Public — no JWT."""
@@ -102,7 +117,16 @@ async def validate_invite(token: str):
             )
 
             if not row:
-                return {"valid": False, "reason": "invalid"}
+                # 404: undangan seperti ini TIDAK ADA. Kemungkinan besar link
+                # salah salin/terpotong. Dibedakan dari 410 supaya penerima tahu
+                # harus meminta LINK yang benar, bukan undangan baru.
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error_code": "INVITE_NOT_FOUND",
+                        "message": "Undangan tidak ditemukan. Pastikan link yang Anda buka lengkap dan benar.",
+                    },
+                )
 
             status = row["status"]
             now = datetime.now(timezone.utc)
@@ -125,14 +149,14 @@ async def validate_invite(token: str):
                     )
                 except Exception:
                     pass
-                return {"valid": False, "reason": "expired"}
+                raise HTTPException(status_code=410, detail=_gone("expired"))
 
-            if status in ("accepted", "declined"):
-                return {"valid": False, "reason": "already_used"}
-            if status == "revoked":
-                return {"valid": False, "reason": "revoked"}
-            if status == "expired":
-                return {"valid": False, "reason": "expired"}
+            # 410 = undangannya NYATA tapi sudah tak berlaku. Pesannya DIBEDAKAN
+            # per sebab: yang kedaluwarsa/dicabut perlu undangan BARU, yang sudah
+            # diterima cukup login. Satu kode dengan satu pesan generik akan
+            # membuat ketiganya terasa seperti kesalahan yang sama.
+            if status in ("accepted", "declined", "revoked", "expired"):
+                raise HTTPException(status_code=410, detail=_gone(status))
 
             await conn.execute(_safe_set_tenant(row["tenant_id"]))
 
@@ -166,6 +190,13 @@ async def validate_invite(token: str):
                 "user_exists": bool(user_exists),
             }
 
+    except HTTPException:
+        # 404/410 di atas adalah JAWABAN, bukan kecelakaan. Tanpa baris ini
+        # `except Exception` di bawah menelannya dan mengubah jawaban yang
+        # BENAR menjadi 500 — persis yang terjadi di jalan pertama gate:
+        # token yang dicabut membalas 500, bukan 410. Kelas cacat yang sama
+        # sudah ditemukan di get_user_context; ini kemunculan keduanya.
+        raise
     except Exception as e:
         logger.error(f"Error validating invite token: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
