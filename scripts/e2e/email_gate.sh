@@ -33,6 +33,7 @@ echo "    pending_registrations sebelum: $N0"
 C=$(curl -s -o /tmp/eg -w '%{http_code}' -X POST "$B/auth/signup/register" -H 'Content-Type: application/json' -d "{\"email\":\"$M\"}")
 ok "register -> HTTP" "$C" "503"
 ok "success=false" "$(python3 -c 'import json;print(str(json.load(open("/tmp/eg")).get("success")).lower())' 2>/dev/null)" "false"
+ok "error_code = EMAIL_NOT_CONFIGURED" "$(python3 -c 'import json;print(json.load(open("/tmp/eg")).get("error_code"))' 2>/dev/null)" "EMAIL_NOT_CONFIGURED"
 ok "★ pesan terbaca FE (kunci message ADA)" "$(python3 -c 'import json;print("ada" if json.load(open("/tmp/eg")).get("message") else "tidak")' 2>/dev/null)" "ada"
 echo "    pesan: $(python3 -c 'import json;print(json.load(open("/tmp/eg")).get("message",""))' 2>/dev/null)"
 ok "★ NOL baris yatim" "$(Q "SELECT count(*) FROM pending_registrations;")" "$N0"
@@ -58,6 +59,7 @@ echo "    register -> HTTP $C4"
 # layanan email menolak. Itulah skenario "kunci terpasang lalu habis kredit",
 # dan sebelum batch ini ia menghasilkan "Cek email Anda" yang bohong.
 ok "★ kunci ditolak layanan -> tetap JUJUR (503)" "$C4" "503"
+ok "error_code = EMAIL_SEND_FAILED (BEDA dari kunci-kosong)" "$(python3 -c 'import json;print(json.load(open("/tmp/eg2")).get("error_code"))' 2>/dev/null)" "EMAIL_SEND_FAILED"
 ok "★ NOL baris yatim walau kirim gagal" "$(Q "SELECT count(*) FROM pending_registrations WHERE email='"'"'$M'"'"';")" "0"
 echo "    prasyarat LEPAS (kunci ada), lalu gagal di pengiriman — dua sebab berbeda, keduanya jujur"
 

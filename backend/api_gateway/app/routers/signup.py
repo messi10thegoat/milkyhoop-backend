@@ -149,7 +149,15 @@ def _email_precondition():
         )
         return JSONResponse(
             status_code=503,
-            content={"success": False, "message": MSG_EMAIL_DOWN},
+            content={
+                "success": False,
+                "message": MSG_EMAIL_DOWN,
+                # error_code MEMBEDAKAN sebab; `message` sengaja SAMA untuk
+                # keduanya — pengguna tak perlu tahu apakah kunci belum
+                # dipasang atau penyedia menolak, dan detail penyedia tak boleh
+                # bocor ke publik. Operator membedakannya lewat error_code + log.
+                "error_code": "EMAIL_NOT_CONFIGURED",
+            },
         )
     return None
 
@@ -238,7 +246,14 @@ async def signup_register(request: SignupRegisterRequest, http_request: Request)
             # indeks menganggap ada pendaftaran tertunda untuk emailnya.
             # Karena itu dihapus di sini — hasil akhirnya sama dengan rollback:
             # gagal kirim = tak ada jejak.
-            logger.error(f"PENDAFTARAN DIBATALKAN, email gagal terkirim: {e}")
+            # Log WAJIB memuat galat mentah penyedia: itulah satu-satunya yang
+            # membedakan kunci-salah (401/403) dari kuota-habis (429) dari
+            # penerima-ditolak (422 / domain tak ada). Ketiganya menghasilkan
+            # 503 yang sama bagi pengguna — dan memang seharusnya begitu.
+            logger.error(
+                f"PENDAFTARAN DIBATALKAN — penyedia email menolak. "
+                f"email={email} sebab_mentah={e!r}"
+            )
             try:
                 async with pool.acquire() as c2:
                     await c2.execute(
@@ -249,7 +264,11 @@ async def signup_register(request: SignupRegisterRequest, http_request: Request)
                 logger.error(f"Gagal membersihkan pendaftaran tertunda: {cleanup_err}")
             return JSONResponse(
                 status_code=503,
-                content={"success": False, "message": MSG_EMAIL_DOWN},
+                content={
+                    "success": False,
+                    "message": MSG_EMAIL_DOWN,
+                    "error_code": "EMAIL_SEND_FAILED",
+                },
             )
 
         return {
