@@ -7,7 +7,11 @@ Zero LLM calls.
 
 CRITICAL: Check DB column names before writing queries.
 customers.nama (NOT name!), products.nama_produk (NOT name!),
-customers.id = varchar (NOT uuid!), bank_accounts.coa_id (NOT chart_of_account_id!).
+customers.id = UUID (terverifikasi [SQL] 2026-08-09) — bukan varchar.
+Tipe customer_id TIDAK seragam: uuid di customers.id / sales_invoices /
+receive_payments; varchar di credit_notes / customer_deposits. Cek
+information_schema per tabel sebelum bind; jangan menyamaratakan.
+bank_accounts.coa_id (BUKAN chart_of_account_id!).
 """
 
 import asyncio
@@ -17,6 +21,20 @@ from typing import Optional
 from datetime import date, datetime
 
 logger = logging.getLogger("unified_agent.entity_resolver")
+
+
+def is_untrusted_id_field(key: str) -> bool:
+    """True bila `key` adalah field ID yang TIDAK boleh diambil dari keluaran LLM.
+
+    Iron Law 1 hardening. ID hanya boleh berasal dari resolver (lookup DB) atau
+    dari input user — tak pernah dari generasi model. Stage-2 LLM terbukti
+    mengisi `customer_id` dengan NAMA pelanggan (dogfood 2026-08-09), yang lolos
+    sampai asyncpg dan meledak sebagai 500.
+
+    SATU definisi dipakai bersama oleh setiap titik tempat entities hasil LLM
+    bertemu payload. Kalau logikanya disalin, dua salinan akan menyimpang.
+    """
+    return key == "id" or key.endswith("_id") or key.endswith("_uuid")
 
 
 @dataclass
@@ -621,7 +639,7 @@ class EntityResolver:
                 # silently routing transactions to wrong entity. IDs MUST
                 # come from the resolver path above (sources 1 / 2 / 2.5).
                 # Ticket: 2026-05-07-stage2-llm-uuid-hallucination-audit.
-                if key == "id" or key.endswith("_id") or key.endswith("_uuid"):
+                if is_untrusted_id_field(key):
                     if value:
                         logger.warning(
                             "[INVARIANT_GUARD] Stripped LLM-extracted ID field %r from payload (intent=%s); resolver is single source of truth",
@@ -854,7 +872,9 @@ class EntityResolver:
     # Individual Entity Resolvers
 
     async def _resolve_customer(self, name_fragment: str) -> Optional[ResolvedEntity]:
-        """customers.id = VARCHAR, column = nama (Bahasa!)
+        """customers.id = UUID (terverifikasi [SQL] 2026-08-09); kolom nama = `nama` (Bahasa!).
+        Tipe customer_id tak seragam: uuid di customers/sales_invoices/receive_payments,
+        varchar di credit_notes/customer_deposits. Jangan menyamaratakan.
         FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: thread actual pg_trgm sim; no blanket 1.0."""
         try:
             rows = await self.db.fetch(

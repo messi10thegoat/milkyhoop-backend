@@ -1040,7 +1040,9 @@ async def reactivate_customer(request: Request, customer_id: str):
 @router.get("/{customer_id}/open-invoices")
 async def get_customer_open_invoices(
     request: Request,
-    customer_id: str,  # customers.id is VARCHAR(255), not UUID
+    customer_id: str,  # customers.id = UUID ([SQL] 2026-08-09). Tipe str di
+    # signature dipertahankan agar tak memaksa cast di pemanggil; validasi bentuk
+    # ada di lapisan endpoint. varchar HANYA di credit_notes/customer_deposits.
 ):
     """
     Get open (unpaid/partially paid) invoices for a customer.
@@ -1119,7 +1121,9 @@ async def get_customer_open_invoices(
 @router.get("/{customer_id}/available-deposits")
 async def get_customer_available_deposits(
     request: Request,
-    customer_id: str,  # customers.id is VARCHAR(255), not UUID
+    customer_id: str,  # customers.id = UUID ([SQL] 2026-08-09). Tipe str di
+    # signature dipertahankan agar tak memaksa cast di pemanggil; validasi bentuk
+    # ada di lapisan endpoint. varchar HANYA di credit_notes/customer_deposits.
 ):
     """
     Get customer deposits with remaining balance.

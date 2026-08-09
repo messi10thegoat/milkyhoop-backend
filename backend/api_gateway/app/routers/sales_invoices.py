@@ -441,7 +441,9 @@ async def list_invoices(
                     param_idx += 1
 
             if customer_id:
-                # Bug #1.5: customer_id column is TEXT, not UUID — drop cast
+                # sales_invoices.customer_id = UUID (terverifikasi [SQL] 2026-08-09).
+                # Komentar lama ("TEXT, not UUID") SALAH. varchar hanya di
+                # credit_notes.customer_id dan customer_deposits.customer_id.
                 conditions.append(f"si.customer_id = ${param_idx}")
                 params.append(customer_id)
                 param_idx += 1

@@ -1034,7 +1034,10 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                             detail="Bank account must be an asset account (Kas/Bank)",
                         )
 
-                    # Validate customer exists (customers.id is VARCHAR, not UUID)
+                    # Validate customer exists.
+                    # customers.id = UUID (terverifikasi [SQL] 2026-08-09).
+                    # uuid: customers.id / sales_invoices / receive_payments.
+                    # varchar: credit_notes.customer_id / customer_deposits.customer_id.
                     customer = await conn.fetchrow(
                         """
                         SELECT id, nama FROM customers
@@ -1170,7 +1173,8 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     """,
                         ctx["tenant_id"],
                         payment_number,
-                        body.customer_id,  # customers.id is VARCHAR, not UUID
+                        body.customer_id,  # customers.id = UUID ([SQL] 2026-08-09);
+                        # varchar hanya di credit_notes/customer_deposits
                         body.customer_name,
                         body.payment_date,
                         body.payment_method,

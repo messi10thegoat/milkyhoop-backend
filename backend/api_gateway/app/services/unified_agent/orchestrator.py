@@ -3711,9 +3711,27 @@ class UnifiedAgent:
                 )
 
         # Normalize entity name field for propose (Bug 3 fix)
+        #
+        # merged_entities di-splat SESUDAH resolution.payload, jadi ia MENANG.
+        # Itu memang disengaja untuk field biasa (nominal/tanggal/deskripsi yang
+        # diekstrak belakangan harus memperbarui payload). TETAPI untuk field ID
+        # ia membatalkan kerja resolver: Stage-2 LLM mengisi `customer_id` dengan
+        # NAMA pelanggan, nama itu menimpa UUID hasil lookup DB, lalu meledak di
+        # asyncpg sebagai 500 (dogfood 2026-08-09, INV-2608-0001).
+        #
+        # INVARIANT_GUARD di entity_resolver._build_payload sudah membuang field
+        # ID hasil LLM — tapi merge ini terjadi DI LUAR fungsi itu, jadi pagarnya
+        # terlewati. Aturan yang sama diterapkan di sini, lewat fungsi yang SAMA
+        # (bukan salinan) supaya keduanya tak bisa menyimpang.
+        from .entity_resolver import is_untrusted_id_field as _untrusted_id
+
         _propose_payload = {
             **resolution.payload,
-            **{k: v for k, v in merged_entities.items() if v is not None},
+            **{
+                k: v
+                for k, v in merged_entities.items()
+                if v is not None and not _untrusted_id(k)
+            },
         }
         if "name" not in _propose_payload or not _propose_payload.get("name"):
             _propose_payload["name"] = (

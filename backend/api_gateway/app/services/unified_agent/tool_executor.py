@@ -902,7 +902,10 @@ class ToolExecutor:
                 except Exception as e:
                     logger.warning(f"[resolve_entity_names] bill lookup: {e}")
 
-        # Customer name (customers.id = varchar, NOT uuid)
+        # Customer name. customers.id = UUID (terverifikasi [SQL] 2026-08-09).
+        # uuid: customers.id / sales_invoices.customer_id / receive_payments.customer_id.
+        # varchar: credit_notes.customer_id / customer_deposits.customer_id.
+        # Jangan menyamaratakan ke arah mana pun.
         if (
             action_key == "create_receive_payment"
             and not payload.get("customer_name")
