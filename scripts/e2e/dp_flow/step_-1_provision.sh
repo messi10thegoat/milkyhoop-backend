@@ -94,10 +94,22 @@ echo "is_pkp: was=$BEFORE_PKP now=$(PSQL "SELECT is_pkp FROM \"Tenant\" WHERE id
 # gateway reader (userguide_rag_enabled) behaves identically for no-row vs default-row; no CHECK
 # constraint; code matches exact lowercase 'delivery'. REMOVE this once a real control is built.
 # Idempotent via ON CONFLICT (tenant_id). Minimal columns; the rest take safe table defaults.
+# POLICY dapat di-override. Default 'delivery' = perilaku lama, TAK BERUBAH.
+#   POLICY=delivery -> tulis 'delivery' (DP flow / skenario #1)
+#   POLICY=none     -> JANGAN tulis apa pun; biarkan tenant_config TANPA BARIS,
+#                      sehingga resolusi jatuh ke default kode 'invoice'
+#                      (= yang didapat 100% tenant nyata; skenario #2 auto-fulfill).
+POLICY=${POLICY:-delivery}
 BEFORE_POL=$(PSQL "SELECT COALESCE((SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN'),'<no-row>');")
-PSQL "INSERT INTO tenant_config (tenant_id, revenue_recognition_policy) VALUES ('$TEN','delivery')
-      ON CONFLICT (tenant_id) DO UPDATE SET revenue_recognition_policy='delivery', updated_at=now();" >/dev/null
-echo "revenue_recognition_policy: was=$BEFORE_POL now=$(PSQL "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN';") (delivery mode: defer revenue to Pengiriman)"
+if [ "$POLICY" = "none" ]; then
+  echo "revenue_recognition_policy: was=$BEFORE_POL — TIDAK DITULIS (POLICY=none)."
+  echo "  Skenario auto-fulfill menuntut KETIADAAN baris, bukan baris berisi 'invoice':"
+  echo "  yang diuji adalah jalur yang benar-benar dilalui tenant nyata."
+else
+  PSQL "INSERT INTO tenant_config (tenant_id, revenue_recognition_policy) VALUES ('$TEN','$POLICY')
+        ON CONFLICT (tenant_id) DO UPDATE SET revenue_recognition_policy='$POLICY', updated_at=now();" >/dev/null
+  echo "revenue_recognition_policy: was=$BEFORE_POL now=$(PSQL "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN';") (delivery mode: defer revenue to Pengiriman)"
+fi
 
 # ---------------------------------------------------------------------------
 # MASTER DATA — lookup-before-create (idempotent).
@@ -160,9 +172,16 @@ echo "PROVISION OK — all master data present."
 
 echo; echo "--- spec-precondition assertions (non-PKP + delivery mode) ---"
 ISPKP=$(PSQL "SELECT is_pkp FROM \"Tenant\" WHERE id='$TEN';")
-POLICY=$(PSQL "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN';")
+POLICY_ACTUAL=$(PSQL "SELECT COALESCE((SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id='$TEN'),'<no-row>');")
 OPENBAL=$(PSQL "SELECT COALESCE(opening_balance,0)::bigint FROM bank_accounts WHERE id='$BANK';")
 aeq "tenant is_pkp = false (non-PKP spec)" "$ISPKP" "f"
-aeq "revenue_recognition_policy = delivery" "$POLICY" "delivery"
+# Assert mengikuti POLICY yang diminta. Dalam mode none, yang WAJIB dibuktikan
+# adalah KETIADAAN baris — kalau baris itu bocor dari run sebelumnya, skenario
+# auto-fulfill akan diam-diam menguji delivery mode dan hijau untuk alasan salah.
+if [ "$POLICY" = "none" ]; then
+  aeq "tenant_config TANPA baris policy (auto-fulfill via default kode)" "$POLICY_ACTUAL" "<no-row>"
+else
+  aeq "revenue_recognition_policy = $POLICY" "$POLICY_ACTUAL" "$POLICY"
+fi
 aeq "bank opening_balance = 20.000.000" "$OPENBAL" "20000000"
 finish
