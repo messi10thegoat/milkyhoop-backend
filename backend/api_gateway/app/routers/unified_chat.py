@@ -5807,11 +5807,36 @@ async def _confirm_direct_action(
         if action_key in ("create_credit_note", "create_vendor_credit"):
             needs_post_step = True
 
-    # Mark as executing
-    await pool.execute(
-        "UPDATE pending_actions SET status = 'EXECUTING', confirmed_at = NOW() WHERE id = $1",
+    # Mark as executing — KLAIM ATOMIK.
+    # Predikat `status = 'PENDING'` wajib: tanpa itu, dua confirm serentak
+    # sama-sama lolos gerbang pembacaan di atas dan sama-sama menulis
+    # (terbukti MERAH oleh gate G1, 2026-08-09 — dua UPDATE serentak pada
+    # baris yang sama, keduanya rowcount 1). Satu pernyataan atomik cukup;
+    # JANGAN menambah advisory lock / idempotency_key / FOR UPDATE — tiga
+    # lapis yang masing-masing memadai membuat efek tiap lapis tak bisa diuji.
+    _claimed = await pool.fetchval(
+        """UPDATE pending_actions
+              SET status = 'EXECUTING', confirmed_at = NOW()
+            WHERE id = $1 AND status = 'PENDING'
+        RETURNING id""",
         uuid_mod.UUID(pending_action_id),
     )
+    if _claimed is None:
+        # Kalah balapan: kartu sudah diklaim confirm lain. Ini BUKAN galat
+        # pengguna dan bukan galat teknis — sistem justru bekerja benar.
+        logger.warning(
+            "[Confirm] Klaim ditolak, kartu sudah diproses: pending_action=%s action=%s",
+            pending_action_id,
+            action_key,
+        )
+        return ChatMessageResponse(
+            message_type="ACTION_RESULT",
+            text=(
+                "Aksi ini sudah diproses. Silakan periksa hasilnya; "
+                "tidak ada yang dicatat dua kali."
+            ),
+            data={"success": False, "reason": "already_claimed"},
+        )
 
     # Forward tenant JWT for auth
     auth_header = http_request.headers.get("authorization", "")
