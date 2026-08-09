@@ -82,6 +82,48 @@ grep -q "tenant-asing-jangan-hapus" /tmp/c1_iknow.log && ok "MENCETAK korban seb
   && ok "sesudah I_KNOW=1, DROP memang terjadi" || no "I_KNOW=1 tak jadi menghapus"
 
 echo
+echo
+echo "############ (f) MERAH — SKEMA RUSAK: guard tak bisa membaca -> WAJIB MENOLAK ############"
+# Kasus yang menemukan FAIL-OPEN. Kasus (c)/(d)/(e) semuanya mengandaikan
+# tabel "Tenant" BISA DIBACA, jadi tak satu pun menjatuhi beban pada jalur
+# "aku tidak tahu". DB yang ada tapi kosong-skema = DB yang restore-nya
+# terputus separuh — skenario nyata, bukan karangan.
+TDB=milkydb_c1tool
+docker exec -i "$C" psql -U postgres -d postgres -tAc "DROP DATABASE IF EXISTS $TDB;" >/dev/null 2>&1
+docker exec -i "$C" psql -U postgres -d postgres -tAc "CREATE DATABASE $TDB;" >/dev/null 2>&1
+HAS=$(docker exec -i "$C" psql -U postgres -d postgres -tAc "SELECT count(*) FROM pg_database WHERE datname='$TDB';" | tr -d '[:space:]')
+[ "$HAS" = "1" ] || { echo "!!! FIXTURE GAGAL: $TDB tak terbuat — ABORT"; exit 2; }
+NOTBL=$(docker exec -i "$C" psql -U postgres -d "$TDB" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" | tr -d '[:space:]')
+echo "  $TDB ada, tabel public=$NOTBL (0 = skema kosong, tabel Tenant tak terbaca)"
+DB=$TDB bash "$R" >/tmp/c1_tool.log 2>&1; RC=$?
+echo "  --- keluaran gerbang ---"; grep -E "tak bisa membaca|MENOLAK|kegagalan ALAT" /tmp/c1_tool.log | sed 's/^/    /'
+[ "$RC" != "0" ] && ok "skema rusak -> MENOLAK (rc=$RC), bukan lolos ke DROP" || no "★ FAIL-OPEN: guard LOLOS padahal tak bisa membaca Tenant"
+grep -q "kegagalan ALAT" /tmp/c1_tool.log && ok "pesan menyebut kegagalan ALAT, bukan kegagalan produk" || no "pesan tak memisahkan alat vs produk"
+# I_KNOW=1 TIDAK boleh melewati kasus ini: menyetujui penghapusan yang isinya
+# tak bisa dibaca adalah persetujuan tanpa objek.
+DB=$TDB I_KNOW=1 bash "$R" >/tmp/c1_tool2.log 2>&1; RC2=$?
+[ "$RC2" != "0" ] && ok "I_KNOW=1 TIDAK melewati kegagalan alat (rc=$RC2)" || no "I_KNOW=1 melewati kegagalan alat — persetujuan tanpa objek"
+STILL_EMPTY=$(docker exec -i "$C" psql -U postgres -d "$TDB" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null | tr -d '[:space:]')
+[ "${STILL_EMPTY:-x}" = "0" ] && ok "$TDB tak disentuh (tetap kosong, nol restore)" || no "$TDB berubah — guard sempat bertindak"
+docker exec -i "$C" psql -U postgres -d postgres -tAc "DROP DATABASE IF EXISTS $TDB;" >/dev/null 2>&1
+
+echo
+echo "############ (g)/(h) MERAH — HARNESS_SLUG unset / kosong ############"
+# Tiga kasus pertama mengandaikan slug TERISI. Kalau slug kosong membuat NOL
+# tenant terhitung asing, guard jadi fail-open — lebih buruk daripada tak ada
+# guard, karena ia memberi rasa aman. Dijawab dengan MENJALANKAN.
+mk_tenant kaos-biru-konveksi
+mk_tenant tenant-asing-jangan-hapus
+echo "  tenant: $(tenants)"
+env -u HARNESS_SLUG DB=$DB bash "$R" >/tmp/c1_g.log 2>&1; RCG=$?
+[ "$RCG" != "0" ] && ok "(g) HARNESS_SLUG UNSET -> tetap MENOLAK (fail-closed)" || no "(g) UNSET -> LOLOS (fail-open)"
+HARNESS_SLUG="" DB=$DB bash "$R" >/tmp/c1_h.log 2>&1; RCH=$?
+[ "$RCH" != "0" ] && ok "(h) HARNESS_SLUG=\"\" -> tetap MENOLAK (fail-closed)" || no "(h) kosong -> LOLOS (fail-open)"
+echo "  (g) menyebut: $(grep -oE "slug harness '[^']*'" /tmp/c1_g.log | head -1)"
+echo "  (h) menyebut: $(grep -oE "slug harness '[^']*'" /tmp/c1_h.log | head -1)"
+[ "$(Q "SELECT count(*) FROM \"Tenant\" WHERE id='tenant-asing-jangan-hapus';")" = "1" ] \
+  && ok "tenant asing tetap selamat sesudah (g)+(h)" || no "tenant asing hilang di (g)/(h)"
+
 echo "############ BERSIH-BERSIH + BUKTI milkydb UTUH ############"
 docker exec -i "$C" psql -U postgres -d postgres -tAc "ALTER DATABASE $DB WITH ALLOW_CONNECTIONS false;" >/dev/null 2>&1
 docker exec -i "$C" psql -U postgres -d postgres -tAc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid<>pg_backend_pid();" >/dev/null 2>&1

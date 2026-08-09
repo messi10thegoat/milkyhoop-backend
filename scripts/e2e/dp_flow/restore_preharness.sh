@@ -11,6 +11,9 @@
 #   (c) C1: tenant asing    -> MENOLAK, dan DB TETAP UTUH (nol DROP)               [08-09]
 #   (d) C1: harness saja    -> jalan normal                                        [08-09]
 #   (e) C1: I_KNOW=1 + asing-> jalan, dan MENCETAK daftar yang akan dihapus        [08-09]
+#   (f) C1: skema rusak     -> MENOLAK (fail-closed), I_KNOW=1 TIDAK melewatinya   [08-09]
+#   (g) C1: HARNESS_SLUG unset -> tetap MENOLAK (default berlaku)                  [08-09]
+#   (h) C1: HARNESS_SLUG=""    -> tetap MENOLAK (:- mengganti string kosong)       [08-09]
 #   Uji ULANG kalau snapshot, versi postgres, atau nama kontainer berubah.
 set -uo pipefail
 SNAP=${SNAP:-/root/milkydb_preharness_20260726_022045.sql.gz}
@@ -41,14 +44,39 @@ echo "===== RESTORE $DB from $SNAP ====="
 # akan MENCETAK apa yang akan dihapus.
 # ---------------------------------------------------------------------------
 HARNESS_SLUG=${HARNESS_SLUG:-kaos-biru-konveksi}
-_DBEXISTS=$(docker exec -i "$C" psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | tr -d '[:space:]')
+# ${VAR:-default} mengganti saat UNSET **maupun KOSONG**, jadi HARNESS_SLUG=""
+# tetap jatuh ke slug harness. Diuji, bukan diandaikan (kasus (g)/(h)).
+
+# _G — pembaca khusus guard, FAIL-CLOSED. JANGAN ganti dengan Q().
+# Q() mem-pipe psql ke `tr`, sehingga $? adalah exit TR (selalu 0) dan
+# kegagalan psql lenyap. TERBUKTI 2026-08-09: `psql|tr` exit 0 sementara psql
+# exit 1 -> `|| echo ERR` tak pernah menyala -> BAD='' -> ${BAD:-0}=0 ->
+# guard LOLOS dan melanjutkan ke DROP DATABASE. Guard keselamatan tak boleh
+# meminjam helper kenyamanan yang menelan galat.
+# Tiga hal diperlakukan sebagai ERR: rc != 0, keluaran kosong, keluaran
+# bukan angka. Ketiganya sama-sama berarti "aku tidak tahu" — dan
+# "tidak tahu" harus berarti MENOLAK, bukan melanjutkan.
+_G(){
+  local _out _rc
+  _out=$(docker exec -i "$C" psql -U postgres -d "$DB" -tA -c "$1" 2>/dev/null)
+  _rc=$?
+  _out=$(printf '%s' "$_out" | tr -d '[:space:]')
+  if [ "$_rc" -ne 0 ] || [ -z "$_out" ] || ! printf '%s' "$_out" | grep -qE '^[0-9]+$'; then
+    printf 'ERR'; return 0
+  fi
+  printf '%s' "$_out"
+}
+_DBEXISTS=$(docker exec -i "$C" psql -U postgres -d postgres -tAc "SELECT count(*) FROM pg_database WHERE datname='$DB'" 2>/dev/null | tr -d '[:space:]')
 if [ "$_DBEXISTS" = "1" ]; then
-  TN=$(Q "SELECT count(*) FROM \"Tenant\";" 2>/dev/null || echo ERR)
-  BAD=$(Q "SELECT count(*) FROM \"Tenant\" WHERE id <> '$HARNESS_SLUG';" 2>/dev/null || echo ERR)
+  TN=$(_G "SELECT count(*) FROM \"Tenant\";")
+  BAD=$(_G "SELECT count(*) FROM \"Tenant\" WHERE id <> '$HARNESS_SLUG';")
   # Kegagalan ALAT tak boleh menyamar jadi "nol tenant asing" — itu justru
   # bacaan yang paling meyakinkan dan paling salah (Law 33 mekanisme 7).
   if [ "$TN" = "ERR" ] || [ "$BAD" = "ERR" ]; then
-    echo "!!! tak bisa membaca tabel Tenant di '$DB' — MENOLAK (kegagalan alat, bukan izin)"
+    echo "!!! tak bisa membaca tabel \"Tenant\" di '$DB' (TN=$TN BAD=$BAD)."
+    echo "    Ini kegagalan ALAT, bukan izin. Bisa berarti skema rusak separuh."
+    echo "    ==> MENOLAK. I_KNOW=1 TIDAK melewati kasus ini: kalau kita tak bisa"
+    echo "        membaca apa yang akan dihapus, kita tak bisa menyetujuinya."
     exit 1
   fi
   if [ "${BAD:-0}" -gt 0 ]; then
@@ -75,6 +103,19 @@ if [ "$_DBEXISTS" = "1" ]; then
       "SELECT t.id AS tenant, (SELECT count(*) FROM \"User\" u WHERE u.\"tenantId\"=t.id) AS pengguna, (SELECT count(*) FROM journal_entries j WHERE j.tenant_id=t.id) AS jurnal FROM \"Tenant\" t ORDER BY t.id;" 2>/dev/null
     echo
   fi
+fi
+
+# CHECK_ONLY=1 — evaluasi gerbang lalu BERHENTI. Tak pernah mencapai
+# ALTER/DROP/CREATE karena `exit` ada DI ATAS ketiganya, bukan karena sebuah
+# flag dipatuhi belakangan. Ada supaya pertanyaan "apakah gerbang akan menolak
+# di milkydb sungguhan?" bisa dijawab TANPA mempertaruhkan balapan: kalau
+# sesi lain kebetulan menghapus tenant asingnya di antara pemeriksaan dan
+# eksekusi, skrip biasa akan LANJUT MENGHAPUS. Mode ini menghapus taruhan itu
+# secara struktural.
+if [ "${CHECK_ONLY:-0}" = "1" ]; then
+  echo "(CHECK_ONLY=1 — gerbang LOLOS untuk '$DB'; berhenti SEBELUM ALTER/DROP/CREATE)"
+  echo "  TN=${TN:-n/a} BAD=${BAD:-n/a} slug='$HARNESS_SLUG'"
+  exit 0
 fi
 
 # CACAT (ditutup 2026-08-08): skrip mengandaikan $DB SUDAH ADA. Kalau milkydb
