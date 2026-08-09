@@ -134,6 +134,10 @@ step(){ # $1=label  $2=script
 }
 
 step  "-1" step_-1_provision.sh
+# C2 — gerbang prasyarat. Restore sudah MENCEGAH kontaminasi; gerbang ini
+# membuat kegagalannya BISA DIBACA (pesan menyebut KONTAMINASI, bukan angka
+# telanjang). Lihat header precondition_gate.sh.
+step  "pre" precondition_gate.sh
 step  "0"  step_0_buy.sh
 step  "0b" step_0b_pay.sh
 step  "1"  step_1_quote.sh

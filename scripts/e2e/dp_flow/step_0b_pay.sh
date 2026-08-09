@@ -61,9 +61,15 @@ PSQLm "SELECT amount, amount_paid, (amount-amount_paid) AS remaining FROM bills 
 echo; echo "========== DRIFT + BANK GAP (AP->0, BANK_GAP=0) =========="
 docker exec -i "$CONTAINER" psql -U postgres -d "$DB" -v ten="'$TEN'" -f - < "$DIR/drift_check.sql"
 
-echo; echo "--- bank DELTA (expect -3.500.000 excl opening) ---"
+# NAMA DIPERBAIKI 2026-08-09: dulu disebut "DELTA", padahal rumusnya
+# `SUM(...) - 20000000` dengan opening HARDCODED — itu assert ABSOLUT
+# berbaju delta. Kelas yang berulang: nama mengklaim lebih dari perilaku.
+# Assert absolutnya SENGAJA DIPERTAHANKAN: assert delta sejati LULUS di atas
+# DB terkontaminasi (tahan-kontaminasi = Law 33 mekanisme 7), sedangkan yang
+# absolut GAGAL NYARING. Ini salah satu dari 22 detektor kontaminasi kita.
+echo; echo "--- bank ABSOLUT dikurangi opening tetap (expect -3.500.000) ---"
 DELTA=$(PSQL "SELECT (COALESCE(SUM(jl.debit-jl.credit),0)-20000000)::bigint FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE je.tenant_id='$TEN' AND je.status='POSTED' AND je.reversed_by_id IS NULL AND jl.account_id='$BANK_COA';")
-echo "  bank delta excl opening = $DELTA"
+echo "  bank absolut - opening tetap = $DELTA"
 
 echo; echo "--- assertions ---"
 REMB=$(PSQL "SELECT COALESCE(remaining_before,0)::bigint FROM bill_payment_allocations WHERE payment_id='$PAYID';")
@@ -73,6 +79,6 @@ PAID=$(PSQL "SELECT COALESCE(amount_paid,0)::bigint FROM bills WHERE id='$BILL';
 aeq "allocation remaining_before (get_bill_remaining_from_journal)" "$REMB" "3500000"
 aeq "journal Dr 2-10100 Hutang Usaha" "$HUT" "3500000"
 aeq "journal Cr 1-10201 BCA" "$BNK" "3500000"
-aeq "bank delta excl opening" "$DELTA" "-3500000"
+aeq "bank absolut - opening tetap 20jt" "$DELTA" "-3500000"
 aeq "bills.amount_paid cache" "$PAID" "3500000"
 finish

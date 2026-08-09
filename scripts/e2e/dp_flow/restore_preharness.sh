@@ -3,10 +3,14 @@
 # verify it is pristine. RESTORE ONLY (no steps). ALLOW_CONNECTIONS-false to win the
 # drop-vs-pool race; re-enables connections on any failure. Then asserts the pristine
 # invariants the single-shot run depends on.
-# DIUJI DUA ARAH: 2026-08-08   <- penanda WAJIB, seragam lintas jaring (Law 33 aturan 1)
+# DIUJI DUA ARAH: 2026-08-09   <- penanda WAJIB, seragam lintas jaring (Law 33 aturan 1)
+#   SATU penanda per berkas — tanggalnya = uji dua-arah TERAKHIR yang lulus.
 #   Diuji di DB KLON lewat DB= (live TIDAK disentuh):
-#   (a) snapshot sah      -> PRISTINE OK, Tenant/User/journal = 0, migrasi 214
-#   (b) snapshot dipotong -> GAGAL KERAS di pemuatan (rc != 0), bukan "PRISTINE OK"
+#   (a) snapshot sah        -> PRISTINE OK, Tenant/User/journal = 0, migrasi 214   [08-08]
+#   (b) snapshot dipotong   -> GAGAL KERAS di pemuatan (rc != 0), bukan "PRISTINE OK" [08-08]
+#   (c) C1: tenant asing    -> MENOLAK, dan DB TETAP UTUH (nol DROP)               [08-09]
+#   (d) C1: harness saja    -> jalan normal                                        [08-09]
+#   (e) C1: I_KNOW=1 + asing-> jalan, dan MENCETAK daftar yang akan dihapus        [08-09]
 #   Uji ULANG kalau snapshot, versi postgres, atau nama kontainer berubah.
 set -uo pipefail
 SNAP=${SNAP:-/root/milkydb_preharness_20260726_022045.sql.gz}
@@ -19,6 +23,60 @@ PG(){ docker exec -i "$C" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "$1
 Q(){ docker exec -i "$C" psql -U postgres -d "$DB" -tAc "$1" | tr -d '[:space:]'; }
 
 echo "===== RESTORE $DB from $SNAP ====="
+
+# ---------------------------------------------------------------------------
+# C1 — GERBANG KESELAMATAN (2026-08-09). Pola dicontek PERSIS dari
+# scripts/e2e/test_gateway.sh, bukan versi baru.
+#
+# KENAPA ADA: skrip ini men-DROP DATABASE seluruh pembukuan, dan sampai hari
+# ini SATU-SATUNYA pemeriksaan tenant ada SESUDAH restore — itu verifikasi
+# hasil, bukan izin bertindak. Padahal test_gateway.sh, yang cuma menyalakan
+# container baca-saja, MENOLAK start bila ada tenant di luar slug harness.
+# Alat yang jauh lebih destruktif punya guard yang jauh lebih lemah.
+# Sesi lain (conversational) memakai milkydb yang SAMA: tiap run_all
+# menghapus datanya tanpa peringatan dan tanpa jejak.
+#
+# JANGAN dilonggarkan dengan mengubah HARNESS_SLUG — itu mengakali guard,
+# bukan melewatinya secara sadar. Untuk melewatinya, pakai I_KNOW=1, yang
+# akan MENCETAK apa yang akan dihapus.
+# ---------------------------------------------------------------------------
+HARNESS_SLUG=${HARNESS_SLUG:-kaos-biru-konveksi}
+_DBEXISTS=$(docker exec -i "$C" psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | tr -d '[:space:]')
+if [ "$_DBEXISTS" = "1" ]; then
+  TN=$(Q "SELECT count(*) FROM \"Tenant\";" 2>/dev/null || echo ERR)
+  BAD=$(Q "SELECT count(*) FROM \"Tenant\" WHERE id <> '$HARNESS_SLUG';" 2>/dev/null || echo ERR)
+  # Kegagalan ALAT tak boleh menyamar jadi "nol tenant asing" — itu justru
+  # bacaan yang paling meyakinkan dan paling salah (Law 33 mekanisme 7).
+  if [ "$TN" = "ERR" ] || [ "$BAD" = "ERR" ]; then
+    echo "!!! tak bisa membaca tabel Tenant di '$DB' — MENOLAK (kegagalan alat, bukan izin)"
+    exit 1
+  fi
+  if [ "${BAD:-0}" -gt 0 ]; then
+    # SATU blok, urutan keputusan eksplisit. Versi pertama menaruh cetakan
+    # I_KNOW SESUDAH cabang penolakan yang ber-`exit 1`, sehingga escape hatch
+    # itu KODE MATI — tak pernah tercapai. Ditemukan uji dua arah kasus (e),
+    # bukan oleh membaca ulang. Guard yang jalurnya tak dijatuhi beban punya
+    # cabang mati tanpa ada yang tahu (Law 33 mekanisme 6).
+    echo "!!! '$DB' memuat $TN tenant, $BAD di luar slug harness '$HARNESS_SLUG'."
+    echo "    Skrip ini men-DROP DATABASE — data tenant itu akan HILANG PERMANEN."
+    echo "    Tenant di luar harness:"
+    docker exec -i "$C" psql -U postgres -d "$DB" -tAc \
+      "SELECT '      - '||id FROM \"Tenant\" WHERE id <> '$HARNESS_SLUG' ORDER BY id;" 2>/dev/null
+    if [ "${I_KNOW:-0}" != "1" ]; then
+      echo "    ==> MENOLAK. Kalau memang disengaja: jalankan ulang dengan I_KNOW=1."
+      exit 1
+    fi
+    # Escape hatch yang DIAM membuat orang mengetiknya sebagai refleks.
+    # Yang MENCETAK korbannya membuat mereka membacanya sekali.
+    echo
+    echo "!!! I_KNOW=1 — GUARD DILEWATI DENGAN SENGAJA."
+    echo "    Yang akan DIHAPUS PERMANEN bersama '$DB':"
+    docker exec -i "$C" psql -U postgres -d "$DB" -c \
+      "SELECT t.id AS tenant, (SELECT count(*) FROM \"User\" u WHERE u.\"tenantId\"=t.id) AS pengguna, (SELECT count(*) FROM journal_entries j WHERE j.tenant_id=t.id) AS jurnal FROM \"Tenant\" t ORDER BY t.id;" 2>/dev/null
+    echo
+  fi
+fi
+
 # CACAT (ditutup 2026-08-08): skrip mengandaikan $DB SUDAH ADA. Kalau milkydb
 # hilang — justru skenario pemulihan yang paling mungkin — ALTER gagal dan
 # restore menolak bekerja. Jaring yang menyerah persis saat dibutuhkan.

@@ -97,6 +97,10 @@ step(){ # $1=label  $2=path-skrip  $3..=env prefix
 # POLICY=none: JANGAN tulis tenant_config. Inilah satu-satunya perbedaan
 # konfigurasi antara skenario #1 dan #2 — dijaga sebagai variabel tunggal.
 step "-1" "$DP/step_-1_provision.sh" POLICY=none
+# C2 — gerbang prasyarat. POLICY=none diteruskan: di skenario ini yang WAJIB
+# dibuktikan adalah tenant_config TANPA BARIS. Kalau baris 'delivery' bocor
+# dari run skenario #1, seluruh run ini diam-diam menguji delivery mode.
+step "pre" "$DP/precondition_gate.sh" POLICY=none
 step "0"  "$DP/step_0_buy.sh"
 step "0b" "$DP/step_0b_pay.sh"
 step "1"  "$DIR/step_1_invoice_autopost.sh"
