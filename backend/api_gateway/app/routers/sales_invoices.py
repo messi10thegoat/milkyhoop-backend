@@ -420,6 +420,12 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     ctx = get_user_context(request)
     pool = await get_pool()
 
+    def _n(v) -> str:
+        """Angka untuk mata manusia: 98.0000 -> '98', 2.5000 -> '2,5'."""
+        d = Decimal(str(v))
+        d = d.quantize(Decimal("1")) if d == d.to_integral_value() else d.normalize()
+        return f"{d}".replace(".", ",")
+
     items = body.get("items") or []
     invoice_date = body.get("invoice_date")
     customer_id = body.get("customer_id")
@@ -461,7 +467,13 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                     return row["name"], row["account_code"]
                 warnings.append(f"Akun untuk peran {role} tidak ditemukan.")
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"Peran akun {role} belum dipetakan ({exc}).")
+                # Detail teknis ke log, bukan ke layar pemilik usaha: nama peran
+                # internal dan pesan galat asyncpg tak bisa ditindaklanjuti user.
+                logger.warning("preview-journal: peran %s gagal resolve: %s", role, exc)
+                warnings.append(
+                    f"Akun untuk '{fallback_name}' belum diatur di Daftar Akun. "
+                    f"Hubungi admin sebelum faktur ini diterbitkan."
+                )
             return fallback_name, ""
 
         # --- periksa pelanggan ---
@@ -474,7 +486,7 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             if not cust:
                 warnings.append("Pelanggan tidak ditemukan.")
         else:
-            warnings.append("Pelanggan belum dipilih.")
+            warnings.append("Pelanggan belum dipilih untuk faktur ini.")
 
         # --- periode fiskal ---
         if invoice_date:
@@ -497,16 +509,22 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                     _inv_date,
                 )
                 if period and period["status"] in ("CLOSED", "LOCKED"):
+                    _tutup = (
+                        "dikunci" if period["status"] == "LOCKED" else "ditutup"
+                    )
                     warnings.append(
-                        f"Periode {period['period_name']} sudah "
-                        f"{period['status'].lower()} — faktur tidak dapat diposting."
+                        f"Pembukuan bulan {period['period_name']} sudah {_tutup}, "
+                        f"jadi faktur ini belum bisa diterbitkan."
                     )
                 elif not period:
                     warnings.append("Belum ada periode fiskal untuk tanggal ini.")
             except ValueError:
-                warnings.append(f"Tanggal faktur tidak dikenali: {invoice_date!r}.")
+                warnings.append("Tanggal faktur tidak dikenali. Periksa kembali.")
             except Exception as _pexc:  # noqa: BLE001
-                warnings.append(f"Periode fiskal tidak dapat diperiksa ({_pexc}).")
+                logger.warning("preview-journal: cek periode gagal: %s", _pexc)
+                warnings.append(
+                    "Status pembukuan bulan ini belum dapat diperiksa."
+                )
 
         # --- kebijakan pengakuan pendapatan EFEKTIF (urutan sama dgn posting) ---
         effective_policy = body.get("recognize_at")
@@ -536,7 +554,10 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                 ctx["tenant_id"],
             )
             if not prod:
-                warnings.append(f"Item {item_id} tidak ditemukan.")
+                warnings.append(
+                    "Ada barang di faktur ini yang tidak dikenali — "
+                    "mungkin sudah dihapus. Periksa kembali daftar barangnya."
+                )
                 continue
             if prod["status"] and prod["status"] != "active":
                 warnings.append(f"Item '{prod['nama_produk']}' tidak aktif.")
@@ -553,8 +574,9 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             if wac <= 0:
                 all_have_cost = False
                 warnings.append(
-                    f"Biaya pokok '{prod['nama_produk']}' belum terbentuk "
-                    f"(WAC 0) — HPP ditunda sampai penerimaan barang dicatat."
+                    f"Harga beli '{prod['nama_produk']}' belum pernah tercatat, "
+                    f"jadi laba faktur ini belum terhitung. Catat pembelian "
+                    f"barangnya dulu supaya HPP ikut terbentuk."
                 )
             else:
                 total_cogs += (wac * qty).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
@@ -569,8 +591,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             on_hand = Decimal(str(on_hand or 0))
             if on_hand < qty:
                 warnings.append(
-                    f"Stok '{prod['nama_produk']}' {on_hand:g} kurang dari {qty:g} "
-                    f"yang dijual — stok akan minus."
+                    f"Stok '{prod['nama_produk']}' tinggal {_n(on_hand)}, "
+                    f"sedangkan yang dijual {_n(qty)} — stok akan jadi minus."
                 )
 
         # apakah COGS BENAR-BENAR akan terbentuk saat posting?

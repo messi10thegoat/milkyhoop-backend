@@ -1129,9 +1129,13 @@ class ToolExecutor:
                     )
                     return None
                 data = resp.json()
-                # Extract journal_lines list from response dict
-                if isinstance(data, dict) and "journal_lines" in data:
-                    return data["journal_lines"]
+                # Dulu di sini: `return data["journal_lines"]` — yang membuang
+                # SELURUH field saudara, termasuk `warnings` yang disusun endpoint
+                # pratinjau (pelanggan tak ada, stok minus, periode tertutup, WAC 0).
+                # Akibatnya delapan pemeriksaan nyata nol sampai ke user.
+                # Kini dict dikembalikan utuh; PEMANGGIL yang memisahkannya, supaya
+                # dua konsumen lama (confirmation_table, response_data) tetap
+                # menerima bentuk daftar yang sama persis seperti sebelumnya.
                 return data
         except Exception as e:
             logger.warning(f"Journal preview failed for {config.action_key}: {e}")
@@ -1665,8 +1669,15 @@ class ToolExecutor:
 
         # === JOURNAL PREVIEW (after normalization + validation + defaults) ===
         journal_preview = None
+        preview_warnings: list[str] = []
         if config.creates_journal and config.journal_preview_endpoint:
-            journal_preview = await self._get_journal_preview(config, payload)
+            _pv = await self._get_journal_preview(config, payload)
+            if isinstance(_pv, dict):
+                journal_preview = _pv.get("journal_lines")
+                preview_warnings = list(_pv.get("warnings") or [])
+            else:
+                # endpoint pratinjau lama yang membalas daftar telanjang
+                journal_preview = _pv
 
         # Store pending action
         pending_id = str(uuid.uuid4())
@@ -1704,7 +1715,9 @@ class ToolExecutor:
         confirmation_table = build_confirmation_table(
             action_key, payload, journal_preview
         )
-        review_card = build_review_card_payload(action_key, payload, journal_preview)
+        review_card = build_review_card_payload(
+            action_key, payload, journal_preview, preview_warnings=preview_warnings
+        )
 
         # Build detection reason from payload fields
         _det_parts = []

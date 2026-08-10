@@ -5138,7 +5138,10 @@ def build_confirmation_table(
 
 
 def build_review_card_payload(
-    action_key: str, payload: dict, journal_preview: list | None = None
+    action_key: str,
+    payload: dict,
+    journal_preview: list | None = None,
+    preview_warnings: list | None = None,
 ) -> dict | None:
     """Build structured review card payload for frontend rendering.
 
@@ -5204,6 +5207,19 @@ def build_review_card_payload(
     for note in impact_notes:
         wtype = "warning" if "\u26a0" in note or "tidak" in note.lower() else "info"
         warnings.append({"type": wtype, "message": note})
+
+    # Warnings dari endpoint pratinjau (pelanggan tak ada, stok minus, periode
+    # tertutup, biaya pokok belum terbentuk). Sebelumnya dibuang di
+    # tool_executor._get_journal_preview dan tak pernah sampai ke user.
+    # Heuristik `impact_notes` di atas TIDAK dipakai untuk ini: ia menandai "info"
+    # bila teks tak memuat kata "tidak", sehingga "Stok ... kurang dari ..." akan
+    # salah turun kelas jadi info. Yang dari pratinjau adalah temuan atas data
+    # nyata — default-nya peringatan, kecuali catatan kebijakan.
+    for note in preview_warnings or []:
+        if not note:
+            continue
+        wtype = "info" if str(note).startswith("Kebijakan tenant") else "warning"
+        warnings.append({"type": wtype, "message": str(note)})
 
     # Journal preview lines
     journal_lines = None
