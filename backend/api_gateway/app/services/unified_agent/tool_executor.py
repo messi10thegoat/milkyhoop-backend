@@ -123,11 +123,45 @@ def _user_gave_absolute_date(user_text: str) -> bool:
 # FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative-date phrases
 
 
+# Q3B 2026-08-10: bilangan-kata Bahasa Indonesia. Parser lama hanya menerima
+# DIGIT (r"(\d+)\s+bulan"), sehingga "jatuh tempo satu bulan" tak dikenali dan
+# due_date HALUSINASI dari LLM bertahan sampai DB (dok. 52: 2024-05-23, mundur
+# dua tahun). Bilangan kata adalah cara orang Indonesia berbicara — 44 dari 44
+# frasa yang diuji gagal sebelum perbaikan ini.
+#
+# Disengaja: normalisasi kata->digit dilakukan DI DEPAN, sehingga seluruh regex
+# yang sudah ada (termasuk jalur _due_offset_days di _apply_relative_dates)
+# langsung bekerja tanpa satu pun regex disentuh. Radius perubahan minimum.
+_ID_WORD_NUM = {
+    "satu": 1, "dua": 2, "tiga": 3, "empat": 4, "lima": 5, "enam": 6,
+    "tujuh": 7, "delapan": 8, "sembilan": 9, "sepuluh": 10, "sebelas": 11,
+    "duabelas": 12, "dua belas": 12,
+}
+_ID_UNITS = ("hari", "minggu", "bulan", "tahun")
+
+
+def _normalize_word_numerals(text: str) -> str:
+    """'satu bulan' -> '1 bulan'; 'sebulan' -> '1 bulan'. Idempoten.
+
+    Hanya menyentuh pola <bilangan> <satuan waktu>; angka lain di kalimat
+    (qty, harga) tidak tersentuh karena satuannya wajib ikut cocok.
+    """
+    if not text:
+        return text
+    out = text
+    for unit in _ID_UNITS:
+        # bentuk lekat: sebulan / seminggu / sehari / setahun
+        out = re.sub(rf"\bse{unit}\b", f"1 {unit}", out)
+    for kata, n in sorted(_ID_WORD_NUM.items(), key=lambda kv: -len(kv[0])):
+        out = re.sub(rf"\b{kata}\s+({'|'.join(_ID_UNITS)})\b", rf"{n} \1", out)
+    return out
+
+
 def _parse_relative_date_phrase(phrase: str, base):
     """Parse Indonesian relative-date phrase. Return computed date or None."""
     if not phrase:
         return None
-    p = phrase.lower().strip()
+    p = _normalize_word_numerals(phrase.lower().strip())
     base_d = base.date() if hasattr(base, "date") else base
     if p in ("hari ini", "sekarang", "today", "tanggal hari ini", "tanggal sekarang"):
         return base_d
@@ -170,6 +204,10 @@ def _parse_relative_date_phrase(phrase: str, base):
     m = re.search(r"(?:dalam\s+)?(\d+)\s+bulan(?:\s+(?:lagi|ke\s+depan|kedepan))?", p)
     if m:
         return base_d + timedelta(days=30 * int(m.group(1)))
+    # Q3B: satuan "tahun" sebelumnya TIDAK ADA sama sekali — "1 tahun" pun gagal.
+    m = re.search(r"(?:dalam\s+)?(\d+)\s+tahun(?:\s+(?:lagi|ke\s+depan|kedepan))?", p)
+    if m:
+        return base_d + timedelta(days=365 * int(m.group(1)))
     return None
 
 
@@ -183,7 +221,9 @@ def _apply_relative_dates(
     """
     if not user_text:
         return payload
-    txt = user_text.lower()
+    # Q3B: normalisasi di sini juga, supaya _n_hari (pemilih basis + penyimpan
+    # _due_offset_days) ikut mengenali "tempo tiga hari", bukan hanya "3 hari".
+    txt = _normalize_word_numerals(user_text.lower())
     today = _date_cls.today()
 
     inv_match = re.search(
@@ -224,6 +264,12 @@ def _apply_relative_dates(
         else:
             base_for_due = today
         computed = _parse_relative_date_phrase(phrase, base_for_due)
+        if computed is None:
+            # Q3C: frasa tempo bisa berupa tanggal ABSOLUT ("jatuh tempo 14 juni").
+            # Parser absolut sudah ada dan murni — dipakai sebagai lapis kedua
+            # supaya membuang due_date LLM (di _enrich_sales_invoice) tidak
+            # mengorbankan kasus ini.
+            computed = _parse_absolute_date_id(phrase)
         if computed:
             payload["due_date"] = computed.isoformat()
             # FIX_BILL_RELDATE_PERSIST (2026-06-18): when the user states an
@@ -4117,7 +4163,31 @@ class ToolExecutor:
         _user_specified_due = bool(
             re.search(r"\b(jatuh\s+tempo|due\s+date|tempo\s+pembayaran)\b", _ut)
         ) or _persisted_due_offset is not None
-        if not _user_specified_due and payload.get("due_date"):
+        # Q3C 2026-08-10: due_date dari LLM TIDAK PERNAH dipercaya — bukan hanya
+        # ketika user diam.
+        #
+        # Bentuk lama: guard ini hanya membuang due_date bila user TIDAK menyebut
+        # tempo. Ketika user menyebut, angka LLM dibiarkan lewat — dengan asumsi
+        # diam-diam bahwa _apply_relative_dates di bawah pasti menimpanya. Asumsi
+        # itu runtuh begitu parser tak mengerti frasanya: "jatuh tempo satu bulan"
+        # menghasilkan due_date 2024-05-23, mundur dua tahun, sampai ke DB
+        # (dok. 52 — INV-2608-0005 lahir dengan tanggal itu).
+        #
+        # Prinsipnya: KEGAGALAN PARSER TIDAK BOLEH BERARTI "PERCAYAI LLM".
+        # due_date selalu dibuang di sini; nilai benar datang dari salah satu
+        # sumber deterministik di bawah, dengan urutan:
+        #   1. _apply_relative_dates  (frasa relatif ATAU tanggal absolut)
+        #   2. _due_offset_days       (offset eksplisit dari giliran sebelumnya)
+        #   3. customer.payment_terms_days / NET-30
+        # Ketiganya turunan; nol angka dari model. Sejalan lapisan 3 arsitektur
+        # target: nominal/tanggal/ID dari input user atau DB, tak pernah dari
+        # generasi model.
+        if payload.get("due_date") and _persisted_due_offset is None:
+            logger.info(
+                "[Q3C] due_date usulan LLM dibuang (user_menyebut_tempo=%s); "
+                "akan diturunkan deterministik",
+                _user_specified_due,
+            )
             payload.pop("due_date", None)
 
         # Default due_date: lookup customer.payment_terms_days. Falls back to 30

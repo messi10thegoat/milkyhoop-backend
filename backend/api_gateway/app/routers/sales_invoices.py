@@ -2320,6 +2320,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 )
 
                 # Insert items
+                _nama_master: dict = {}
                 for item in calculated_items:
                     item_uuid = None
                     _raw_item_id = item.get("item_id") or item.get("product_id")
@@ -2328,6 +2329,37 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             item_uuid = UUID(str(_raw_item_id))
                         except ValueError:
                             pass
+
+                    # Q5 2026-08-10: bila item_id TER-RESOLVE, `description` diisi
+                    # nama master — bukan teks yang diketik user di chat.
+                    #
+                    # Sebabnya: `description` BUKAN catatan bebas dalam praktiknya.
+                    # PDF faktur (templates/pdf/sales_invoice.html:118) dan surat
+                    # jalan (:100) menampilkannya sebagai NAMA BARANG, dan
+                    # fallback `{{ item.product_name or item.description }}` di
+                    # sana adalah ilusi: :4352 mengisi product_name DARI
+                    # description, dan :5092 memakai `sii.description AS
+                    # product_name`. Kedua sisi `or` adalah field yang sama.
+                    # Akibatnya faktur resmi ke pelanggan berbunyi "kaos"
+                    # (dok. 52, INV-2608-0005) alih-alih "Kaos Hitam Gramasi 24s"
+                    # — padahal item_id-nya ter-resolve benar (harga dan HPP
+                    # terbukti benar).
+                    #
+                    # Ter-resolve = kita TAHU barang apa ini; nama master adalah
+                    # kebenarannya. Bila TIDAK ter-resolve (jasa, barang non-
+                    # katalog, teks bebas), teks user dipertahankan apa adanya —
+                    # ia satu-satunya keterangan yang kita punya.
+                    _desc = item["description"]
+                    if item_uuid:
+                        if item_uuid not in _nama_master:
+                            _nama_master[item_uuid] = await conn.fetchval(
+                                """SELECT nama_produk FROM products
+                                   WHERE id = $1 AND tenant_id = $2""",
+                                item_uuid,
+                                ctx["tenant_id"],
+                            )
+                        if _nama_master[item_uuid]:
+                            _desc = _nama_master[item_uuid]
 
                     # Auto-populate batch_no/exp_date from item_batches if only batch_id provided
                     item_batch_no = item.get("batch_no")
@@ -2377,7 +2409,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         invoice_id,
                         item_uuid,
                         item.get("item_code"),
-                        item["description"],
+                        _desc,
                         item["quantity"],
                         item.get("unit"),
                         item["unit_price"],
