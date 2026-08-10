@@ -6,7 +6,7 @@ Handles draft -> posted -> paid lifecycle with AR and journal entry creation.
 """
 
 from decimal import Decimal, ROUND_HALF_UP
-from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -374,6 +374,274 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
 # =============================================================================
 # LIST INVOICES
 # =============================================================================
+@router.post("/preview-journal")
+async def preview_journal(request: Request, body: dict = Body(...)):
+    """Pratinjau jurnal faktur penjualan — READ-ONLY, nol tulis.
+
+    Menampilkan KETIGA peristiwa yang benar-benar terjadi saat posting
+    (bandingkan `_post_invoice`):
+
+        JV     Dr Piutang Usaha (termasuk PPN) / Cr Pendapatan Diterima Dimuka
+                                               / Cr PPN Keluaran  <- bila ada pajak
+        RECOG  Dr Pendapatan Diterima Dimuka   / Cr Penjualan      (nilai TANPA pajak)
+        COGS   Dr HPP                          / Cr Persediaan     <- hanya bila auto-fulfill
+
+    COGS ditampilkan HANYA bila tenant ini benar-benar akan mem-posting-nya
+    saat invoice. Kebijakan efektif dibaca dengan urutan yang SAMA dengan
+    `_post_invoice`: `recognize_at` per-faktur -> `tenant_config
+    .revenue_recognition_policy` -> default 'invoice'. Kalau kebijakannya
+    'delivery', atau ada item ber-WAC 0, posting akan MENUNDA COGS — dan
+    pratinjau harus mencerminkan itu, bukan kasus umum.
+
+    Biaya pokok memakai `get_weighted_average_cost()` — fungsi yang SAMA
+    dengan yang dipakai posting. Sengaja tidak menghitung ulang WAC di sini:
+    pratinjau yang memakai sumber berbeda dari eksekusi akan menyimpang
+    darinya, dan itu justru cacat yang endpoint ini ada untuk menutup.
+    `products.stok` TIDAK dipakai (terbukti basi: 0 sementara warehouse_stock 98).
+
+    Law 27: seluruh akun di-resolve lewat peran, nol kode akun ditulis keras.
+
+    YANG DIPERIKSA (dan dilaporkan di `warnings`, bukan menolak — ini pratinjau):
+      - pelanggan ada
+      - tiap item ada, aktif, milik tenant ini
+      - WAC tersedia (WAC 0 => COGS ditunda, sama seperti posting)
+      - stok cukup di gudang
+      - periode fiskal untuk tanggal faktur terbuka
+      - peran akun ter-resolve
+
+    YANG TIDAK DIPERIKSA (sengaja, dan harus tetap tertulis di sini):
+      - kunci idempotensi / duplikasi nomor faktur
+      - RBAC di luar middleware yang sudah berjalan
+      - advisory lock, rantai hash
+      - keabsahan tax_code / faktur pajak keluaran (nomor seri, e-Faktur):
+        yang dicerminkan hanya DAMPAK JURNAL pajaknya
+      - batas kredit pelanggan
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    items = body.get("items") or []
+    invoice_date = body.get("invoice_date")
+    customer_id = body.get("customer_id")
+    warnings: list[str] = []
+
+    # Aritmetika baris memakai calculate_item_totals() — FUNGSI YANG SAMA yang
+    # dipakai jalur create/update (:345, :2164, :2463) dan yang menghasilkan
+    # `tax_amount` yang kelak dibaca _post_invoice. Sengaja TIDAK dihitung ulang
+    # di sini: dua salinan aritmetika pajak akan menyimpang, dan divergensi itu
+    # persis penyakit yang endpoint ini ada untuk menyembuhkan.
+    subtotal = Decimal("0")   # setelah diskon, SEBELUM pajak
+    tax_total = Decimal("0")
+    try:
+        for it in items:
+            norm = dict(it)
+            norm["quantity"] = it.get("quantity", it.get("qty", 0)) or 0
+            norm["unit_price"] = it.get("unit_price", it.get("price", 0)) or 0
+            calc = calculate_item_totals(norm)
+            subtotal += _d(calc["subtotal"]) - _d(calc["discount_amount"])
+            tax_total += _d(calc["tax_amount"])
+        if subtotal == 0 and tax_total == 0:
+            subtotal = Decimal(str(body.get("total_amount") or 0))
+    except (ValueError, TypeError, ArithmeticError, KeyError):
+        subtotal = Decimal(str(body.get("total_amount") or 0))
+        tax_total = Decimal("0")
+
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+
+        async def _acct(role: str, fallback_name: str) -> tuple[str, str]:
+            """(nama, kode) untuk sebuah peran. Gagal -> warning, bukan diam."""
+            try:
+                aid = await resolve_account_id_by_role(conn, ctx["tenant_id"], role)
+                row = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts WHERE id = $1",
+                    aid,
+                )
+                if row:
+                    return row["name"], row["account_code"]
+                warnings.append(f"Akun untuk peran {role} tidak ditemukan.")
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"Peran akun {role} belum dipetakan ({exc}).")
+            return fallback_name, ""
+
+        # --- periksa pelanggan ---
+        if customer_id:
+            cust = await conn.fetchrow(
+                "SELECT id FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id,
+                ctx["tenant_id"],
+            )
+            if not cust:
+                warnings.append("Pelanggan tidak ditemukan.")
+        else:
+            warnings.append("Pelanggan belum dipilih.")
+
+        # --- periode fiskal ---
+        if invoice_date:
+            try:
+                # asyncpg menuntut objek date untuk parameter bertipe date;
+                # meneruskan str menghasilkan galat yang dulu tertelan menjadi
+                # warning "tidak dapat diperiksa" — pemeriksaan yang diam-diam mati.
+                from datetime import date as _date
+
+                _inv_date = (
+                    invoice_date
+                    if isinstance(invoice_date, _date)
+                    else _date.fromisoformat(str(invoice_date)[:10])
+                )
+                period = await conn.fetchrow(
+                    """SELECT period_name, status FROM fiscal_periods
+                       WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                       ORDER BY start_date DESC LIMIT 1""",
+                    ctx["tenant_id"],
+                    _inv_date,
+                )
+                if period and period["status"] in ("CLOSED", "LOCKED"):
+                    warnings.append(
+                        f"Periode {period['period_name']} sudah "
+                        f"{period['status'].lower()} — faktur tidak dapat diposting."
+                    )
+                elif not period:
+                    warnings.append("Belum ada periode fiskal untuk tanggal ini.")
+            except ValueError:
+                warnings.append(f"Tanggal faktur tidak dikenali: {invoice_date!r}.")
+            except Exception as _pexc:  # noqa: BLE001
+                warnings.append(f"Periode fiskal tidak dapat diperiksa ({_pexc}).")
+
+        # --- kebijakan pengakuan pendapatan EFEKTIF (urutan sama dgn posting) ---
+        effective_policy = body.get("recognize_at")
+        if not effective_policy:
+            try:
+                effective_policy = await conn.fetchval(
+                    "SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id=$1",
+                    ctx["tenant_id"],
+                )
+            except Exception:  # noqa: BLE001
+                effective_policy = None
+        if not effective_policy:
+            effective_policy = "invoice"
+
+        # --- item: keberadaan, keaktifan, WAC, stok ---
+        total_cogs = Decimal("0")
+        has_inventory_items = False
+        all_have_cost = True
+        for it in items:
+            item_id = it.get("item_id") or it.get("product_id")
+            if not item_id:
+                continue
+            prod = await conn.fetchrow(
+                """SELECT id, nama_produk, item_type, track_inventory, status
+                   FROM products WHERE id = $1::uuid AND tenant_id = $2""",
+                item_id,
+                ctx["tenant_id"],
+            )
+            if not prod:
+                warnings.append(f"Item {item_id} tidak ditemukan.")
+                continue
+            if prod["status"] and prod["status"] != "active":
+                warnings.append(f"Item '{prod['nama_produk']}' tidak aktif.")
+            if not prod["track_inventory"]:
+                continue
+
+            has_inventory_items = True
+            qty = Decimal(str(it.get("quantity") or it.get("qty") or 0))
+
+            wac = await conn.fetchval(
+                "SELECT get_weighted_average_cost($1, $2)", ctx["tenant_id"], item_id
+            )
+            wac = Decimal(str(wac or 0))
+            if wac <= 0:
+                all_have_cost = False
+                warnings.append(
+                    f"Biaya pokok '{prod['nama_produk']}' belum terbentuk "
+                    f"(WAC 0) — HPP ditunda sampai penerimaan barang dicatat."
+                )
+            else:
+                total_cogs += (wac * qty).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+            # stok tersedia (warehouse_stock = sumber yang benar; products.stok basi)
+            on_hand = await conn.fetchval(
+                """SELECT COALESCE(SUM(quantity), 0) FROM warehouse_stock
+                   WHERE tenant_id = $1 AND item_id = $2::uuid""",
+                ctx["tenant_id"],
+                item_id,
+            )
+            on_hand = Decimal(str(on_hand or 0))
+            if on_hand < qty:
+                warnings.append(
+                    f"Stok '{prod['nama_produk']}' {on_hand:g} kurang dari {qty:g} "
+                    f"yang dijual — stok akan minus."
+                )
+
+        # apakah COGS BENAR-BENAR akan terbentuk saat posting?
+        cogs_will_post = (
+            has_inventory_items and all_have_cost and effective_policy != "delivery"
+        )
+        if has_inventory_items and all_have_cost and effective_policy == "delivery":
+            warnings.append(
+                "Kebijakan tenant: pendapatan & HPP diakui saat pengiriman, "
+                "bukan saat faktur."
+            )
+
+        # --- akun (Law 27) ---
+        ar_name, ar_code = await _acct(AccountRole.AR_TRADE, "Piutang Usaha")
+        defer_name, defer_code = await _acct(
+            AccountRole.REVENUE_DEFERRED, "Pendapatan Diterima Dimuka"
+        )
+        rev_name, rev_code = await _acct(AccountRole.REVENUE_SALES_GOODS, "Penjualan")
+
+        # Cermin _post_invoice:1729-1778 —
+        #   Dr Piutang        = total TERMASUK pajak  (:1745)
+        #   Cr Ditangguhkan   = total - pajak         (:1730)
+        #   Cr PPN Keluaran   = pajak, hanya bila > 0 (:1767)
+        # Pengakuan pendapatan (RECOG) memakai nilai TANPA pajak (:1862-1863).
+        amt = int(subtotal)
+        tax_amt = int(tax_total)
+        lines = [
+            {"account_name": ar_name, "account_code": ar_code,
+             "debit": amt + tax_amt, "credit": 0, "event": "JV"},
+            {"account_name": defer_name, "account_code": defer_code,
+             "debit": 0, "credit": amt, "event": "JV"},
+        ]
+        if tax_amt > 0:
+            # _post_invoice TIDAK memeriksa Tenant.is_pkp di sini: ia menerbitkan
+            # baris PPN semata-mata karena tax_amount > 0, lewat
+            # resolve_account_id_by_role (BUKAN varian _if_pkp). Pratinjau meniru
+            # persis itu — menambah gerbang is_pkp di sini justru akan membuat
+            # pratinjau dan posting tak sepakat untuk sebagian tenant.
+            vat_name, vat_code = await _acct(AccountRole.VAT_OUTPUT, "PPN Keluaran")
+            lines.append({"account_name": vat_name, "account_code": vat_code,
+                          "debit": 0, "credit": tax_amt, "event": "JV"})
+        lines += [
+            {"account_name": defer_name, "account_code": defer_code,
+             "debit": amt, "credit": 0, "event": "RECOG"},
+            {"account_name": rev_name, "account_code": rev_code,
+             "debit": 0, "credit": amt, "event": "RECOG"},
+        ]
+
+        if cogs_will_post and total_cogs > 0:
+            cogs_name, cogs_code = await _acct(AccountRole.COGS_SALES, "HPP")
+            inv_name, inv_code = await _acct(
+                AccountRole.INVENTORY_MERCHANDISE, "Persediaan"
+            )
+            c = int(total_cogs)
+            lines.append({"account_name": cogs_name, "account_code": cogs_code,
+                          "debit": c, "credit": 0, "event": "COGS"})
+            lines.append({"account_name": inv_name, "account_code": inv_code,
+                          "debit": 0, "credit": c, "event": "COGS"})
+
+        return {
+            "journal_lines": lines,
+            "warnings": warnings,
+            "total_cogs": int(total_cogs) if cogs_will_post else 0,
+            "revenue_policy": effective_policy,
+            "cogs_recognized_at_invoice": cogs_will_post,
+            "subtotal": int(subtotal),
+            "tax_amount": int(tax_total),
+            "total_amount": int(subtotal + tax_total),
+        }
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     request: Request,
