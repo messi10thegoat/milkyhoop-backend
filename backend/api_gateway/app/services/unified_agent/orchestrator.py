@@ -1091,6 +1091,49 @@ class UnifiedAgent:
 
         merged_entities = dict(extraction.entities)
 
+        # ── FIX_DISKON_HANTU 2026-08-10 ────────────────────────────────────
+        # Stage-2 LLM menulis NOMINAL TAGIHAN ke field diskon yang tak pernah
+        # disebut user: "catat tagihan dari PT Benang Emas 3 juta" menghasilkan
+        # invoice_discount_amount = 3.000.000 — diskon sebesar tagihannya sendiri,
+        # yang membuat tagihan menjadi NOL (dok. 56). Terbukti pada SATU giliran,
+        # tanpa multi-giliran, dan endpoint memang memakai field itu
+        # (schemas/bills.py:407).
+        #
+        # Pelanggaran langsung lapisan 3: angka di field uang berasal dari
+        # generasi model, bukan dari input user.
+        #
+        # Pola sama dengan FIX_AQUA_DUEDATE / Q3C, termasuk pelajarannya:
+        # gerbang kata kunci menutup kasus user diam dan MEMBUKA kasus user
+        # menyebut. Karena itu saat kata "diskon"/"potongan" MEMANG ada,
+        # nilainya diparse DETERMINISTIK di sini — nilai LLM tidak dipakai.
+        # Parser gagal => diskon DIBUANG (tagihan penuh), bukan "percayai LLM".
+        def _parse_diskon(teks: str):
+            """(rupiah, persen) dari teks user. Deterministik, nol LLM."""
+            import re as _re
+
+            t = (teks or "").lower()
+            m = _re.search(
+                r"(?:diskon|potongan|disc)\s*(?:sebesar\s*)?"
+                r"(?:rp\.?\s*)?([\d.,]+)\s*(%|persen|ribu|rb|juta|jt|miliar|m)?",
+                t,
+            )
+            if not m:
+                return None, None
+            angka = m.group(1).replace(".", "").replace(",", ".").rstrip(".")
+            if not angka:
+                return None, None
+            try:
+                n = float(angka)
+            except ValueError:
+                return None, None
+            satuan = (m.group(2) or "").strip()
+            if satuan in ("%", "persen"):
+                return None, n
+            skala = {"ribu": 1_000, "rb": 1_000, "juta": 1_000_000,
+                     "jt": 1_000_000, "miliar": 1_000_000_000, "m": 1_000_000_000}
+            return n * skala.get(satuan, 1), None
+
+
         # ── Stage 2: Registry-driven field extraction ──
         # If intent has registry fields not in Stage 1 schema, extract them.
         # This fires an additional cheap LLM call (~300ms, ~100 tokens).
@@ -1129,6 +1172,33 @@ class UnifiedAgent:
                     for k, v in _s2_result.items():
                         if v is not None:
                             merged_entities[k] = v
+
+                    # FIX_DISKON_HANTU: lihat blok penjelasan di _parse_diskon.
+                    # Dibatasi ke create_bill — satu-satunya jalur yang TERBUKTI
+                    # salah-petakan (faktur penjualan diuji BERSIH pada frasa
+                    # setara, dok. 56 D2a), jadi jalur yang sehat tidak disentuh.
+                    if extraction.intent == "create_bill":
+                        _d_rp, _d_pct = _parse_diskon(user_text)
+                        _punya_kata = bool(
+                            __import__("re").search(
+                                r"\b(diskon|potongan|disc)\b", (user_text or "").lower()
+                            )
+                        )
+                        for _df, _nilai in (
+                            ("invoice_discount_amount", _d_rp),
+                            ("invoice_discount_percent", _d_pct),
+                        ):
+                            if _nilai is not None:
+                                merged_entities[_df] = _nilai
+                            elif _df in merged_entities:
+                                logger.info(
+                                    "[FIX_DISKON_HANTU] %s=%s dibuang "
+                                    "(user_sebut_diskon=%s, parser=None)",
+                                    _df,
+                                    merged_entities.get(_df),
+                                    _punya_kata,
+                                )
+                                merged_entities.pop(_df, None)
 
                     # ── Price field dedup for create_item ──
                     # Stage 1 often extracts generic "unit_price" from any price mention.
