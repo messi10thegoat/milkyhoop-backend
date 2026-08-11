@@ -873,6 +873,72 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
 # =============================================================================
 
 
+
+def _pesan_galat_manusiawi(error_detail, payload: dict | None = None) -> str:
+    """F3 2026-08-11: galat endpoint → kalimat yang bisa ditindaklanjuti.
+
+    Sampai commit ini user melihat, apa adanya:
+        Gagal: [{'type': 'missing', 'loc': ['body', 'items', 0, 'qty'],
+                 'msg': 'Field required', 'input': {...}}]
+    Itu bentuk galat Pydantic — nama field internal, indeks baris, dan seluruh
+    payload. Untuk pemilik UMKM yang bukan akuntan (apalagi bukan programmer)
+    ia bukan hanya tak berguna, ia menakutkan: tampak seperti sistem rusak,
+    padahal yang kurang cuma jumlah barang.
+
+    Prinsip dok. 51: nama internal dan pesan asli ke LOG; yang di layar adalah
+    KEADAAN + LANGKAH BERIKUTNYA. Nomor baris diterjemahkan jadi NAMA BARANG —
+    "Item 1" tak berarti apa pun bagi orang yang mengetik "jasa sablon".
+
+    Detail mentah TIDAK hilang: pemanggil tetap menyimpannya ke
+    pending_actions.error_message dan menulisnya ke log.
+    """
+    _FIELD_ID = {
+        "qty": "jumlah", "quantity": "jumlah",
+        "price": "harga", "unit_price": "harga",
+        "vendor_id": "vendor", "customer_id": "pelanggan",
+        "issue_date": "tanggal", "invoice_date": "tanggal",
+        "due_date": "jatuh tempo", "items": "baris barang/jasa",
+        "bank_account_id": "rekening kas/bank", "total_amount": "nominal",
+        "amount": "nominal",
+    }
+
+    def _nama_baris(idx):
+        try:
+            it = (payload or {}).get("items")[idx]
+            return (it.get("product_name") or it.get("description")
+                    or it.get("name") or f"baris ke-{idx + 1}")
+        except Exception:
+            return f"baris ke-{idx + 1}"
+
+    if isinstance(error_detail, list) and error_detail:
+        bagian = []
+        for err in error_detail:
+            if not isinstance(err, dict):
+                continue
+            loc = [x for x in (err.get("loc") or []) if x != "body"]
+            fname = str(loc[-1]) if loc else ""
+            label = _FIELD_ID.get(fname, fname or "salah satu isian")
+            idx = next((x for x in loc if isinstance(x, int)), None)
+            dimana = f" untuk {_nama_baris(idx)}" if idx is not None else ""
+            tipe = str(err.get("type") or "")
+            if "missing" in tipe:
+                bagian.append(f"{label}{dimana} belum diisi")
+            elif "greater_than" in tipe or "gt" in tipe:
+                bagian.append(f"{label}{dimana} harus lebih dari nol")
+            else:
+                bagian.append(f"{label}{dimana} belum benar")
+        if bagian:
+            inti = bagian[0] if len(bagian) == 1 else ", ".join(bagian)
+            return (f"Belum bisa disimpan: {inti}. "
+                    "Sebutkan yang kurang itu lalu kirim lagi.")
+
+    teks = str(error_detail or "").strip()
+    if not teks or teks.startswith("[") or teks.startswith("{"):
+        return ("Belum bisa disimpan karena ada isian yang belum lengkap. "
+                "Coba sebutkan ulang dengan jumlah dan harganya.")
+    return f"Belum bisa disimpan: {teks}"
+
+
 @router.post("/message", response_model=ChatMessageResponse)
 async def send_message(request: Request, body: ChatMessageRequest):
     """
@@ -6445,9 +6511,15 @@ async def _confirm_direct_action(
                 uuid_mod.UUID(pending_action_id),
             )
 
+            # F3: mentahnya sudah tersimpan di pending_actions.error_message
+            # (di atas) dan masuk log; yang ke layar adalah kalimat manusia.
+            logger.warning(
+                "[F3] galat endpoint action=%s detail=%s",
+                action_key, str(error_detail)[:500],
+            )
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
-                text=f"Gagal: {error_detail}",
+                text=_pesan_galat_manusiawi(error_detail, payload),
                 data={"success": False},
             )
 

@@ -3725,7 +3725,27 @@ class ToolExecutor:
                 _p = float(item.get(price_field) or 0)
             except (TypeError, ValueError):
                 _p = 0.0
-            if _p > 0:
+            # F2 2026-08-11: JUMLAH juga wajib ditanya, bukan hanya harga.
+            #
+            # "jasa sablon 2 warna 500 ribu" — "2" adalah jumlah WARNA, bukan
+            # jumlah barang. Sampai commit ini bot tetap mengusulkan kartu,
+            # user menekan Konfirmasi, dan endpoint menolak dengan galat
+            # Pydantic mentah (qty: Field(..., gt=0)). Kartu itu tak pernah
+            # bisa berhasil sejak lahir.
+            #
+            # Kenapa qty dan BUKAN harga/tanggal/unit: qty tak bisa diturunkan
+            # dari mana pun. Harga ada di master (terbukti: purchase_price
+            # terambil tanpa user menyebutnya), tanggal punya default, unit
+            # punya default. Menanyakan yang bisa disimpulkan akan mengubah
+            # chatmode jadi wawancara — itu merusak keunggulannya atas
+            # dashboard.
+            _q_raw = item.get(qty_field, item.get("quantity"))
+            try:
+                _q_num = float(_q_raw) if _q_raw is not None else 0.0
+            except (TypeError, ValueError):
+                _q_num = 0.0
+            _qty_kurang = _q_num <= 0
+            if _p > 0 and not _qty_kurang:
                 continue
             try:
                 _q = int(float(item.get(qty_field) or 1))
@@ -3739,6 +3759,9 @@ class ToolExecutor:
                     "qty": _q,
                     "price_field": price_field,
                     "price_label": price_label,
+                    # "jumlah" → tanya qty (harga bisa dari master);
+                    # "harga"  → perilaku lama, tak berubah.
+                    "kurang": "jumlah" if _qty_kurang else "harga",
                     # FIX_AQUA_ITEM_RESOLVE 2026-05-19: surface fuzzy candidates
                     # so price-ask renderer can show "Mirip dengan: ..." hint.
                     "fuzzy_candidates": (

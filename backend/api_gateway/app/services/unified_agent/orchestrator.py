@@ -895,6 +895,40 @@ def _strip_draft_void_rows(text: str) -> str:
     return "\n".join(result)
 
 
+def _kalimat_tanya_item(m: dict) -> str:
+    """Satu kalimat untuk satu baris item yang belum bisa diproses.
+
+    Sebelumnya kalimat ini ditulis TIGA kali (jalur fresh, resume, dan
+    propose-langsung) dengan teks identik. F2 menambah varian "jumlah", dan
+    menyalin varian kedua ke tiga tempat berarti tiga tempat untuk menyimpang.
+
+    Mutu kalimat mengikuti e380b613: sebut BARIS MANA, sebut CONTOHNYA.
+    """
+    _nm = m.get("name") or "Item"
+    _fc = m.get("fuzzy_candidates") or []
+    _hint = ""
+    if _fc:
+        _opts = ", ".join(f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5]))
+        _hint = (
+            f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, "
+            "atau sebutkan harga untuk buat item baru._"
+        )
+
+    if m.get("kurang") == "jumlah":
+        return (
+            f"**{_nm}** — berapa banyak? Jumlahnya belum disebutkan, jadi "
+            "nilai barisnya masih Rp 0 dan dokumennya belum bisa dibuat. "
+            "_Contoh balasan: 2 pcs atau 10._"
+        ) + _hint
+
+    _qty = m.get("qty") or m.get("quantity") or ""
+    _qty_str = f" ({_qty} pcs)" if _qty else ""
+    return (
+        f"**{_nm}**{_qty_str} — {m.get('price_label') or 'harga jual'} per pcs "
+        "belum diset di data master. Berapa per pcs? "
+        "_Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._"
+    ) + _hint
+
 class UnifiedAgent:
     """
     Single agent loop. Replaces: intent classifier + action_planner + enrichment.
@@ -1767,7 +1801,23 @@ class UnifiedAgent:
                             _idx = _m.get("idx")
                             if isinstance(_idx, int) and 0 <= _idx < len(_items_resume):
                                 _items_resume[_idx] = dict(_items_resume[_idx])
-                                _items_resume[_idx]["unit_price"] = _ap_num
+                                # F2 2026-08-11: jalur resume ini SATU-SATUNYA
+                                # jalan keluar dari pertanyaan. Sampai commit ini
+                                # ia selalu menulis unit_price, jadi jawaban
+                                # "2 pcs" atas pertanyaan JUMLAH menjadi harga 2,
+                                # qty tetap kosong, dan bot bertanya lagi —
+                                # LINGKARAN yang tak bisa ditinggalkan user.
+                                # Menanyakan jumlah tanpa menutup jalur ini akan
+                                # LEBIH BURUK daripada tidak bertanya sama sekali.
+                                if _m.get("kurang") == "jumlah":
+                                    # nama field beda per domain: bills pakai
+                                    # "qty", faktur penjualan "quantity".
+                                    if _m.get("price_field") == "price":
+                                        _items_resume[_idx]["qty"] = _ap_num
+                                    else:
+                                        _items_resume[_idx]["quantity"] = _ap_num
+                                else:
+                                    _items_resume[_idx]["unit_price"] = _ap_num
                         _ap_payload_saved["items"] = _items_resume
                         # Cancel workflow before re-proposing (handler will recreate if still missing)
                         try:
@@ -1823,17 +1873,7 @@ class UnifiedAgent:
                                 _qtm = _mm.get("qty") or _mm.get("quantity") or ""
                                 _qsm = f" ({_qtm} pcs)" if _qtm else ""
                                 # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
-                                _fcm = _mm.get("fuzzy_candidates") or []
-                                _hintm = ""
-                                if _fcm:
-                                    _opts = ", ".join(
-                                        f"{_i+1}) {_c}"
-                                        for _i, _c in enumerate(_fcm[:5])
-                                    )
-                                    _hintm = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
-                                _ap2_lines.append(
-                                    f"**{_nmm}**{_qsm} — {_mm.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hintm}"
-                                )
+                                _ap2_lines.append(_kalimat_tanya_item(_mm))
                             return AgentResponse(
                                 message_type="TEXT",
                                 content="\n\n".join(_ap2_lines)
@@ -2445,22 +2485,12 @@ class UnifiedAgent:
                             _nm = _m.get("name") or "item"
                             _qty = _m.get("qty") or _m.get("quantity") or ""
                             _qty_str = f" ({_qty} pcs)" if _qty else ""
-                            # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
-                            _fc = _m.get("fuzzy_candidates") or []
-                            _hint = ""
-                            if _fc:
-                                _opts = ", ".join(
-                                    f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5])
-                                )
-                                _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
-                            _ap_lines.append(
-                                f"**{_nm}**{_qty_str} — {_m.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
-                            )
+                            _ap_lines.append(_kalimat_tanya_item(_m))
                         _ap_text = (
                             "\n\n".join(_ap_lines)
                             if _ap_lines
                             else (
-                                "Harga item belum diset. Mohon sebutkan harga per pcs."
+                                "Ada baris yang belum lengkap. Mohon sebutkan jumlah atau harganya."
                             )
                         )
                         await emit(
@@ -3915,19 +3945,11 @@ class UnifiedAgent:
                 _nm = _m.get("name") or "item"
                 _qty = _m.get("qty") or _m.get("quantity") or ""
                 _qty_str = f" ({_qty} pcs)" if _qty else ""
-                # FIX_AQUA_ITEM_RESOLVE 2026-05-19 (Layer B)
-                _fc = _m.get("fuzzy_candidates") or []
-                _hint = ""
-                if _fc:
-                    _opts = ", ".join(f"{_i+1}) {_c}" for _i, _c in enumerate(_fc[:5]))
-                    _hint = f"\n\n_Mirip dengan: {_opts}. Ketik nama lengkap untuk pilih, atau sebutkan harga untuk buat item baru._"
-                _ap_lines.append(
-                    f"**{_nm}**{_qty_str} — {_m.get('price_label') or 'harga jual'} per pcs belum diset di data master. Berapa per pcs? _Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._{_hint}"
-                )
+                _ap_lines.append(_kalimat_tanya_item(_m))
             _ap_text = (
                 "\n\n".join(_ap_lines)
                 if _ap_lines
-                else ("Harga item belum diset. Mohon sebutkan harga per pcs.")
+                else ("Ada baris yang belum lengkap. Mohon sebutkan jumlah atau harganya.")
             )
             await emit(
                 "THINKING_DONE",
