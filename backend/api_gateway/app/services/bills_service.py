@@ -126,6 +126,51 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+async def _timpa_nama_dari_master(conn, tenant_id, items) -> None:
+    """T14 2026-08-11: kalau product_id TER-RESOLVE, `product_name` diisi nama
+    master — bukan teks yang diketik user di chat.
+
+    Sebabnya sama persis dengan Q5 di jalur penjualan (50b71e14): `product_name`
+    BUKAN catatan bebas. templates/pdf/bill_invoice.html:118 dan :145 (kedua
+    layout) menampilkannya sebagai NAMA BARANG lewat
+    `{{ item.product_name or item.description }}`, dan sisi kanan `or` itu tak
+    pernah tercapai karena INSERT mengisi KEDUA kolom dari satu nilai. Jadi
+    faktur pembelian ke vendor berbunyi "Kaos Hitam" alih-alih "Kaos Hitam
+    Gramasi 24s" (dok. 60, PB-2608-0002) — padahal product_id-nya benar,
+    sehingga stok dan WAC tak pernah terpengaruh.
+
+    Ter-resolve = kita TAHU barang apa ini, dan nama master adalah kebenarannya.
+    TIDAK ter-resolve (jasa, ongkos, barang non-katalog) → teks user
+    dipertahankan apa adanya; ia satu-satunya keterangan yang kita punya.
+
+    Ditulis sebagai fungsi, bukan disalin dua kali, karena ada DUA situs INSERT
+    bill_items — create dan update_bill_v2. Memperbaiki create saja akan membuat
+    gejalanya kembali lewat tombol Edit.
+    """
+    if not items:
+        return
+    _cache: dict = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        _pid = item.get("product_id") or item.get("item_id")
+        if not _pid:
+            continue
+        try:
+            _uuid = UUID(str(_pid))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if _uuid not in _cache:
+            _cache[_uuid] = await conn.fetchval(
+                """SELECT nama_produk FROM products
+                   WHERE id = $1 AND tenant_id = $2""",
+                _uuid,
+                tenant_id,
+            )
+        if _cache[_uuid]:
+            item["product_name"] = _cache[_uuid]
+
+
 class BillCalculator:
     """
     Pure calculation logic for pharmacy bills.
@@ -2653,6 +2698,9 @@ class BillsService:
                 )
 
                 # 6. Insert items
+                # T14: nama master menang bila product_id ter-resolve
+                await _timpa_nama_dari_master(conn, tenant_id, items)
+
                 for idx, item in enumerate(items, start=1):
                     # Validate required item fields
                     if "qty" not in item or item["qty"] is None:
@@ -3847,6 +3895,9 @@ class BillsService:
                     )
 
                     # Insert new items
+                    # T14: nama master menang bila product_id ter-resolve
+                    await _timpa_nama_dari_master(conn, tenant_id, items)
+
                     for idx, item in enumerate(items, start=1):
                         qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
                         price = int(item["price"])
