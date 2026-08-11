@@ -5,7 +5,7 @@ Endpoints for managing bills, payments, and attachments.
 Integrates with accounting kernel for AP and journal entries.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
 from fastapi.responses import StreamingResponse
 from typing import Optional, Literal
 from uuid import UUID
@@ -48,6 +48,12 @@ from ..schemas.bills import (
 
 # Import calculator for preview endpoint
 from ..services.bills_service import BillCalculator
+from ..services.role_resolver import (  # noqa: E402
+    AccountRole,
+    resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
+)
+from decimal import Decimal  # noqa: E402
 
 # Import services
 from ..services.bills_service import BillsService
@@ -176,6 +182,246 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 # LIST BILLS
 # =============================================================================
+@router.post("/preview-journal")
+async def preview_journal(request: Request, body: dict = Body(...)):
+    """Pratinjau jurnal FAKTUR PEMBELIAN — READ-ONLY, nol tulis.
+
+    Sampai commit ini, faktur pembelian adalah satu-satunya dokumen berbaris
+    yang dampak jurnalnya TIDAK PERNAH terlihat user: registry menunjuk
+    endpoint ini tetapi rutenya tak ada (405), dan `_get_journal_preview`
+    menelan HTTP >=400 menjadi None sehingga kartu tampil tanpa bagian jurnal,
+    tanpa satu pun tanda ada yang gagal (dok. 50). Dua bug uang minggu ini
+    ditemukan justru di jalur ini (dok. 58) — jalur yang paling sering salah
+    adalah jalur yang paling tak terlihat.
+
+    Mencerminkan `BillsService.post_bill` baris demi baris:
+
+        Dr Persediaan / WIP    = subtotal (grand_total - pajak)   (:3465)
+        Dr PPN Masukan         = pajak, bila > 0 DAN tenant PKP   (:3475)
+        Cr Hutang Usaha        = grand_total                       (:3491)
+
+    TIGA PERBEDAAN dari faktur penjualan yang TIDAK boleh diasumsikan simetris:
+
+    1. SATU akun debit untuk SELURUH tagihan — bukan per item. Baris jasa
+       maupun barang sama-sama masuk akun yang sama. Bukan keputusan endpoint
+       ini; itu yang dilakukan posting (`post_bill` me-resolve satu
+       `debit_role` untuk seluruh dokumen).
+    2. PPN Masukan DIGERBANGI is_pkp lewat `resolve_account_id_by_role_if_pkp`,
+       dan posting MENOLAK KERAS bila tenant non-PKP mengirim pajak > 0.
+       Kebalikan dari faktur penjualan, yang tak memeriksa is_pkp sama sekali
+       (dok. 48 T6c). Pratinjau meniru sisi INI, bukan sisi penjualan.
+    3. Nol pengakuan pendapatan, nol HPP — tagihan tidak menggerakkan laba
+       saat diposting.
+
+    Aritmetika memakai `BillCalculator.calculate()` — fungsi yang SAMA dengan
+    jalur create/update. Nol aritmetika baru: salinan kedua akan menyimpang,
+    dan itu justru cacat yang endpoint ini ada untuk menutup.
+
+    Law 27: seluruh akun lewat peran, nol kode akun ditulis keras.
+
+    YANG DIPERIKSA (dilaporkan di `warnings`, tidak menolak — ini pratinjau):
+      - vendor ada dan milik tenant ini
+      - tiap item ada, aktif, milik tenant ini
+      - periode fiskal untuk tanggal tagihan terbuka
+      - peran akun ter-resolve (AP_TRADE / debit / VAT_INPUT)
+      - tenant non-PKP mengirim pajak > 0  -> posting akan DITOLAK
+      - diskon >= nilai dokumen            -> tagihan menjadi nol/negatif
+
+    YANG TIDAK DIPERIKSA (sengaja, dan harus tetap tertulis di sini):
+      - subcontract routing: `post_bill` mengalihkan debit ke WIP_SUBCONTRACT
+        bila tagihan tertaut production_subcontracts. Pratinjau berjalan
+        SEBELUM tagihan ada, jadi tautan itu belum dapat diketahui —
+        pratinjau selalu menampilkan akun persediaan. Tertulis, bukan
+        tersembunyi.
+      - duplikasi nomor faktur vendor, batas kredit, advisory lock,
+        rantai hash, keabsahan faktur pajak masukan (nomor seri / e-Faktur)
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    warnings: list[str] = []
+
+    items_in = body.get("items") or []
+    _items = []
+    for it in items_in:
+        _items.append(
+            {
+                "qty": it.get("qty", it.get("quantity", 0)) or 0,
+                "price": it.get("price", it.get("unit_price", 0)) or 0,
+                "discount_percent": it.get("discount_percent", 0) or 0,
+            }
+        )
+
+    def _num(v, d=0):
+        try:
+            return type(d)(v) if v is not None else d
+        except (TypeError, ValueError):
+            return d
+
+    totals = BillCalculator.calculate(
+        items=_items,
+        invoice_discount_percent=Decimal(str(_num(body.get("invoice_discount_percent"), 0))),
+        invoice_discount_amount=_num(body.get("invoice_discount_amount"), 0.0),
+        cash_discount_percent=Decimal(str(_num(body.get("cash_discount_percent"), 0))),
+        cash_discount_amount=_num(body.get("cash_discount_amount"), 0.0),
+        tax_rate=int(_num(body.get("tax_rate"), 11)),
+    )
+    grand_total = int(totals.get("grand_total") or 0)
+    bill_tax = int(totals.get("tax_amount") or 0)
+    subtotal = grand_total - bill_tax
+
+    async with pool.acquire() as conn:
+        async def _acct(role: str, fallback: str, pkp_gated: bool = False):
+            """(nama, kode, ada?) untuk sebuah peran. Gagal -> warning, bukan diam."""
+            try:
+                if pkp_gated:
+                    aid = await resolve_account_id_by_role_if_pkp(
+                        conn, ctx["tenant_id"], role
+                    )
+                else:
+                    aid = await resolve_account_id_by_role(conn, ctx["tenant_id"], role)
+                if not aid:
+                    return fallback, "", False
+                row = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts WHERE id = $1", aid
+                )
+                if row:
+                    return row["name"], row["account_code"], True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("preview-journal(bill): peran %s gagal: %s", role, exc)
+                warnings.append(
+                    f"Akun untuk '{fallback}' belum diatur di Daftar Akun. "
+                    f"Hubungi admin sebelum tagihan ini diterbitkan."
+                )
+            return fallback, "", False
+
+        # --- vendor ---
+        _vid = body.get("vendor_id")
+        if _vid:
+            try:
+                _v = await conn.fetchrow(
+                    "SELECT id FROM vendors WHERE id = $1::uuid AND tenant_id = $2",
+                    str(_vid),
+                    ctx["tenant_id"],
+                )
+                if not _v:
+                    warnings.append("Vendor tidak ditemukan.")
+            except Exception:  # noqa: BLE001
+                warnings.append("Vendor tidak dikenali.")
+        else:
+            warnings.append("Vendor belum dipilih untuk tagihan ini.")
+
+        # --- item: ada, aktif, milik tenant ---
+        for it in items_in:
+            _iid = it.get("item_id") or it.get("product_id")
+            if not _iid:
+                continue
+            try:
+                prod = await conn.fetchrow(
+                    """SELECT nama_produk, status FROM products
+                       WHERE id = $1::uuid AND tenant_id = $2""",
+                    str(_iid),
+                    ctx["tenant_id"],
+                )
+            except Exception:  # noqa: BLE001
+                prod = None
+            if not prod:
+                warnings.append(
+                    "Ada barang di tagihan ini yang tidak dikenali — "
+                    "mungkin sudah dihapus. Periksa kembali daftar barangnya."
+                )
+            elif prod["status"] and prod["status"] != "active":
+                warnings.append(f"Barang '{prod['nama_produk']}' tidak aktif.")
+
+        # --- periode fiskal ---
+        _tgl = body.get("issue_date") or body.get("bill_date") or body.get("invoice_date")
+        if _tgl:
+            try:
+                _d = _tgl if isinstance(_tgl, date) else date.fromisoformat(str(_tgl)[:10])
+                period = await conn.fetchrow(
+                    """SELECT period_name, status FROM fiscal_periods
+                       WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+                       ORDER BY start_date DESC LIMIT 1""",
+                    ctx["tenant_id"],
+                    _d,
+                )
+                if period and period["status"] in ("CLOSED", "LOCKED"):
+                    _t = "dikunci" if period["status"] == "LOCKED" else "ditutup"
+                    warnings.append(
+                        f"Pembukuan bulan {period['period_name']} sudah {_t}, "
+                        f"jadi tagihan ini belum bisa diterbitkan."
+                    )
+                elif not period:
+                    warnings.append("Belum ada periode fiskal untuk tanggal ini.")
+            except ValueError:
+                warnings.append("Tanggal tagihan tidak dikenali. Periksa kembali.")
+            except Exception as _pe:  # noqa: BLE001
+                logger.warning("preview-journal(bill): cek periode gagal: %s", _pe)
+                warnings.append("Status pembukuan bulan ini belum dapat diperiksa.")
+
+        # --- diskon menelan tagihannya sendiri (dok. 58) ---
+        _disk = float(totals.get("invoice_discount_total") or 0) + float(
+            totals.get("cash_discount_total") or 0
+        )
+        _bruto = float(totals.get("subtotal") or 0) - float(
+            totals.get("item_discount_total") or 0
+        )
+        if _bruto > 0 and _disk >= _bruto:
+            warnings.append(
+                f"Diskon Rp {int(_disk):,} sama besar atau melebihi nilai "
+                f"tagihannya (Rp {int(_bruto):,}) — tagihan menjadi nol. "
+                f"Periksa kembali.".replace(",", ".")
+            )
+
+        # --- akun (Law 27) ---
+        inv_name, inv_code, _ = await _acct(
+            AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
+        )
+        ap_name, ap_code, _ = await _acct(AccountRole.AP_TRADE, "Hutang Usaha")
+
+        lines = [
+            {"account_name": inv_name, "account_code": inv_code,
+             "debit": subtotal, "credit": 0, "event": "BILL"},
+        ]
+        if bill_tax > 0:
+            vat_name, vat_code, vat_ok = await _acct(
+                AccountRole.VAT_INPUT, "PPN Masukan", pkp_gated=True
+            )
+            if vat_ok:
+                lines.append({"account_name": vat_name, "account_code": vat_code,
+                              "debit": bill_tax, "credit": 0, "event": "BILL"})
+            else:
+                # Cermin post_bill (:3395-3404): tenant non-PKP + pajak > 0 =>
+                # posting MENOLAK KERAS dan NOL jurnal terbentuk. Karena itu
+                # pratinjau tidak boleh menampilkan baris jurnal apa pun di sini:
+                # menampilkan Dr Persediaan + Cr Hutang tanpa baris PPN
+                # menghasilkan jurnal TIMPANG di kartu (4.500.000 vs 4.995.000) —
+                # gambar yang tak pernah akan terjadi, dan justru kelas
+                # "kartu menampilkan jurnal yang salah" yang endpoint ini ada
+                # untuk membasmi. Yang benar: nol baris + satu kalimat jelas.
+                warnings.append(
+                    "Tenant ini belum berstatus PKP, jadi PPN Masukan tidak dapat "
+                    "dicatat — tagihan berpajak akan DITOLAK saat diterbitkan. "
+                    "Hapus pajaknya, atau ubah status PKP di Pengaturan."
+                )
+                return {
+                    "journal_lines": [],
+                    "warnings": warnings,
+                    "subtotal": subtotal,
+                    "tax_amount": bill_tax,
+                    "total_amount": grand_total,
+                }
+        lines.append({"account_name": ap_name, "account_code": ap_code,
+                      "debit": 0, "credit": grand_total, "event": "BILL"})
+
+        return {
+            "journal_lines": lines,
+            "warnings": warnings,
+            "subtotal": subtotal,
+            "tax_amount": bill_tax,
+            "total_amount": grand_total,
+        }
+
+
 @router.get("", response_model=BillListResponse)
 async def list_bills(
     request: Request,

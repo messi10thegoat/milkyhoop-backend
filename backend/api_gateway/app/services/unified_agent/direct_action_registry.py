@@ -817,7 +817,10 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             "faktur supplier",
             "faktur vendor",
         ],
-        journal_preview_endpoint="",
+        # T8 2026-08-11: endpointnya kini ADA (routers/bills.py). Sebelum ini
+        # nilainya "" sehingga faktur pembelian adalah satu-satunya dokumen
+        # berbaris yang dampak jurnalnya tak pernah sampai ke kartu.
+        journal_preview_endpoint="/api/bills/preview-journal",
         entity_name_field="vendor_name",
         loading_message_template="Membuat faktur pembelian dari {entity_name}\u2026",
         success_message_template="Faktur pembelian dari '{entity_name}' berhasil dibuat.",
