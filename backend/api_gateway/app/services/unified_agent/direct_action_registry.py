@@ -5140,6 +5140,74 @@ def build_confirmation_table(
     return "\n".join(lines)
 
 
+def _pesan_jurnal_tanpa_dampak(
+    action_key: str, payload: dict, total_dr: float, total_cr: float
+) -> str:
+    """Kalimat untuk kartu ketika pratinjau jurnal TIDAK LAYAK ditampilkan.
+
+    Harus menyebut APA yang kurang, bukan bahwa ada yang kurang. "Jurnal tidak
+    valid" memindahkan pekerjaan diagnosa ke user yang bukan akuntan; "Jumlah
+    untuk 'jasa sablon' belum diisi" memberi tahu tombol mana yang harus ditekan.
+    """
+    # Satu sisi saja padahal ada nilai: ini bukan kesalahan input user.
+    if total_dr > 0 or total_cr > 0:
+        sisi = "kredit" if total_dr > 0 else "debit"
+        return (
+            f"Pratinjau jurnal ini tidak punya sisi {sisi}, jadi belum bisa "
+            "ditampilkan. Dokumennya belum tersimpan — laporkan ke tim MilkyHoop."
+        )
+
+    items = payload.get("items")
+    if isinstance(items, str):
+        try:
+            import json as _json
+
+            items = _json.loads(items)
+        except Exception:
+            items = None
+    if isinstance(items, list) and items:
+        tanpa_jumlah, tanpa_harga = [], []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            nama = str(
+                it.get("product_name")
+                or it.get("description")
+                or it.get("name")
+                or "barang/jasa"
+            ).strip()
+            try:
+                _q = float(it.get("quantity", it.get("qty", 0)) or 0)
+            except (TypeError, ValueError):
+                _q = 0.0
+            try:
+                _h = float(it.get("unit_price", it.get("price", 0)) or 0)
+            except (TypeError, ValueError):
+                _h = 0.0
+            if _q <= 0:
+                tanpa_jumlah.append(nama)
+            elif _h <= 0:
+                tanpa_harga.append(nama)
+        if tanpa_jumlah:
+            _d = ", ".join(f"\u2018{n}\u2019" for n in tanpa_jumlah[:3])
+            return (
+                f"Jumlah untuk {_d} belum diisi, jadi nilai dokumen ini Rp 0 dan "
+                "belum ada dampak jurnal. Sebutkan berapa banyak — misalnya "
+                "“2 pcs” — lalu kirim lagi."
+            )
+        if tanpa_harga:
+            _d = ", ".join(f"\u2018{n}\u2019" for n in tanpa_harga[:3])
+            return (
+                f"Harga untuk {_d} belum diisi, jadi nilai dokumen ini Rp 0 dan "
+                "belum ada dampak jurnal. Sebutkan harganya lalu kirim lagi."
+            )
+
+    return (
+        "Nilai transaksi ini masih Rp 0, jadi belum ada dampak jurnal. "
+        "Sebutkan nominalnya lalu kirim lagi."
+    )
+
+
 def build_review_card_payload(
     action_key: str,
     payload: dict,
@@ -5243,7 +5311,42 @@ def build_review_card_payload(
                     "amount": dr if dr > 0 else cr,
                 }
             )
-        journal_balanced = abs(total_dr - total_cr) < 0.01
+
+        # JURNAL TANPA SISI DEBIT BUKAN JURNAL.
+        #
+        # `abs(total_dr - total_cr) < 0.01` sendirian TIDAK BISA menolak jurnal
+        # kosong: 0 - 0 = 0, jadi ✓ BALANCE menyala untuk dokumen bernilai Rp 0
+        # (qty absen pada baris jasa, nominal pembayaran 0). Terbukti pada LIMA
+        # aksi sekaligus — faktur jual, faktur beli, biaya, terima bayar, bayar
+        # tagihan — karena renderer ini dipakai bersama.
+        #
+        # Ini instans KEDUA ✓ BALANCE berbohong. T6: nilai hilang dari kedua
+        # sisi sehingga selisihnya tetap nol. Di sini: nilainya nol sejak awal.
+        # Mekanismenya berbeda, kesimpulannya sama — PEMERIKSA YANG HANYA
+        # MELIHAT SELISIH TAK PERNAH BISA MELIHAT KETIADAAN.
+        #
+        # Tiga syarat, ditulis terpisah walau syarat ke-3 tercakup dua yang awal,
+        # supaya yang membaca tahu ketiganya memang dimaksudkan.
+        _tanpa_debit = total_dr <= 0
+        _tanpa_kredit = total_cr <= 0
+        _total_nol = total_dr <= 0 and total_cr <= 0
+        if _tanpa_debit or _tanpa_kredit or _total_nol:
+            # Bentuk keluaran mengikuti preseden 47fef208 (non-PKP + pajak):
+            # NOL BARIS JURNAL + satu kalimat jelas — bukan
+            # journal_balanced=False, yang merender “TIDAK BALANCE” dan
+            # menyesatkan: masalahnya bukan ketimpangan, melainkan ketiadaan.
+            journal_lines = None
+            journal_balanced = None
+            warnings.append(
+                {
+                    "type": "warning",
+                    "message": _pesan_jurnal_tanpa_dampak(
+                        action_key, payload, total_dr, total_cr
+                    ),
+                }
+            )
+        else:
+            journal_balanced = abs(total_dr - total_cr) < 0.01
 
     # Items + totals (for invoice-type actions)
     items = None
