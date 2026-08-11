@@ -1009,18 +1009,81 @@ class EntityResolver:
                 f"%{search_term}%",
             )
 
-            # Step 2: Fallback first word ILIKE
-            if not rows and len(name_fragment.split()) > 1:
-                search_term = name_fragment.split()[0]
-                rows = await self.db.fetch(
-                    """SELECT id, nama_produk, sales_price_amount, purchase_price_amount, item_type
-                       FROM products
-                       WHERE tenant_id = $1 AND status = 'active'
-                         AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
-                       ORDER BY nama_produk LIMIT 5""",
-                    self.tenant_id,
-                    f"%{search_term}%",
-                )
+            # Step 2: PENYEMPITAN BERTAHAP — semua token user di-AND-kan.
+            #
+            # J0 2026-08-12: dulu langkah ini memakai KATA PERTAMA saja
+            # (`name_fragment.split()[0]`), dan itu membuang justru token yang
+            # membedakan. "kaos hitam 30s" -> Step 1 nol hasil (master bernama
+            # "Kaos Hitam Gramasi 30s" tak memuat substring itu) -> fallback
+            # mencari "%kaos%" -> DUA kandidat -> pil disambiguasi muncul
+            # padahal user sudah menyebut variannya dengan tepat.
+            #
+            # Akibatnya sistematis dan terbalik: SEMAKIN SPESIFIK user mengetik,
+            # semakin panjang frasanya, semakin pasti Step 1 gagal, dan semakin
+            # jauh fallback melempar ke kata yang paling umum. Ketelitian user
+            # dihukum. Terjadi pada SETIAP transaksi kaos (dogfood 2026-08-12).
+            #
+            # ARAH AND: token USER harus semuanya ada di nama master, BUKAN
+            # sebaliknya. "kaos hitam 30s" cocok "Kaos Hitam Gramasi 30s" meski
+            # "gramasi" tak diketik. Arah sebaliknya akan menuntut owner
+            # mengetik nama lengkap setiap kali — menukar satu gangguan dengan
+            # yang lebih parah.
+            #
+            # NOL daftar stop-word. Ekstraksi sudah memisahkan qty/satuan/pihak
+            # ke field sendiri (item_name = "kaos hitam 30s", quantity = 50,
+            # base_unit = "pcs"), jadi yang masuk ke sini memang hanya nama
+            # barang. Daftar stop-word akan jadi tebakan yang tak dibutuhkan,
+            # dan selalu salah untuk sebagian tenant — bayangkan barang bernama
+            # "Kaos Untuk Anak". Penyaringnya panjang token (>= 2 huruf):
+            # aturan yang bisa dijelaskan tanpa mengenal kosakata bisnis siapa
+            # pun.
+            #
+            # Step 1 (ILIKE frasa penuh) SENGAJA DIPERTAHANKAN di atas sebagai
+            # jalur cepat: bila frasa penuh cocok, tak perlu memecah token.
+            _tokens = [t for t in name_fragment.split() if len(t) >= 2]
+            if not rows and len(_tokens) > 1:
+
+                async def _cari_and(tokens):
+                    _kondisi = " AND ".join(
+                        f"(nama_produk ILIKE ${i + 2} OR item_code ILIKE ${i + 2} "
+                        f"OR sku ILIKE ${i + 2})"
+                        for i in range(len(tokens))
+                    )
+                    return await self.db.fetch(
+                        f"""SELECT id, nama_produk, sales_price_amount,
+                                   purchase_price_amount, item_type
+                            FROM products
+                            WHERE tenant_id = $1 AND status = 'active'
+                              AND {_kondisi}
+                            ORDER BY nama_produk LIMIT 5""",
+                        self.tenant_id,
+                        *[f"%{t}%" for t in tokens],
+                    )
+
+                rows = await _cari_and(_tokens)
+                search_term = " ".join(_tokens)
+
+                # Longgarkan SATU tingkat: buang token yang sendirian pun nol
+                # hasil (umumnya salah ketik), lalu AND ulang sisanya. Ini yang
+                # menangani "kaos hitm 30s": "hitm" dibuang, AND(kaos, 30s)
+                # menyisakan tepat satu master. Token yang dibuang TIDAK
+                # menghapus batasan yang berarti — ia memang tak cocok apa pun.
+                if not rows:
+                    _hidup = []
+                    for _t in _tokens:
+                        _cek = await self.db.fetch(
+                            """SELECT 1 FROM products
+                               WHERE tenant_id = $1 AND status = 'active'
+                                 AND (nama_produk ILIKE $2 OR item_code ILIKE $2
+                                      OR sku ILIKE $2) LIMIT 1""",
+                            self.tenant_id,
+                            f"%{_t}%",
+                        )
+                        if _cek:
+                            _hidup.append(_t)
+                    if _hidup and len(_hidup) < len(_tokens):
+                        rows = await _cari_and(_hidup)
+                        search_term = " ".join(_hidup)
 
             # Step 3: Fuzzy match via pg_trgm (handles typos like "obyat" -> "obat")
             # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: substring is tracked as kind "substring"
