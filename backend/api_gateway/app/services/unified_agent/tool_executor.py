@@ -668,6 +668,91 @@ ACTION_ENRICHMENT = {
 }
 
 
+def _amankan_nomor_dokumen(payload: dict, action_key: str) -> None:
+    """H 2026-08-11: jaga agar NOMOR DOKUMEN tetap milik generator.
+
+    bills_service:2553 melewati generate_purchase_bill_number() begitu
+    invoice_number terisi apa pun. Jadi satu kalimat yang mendarat di sana
+    MENGGANTI nomor resmi dokumen: owner melihat "No. Faktur = kaos hitam dari
+    pt benang emas" di dashboard, dan PDF ke vendor tercetak dengan judul itu.
+
+    Akarnya (label FieldSpec yang meminta "No. Faktur Vendor") sudah diperbaiki
+    di commit yang sama, dan itu menurunkan kejadian dari 3/4 run menjadi 0/4.
+    Pagar ini tetap dipasang karena perilaku model tidak stabil sepanjang waktu:
+    label mengurangi PELUANG, pagar menghilangkan KONSEKUENSI.
+
+    ⚠️ bill_number IKUT DITANGANI, dan itu BUKAN kode mati.
+    Ia terisi kalimat pada 4 dari 4 run, di kedua jalur, dan hari ini tidak
+    merusak apa pun HANYA karena namanya tidak cocok dengan skema endpoint
+    (BillCreateV2 tak punya field itu, jadi Pydantic membuangnya). Begitu ada
+    yang menambahkan aliases=["bill_number"] ke FieldSpec invoice_number —
+    perubahan yang tampak rapi dan tak berbahaya — bug ini bangun seketika.
+    JANGAN hapus cabang ini dengan alasan "bill_number toh tak dipakai".
+
+    Ambang sengaja LONGGAR ke arah aman (disiplin Q3c): kalau tidak yakin
+    sebuah nilai adalah nomor, ia TIDAK dibuang dan TIDAK dipakai sebagai nomor
+    dokumen — ia disimpan ke ref_no. Salah menebak jadi murah karena taruhannya
+    bukan lagi identitas dokumen.
+    """
+    if action_key not in ("create_bill", "create_purchase_invoice"):
+        return
+
+    _vendor = str(payload.get("vendor_name") or "").strip().lower()
+
+    def _kalimat(nilai: str) -> bool:
+        """Jelas bukan nomor: kalimat, bukan identitas dokumen."""
+        n = nilai.strip()
+        if n.count(" ") > 1 or len(n) > 40:
+            return True
+        return bool(_vendor) and len(_vendor) >= 4 and _vendor in n.lower()
+
+    def _simpan_ke_ref(nilai: str) -> None:
+        if not payload.get("ref_no"):
+            payload["ref_no"] = nilai
+
+    # bill_number: nama yang tak dikenal endpoint (lihat docstring — ini BUKAN
+    # kode mati). Nilainya diselamatkan ke ref_no bila ia tampak seperti nomor,
+    # lalu kuncinya dibuang supaya tak ada yang mewariskannya.
+    _bn = payload.pop("bill_number", None)
+    if isinstance(_bn, str) and _bn.strip():
+        if not _kalimat(_bn):
+            _simpan_ke_ref(_bn.strip())
+        else:
+            logger.info(
+                "[FIX_NOMOR_DOKUMEN] bill_number dibuang (kalimat): %r", _bn[:60]
+            )
+
+    # invoice_number SELALU dikosongkan pada pembuatan dokumen baru — bukan
+    # hanya ketika isinya "mencurigakan".
+    #
+    # Gate H3 membuktikan ambang-kecurigaan menjawab PERTANYAAN YANG SALAH:
+    # "INV/BE/2026/0812" adalah nomor vendor yang SAH, lolos semua ambang, dan
+    # tetap menimpa invoice_number -> generator PB- dilewati -> nomor dokumen
+    # internal menjadi nomor milik vendor. Sah atau tidaknya nilai itu TIDAK
+    # relevan; yang relevan adalah invoice_number bukan milik siapa pun selain
+    # generator, dan dokumen yang sedang dibuat belum punya nomor untuk dirujuk.
+    #
+    # Jadi: nilai yang tampak seperti nomor diselamatkan ke ref_no (tempatnya
+    # yang benar), nilai yang jelas kalimat dibuang. Dua-duanya keluar dari
+    # invoice_number. Disiplin Q3c: pada field bertaruhan tinggi, nilai dari
+    # model tidak dipakai — ia dipindahkan ke tempat yang taruhannya rendah.
+    _inv = payload.pop("invoice_number", None)
+    if isinstance(_inv, str) and _inv.strip():
+        if _kalimat(_inv):
+            logger.warning(
+                "[FIX_NOMOR_DOKUMEN] invoice_number dibuang dari nomor dokumen "
+                "(kalimat), disimpan sebagai ref_no: %r",
+                _inv[:60],
+            )
+            _simpan_ke_ref(_inv.strip())
+        else:
+            logger.info(
+                "[FIX_NOMOR_DOKUMEN] invoice_number -> ref_no (nomor vendor, "
+                "bukan nomor internal): %r",
+                _inv[:60],
+            )
+            _simpan_ke_ref(_inv.strip())
+
 class TenantContext:
     """Tenant context passed to tool executor."""
 
@@ -1426,6 +1511,10 @@ class ToolExecutor:
         except Exception as _ocr_err:
             logger.debug("[FIX_PHONE_COERCE] OCR fetch skipped: %s", _ocr_err)
         payload = self._normalize_payload(action_key, payload)
+
+        # H: satu titik untuk KEDUA jalur (propose langsung dan re-propose
+        # setelah pil entitas) — keduanya bertemu di sini.
+        _amankan_nomor_dokumen(payload, action_key)
 
         # === ENRICHMENT (date defaults, field translation, CoA→bank lookup) ===
         _enrich_action_type = (

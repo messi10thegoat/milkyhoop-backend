@@ -843,7 +843,29 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             FieldSpec(
                 name="due_date", label="Jatuh Tempo", field_type="date", required=True
             ),
-            FieldSpec(name="invoice_number", label="No. Faktur Vendor"),
+            FieldSpec(
+                name="invoice_number",
+                label="No. Faktur",
+                description=(
+                    "Nomor dokumen INTERNAL, dibuat otomatis oleh sistem "
+                    "(format PB-YYMM-0001). JANGAN diisi dari kalimat user. "
+                    "Nomor faktur milik VENDOR bukan field ini — pakai ref_no."
+                ),
+            ),
+            # H 2026-08-11: sampai commit ini nomor faktur VENDOR tidak punya
+            # tempat yang sah, jadi model menaruhnya di invoice_number — dan
+            # bills_service:2553 melewati generator PB- begitu field itu terisi,
+            # sehingga NOMOR DOKUMEN berubah jadi kalimat user. Memberi tempat
+            # yang benar lebih murah daripada terus menangkapnya di pagar.
+            FieldSpec(
+                name="ref_no",
+                label="No. Faktur Vendor",
+                description=(
+                    "Nomor faktur yang tertera pada dokumen VENDOR "
+                    "(mis. INV/BE/2026/0812). Kosongkan bila user tidak "
+                    "menyebutkan nomor."
+                ),
+            ),
             FieldSpec(
                 name="items",
                 label="Item",
