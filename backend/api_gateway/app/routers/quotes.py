@@ -6,6 +6,8 @@ NO journal entries - accounting impact happens on conversion.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from datetime import date, datetime, timedelta
+
+from ..utils.tanggal_tenant import tanggal_dokumen
 from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
 import logging
@@ -1183,7 +1185,11 @@ async def duplicate_quote(
 
                 # Create new quote
                 new_id = uuid_module.uuid4()
-                new_date = body.quote_date if body and body.quote_date else date.today()
+                new_date = (
+                    body.quote_date
+                    if body and body.quote_date
+                    else await tanggal_dokumen(conn, ctx["tenant_id"])
+                )
                 new_expiry = (
                     body.expiry_date
                     if body and body.expiry_date
@@ -1336,7 +1342,9 @@ async def convert_to_invoice(
                 # Create invoice
                 invoice_id = uuid_module.uuid4()
                 invoice_date = (
-                    body.invoice_date if body and body.invoice_date else date.today()
+                    body.invoice_date
+                    if body and body.invoice_date
+                    else await tanggal_dokumen(conn, ctx["tenant_id"])
                 )
                 due_date = (
                     body.due_date
@@ -1493,7 +1501,9 @@ async def convert_to_sales_order(
                 # Create sales order
                 so_id = uuid_module.uuid4()
                 order_date = (
-                    body.order_date if body and body.order_date else date.today()
+                    body.order_date
+                    if body and body.order_date
+                    else await tanggal_dokumen(conn, ctx["tenant_id"])
                 )
 
                 # Recalculate totals for selected items

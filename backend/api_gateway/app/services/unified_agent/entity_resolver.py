@@ -18,7 +18,6 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-from datetime import date, datetime
 
 logger = logging.getLogger("unified_agent.entity_resolver")
 
@@ -80,7 +79,17 @@ class EntityResolver:
     ) -> ResolutionResult:
         modifiers = modifiers or []
         memory_state = memory_state or {}
-        system_defaults = system_defaults or {"date": date.today().isoformat()}
+        # K0: satu-satunya tempat yang menjamin system_defaults["date"] ADA dan
+        # memakai zona TENANT, bukan zona server. Invarian ditegakkan di SINI
+        # supaya konsumennya (lihat "defaults hoist" di bawah) tak perlu cabang
+        # cadangan yang tak pernah tercapai.
+        if not system_defaults or not system_defaults.get("date"):
+            from ...utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
+
+            system_defaults = {
+                **(system_defaults or {}),
+                "date": (await tanggal_dokumen(self.db, self.tenant_id)).isoformat(),
+            }
 
         result = ResolutionResult()
 
@@ -470,7 +479,26 @@ class EntityResolver:
                 apply_defaults(intent, result.payload)
             except Exception as _e:
                 logger.warning(f"apply_defaults failed for {intent}: {_e}")
-            _today = datetime.now().strftime("%Y-%m-%d")
+            # K0 2026-08-12: dulu baris ini `datetime.now().strftime(...)` —
+            # zona SERVER. Ia mengisi SETIAP FieldSpec bertipe date+required yang
+            # masih kosong: 16 field di 15 aksi. Karena loopnya generik, nama
+            # fieldnya tak pernah muncul sebagai literal, jadi `grep quote_date`
+            # mengembalikan NOL dan penulisnya tak terlihat selama dua batch.
+            #
+            # Nilai yang BENAR sudah dioper ke fungsi ini sejak awal;
+            # kodenya menghitung tanggalnya sendiri padahal jawabannya ada di
+            # dalam jangkauan. Cukup memakainya.
+            #
+            # TANPA cadangan `or ...`: resolve_and_complete punya satu pemanggil
+            # (orchestrator) yang selalu mengoper "date", dan normalisasi di awal
+            # metode ini menjamin kuncinya ada. Cadangan di sini akan jadi cabang
+            # yang tak pernah dieksekusi — dan cabang mati membusuk tanpa
+            # ketahuan.
+            #
+            # Tujuan asli blok ini (2734fc18) TIDAK berubah: mengisi tanggal
+            # sebelum validate_payload supaya bot tidak menanyakan "tanggal
+            # berapa?" untuk dokumen yang tak menyebut tanggal.
+            _today = system_defaults["date"]
             _cfg_full = DIRECT_ACTIONS.get(intent)
             if _cfg_full:
                 for _f in _cfg_full.fields:

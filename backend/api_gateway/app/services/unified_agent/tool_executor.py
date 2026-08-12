@@ -834,6 +834,26 @@ def _normalize_payment_method(value) -> str:
     return "bank_transfer"
 
 
+def _dasar_jatuh_tempo(hari_ini: str, days: int) -> str:
+    """Jatuh tempo = tanggal dokumen + N hari.
+
+    K0: `hari_ini` datang dari pemanggil yang sudah menghitungnya menurut zona
+    TENANT. Kalau ia tak dioper, kita jatuh ke zona server dan MENGATAKANNYA —
+    diam di sini berarti jatuh tempo bergeser sehari tanpa jejak.
+    """
+    from datetime import date as _d
+
+    if hari_ini:
+        try:
+            return (_d.fromisoformat(hari_ini) + timedelta(days=days)).isoformat()
+        except (ValueError, TypeError):
+            pass
+    logger.warning(
+        "[K0_ZONA] jatuh tempo dihitung tanpa zona tenant (hari_ini=%r)", hari_ini
+    )
+    return (_d.today() + timedelta(days=days)).isoformat()
+
+
 class ToolExecutor:
     """
     Executes tools called by the unified agent.
@@ -862,6 +882,25 @@ class ToolExecutor:
         if len(text) <= max_len:
             return text
         return text[: max_len - 1] + "…"
+
+    async def _hari_ini_date(self):
+        """Hari ini menurut zona waktu TENANT, bukan zona server.
+
+        K0 2026-08-12: seluruh lapisan berjalan UTC, jadi kartu yang dibuat
+        00.00-08.00 WITA mengusulkan tanggal KEMARIN — dan itu jam kerja bagi
+        pemilik toko yang membukukan setelah tutup, bukan kasus tepi.
+
+        Hanya untuk TANGGAL DOKUMEN. Cap waktu sistem tetap UTC.
+        """
+        from .db_utils import get_session_db_pool  # noqa: E402
+        from ...utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
+
+        pool = await get_session_db_pool()
+        async with pool.acquire() as conn:
+            return await tanggal_dokumen(conn, self.context.tenant_id)
+
+    async def _hari_ini(self) -> str:
+        return (await self._hari_ini_date()).isoformat()
 
     @property
     def validator_client(self):
@@ -4166,7 +4205,9 @@ class ToolExecutor:
 
         return payload
 
-    def _add_due_date(self, payload: Dict[str, Any], days: int = 30) -> Dict[str, Any]:
+    def _add_due_date(
+        self, payload: Dict[str, Any], days: int = 30, hari_ini: str = None
+    ) -> Dict[str, Any]:
         """Add due_date = invoice_date + N days if not already set.
 
         BUG-05 fix: Also handles case where invoice_date is missing —
@@ -4181,13 +4222,9 @@ class ToolExecutor:
                         "%Y-%m-%d"
                     )
                 except (ValueError, TypeError):
-                    payload["due_date"] = (
-                        datetime.now() + timedelta(days=days)
-                    ).strftime("%Y-%m-%d")
+                    payload["due_date"] = _dasar_jatuh_tempo(hari_ini, days)
             else:
-                payload["due_date"] = (datetime.now() + timedelta(days=days)).strftime(
-                    "%Y-%m-%d"
-                )
+                payload["due_date"] = _dasar_jatuh_tempo(hari_ini, days)
         return payload
 
     # --- Per-action enrichment methods ---
@@ -4204,7 +4241,7 @@ class ToolExecutor:
           - Backfills item_id from top-level to items[0]
           - Cleans up extraction artifacts (item_id, item_name, quantity, etc.)
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         _ut_raw = getattr(self, "user_text", "") or ""
 
         # FIX_BILL_ABSDATE_PARSE 2026-06-18 (sales-invoice twin): deterministically
@@ -4319,7 +4356,7 @@ class ToolExecutor:
                     "[enrich_sales_invoice] payment_terms_days lookup failed: %s",
                     _terms_err,
                 )
-        self._add_due_date(payload, days=_terms_days)
+        self._add_due_date(payload, days=_terms_days, hari_ini=today)
 
         # FIX_BILL_RELDATE / RELDATE_PERSIST (sales twin, 2026-06-18): resolve
         # relative dates from this turn's text + re-apply a persisted explicit
@@ -4407,7 +4444,7 @@ class ToolExecutor:
                             except Exception:
                                 pass
                             payload.pop("due_date", None)
-                            self._add_due_date(payload, days=_terms2)
+                            self._add_due_date(payload, days=_terms2, hari_ini=today)
 
             # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
             _raw_items = payload.get("items")
@@ -4618,7 +4655,7 @@ class ToolExecutor:
         order_date (required), expected_ship_date (optional, defaults to order_date+7d),
         customer_id + customer_name (both required), items[] with description + unit_price.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
 
         # Stale-date override on order_date
         _od = payload.get("order_date")
@@ -4804,7 +4841,7 @@ class ToolExecutor:
           - Translates generic field names → bills/v2 schema (product_id, product_name, qty, price)
           - Cleans up extraction artifacts
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         _ut_raw = getattr(self, "user_text", "") or ""
 
         # FIX_BILL_ABSDATE_PARSE 2026-06-18: deterministically resolve an explicit
@@ -5323,16 +5360,16 @@ class ToolExecutor:
 
     async def _enrich_purchase_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_PURCHASE_ORDER: vendor_name, due_date, item descriptions."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         payload.setdefault("order_date", today)
         if "due_date" not in payload and "order_date" in payload:
             try:
                 od = datetime.strptime(payload["order_date"], "%Y-%m-%d")
                 payload["due_date"] = (od + timedelta(days=30)).strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                payload["due_date"] = (datetime.now() + timedelta(days=30)).strftime(
-                    "%Y-%m-%d"
-                )
+                payload["due_date"] = (
+                    await self._hari_ini_date() + timedelta(days=30)
+                ).isoformat()
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             vid = payload.get("vendor_id")
@@ -5360,7 +5397,7 @@ class ToolExecutor:
           - Applies top-level tax_rate to each line item if line has no tax_rate
           - Strips top-level tax_rate before REST (schema rejects it)
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         _qd = payload.get("quote_date")
         _override = False
         if not _qd or _qd in ("null", "", "-", "None"):
@@ -5387,9 +5424,9 @@ class ToolExecutor:
                 qd = datetime.strptime(payload["quote_date"], "%Y-%m-%d")
                 payload["expiry_date"] = (qd + timedelta(days=14)).strftime("%Y-%m-%d")
             except (ValueError, TypeError):
-                payload["expiry_date"] = (datetime.now() + timedelta(days=14)).strftime(
-                    "%Y-%m-%d"
-                )
+                payload["expiry_date"] = (
+                    await self._hari_ini_date() + timedelta(days=14)
+                ).isoformat()
 
         # Keep top-level tax_rate for build_review_card_payload; REST layer handles stripping
         try:
@@ -5541,7 +5578,7 @@ class ToolExecutor:
 
     async def _enrich_expense(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_EXPENSE: field translation, CoA→bank_account lookup, date default."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         # Fix: setdefault doesn't override empty/null values from document pipeline
         if not payload.get("expense_date") or payload.get("expense_date") in (
             "null",
@@ -5601,7 +5638,7 @@ class ToolExecutor:
 
     async def _enrich_credit_note(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_CREDIT_NOTE: customer lookup (+reverse), stale-date override."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
 
         # Stale-date override (mirrors _enrich_sales_invoice)
         _cd = payload.get("credit_note_date")
@@ -5668,7 +5705,7 @@ class ToolExecutor:
 
     async def _enrich_receive_payment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich RECEIVE_PAYMENT: customer lookup from invoice, field translations, defaults."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         # FIX_TRANSFER_RCV_DATE (2026-06-15): the document resolver sets
         # payment_date="" when OCR has no date (bank transfers often lack one).
         # setdefault does NOT override an existing empty string, so the required
@@ -5945,7 +5982,7 @@ class ToolExecutor:
         Mirrors _enrich_receive_payment: auto-build bill_id (single-bill allocation)
         from vendor's oldest outstanding bill when bill_id is missing.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         # FIX_DOGFOOD_PAYMETHOD_NORMALIZE (2026-06-09): symmetric defensive
         # normalization for the bill-payment twin. bill_payments_v2 has no DB
         # CHECK on payment_method, but downstream bill schemas restrict it; a
@@ -6135,7 +6172,7 @@ class ToolExecutor:
 
     async def _enrich_vendor_credit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich CREATE_VENDOR_CREDIT: vendor reverse-lookup, stale-date override."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
 
         _vcd = payload.get("vendor_credit_date")
         _override = False
@@ -6201,14 +6238,14 @@ class ToolExecutor:
 
     async def _enrich_transfer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich BANK_TRANSFER: transfer_date default."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         payload.setdefault("transfer_date", today)
         # from_bank_id, to_bank_id, amount must come from LLM
         return payload
 
     async def _enrich_journal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich POST_GENERAL_JOURNAL: posting_date default."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = await self._hari_ini()
         payload.setdefault("posting_date", today)
         return payload
 

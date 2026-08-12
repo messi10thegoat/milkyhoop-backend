@@ -15,6 +15,8 @@ import logging
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
 from datetime import date, datetime
+
+from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
 from decimal import Decimal
 
@@ -936,7 +938,9 @@ class BillsService:
                     total_amount += subtotal
 
                 # 4. Insert bill
-                issue_date = request.get("issue_date") or date.today()
+                issue_date = request.get("issue_date") or await tanggal_dokumen(
+                    conn, tenant_id
+                )
                 due_date = request["due_date"]
 
                 bill_id = await conn.fetchval(
@@ -1465,7 +1469,9 @@ class BillsService:
                         "data": None,
                     }
 
-                payment_date = request.get("payment_date") or date.today()
+                payment_date = request.get("payment_date") or await tanggal_dokumen(
+                    conn, tenant_id
+                )
                 if isinstance(payment_date, str):
                     payment_date = date.fromisoformat(payment_date)
 
@@ -2637,7 +2643,9 @@ class BillsService:
 
                 # 4. Determine status and dates
                 status = request.get("status", "draft")
-                issue_date = request.get("issue_date") or date.today()
+                issue_date = request.get("issue_date") or await tanggal_dokumen(
+                    conn, tenant_id
+                )
 
                 # due_date is required
                 due_date = request.get("due_date")

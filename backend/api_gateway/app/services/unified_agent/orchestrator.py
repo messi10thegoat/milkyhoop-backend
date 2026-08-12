@@ -929,6 +929,24 @@ def _kalimat_tanya_item(m: dict) -> str:
         "_Contoh balasan: 80000 atau Rp 80.000 atau 80 ribu._"
     ) + _hint
 
+
+async def _hari_ini_tenant(tenant_id: str) -> str:
+    """Hari ini menurut zona tenant, untuk DISUNTIKKAN KE PROMPT LLM.
+
+    K0 kelas E 2026-08-12: memperbaiki default payload saja tidak cukup.
+    Model MENURUT pada tanggal yang diberitahukan kepadanya — pelajaran yang
+    sama dengan label FieldSpec di batch H. Kalau prompt bilang 2026-08-11,
+    kartu mengusulkan 2026-08-11, dan owner melihat gejala yang persis sama
+    walau setiap default sudah benar.
+    """
+    from .db_utils import get_session_db_pool  # noqa: E402
+    from ...utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
+
+    pool = await get_session_db_pool()
+    async with pool.acquire() as conn:
+        return (await tanggal_dokumen(conn, tenant_id)).isoformat()
+
+
 class UnifiedAgent:
     """
     Single agent loop. Replaces: intent classifier + action_planner + enrichment.
@@ -957,7 +975,7 @@ class UnifiedAgent:
 
         sys_msgs = _build_sys(
             tenant_name=context.tenant_name,
-            today=date.today().isoformat(),
+            today=await _hari_ini_tenant(context.tenant_id),
             user_text=user_text,
             intent="CHITCHAT",
         )
@@ -1263,7 +1281,7 @@ class UnifiedAgent:
             entities=extraction.entities,
             modifiers=extraction.modifiers,
             memory_state=memory_state,
-            system_defaults={"date": date.today().isoformat()},
+            system_defaults={"date": await _hari_ini_tenant(context.tenant_id)},
             entity_graph=entity_graph,
             action_memory_suggestion=action_memory_suggestion,
             user_text=user_text,
@@ -11783,7 +11801,7 @@ class UnifiedAgent:
         # Segments loaded based on intent: CHITCHAT=~500tok, SIMPLE_READ=~2.5K, etc.
         system_msgs = build_system_messages(
             tenant_name=context.tenant_name,
-            today=date.today().isoformat(),
+            today=await _hari_ini_tenant(context.tenant_id),
             user_text=user_text,
             intent=_intent,
             userguide_enabled=userguide_enabled,
