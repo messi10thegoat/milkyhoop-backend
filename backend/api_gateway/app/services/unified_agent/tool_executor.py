@@ -4771,6 +4771,27 @@ class ToolExecutor:
                         pass
 
             # Backfill item_id + apply tax_rate per line
+            # K1 2026-08-12: deskripsi + harga item disatukan ke _enrich_items,
+            # fungsi bersama yang sudah dipakai sales_invoice / purchase_order /
+            # credit_note. Ini BUKAN cabang keempat — ini menghapus yang keempat.
+            #
+            # Salinan yang dulu di sini adalah FOSIL versi pra-FIX_AQUA_PRICE,
+            # dengan DUA cacat yang masing-masing SENDIRIAN cukup membuat harga
+            # nol — jadi memperbaiki salah satunya saja tak akan terlihat:
+            #   1) fetch digerbangi `not item.get("description")`, padahal
+            #      resolver SUDAH mengisi description -> fetch tak pernah jalan.
+            #      FIX_AQUA_PRICE 2026-05-09 memperbaiki persis ini di
+            #      _enrich_items ("always fetch when description missing OR
+            #      unit_price still 0"), tapi perbaikannya tak pernah menyeberang
+            #      ke penawaran dan pesanan penjualan.
+            #   2) ia membaca `selling_price`/`harga_jual`; /api/items/{id}
+            #      mengembalikan `sales_price`. Kunci yang dibacanya TIDAK ADA
+            #      di respons — [SQL] harga nyata hidup di kolom sales_price /
+            #      harga_jual, sementara sales_price_amount justru 0.00.
+            # Menyatukan di sini bukan kerapian: ia memindahkan perbaikan yang
+            # sudah lama ada ke jalur yang tak pernah menerimanya.
+            payload = await self._enrich_items(payload, client)
+
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 _top_item_id = payload.get("item_id")
@@ -4780,24 +4801,16 @@ class ToolExecutor:
                     if not item.get("item_id") and _top_item_id:
                         item["item_id"] = _top_item_id
                     item_id = item.get("item_id")
-                    if item_id and not item.get("description"):
+                    # _enrich_items tidak mengurus satuan; hanya itu yang tersisa
+                    # di sini, dan hanya kalau memang belum terisi.
+                    if item_id and not item.get("unit"):
                         detail = await self._fetch_entity(
                             client, f"/api/items/{item_id}"
                         )
                         if detail:
-                            item["description"] = detail.get("name", "Item")
-                            if not item.get("unit_price"):
-                                item["unit_price"] = int(
-                                    detail.get("selling_price")
-                                    or detail.get("harga_jual")
-                                    or 0
-                                )
-                            if not item.get("unit"):
-                                item["unit"] = (
-                                    detail.get("base_unit")
-                                    or detail.get("unit")
-                                    or "pcs"
-                                )
+                            item["unit"] = (
+                                detail.get("base_unit") or detail.get("unit") or "pcs"
+                            )
                     if not item.get("description"):
                         item["description"] = item.get("name") or "Item"
                     if _cur_tr and not item.get("tax_rate"):
@@ -5519,6 +5532,27 @@ class ToolExecutor:
                         pass
 
             # Enrich items (description + unit_price lookup, inject item_id, apply tax_rate)
+            # K1 2026-08-12: deskripsi + harga item disatukan ke _enrich_items,
+            # fungsi bersama yang sudah dipakai sales_invoice / purchase_order /
+            # credit_note. Ini BUKAN cabang keempat — ini menghapus yang keempat.
+            #
+            # Salinan yang dulu di sini adalah FOSIL versi pra-FIX_AQUA_PRICE,
+            # dengan DUA cacat yang masing-masing SENDIRIAN cukup membuat harga
+            # nol — jadi memperbaiki salah satunya saja tak akan terlihat:
+            #   1) fetch digerbangi `not item.get("description")`, padahal
+            #      resolver SUDAH mengisi description -> fetch tak pernah jalan.
+            #      FIX_AQUA_PRICE 2026-05-09 memperbaiki persis ini di
+            #      _enrich_items ("always fetch when description missing OR
+            #      unit_price still 0"), tapi perbaikannya tak pernah menyeberang
+            #      ke penawaran dan pesanan penjualan.
+            #   2) ia membaca `selling_price`/`harga_jual`; /api/items/{id}
+            #      mengembalikan `sales_price`. Kunci yang dibacanya TIDAK ADA
+            #      di respons — [SQL] harga nyata hidup di kolom sales_price /
+            #      harga_jual, sementara sales_price_amount justru 0.00.
+            # Menyatukan di sini bukan kerapian: ia memindahkan perbaikan yang
+            # sudah lama ada ke jalur yang tak pernah menerimanya.
+            payload = await self._enrich_items(payload, client)
+
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 _top_item_id = payload.get("item_id")
@@ -5528,24 +5562,16 @@ class ToolExecutor:
                     if not item.get("item_id") and _top_item_id:
                         item["item_id"] = _top_item_id
                     item_id = item.get("item_id")
-                    if item_id and not item.get("description"):
+                    # _enrich_items tidak mengurus satuan; hanya itu yang tersisa
+                    # di sini, dan hanya kalau memang belum terisi.
+                    if item_id and not item.get("unit"):
                         detail = await self._fetch_entity(
                             client, f"/api/items/{item_id}"
                         )
                         if detail:
-                            item["description"] = detail.get("name", "Item")
-                            if not item.get("unit_price"):
-                                item["unit_price"] = int(
-                                    detail.get("selling_price")
-                                    or detail.get("harga_jual")
-                                    or 0
-                                )
-                            if not item.get("unit"):
-                                item["unit"] = (
-                                    detail.get("base_unit")
-                                    or detail.get("unit")
-                                    or "pcs"
-                                )
+                            item["unit"] = (
+                                detail.get("base_unit") or detail.get("unit") or "pcs"
+                            )
                     if not item.get("description"):
                         item["description"] = item.get("name") or "Item"
                     if _cur_tr and not item.get("tax_rate"):
