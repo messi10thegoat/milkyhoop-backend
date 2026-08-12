@@ -5427,9 +5427,20 @@ def build_review_card_payload(
             totals["tax_rate"] = tax_rate_val
 
     # Determine render_target
-    # Invoice/bill always artifact (financial document = review in side panel)
+    #
+    # K3 2026-08-12: penentunya adalah PUNYA BARIS ITEM, bukan punya jurnal.
+    # Yang menentukan BENTUK kartu adalah apakah dokumennya berbaris — baris
+    # butuh tabel, dan tabel butuh panel samping. Punya jurnal menentukan
+    # DAMPAK AKUNTANSI, bukan bentuk tampilan; mencampur keduanya membuat
+    # penawaran dan pesanan penjualan — dokumen berbaris yang memang tak
+    # berjurnal — dipaksa masuk kartu inline yang tak muat menampung tabelnya.
+    #
+    # Ketiadaan jurnal TIDAK melahirkan bagian kosong: journal_lines dan
+    # journal_balanced tetap None (lihat blok "Journal preview lines" di atas),
+    # bentuk yang sama yang ditetapkan e380b613 supaya kartu tak pernah
+    # menampilkan "✓ BALANCE" untuk jurnal yang tak ada.
     has_items = items is not None and len(items) > 0
-    render_target = "artifact" if config.creates_journal and has_items else "inline"
+    render_target = "artifact" if has_items else "inline"
 
     return {
         "render_target": render_target,
