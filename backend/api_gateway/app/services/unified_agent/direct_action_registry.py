@@ -5503,3 +5503,169 @@ def get_fields_description(action_key: str) -> str:
         opts = " [{}]".format(", ".join(f.options)) if f.options else ""
         parts.append(f"  - {f.name}: {f.label}{req}{opts}{desc}")
     return "\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# AKSI ATAS DOKUMEN YANG SUDAH ADA  (dok. 79, 2026-08-13)
+#
+# Kelas aksi yang MENGGERAKKAN dokumen yang sudah lahir — bukan membuatnya,
+# bukan membatalkannya. Endpointnya sudah ada dan lengkap sejak lama; yang
+# tak pernah ada adalah jalur chat menuju ke sana (dok. 78: 12 endpoint,
+# nol action_key).
+#
+# KENAPA TABEL, BUKAN DUA BELAS CONFIG DITULIS TANGAN
+# Tiap aksi membawa tujuh hal yang bisa keliru (endpoint, tabel sumber,
+# kolom nomor, status yang sah, kata kerja, pesan, creates_journal). Dua
+# belas config = 84 kesempatan menyimpang. Kita sudah membayar bentuk itu
+# tiga kali: enrichment x3, nama item x3, nomor dokumen x2.
+#
+# Sebuah BARIS TABEL tidak bisa punya jalur kode yang berbeda. Satu-satunya
+# cara menyimpang adalah mengubah _bangun_aksi_dokumen — satu tempat, satu
+# diff. Menyimpang jadi mustahil secara struktural, bukan secara disiplin.
+#
+# Kolomnya dirancang untuk dua belas sejak awal meskipun baru SATU yang
+# diisi: menambah kolom nanti berarti menyentuh pembangun, dan pembangun
+# adalah titik yang harus stabil.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class AksiDokumen:
+    """Satu baris deklarasi aksi-atas-dokumen. Data, bukan kode."""
+
+    action_key: str
+    entity_type: str
+    display_name: str
+    # ── sumber: bagaimana nomor dokumen jadi UUID ──
+    tabel: str
+    kolom_nomor: str
+    field_nomor: str  # nama field yang membawa nomor di entities/payload
+    label_nomor: str  # untuk BARIS TABEL kartu ("No. Penawaran")
+    sebutan: str  # untuk KALIMAT ke user ("Penawaran") — beda tempat, beda bentuk
+    sebutan_tujuan: str  # dokumen hasilnya ("pesanan")
+    kata_kerja_pasif: str  # "dikonversi" — dipakai menyusun kalimat penolakan
+    # ── eksekusi ──
+    endpoint: str
+    rest_method: str
+    # ── gerbang status (dipakai DI DEPAN; endpoint tetap menjaga di belakang) ──
+    status_boleh: tuple[str, ...]
+    # ── bahasa ──
+    kata_kerja: tuple[str, ...]  # di AWAL kalimat
+    kata_sumber: tuple[str, ...]  # kata entitas dokumen sumber, di mana saja
+    kata_tujuan: tuple[str, ...]  # kata dokumen TUJUAN, di mana saja
+    pesan_memproses: str
+    pesan_sukses: str
+    # ── risiko ──
+    creates_journal: bool
+    risk_level: str
+    ttl_seconds: int
+    # ── penunjuk hasil, untuk pesan penolakan yang berguna ──
+    kolom_tujuan_id: str = ""
+    tabel_tujuan: str = ""
+    kolom_nomor_tujuan: str = ""
+    # ── ringkasan dokumen untuk kartu (pratinjau DOKUMEN, bukan jurnal) ──
+    kolom_ringkas: tuple[tuple[str, str], ...] = ()  # (kolom_db, field_payload)
+    tabel_baris: str = ""
+    kolom_induk_baris: str = ""
+
+
+DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
+    AksiDokumen(
+        action_key="quote_to_order",
+        entity_type="quote",
+        display_name="Konversi Penawaran ke Pesanan",
+        tabel="quotes",
+        kolom_nomor="quote_number",
+        field_nomor="quote_number",
+        label_nomor="No. Penawaran",
+        sebutan="Penawaran",
+        sebutan_tujuan="pesanan",
+        kata_kerja_pasif="dikonversi",
+        endpoint="/api/quotes/{id}/to-order",
+        rest_method="POST",
+        # routers/quotes.py:1475 — sumber kebenaran kedua ada di endpoint.
+        # Gate WAJIB membuktikan kedua sisi sepakat; kalau endpoint berubah
+        # dan baris ini tidak, gate itu yang merah.
+        status_boleh=("sent", "accepted", "viewed"),
+        kata_kerja=("konversi", "jadikan"),
+        kata_sumber=("penawaran", "quote", "quotation"),
+        kata_tujuan=("pesanan", "sales order", "so"),
+        pesan_memproses="Mengonversi penawaran {entity_name}\u2026",
+        pesan_sukses="Penawaran '{entity_name}' berhasil dikonversi jadi pesanan.",
+        creates_journal=False,  # diverifikasi dok. 79 M1b: kode + trigger
+        risk_level="medium",
+        ttl_seconds=120,
+        kolom_tujuan_id="converted_to_id",
+        tabel_tujuan="sales_orders",
+        kolom_nomor_tujuan="order_number",
+        kolom_ringkas=(
+            ("customer_name", "customer_name"),
+            ("total_amount", "total_amount"),
+            ("status", "_status"),
+        ),
+        tabel_baris="quote_items",
+        kolom_induk_baris="quote_id",
+    ),
+)
+
+DOCUMENT_ACTIONS_BY_KEY: dict[str, AksiDokumen] = {
+    a.action_key: a for a in DOCUMENT_ACTIONS
+}
+
+
+def _bangun_aksi_dokumen(a: AksiDokumen) -> DirectActionConfig:
+    """Satu-satunya tempat sebuah baris DOCUMENT_ACTIONS jadi config.
+
+    Kartu sengaja TIDAK punya bagian jurnal: keempat aksi konversi nol jurnal
+    (dok. 79 M1b, diverifikasi dua arah — badan endpoint DAN trigger tabel).
+    journal_preview_endpoint dibiarkan kosong supaya tak lahir slot kosong;
+    itu bentuk yang ditetapkan e380b613.
+    """
+    fields = [
+        FieldSpec(name="id", label="ID", required=True, hidden=True),
+        FieldSpec(name=a.field_nomor, label=a.label_nomor, display_only=True),
+    ]
+    for _, field_payload in a.kolom_ringkas:
+        if field_payload.startswith("_"):
+            continue  # kolom kerja (mis. status), bukan untuk mata user
+        fields.append(
+            FieldSpec(
+                name=field_payload,
+                label={
+                    "customer_name": "Pelanggan",
+                    "total_amount": "Total",
+                }.get(field_payload, field_payload),
+                field_type="number" if field_payload.endswith("_amount") else "string",
+                display_only=True,
+            )
+        )
+    if a.tabel_baris:
+        fields.append(
+            FieldSpec(
+                name="jumlah_baris", label="Jumlah baris", display_only=True
+            )
+        )
+    return DirectActionConfig(
+        action_key=a.action_key,
+        display_name=a.display_name,
+        rest_endpoint=a.endpoint,
+        rest_method=a.rest_method,
+        entity_type=a.entity_type,
+        risk_level=a.risk_level,
+        creates_journal=a.creates_journal,
+        ttl_seconds=a.ttl_seconds,
+        action_type_key=a.action_key.upper(),
+        signal_words=[
+            f"{kk} {ks}" for kk in a.kata_kerja for ks in a.kata_sumber
+        ],
+        entity_name_field=a.field_nomor,
+        loading_message_template=a.pesan_memproses,
+        success_message_template=a.pesan_sukses,
+        journal_preview_endpoint="",
+        fields=fields,
+    )
+
+
+DIRECT_ACTIONS.update(
+    {a.action_key: _bangun_aksi_dokumen(a) for a in DOCUMENT_ACTIONS}
+)

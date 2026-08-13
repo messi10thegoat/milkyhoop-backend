@@ -36,6 +36,20 @@ def is_untrusted_id_field(key: str) -> bool:
     return key == "id" or key.endswith("_id") or key.endswith("_uuid")
 
 
+# dok. 79 M1g — status internal jangan pernah sampai ke layar apa adanya.
+_STATUS_ID = {
+    "draft": "draf",
+    "sent": "terkirim",
+    "viewed": "sudah dilihat",
+    "accepted": "diterima",
+    "declined": "ditolak",
+    "expired": "kedaluwarsa",
+    "converted": "sudah dikonversi",
+    "void": "dibatalkan",
+    "cancelled": "dibatalkan",
+}
+
+
 @dataclass
 class ResolvedEntity:
     """Single resolved entity."""
@@ -92,6 +106,17 @@ class EntityResolver:
             }
 
         result = ResolutionResult()
+
+        # ── Aksi atas dokumen yang sudah ada (dok. 79) ────────────────────
+        # Jalur pendek dan MANDIRI: aksi ini tidak membangun dokumen dari
+        # entitas hasil LLM, ia menunjuk SATU dokumen yang sudah ada. Nol
+        # nominal, nol tanggal, nol nama dari model — hanya nomor dokumen
+        # yang diketik user, diubah jadi UUID oleh DB.
+        from .direct_action_registry import DOCUMENT_ACTIONS_BY_KEY
+
+        _aksi_dok = DOCUMENT_ACTIONS_BY_KEY.get(intent)
+        if _aksi_dok is not None:
+            return await self._resolve_aksi_dokumen(_aksi_dok, entities)
 
         # Step A: Resolve extracted entities (parallel DB queries)
         # Skip entity resolution for create intents where fields are TEXT, not references.
@@ -1315,6 +1340,129 @@ class EntityResolver:
             logger.warning("[RESOLVE] Bill lookup failed: %s", e)
             return None
 
+    async def _resolve_aksi_dokumen(self, aksi, entities: dict) -> ResolutionResult:
+        """Resolusi untuk satu baris DOCUMENT_ACTIONS. Table-driven.
+
+        Empat keadaan, tiga di antaranya BERHENTI dengan kalimat manusia:
+          1. nomor tak disebut      -> tanya nomornya (JANGAN menebak)
+          2. nomor tak ditemukan    -> sebut nomornya, minta dicek
+          3. nomor ambigu           -> tampilkan kandidat, tanya yang mana
+          4. status tak memenuhi    -> sebut dokumen HASILNYA kalau ada
+        Baru sesudah keempatnya lewat, payload kartu dibangun.
+        """
+        hasil = ResolutionResult()
+        nomor = (entities or {}).get(aksi.field_nomor) or (entities or {}).get("name")
+        nomor = str(nomor).strip() if nomor else ""
+
+        if not nomor:
+            hasil.needs_clarification = True
+            hasil.clarifications.append(
+                f"{aksi.sebutan} mana yang mau {aksi.kata_kerja_pasif} jadi "
+                f"{aksi.sebutan_tujuan}? Sebutkan nomornya, "
+                f"misalnya QUO-2608-0002."
+            )
+            return hasil
+
+        ref = await self._resolve_by_number(
+            nomor,
+            table=aksi.tabel,
+            number_column=aksi.kolom_nomor,
+            entity_type=aksi.entity_type,
+        )
+        # Gerbang M1e: objek saja tidak cukup. Kontrak sumber kini
+        # mengembalikan None saat gagal, dan syarat ganda di bawah menahan
+        # entity_id kosong seandainya kontrak itu kelak berubah lagi.
+        if ref is None or not ref.entity_id or ref.confidence <= 0:
+            hasil.needs_clarification = True
+            hasil.clarifications.append(
+                f"{aksi.sebutan} {nomor} tidak ditemukan. Coba cek nomornya."
+            )
+            return hasil
+
+        if len(ref.candidates) > 1:
+            daftar = ", ".join(c["name"] for c in ref.candidates)
+            hasil.needs_clarification = True
+            hasil.clarifications.append(
+                f"Ada {len(ref.candidates)} dokumen yang cocok dengan '{nomor}': "
+                f"{daftar}. Yang mana?"
+            )
+            return hasil
+
+        kolom = ["status"] + [k for k, _ in aksi.kolom_ringkas]
+        if aksi.kolom_tujuan_id:
+            kolom.append(aksi.kolom_tujuan_id)
+        kolom_unik = list(dict.fromkeys(kolom))
+        baris = await self.db.fetchrow(
+            f'SELECT {", ".join(kolom_unik)} FROM {aksi.tabel} '
+            f"WHERE id = $1 AND tenant_id = $2",
+            __import__("uuid").UUID(ref.entity_id),
+            self.tenant_id,
+        )
+        if baris is None:
+            hasil.needs_clarification = True
+            hasil.clarifications.append(
+                f"{aksi.sebutan} {ref.entity_name} tidak ditemukan. "
+                "Coba cek nomornya."
+            )
+            return hasil
+
+        status = baris["status"]
+        if status not in aksi.status_boleh:
+            # GERBANG DEPAN. Endpoint tetap menjaga di belakang (400) — dua
+            # sisi, sengaja. Yang di depan ada supaya user tak pernah melihat
+            # kartu untuk aksi yang pasti ditolak; yang di belakang ada karena
+            # status bisa berubah antara kartu dibuat dan dikonfirmasi.
+            # Memasang yang depan lalu menganggap yang belakang tak perlu
+            # adalah bentuk yang sudah tiga kali kita bayar.
+            tujuan = ""
+            if aksi.kolom_tujuan_id and baris.get(aksi.kolom_tujuan_id):
+                try:
+                    b2 = await self.db.fetchrow(
+                        f"SELECT {aksi.kolom_nomor_tujuan} AS n "
+                        f"FROM {aksi.tabel_tujuan} WHERE id = $1 AND tenant_id = $2",
+                        baris[aksi.kolom_tujuan_id],
+                        self.tenant_id,
+                    )
+                    if b2 and b2["n"]:
+                        tujuan = f" jadi {aksi.sebutan_tujuan} {b2['n']}"
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[AKSI_DOK] lookup dokumen tujuan gagal: %s", e)
+            if status == "converted":
+                pesan = (
+                    f"{aksi.sebutan} {ref.entity_name} sudah pernah "
+                    f"{aksi.kata_kerja_pasif}{tujuan}, jadi tidak bisa "
+                    f"{aksi.kata_kerja_pasif} lagi."
+                )
+            else:
+                pesan = (
+                    f"{aksi.sebutan} {ref.entity_name} berstatus "
+                    f"'{_STATUS_ID.get(status, status)}', jadi belum bisa "
+                    f"{aksi.kata_kerja_pasif} jadi {aksi.sebutan_tujuan}."
+                )
+            hasil.needs_clarification = True
+            hasil.clarifications.append(pesan)
+            return hasil
+
+        payload = {"id": ref.entity_id, aksi.field_nomor: ref.entity_name}
+        for kolom_db, field_payload in aksi.kolom_ringkas:
+            if field_payload.startswith("_"):
+                continue
+            nilai = baris[kolom_db]
+            payload[field_payload] = (
+                float(nilai) if hasattr(nilai, "quantize") else nilai
+            )
+        if aksi.tabel_baris:
+            n = await self.db.fetchval(
+                f"SELECT count(*) FROM {aksi.tabel_baris} "
+                f"WHERE {aksi.kolom_induk_baris} = $1",
+                __import__("uuid").UUID(ref.entity_id),
+            )
+            payload["jumlah_baris"] = int(n or 0)
+
+        hasil.payload = payload
+        hasil.resolved = {aksi.entity_type: ref}
+        return hasil
+
     async def _resolve_by_number(
         self,
         search_val: str,
@@ -1342,12 +1490,16 @@ class EntityResolver:
                 f"%{search_val}%",
             )
             if not rows:
-                return ResolvedEntity(
-                    entity_type=entity_type,
-                    entity_id="",
-                    entity_name=search_val,
-                    confidence=0.0,
-                )
+                # dok. 79 M1e — diperbaiki DI SUMBER, bukan di pemanggil.
+                # Sebelum ini fungsi mengembalikan ResolvedEntity(entity_id="",
+                # confidence=0.0) saat gagal: objek yang TRUTHY. Sebuah
+                # `if entity:` lolos, lalu "" disubstitusi ke {id} dan lahir
+                # POST /api/quotes//to-order. Fungsi ini punya NOL pemanggil
+                # sampai commit ini, jadi mengubah kontraknya nol risiko
+                # regresi — dan memperbaikinya di pemanggil berarti pemanggil
+                # KEDUA akan mengulang kesalahan yang sama. Yang cacat bukan
+                # pencariannya, melainkan kontrak yang mengundang salah baca.
+                return None
             candidates = [{"id": str(r["id"]), "name": r[number_column]} for r in rows]
             best = candidates[0]
             confidence = 1.0 if len(candidates) == 1 else 0.7

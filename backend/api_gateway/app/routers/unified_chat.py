@@ -936,6 +936,48 @@ def _pesan_galat_manusiawi(error_detail, payload: dict | None = None) -> str:
     if not teks or teks.startswith("[") or teks.startswith("{"):
         return ("Belum bisa disimpan karena ada isian yang belum lengkap. "
                 "Coba sebutkan ulang dengan jumlah dan harganya.")
+
+    # dok. 79 M1g — JARING BELAKANG untuk gerbang status endpoint.
+    # F3 (11 Agt) menutup galat Pydantic yang berbentuk LIST. `detail` yang
+    # berbentuk STRING masih lolos apa adanya, jadi gerbang status endpoint
+    # sampai ke layar sebagai "Cannot convert quote with status 'converted'" —
+    # bahasa Inggris, istilah internal, dan nol saran langkah berikutnya.
+    #
+    # Ini jaring, BUKAN pengganti gerbang depan di resolver: gerbang depan
+    # mencegah kartu lahir untuk aksi yang pasti ditolak; jaring ini menangkap
+    # status yang berubah ANTARA kartu dibuat dan dikonfirmasi. Keduanya perlu.
+    import re as _re_g  # noqa: E402
+
+    from ..services.unified_agent.entity_resolver import _STATUS_ID  # noqa: E402
+
+    _POLA_GALAT = (
+        (r"Cannot convert quote with status '([a-z_]+)'",
+         "Penawaran ini berstatus '{s}', jadi tidak bisa dikonversi. "
+         "Penawaran yang sudah dikonversi tidak bisa dikonversi dua kali."),
+        (r"Cannot invoice order with status '([a-z_]+)'",
+         "Pesanan ini berstatus '{s}', jadi belum bisa dibuatkan faktur."),
+        (r"Cannot ship order with status '([a-z_]+)'",
+         "Pesanan ini berstatus '{s}', jadi belum bisa dikirim."),
+    )
+    for pola, tmpl in _POLA_GALAT:
+        m = _re_g.search(pola, teks)
+        if m:
+            _s = m.group(1)
+            return tmpl.format(s=_STATUS_ID.get(_s, _s))
+    _TETAP = {
+        "Quote not found": "Penawaran itu tidak ditemukan. Coba cek nomornya.",
+        "Sales order not found": "Pesanan itu tidak ditemukan. Coba cek nomornya.",
+        "No items to convert": (
+            "Penawaran itu belum punya baris barang/jasa, jadi tidak ada yang "
+            "bisa dikonversi."),
+        "No items to invoice": (
+            "Pesanan itu belum punya baris barang/jasa, jadi tidak ada yang "
+            "bisa difakturkan."),
+    }
+    for kunci, pesan in _TETAP.items():
+        if kunci in teks:
+            return pesan
+
     return f"Belum bisa disimpan: {teks}"
 
 

@@ -3335,13 +3335,32 @@ class UnifiedAgent:
                     f"Lalu kirim ulang permintaan ini."
                 )
             else:
-                # Build natural clarification via LLM
-                clarification_text = await self._natural_clarification(
-                    intent=extraction.intent,
-                    collected=merged_entities,
-                    missing_labels=resolution.clarifications,
-                    resolution=resolution,
+                # ── AKSI_DOKUMEN: kalimatnya APA ADANYA (dok. 79) ─────────
+                # Bentuk yang sama dengan cabang _name_unresolved di atas.
+                # Klarifikasi aksi dokumen sudah kalimat Indonesia utuh yang
+                # dibangun dari FAKTA DB — termasuk nomor pesanan yang lahir
+                # dari penawaran itu. Menyerahkannya ke _natural_clarification
+                # cuma bisa MENGHILANGKAN isi, tak pernah menambah.
+                #
+                # Terukur sebelum baris ini ada: gerbang depan menahan 4 dari
+                # 4 (nol kartu, nol konversi kedua), tapi nomor SO-2608-0001
+                # hanya sampai ke user pada 2 dari 4 — dua sisanya berubah
+                # jadi tawaran "membuat pesanan baru", yang bukan hanya hilang
+                # informasi melainkan menyarankan hal yang keliru.
+                from .direct_action_registry import (  # noqa: E402
+                    DOCUMENT_ACTIONS_BY_KEY as _DAK,
                 )
+
+                if extraction.intent in _DAK and resolution.clarifications:
+                    clarification_text = resolution.clarifications[0]
+                else:
+                    # Build natural clarification via LLM
+                    clarification_text = await self._natural_clarification(
+                        intent=extraction.intent,
+                        collected=merged_entities,
+                        missing_labels=resolution.clarifications,
+                        resolution=resolution,
+                    )
 
             await emit(
                 "THINKING_DONE",
@@ -8676,6 +8695,27 @@ class UnifiedAgent:
 
         # Intent classification via heuristic (Final Cleanup: LLM classifier removed)
         _intent = _infer_intent(user_text)
+        # ── AKSI_DOKUMEN, tahap RUTE (dok. 79) ────────────────────────────
+        # Blok klasifikasi di bawah hanya dimasuki oleh rute ACTION dan
+        # SIMPLE_READ (baris "if _intent in (...)"). Tanpa baris ini,
+        # keterjangkauan aksi dokumen bergantung pada heuristik rute yang
+        # tak tahu apa-apa tentangnya: TERUKUR, "konversi penawaran QUO-...
+        # jadi pesanan" mendarat di SIMPLE_READ dan bekerja, sementara
+        # "konversi penawaran yang tadi jadi pesanan" mendarat di FOLLOWUP
+        # dan MELEWATI seluruh guard — lalu agent loop menebak dokumen dari
+        # daftar penawaran. Persis yang gerbang M1f larang.
+        #
+        # Pemicunya deterministik dan sempit (tiga syarat wajib), nol LLM,
+        # dan dibaca dari DOCUMENT_ACTIONS. Ia menaikkan rute, bukan
+        # menetapkan intent — intent tetap ditetapkan guard di bawah.
+        try:
+            from .entity_extractor import classify_document_action as _cda_rute
+
+            if _intent not in ("ACTION", "SIMPLE_READ") and _cda_rute(user_text)[0]:
+                logger.warning("[AKSI_DOKUMEN] rute %s -> ACTION", _intent)
+                _intent = "ACTION"
+        except Exception as _rute_err:  # noqa: BLE001
+            logger.warning("[AKSI_DOKUMEN] naik-rute gagal: %s", _rute_err)
         # FIX_READ_PROMOTE guard (2026-06-04): _qci_guard/_qci_entity_name
         # are otherwise only assigned inside the `if extraction is not None:`
         # block. The LLM-router read-promote path references _qci_guard in its
@@ -10579,6 +10619,48 @@ class UnifiedAgent:
                 extraction.intent = _qci_guard
                 extraction.confidence = 1.0
                 extraction.entities["name"] = _qci_entity_name
+
+            # ── AKSI_DOKUMEN (dok. 79): kata terakhir soal intent ──────────
+            # Ditaruh SESUDAH seluruh guard lain — termasuk DOC_DETAIL_GUARD —
+            # dengan sengaja. Pemicunya sangat sempit (kata kerja di AWAL
+            # kalimat + kata dokumen sumber + kata dokumen tujuan, ketiganya
+            # wajib), jadi ia tak bisa menyerobot kalimat lain; dan ditaruh di
+            # belakang supaya jalur "nomor dokumen membajak jadi kueri" —
+            # kelas yang mematikan void (dok. 37 Sebab A) — tak bisa terulang
+            # di sini. Terukur hari ini: classify_query_intent mengembalikan
+            # (None, None, None) untuk seluruh keluarga kalimat ini, jadi
+            # DOC_DETAIL_GUARD memang tak menyala; penempatan ini menjaga agar
+            # itu tetap benar meski classifier kueri kelak berubah.
+            try:
+                from .entity_extractor import classify_document_action
+
+                (_da_key, _da_nomor, _da_field) = classify_document_action(user_text)
+            except Exception as _da_err:  # noqa: BLE001
+                logger.warning("[AKSI_DOKUMEN] classifier gagal: %s", _da_err)
+                _da_key = _da_nomor = _da_field = None
+            if _da_key:
+                logger.warning(
+                    "[AKSI_DOKUMEN] %s -> %s (nomor=%s)",
+                    extraction.intent,
+                    _da_key,
+                    _da_nomor,
+                )
+                _tel_guard = "aksi_dokumen"
+                _tel_guard_from = extraction.intent
+                _tel_guard_to = _da_key
+                _tel_decision_source = "aksi_dokumen"
+                _tel_guard_matches["aksi_dokumen"] = _da_key
+                extraction.intent = _da_key
+                extraction.confidence = 1.0
+                extraction.needs_escalation = False
+                if not isinstance(extraction.entities, dict):
+                    extraction.entities = {}
+                # Nomor BOLEH None — itu keadaan "aksi dikenali, dokumen belum
+                # disebut", dan resolver yang bertanya. Jangan menebak dari
+                # ingatan sesi: REC terisi 0 dari 796 baris dan pending_payload
+                # tak punya TTL (dok. 79 M1f). Batas yang dipilih sadar.
+                if _da_nomor and _da_field:
+                    extraction.entities[_da_field] = _da_nomor
 
             logger.warning(
                 "[CLASSIFY_FINAL] intent=%s confidence=%.2f",

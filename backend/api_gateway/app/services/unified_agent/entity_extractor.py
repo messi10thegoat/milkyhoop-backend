@@ -918,7 +918,20 @@ PIPELINE_ENABLED_INTENTS = {
 
 def is_pipeline_enabled(intent: str) -> bool:
     """Check if intent should use compiler pipeline or fallback to agent loop."""
-    return intent in PIPELINE_ENABLED_INTENTS
+    if intent in PIPELINE_ENABLED_INTENTS:
+        return True
+    # dok. 79 — aksi atas dokumen WAJIB lewat compiler pipeline, bukan agent
+    # loop. Dibaca dari DOCUMENT_ACTIONS, bukan disalin ke himpunan di atas:
+    # satu baris tabel menyalakan config registry, pemicu bahasa, DAN jalur
+    # ini sekaligus. Menyalinnya berarti baris ke-13 bisa lupa satu dari tiga.
+    #
+    # Terukur sebelum baris ini ada: guard menetapkan intent=quote_to_order
+    # dengan benar, lalu agent loop tetap menjalankan get_quotes dan menjawab
+    # dengan RINGKASAN penawaran + pertanyaan basa-basi. Aksi dikenali,
+    # kartunya tak pernah lahir — kelas yang sama dengan dok. 37 Sebab B.
+    from .direct_action_registry import DOCUMENT_ACTIONS_BY_KEY  # noqa: E402
+
+    return intent in DOCUMENT_ACTIONS_BY_KEY
 
 
 # ── Code-Driven CRUD Intent Classifier ────────────────────────────────────
@@ -1974,6 +1987,95 @@ def classify_query_intent(user_text: str) -> tuple:
             t,
         ):
             return "reformat_as_table", None, None
+
+    return None, None, None
+
+
+# ── Aksi atas dokumen yang sudah ada (dok. 79) ────────────────────────────
+# Kelas kata kerja "gerakkan dokumen". DIJALANKAN SEBELUM classify_crud_intent
+# dan TIDAK menyentuh _ACTION_KEYWORDS.
+#
+# Kenapa langkah terpisah, bukan baris di _ACTION_KEYWORDS:
+#   1. _ACTION_KEYWORDS diiterasi dalam URUTAN DICT dan kecocokan PERTAMA
+#      menang — nol pertimbangan kespesifikan. Menyisipkan kelas baru ke
+#      dalamnya menggeser presedensi empat kelas yang sudah ada. Di luar
+#      sini, nol baris lama tersentuh, jadi tiga tabrakan yang sudah
+#      terukur (T53/T54: "terbitkan"→post_bill, "batalkan"→delete_quote,
+#      "ubah jadi"→update_quote) tak bisa memburuk karena batch ini.
+#   2. intent = f"{action}{entity_suffix}" hanya menyediakan tempat untuk
+#      SATU entitas. Konversi punya dua: sumber DAN tujuan. Bukti bahwa
+#      tujuan tertelan tanpa jejak: "ubah jadi pesanan penawaran QUO-..."
+#      → update_quote. Di sini kata kerja membawa tujuannya, jadi keduanya
+#      wajib hadir sebelum aksi dikenali.
+#   3. Sumbernya SATU: baris DOCUMENT_ACTIONS yang sama menghasilkan config
+#      registry DAN pemicu di bawah ini. Tak ada daftar kata kedua untuk
+#      disinkronkan.
+
+_DOC_NUM_RE = _re.compile(r"\b([a-z]{2,6}(?:[-/][a-z0-9]{1,8}){1,4})\b", _re.IGNORECASE)
+
+_SOPAN = (
+    r"(?:tolong|mohon|bisa|boleh|bantu|coba|mau|minta|gas|oke|ok|yuk|dong|"
+    r"sip|siap|ayo|cus|langsung|baik|ya|iya|please)"
+)
+
+
+def classify_document_action(user_text: str) -> tuple:
+    """Kenali "gerakkan dokumen X jadi Y".
+
+    Mengembalikan (action_key, nomor_dokumen_atau_None, field_nomor) atau
+    (None, None, None).
+
+    Nomor BOLEH None: itu bukan kegagalan, melainkan keadaan "aksi dikenali,
+    dokumennya belum disebut". Pemanggil WAJIB menanyakan nomornya — jangan
+    menebak. Rujukan tanpa nomor ("penawaran yang tadi") sengaja TIDAK
+    didukung: lapis REC terisi pada 0 dari 796 baris chat_session_state, dan
+    satu-satunya ingatan yang hidup (pending_payload) tak punya TTL dengan
+    151 baris lebih tua dari sehari (dok. 78/79 M1f). Menebak di atas itu
+    berarti mengonversi dokumen KEMARIN — kekeliruan yang tak meninggalkan
+    sinyal apa pun karena dokumen hasilnya sah.
+    """
+    from .direct_action_registry import DOCUMENT_ACTIONS
+
+    teks = user_text.strip().lower()
+    if not teks:
+        return None, None, None
+
+    for aksi in DOCUMENT_ACTIONS:
+        cocok_kerja = False
+        sisa_pos = 0
+        for kk in aksi.kata_kerja:
+            for pat in (
+                rf"^{_re.escape(kk)}\b",
+                rf"^{_SOPAN}\s+{_re.escape(kk)}\b",
+                rf"^{_SOPAN}\s+(?:bantu\s+)?{_re.escape(kk)}\b",
+            ):
+                m = _re.search(pat, teks)
+                if m:
+                    cocok_kerja = True
+                    sisa_pos = m.end()
+                    break
+            if cocok_kerja:
+                break
+        if not cocok_kerja:
+            continue
+
+        sisa = teks[sisa_pos:]
+        # Sumber DAN tujuan dua-duanya wajib. Tanpa syarat ini "konversi
+        # penawaran" saja akan menang untuk aksi mana pun yang sumbernya
+        # penawaran — dan begitu baris kedua ditambahkan (quote_to_invoice),
+        # dua aksi akan cocok pada kalimat yang sama.
+        if not any(ks in sisa for ks in aksi.kata_sumber):
+            continue
+        if not any(kt in sisa for kt in aksi.kata_tujuan):
+            continue
+
+        nomor = None
+        for kandidat in _DOC_NUM_RE.findall(user_text):
+            # Buang kandidat yang sebenarnya kata biasa berdempet tanda hubung.
+            if _re.search(r"\d", kandidat):
+                nomor = kandidat.upper()
+                break
+        return aksi.action_key, nomor, aksi.field_nomor
 
     return None, None, None
 
