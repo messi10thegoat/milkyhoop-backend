@@ -6009,15 +6009,22 @@ async def _confirm_direct_action(
     # default behavior and matches the legacy single-call execution.
     # Quote / credit_note / vendor_credit currently always create as DRAFT;
     # POSTED for credit_note/vendor_credit triggers a follow-up /post call below.
+    # dok. 81 (3): keanggotaan dibaca dari SATU sumber di registry, yang juga
+    # menentukan tombol apa yang diumumkan ke FE. Dulu daftar ini hanya hidup
+    # di sini, jadi tombol dan perilaku bisa menyimpang tanpa jejak.
+    from ..services.unified_agent.direct_action_registry import (  # noqa: E402
+        AKSI_DOC_STATUS_DRAFT as _AKSI_DRAFT,
+        AKSI_DOC_STATUS_POSTED as _AKSI_POSTED,
+    )
+
     needs_post_step = False
-    if doc_status == "DRAFT":
+    if doc_status == "DRAFT" and action_key in _AKSI_DRAFT:
         if action_key == "create_sales_invoice":
             payload["auto_post"] = "false"
-        elif action_key in ("create_sales_order", "create_bill"):
+        else:
             payload["status"] = "draft"
-    elif doc_status == "POSTED":
-        if action_key in ("create_credit_note", "create_vendor_credit"):
-            needs_post_step = True
+    elif doc_status == "POSTED" and action_key in _AKSI_POSTED:
+        needs_post_step = True
 
     # Mark as executing — KLAIM ATOMIK.
     # Predikat `status = 'PENDING'` wajib: tanpa itu, dua confirm serentak
@@ -6440,7 +6447,9 @@ async def _confirm_direct_action(
                     _md_err,
                 )
 
-            success_msg = config.get_success_message(payload)
+            # dok. 81 (4): sertakan badan respons endpoint supaya nomor
+            # dokumen yang baru lahir bisa masuk kalimat sukses.
+            success_msg = config.get_success_message(payload, result_data)
 
             # Clear document_context from Layer 2 (only for document actions)
             if action_key == "confirm_document_draft" and session_id:

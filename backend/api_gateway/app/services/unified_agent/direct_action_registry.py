@@ -182,6 +182,9 @@ class DirectActionConfig:
     # Format: {"sales_account_id": (account_type, code_prefix, name_hint), ...}
     # Resolved at confirm time — injects *_id + friendly *_account name into payload.
     default_accounts_policy: dict = field(default_factory=dict)
+    # dok. 81 (3) — label tombol konfirmasi. Kosong = pakai display_name,
+    # yang sudah menyebut apa yang aksi ini lakukan.
+    label_tombol: str = ""
 
     def get_entity_name(self, payload: dict) -> str:
         """Extract entity display name from payload."""
@@ -192,10 +195,53 @@ class DirectActionConfig:
         name = self.get_entity_name(payload)
         return _safe_format(self.loading_message_template, payload, entity_name=name)
 
-    def get_success_message(self, payload: dict) -> str:
-        """Build success message after action completes."""
+    def get_success_message(self, payload: dict, hasil: dict | None = None) -> str:
+        """Build success message after action completes.
+
+        `hasil` = badan respons endpoint (mis. {"data": {"quote_number": ...}}).
+        Nomor dokumen LAHIR DI ENDPOINT, jadi ia tidak pernah ada di payload —
+        tanpa argumen ini sebuah template ber-{quote_number} akan dirender
+        dengan lubang kosong oleh _safe_format (KeyError -> placeholder
+        dibuang), dan pesan yang seharusnya bisa ditindaklanjuti berubah jadi
+        kalimat menggantung. Opsional supaya pemanggil pra-eksekusi
+        (build_ux_metadata) tak berubah perilakunya.
+        """
         name = self.get_entity_name(payload)
-        return _safe_format(self.success_message_template, payload, entity_name=name)
+        _extra = {"entity_name": name}
+        if isinstance(hasil, dict):
+            for _sumber in (hasil, hasil.get("data")):
+                if not isinstance(_sumber, dict):
+                    continue
+                for k, v in _sumber.items():
+                    # RESPONS MENANG ATAS PAYLOAD. Pesan sukses menjelaskan apa
+                    # yang TERJADI, dan payload hanyalah apa yang DIMINTA —
+                    # payload bisa keliru, respons tidak.
+                    #
+                    # Ini bukan pilihan gaya. Percobaan pertama memakai aturan
+                    # sebaliknya (payload menang) dan gate-nya MERAH dengan cara
+                    # yang tak terduga: payload create_quote membawa
+                    # quote_number berisi SELURUH KALIMAT USER (kelas T44 —
+                    # _amankan_nomor_dokumen hanya menjaga create_bill /
+                    # create_purchase_invoice), sehingga kalimatnya berbunyi
+                    # "Penawaran untuk toko melati, 10 pcs kaos hitam 24s
+                    # tersimpan sebagai draft". Endpoint mengabaikan nomor palsu
+                    # itu dan menghasilkan QUO-2608-0004 yang benar; hanya
+                    # responsnya yang tahu.
+                    #
+                    # Dua template lain memakai placeholder non-entity_name:
+                    #   categorize_statement -> account_name : responsnya
+                    #     mengembalikan nama akun dari DB (category_account),
+                    #     jadi respons-menang justru LEBIH benar daripada nama
+                    #     hasil resolusi di payload.
+                    #   confirm_recon_batch -> action_count : endpointnya
+                    #     (/sessions/{id}/confirm-batch) TIDAK ADA di router
+                    #     mana pun, jadi aksi itu tak pernah tereksekusi.
+                    # Keduanya diperiksa sebelum urutan ini dibalik.
+                    if k == "entity_name":
+                        continue
+                    if isinstance(v, (str, int, float)) and v != "":
+                        _extra[k] = v
+        return _safe_format(self.success_message_template, payload, **_extra)
 
     def get_category_label(self, payload: dict) -> Optional[str]:
         """Get accounting category label from payload, if configured."""
@@ -748,7 +794,12 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         ],
         entity_name_field="customer_name",
         loading_message_template="Membuat pesanan penjualan untuk {entity_name}\u2026",
-        success_message_template="Pesanan penjualan untuk '{entity_name}' berhasil dibuat.",
+        # dok. 81 (4c): gejala dan bentuknya IDENTIK dengan penawaran —
+        # routers/sales_orders.py juga menulis 'draft' tanpa syarat.
+        success_message_template=(
+            "Pesanan {order_number} untuk '{entity_name}' tersimpan sebagai "
+            "draft. Konfirmasi lewat Penjualan \u2192 Pesanan Penjualan."
+        ),
         impact_rules=[
             ImpactRule(
                 field="tax_rate",
@@ -1288,6 +1339,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         ],
     ),
     "post_bill": DirectActionConfig(
+        label_tombol="Posting",
         action_key="post_bill",
         display_name="Posting Faktur Pembelian",
         rest_endpoint="/api/bills/{id}/post",
@@ -1338,6 +1390,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
     # never creates a new doc. Payload field `invoice_id` is mapped to `id` by
     # entity_resolver._build_payload (post_sales_invoice branch).
     "post_sales_invoice": DirectActionConfig(
+        label_tombol="Posting",
         action_key="post_sales_invoice",
         display_name="Posting Faktur Penjualan",
         rest_endpoint="/api/sales-invoices/{id}/post",
@@ -2556,6 +2609,7 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
     ),
     # ═══════════════ BATCH 3: Quote Actions ═══════════════
     "create_quote": DirectActionConfig(
+        label_tombol="Simpan Penawaran",
         action_key="create_quote",
         display_name="Buat Penawaran",
         rest_endpoint="/api/quotes",
@@ -2568,7 +2622,18 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         signal_words=["buat penawaran", "create quote", "bikin quotation"],
         entity_name_field="quote_number",
         loading_message_template="Membuat penawaran…",
-        success_message_template="Penawaran berhasil dibuat.",
+        # dok. 81 (4): penawaran SELALU lahir draft — routers/quotes.py
+        # menulis status 'draft' tanpa syarat, dan doc_status dari FE diabaikan
+        # untuk aksi ini (T67). Kalimat lama, "Penawaran berhasil dibuat.",
+        # tidak berbohong tapi juga tidak memberi tahu DUA hal yang dibutuhkan
+        # owner: bahwa dokumennya belum terkirim, dan apa langkah berikutnya.
+        # Digabung dengan tombol berlabel "Posting", itu yang membuat owner
+        # mengira gagal lalu memeriksa ulang di dashboard — dan chatmode
+        # kehilangan satu-satunya keunggulannya, yaitu tak perlu diperiksa.
+        success_message_template=(
+            "Penawaran {quote_number} tersimpan sebagai draft. "
+            "Kirim ke pelanggan lewat Penjualan \u2192 Penawaran."
+        ),
         impact_rules=[
             ImpactRule(
                 field="tax_rate",
@@ -5457,6 +5522,73 @@ def build_review_card_payload(
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# TOMBOL KONFIRMASI — diumumkan config, bukan dikarang FE  (dok. 81 bagian 3)
+#
+# FE menampilkan DUA tombol ("Simpan Draft" / "Posting") dan mengirim
+# doc_status. Tapi backend hanya MENERJEMAHKAN doc_status untuk LIMA aksi;
+# untuk 55 sisanya — termasuk penawaran dan konversi — kedua tombol memanggil
+# jalur yang sama dan menghasilkan hasil yang sama. Salah satunya berkata
+# "Posting" pada dokumen yang tak pernah berjurnal.
+#
+# Dua himpunan di bawah adalah SUMBER TUNGGAL: routers/unified_chat.py
+# membacanya untuk MENERJEMAHKAN doc_status, dan tombol yang diumumkan ke FE
+# diturunkan dari himpunan yang SAMA. Jadi aksi ke-61 tak bisa punya perilaku
+# dua-tombol tanpa tombolnya ikut muncul, dan sebaliknya.
+#
+# ⚠️ "Posting" TIDAK dihapus di mana-mana. Untuk post_bill /
+# post_sales_invoice / faktur bermuatan jurnal, kata itu JUJUR. Menyeragamkan
+# semuanya jadi "Simpan" akan menukar satu kebohongan dengan kebohongan ke
+# arah sebaliknya — dan yang kedua lebih berbahaya, karena menyembunyikan
+# saat jurnal benar-benar terbentuk.
+# ══════════════════════════════════════════════════════════════════════════
+
+# doc_status="DRAFT" mengubah payload untuk aksi-aksi ini
+AKSI_DOC_STATUS_DRAFT: tuple[str, ...] = (
+    "create_sales_invoice",
+    "create_sales_order",
+    "create_bill",
+)
+# doc_status="POSTED" memicu panggilan /post kedua untuk aksi-aksi ini
+AKSI_DOC_STATUS_POSTED: tuple[str, ...] = (
+    "create_credit_note",
+    "create_vendor_credit",
+)
+AKSI_DUA_TOMBOL: tuple[str, ...] = AKSI_DOC_STATUS_DRAFT + AKSI_DOC_STATUS_POSTED
+
+# Label sisi "terbitkan" pada aksi dua-tombol. create_sales_order menghormati
+# doc_status TAPI nol jurnal — jadi "Posting" salah untuknya, sementara untuk
+# faktur penjualan/pembelian dan nota kredit ia benar.
+_LABEL_TERBIT = {
+    "create_sales_order": "Simpan",
+}
+
+
+def tombol_konfirmasi(action_key: str) -> list[dict]:
+    """Tombol yang BERMAKNA untuk aksi ini.
+
+    Satu tombol = doc_status diabaikan backend, jadi menawarkan dua pilihan
+    adalah pilihan palsu. Dua tombol = keduanya benar-benar berbeda hasilnya.
+    """
+    config = DIRECT_ACTIONS.get(action_key)
+    if not config:
+        return []
+    if action_key in AKSI_DUA_TOMBOL:
+        return [
+            {"doc_status": "DRAFT", "label": "Simpan Draft"},
+            {
+                "doc_status": "POSTED",
+                "label": _LABEL_TERBIT.get(action_key, "Posting"),
+            },
+        ]
+    return [
+        {
+            "doc_status": "POSTED",
+            "label": config.label_tombol or config.display_name,
+        }
+    ]
+
+
 def build_ux_metadata(action_key: str, payload: dict) -> dict:
     """Build UX metadata dict for DIRECT_ACTION_PREVIEW response data.
     Includes everything frontend needs — no hardcoding required."""
@@ -5468,6 +5600,9 @@ def build_ux_metadata(action_key: str, payload: dict) -> dict:
         "success_message": config.get_success_message(payload),
         "entity_type": config.entity_type,  # for data-changed events
         "action_type_key": config.action_type_key,  # uppercase key
+        # dok. 81 (3): kunci BARU. FE lama tak mengenalnya dan mengabaikannya;
+        # sampai FE menyusul, ini NOL DAMPAK ke layar.
+        "tombol": tombol_konfirmasi(action_key),
     }
 
 
@@ -5567,6 +5702,7 @@ class AksiDokumen:
     kolom_ringkas: tuple[tuple[str, str], ...] = ()  # (kolom_db, field_payload)
     tabel_baris: str = ""
     kolom_induk_baris: str = ""
+    label_tombol: str = "Konfirmasi"
 
 
 DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
@@ -5605,6 +5741,7 @@ DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
         ),
         tabel_baris="quote_items",
         kolom_induk_baris="quote_id",
+        label_tombol="Konversi",
     ),
 )
 
@@ -5662,6 +5799,7 @@ def _bangun_aksi_dokumen(a: AksiDokumen) -> DirectActionConfig:
         loading_message_template=a.pesan_memproses,
         success_message_template=a.pesan_sukses,
         journal_preview_endpoint="",
+        label_tombol=a.label_tombol,
         fields=fields,
     )
 

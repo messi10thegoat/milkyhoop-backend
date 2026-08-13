@@ -1973,6 +1973,32 @@ class ToolExecutor:
         _detection_reason = (
             "Terdeteksi dari: " + ", ".join(_det_parts) if _det_parts else ""
         )
+        # dok. 81 (2) — aksi ATAS DOKUMEN yang sudah ada: nol teks, bukan teks
+        # yang benar.
+        #
+        # "Terdeteksi dari" bermakna ketika sistem MENEBAK: mengambil nama
+        # pelanggan dari kalimat bebas, menyimpulkan nominal dari kata-kata.
+        # Di sini nol tebakan terjadi — SELURUH isi kartu dibaca dari dokumen
+        # sumber lewat satu SELECT, dan satu-satunya hal yang diketik user
+        # (nomor dokumennya) sudah tercetak di baris PERTAMA kartu. Teks
+        # "Terdeteksi dari: nominal Rp 4.250.000, pelanggan 'Toko Melati'"
+        # menyebut dua hal yang TIDAK diketik owner, di bawah label yang
+        # menyiratkan sistem menyimpulkan sesuatu.
+        #
+        # Akar yang lebih luas TIDAK disentuh di sini: _det_parts dibangun dari
+        # payload untuk seluruh 60 aksi, jadi ia menggambarkan HASIL, bukan
+        # masukan — daftar prioritas di atas sudah bercabang lima kali untuk
+        # menambal gejala yang sama. Membawa user_text ke lapisan ini adalah
+        # T69, batch tersendiri. Yang dikerjakan di sini hanya keluarga aksi
+        # dokumen, tempat jawabannya bukan "teks yang benar" melainkan "tak
+        # ada teks yang perlu ditampilkan".
+        try:
+            from .direct_action_registry import DOCUMENT_ACTIONS_BY_KEY as _DAK_DET
+
+            if action_key in _DAK_DET:
+                _detection_reason = ""
+        except Exception as _det_err:  # noqa: BLE001
+            logger.warning("[DETECTION] cek aksi dokumen gagal: %s", _det_err)
 
         # FIX_AQUA_PERLINE_HINT 2026-05-09: prepend hint banner to card
         # narrative if user mentioned per-line keywords. Helps user discover
