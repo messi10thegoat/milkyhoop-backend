@@ -721,6 +721,98 @@ def _get_user_context(request: Request) -> dict:
 # ─── Chat History Helpers ──────────────────────────────────────────────────────
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# GERBANG KARTU MENUNGGU — satu fungsi, tiga pemanggil  (T58b, dok. 80)
+#
+# Kueri yang sama persis pernah disalin ke TIGA tempat (/message,
+# /message/stream, /message/upload). Menambahkan penandaan EXPIRED ke
+# ketiganya berarti tiga salinan yang bisa menyimpang — bentuk yang sudah
+# kita bayar tiga kali (enrichment, nama item, nomor dokumen).
+#
+# KENAPA PENANDAAN MALAS, BUKAN JOB LATAR
+# Fungsi ini berjalan pada SETIAP pesan, sudah memegang conversation_id,
+# dan [SQL] batasnya terbukti TEPAT SATU baris PENDING per percakapan
+# (624 baris PENDING tersebar di 624 percakapan, maksimum 1). Jadi
+# biayanya satu UPDATE bertarget, bukan sapuan tabel. Job latar akan
+# menambah komponen yang bisa mati diam-diam — dan penandaan EXPIRED yang
+# sudah ada justru mati persis karena begitu: dua situsnya nyata, tapi
+# keduanya di jalur yang praktis tak pernah dilewati, sehingga status
+# EXPIRED tak pernah tertulis sekali pun dalam sejarah basis data ini.
+#
+# ⚠️ URUTAN DAN PREDIKATNYA PENTING
+# SELECT di bawah tetap memakai `expires_at > now()` — TIDAK diubah.
+# Artinya kartu basi tak bisa mengunci percakapan, apa pun yang terjadi
+# pada UPDATE di atasnya. Kalau UPDATE gagal, ia gagal sebagai kebersihan
+# riwayat, BUKAN sebagai kebuntuan. Itu sebabnya UPDATE-nya dibungkus dan
+# non-fatal: memperbaiki kerapian tak boleh menghidupkan kembali bug yang
+# sedang kita tutup.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+_TEKS_GERBANG = (
+    "Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan "
+    "dulu sebelum mengirim pesan baru."
+)
+
+
+async def _kartu_menunggu(pool, conversation_id, tenant_id: str):
+    """Kembalikan id kartu PENDING yang MASIH hidup di percakapan ini.
+
+    Efek samping yang disengaja: kartu PENDING yang sudah lewat
+    `expires_at` ditandai EXPIRED lebih dulu, supaya riwayat berhenti
+    berbohong bahwa ia masih menunggu keputusan manusia.
+    """
+    if not conversation_id:
+        return None
+    try:
+        await pool.execute(
+            "UPDATE pending_actions SET status = 'EXPIRED' "
+            "WHERE conversation_id = $1 AND tenant_id = $2 "
+            "  AND status = 'PENDING' AND expires_at <= now()",
+            str(conversation_id),
+            tenant_id,
+        )
+    except Exception as _exp_err:  # noqa: BLE001
+        # Non-fatal ON PURPOSE — lihat catatan urutan di atas.
+        logger.warning("[KARTU] penandaan EXPIRED gagal (non-fatal): %s", _exp_err)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM pending_actions "
+        "WHERE conversation_id = $1 AND tenant_id = $2 AND status = 'PENDING' "
+        "  AND expires_at > now() "
+        "ORDER BY created_at DESC LIMIT 1",
+        str(conversation_id),
+        tenant_id,
+    )
+    return str(row["id"]) if row else None
+
+
+async def _simpan_pesan_ditolak(
+    pool, tenant_id: str, user_id: str, session_id, teks: str, balasan: str
+):
+    """T65 — simpan pesan user yang DITOLAK gerbang, beserta balasannya.
+
+    Sampai commit ini, gerbang membalas lalu `return` tanpa menyimpan apa
+    pun: [SQL] kalimat "Ada aksi yang menunggu konfirmasi" muncul NOL kali
+    di chat_messages, dan kalimat user yang ditolak juga hilang. Riwayat
+    percakapan tidak merekam bahwa kebuntuan itu pernah terjadi — itulah
+    satu-satunya sebab bug ini bertahan tanpa terlihat sampai owner
+    melaporkannya sendiri.
+
+    Balasan gerbang ikut disimpan meski owner menyebutnya opsional:
+    menyimpan pertanyaan user tanpa jawabannya menghasilkan riwayat yang
+    berbohong dengan cara lain — seolah sistem mengabaikan user.
+    """
+    try:
+        from ..services.unified_agent.session_manager import SessionManager
+
+        _sm = SessionManager(db_pool=pool, tenant_id=tenant_id, user_id=user_id)
+        await _sm.store_message(str(session_id), "user", teks)
+        await _sm.store_message(str(session_id), "assistant", balasan)
+    except Exception as _sv_err:  # noqa: BLE001
+        logger.warning("[T65] gagal menyimpan pesan yang ditolak: %s", _sv_err)
+
+
 async def _save_to_chat_history(
     user_id: str,
     tenant_id: str,
@@ -1062,14 +1154,10 @@ async def send_message(request: Request, body: ChatMessageRequest):
     if body.session_id and body.text:
         try:
             db_pool_guard = await get_session_db_pool()
-            pending_row = await db_pool_guard.fetchrow(
-                "SELECT id FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = 'PENDING' "
-                "  AND expires_at > now() "
-                "ORDER BY created_at DESC LIMIT 1",
-                body.session_id,
+            # T58b — satu fungsi bersama; ia juga menandai kartu basi EXPIRED.
+            pending_id = await _kartu_menunggu(
+                db_pool_guard, body.session_id, ctx["tenant_id"]
             )
-            pending_id = str(pending_row["id"]) if pending_row else None
 
             if pending_id:
                 message_lower = body.text.lower().strip()
@@ -1137,9 +1225,18 @@ async def send_message(request: Request, body: ChatMessageRequest):
 
                 # Fall-through block: pending exists but utterance is not a
                 # short confirm/reject — preserve old UX (block new work).
+                # T65: simpan dulu — lihat _simpan_pesan_ditolak.
+                await _simpan_pesan_ditolak(
+                    db_pool_guard,
+                    ctx["tenant_id"],
+                    ctx["user_id"],
+                    body.session_id,
+                    body.text,
+                    _TEKS_GERBANG,
+                )
                 return ChatMessageResponse(
                     message_type="TEXT",
-                    text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
+                    text=_TEKS_GERBANG,
                     session_id=body.session_id,
                 )
         except HTTPException:
@@ -2497,15 +2594,9 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
     if body.session_id:
         try:
             db_pool_guard = await get_session_db_pool()
-            pending_row_stream = await db_pool_guard.fetchrow(
-                "SELECT id FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = 'PENDING' "
-                "  AND expires_at > now() "
-                "ORDER BY created_at DESC LIMIT 1",
-                body.session_id,
-            )
-            pending_id_stream = (
-                str(pending_row_stream["id"]) if pending_row_stream else None
+            # T58b — fungsi yang sama dengan /message. Satu sumber.
+            pending_id_stream = await _kartu_menunggu(
+                db_pool_guard, body.session_id, ctx["tenant_id"]
             )
 
             if pending_id_stream:
@@ -2638,12 +2729,22 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
 
                 # Fall-through: pending exists but utterance is not a short
                 # confirm/reject — preserve old "Ada aksi menunggu" UX.
+                # T65: simpan dulu — lihat _simpan_pesan_ditolak.
+                await _simpan_pesan_ditolak(
+                    db_pool_guard,
+                    ctx["tenant_id"],
+                    ctx["user_id"],
+                    body.session_id,
+                    body.text or "",
+                    _TEKS_GERBANG,
+                )
+
                 async def _guard_gen():
                     _resp = {
                         "event": "DONE",
                         "data": {
                             "message_type": "TEXT",
-                            "text": "Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
+                            "text": _TEKS_GERBANG,
                             "session_id": body.session_id,
                         },
                     }
@@ -3430,15 +3531,9 @@ async def send_message_with_files(
             # BucketA1.7 (2026-04-25): mirror A1's natural-language confirm/
             # reject dispatch from /message into /message/upload. Without this,
             # short "betul"/"batal" replies on file-upload chat get blocked.
-            pending_row_upload = await db_pool_guard.fetchrow(
-                "SELECT id FROM pending_actions "
-                "WHERE conversation_id = $1 AND status = 'PENDING' "
-                "  AND expires_at > now() "
-                "ORDER BY created_at DESC LIMIT 1",
-                session_id,
-            )
-            pending_id_upload = (
-                str(pending_row_upload["id"]) if pending_row_upload else None
+            # T58b — fungsi yang sama dengan /message. Satu sumber.
+            pending_id_upload = await _kartu_menunggu(
+                db_pool_guard, session_id, ctx["tenant_id"]
             )
 
             if pending_id_upload:
@@ -3530,9 +3625,18 @@ async def send_message_with_files(
 
                 # Fall-through: pending exists but utterance is not a short
                 # confirm/reject — preserve old "Ada aksi menunggu" UX.
+                # T65: simpan dulu — lihat _simpan_pesan_ditolak.
+                await _simpan_pesan_ditolak(
+                    db_pool_guard,
+                    ctx["tenant_id"],
+                    ctx["user_id"],
+                    session_id,
+                    text or "",
+                    _TEKS_GERBANG,
+                )
                 return ChatMessageResponse(
                     message_type="TEXT",
-                    text="Ada aksi yang menunggu konfirmasi. Silakan konfirmasi atau batalkan dulu sebelum mengirim pesan baru.",
+                    text=_TEKS_GERBANG,
                     session_id=session_id,
                 )
         except HTTPException:
@@ -6784,11 +6888,87 @@ async def cancel_action(request: Request, body: CancelActionRequest):
     ctx = _get_user_context(request)
 
     try:
-        executor = get_action_executor_client()
-        _result = await executor.cancel_action(
-            pending_action_id=body.pending_action_id,
-            tenant_id=ctx["tenant_id"],
-            user_id=ctx["user_id"],
+        # ── T58a — PEMBATALAN YANG BENAR-BENAR MEMBATALKAN ────────────────
+        # Sampai commit ini fungsi ini mendelegasikan ke gRPC action_executor:
+        # host `action_executor` TIDAK RESOLVE dan nol container-nya ada
+        # (kontrol positif: `postgres` resolve). Kliennya menangkap galat dan
+        # mengembalikan {"success": False}; nilai itu disimpan ke `_result`
+        # DAN TAK PERNAH DIBACA. Hasilnya: POST /cancel membalas 200 OK,
+        # kartu tetap PENDING, dan user diminta "batalkan dulu" — perintah
+        # yang tak mungkin dituruti. [SQL] status CANCELLED tak pernah
+        # tertulis sekali pun: 0 baris dari 662.
+        #
+        # Jalur gRPC-nya SENGAJA tidak dihidupkan dan tidak dihapus, hanya
+        # dilewati (Pelajaran X0: jangan ubah kode yang tujuannya belum
+        # dipahami). Kliennya utuh untuk pemanggil lain.
+        #
+        # BENTUK PREDIKATNYA sama dengan klaim atomik 68c7ab46, dan alasannya
+        # sama: `AND status='PENDING'` di dalam UPDATE membuat DB yang
+        # memutuskan siapa menang. Dua Batal serentak -> satu rowcount 1,
+        # satu 0. Batal SESUDAH Confirm -> 0, dan COMPLETED tidak tertimpa.
+        # Yang terakhir itu bukan kerapian: riwayat yang bilang "dibatalkan"
+        # padahal dokumennya lahir adalah kelas status-berbohong dok. 33,
+        # lebih berbahaya daripada duplikat karena tak terlihat.
+        #
+        # CHECK constraint `valid_pending_status` sudah memuat CANCELLED dan
+        # EXPIRED — diverifikasi [SQL] SEBELUM baris ini ditulis, karena
+        # keduanya belum pernah muncul di data.
+        _pool_batal = await get_session_db_pool()
+        _hasil_batal = await _pool_batal.execute(
+            "UPDATE pending_actions SET status = 'CANCELLED' "
+            "WHERE id = $1::uuid AND tenant_id = $2 AND status = 'PENDING'",
+            str(body.pending_action_id),
+            ctx["tenant_id"],
+        )
+        _batal_ok = _hasil_batal.strip().split()[-1] == "1"
+
+        if _batal_ok:
+            _batal_pesan = "Dibatalkan."
+        else:
+            # rowcount 0 punya BANYAK sebab, dan tiap sebab menuntut kalimat
+            # berbeda. "Ok, dilewati" berbahaya justru karena ia satu kalimat
+            # untuk semua keadaan — termasuk keadaan yang artinya sebaliknya.
+            _brs = await _pool_batal.fetchrow(
+                "SELECT status FROM pending_actions "
+                "WHERE id = $1::uuid AND tenant_id = $2",
+                str(body.pending_action_id),
+                ctx["tenant_id"],
+            )
+            if _brs is None:
+                _batal_pesan = (
+                    "Kartu itu tidak ditemukan, jadi tidak ada yang perlu "
+                    "dibatalkan."
+                )
+            else:
+                _st = _brs["status"]
+                if _st == "COMPLETED":
+                    _batal_pesan = (
+                        "Aksi itu sudah diproses, jadi tidak bisa dibatalkan lagi. "
+                        "Kalau perlu dikoreksi, batalkan dokumennya lewat menu terkait."
+                    )
+                elif _st == "CANCELLED":
+                    _batal_pesan = "Aksi itu sudah dibatalkan sebelumnya."
+                elif _st == "EXPIRED":
+                    _batal_pesan = (
+                        "Kartu itu sudah kedaluwarsa dan otomatis batal, "
+                        "jadi tidak ada yang perlu dibatalkan."
+                    )
+                elif _st == "EXECUTING":
+                    _batal_pesan = (
+                        "Aksi itu sedang diproses, jadi tidak bisa dibatalkan sekarang."
+                    )
+                elif _st == "FAILED":
+                    _batal_pesan = (
+                        "Aksi itu gagal diproses, jadi tidak ada yang perlu dibatalkan."
+                    )
+                else:
+                    _batal_pesan = f"Aksi itu berstatus '{_st}', tidak bisa dibatalkan."
+        logger.warning(
+            "[BATAL] id=%s tenant=%s hasil=%s -> %s",
+            str(body.pending_action_id)[:8],
+            ctx["tenant_id"],
+            _hasil_batal.strip(),
+            "CANCELLED" if _batal_ok else "ditolak",
         )
 
         # Phase D: Update chat message metadata status to CANCELLED
@@ -6961,7 +7141,7 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                 )
 
         # Build contextual cancel message with workflow info
-        cancel_text = "Ok, dilewati."
+        cancel_text = _batal_pesan
         try:
             if body.session_id:
                 from ..services.unified_agent.workflow_engine import WorkflowEngine
@@ -6974,7 +7154,12 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                     auth_token=ctx["auth_token"],
                 )
                 _wf = await _eng.get_state(body.session_id, "bank_reconciliation")
-                if _wf and _wf.status == "active" and _wf.current_state == "REVIEWING":
+                if (
+                    _batal_ok
+                    and _wf
+                    and _wf.status == "active"
+                    and _wf.current_state == "REVIEWING"
+                ):
                     _summary = _wf.data.get("summary", {})
                     _unmatched = _summary.get("unmatched_count", 0)
                     _reviewed = _wf.data.get("reviewed_count", 0)
@@ -7002,6 +7187,7 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         return ChatMessageResponse(
             message_type="TEXT",
             text=cancel_text,
+            data={"success": _batal_ok},
             pending_action_id=body.pending_action_id,
             trace_id=str(uuid_mod.uuid4()),
         )
