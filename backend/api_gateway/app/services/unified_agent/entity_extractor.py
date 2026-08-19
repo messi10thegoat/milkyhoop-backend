@@ -2040,7 +2040,13 @@ def classify_document_action(user_text: str) -> tuple:
     if not teks:
         return None, None, None
 
-    for aksi in DOCUMENT_ACTIONS:
+    # Aksi yang MENUNTUT kata tujuan diperiksa LEBIH DULU. Sebagian aksi tak
+    # punya dokumen tujuan (mengirim penawaran menghasilkan penawaran yang
+    # sama), jadi syarat tujuannya kosong — dan syarat yang kosong menerima
+    # kalimat apa pun. Kalau dua aksi berbagi kata kerja, yang bersyarat lebih
+    # banyak harus menang; mengandalkan urutan penulisan di tabel berarti
+    # baris ke-3 bisa membajak baris ke-1 tanpa siapa pun menyadarinya.
+    for aksi in sorted(DOCUMENT_ACTIONS, key=lambda a: not a.kata_tujuan):
         cocok_kerja = False
         sisa_pos = 0
         for kk in aksi.kata_kerja:
@@ -2066,7 +2072,9 @@ def classify_document_action(user_text: str) -> tuple:
         # dua aksi akan cocok pada kalimat yang sama.
         if not any(ks in sisa for ks in aksi.kata_sumber):
             continue
-        if not any(kt in sisa for kt in aksi.kata_tujuan):
+        # Tujuan kosong = aksi ini memang tak punya dokumen tujuan. Kata
+        # kerjanya sendiri yang membedakan ("kirim" vs "konversi"/"jadikan").
+        if aksi.kata_tujuan and not any(kt in sisa for kt in aksi.kata_tujuan):
             continue
 
         nomor = None

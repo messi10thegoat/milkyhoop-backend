@@ -5753,6 +5753,31 @@ def get_fields_description(action_key: str) -> str:
 
 
 @dataclass(frozen=True)
+class LangkahBerikutnya:
+    """Langkah yang menyelesaikan kebuntuan, untuk satu status yang memblokir.
+
+    Pesan gerbang lama berhenti di SEBAB: "Penawaran QUO-2608-0013 berstatus
+    'draf', jadi belum bisa dikonversi jadi pesanan." Benar, dan owner tetap
+    harus menebak solusinya — pindah ke dashboard, menemukan tombol "Kirim
+    Penawaran", lalu kembali ke chat. Sebab tanpa langkah memindahkan beban
+    berpikir ke orang yang justru datang ke chat untuk menghindarinya.
+
+    ⚠️ `aksi_prasyarat` membuat kalimatnya JUJUR SECARA STRUKTURAL. Menyuruh
+    owner mengetik "kirim penawaran X" hanya sah bila aksi itu benar-benar
+    terdaftar. Alih-alih mengandalkan urutan penggarapan (N1 sebelum N2 —
+    sesuatu yang tak meninggalkan jejak kalau salah), kalimatnya DITURUNKAN
+    dari isi registry: baris quote_send dicabut -> teks otomatis kembali
+    menunjuk dashboard. Tak ada keadaan di mana bot menyuruh mengetik perintah
+    yang tak ada.
+    """
+
+    status: str  # status yang memblokir
+    aksi_prasyarat: str  # action_key penyedia jalur chat; "" = selalu teks_chat
+    teks_chat: str  # {nomor} = nomor dokumen
+    teks_dashboard: str
+
+
+@dataclass(frozen=True)
 class AksiDokumen:
     """Satu baris deklarasi aksi-atas-dokumen. Data, bukan kode."""
 
@@ -5765,7 +5790,6 @@ class AksiDokumen:
     field_nomor: str  # nama field yang membawa nomor di entities/payload
     label_nomor: str  # untuk BARIS TABEL kartu ("No. Penawaran")
     sebutan: str  # untuk KALIMAT ke user ("Penawaran") — beda tempat, beda bentuk
-    sebutan_tujuan: str  # dokumen hasilnya ("pesanan")
     kata_kerja_pasif: str  # "dikonversi" — dipakai menyusun kalimat penolakan
     # ── eksekusi ──
     endpoint: str
@@ -5791,6 +5815,12 @@ class AksiDokumen:
     tabel_baris: str = ""
     kolom_induk_baris: str = ""
     label_tombol: str = "Konfirmasi"
+    # N2 — apa yang harus owner LAKUKAN, bukan hanya kenapa ia ditolak.
+    langkah: tuple["LangkahBerikutnya", ...] = ()
+    # Sebagian aksi tak punya dokumen tujuan (mengirim penawaran menghasilkan
+    # penawaran yang sama, berstatus lain). Kosong = kalimat gerbang tidak
+    # menambahkan "jadi <tujuan>".
+    sebutan_tujuan: str = ""
 
 
 DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
@@ -5830,6 +5860,88 @@ DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
         tabel_baris="quote_items",
         kolom_induk_baris="quote_id",
         label_tombol="Konversi",
+        langkah=(
+            LangkahBerikutnya(
+                status="draft",
+                aksi_prasyarat="quote_send",
+                teks_chat="Kirim penawarannya dulu — ketik \u201ckirim penawaran {nomor}\u201d.",
+                teks_dashboard=(
+                    "Kirim penawarannya dulu lewat Penjualan \u2192 Penawaran, "
+                    "tombol \u201cKirim Penawaran\u201d."
+                ),
+            ),
+        ),
+    ),
+    # ── N1: mengirim penawaran (draft -> sent) ────────────────────────────
+    # Satu baris tabel, nol jalur baru. Yang membuatnya layak ditambahkan
+    # bukan endpointnya (sudah ada sejak lama) melainkan bahwa TANPA-nya
+    # rantai penawaran putus di tengah: owner bisa MEMBUAT penawaran lewat
+    # chat dan bisa MENGONVERSI-nya lewat chat, tapi langkah di antara
+    # keduanya hanya ada di dashboard.
+    #
+    # ⚠️ NOL EFEK KELUAR. POST /api/quotes/{id}/send hanya
+    # "UPDATE quotes SET status='sent', sent_at=NOW()". Cabang pengiriman
+    # email dijaga body.send_email (default False, dan kami tak mengirimkan
+    # body sama sekali), DAN panggilan email-nya sendiri masih dikomentari —
+    # quotes.py tidak mengimpor email_service, sementara signup.py dan
+    # team_members.py memang mengimpornya. Jadi aksi ini mengubah KEADAAN
+    # dokumen, bukan mengirim apa pun ke pelanggan.
+    AksiDokumen(
+        action_key="quote_send",
+        entity_type="quote",
+        display_name="Kirim Penawaran",
+        tabel="quotes",
+        kolom_nomor="quote_number",
+        field_nomor="quote_number",
+        label_nomor="No. Penawaran",
+        sebutan="Penawaran",
+        kata_kerja_pasif="dikirim",
+        endpoint="/api/quotes/{id}/send",
+        rest_method="POST",
+        # ⚠️ Endpoint menerima draft DAN sent; gerbang chat sengaja LEBIH
+        # SEMPIT, dan itu bukan kelalaian menyalin:
+        #   1. mengirim ulang yang sudah 'sent' menimpa sent_at diam-diam —
+        #      owner kehilangan kapan penawaran benar-benar dikirim;
+        #   2. lebih buruk, trg_quote_expiry membalik NEW.status := 'expired'
+        #      ketika OLD='sent' DAN NEW='sent' DAN expiry_date < hari ini.
+        #      Jadi "kirim penawaran" pada penawaran lewat tanggal justru
+        #      MENG-EXPIRE-kannya. Nol pesan, nol galat.
+        # Chat memilih jalur yang tak bisa mengejutkan; dashboard tetap punya
+        # keleluasaan penuh.
+        status_boleh=("draft",),
+        kata_kerja=("kirim", "kirimkan"),
+        kata_sumber=("penawaran", "quote", "quotation"),
+        kata_tujuan=(),
+        pesan_memproses="Mengirim penawaran {entity_name}\u2026",
+        pesan_sukses=(
+            "Penawaran {quote_number} ditandai terkirim. "
+            "Sekarang bisa dikonversi jadi pesanan."
+        ),
+        creates_journal=False,
+        risk_level="low",
+        ttl_seconds=120,
+        kolom_ringkas=(
+            ("customer_name", "customer_name"),
+            ("total_amount", "total_amount"),
+            ("status", "_status"),
+        ),
+        tabel_baris="quote_items",
+        kolom_induk_baris="quote_id",
+        label_tombol="Kirim Penawaran",
+        langkah=(
+            LangkahBerikutnya(
+                status="sent",
+                aksi_prasyarat="quote_to_order",
+                teks_chat=(
+                    "Penawaran ini sudah terkirim. Lanjutkan dengan "
+                    "\u201ckonversi penawaran {nomor} jadi pesanan\u201d."
+                ),
+                teks_dashboard=(
+                    "Penawaran ini sudah terkirim. Lanjutkan lewat "
+                    "Penjualan \u2192 Penawaran."
+                ),
+            ),
+        ),
     ),
 )
 

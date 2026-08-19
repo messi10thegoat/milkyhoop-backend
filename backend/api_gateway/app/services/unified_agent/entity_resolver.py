@@ -1357,9 +1357,9 @@ class EntityResolver:
         if not nomor:
             hasil.needs_clarification = True
             hasil.clarifications.append(
-                f"{aksi.sebutan} mana yang mau {aksi.kata_kerja_pasif} jadi "
-                f"{aksi.sebutan_tujuan}? Sebutkan nomornya, "
-                f"misalnya QUO-2608-0002."
+                f"{aksi.sebutan} mana yang mau {aksi.kata_kerja_pasif}"
+                + (f" jadi {aksi.sebutan_tujuan}" if aksi.sebutan_tujuan else "")
+                + "? Sebutkan nomornya, misalnya QUO-2608-0002."
             )
             return hasil
 
@@ -1427,7 +1427,18 @@ class EntityResolver:
                         tujuan = f" jadi {aksi.sebutan_tujuan} {b2['n']}"
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[AKSI_DOK] lookup dokumen tujuan gagal: %s", e)
-            if status == "converted":
+            # "jadi <tujuan>" hanya sah kalau aksinya PUNYA dokumen tujuan.
+            # quote_send menghasilkan penawaran yang sama berstatus lain, jadi
+            # tanpa syarat ini kalimatnya berakhir "belum bisa dikirim jadi ."
+            _ke = f" jadi {aksi.sebutan_tujuan}" if aksi.sebutan_tujuan else ""
+            # "sudah pernah dikonversi" hanya benar untuk aksi yang MEMANG
+            # mengonversi. quote_send memakai kata kerja "dikirim", sehingga
+            # cabang ini membuatnya berkata "sudah pernah dikirim" untuk
+            # penawaran yang sebenarnya sudah DIKONVERSI — bot mengarang
+            # riwayat, dan owner tak punya cara tahu itu keliru. Cabang ini
+            # milik aksi yang punya dokumen tujuan; sisanya memakai kalimat
+            # status biasa, yang menyebut keadaan sebenarnya.
+            if status == "converted" and aksi.kolom_tujuan_id:
                 pesan = (
                     f"{aksi.sebutan} {ref.entity_name} sudah pernah "
                     f"{aksi.kata_kerja_pasif}{tujuan}, jadi tidak bisa "
@@ -1437,8 +1448,23 @@ class EntityResolver:
                 pesan = (
                     f"{aksi.sebutan} {ref.entity_name} berstatus "
                     f"'{_STATUS_ID.get(status, status)}', jadi belum bisa "
-                    f"{aksi.kata_kerja_pasif} jadi {aksi.sebutan_tujuan}."
+                    f"{aksi.kata_kerja_pasif}{_ke}."
                 )
+            # N2 — SEBAB saja memindahkan beban berpikir ke owner. Langkahnya
+            # dibaca dari tabel (satu tempat untuk seluruh keluarga), dan
+            # kalimat yang menyebut perintah chat hanya dipakai bila aksi
+            # penyedianya BENAR-BENAR terdaftar.
+            try:
+                from .direct_action_registry import DOCUMENT_ACTIONS_BY_KEY as _DAK
+                for _lg in getattr(aksi, "langkah", ()):
+                    if _lg.status != status:
+                        continue
+                    _tersedia = (not _lg.aksi_prasyarat) or (_lg.aksi_prasyarat in _DAK)
+                    _teks = _lg.teks_chat if _tersedia else _lg.teks_dashboard
+                    pesan += " " + _teks.replace("{nomor}", ref.entity_name)
+                    break
+            except Exception as _lg_err:  # noqa: BLE001
+                logger.warning("[AKSI_DOK] langkah berikutnya gagal: %s", _lg_err)
             hasil.needs_clarification = True
             hasil.clarifications.append(pesan)
             return hasil
