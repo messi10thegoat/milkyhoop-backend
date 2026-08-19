@@ -92,17 +92,73 @@ class PreFlightCheck:
 import re as _re  # noqa: E402
 
 
+# Puing yang tertinggal ketika sebuah placeholder mengosong. Diterapkan
+# BERURUTAN — kutip kosong dulu, baru spasi, baru tanda baca — karena
+# menghapus "''" itu sendiri melahirkan spasi ganda.
+_PUING: tuple[tuple[str, str], ...] = (
+    (r"(?<!\w)([\'\"])\1(?!\w)", ""),   # '' atau "" (kutip yang isinya lenyap)
+    (r"[ \t]{2,}", " "),                 # spasi ganda
+    (r"[ \t]+([.,;:!?])", r"\1"),        # spasi sebelum tanda baca
+    (r"\(\s*\)", ""),                     # tanda kurung yang jadi kosong
+    (r"[ \t]{2,}", " "),                 # sapuan kedua: aturan di atas bisa
+)                                       # menyisakan spasi ganda baru
+
+
+def _rapikan(teks: str) -> str:
+    """Buang puing yang ditinggalkan placeholder kosong.
+
+    Kalimat yang terlihat rusak ("Faktur '' berhasil dibatalkan.") merusak
+    kepercayaan lebih dalam daripada kalimat yang sekadar kurang lengkap
+    ("Faktur berhasil dibatalkan."): yang pertama membuat user bertanya apa
+    lagi yang rusak di balik layar, tepat setelah menyentuh pembukuannya.
+    """
+    for pola, ganti in _PUING:
+        teks = _re.sub(pola, ganti, teks)
+    return teks.strip()
+
+
+class _Kosong(dict):
+    """Kunci yang tak ada -> string kosong, BUKAN KeyError.
+
+    str.format_map memanggil __missing__ hanya untuk kunci yang hilang, jadi
+    placeholder yang TERSEDIA tetap terisi. Itu inti T74.
+    """
+
+    def __missing__(self, key: str) -> str:  # noqa: D105
+        return ""
+
+
 def _safe_format(template: str, payload: dict, **extra) -> str:
-    """Format template with payload + extra kwargs. Missing keys -> placeholder stripped."""
-    fmt_kwargs = {
-        **{k: v for k, v in payload.items() if isinstance(v, (str, int, float))},
-        **extra,
-    }
+    """Isi placeholder yang ADA; yang hilang dikosongkan lalu puingnya dirapikan.
+
+    ⚠️ Perilaku LAMA gagal semua-atau-tak-satu-pun: satu KeyError membuang
+    SELURUH placeholder, termasuk yang nilainya tersedia. Itu sebabnya
+    create_sales_order tampil di layar sebagai
+
+        "Pesanan  untuk '' tersimpan sebagai draft."
+
+    padahal customer_name pada payload yang sama terisi "Toko Melati" —
+    satu-satunya yang benar-benar hilang adalah order_number, yang memang
+    belum lahir saat kartu pratinjau dibuat.
+
+    Penting: puing TIDAK hanya muncul saat kunci hilang. `entity_name` selalu
+    ADA (get_entity_name mengembalikan "" bila field-nya kosong), jadi
+    "Faktur '{entity_name}'" sudah bisa mencetak "Faktur ''" tanpa satu pun
+    KeyError. 49 dari 120 template terbukti mengeluarkan puing pada keadaan
+    terdegradasi. Karena itu _rapikan() dipanggil SELALU, bukan hanya di
+    jalur galat.
+    """
+    fmt_kwargs = _Kosong(
+        {k: v for k, v in payload.items() if isinstance(v, (str, int, float))}
+    )
+    fmt_kwargs.update(extra)
     try:
-        return template.format(**fmt_kwargs)
-    except KeyError:
-        # Strip any remaining {placeholder} patterns
-        return _re.sub(r"\{[^}]+\}", "", template).strip()
+        hasil = template.format_map(fmt_kwargs)
+    except (IndexError, ValueError):
+        # Template cacat (kurung tak berpasangan / spesifikasi format salah).
+        # Jangan pernah melempar dari jalur pesan: kembalikan bentuk polos.
+        hasil = _re.sub(r"\{[^}]*\}", "", template)
+    return _rapikan(hasil)
 
 
 @dataclass
@@ -185,6 +241,21 @@ class DirectActionConfig:
     # dok. 81 (3) — label tombol konfirmasi. Kosong = pakai display_name,
     # yang sudah menyebut apa yang aksi ini lakukan.
     label_tombol: str = ""
+    # T74 — kalimat pengganti untuk saat sebuah placeholder TAK BERNILAI.
+    #
+    # Merapikan puing sudah cukup untuk 213 dari 214 render (seluruh kombinasi
+    # hadir/hilang atas 120 template): "Faktur '{entity_name}'" menjadi
+    # "Faktur", dan itu kalimat Indonesia yang sah. Yang TIDAK bisa
+    # diselamatkan hanyalah kalimat yang placeholder-nya diikat kata fungsi —
+    # "dikategorisasi sebagai {account_name}" runtuh jadi "dikategorisasi
+    # sebagai." apa pun yang dirapikan, karena "sebagai" menuntut objek.
+    #
+    # Sengaja BUKAN perbaikan otomatis berbasis daftar kata fungsi: aturan
+    # semacam itu akan menyunting kalimat yang memuat DATA USER (nama
+    # pelanggan yang kebetulan berakhir "…dari"), dan menyunting data user
+    # diam-diam lebih buruk daripada satu kalimat yang kurang lengkap.
+    # Kosong = pakai jalur rapikan biasa.
+    success_message_kosong: str = ""
 
     def get_entity_name(self, payload: dict) -> str:
         """Extract entity display name from payload."""
@@ -241,6 +312,20 @@ class DirectActionConfig:
                         continue
                     if isinstance(v, (str, int, float)) and v != "":
                         _extra[k] = v
+        # T74: bila sebuah placeholder yang dituntut template tak bernilai dan
+        # aksi ini menyediakan kalimat pengganti, pakai kalimat itu — merapikan
+        # puing tak menyelamatkan kalimat yang placeholder-nya diikat kata
+        # fungsi. Diperiksa SEBELUM format supaya keputusannya soal DATA,
+        # bukan soal bentuk teks yang sudah terlanjur rusak.
+        if self.success_message_kosong:
+            _tersedia = {
+                k: v
+                for k, v in {**payload, **_extra}.items()
+                if isinstance(v, (str, int, float)) and str(v).strip() != ""
+            }
+            _diminta = set(_re.findall(r"\{(\w+)\}", self.success_message_template))
+            if _diminta - set(_tersedia):
+                return _safe_format(self.success_message_kosong, payload, **_extra)
         return _safe_format(self.success_message_template, payload, **_extra)
 
     def get_category_label(self, payload: dict) -> Optional[str]:
@@ -1714,6 +1799,9 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         entity_name_field="description",
         loading_message_template="Mengkategorisasi transaksi\u2026",
         success_message_template="Statement berhasil dikategorisasi sebagai {account_name}.",
+        # T74: "…dikategorisasi sebagai." bukan kalimat. Ini satu-satunya dari
+        # 214 render yang tak bisa diselamatkan dengan merapikan puing.
+        success_message_kosong="Statement berhasil dikategorisasi.",
         category=None,
         impact_rules=[
             ImpactRule(
