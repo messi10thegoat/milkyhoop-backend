@@ -2966,6 +2966,21 @@ class UnifiedAgent:
                             _ep_payload["_user_stated_issue_date"] = True
 
                 _ep_items = _ep_payload.get("items")
+                # T79 LAPIS 1: Stage-2 LLM emits `items` as a JSON *string*
+                # (measured G0b: items_type=str, 3/3). Downstream gates test
+                # isinstance(..., list), so the string silently disables the
+                # line_index fill below AND branch A in unified_chat.py, which
+                # reads the PERSISTED payload -> item_id lands top-level and
+                # _enrich_items never fetches unit_price. Normalise, and write
+                # the parsed list BACK so the persisted resolved_payload is a
+                # list too.
+                if isinstance(_ep_items, str):
+                    try:
+                        _ep_items = json.loads(_ep_items)
+                    except (ValueError, TypeError):
+                        _ep_items = None
+                    if isinstance(_ep_items, list):
+                        _ep_payload["items"] = _ep_items
                 if not isinstance(_ep_items, list):
                     _ep_items = None
 
