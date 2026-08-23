@@ -1073,37 +1073,198 @@ def _pesan_galat_manusiawi(error_detail, payload: dict | None = None) -> str:
     return f"Belum bisa disimpan: {teks}"
 
 
-# ========================================================================
-# T92 commit 1 - EKSTRAKSI MURNI, NOL PERUBAHAN PERILAKU.
+# ══════════════════════════════════════════════════════════════════════════
+# T92 — SATU penangan jawaban "pil disambiguasi" ENTITY, dipakai BERTIGA
+# oleh /message, /message/stream dan /message/upload.
 #
-# Blok pil entity yang dulu inline di /message dipindah apa adanya ke
-# `_jalankan_pil_entity`, dengan pembungkus tipis `tangani_jawaban_pil`.
-# Perubahan HANYA rename variabel lokal jadi parameter:
-#   _retrigger_sm -> sm, _retrigger_sid -> sid,
-#   body.session_id -> session_id, _doc_ctx -> doc_ctx,
-#   body.text -> text
-# NOL validasi, NOL cancel, NOL pemanggilan di /stream atau /upload.
-# ========================================================================
+# Sebelum T92 cabang pil hanya ada di /message; /stream dan /upload tidak
+# punya sama sekali. Akibatnya sama-sama buruk tapi berbeda bentuknya:
+#   /message : teks APA PUN ditelan jadi option.value  → item_id = "batal"
+#              → kartu palsu lahir → kalimat berikutnya diblokir gerbang.
+#   /stream  : teks lolos ke LLM → jawaban karangan, pil MENGGANTUNG selamanya.
+#   /upload  : sama seperti /stream, plus pil bisa tertimpa pil bank.
+#
+# ⚠️ "batal" TIDAK BISA sekadar diteruskan ke pipeline: penangan batal T58
+# (_kartu_menunggu → cancel_action) seluruhnya bersyarat `if pending_id:`.
+# Saat pil menggantung BELUM ADA baris pending_actions → pending_id None →
+# T58 dilewati. Karena itu cancel WAJIB ditangani DI SINI.
+#
+# ⚠️ LINGKUP: ENTITY SAJA. `pending_bank_selection` dan `pending_post_selection`
+# punya cacat yang serupa (tak ada validasi nilai, tak ada jalan keluar), TAPI
+# keduanya belum punya gerbang-merah yang sah — belum sekali pun diukur bahwa
+# mereka rusak, dan belum ada pagar yang membuktikan perbaikannya tidak
+# merusak alur bukti-transfer / post-draft. Itu tiket T106, BUKAN kelalaian.
+# Sampai saat itu keduanya dilewati apa adanya (return TIDAK_BERLAKU), dan
+# urutan lama "bank menang atas entity" dipertahankan PERSIS.
+# Menambah bank/post nanti = MEMANGGIL fungsi ini dengan entri antrean yang
+# setara, bukan mendesain ulang tanda tangannya.
+# ══════════════════════════════════════════════════════════════════════════
+
+_TEKS_PIL_DIBATALKAN_UMUM = (
+    "Oke, pemilihannya dibatalkan. Belum ada dokumen yang dibuat, jadi tidak "
+    "ada yang perlu dibatalkan selain pilihan tadi."
+)
+
+_LABEL_ENTITAS = {"vendor": "vendor", "customer": "pelanggan", "item": "barang"}
+
+
+def _teks_pil_dibatalkan(entity_type: str | None) -> str:
+    """Konfirmasi JUJUR: yang batal adalah PILIHAN, bukan sebuah tindakan.
+
+    Sengaja dibedakan dari pesan T58 ("Dibatalkan." untuk kartu) — di sini
+    nol pending_action yang dibatalkan, jadi mengaku "tindakan dibatalkan"
+    akan berbohong tentang apa yang barusan terjadi.
+    """
+    label = _LABEL_ENTITAS.get(entity_type or "", "")
+    if not label:
+        return _TEKS_PIL_DIBATALKAN_UMUM
+    return (
+        f"Oke, pemilihan {label} dibatalkan. Belum ada dokumen yang dibuat, "
+        "jadi tidak ada yang perlu dibatalkan selain pilihan tadi."
+    )
+
+
+async def _bersihkan_pil_entity(sm, sid) -> None:
+    """Padamkan pending_entity_selection; kegagalannya tak boleh membuntukan."""
+    try:
+        await sm.update_state(
+            sid, document_context={"pending_entity_selection": False}
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[T92] gagal membersihkan pending_entity_selection", exc_info=True)
 
 
 async def tangani_jawaban_pil(
-    *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict
-) -> ChatMessageResponse:
-    """Pembungkus tipis. Commit 1 tidak menambah perilaku apa pun."""
-    return await _jalankan_pil_entity(
-        sm=sm,
-        sid=sid,
-        session_id=session_id,
-        ctx=ctx,
-        text=text,
-        doc_ctx=doc_ctx,
+    *,
+    pool,
+    ctx: dict,
+    sid: str,
+    session_id: Optional[str],
+    conversation_id: Optional[str],
+    text: str,
+    ada_berkas: bool = False,
+) -> tuple[str, Optional[ChatMessageResponse]]:
+    """Tangani satu jawaban atas pil disambiguasi ENTITY.
+
+    Kembalian:
+      ("TIDAK_BERLAKU", None) — tak ada pil entity menggantung; endpoint lanjut
+                                seperti biasa (TANPA efek samping apa pun).
+      ("HANDLED", resp)       — sudah dijawab; endpoint mengembalikan `resp`
+                                (tiap endpoint memformat sendiri: /stream
+                                membungkusnya jadi satu event SSE).
+      ("TERUSKAN", None)      — nilainya bukan salah satu opsi (atau ada berkas
+                                terlampir); pil SUDAH dipadamkan di sini,
+                                endpoint lanjut ke pipeline biasa.
+    """
+    if not sid or not text or not text.strip():
+        return ("TIDAK_BERLAKU", None)
+
+    sm = SessionManager(
+        db_pool=pool, tenant_id=ctx["tenant_id"], user_id=ctx["user_id"]
     )
+    try:
+        state = await sm.get_state(sid)
+    except Exception:  # noqa: BLE001
+        logger.warning("[T92] get_state gagal — pil dilewati", exc_info=True)
+        return ("TIDAK_BERLAKU", None)
+    doc_ctx = (state.document_context if state else None) or {}
+
+    # Lihat catatan LINGKUP di atas: bank & post BUKAN urusan T92, dan bank
+    # tetap menang atas entity persis seperti rantai if/elif yang lama.
+    if doc_ctx.get("pending_bank_selection") or doc_ctx.get("pending_post_selection"):
+        return ("TIDAK_BERLAKU", None)
+    if not doc_ctx.get("pending_entity_selection"):
+        return ("TIDAK_BERLAKU", None)
+
+    # Aturan 5 — BERKAS MENANG. Sebuah berkas adalah maksud baru yang jelas;
+    # menahannya demi pil lama akan membuang unggahan pengguna.
+    if ada_berkas:
+        logger.warning("[T92] berkas menang atas pil entity; pil dipadamkan")
+        await _bersihkan_pil_entity(sm, sid)
+        return ("TERUSKAN", None)
+
+    _q = doc_ctx.get("entity_queue") or []
+    try:
+        _c = int(doc_ctx.get("entity_cursor", 0) or 0)
+    except (TypeError, ValueError):
+        _c = -1
+    _entry = _q[_c] if (isinstance(_q, list) and 0 <= _c < len(_q)) else None
+
+    _val = text.strip()
+
+    # ── Aturan 1 — VALIDASI. Inilah lubang T92: dulu nilai APA PUN dianggap
+    # option.value, sehingga "batal" menjadi item_id="batal" dan melahirkan
+    # kartu palsu. Nilai sah = id salah satu kandidat, atau sentinel create_new.
+    _sah = _entry is not None and (
+        _val.startswith("create_new:")
+        or _val
+        in {str(c.get("id")) for c in (_entry.get("candidates") or []) if c.get("id")}
+    )
+
+    if _entry is None or _sah:
+        # Antrean rusak → jalur lama menjawab "Sesi pemilihan sudah berakhir".
+        # Nilai sah → perilaku lama dipertahankan PENUH.
+        try:
+            _resp = await _jalankan_pil_entity(
+                sm=sm,
+                sid=sid,
+                session_id=session_id,
+                ctx=ctx,
+                text=_val,
+                doc_ctx=doc_ctx,
+            )
+        except Exception:  # noqa: BLE001
+            # Kontrak leak-safety FIX_ENTITY_PILLS: jawaban pil yang melempar
+            # TETAP harus menjawab — jangan pernah bocorkan UUID yang ditap ke
+            # orchestrator umum.
+            logger.warning("[T92] pil entity gagal diproses", exc_info=True)
+            await _bersihkan_pil_entity(sm, sid)
+            return (
+                "HANDLED",
+                ChatMessageResponse(
+                    message_type="TEXT",
+                    text=(
+                        "Maaf, aku belum bisa memproses pilihan tadi. Coba kirim "
+                        "ulang permintaannya."
+                    ),
+                    session_id=sid,
+                ),
+            )
+        return ("HANDLED", _resp)
+
+    # ── Aturan 2 — CANCEL. Ambang <= 3 token meniru gerbang T58 supaya
+    # "batalkan saja pesanan lama itu" tidak ikut tertangkap.
+    _tok = _val.lower().strip().split()
+    if 0 < len(_tok) <= 3 and any(kw in set(_tok) for kw in CANCEL_KEYWORDS):
+        logger.warning("[T92] CANCEL pil entity: sid=%s text=%r", sid[:8], _val[:40])
+        await _bersihkan_pil_entity(sm, sid)
+        return (
+            "HANDLED",
+            ChatMessageResponse(
+                message_type="TEXT",
+                text=_teks_pil_dibatalkan(_entry.get("entity_type")),
+                session_id=sid,
+            ),
+        )
+
+    # ── Aturan 3 — SELAIN ITU. Bukan opsi, bukan cancel: pengguna sudah pindah
+    # topik. Padamkan pil lalu biarkan pipeline biasa yang menjawab.
+    logger.warning(
+        "[T92] TERUSKAN — bukan opsi & bukan cancel: sid=%s text=%r", sid[:8], _val[:40]
+    )
+    await _bersihkan_pil_entity(sm, sid)
+    return ("TERUSKAN", None)
 
 
 async def _jalankan_pil_entity(
     *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict
 ) -> ChatMessageResponse:
-    """Perilaku pil entity yang LAMA, dipindah apa adanya dari /message:1594."""
+    """Perilaku pil entity yang LAMA, dipindah apa adanya dari /message:1594.
+
+    Dipindah, bukan ditulis ulang — supaya jalur "tap pil sah" (T97/T79) tetap
+    identik byte-per-byte perilakunya. Setiap cabang WAJIB mengembalikan
+    ChatMessageResponse (kontrak leak-safety FIX_DOCDIR_NORESOLVE).
+    """
     _ep_value = text.strip()
     _ep_queue = doc_ctx.get("entity_queue") or []
     _ep_cursor = int(doc_ctx.get("entity_cursor", 0) or 0)
@@ -1468,6 +1629,28 @@ async def send_message(request: Request, body: ChatMessageRequest):
             logger.exception("[BucketA1] Pending-action dispatch failed (non-fatal)")
             # Non-fatal — proceed to normal NLU pipeline
 
+    # ── T92: jawaban pil disambiguasi ENTITY (satu fungsi, tiga endpoint) ──
+    # Sengaja SESUDAH gerbang T58 (kartu menunggu menang — kartu sudah punya
+    # baris pending_actions, pil belum) dan SEBELUM pipeline apa pun, supaya
+    # nilai yang ditap tidak pernah sempat dibaca sebagai kalimat biasa.
+    try:
+        _t92_sid = body.session_id or body.conversation_id
+        if _t92_sid and body.text:
+            _t92_kode, _t92_resp = await tangani_jawaban_pil(
+                pool=await get_session_db_pool(),
+                ctx=ctx,
+                sid=_t92_sid,
+                session_id=body.session_id,
+                conversation_id=body.conversation_id,
+                text=body.text,
+            )
+            if _t92_kode == "HANDLED" and _t92_resp is not None:
+                return _t92_resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("[T92] penanganan pil gagal (non-fatal)", exc_info=True)
+
     # ── Bank selection re-trigger (from document clarification) ──
     # When user taps a bank option from CLARIFICATION, text = bank_account_id (UUID).
     # Check Layer 2 document_context.pending_bank_selection and re-resolve.
@@ -1805,26 +1988,13 @@ async def send_message(request: Request, body: ChatMessageRequest):
                             session_id=body.session_id,
                         )
 
-            # ── Entity selection re-trigger (FIX_ENTITY_PILLS) ──────────────
-            # Mirror of the bank-selection re-trigger above, for ambiguous
-            # vendor / customer / item pills emitted by the orchestrator's entity
-            # pills shortcut. body.text IS the chosen value: an entity UUID, or a
-            # "create_new:<entity_type>" sentinel. LEAK-SAFETY (FIX_DOCDIR_NORESOLVE
-            # class): EVERY branch below MUST return a ChatMessageResponse — never
-            # let the tapped value fall through to the generic orchestrator (it
-            # would misread a bare UUID / "create_new:vendor" as a query). The
-            # outer except (below) is hardened the same way via _entity_pill_answer.
-            elif _doc_ctx.get("pending_entity_selection"):
-                _entity_pill_answer = True
-                # T92 commit 1: badan blok DIPINDAH ke _jalankan_pil_entity.
-                return await tangani_jawaban_pil(
-                    sm=_retrigger_sm,
-                    sid=_retrigger_sid,
-                    session_id=body.session_id,
-                    ctx=ctx,
-                    text=body.text,
-                    doc_ctx=_doc_ctx,
-                )
+            # ── Entity selection re-trigger — DIPINDAH oleh T92 ───────────
+            # Blok ini dulu ada di sini (202 baris). Sekarang satu-satunya
+            # salinannya ada di `tangani_jawaban_pil`/`_jalankan_pil_entity`
+            # di atas, dan dipanggil LEBIH AWAL oleh KETIGA endpoint. Kalau
+            # eksekusi sampai ke sini dengan pending_entity_selection masih
+            # menyala, itu berarti panggilan awal terlewat — bukan cabang
+            # yang perlu dihidupkan lagi di sini.
 
             # ── FIX_POST_DRAFT 2026-06-20: post-draft pill re-trigger ──────────
             # Two stages: "party" (value "party:<id>" → fetch that party's drafts
@@ -2808,6 +2978,46 @@ async def send_message_stream(request: Request, body: ChatMessageRequest):
                 "[BucketA1] Stream pending-action dispatch failed (non-fatal)"
             )
 
+    # ── T92: jawaban pil disambiguasi ENTITY (satu fungsi, tiga endpoint) ──
+    # Sengaja SESUDAH gerbang T58 (kartu menunggu menang — kartu sudah punya
+    # baris pending_actions, pil belum) dan SEBELUM pipeline apa pun, supaya
+    # nilai yang ditap tidak pernah sempat dibaca sebagai kalimat biasa.
+    # /stream mengembalikan SSE, jadi respons dibungkus jadi SATU event.
+    # Event yang dipakai = DONE (bukan FINAL_RESPONSE): preseden
+    # `_confirm_dispatch_gen` memakai DONE, dan FE (ChatPanel/index.tsx,
+    # FloatingChatWidget, ActionChatResource) HANYA memproses 'DONE' dan
+    # ERROR — tidak ada satu pun penangan FINAL_RESPONSE di frontend.
+    try:
+        _t92_sid = body.session_id or body.conversation_id
+        if _t92_sid and body.text:
+            _t92_kode, _t92_resp = await tangani_jawaban_pil(
+                pool=await get_session_db_pool(),
+                ctx=ctx,
+                sid=_t92_sid,
+                session_id=body.session_id,
+                conversation_id=body.conversation_id,
+                text=body.text,
+            )
+            if _t92_kode == "HANDLED" and _t92_resp is not None:
+                _t92_payload = _t92_resp.model_dump()
+
+                async def _t92_pil_gen(payload=_t92_payload):
+                    yield f"data: {_json_stream.dumps({'event': 'DONE', 'data': payload}, default=str)}\n\n"
+
+                return StreamingResponse(
+                    _t92_pil_gen(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("[T92] penanganan pil (stream) gagal (non-fatal)", exc_info=True)
+
     # Build tenant context for tool executor
     tenant_context = TenantContext(
         tenant_id=ctx["tenant_id"],
@@ -3687,6 +3897,31 @@ async def send_message_with_files(
             logger.exception(
                 "[BucketA1] Upload pending-action dispatch failed (non-fatal)"
             )
+
+    # ── T92: jawaban pil disambiguasi ENTITY (satu fungsi, tiga endpoint) ──
+    # Sengaja SESUDAH gerbang T58 (kartu menunggu menang — kartu sudah punya
+    # baris pending_actions, pil belum) dan SEBELUM pipeline apa pun, supaya
+    # nilai yang ditap tidak pernah sempat dibaca sebagai kalimat biasa.
+    # Aturan berkas-menang: kalau ada lampiran, pil dipadamkan dan alur
+    # unggahan berjalan normal (lihat `ada_berkas` di tangani_jawaban_pil).
+    try:
+        _t92_sid = session_id or conversation_id
+        if _t92_sid and (text or file_metas):
+            _t92_kode, _t92_resp = await tangani_jawaban_pil(
+                pool=await get_session_db_pool(),
+                ctx=ctx,
+                sid=_t92_sid,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                text=text or "",
+                ada_berkas=bool(file_metas),
+            )
+            if _t92_kode == "HANDLED" and _t92_resp is not None:
+                return _t92_resp
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("[T92] penanganan pil (upload) gagal (non-fatal)", exc_info=True)
 
     # ── Recon Upload Shortcut: bypass LLM when CSV+recon text detected ──
     # This prevents conversation history from confusing the LLM into thinking
