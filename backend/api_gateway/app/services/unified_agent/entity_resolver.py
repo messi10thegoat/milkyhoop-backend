@@ -21,6 +21,29 @@ from typing import Optional
 
 logger = logging.getLogger("unified_agent.entity_resolver")
 
+# G1 (T97): ambang pg_trgm untuk memutuskan apakah sebuah token yang DIBUANG di
+# Step 2b masih punya "tetangga dekat" di master tenant (= salah ketik) atau
+# tidak sama sekali (= token asing, barangnya memang tak ada di master).
+_AMBANG_TOKEN_ASING = 0.25
+
+# Token-token pembanding = kata-kata nama_produk + item_code + sku, per tenant.
+_SQL_TETANGGA_DEKAT = """
+    SELECT 1
+      FROM products p
+      CROSS JOIN LATERAL (
+        SELECT unnest(
+            regexp_split_to_array(lower(p.nama_produk), '\\s+')
+            || ARRAY[lower(coalesce(p.item_code, '')),
+                     lower(coalesce(p.sku, ''))]
+        ) AS w
+      ) tk
+     WHERE p.tenant_id = $1
+       AND p.status = 'active'
+       AND tk.w <> ''
+       AND similarity(tk.w, $2::text) >= $3::real
+     LIMIT 1
+"""
+
 
 def is_untrusted_id_field(key: str) -> bool:
     """True bila `key` adalah field ID yang TIDAK boleh diambil dari keluaran LLM.
@@ -59,6 +82,11 @@ class ResolvedEntity:
     entity_name: str
     confidence: float
     candidates: list = field(default_factory=list)
+    # G1 (T97): kandidat ADA tapi diperoleh lewat jalur yang tak dapat
+    # dipercaya (mis. Step 2b melonggarkan token ASING). Kandidat boleh
+    # ditawarkan, TAPI tak boleh dipakai diam-diam, dan user WAJIB diberi
+    # jalan keluar ("Bukan salah satu dari ini").
+    low_trust: bool = False
 
 
 @dataclass
@@ -1093,6 +1121,7 @@ class EntityResolver:
             #
             # Step 1 (ILIKE frasa penuh) SENGAJA DIPERTAHANKAN di atas sebagai
             # jalur cepat: bila frasa penuh cocok, tak perlu memecah token.
+            _low_trust = False  # G1 (T97)
             _tokens = [t for t in name_fragment.split() if len(t) >= 2]
             if not rows and len(_tokens) > 1:
 
@@ -1135,8 +1164,54 @@ class EntityResolver:
                         if _cek:
                             _hidup.append(_t)
                     if _hidup and len(_hidup) < len(_tokens):
+                        # G1 (T97) 2026-08-23: pelonggaran di atas hanya SAH untuk
+                        # SALAH KETIK. Asumsi commit 6d9b445c ("token yang dibuang
+                        # tidak menghapus batasan yang berarti") benar untuk "hitm",
+                        # tapi SALAH untuk token ASING: "hitam" nol hasil bukan
+                        # karena salah ketik, melainkan karena barang hitam memang
+                        # TIDAK ADA di master. Membuangnya menghapus justru batasan
+                        # yang paling berarti, lalu AND sisanya ("kaos") menyisakan
+                        # tepat satu baris -> confidence 0.9 -> diterima DIAM-DIAM.
+                        #
+                        # Pemisahnya terukur (pg_trgm, token vs token):
+                        #   "hitm"  <-> "hitam"                = 0.375  (salah ketik)
+                        #   "hitam" <-> token master mana pun  = 0.000  (asing)
+                        # Ambang 0.25 duduk di celah itu: 0.125 di bawah sisi salah
+                        # ketik, 0.25 penuh di atas sisi asing. Sengaja diambil di
+                        # ujung BAWAH celah -- sisi asing terukur nol, jadi ambang
+                        # rendah tak melemahkan penolakan sama sekali, sementara
+                        # ambang rendah memberi ruang paling lega bagi salah ketik
+                        # yang HARI INI sudah bekerja benar (jangan tambah friksi).
+                        #
+                        # Bandingkan TOKEN lawan TOKEN, bukan lawan nama penuh:
+                        # similarity("kaos hitam", "Kaos Biru 30s") = 0.25 -- cukup
+                        # tinggi untuk menipu ambang ini. Token-lawan-token = 0.000.
+                        _dibuang = [t for t in _tokens if t not in _hidup]
+                        _asing = []
+                        for _t in _dibuang:
+                            _dekat = await self.db.fetch(
+                                _SQL_TETANGGA_DEKAT,
+                                self.tenant_id,
+                                _t.lower(),
+                                _AMBANG_TOKEN_ASING,
+                            )
+                            if not _dekat:
+                                _asing.append(_t)
                         rows = await _cari_and(_hidup)
                         search_term = " ".join(_hidup)
+                        if _asing:
+                            # T89: logger modul ini tak punya handler untuk .info --
+                            # WAJIB .warning agar baris ini benar-benar terbit.
+                            logger.warning(
+                                "[RESOLVE][T97] token asing %s pada %r -- hasil "
+                                "pelonggaran Step 2b TIDAK DIPERCAYA (tak ada "
+                                "tetangga dekat >= %s di master tenant); "
+                                "kandidat ditawarkan sebagai pil, bukan diikat",
+                                _asing,
+                                name_fragment,
+                                _AMBANG_TOKEN_ASING,
+                            )
+                            _low_trust = bool(rows)
 
             # Step 3: Fuzzy match via pg_trgm (handles typos like "obyat" -> "obat")
             # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: substring is tracked as kind "substring"
@@ -1170,6 +1245,13 @@ class EntityResolver:
                     confidence = float(rows[0]["sim"])
                 except Exception:
                     confidence = 0.5
+            elif _low_trust:
+                # G1 (T97): JANGAN 0.9. Pita 0.5 <= conf < 0.85 adalah pita
+                # "konfirmasi dulu" yang SUDAH ADA (entity_resolver:181-192 dan
+                # orchestrator._ep_is_ambiguous): satu kandidat pun tetap
+                # dimunculkan sebagai pil, bukan diikat diam-diam.
+                # Confidence 0.9 untuk hasil Step 1 / Step 2 biasa TIDAK diubah.
+                confidence = 0.6
             else:
                 confidence = 0.9
             for c in candidates:
@@ -1183,6 +1265,7 @@ class EntityResolver:
                 entity_name=best["name"],
                 confidence=confidence,
                 candidates=candidates,
+                low_trust=_low_trust,
             )
         except Exception as e:
             logger.warning("[RESOLVE] Item lookup failed: %s", e)

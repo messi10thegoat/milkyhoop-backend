@@ -3060,13 +3060,29 @@ class UnifiedAgent:
                                     break
                             if _line_index is None:
                                 _line_index = 0
+                        # G1 (T97): OPSI KELUAR. allow_create tetap False untuk
+                        # pil ambigu biasa (dua varian master yang sama-sama sah —
+                        # user pasti memaksudkan salah satunya, menawarkan "buat
+                        # baru" di situ hanya menambah kebisingan). Tapi bila
+                        # resolver menandai hasilnya low_trust (Step 2b melonggarkan
+                        # token ASING), kandidatnya MUNGKIN SALAH SEMUA — tanpa
+                        # jalan keluar user terpaksa memilih yang salah atau
+                        # percakapan nyangkut (kelas T92). Sentinel create_new:item
+                        # TIDAK membuat barang; unified_chat.py menjawabnya dengan
+                        # "belum terdaftar, ketik: tambah barang <nama>".
+                        _it_low_trust = bool(getattr(_re_item, "low_trust", False))
                         _entity_queue.append(
                             {
                                 "slot": "item_id",
                                 "entity_type": "item",
                                 "line_index": _line_index,
                                 "candidates": _item_cands,
-                                "allow_create": False,
+                                "allow_create": _it_low_trust,
+                                "create_label": (
+                                    "Bukan salah satu dari ini"
+                                    if _it_low_trust
+                                    else None
+                                ),
                             }
                         )
 
@@ -3110,7 +3126,9 @@ class UnifiedAgent:
                     if _ep_first.get("allow_create"):
                         _ep_options.append(
                             {
-                                "label": "➕ Buat baru",
+                                # G1 (T97): label jujur untuk opsi keluar low-trust.
+                                "label": _ep_first.get("create_label")
+                                or "➕ Buat baru",
                                 "value": f"create_new:{_ep_first['entity_type']}",
                                 "description": "",
                             }
