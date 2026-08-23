@@ -1073,6 +1073,229 @@ def _pesan_galat_manusiawi(error_detail, payload: dict | None = None) -> str:
     return f"Belum bisa disimpan: {teks}"
 
 
+# ========================================================================
+# T92 commit 1 - EKSTRAKSI MURNI, NOL PERUBAHAN PERILAKU.
+#
+# Blok pil entity yang dulu inline di /message dipindah apa adanya ke
+# `_jalankan_pil_entity`, dengan pembungkus tipis `tangani_jawaban_pil`.
+# Perubahan HANYA rename variabel lokal jadi parameter:
+#   _retrigger_sm -> sm, _retrigger_sid -> sid,
+#   body.session_id -> session_id, _doc_ctx -> doc_ctx,
+#   body.text -> text
+# NOL validasi, NOL cancel, NOL pemanggilan di /stream atau /upload.
+# ========================================================================
+
+
+async def tangani_jawaban_pil(
+    *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict
+) -> ChatMessageResponse:
+    """Pembungkus tipis. Commit 1 tidak menambah perilaku apa pun."""
+    return await _jalankan_pil_entity(
+        sm=sm,
+        sid=sid,
+        session_id=session_id,
+        ctx=ctx,
+        text=text,
+        doc_ctx=doc_ctx,
+    )
+
+
+async def _jalankan_pil_entity(
+    *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict
+) -> ChatMessageResponse:
+    """Perilaku pil entity yang LAMA, dipindah apa adanya dari /message:1594."""
+    _ep_value = text.strip()
+    _ep_queue = doc_ctx.get("entity_queue") or []
+    _ep_cursor = int(doc_ctx.get("entity_cursor", 0) or 0)
+    _ep_action_key = doc_ctx.get("resolved_action_key", "")
+    _ep_payload = doc_ctx.get("resolved_payload") or {}
+
+    # Guard: queue/cursor sanity. If anything is off, clear + graceful.
+    if (
+        not _ep_queue
+        or _ep_cursor < 0
+        or _ep_cursor >= len(_ep_queue)
+        or not _ep_action_key
+    ):
+        try:
+            await sm.update_state(
+                sid,
+                document_context={"pending_entity_selection": False},
+            )
+        except Exception:
+            pass
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text=(
+                "Sesi pemilihan sudah berakhir. Silakan kirim ulang "
+                "permintaannya."
+            ),
+            session_id=sid,
+        )
+
+    _ep_entry = _ep_queue[_ep_cursor]
+    _ep_slot = _ep_entry.get("slot")
+    _ep_etype = _ep_entry.get("entity_type")
+    _ep_line_index = _ep_entry.get("line_index")
+
+    # ── create_new sentinel → graceful guidance, clear flag ──
+    if _ep_value.startswith("create_new:"):
+        _cn_type = _ep_value.split(":", 1)[1] or _ep_etype or ""
+        _cn_label = {
+            "vendor": "vendor",
+            "customer": "pelanggan",
+            "item": "barang",
+        }.get(_cn_type, _cn_type or "data")
+        _cn_cmd = {
+            "vendor": "tambah vendor <nama>",
+            "customer": "tambah pelanggan <nama>",
+            "item": "tambah barang <nama>",
+        }.get(_cn_type, "")
+        try:
+            await sm.update_state(
+                sid,
+                document_context={"pending_entity_selection": False},
+            )
+        except Exception:
+            pass
+        _cn_text = (
+            f"Oke, {_cn_label} ini belum terdaftar. Daftarkan dulu"
+        )
+        if _cn_cmd:
+            _cn_text += f" dengan ketik:\n\n`{_cn_cmd}`\n\nLalu kirim ulang permintaan ini."
+        else:
+            _cn_text += " lewat modulnya, lalu kirim ulang permintaan ini."
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text=_cn_text,
+            session_id=sid,
+        )
+
+    # ── Chosen id → inject into saved payload at the slot ──
+    if _ep_etype == "item":
+        _ep_items = _ep_payload.get("items")
+        if (
+            isinstance(_ep_items, list)
+            and _ep_line_index is not None
+            and 0 <= _ep_line_index < len(_ep_items)
+            and isinstance(_ep_items[_ep_line_index], dict)
+        ):
+            # Setting item_id prevents the proper-noun null-out in
+            # _enrich_items (that block only fires when item_id absent).
+            _ep_items[_ep_line_index]["item_id"] = _ep_value
+        else:
+            # No items[] line — set top-level item_id; _finalize_*
+            # backfills it into items[0].
+            _ep_payload["item_id"] = _ep_value
+    else:
+        _ep_payload[_ep_slot] = _ep_value
+
+    # ── Advance cursor: more entities to ask? ──
+    _ep_next_cursor = _ep_cursor + 1
+    if _ep_next_cursor < len(_ep_queue):
+        _ep_next = _ep_queue[_ep_next_cursor]
+        _ep_next_options = [
+            {
+                "label": c.get("name") or "",
+                "value": str(c.get("id")),
+                "description": "",
+            }
+            for c in (_ep_next.get("candidates") or [])
+            if c.get("id")
+        ]
+        if _ep_next.get("allow_create"):
+            _ep_next_options.append(
+                {
+                    "label": "➕ Buat baru",
+                    "value": f"create_new:{_ep_next.get('entity_type')}",
+                    "description": "",
+                }
+            )
+        _ep_next_q = {
+            "vendor": "Pilih vendor:",
+            "customer": "Pilih pelanggan:",
+            "item": "Pilih barang yang dimaksud:",
+        }.get(_ep_next.get("entity_type"), "Pilih yang dimaksud:")
+        # FK safety + full-dict rewrite (advanced cursor, same payload).
+        try:
+            await sm.get_or_create_session(sid)
+        except Exception:
+            pass
+        await sm.update_state(
+            sid,
+            document_context={
+                "pending_entity_selection": True,
+                "resolved_action_key": _ep_action_key,
+                "resolved_payload": _ep_payload,
+                "entity_queue": _ep_queue,
+                "entity_cursor": _ep_next_cursor,
+            },
+        )
+        return ChatMessageResponse(
+            message_type="CLARIFICATION",
+            text=_ep_next_q,
+            data={
+                "question": _ep_next_q,
+                "options": _ep_next_options,
+                "allow_freetext": False,
+            },
+            session_id=sid,
+        )
+
+    # ── All entities resolved → propose the action ──
+    _te_ep = ToolExecutor(
+        context=TenantContext(
+            tenant_id=ctx["tenant_id"],
+            user_id=ctx["user_id"],
+            auth_token=ctx["auth_token"],
+            tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+        ),
+        session_id=session_id,
+    )
+    try:
+        _ep_propose = await _te_ep._execute_propose_direct(
+            {
+                "action_key": _ep_action_key,
+                "payload": _ep_payload,
+            }
+        )
+    except Exception as _ep_pe:
+        logger.error(
+            "[EntityRetrigger] propose EXCEPTION: %s",
+            _ep_pe,
+            exc_info=True,
+        )
+        _ep_propose = {"success": False, "error": str(_ep_pe)}
+
+    # Clear pending flag regardless of propose outcome.
+    try:
+        await sm.update_state(
+            sid,
+            document_context={"pending_entity_selection": False},
+        )
+    except Exception:
+        pass
+
+    if _ep_propose.get("success"):
+        return ChatMessageResponse(
+            message_type="DIRECT_ACTION_PREVIEW",
+            text="Pilihan diterima.",
+            data=_ep_propose["data"],
+            pending_action_id=_ep_propose["data"].get(
+                "pending_action_id"
+            ),
+            session_id=session_id,
+        )
+    _ep_err = _ep_propose.get("error", "")
+    if isinstance(_ep_err, dict):
+        _ep_err = _ep_err.get("message", str(_ep_err))
+    return ChatMessageResponse(
+        message_type="TEXT",
+        text=str(_ep_err) if _ep_err else "Gagal menyiapkan data.",
+        session_id=session_id,
+    )
+
+
 @router.post("/message", response_model=ChatMessageResponse)
 async def send_message(request: Request, body: ChatMessageRequest):
     """
@@ -1593,195 +1816,14 @@ async def send_message(request: Request, body: ChatMessageRequest):
             # outer except (below) is hardened the same way via _entity_pill_answer.
             elif _doc_ctx.get("pending_entity_selection"):
                 _entity_pill_answer = True
-                _ep_value = body.text.strip()
-                _ep_queue = _doc_ctx.get("entity_queue") or []
-                _ep_cursor = int(_doc_ctx.get("entity_cursor", 0) or 0)
-                _ep_action_key = _doc_ctx.get("resolved_action_key", "")
-                _ep_payload = _doc_ctx.get("resolved_payload") or {}
-
-                # Guard: queue/cursor sanity. If anything is off, clear + graceful.
-                if (
-                    not _ep_queue
-                    or _ep_cursor < 0
-                    or _ep_cursor >= len(_ep_queue)
-                    or not _ep_action_key
-                ):
-                    try:
-                        await _retrigger_sm.update_state(
-                            _retrigger_sid,
-                            document_context={"pending_entity_selection": False},
-                        )
-                    except Exception:
-                        pass
-                    return ChatMessageResponse(
-                        message_type="TEXT",
-                        text=(
-                            "Sesi pemilihan sudah berakhir. Silakan kirim ulang "
-                            "permintaannya."
-                        ),
-                        session_id=_retrigger_sid,
-                    )
-
-                _ep_entry = _ep_queue[_ep_cursor]
-                _ep_slot = _ep_entry.get("slot")
-                _ep_etype = _ep_entry.get("entity_type")
-                _ep_line_index = _ep_entry.get("line_index")
-
-                # ── create_new sentinel → graceful guidance, clear flag ──
-                if _ep_value.startswith("create_new:"):
-                    _cn_type = _ep_value.split(":", 1)[1] or _ep_etype or ""
-                    _cn_label = {
-                        "vendor": "vendor",
-                        "customer": "pelanggan",
-                        "item": "barang",
-                    }.get(_cn_type, _cn_type or "data")
-                    _cn_cmd = {
-                        "vendor": "tambah vendor <nama>",
-                        "customer": "tambah pelanggan <nama>",
-                        "item": "tambah barang <nama>",
-                    }.get(_cn_type, "")
-                    try:
-                        await _retrigger_sm.update_state(
-                            _retrigger_sid,
-                            document_context={"pending_entity_selection": False},
-                        )
-                    except Exception:
-                        pass
-                    _cn_text = (
-                        f"Oke, {_cn_label} ini belum terdaftar. Daftarkan dulu"
-                    )
-                    if _cn_cmd:
-                        _cn_text += f" dengan ketik:\n\n`{_cn_cmd}`\n\nLalu kirim ulang permintaan ini."
-                    else:
-                        _cn_text += " lewat modulnya, lalu kirim ulang permintaan ini."
-                    return ChatMessageResponse(
-                        message_type="TEXT",
-                        text=_cn_text,
-                        session_id=_retrigger_sid,
-                    )
-
-                # ── Chosen id → inject into saved payload at the slot ──
-                if _ep_etype == "item":
-                    _ep_items = _ep_payload.get("items")
-                    if (
-                        isinstance(_ep_items, list)
-                        and _ep_line_index is not None
-                        and 0 <= _ep_line_index < len(_ep_items)
-                        and isinstance(_ep_items[_ep_line_index], dict)
-                    ):
-                        # Setting item_id prevents the proper-noun null-out in
-                        # _enrich_items (that block only fires when item_id absent).
-                        _ep_items[_ep_line_index]["item_id"] = _ep_value
-                    else:
-                        # No items[] line — set top-level item_id; _finalize_*
-                        # backfills it into items[0].
-                        _ep_payload["item_id"] = _ep_value
-                else:
-                    _ep_payload[_ep_slot] = _ep_value
-
-                # ── Advance cursor: more entities to ask? ──
-                _ep_next_cursor = _ep_cursor + 1
-                if _ep_next_cursor < len(_ep_queue):
-                    _ep_next = _ep_queue[_ep_next_cursor]
-                    _ep_next_options = [
-                        {
-                            "label": c.get("name") or "",
-                            "value": str(c.get("id")),
-                            "description": "",
-                        }
-                        for c in (_ep_next.get("candidates") or [])
-                        if c.get("id")
-                    ]
-                    if _ep_next.get("allow_create"):
-                        _ep_next_options.append(
-                            {
-                                "label": "➕ Buat baru",
-                                "value": f"create_new:{_ep_next.get('entity_type')}",
-                                "description": "",
-                            }
-                        )
-                    _ep_next_q = {
-                        "vendor": "Pilih vendor:",
-                        "customer": "Pilih pelanggan:",
-                        "item": "Pilih barang yang dimaksud:",
-                    }.get(_ep_next.get("entity_type"), "Pilih yang dimaksud:")
-                    # FK safety + full-dict rewrite (advanced cursor, same payload).
-                    try:
-                        await _retrigger_sm.get_or_create_session(_retrigger_sid)
-                    except Exception:
-                        pass
-                    await _retrigger_sm.update_state(
-                        _retrigger_sid,
-                        document_context={
-                            "pending_entity_selection": True,
-                            "resolved_action_key": _ep_action_key,
-                            "resolved_payload": _ep_payload,
-                            "entity_queue": _ep_queue,
-                            "entity_cursor": _ep_next_cursor,
-                        },
-                    )
-                    return ChatMessageResponse(
-                        message_type="CLARIFICATION",
-                        text=_ep_next_q,
-                        data={
-                            "question": _ep_next_q,
-                            "options": _ep_next_options,
-                            "allow_freetext": False,
-                        },
-                        session_id=_retrigger_sid,
-                    )
-
-                # ── All entities resolved → propose the action ──
-                _te_ep = ToolExecutor(
-                    context=TenantContext(
-                        tenant_id=ctx["tenant_id"],
-                        user_id=ctx["user_id"],
-                        auth_token=ctx["auth_token"],
-                        tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
-                    ),
+                # T92 commit 1: badan blok DIPINDAH ke _jalankan_pil_entity.
+                return await tangani_jawaban_pil(
+                    sm=_retrigger_sm,
+                    sid=_retrigger_sid,
                     session_id=body.session_id,
-                )
-                try:
-                    _ep_propose = await _te_ep._execute_propose_direct(
-                        {
-                            "action_key": _ep_action_key,
-                            "payload": _ep_payload,
-                        }
-                    )
-                except Exception as _ep_pe:
-                    logger.error(
-                        "[EntityRetrigger] propose EXCEPTION: %s",
-                        _ep_pe,
-                        exc_info=True,
-                    )
-                    _ep_propose = {"success": False, "error": str(_ep_pe)}
-
-                # Clear pending flag regardless of propose outcome.
-                try:
-                    await _retrigger_sm.update_state(
-                        _retrigger_sid,
-                        document_context={"pending_entity_selection": False},
-                    )
-                except Exception:
-                    pass
-
-                if _ep_propose.get("success"):
-                    return ChatMessageResponse(
-                        message_type="DIRECT_ACTION_PREVIEW",
-                        text="Pilihan diterima.",
-                        data=_ep_propose["data"],
-                        pending_action_id=_ep_propose["data"].get(
-                            "pending_action_id"
-                        ),
-                        session_id=body.session_id,
-                    )
-                _ep_err = _ep_propose.get("error", "")
-                if isinstance(_ep_err, dict):
-                    _ep_err = _ep_err.get("message", str(_ep_err))
-                return ChatMessageResponse(
-                    message_type="TEXT",
-                    text=str(_ep_err) if _ep_err else "Gagal menyiapkan data.",
-                    session_id=body.session_id,
+                    ctx=ctx,
+                    text=body.text,
+                    doc_ctx=_doc_ctx,
                 )
 
             # ── FIX_POST_DRAFT 2026-06-20: post-draft pill re-trigger ──────────
