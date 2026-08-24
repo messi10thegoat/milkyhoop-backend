@@ -4205,29 +4205,31 @@ class ToolExecutor:
                         item["description"] = None
             if not item_id:
                 continue
-            # FIX_AQUA_PRICE 2026-05-09: always fetch detail when description
-            # missing OR unit_price still 0/missing. Previously gated on
-            # description-only which skipped backfill when BUG-item-slot
-            # already set description but price came back null/zero.
-            _need_desc = "description" not in item or not item.get("description")
-            _need_price = not item.get("unit_price")  # truthy check (0 is falsy)
-            if _need_desc or _need_price:
-                detail = await self._fetch_entity(client, f"/api/items/{item_id}")
-                # FIX_AQUA_UNWRAP defensive belt-and-suspenders (envelope
-                # unwrap also fixed at-source in _fetch_entity 2026-05-09).
-                if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
-                    detail = detail["data"]
-                if detail:
-                    if _need_desc:
-                        item["description"] = detail.get("name", "Item")
-                    if _need_price:
-                        _price = 0
-                        for _pk in price_keys:
-                            _v = detail.get(_pk)
-                            if _v:
-                                _price = _v
-                                break
-                        item["unit_price"] = _price
+            # FIX_NAMA_HARGA_SATU_SUMBER 2026-08-24: item_id terikat => nama
+            # baris WAJIB dari master, tanpa syarat. Bentuknya disalin dari
+            # jalur name-hint di atas (item["description"] = rname). Dua
+            # gerbang independen (_need_desc / _need_price) atas SATU fetch
+            # membiarkan nama datang dari teks user sementara harga datang dari
+            # master -> dua barang berbeda dalam satu baris. Kalau sistem salah
+            # memilih barang, owner HARUS melihatnya di nama, bukan tersamar.
+            # Harga tetap "master hanya bila belum diisi" — identik dengan
+            # jalur name-hint — supaya jawaban user pada alur tanya-harga
+            # (_check_missing_item_prices) tidak ditimpa balik ke 0.
+            detail = await self._fetch_entity(client, f"/api/items/{item_id}")
+            # FIX_AQUA_UNWRAP defensive belt-and-suspenders (envelope
+            # unwrap also fixed at-source in _fetch_entity 2026-05-09).
+            if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
+                detail = detail["data"]
+            if detail:
+                item["description"] = detail.get("name", "Item")
+                if not item.get("unit_price"):
+                    _price = 0
+                    for _pk in price_keys:
+                        _v = detail.get(_pk)
+                        if _v:
+                            _price = _v
+                            break
+                    item["unit_price"] = _price
 
         return payload
 
@@ -5188,110 +5190,42 @@ class ToolExecutor:
                     if not item.get("item_id") and _top_item_id:
                         item["item_id"] = _top_item_id
 
-            # Enrich items + translate generic → bills/v2 field names
+            # FIX_NAMA_HARGA_SATU_SUMBER 2026-08-24: salinan-terpisah dihapus.
+            # Bill kini memakai _enrich_items yang SAMA dengan 5 pemanggil sisi
+            # jual/PO. Satu-satunya beda nyata adalah nama kunci, jadi kunci
+            # bills/v2 dinormalkan ke kunci generik SEBELUM enrich, lalu blok
+            # terjemahan di bawah mengembalikannya ke product_id/product_name/
+            # price. Domain harga tetap PEMBELIAN (Iron Law 16).
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    item_id = item.get("item_id") or item.get("product_id")
+                    if not item.get("item_id") and item.get("product_id"):
+                        item["item_id"] = item["product_id"]
+                    if not item.get("description") and item.get("product_name"):
+                        item["description"] = item["product_name"]
+                    if not item.get("unit_price") and item.get("price"):
+                        item["unit_price"] = item["price"]
+                payload = await self._enrich_items(
+                    payload,
+                    client,
+                    price_keys=("purchase_price", "harga_beli"),
+                )
 
-                    # FIX_BILL_ITEM_RESOLVE 2026-06-17: the block below only
-                    # pulls master price when item_id ALREADY exists. A bill
-                    # created by item NAME (no product_id — e.g. a freshly-made
-                    # item) therefore landed at price=0 -> false "harga belum
-                    # diset" ask. Resolve product_id by name first (purchase
-                    # domain ONLY, Iron Law 16 — never sales_price fallback),
-                    # mirroring the shared _enrich_items resolver used by
-                    # sales/PO. Mention-gated to avoid vendor-name bleed.
-                    if not item_id:
-                        _bnm = item.get("product_name") or item.get("description")
-                        if isinstance(_bnm, str) and _bnm.strip():
-                            _bnm = _bnm.strip()
-                            _but = (getattr(self, "user_text", "") or "").lower()
-                            _btoks = [t for t in _bnm.lower().split() if len(t) >= 2]
-                            if _btoks and all(t in _but for t in _btoks):
-                                _bsr = await self._fetch_entity(
-                                    client,
-                                    f"/api/items?search={_bnm}&limit=5&status=active",
-                                )
-                                _brows = (
-                                    _bsr
-                                    if isinstance(_bsr, list)
-                                    else (_bsr.get("items", []) if _bsr else [])
-                                )
-                                if _brows:
-                                    _bexact = next(
-                                        (
-                                            r
-                                            for r in _brows
-                                            if (
-                                                r.get("name")
-                                                or r.get("nama_produk")
-                                                or ""
-                                            ).strip().lower()
-                                            == _bnm.lower()
-                                        ),
-                                        None,
-                                    )
-                                    _bres = _bexact or _brows[0]
-                                    _brid = _bres.get("id") or _bres.get("item_id")
-                                    if _brid:
-                                        item["product_id"] = _brid
-                                        item_id = _brid
-                                        item["product_name"] = (
-                                            _bres.get("name")
-                                            or _bres.get("nama_produk")
-                                            or _bnm
-                                        )
-                                        if not item.get("price") and not item.get(
-                                            "unit_price"
-                                        ):
-                                            item["price"] = (
-                                                _bres.get("purchase_price")
-                                                or _bres.get("harga_beli")
-                                                or 0
-                                            )
-                                        logger.info(
-                                            f"[FIX_BILL_ITEM_RESOLVE] resolved '{_bnm}' -> {_brid} price={item.get('price')}"
-                                        )
-
-                    # FIX_AQUA_PRICE 2026-05-09 (port to bills/purchase domain):
-                    # always fetch detail when name OR price still missing/0.
-                    # Previous gate combined both checks → if LLM set product_name
-                    # but unit_price=0, price stayed 0. Truthiness check (0 falsy).
-                    _bill_need_name = not item.get("product_name") and not item.get(
-                        "description"
-                    )
-                    _bill_need_price = not item.get("price") and not item.get(
-                        "unit_price"
-                    )
-                    if item_id and (_bill_need_name or _bill_need_price):
-                        detail = await self._fetch_entity(
-                            client, f"/api/items/{item_id}"
-                        )
-                        # Defensive unwrap (also fixed at-source in _fetch_entity)
-                        if isinstance(detail, dict) and isinstance(
-                            detail.get("data"), dict
-                        ):
-                            detail = detail["data"]
-                        if detail:
-                            if _bill_need_name:
-                                item["product_name"] = detail.get("name", "Item")
-                            if _bill_need_price:
-                                # FIX_AQUA_CHAIN_STRICT 2026-05-09: purchase
-                                # domain ONLY — never fall back to sales_price.
-                                # Sales price ≠ purchase price; falling through
-                                # would inflate persediaan + corrupt WAC.
-                                # Iron Law 16 (Pure Ledger integrity).
-                                # Returns 0 if master purchase_price/harga_beli
-                                # not set — caller MUST handle 0 via L3 ask flow.
-                                item["price"] = (
-                                    detail.get("purchase_price")
-                                    or detail.get("harga_beli")
-                                    or 0
-                                )
-
+            # Translate generic → bills/v2 field names
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    # nama master menang atas sisa product_name lama
+                    if item.get("item_id"):
+                        item["product_id"] = item["item_id"]
+                    if item.get("item_id") and item.get("description"):
+                        item["product_name"] = item["description"]
+                    if item.get("item_id") and item.get("unit_price"):
+                        item["price"] = item["unit_price"]
                     # Translate generic field names → bills/v2 schema
                     if "description" in item and "product_name" not in item:
                         item["product_name"] = item.pop("description")
