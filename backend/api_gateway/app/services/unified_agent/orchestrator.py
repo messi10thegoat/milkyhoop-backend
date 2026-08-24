@@ -2892,6 +2892,17 @@ class UnifiedAgent:
                     _cands = getattr(_re, "candidates", None) or []
                     if len(_cands) > 1:
                         return True
+                    # T113 2026-08-24: low_trust DIHORMATI SECARA EKSPLISIT.
+                    # Sebelumnya pil untuk hasil low_trust muncul HANYA karena
+                    # confidence-nya (0.6 / 0.5789) KEBETULAN jatuh di pita
+                    # 0.5–0.85 di bawah. Kalau suatu jalur resolusi mengembalikan
+                    # low_trust dengan sim >= 0.85 (mis. satu kandidat trigram
+                    # tinggi), pil TIDAK muncul dan tebakan yang resolver sendiri
+                    # sudah nyatakan tak dipercaya jadi diikat diam-diam.
+                    # Bersandar pada kebetulan angka = kelas yang sudah dibayar
+                    # berkali-kali. Sinyalnya eksplisit, jadi bacalah eksplisit.
+                    if _cands and getattr(_re, "low_trust", False):
+                        return True
                     if len(_cands) == 1 and 0.5 <= getattr(_re, "confidence", 0.0) < 0.85:
                         return True
                     return False

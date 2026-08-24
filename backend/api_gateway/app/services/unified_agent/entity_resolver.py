@@ -1163,55 +1163,139 @@ class EntityResolver:
                         )
                         if _cek:
                             _hidup.append(_t)
-                    if _hidup and len(_hidup) < len(_tokens):
-                        # G1 (T97) 2026-08-23: pelonggaran di atas hanya SAH untuk
-                        # SALAH KETIK. Asumsi commit 6d9b445c ("token yang dibuang
-                        # tidak menghapus batasan yang berarti") benar untuk "hitm",
-                        # tapi SALAH untuk token ASING: "hitam" nol hasil bukan
-                        # karena salah ketik, melainkan karena barang hitam memang
-                        # TIDAK ADA di master. Membuangnya menghapus justru batasan
-                        # yang paling berarti, lalu AND sisanya ("kaos") menyisakan
-                        # tepat satu baris -> confidence 0.9 -> diterima DIAM-DIAM.
-                        #
-                        # Pemisahnya terukur (pg_trgm, token vs token):
-                        #   "hitm"  <-> "hitam"                = 0.375  (salah ketik)
-                        #   "hitam" <-> token master mana pun  = 0.000  (asing)
-                        # Ambang 0.25 duduk di celah itu: 0.125 di bawah sisi salah
-                        # ketik, 0.25 penuh di atas sisi asing. Sengaja diambil di
-                        # ujung BAWAH celah -- sisi asing terukur nol, jadi ambang
-                        # rendah tak melemahkan penolakan sama sekali, sementara
-                        # ambang rendah memberi ruang paling lega bagi salah ketik
-                        # yang HARI INI sudah bekerja benar (jangan tambah friksi).
-                        #
-                        # Bandingkan TOKEN lawan TOKEN, bukan lawan nama penuh:
-                        # similarity("kaos hitam", "Kaos Biru 30s") = 0.25 -- cukup
-                        # tinggi untuk menipu ambang ini. Token-lawan-token = 0.000.
-                        _dibuang = [t for t in _tokens if t not in _hidup]
-                        _asing = []
-                        for _t in _dibuang:
-                            _dekat = await self.db.fetch(
-                                _SQL_TETANGGA_DEKAT,
+                    # T113 2026-08-24: PERHATIAN — dulu blok ini dijaga oleh
+                    # `if _hidup and len(_hidup) < len(_tokens)`. Klausa
+                    # `len(_hidup) < len(_tokens)` SENGAJA DICABUT dari syarat
+                    # MASUK; ia TIDAK hilang karena kelalaian. Alasannya:
+                    #
+                    # Kita berada DI DALAM `if not rows` (Step 2 AND penuh nol).
+                    # Posisi kode itu SUDAH membuktikan "tak ada satu baris pun
+                    # yang memuat SEMUA token". Menambahkan `len(_hidup) <
+                    # len(_tokens)` di depan pintu berarti bertanya hal LAIN:
+                    # "adakah token yang mati di mana pun di master?" — pertanyaan
+                    # yang tidak diminta, dan yang jawabannya TIDAK menentukan
+                    # apakah user perlu dibantu memilih.
+                    #
+                    # Kasus yang terjatuh lewat celah itu: "kaos hitam 30s" di
+                    # tenant yang punya "Kaos Hitam 24s" dan "Kaos Biru 30s".
+                    # Ketiga token HIDUP (kaos, hitam, 30s semuanya ada di suatu
+                    # baris), tapi tak satu baris memuat ketiganya. Gerbang lama
+                    # -> False -> blok dilewati -> Step 3 fuzzy melawan frasa
+                    # penuh: Kaos Hitam 24s = 0.5789 LOLOS, Kaos Biru 30s = 0.45
+                    # DITOLAK. Padahal keduanya cocok 2 dari 3 token; yang
+                    # memisahkan hanya artefak trigram 0,13. User dapat pil SATU
+                    # opsi tanpa jalan keluar.
+                    #
+                    # Sekarang klausa itu turun derajat jadi syarat LOKAL: ia
+                    # hanya memilih sub-langkah mana yang dipakai di bawah.
+                    if _hidup:
+                        if len(_hidup) < len(_tokens):
+                            # G1 (T97) 2026-08-23: pelonggaran di atas hanya SAH untuk
+                            # SALAH KETIK. Asumsi commit 6d9b445c ("token yang dibuang
+                            # tidak menghapus batasan yang berarti") benar untuk "hitm",
+                            # tapi SALAH untuk token ASING: "hitam" nol hasil bukan
+                            # karena salah ketik, melainkan karena barang hitam memang
+                            # TIDAK ADA di master. Membuangnya menghapus justru batasan
+                            # yang paling berarti, lalu AND sisanya ("kaos") menyisakan
+                            # tepat satu baris -> confidence 0.9 -> diterima DIAM-DIAM.
+                            #
+                            # Pemisahnya terukur (pg_trgm, token vs token):
+                            #   "hitm"  <-> "hitam"                = 0.375  (salah ketik)
+                            #   "hitam" <-> token master mana pun  = 0.000  (asing)
+                            # Ambang 0.25 duduk di celah itu: 0.125 di bawah sisi salah
+                            # ketik, 0.25 penuh di atas sisi asing. Sengaja diambil di
+                            # ujung BAWAH celah -- sisi asing terukur nol, jadi ambang
+                            # rendah tak melemahkan penolakan sama sekali, sementara
+                            # ambang rendah memberi ruang paling lega bagi salah ketik
+                            # yang HARI INI sudah bekerja benar (jangan tambah friksi).
+                            #
+                            # Bandingkan TOKEN lawan TOKEN, bukan lawan nama penuh:
+                            # similarity("kaos hitam", "Kaos Biru 30s") = 0.25 -- cukup
+                            # tinggi untuk menipu ambang ini. Token-lawan-token = 0.000.
+                            _dibuang = [t for t in _tokens if t not in _hidup]
+                            _asing = []
+                            for _t in _dibuang:
+                                _dekat = await self.db.fetch(
+                                    _SQL_TETANGGA_DEKAT,
+                                    self.tenant_id,
+                                    _t.lower(),
+                                    _AMBANG_TOKEN_ASING,
+                                )
+                                if not _dekat:
+                                    _asing.append(_t)
+                            rows = await _cari_and(_hidup)
+                            search_term = " ".join(_hidup)
+                            if _asing:
+                                # T89: logger modul ini tak punya handler untuk .info --
+                                # WAJIB .warning agar baris ini benar-benar terbit.
+                                logger.warning(
+                                    "[RESOLVE][T97] token asing %s pada %r -- hasil "
+                                    "pelonggaran Step 2b TIDAK DIPERCAYA (tak ada "
+                                    "tetangga dekat >= %s di master tenant); "
+                                    "kandidat ditawarkan sebagai pil, bukan diikat",
+                                    _asing,
+                                    name_fragment,
+                                    _AMBANG_TOKEN_ASING,
+                                )
+                                _low_trust = bool(rows)
+                        else:
+                            # T113: SEMUA token hidup, tapi nol baris memuat
+                            # semuanya. Tidak ada token yang bisa "dibuang"
+                            # (pelonggaran salah-ketik di atas tak berlaku), dan
+                            # menyerahkannya ke Step 3 fuzzy berarti memvonis
+                            # lewat trigram nama-penuh — ukuran yang tidak
+                            # mewakili apa yang user ketik.
+                            #
+                            # Yang benar: kumpulkan kandidat menurut CAKUPAN
+                            # TOKEN tertinggi (berapa banyak token user yang
+                            # muncul di baris itu), lalu tawarkan sebagai pil.
+                            # Cakupan minimum 2 token bila user mengetik >= 2
+                            # token — satu token generik ("kaos") bukan sinyal,
+                            # ia akan menarik seluruh katalog.
+                            #
+                            # low_trust = True SELALU di cabang ini: menurut
+                            # konstruksi TIDAK ADA kandidat yang memuat semua
+                            # token, jadi kandidat terbaik pun mungkin salah
+                            # semua -> user WAJIB diberi opsi keluar.
+                            #
+                            # LIMIT 5 mengikuti seluruh jalur resolusi lain di
+                            # berkas ini (Step 1, _cari_and, Step 3, _resolve_*).
+                            _min_cakupan = 2 if len(_tokens) >= 2 else 1
+                            _ekspr = " + ".join(
+                                f"(CASE WHEN (nama_produk ILIKE ${i + 2} "
+                                f"OR item_code ILIKE ${i + 2} "
+                                f"OR sku ILIKE ${i + 2}) THEN 1 ELSE 0 END)"
+                                for i in range(len(_tokens))
+                            )
+                            rows = await self.db.fetch(
+                                f"""SELECT * FROM (
+                                        SELECT id, nama_produk, sales_price_amount,
+                                               purchase_price_amount, item_type,
+                                               ({_ekspr}) AS cakupan
+                                        FROM products
+                                        WHERE tenant_id = $1 AND status = 'active'
+                                    ) AS c
+                                    WHERE cakupan >= {_min_cakupan}
+                                    ORDER BY cakupan DESC, nama_produk
+                                    LIMIT 5""",
                                 self.tenant_id,
-                                _t.lower(),
-                                _AMBANG_TOKEN_ASING,
+                                *[f"%{t}%" for t in _tokens],
                             )
-                            if not _dekat:
-                                _asing.append(_t)
-                        rows = await _cari_and(_hidup)
-                        search_term = " ".join(_hidup)
-                        if _asing:
-                            # T89: logger modul ini tak punya handler untuk .info --
-                            # WAJIB .warning agar baris ini benar-benar terbit.
-                            logger.warning(
-                                "[RESOLVE][T97] token asing %s pada %r -- hasil "
-                                "pelonggaran Step 2b TIDAK DIPERCAYA (tak ada "
-                                "tetangga dekat >= %s di master tenant); "
-                                "kandidat ditawarkan sebagai pil, bukan diikat",
-                                _asing,
-                                name_fragment,
-                                _AMBANG_TOKEN_ASING,
-                            )
-                            _low_trust = bool(rows)
+                            if rows:
+                                # T89: logger modul ini tak punya handler untuk
+                                # .info -- WAJIB .warning agar baris ini terbit.
+                                logger.warning(
+                                    "[RESOLVE][T113] nol baris memuat SEMUA token "
+                                    "%s pada %r; %d kandidat dipilih menurut "
+                                    "cakupan token (min %d) -- ditawarkan sebagai "
+                                    "pil dengan opsi keluar, tidak diikat",
+                                    _tokens,
+                                    name_fragment,
+                                    len(rows),
+                                    _min_cakupan,
+                                )
+                                search_term = " ".join(_tokens)
+                                _low_trust = True
 
             # Step 3: Fuzzy match via pg_trgm (handles typos like "obyat" -> "obat")
             # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: substring is tracked as kind "substring"
