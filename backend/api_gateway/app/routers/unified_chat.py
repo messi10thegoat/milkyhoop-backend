@@ -33,7 +33,10 @@ import json as _json_stream
 from ..services.unified_agent.session_orchestrator import SessionAwareAgent
 from ..services.unified_agent.telemetry import record_telemetry
 from ..services.unified_agent.tool_executor import ToolExecutor, TenantContext
-from ..services.unified_agent.orchestrator import _strip_draft_void_rows
+from ..services.unified_agent.orchestrator import (
+    _strip_draft_void_rows,
+    LABEL_OPSI_KELUAR,
+)
 from ..services.action_executor_client import get_action_executor_client
 from ..services.action_service import (
     ActionService,
@@ -1365,9 +1368,18 @@ async def _jalankan_pil_entity(
             if c.get("id")
         ]
         if _ep_next.get("allow_create"):
+            # T114: label opsi keluar dibaca dari antrean (SATU SUMBER dengan
+            # entity PERTAMA di orchestrator), bukan dihardcode di sini.
+            _t114_label = _ep_next.get("create_label") or LABEL_OPSI_KELUAR
+            logger.warning(
+                "[T114] opsi keluar entity ke-%d tipe=%s label=%r",
+                _ep_next_cursor,
+                _ep_next.get("entity_type"),
+                _t114_label,
+            )
             _ep_next_options.append(
                 {
-                    "label": "➕ Buat baru",
+                    "label": _t114_label,
                     "value": f"create_new:{_ep_next.get('entity_type')}",
                     "description": "",
                 }

@@ -55,6 +55,16 @@ from .correlation import TurnContext  # noqa: E402
 
 logger = logging.getLogger("unified_agent.orchestrator")
 
+# T114 — LABEL OPSI KELUAR (SATU SUMBER).
+# Sentinel `create_new:<type>` TIDAK PERNAH membuat entity apa pun: seluruh tipe
+# (vendor/customer/item) ditangani oleh SATU blok di routers/unified_chat.py
+# (`if _ep_value.startswith("create_new:")`) yang hanya BERHENTI SOPAN + memberi
+# instruksi "tambah <tipe> <nama>" lalu mematikan pending_entity_selection.
+# Karena akibatnya seragam untuk semua tipe, labelnya seragam pula — dan
+# "Buat baru" berbohong tentang akibat itu.
+LABEL_OPSI_KELUAR = "Bukan salah satu dari ini"
+
+
 # ─── FIX_WF_SLOTANSWER_NOCANCEL (2026-06-18) ─────────────────────────────────
 # A bill/sales-invoice/quote multi-turn crud_form has a due-date slot. When the
 # user answers that slot with "(faktur) jatuh tempo N hari", the CODE query
@@ -3033,6 +3043,8 @@ class UnifiedAgent:
                             "line_index": None,
                             "candidates": _cands,
                             "allow_create": True,
+                            # T114: label diturunkan dari AKIBAT, bukan selera.
+                            "create_label": LABEL_OPSI_KELUAR,
                         }
                     )
 
@@ -3090,9 +3102,7 @@ class UnifiedAgent:
                                 "candidates": _item_cands,
                                 "allow_create": _it_low_trust,
                                 "create_label": (
-                                    "Bukan salah satu dari ini"
-                                    if _it_low_trust
-                                    else None
+                                    LABEL_OPSI_KELUAR if _it_low_trust else None
                                 ),
                             }
                         )
@@ -3139,7 +3149,7 @@ class UnifiedAgent:
                             {
                                 # G1 (T97): label jujur untuk opsi keluar low-trust.
                                 "label": _ep_first.get("create_label")
-                                or "➕ Buat baru",
+                                or LABEL_OPSI_KELUAR,
                                 "value": f"create_new:{_ep_first['entity_type']}",
                                 "description": "",
                             }
