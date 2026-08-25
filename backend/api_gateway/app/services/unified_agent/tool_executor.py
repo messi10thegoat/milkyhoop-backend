@@ -4818,6 +4818,27 @@ class ToolExecutor:
             #      harga_jual, sementara sales_price_amount justru 0.00.
             # Menyatukan di sini bukan kerapian: ia memindahkan perbaikan yang
             # sudah lama ada ke jalur yang tak pernah menerimanya.
+            #
+            # URUTAN 2026-08-25: backfill item_id tingkat-atas -> items[] HARUS
+            # MENDAHULUI _enrich_items. Bentuknya disalin apa adanya dari
+            # _enrich_sales_invoice (jalur yang terbukti bersih), yang sudah
+            # melakukan backfill DULU baru enrich.
+            # Sebabnya: pada jalur auto-resolve (mis. nama barang salah ketik,
+            # confidence tinggi, tanpa pil) entity_resolver._build_payload hanya
+            # menulis payload["item_id"] TINGKAT-ATAS. Kalau enrich jalan lebih
+            # dulu, baris belum punya item_id -> `if not item_id: continue` di
+            # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
+            # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
+            # ketikan user + unit_price kosong.
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+
             payload = await self._enrich_items(payload, client)
 
             items = payload.get("items", [])
@@ -5332,6 +5353,12 @@ class ToolExecutor:
         return payload
 
     async def _enrich_purchase_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # URUTAN 2026-08-25: SENGAJA TIDAK DIUBAH. Fungsi ini nol backfill
+        # item_id tingkat-atas -> items[] sama sekali, jadi secara struktural ia
+        # terpapar cacat urutan yang sama dengan quote/sales_order. Ia tidak
+        # ikut diubah karena TAK TERJANGKAU dari chat: CREATE_PURCHASE_ORDER
+        # nol entri di direct_action_registry -> nol gate merah yang sah untuk
+        # membuktikan perubahannya. Mengubah tanpa gate = tebakan.
         """Enrich CREATE_PURCHASE_ORDER: vendor_name, due_date, item descriptions."""
         today = await self._hari_ini()
         payload.setdefault("order_date", today)
@@ -5511,6 +5538,27 @@ class ToolExecutor:
             #      harga_jual, sementara sales_price_amount justru 0.00.
             # Menyatukan di sini bukan kerapian: ia memindahkan perbaikan yang
             # sudah lama ada ke jalur yang tak pernah menerimanya.
+            #
+            # URUTAN 2026-08-25: backfill item_id tingkat-atas -> items[] HARUS
+            # MENDAHULUI _enrich_items. Bentuknya disalin apa adanya dari
+            # _enrich_sales_invoice (jalur yang terbukti bersih), yang sudah
+            # melakukan backfill DULU baru enrich.
+            # Sebabnya: pada jalur auto-resolve (mis. nama barang salah ketik,
+            # confidence tinggi, tanpa pil) entity_resolver._build_payload hanya
+            # menulis payload["item_id"] TINGKAT-ATAS. Kalau enrich jalan lebih
+            # dulu, baris belum punya item_id -> `if not item_id: continue` di
+            # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
+            # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
+            # ketikan user + unit_price kosong.
+            items = payload.get("items", [])
+            if items and isinstance(items, list):
+                _top_item_id = payload.get("item_id")
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("item_id") and _top_item_id:
+                        item["item_id"] = _top_item_id
+
             payload = await self._enrich_items(payload, client)
 
             items = payload.get("items", [])
@@ -5623,6 +5671,10 @@ class ToolExecutor:
         return payload
 
     async def _enrich_credit_note(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # URUTAN 2026-08-25: SENGAJA TIDAK DIUBAH. Sama seperti
+        # _enrich_purchase_order: nol backfill item_id tingkat-atas -> items[],
+        # jadi terpapar struktural, TAPI tak terjangkau dari chat (FieldSpec
+        # `create_credit_note` nol field `items`) -> nol gate merah yang sah.
         """Enrich CREATE_CREDIT_NOTE: customer lookup (+reverse), stale-date override."""
         today = await self._hari_ini()
 
