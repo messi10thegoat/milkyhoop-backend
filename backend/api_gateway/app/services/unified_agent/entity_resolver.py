@@ -1308,16 +1308,34 @@ class EntityResolver:
                             elif _asing:
                                 # T89: logger modul ini tak punya handler untuk .info --
                                 # WAJIB .warning agar baris ini benar-benar terbit.
+                                #
+                                # M3c 2026-08-26: kalimat lama berbunyi "kandidat
+                                # ditawarkan sebagai pil, bukan diikat" TANPA SYARAT,
+                                # padahal `_low_trust = bool(rows)` di bawahnya bisa
+                                # False saat rows=[] — nol kandidat, nol pil, kartu
+                                # lahir diam-diam. Jejak owner 2026-08-26T01:59:59Z
+                                # memuat baris itu dan membacanya sebagai bukti pil
+                                # muncul. Log yang berbohong lebih berbahaya daripada
+                                # nol log. Sekarang jumlah baris DIUKUR dan akibatnya
+                                # DINYATAKAN apa adanya.
+                                _low_trust = bool(rows)
                                 logger.warning(
                                     "[RESOLVE][T97] token asing %s pada %r -- hasil "
                                     "pelonggaran Step 2b TIDAK DIPERCAYA (tak ada "
                                     "tetangga dekat >= %s di master tenant); "
-                                    "kandidat ditawarkan sebagai pil, bukan diikat",
+                                    "AND(%s) -> %d baris; low_trust=%s -> %s",
                                     _asing,
                                     name_fragment,
                                     _AMBANG_TOKEN_ASING,
+                                    _hidup,
+                                    len(rows),
+                                    _low_trust,
+                                    (
+                                        "kandidat ditawarkan sebagai pil, bukan diikat"
+                                        if _low_trust
+                                        else "NOL kandidat -- lanjut ke Step 3 fuzzy"
+                                    ),
                                 )
-                                _low_trust = bool(rows)
                         else:
                             # T113: SEMUA token hidup, tapi nol baris memuat
                             # semuanya. Tidak ada token yang bisa "dibuang"
