@@ -14,7 +14,7 @@ Key concepts:
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import date
 
 
@@ -270,6 +270,9 @@ class ImportError(BaseModel):
     column: Optional[str] = None
     value: Optional[str] = None
     error: str
+    # Alasan bertipe, supaya pemanggil bisa mengelompokkan tanpa mem-parse teks bebas.
+    # Nilai: "unparseable_date" | "unparseable_amount" | "row_exception"
+    reason: Optional[str] = None
 
 
 class HistoryItem(BaseModel):
@@ -394,11 +397,23 @@ class ImportResponse(BaseModel):
     """Response for statement import."""
 
     lines_imported: int
+    # KOMPATIBILITAS: lines_skipped DIPERTAHANKAN dan SELALU = skipped_benign +
+    # skipped_error. Ia dihitung dari kedua ember di akhir, TIDAK dinaikkan manual,
+    # supaya tak pernah bisa melenceng dari rinciannya.
     lines_skipped: int
+    # Dilewati karena memang SEHARUSNYA dilewati (penanda saldo, baris kosong).
+    skipped_benign: int = 0
+    # Dilewati karena DATANYA HILANG (tanggal/nominal tak terbaca, exception baris).
+    skipped_error: int = 0
+    skipped_benign_reasons: Dict[str, int] = {}
     total_credits: int
     total_debits: int
     date_range: ImportDateRange
+    # `errors` DIPOTONG (respons tak boleh tak terbatas). errors_total = jumlah
+    # SEBENARNYA; errors_truncated menyatakan bahwa daftar di atas tidak lengkap.
     errors: List[ImportError] = []
+    errors_total: int = 0
+    errors_truncated: bool = False
 
 
 # =============================================================================

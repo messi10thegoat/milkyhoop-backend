@@ -733,6 +733,11 @@ async def update_reconciliation_session_stats(conn, session_id: UUID):
 # =============================================================================
 
 
+# Batas jumlah entri `errors` yang IKUT dalam respons. Sisanya tetap dihitung
+# di `errors_total` — angka benar dengan daftar bohong lebih buruk daripada keduanya salah.
+MAX_IMPORT_ERRORS = 50
+
+
 @router.post("/sessions/{session_id}/import", response_model=ImportResponse)
 async def import_statement(
     request: Request,
@@ -775,13 +780,29 @@ async def import_statement(
                 file_format = "csv"
 
         lines_imported = 0
-        lines_skipped = 0
+        # DUA EMBER TERPISAH (lines_skipped lama mencampur keduanya):
+        #   skipped_benign = dilewati dan itu PERILAKU BENAR
+        #   skipped_error  = dilewati karena DATA HILANG
+        skipped_benign = 0
+        skipped_error = 0
+        benign_reasons: dict = {}
+        rows_seen = 0
         total_credits = 0
         total_debits = 0
         errors: list = []
         dates: list = []
         balance_markers: list = []
 
+        # ⚠️ KETIADAAN `conn.transaction()` DI SEKITAR LOOP ADALAH DISENGAJA — JANGAN
+        # "PERBAIKI". Endpoint ini autocommit per baris. Itulah yang membuatnya IMUN
+        # terhadap kelas kegagalan items.py:1947: satu galat DB menaruh transaksi asyncpg
+        # ke FAILED state, iterasi berikutnya tumbang berantai, lalu ROLLBACK menghapus
+        # baris yang sudah "berhasil" SEMENTARA respons tetap melaporkan angka untuk baris
+        # yang sudah tak ada lagi. Endpoint ini menulis STAGING
+        # (bank_statement_lines_v2) dan NOL jurnal, jadi impor sebagian memang sah:
+        # tak ada invarian pembukuan yang bisa dilanggar oleh baris staging yang lolos
+        # sendirian. Membungkusnya dengan transaksi akan MENUKAR sifat imun itu dengan
+        # atomisitas yang tak dibutuhkan siapa pun di sini.
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
@@ -892,6 +913,7 @@ async def import_statement(
                 line_number = 0
                 for idx, row in df.iterrows():
                     line_number += 1
+                    rows_seen += 1
                     try:
                         # Parse date
                         date_str = str(row.get(date_column, "")).strip()
@@ -905,9 +927,10 @@ async def import_statement(
                                     column=date_column,
                                     value=date_str,
                                     error="Invalid date format",
+                                    reason="unparseable_date",
                                 )
                             )
-                            lines_skipped += 1
+                            skipped_error += 1
                             continue
 
                         # Parse description
@@ -933,9 +956,10 @@ async def import_statement(
                                         column=amount_column,
                                         value=amount_str,
                                         error="Invalid amount",
+                                        reason="unparseable_amount",
                                     )
                                 )
-                                lines_skipped += 1
+                                skipped_error += 1
                                 continue
                         elif debit_column and credit_column:
                             debit_str = (
@@ -966,7 +990,18 @@ async def import_statement(
                                     amount = int(debit)
                                     is_credit = False
                             except ValueError:
-                                lines_skipped += 1
+                                # SITUS 969 — kembar dari situs 938 (nominal tak terbaca),
+                                # cuma lewat kolom debit/credit. DATA HILANG, bukan benign.
+                                errors.append(
+                                    ImportErrorSchema(
+                                        row_number=line_number,
+                                        column=f"{debit_column}/{credit_column}",
+                                        value=f"{debit_str}/{credit_str}",
+                                        error="Invalid amount",
+                                        reason="unparseable_amount",
+                                    )
+                                )
+                                skipped_error += 1
                                 continue
 
                         # Parse reference
@@ -996,7 +1031,13 @@ async def import_statement(
                                     "running_balance": running_balance,
                                 }
                             )
-                            lines_skipped += 1
+                            # SITUS 999 — BENIGN. Baris ini bukan transaksi; running_balance-nya
+                            # dipakai mengisi statement_beginning/ending_balance di bawah.
+                            # Melewatinya adalah perilaku BENAR, bukan kehilangan data.
+                            skipped_benign += 1
+                            benign_reasons["balance_marker"] = (
+                                benign_reasons.get("balance_marker", 0) + 1
+                            )
                             continue
 
                         # Insert line
@@ -1032,9 +1073,13 @@ async def import_statement(
 
                     except Exception as e:
                         errors.append(
-                            ImportErrorSchema(row_number=line_number, error=str(e))
+                            ImportErrorSchema(
+                                row_number=line_number,
+                                error=str(e),
+                                reason="row_exception",
+                            )
                         )
-                        lines_skipped += 1
+                        skipped_error += 1
 
             elif file_format == "xlsx":
                 import pandas as pd
@@ -1060,11 +1105,31 @@ async def import_statement(
                 line_number = 0
                 for idx, row in df.iterrows():
                     line_number += 1
+                    rows_seen += 1
                     try:
                         # Parse date
                         date_val = row.get(date_column)
                         if pd.isna(date_val):
-                            lines_skipped += 1
+                            # SITUS 1067 — TIDAK boleh digeneralisasi jadi satu ember.
+                            # Excel lazim menyisakan baris padding yang SELURUH selnya NaN
+                            # (melewatinya = benar). Tapi baris yang berisi keterangan &
+                            # nominal namun tanggalnya tak terbaca = DATA HILANG.
+                            if bool(row.isna().all()):
+                                skipped_benign += 1
+                                benign_reasons["empty_row"] = (
+                                    benign_reasons.get("empty_row", 0) + 1
+                                )
+                            else:
+                                errors.append(
+                                    ImportErrorSchema(
+                                        row_number=line_number,
+                                        column=date_column,
+                                        value=None,
+                                        error="Missing or unreadable date",
+                                        reason="unparseable_date",
+                                    )
+                                )
+                                skipped_error += 1
                             continue
 
                         if isinstance(date_val, datetime):
@@ -1131,7 +1196,11 @@ async def import_statement(
                                     "running_balance": running_balance,
                                 }
                             )
-                            lines_skipped += 1
+                            # SITUS 1134 — BENIGN, sama seperti situs 999 (jalur XLSX).
+                            skipped_benign += 1
+                            benign_reasons["balance_marker"] = (
+                                benign_reasons.get("balance_marker", 0) + 1
+                            )
                             continue
 
                         # Insert line
@@ -1163,9 +1232,13 @@ async def import_statement(
 
                     except Exception as e:
                         errors.append(
-                            ImportErrorSchema(row_number=line_number, error=str(e))
+                            ImportErrorSchema(
+                                row_number=line_number,
+                                error=str(e),
+                                reason="row_exception",
+                            )
                         )
-                        lines_skipped += 1
+                        skipped_error += 1
 
             elif file_format == "ofx":
                 try:
@@ -1186,6 +1259,7 @@ async def import_statement(
                 for account in ofx.accounts:
                     for tx in account.statement.transactions:
                         line_number += 1
+                        rows_seen += 1
                         try:
                             tx_date = (
                                 tx.date.date() if hasattr(tx.date, "date") else tx.date
@@ -1197,7 +1271,13 @@ async def import_statement(
                             is_credit = Decimal(str(tx.amount)) > 0
                             reference = tx.id if hasattr(tx, "id") else None
 
-                            # Skip balance markers (amount=0)
+                            # SITUS 1209 — SENGAJA TIDAK disamakan dengan situs 999/1134.
+                            # OFX membawa saldo di elemen <LEDGERBAL> TERPISAH, bukan di
+                            # daftar transaksi; STMTTRN bernominal 0 karena itu BUKAN
+                            # penanda saldo (perhatikan running_balance yang di-hardcode
+                            # None — tak ada saldo yang dipanen dari sini). Ia juga bukan
+                            # data hilang: nol rupiah tak mengubah rekonsiliasi apa pun.
+                            # Jadi: tetap BENIGN, tapi dengan nama alasan yang JUJUR.
                             if amount == 0:
                                 balance_markers.append(
                                     {
@@ -1206,7 +1286,10 @@ async def import_statement(
                                         "running_balance": None,
                                     }
                                 )
-                                lines_skipped += 1
+                                skipped_benign += 1
+                                benign_reasons["zero_amount_transaction"] = (
+                                    benign_reasons.get("zero_amount_transaction", 0) + 1
+                                )
                                 continue
 
                             line_id = uuid.uuid4()
@@ -1236,9 +1319,13 @@ async def import_statement(
 
                         except Exception as e:
                             errors.append(
-                                ImportErrorSchema(row_number=line_number, error=str(e))
+                                ImportErrorSchema(
+                                    row_number=line_number,
+                                    error=str(e),
+                                    reason="row_exception",
+                                )
                             )
-                            lines_skipped += 1
+                            skipped_error += 1
 
             else:
                 raise HTTPException(
@@ -1285,14 +1372,48 @@ async def import_statement(
             start_date = ""
             end_date = ""
 
-        return ImportResponse(
+        errors_total = len(errors)
+        payload = ImportResponse(
             lines_imported=lines_imported,
-            lines_skipped=lines_skipped,
+            # lines_skipped = benign + error (kompatibilitas; lihat komentar di schema)
+            lines_skipped=skipped_benign + skipped_error,
+            skipped_benign=skipped_benign,
+            skipped_error=skipped_error,
+            skipped_benign_reasons=benign_reasons,
             total_credits=total_credits,
             total_debits=total_debits,
             date_range=ImportDateRange(start_date=start_date, end_date=end_date),
-            errors=errors[:50],  # Limit errors returned
+            errors=errors[:MAX_IMPORT_ERRORS],
+            errors_total=errors_total,
+            errors_truncated=errors_total > MAX_IMPORT_ERRORS,
         )
+
+        # ── KONTRAK STATUS ────────────────────────────────────────────────────────
+        # Ini IMPOR BATCH ke STAGING (nol jurnal), jadi "sebagian berhasil" SAH.
+        #   200 : ada baris yang masuk; ATAU berkas tak punya baris data sama sekali;
+        #         ATAU semua baris dilewati secara BENIGN (mis. berkas isinya hanya
+        #         penanda saldo) — itu berkas degeneratif, bukan permintaan salah.
+        #   400 : NOL baris masuk padahal ADA baris data, dan seluruh kegagalannya
+        #         kelas-PARSE (tanggal/nominal tak terbaca) => pemetaan kolom atau
+        #         format tanggal salah total. Pengguna BISA memperbaikinya lewat config.
+        #   500 : NOL baris masuk dan ada kegagalan kelas-EXCEPTION (mis. galat DB).
+        #         Itu salah kami; mengutak-atik config tak akan menolong pengguna.
+        # 4xx yang sudah ada di hulu (>10MB, config JSON rusak, format tak didukung,
+        # CSV/Excel/OFX tak terparse, sesi tak ditemukan/bukan in_progress) tetap sah.
+        if lines_imported == 0 and rows_seen > 0 and skipped_error > 0:
+            has_row_exception = any(e.reason == "row_exception" for e in errors)
+            raise HTTPException(
+                status_code=500 if has_row_exception else 400,
+                detail={
+                    "message": (
+                        f"Tidak ada satu pun baris yang bisa diimpor dari {rows_seen} "
+                        "baris data. Periksa pemetaan kolom dan format tanggal."
+                    ),
+                    **payload.model_dump(mode="json"),
+                },
+            )
+
+        return payload
 
     except HTTPException:
         raise
