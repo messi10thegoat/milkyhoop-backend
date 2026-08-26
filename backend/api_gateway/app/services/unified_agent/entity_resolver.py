@@ -1142,6 +1142,32 @@ class EntityResolver:
                         *[f"%{t}%" for t in tokens],
                     )
 
+                # T137 2026-08-26: pencarian menurut CAKUPAN TOKEN, diangkat
+                # dari cabang T113 di bawah supaya DUA cabang memakai SATU
+                # mekanisme yang sama. Tidak ada perubahan perilaku pada T113:
+                # pemanggilnya melewatkan argumen yang persis sama.
+                async def _cari_cakupan(tokens, min_cakupan):
+                    _ekspr = " + ".join(
+                        f"(CASE WHEN (nama_produk ILIKE ${i + 2} "
+                        f"OR item_code ILIKE ${i + 2} "
+                        f"OR sku ILIKE ${i + 2}) THEN 1 ELSE 0 END)"
+                        for i in range(len(tokens))
+                    )
+                    return await self.db.fetch(
+                        f"""SELECT * FROM (
+                                SELECT id, nama_produk, sales_price_amount,
+                                       purchase_price_amount, item_type,
+                                       ({_ekspr}) AS cakupan
+                                FROM products
+                                WHERE tenant_id = $1 AND status = 'active'
+                            ) AS c
+                            WHERE cakupan >= {min_cakupan}
+                            ORDER BY cakupan DESC, nama_produk
+                            LIMIT 5""",
+                        self.tenant_id,
+                        *[f"%{t}%" for t in tokens],
+                    )
+
                 rows = await _cari_and(_tokens)
                 search_term = " ".join(_tokens)
 
@@ -1225,7 +1251,61 @@ class EntityResolver:
                                     _asing.append(_t)
                             rows = await _cari_and(_hidup)
                             search_term = " ".join(_hidup)
-                            if _asing:
+                            # T137 2026-08-26 — GERBANG CAKUPAN TOKEN.
+                            #
+                            # Sampai di sini berarti: Step 2 AND penuh nol DAN
+                            # Step 2b AND(_hidup) juga nol. Dulu jalur ini
+                            # berakhir dengan rows=[] -> _low_trust=bool([])=False
+                            # -> Step 3 fuzzy (0.42/0.33 < 0.5) -> confidence 0.0
+                            # -> `missing.append("item")` TANPA satu pun
+                            # clarification -> kartu lahir DIAM-DIAM sebagai teks
+                            # bebas: description = kalimat user, item_id null,
+                            # unit_price absen -> harga 0. Owner tidak pernah
+                            # ditanya apa pun.
+                            #
+                            # Pembedanya SATU ANGKA: `len(_hidup)` — berapa token
+                            # user (>= 2 huruf) yang cocok baris master aktif mana
+                            # pun di tenant ini.
+                            #   len(_hidup) == 0 -> user memang bicara di luar
+                            #     master (jasa sablon/bordir/konsultasi). Blok ini
+                            #     tak pernah dimasuki (`if _hidup:` di atas False),
+                            #     teks bebas lahir LANGSUNG tanpa pertanyaan. PAGAR
+                            #     ITU TIDAK BOLEH MATI.
+                            #   len(_hidup) == 1 -> `_cari_and` satu token sudah
+                            #     mengembalikan baris (mis. "kaos ungu" -> 2 baris)
+                            #     -> jalur T97 lama, tak diubah.
+                            #   len(_hidup) >= 2 TAPI nol baris memuat semuanya ->
+                            #     user jelas memaksudkan SESUATU DI MASTER dengan
+                            #     kombinasi yang tidak ada. Itu pertanyaan, bukan
+                            #     barang baru.
+                            #
+                            # Terukur pada 14 deskripsi unik / 2 tenant: 12/12
+                            # teks-bebas SAH punya len(_hidup)=0; 2/2 kasus salah
+                            # punya len(_hidup)>=2. Nol tumpang tindih.
+                            #
+                            # Mekanismenya SENGAJA sama persis dengan cabang T113
+                            # di bawah (`_cari_cakupan` + `_low_trust = True`):
+                            # dua cabang, satu mesin, satu jalur pil. Cakupan
+                            # dihitung terhadap _tokens PENUH (bukan _hidup) agar
+                            # peringkat kandidat mencerminkan yang user ketik.
+                            if not rows and len(_hidup) >= 2:
+                                rows = await _cari_cakupan(_tokens, 2)
+                                search_term = " ".join(_tokens)
+                                _low_trust = True
+                                # T89: WAJIB .warning agar baris ini terbit.
+                                logger.warning(
+                                    "[RESOLVE][T137] Step 2b AND(%s) nol baris "
+                                    "pada %r; n_hidup=%d >= 2 -> gerbang cakupan "
+                                    "token: %d kandidat (min cakupan 2, token "
+                                    "asing=%s) -- pil + opsi keluar, kartu TIDAK "
+                                    "dilahirkan diam-diam",
+                                    _hidup,
+                                    name_fragment,
+                                    len(_hidup),
+                                    len(rows),
+                                    _asing,
+                                )
+                            elif _asing:
                                 # T89: logger modul ini tak punya handler untuk .info --
                                 # WAJIB .warning agar baris ini benar-benar terbit.
                                 logger.warning(
@@ -1261,26 +1341,7 @@ class EntityResolver:
                             # LIMIT 5 mengikuti seluruh jalur resolusi lain di
                             # berkas ini (Step 1, _cari_and, Step 3, _resolve_*).
                             _min_cakupan = 2 if len(_tokens) >= 2 else 1
-                            _ekspr = " + ".join(
-                                f"(CASE WHEN (nama_produk ILIKE ${i + 2} "
-                                f"OR item_code ILIKE ${i + 2} "
-                                f"OR sku ILIKE ${i + 2}) THEN 1 ELSE 0 END)"
-                                for i in range(len(_tokens))
-                            )
-                            rows = await self.db.fetch(
-                                f"""SELECT * FROM (
-                                        SELECT id, nama_produk, sales_price_amount,
-                                               purchase_price_amount, item_type,
-                                               ({_ekspr}) AS cakupan
-                                        FROM products
-                                        WHERE tenant_id = $1 AND status = 'active'
-                                    ) AS c
-                                    WHERE cakupan >= {_min_cakupan}
-                                    ORDER BY cakupan DESC, nama_produk
-                                    LIMIT 5""",
-                                self.tenant_id,
-                                *[f"%{t}%" for t in _tokens],
-                            )
+                            rows = await _cari_cakupan(_tokens, _min_cakupan)
                             if rows:
                                 # T89: logger modul ini tak punya handler untuk
                                 # .info -- WAJIB .warning agar baris ini terbit.
