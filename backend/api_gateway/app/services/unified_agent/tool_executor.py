@@ -120,6 +120,41 @@ def _user_gave_absolute_date(user_text: str) -> bool:
         return False
 
 
+# ── T143 JUDUL-DARI-ITEM 2026-08-27 ──────────────────────────────────────
+# Penanda "judul yang user sebut sendiri". Bentuknya DISALIN dari
+# _user_gave_absolute_date / _user_stated_issue_date (FIX_BILL_ABSDATE_PERSIST)
+# — pasangan "detektor teks + penanda boolean yang ikut di payload" — karena
+# jalur pil membuat ToolExecutor BARU dengan user_text = nilai pil (UUID),
+# sehingga deteksi dari teks saja MUSTAHIL bertahan ke giliran kedua.
+_JUDUL_EKSPLISIT_RE = re.compile(
+    r"(?:^|[,;.\n]|\bdengan\s+|\bdgn\s+)\s*"
+    r"(?:judul|perihal|subjek|subject)\s*[:\-]?\s+"
+    r"(?P<judul>\S.*)$",
+    re.IGNORECASE,
+)
+
+
+def _judul_eksplisit_dari_teks(user_text: str):
+    """Kembalikan judul yang USER sebut sendiri, atau None.
+
+    Menangkap ketiga bentuk yang BENAR-BENAR ada di chat_messages:
+      - ", judul UNTUK PAK EKO"                (tanpa titik dua)
+      - "\nJudul: Penawaran untuk Toko Melati" (huruf besar + titik dua)
+      - ", dengan judul Penawaran Kaos Hitam Gramasi 24s"
+    """
+    if not user_text:
+        return None
+    try:
+        m = _JUDUL_EKSPLISIT_RE.search(user_text)
+    except Exception:
+        return None
+    if not m:
+        return None
+    j = (m.group("judul") or "").strip().strip("\"'")
+    j = j.rstrip(" .,;:")
+    return j[:255] or None
+
+
 # FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative-date phrases
 
 
@@ -5594,6 +5629,67 @@ class ToolExecutor:
                             item["quantity"] = float(item["quantity"])
                         except (ValueError, TypeError):
                             item["quantity"] = 1.0
+
+            # ── T143: JUDUL DITURUNKAN SETELAH ITEM TER-RESOLVE ──────────
+            # Ditempatkan SETELAH _enrich_items (satu-satunya titik di mana
+            # baris sudah memegang nama MASTER dan item_id). Titik ini dilewati
+            # oleh KEDUA jalur — propose langsung DAN re-propose sesudah pil
+            # (unified_chat._jalankan_pil_entity -> _execute_propose_direct ->
+            # _enrich_payload) — jadi judul ditinjau ulang persis saat item
+            # AKHIRNYA terikat, bukan dibawa membeku dari giliran pertama.
+            # Preseden urutan: a7f0bc5c (backfill item_id mendahului
+            # _enrich_items).
+            _judul_user = payload.pop("_user_subject", None)
+            payload.pop("_user_stated_subject", None)
+            if not _judul_user:
+                _judul_user = _judul_eksplisit_dari_teks(
+                    getattr(self, "user_text", "") or ""
+                )
+            _t143_items = [
+                _i for _i in (payload.get("items") or []) if isinstance(_i, dict)
+            ]
+            _t143_terikat = [
+                str(_i.get("description") or "").strip()
+                for _i in _t143_items
+                if _i.get("item_id") and str(_i.get("description") or "").strip()
+            ]
+            _t143_unik = list(dict.fromkeys(_t143_terikat))
+            _t143_lama = payload.get("subject")
+            if _judul_user:
+                payload["subject"] = _judul_user[:255]
+                logger.warning(
+                    "[T143_JUDUL] eksplisit MENANG: %r (llm=%r, terikat=%s)",
+                    payload["subject"],
+                    _t143_lama,
+                    _t143_unik,
+                )
+            elif len(_t143_unik) == 1:
+                payload["subject"] = ("Penawaran " + _t143_unik[0])[:255]
+                logger.warning(
+                    "[T143_JUDUL] DITURUNKAN dari item terikat: %r <- %r (llm=%r)",
+                    payload["subject"],
+                    _t143_unik[0],
+                    _t143_lama,
+                )
+            elif len(_t143_unik) > 1:
+                _t143_pel = str(payload.get("customer_name") or "").strip()
+                payload["subject"] = (
+                    ("Penawaran untuk " + _t143_pel) if _t143_pel else "Penawaran"
+                )[:255]
+                logger.warning(
+                    "[T143_JUDUL] multi-item (%d baris terikat) -> judul generik: "
+                    "%r (llm=%r, terikat=%s)",
+                    len(_t143_unik),
+                    payload["subject"],
+                    _t143_lama,
+                    _t143_unik,
+                )
+            else:
+                logger.warning(
+                    "[T143_JUDUL] NOL item terikat -> judul teks user "
+                    "DIPERTAHANKAN: %r",
+                    _t143_lama,
+                )
 
             # Strip top-level scalar fields not in CreateQuoteRequest schema (keep tax_rate for review_card)
             for _k in (

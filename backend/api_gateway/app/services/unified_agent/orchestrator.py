@@ -42,6 +42,7 @@ from .tool_executor import (  # noqa: E402
     get_stage_label,
     _parse_absolute_date_id,
     _user_gave_absolute_date,
+    _judul_eksplisit_dari_teks,
 )
 from .tool_registry import is_tutorial_tool  # noqa: E402
 from .citation_rewriter import (  # noqa: E402
@@ -2986,6 +2987,27 @@ class UnifiedAgent:
                         elif _user_gave_absolute_date(user_text or ""):
                             _ep_payload["_user_stated_issue_date"] = True
 
+                # T143 (2026-08-27): CERMIN penanda judul-eksplisit untuk jalur
+                # pil. resolved_payload dibawa MEMBEKU ke giliran kedua dan
+                # ToolExecutor di _jalankan_pil_entity dibuat TANPA user_text
+                # (user_text giliran-2 = UUID pil), jadi tanpa penanda ini
+                # _enrich_quote tak punya cara apa pun mengetahui bahwa user
+                # sudah menyebut judul sendiri. Bentuk = salinan persis
+                # FIX_ENTITY_PILLS_DATEKEEP di atas. Metadata-only; di-pop di
+                # _enrich_quote sebelum REST (tak ada 422).
+                if extraction.intent == "create_quote" and not _ep_payload.get(
+                    "_user_subject"
+                ):
+                    _ep_judul = _judul_eksplisit_dari_teks(user_text or "")
+                    if _ep_judul:
+                        _ep_payload["_user_subject"] = _ep_judul
+                        _ep_payload["_user_stated_subject"] = True
+                        logger.warning(
+                            "[T143_JUDUL_PILL] penanda judul eksplisit disimpan "
+                            "ke resolved_payload: %r",
+                            _ep_judul,
+                        )
+
                 _ep_items = _ep_payload.get("items")
                 # T79 LAPIS 1: Stage-2 LLM emits `items` as a JSON *string*
                 # (measured G0b: items_type=str, 3/3). Downstream gates test
@@ -3275,6 +3297,20 @@ class UnifiedAgent:
                     )
                 elif _user_gave_absolute_date(user_text or ""):
                     save_payload["_user_stated_issue_date"] = True
+
+            # T143: cermin yang sama untuk jalur pending/crud_form multi-giliran.
+            if extraction.intent == "create_quote" and not save_payload.get(
+                "_user_subject"
+            ):
+                _sp_judul = _judul_eksplisit_dari_teks(user_text or "")
+                if _sp_judul:
+                    save_payload["_user_subject"] = _sp_judul
+                    save_payload["_user_stated_subject"] = True
+                    logger.warning(
+                        "[T143_JUDUL_PENDING] penanda judul eksplisit disimpan "
+                        "ke pending payload: %r",
+                        _sp_judul,
+                    )
 
             if (
                 tool_executor
@@ -4202,6 +4238,20 @@ class UnifiedAgent:
                     )
                 elif _user_gave_absolute_date(user_text or ""):
                     save_payload["_user_stated_issue_date"] = True
+
+            # T143: cermin yang sama untuk jalur pending/crud_form multi-giliran.
+            if extraction.intent == "create_quote" and not save_payload.get(
+                "_user_subject"
+            ):
+                _sp_judul = _judul_eksplisit_dari_teks(user_text or "")
+                if _sp_judul:
+                    save_payload["_user_subject"] = _sp_judul
+                    save_payload["_user_stated_subject"] = True
+                    logger.warning(
+                        "[T143_JUDUL_PENDING] penanda judul eksplisit disimpan "
+                        "ke pending payload: %r",
+                        _sp_judul,
+                    )
 
             if (
                 tool_executor

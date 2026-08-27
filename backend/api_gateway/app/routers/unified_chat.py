@@ -6571,6 +6571,9 @@ async def _confirm_direct_action(
         if isinstance(clean_payload, dict):
             clean_payload.pop("_user_issue_date", None)
             clean_payload.pop("_user_stated_issue_date", None)
+            # T143: penanda judul-eksplisit, kelas yang sama.
+            clean_payload.pop("_user_subject", None)
+            clean_payload.pop("_user_stated_subject", None)
 
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}
