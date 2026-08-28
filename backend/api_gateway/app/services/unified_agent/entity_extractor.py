@@ -2618,6 +2618,11 @@ class FieldExtractor:
     def __init__(self, llm_client, default_model: str = "gpt-4o-mini-2024-07-18"):
         self.llm_client = llm_client
         self.default_model = default_model
+        # T144 FASE 1b SITUS 1: kegagalan ekstraksi Stage-2 dulu hanya
+        # `return {}` -> pemanggil tak bisa membedakan "tak ada field" dari
+        # "ekstraksi HANCUR". Penanda ini dibaca orchestrator untuk memberi
+        # KALIMAT JUJUR ke pengguna, bukan diam / kartu yang mengarang.
+        self.last_parse_error: str = ""
 
     async def extract_fields(
         self,
@@ -2638,6 +2643,9 @@ class FieldExtractor:
         if not system_content:
             return {}
 
+        self.last_parse_error = ""
+        raw_text = ""
+
         try:
             response = await self.llm_client.chat(
                 messages=[
@@ -2647,7 +2655,18 @@ class FieldExtractor:
                 tools=[],
                 model=model or self.default_model,
                 temperature=0.1,
-                max_tokens=300,
+                # T144 FASE 1b SITUS 1: 300 -> 4096.
+                # Diukur (gemini-2.5-flash-lite, intent=create_bill, di dalam
+                # container produksi 2026-08-28): completion_tokens mentok di
+                # 286-288 untuk 10/20/30 baris dan JSON terpotong -> parse
+                # gagal; dengan plafon 4096 kebutuhan sesungguhnya terukur
+                # 118 tok (2 baris), 222 (5), 327 (10), 917 (20 baris penuh).
+                # 4096 = default yang sudah dipakai SELURUH call-site lain
+                # (llm_client / gemini_client / openai_client / llm_router),
+                # jadi bukan angka karangan, dan memberi ~4,4x kelonggaran di
+                # atas kebutuhan terbesar yang terukur. Plafon tak terpakai
+                # tidak menambah biaya: token keluaran ditagih saat dipakai.
+                max_tokens=4096,
                 response_format=schema,
             )
 
@@ -2672,5 +2691,15 @@ class FieldExtractor:
             return extracted
 
         except Exception as e:
-            logger.warning("[EXTRACT_S2] Failed: %s", e)
+            # T144 FASE 1b SITUS 1: dulu satu baris tanpa isi -> mustahil
+            # membedakan keluaran terpotong dari amplop rusak. Sekarang
+            # panjang + 200 karakter pertama IKUT, dan penanda diangkat.
+            self.last_parse_error = f"{type(e).__name__}: {e}"
+            logger.warning(
+                "[EXTRACT_S2] Failed intent=%s err=%s raw_len=%d raw_head=%r",
+                intent,
+                e,
+                len(raw_text),
+                raw_text[:200],
+            )
             return {}

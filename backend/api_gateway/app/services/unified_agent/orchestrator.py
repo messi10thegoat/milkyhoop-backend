@@ -1231,6 +1231,35 @@ class UnifiedAgent:
                     collected=merged_entities,
                 )
 
+                # -- T144 FASE 1b SITUS 1: KALIMAT JUJUR -----------------
+                # Ekstraksi Stage-2 yang hancur dulu pulang sebagai {} dan
+                # pipeline jalan terus dengan entitas Stage-1 saja. Akibatnya
+                # pengguna dapat pertanyaan klarifikasi yang BOHONG (mis.
+                # "kapan jatuh temponya?" padahal ia sudah menyebutkannya)
+                # atau kartu yang mengarang. Terukur di produksi 2026-08-28,
+                # create_bill 14 baris. Sekarang berhenti dan berkata jujur.
+                if _field_extractor.last_parse_error:
+                    logger.warning(
+                        "[T144_S2_JUJUR] ekstraksi Stage-2 gagal -> balasan "
+                        "jujur. intent=%s err=%s user_len=%d user_head=%r",
+                        extraction.intent,
+                        _field_extractor.last_parse_error,
+                        len(user_text or ""),
+                        (user_text or "")[:200],
+                    )
+                    return AgentResponse(
+                        message_type="TEXT",
+                        content=(
+                            "Maaf, saya tidak berhasil membaca rincian dari "
+                            "pesan itu, jadi tidak ada yang saya simpan. "
+                            "Coba kirim ulang dengan lebih sedikit baris "
+                            "(misalnya 5 baris sekaligus)."
+                        ),
+                        iterations=1,
+                        model_used="pipeline",
+                        total_latency_ms=int((_time.time() - start_time) * 1000),
+                    )
+
                 if _s2_result:
                     for k, v in _s2_result.items():
                         if v is not None:
@@ -3018,9 +3047,22 @@ class UnifiedAgent:
                 # the parsed list BACK so the persisted resolved_payload is a
                 # list too.
                 if isinstance(_ep_items, str):
+                    _t144_raw_items = _ep_items
                     try:
                         _ep_items = json.loads(_ep_items)
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError) as _t144_e:
+                        # T144 FASE 1b SITUS 2: dulu NOL jejak. String mentah
+                        # tetap dipersist ke resolved_payload, gate isinstance
+                        # di hilir diam-diam mati, dan enricher jatuh ke
+                        # scalar-fallback. Sekarang sebabnya tercatat.
+                        logger.warning(
+                            "[T144_ITEMS_PARSE_GAGAL] items string gagal "
+                            "di-parse. intent=%s err=%s raw_len=%d raw_head=%r",
+                            extraction.intent,
+                            _t144_e,
+                            len(_t144_raw_items),
+                            _t144_raw_items[:200],
+                        )
                         _ep_items = None
                     if isinstance(_ep_items, list):
                         _ep_payload["items"] = _ep_items
