@@ -6581,17 +6581,179 @@ async def _confirm_direct_action(
             if not request_body:
                 request_body = None  # Send no body for empty DELETE
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.request(
-                method=config.rest_method,
-                url=f"{base_url}{endpoint}",
-                json=request_body,
-                headers={
-                    "Authorization": auth_header,
-                    "Content-Type": "application/json",
-                    "X-Tenant-ID": tenant_id,
+        # ══════════════════ T144 FASE 2 — EKSEKUSI BULK create_item ══════════════════
+        # D2: LOOP `POST /api/items` TUNGGAL — endpoint yang SAMA dengan jalur
+        # skalar dan dengan form UI. BUKAN /api/items/bulk-import: endpoint itu
+        # `return {"success": True, ...}` apa pun yang terjadi, penamaan fieldnya
+        # berbeda (code/type/unit/selling_price), dan ia INSERT langsung
+        # melewati default_accounts_policy, SKU auto-generate, dan tiga pagar
+        # duplikat.
+        #
+        # JANGAN `raise` di tengah loop (D3): 8 jadi 2 gagal harus MENAMPILKAN
+        # semuanya dan menyebut baris mana yang gagal — bukan menolak semuanya,
+        # bukan menyimpan sebagian tanpa mengatakannya.
+        _t144_baris = None
+        if action_key == "create_item":
+            _t144_raw = clean_payload.get("items")
+            if isinstance(_t144_raw, list) and _t144_raw:
+                _t144_baris = _t144_raw
+        # `items` bukan field CreateItemRequest -> selalu dibuang dari body.
+        if isinstance(clean_payload, dict):
+            clean_payload.pop("items", None)
+
+        if _t144_baris is not None:
+            from ..services.unified_agent.direct_action_registry import (  # noqa: E402
+                t144_baris_bisa_dibuat as _t144_bisa,
+                t144_masalah_baris as _t144_masalah,
+            )
+
+            _t144_dibuat: list = []
+            _t144_gagal: list = []
+            # Kunci yang boleh diwarisi dari kartu (akun default hasil
+            # default_accounts_policy + tanggal). Nama/harga/satuan/tipe TIDAK
+            # diwarisi — tiap baris membawa miliknya sendiri, kalau tidak baris
+            # ke-2..ke-5 akan lahir sebagai salinan baris ke-1.
+            _t144_warisan = {
+                k: v
+                for k, v in clean_payload.items()
+                if k
+                in (
+                    "sales_account_id",
+                    "purchase_account_id",
+                    "inventory_account_id",
+                    "cogs_account_id",
+                )
+                and v
+            }
+            async with httpx.AsyncClient(timeout=20.0) as _t144_client:
+                for _i, _b in enumerate(_t144_baris, start=1):
+                    _nama = str(_b.get("nama_produk") or "").strip()
+                    if not _t144_bisa(_b):
+                        _t144_gagal.append(
+                            {
+                                "line": _i,
+                                "name": _nama or "(tanpa nama)",
+                                "reason": "data belum lengkap: "
+                                + ", ".join(_t144_masalah(_b)),
+                            }
+                        )
+                        continue
+                    _body = dict(_t144_warisan)
+                    _body["name"] = _nama
+                    _body["base_unit"] = str(_b.get("base_unit") or "pcs")
+                    _t144_tipe = str(_b.get("item_type") or "goods")
+                    _body["item_type"] = (
+                        _t144_tipe
+                        if _t144_tipe in ("goods", "service", "non_inventory")
+                        else "goods"
+                    )
+                    for _k in (
+                        "sales_price",
+                        "purchase_price",
+                        "sku",
+                        "kategori",
+                        "deskripsi",
+                    ):
+                        if _b.get(_k) not in (None, ""):
+                            _body[_k] = _b[_k]
+                    if _b.get("description") and "deskripsi" not in _body:
+                        _body["deskripsi"] = _b["description"]
+                    try:
+                        _r = await _t144_client.post(
+                            f"{base_url}/api/items",
+                            json=_body,
+                            headers={
+                                "Authorization": auth_header,
+                                "Content-Type": "application/json",
+                                "X-Tenant-ID": tenant_id,
+                            },
+                        )
+                    except Exception as _t144_e:  # noqa: BLE001
+                        logger.warning(
+                            "[T144_BULK] baris %d (%s) exception: %s",
+                            _i,
+                            _nama,
+                            _t144_e,
+                        )
+                        _t144_gagal.append(
+                            {
+                                "line": _i,
+                                "name": _nama,
+                                "reason": "gagal terhubung ke server",
+                            }
+                        )
+                        continue
+                    if _r.status_code in (200, 201):
+                        _j = _r.json()
+                        _t144_dibuat.append(
+                            {
+                                "line": _i,
+                                "name": _nama,
+                                "id": str(
+                                    _j.get("id")
+                                    or (_j.get("data") or {}).get("id")
+                                    or ""
+                                ),
+                            }
+                        )
+                    else:
+                        _alasan = ""
+                        try:
+                            _alasan = str((_r.json() or {}).get("detail") or "")
+                        except Exception:  # noqa: BLE001
+                            _alasan = ""
+                        logger.warning(
+                            "[T144_BULK] baris %d (%s) HTTP %s: %s",
+                            _i,
+                            _nama,
+                            _r.status_code,
+                            _alasan[:200],
+                        )
+                        _t144_gagal.append(
+                            {
+                                "line": _i,
+                                "name": _nama,
+                                "reason": _alasan[:200]
+                                or ("HTTP %d" % _r.status_code),
+                            }
+                        )
+            logger.warning(
+                "[T144_BULK] eksekusi selesai: %d dibuat, %d gagal (dari %d baris)",
+                len(_t144_dibuat),
+                len(_t144_gagal),
+                len(_t144_baris),
+            )
+
+            class _T144Resp:  # bentuk minimal yang dibaca jalur sukses di bawah
+                def __init__(self, kode, badan):
+                    self.status_code = kode
+                    self._badan = badan
+                    self.text = json.dumps(badan, default=str)
+
+                def json(self):
+                    return self._badan
+
+            response = _T144Resp(
+                200 if _t144_dibuat else 400,
+                {
+                    "created": _t144_dibuat,
+                    "failed": _t144_gagal,
+                    "total": len(_t144_baris),
+                    "id": _t144_dibuat[0]["id"] if _t144_dibuat else "",
                 },
             )
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.request(
+                    method=config.rest_method,
+                    url=f"{base_url}{endpoint}",
+                    json=request_body,
+                    headers={
+                        "Authorization": auth_header,
+                        "Content-Type": "application/json",
+                        "X-Tenant-ID": tenant_id,
+                    },
+                )
 
         if response.status_code in (200, 201):
             result_data = response.json()
@@ -6742,6 +6904,42 @@ async def _confirm_direct_action(
             # dok. 81 (4): sertakan badan respons endpoint supaya nomor
             # dokumen yang baru lahir bisa masuk kalimat sukses.
             success_msg = config.get_success_message(payload, result_data)
+
+            # T144 FASE 2 (D3): hasil bulk disebut PER BARIS. Template skalar
+            # ("Barang/jasa 'X' berhasil dibuat") akan menamai SATU barang dan
+            # membuat empat sisanya menguap — persis cacat yang dilaporkan.
+            if _t144_baris is not None:
+                _ok = result_data.get("created") or []
+                _ng = result_data.get("failed") or []
+                _bag = []
+                if _ok:
+                    _bag.append(
+                        "%d dari %d barang berhasil didaftarkan: %s."
+                        % (
+                            len(_ok),
+                            result_data.get("total", len(_t144_baris)),
+                            ", ".join(
+                                "%s (baris %s)" % (c.get("name"), c.get("line"))
+                                for c in _ok
+                            ),
+                        )
+                    )
+                else:
+                    _bag.append(
+                        "Tidak ada satu pun dari %d barang yang berhasil "
+                        "didaftarkan." % result_data.get("total", len(_t144_baris))
+                    )
+                if _ng:
+                    _bag.append(
+                        "Gagal: "
+                        + "; ".join(
+                            "baris %s (%s) — %s"
+                            % (g.get("line"), g.get("name"), g.get("reason"))
+                            for g in _ng
+                        )
+                        + "."
+                    )
+                success_msg = " ".join(_bag)
 
             # Clear document_context from Layer 2 (only for document actions)
             if action_key == "confirm_document_draft" and session_id:
@@ -6964,6 +7162,42 @@ async def _confirm_direct_action(
                 "[F3] galat endpoint action=%s detail=%s",
                 action_key, str(error_detail)[:500],
             )
+            # T144 FASE 2 (D3): kalau SELURUH baris bulk gagal, sebab tiap
+            # baris SUDAH diketahui per baris. Kalimat generik
+            # ("ada isian yang belum lengkap") membuangnya dan mengembalikan
+            # kebisuan yang jadi sebab tiket ini — lima barang menguap tanpa
+            # satu pun kata. Sebutkan barisnya.
+            if _t144_baris is not None:
+                _ng = (error_json or {}).get("failed") if isinstance(
+                    locals().get("error_json"), dict
+                ) else None
+                if not _ng:
+                    try:
+                        _ng = (response.json() or {}).get("failed")
+                    except Exception:  # noqa: BLE001
+                        _ng = None
+                if _ng:
+                    return ChatMessageResponse(
+                        message_type="ACTION_RESULT",
+                        text=(
+                            "Tidak ada satu pun dari %d barang yang berhasil "
+                            "didaftarkan. Gagal: %s."
+                            % (
+                                len(_t144_baris),
+                                "; ".join(
+                                    "baris %s (%s) \u2014 %s"
+                                    % (
+                                        g.get("line"),
+                                        g.get("name"),
+                                        g.get("reason"),
+                                    )
+                                    for g in _ng
+                                ),
+                            )
+                        ),
+                        data={"success": False},
+                    )
+
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",
                 text=_pesan_galat_manusiawi(error_detail, payload),

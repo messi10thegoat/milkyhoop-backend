@@ -1076,6 +1076,17 @@ class EntityResolver:
 
     async def _resolve_item(self, name_fragment: str) -> Optional[ResolvedEntity]:
         """products.nama_produk (Bahasa!) — with fuzzy fallback for typos."""
+        # T144 FASE 2 — JEJAK WAJIB. Fungsi ini MENCARI barang yang SUDAH ADA.
+        # Pada jalur bulk create_item ia tidak boleh terpanggil: ambang fuzzy
+        # 0.5 meloloskan similarity("(2XL)","(3XL)")=0.714, dan pemanggilnya
+        # di tool_executor memakai `exact or results[0]` — tebakan buta yang
+        # akan MELEBUR lima ukuran jadi satu. Pagarnya ada di resolve_and_complete
+        # (`not intent.startswith("create_item")`), tapi pagar tanpa jejak tak
+        # bisa diuji: baris ini yang membuat "nol pemanggilan" jadi PENGUKURAN,
+        # bukan pengandaian.
+        logger.warning(
+            "[RESOLVE_ITEM] _resolve_item dipanggil, fragment=%r", name_fragment
+        )
         try:
             search_term = name_fragment.strip()
 

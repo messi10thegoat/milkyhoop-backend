@@ -2037,6 +2037,21 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
         success_message_template="Barang/jasa '{entity_name}' berhasil dibuat.",
         fields=[
             FieldSpec(name="name", label="Nama", required=True),
+            # T144 FASE 2 — KONTROL NEGATIF PROSA, LANGKAH 1.
+            # Deskripsi ini SENGAJA tidak memuat frasa "Array of ...".
+            FieldSpec(
+                name="items",
+                label="Item",
+                field_type="json",
+                required=False,
+                description=(
+                    "Barang bila user menyebut LEBIH DARI SATU barang dalam "
+                    "satu pesan. Tiap barang dapat berisi: nama_produk, "
+                    "item_type, base_unit, sales_price, purchase_price, sku, "
+                    "kategori, description. Kosongkan bila user hanya "
+                    "menyebut satu barang."
+                ),
+            ),
             FieldSpec(
                 name="item_type",
                 label="Tipe",
@@ -5243,6 +5258,127 @@ def _build_api_to_label(options: list) -> dict:
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+# T144 FASE 2 — create_item BANYAK BARANG (satu pesan, satu kartu)
+#
+# Subfield nama dipilih `nama_produk`, BUKAN `name` (D6). `name` adalah
+# entity_name_field create_item: WAJIB, identitas entitas, dan sudah punya
+# dua penulis global tak-sadar-items (orchestrator: normalisasi nama
+# entitas + jalur pil). Verifikasi tabrakan: `nama_produk` TIDAK pernah
+# dibaca/ditulis sebagai kunci TOP-LEVEL payload di jalur create_item —
+# seluruh 20 kemunculannya di backend adalah (a) nama KOLOM products, atau
+# (b) subfield baris item pada aksi lain, atau (c) pemetaan tampilan
+# entitas yang SUDAH ADA (update_item/delete_item). Nol enricher terdaftar
+# untuk CREATE_ITEM (ENRICHERS tak memuat kunci itu), jadi tak ada
+# penambal yang bisa menyentuhnya.
+#
+# ⚠️ KOREKSI atas usul D6: body POST /api/items memakai `name`, BUKAN
+# `nama_produk` (schemas/items.py CreateItemRequest.name). `nama_produk`
+# adalah nama KOLOM DB. Pemetaan subfield -> body dilakukan eksplisit di
+# unified_chat._t144_body_item.
+# ══════════════════════════════════════════════════════════════════════
+
+T144_BATAS_ITEM = 10
+
+# Field yang kalau kosong membuat satu baris BERMASALAH (ditandai, tetap
+# ditampilkan). `sales_price`/`purchase_price` diperiksa sebagai pasangan:
+# nol dua-duanya = TAK BISA dibuat (endpoint menolak lewat at_least_one).
+T144_FIELD_BARIS = ("nama_produk", "item_type", "base_unit", "sales_price", "purchase_price")
+
+
+def t144_masalah_baris(baris: dict) -> list[str]:
+    """Label field yang hilang pada satu baris. Kosong = baris sehat."""
+    if not isinstance(baris, dict):
+        return ["baris bukan objek"]
+    _label = {
+        "nama_produk": "nama",
+        "item_type": "tipe",
+        "base_unit": "satuan",
+        "sales_price": "harga jual",
+        "purchase_price": "harga beli",
+    }
+    return [
+        _label[k]
+        for k in T144_FIELD_BARIS
+        if baris.get(k) in (None, "", 0)
+    ]
+
+
+def t144_baris_bisa_dibuat(baris: dict) -> bool:
+    """Cukup untuk POST /api/items? nama + satuan + minimal satu harga."""
+    if not isinstance(baris, dict):
+        return False
+    return bool(
+        str(baris.get("nama_produk") or "").strip()
+        and str(baris.get("base_unit") or "").strip()
+        and (baris.get("sales_price") or baris.get("purchase_price"))
+    )
+
+
+def _t144_rupiah(v) -> str:
+    try:
+        return "Rp {:,}".format(int(float(v))).replace(",", ".")
+    except (TypeError, ValueError):
+        return "-"
+
+
+def t144_baris_teks(i: int, baris: dict) -> tuple[str, str]:
+    """(label, value) satu baris untuk kartu. Nol angka karangan."""
+    masalah = t144_masalah_baris(baris)
+    nama = str(baris.get("nama_produk") or "(tanpa nama)").strip()
+    label = "%d. %s" % (i, nama)
+    if masalah:
+        label = "\u26a0 " + label
+    bagian = [
+        "Jual %s" % _t144_rupiah(baris.get("sales_price"))
+        if baris.get("sales_price")
+        else "Jual -",
+        "Beli %s" % _t144_rupiah(baris.get("purchase_price"))
+        if baris.get("purchase_price")
+        else "Beli -",
+        str(baris.get("base_unit") or "-"),
+        _API_TO_LABEL_MAP.get(
+            str(baris.get("item_type") or "").lower(),
+            str(baris.get("item_type") or "-"),
+        ),
+    ]
+    nilai = " \u00b7 ".join(bagian)
+    if masalah:
+        nilai += "  \u2014 belum ada: " + ", ".join(masalah)
+    return label, nilai
+
+
+def t144_items_bulk(action_key: str, payload: dict) -> list | None:
+    """Baris bulk create_item, atau None kalau ini jalur skalar."""
+    if action_key != "create_item":
+        return None
+    baris = payload.get("items")
+    if not isinstance(baris, list) or not baris:
+        return None
+    return baris
+
+
+def t144_peringatan(baris_list: list) -> list[dict]:
+    """Peringatan per-baris (D3): sebut BARIS MANA dan apa yang kurang."""
+    keluar = []
+    for i, b in enumerate(baris_list, start=1):
+        masalah = t144_masalah_baris(b)
+        if not masalah:
+            continue
+        nama = str(b.get("nama_produk") or "(tanpa nama)").strip()
+        if t144_baris_bisa_dibuat(b):
+            keluar.append({
+                "type": "warning",
+                "message": "Baris %d (%s) belum lengkap: %s. Tetap bisa didaftarkan." % (i, nama, ", ".join(masalah)),
+            })
+        else:
+            keluar.append({
+                "type": "error",
+                "message": "Baris %d (%s) TIDAK bisa didaftarkan: %s." % (i, nama, ", ".join(masalah)),
+            })
+    return keluar
+
+
 def build_confirmation_table(
     action_key: str, payload: dict, journal_preview: list | None = None
 ) -> str:
@@ -5250,6 +5386,27 @@ def build_confirmation_table(
     config = DIRECT_ACTIONS.get(action_key)
     if not config:
         return ""
+
+    # T144 FASE 2 — bulk create_item: SATU tabel, SATU baris per barang.
+    _t144_baris = t144_items_bulk(action_key, payload)
+    if _t144_baris is not None:
+        _t = ["### Buat %d Barang/Jasa\n" % len(_t144_baris)]
+        _t.append("| # | Nama | Harga Jual | Harga Beli | Satuan | Tipe |")
+        _t.append("|---|------|-----------|-----------|--------|------|")
+        for _i, _b in enumerate(_t144_baris, start=1):
+            _tanda = "\u26a0 " if t144_masalah_baris(_b) else ""
+            _t.append("| %s%d | %s | %s | %s | %s | %s |" % (
+                _tanda, _i,
+                str(_b.get("nama_produk") or "(tanpa nama)"),
+                _t144_rupiah(_b.get("sales_price")) if _b.get("sales_price") else "-",
+                _t144_rupiah(_b.get("purchase_price")) if _b.get("purchase_price") else "-",
+                str(_b.get("base_unit") or "-"),
+                _API_TO_LABEL_MAP.get(str(_b.get("item_type") or "").lower(), str(_b.get("item_type") or "-")),
+            ))
+        for _w in t144_peringatan(_t144_baris):
+            _t.append("")
+            _t.append("> %s" % _w["message"])
+        return "\n".join(_t)
 
     lines = [f"### {config.display_name}\n"]
     lines.append("| Field | Value |")
@@ -5397,6 +5554,45 @@ def build_review_card_payload(
     config = DIRECT_ACTIONS.get(action_key)
     if not config:
         return None
+
+    # T144 FASE 2 — bulk create_item. Kartu dibangun SENDIRI, bukan lewat
+    # loop FieldSpec: sepuluh FieldSpec skalar hanya menggambarkan barang
+    # PERTAMA, dan blok `items` generik di bawah membaca kunci baris
+    # faktur (description/quantity/unit_price) yang TIDAK ADA di baris
+    # create_item -> lima baris akan jadi "Item / 0 / Rp 0".
+    #
+    # ⚠️ Baris dirender sebagai `header` (label/value), BUKAN `items`:
+    # tabel `items` di FE terpasang kolom Qty + Subtotal, dan create_item
+    # tidak punya qty. Mengisinya 1 = mengarang angka di layar (kelas
+    # T144-b). Ini BATAS FE terpasang, bukan pilihan estetika.
+    _t144_baris = t144_items_bulk(action_key, payload)
+    if _t144_baris is not None:
+        _t144_header = [
+            {
+                "label": _lb,
+                "value": _vl,
+                "field_type": "string",
+                "key": "items",
+                "editable": False,
+            }
+            for _lb, _vl in (
+                t144_baris_teks(_i, _b)
+                for _i, _b in enumerate(_t144_baris, start=1)
+            )
+        ]
+        return {
+            "render_target": "inline",
+            "title": "Buat %d Barang/Jasa" % len(_t144_baris),
+            "header": _t144_header,
+            "items": None,
+            "totals": None,
+            "journal_lines": None,
+            "journal_balanced": None,
+            "warnings": t144_peringatan(_t144_baris) or None,
+            "impact_notes": None,
+            "category_label": None,
+            "version": 1,
+        }
 
     # Header fields — from FieldSpec, same iteration as build_confirmation_table
     header = []

@@ -89,6 +89,100 @@ _DUE_DATE_SLOT_CRUD_INTENTS = frozenset(
 )
 
 
+# ══════════════════════════════════════════════════════════════════════
+# T144 FASE 2 — `items` create_item: STRING -> LIST, sekali, di satu tempat.
+#
+# Model gemini-2.5-flash-lite mengeluarkan `items` sebagai STRING berisi
+# JSON (field_type="json" -> ["string","null"] -> _clean_schema meruntuhkan
+# union jadi "STRING"). TERUKUR 4/4 di :8002, dengan MAUPUN tanpa frasa
+# "Array of ..." di description — frasa itu NOL PENGARUH (kontrol negatif
+# T144 FASE 2, 2026-08-28).
+#
+# ⚠️ PAGAR: jalur ini TIDAK BOLEH memanggil _resolve_item / _enrich_items.
+# create_item MEMBUAT barang baru; mencari yang lama akan melebur lima
+# ukuran jadi satu (similarity("(2XL)","(3XL)")=0.714 > ambang 0.5, lalu
+# `exact or results[0]` menebak buta). Pagarnya struktural: ENRICHERS
+# tidak memuat kunci "CREATE_ITEM", jadi _enrich_payload melewatinya.
+# ══════════════════════════════════════════════════════════════════════
+
+T144_BATAS_ITEM = 10
+
+
+def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int]:
+    # -> (baris_bersih, jumlah_kalau_melebihi_batas)
+    #
+    # (None, 0) = jalur SKALAR, yang lama, TAK TERSENTUH (`items` di-pop
+    #             supaya tak pernah ikut ke body POST).
+    # (None, N) = N > batas: NOL yang diproses (D5).
+    if not isinstance(entities, dict):
+        return None, 0
+    mentah = entities.get("items")
+    if isinstance(mentah, str):
+        _asli = mentah
+        try:
+            mentah = json.loads(mentah)
+        except (ValueError, TypeError) as _e:
+            logger.warning(
+                "[T144_BULK] items string gagal di-parse: err=%s len=%d head=%r",
+                _e,
+                len(_asli),
+                _asli[:200],
+            )
+            mentah = None
+    if not isinstance(mentah, list):
+        entities.pop("items", None)
+        return None, 0
+    bersih = [
+        b
+        for b in mentah
+        if isinstance(b, dict) and str(b.get("nama_produk") or "").strip()
+    ]
+    if not bersih:
+        # D1: `items` kosong -> jalur skalar SEKARANG, tak tersentuh.
+        # JANGAN mengarang satu baris dari field top-level (kelas T144-b).
+        entities.pop("items", None)
+        return None, 0
+    if len(bersih) > T144_BATAS_ITEM:
+        return None, len(bersih)
+    entities["items"] = bersih
+    # Angkat nilai skalar dari baris PERTAMA yang memilikinya, HANYA bila
+    # slot top-level masih kosong. Nilainya NYATA (milik salah satu baris),
+    # bukan karangan; tujuannya supaya validasi wajib + at_least_one yang
+    # sudah ada lulus tanpa dicabangkan, dan jalur skalar tetap satu jalur.
+    for _slot, _sub in (
+        ("name", "nama_produk"),
+        ("item_type", "item_type"),
+        ("base_unit", "base_unit"),
+        ("sales_price", "sales_price"),
+        ("purchase_price", "purchase_price"),
+    ):
+        if entities.get(_slot):
+            continue
+        for _b in bersih:
+            if _b.get(_sub):
+                entities[_slot] = _b[_sub]
+                break
+    # Isi-turun HANYA untuk `item_type` dan `base_unit`. Keduanya memang
+    # dinyatakan SEKALI untuk seluruh pesan ("daftarkan item baru: 1..5"),
+    # dan nilai yang dipakai adalah nilai TOP-LEVEL yang SAMA PERSIS dengan
+    # yang dipakai jalur skalar hari ini — jadi ini bukan angka karangan.
+    #
+    # ⚠️ HARGA TIDAK diisi-turun. Harga per baris berbeda-beda; mengisinya
+    # dari baris lain akan MENYEMBUNYIKAN baris yang memang tak punya harga,
+    # padahal justru itu yang wajib ditandai (D3).
+    for _b in bersih:
+        for _slot in ("item_type", "base_unit"):
+            if not _b.get(_slot) and entities.get(_slot):
+                _b[_slot] = entities[_slot]
+
+    logger.warning(
+        "[T144_BULK] jalur bulk create_item AKTIF: %d baris, nama=%r",
+        len(bersih),
+        [str(b.get("nama_produk"))[:40] for b in bersih],
+    )
+    return bersih, 0
+
+
 def _is_due_date_slot_answer_collision(wf_intent, query_intent):
     """True when an overdue-query classification collides with a due-date slot
     answer inside an active due-date-bearing CRUD form -> must NOT cancel."""
@@ -1315,6 +1409,47 @@ class UnifiedAgent:
                         list(_s2_result.keys()),
                         list(merged_entities.keys()),
                     )
+
+        # ═══════════════ T144 FASE 2 — NORMALISASI items create_item ═══════════════
+        # SITUS KONVERSI untuk jalur non-pil. Jalur pil (_ep_items, ~L3050)
+        # meng-parse ke SALINAN payload dan tak pernah dilewati create_item
+        # (nol slot vendor/customer -> nol ambiguitas -> blok itu tak jalan).
+        # Tanpa blok ini `items` tetap STRING sepanjang jalur dan setiap gate
+        # isinstance(..., list) di hilir mati diam-diam.
+        if extraction.intent == "create_item":
+            _t144_baris, _t144_terlalu_banyak = _t144_normalisasi_items(
+                extraction.entities
+            )
+            if _t144_terlalu_banyak:
+                # D5: JANGAN potong diam-diam, JANGAN tolak diam-diam —
+                # SEBUT jumlahnya. Dihitung saat `items` sudah struktur,
+                # jadi len() adalah fakta, bukan tafsir.
+                logger.warning(
+                    "[T144_BULK_BATAS] %d barang dalam satu pesan (batas %d) "
+                    "-- minta dipecah, nol yang disimpan",
+                    _t144_terlalu_banyak,
+                    T144_BATAS_ITEM,
+                )
+                return AgentResponse(
+                    message_type="TEXT",
+                    content=(
+                        "Pesan ini memuat %d barang sekaligus, sementara saya "
+                        "hanya sanggup memproses %d barang dalam satu kartu. "
+                        "Tidak ada satu pun yang saya simpan. Mohon dipecah "
+                        "jadi beberapa pesan, masing-masing paling banyak %d "
+                        "barang."
+                        % (
+                            _t144_terlalu_banyak,
+                            T144_BATAS_ITEM,
+                            T144_BATAS_ITEM,
+                        )
+                    ),
+                    iterations=1,
+                    tool_calls_made=[],
+                    model_used="pipeline",
+                    total_latency_ms=int((_time.time() - start_time) * 1000),
+                    thinking_stages=["Menganalisis pesan"],
+                )
 
         resolution = await resolver.resolve_and_complete(
             intent=extraction.intent,
@@ -4012,6 +4147,13 @@ class UnifiedAgent:
                 or _propose_payload.get("account_name")
                 or ""
             )
+
+        # T144 FASE 2: normalisasi KEDUA, idempoten. _propose_payload dibangun
+        # ulang dari resolution.payload + merged_entities, dan keduanya bisa
+        # membawa salinan `items` yang MASIH string. List tetap list; string
+        # jadi list; kosong -> di-pop (jalur skalar utuh).
+        if extraction.intent == "create_item":
+            _t144_normalisasi_items(_propose_payload)
 
         propose_result = await tool_executor._execute_propose_direct(
             {
