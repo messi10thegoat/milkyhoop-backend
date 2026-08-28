@@ -1974,9 +1974,18 @@ class ToolExecutor:
             # "Terdeteksi dari vendor 'NONENG'" on a create_item card. Put the
             # item/entity name first and EXCLUDE vendor/customer entirely so a
             # stray counterparty can never appear on a master-data card.
+            # T145 (2026-08-28): "name" DIDAHULUKAN atas "item_name". Pada
+            # payload create_item nyata, "name" membawa nama LENGKAP hasil
+            # ekstraksi ("Kaos 20s + Sablon Plastisol (Size XS-XL)") sedangkan
+            # "item_name" membawa varian TERPOTONG ("Kaos 20s + Sablon
+            # Plastisol"), sehingga label memilih yang terpotong. Sensus atas
+            # pending_actions.action_plan: pada seluruh baris terdampak (yang
+            # memuat KEDUA kunci pada cabang ini) item_name TAK PERNAH lebih
+            # panjang dari name -- 4 identik + 1 superset, nol kasus balik.
+            # Hanya URUTAN yang ditukar; vendor/customer tetap DIKECUALIKAN.
             _det_party_order = [
-                ("item_name", "barang"),
                 ("name", "nama"),
+                ("item_name", "barang"),
                 ("account_name", "akun"),
             ]
         elif action_key in ("create_vendor", "update_vendor"):
