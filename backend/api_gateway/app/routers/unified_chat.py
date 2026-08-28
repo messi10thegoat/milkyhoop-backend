@@ -1530,6 +1530,16 @@ async def send_message(request: Request, body: ChatMessageRequest):
                     )
                     if _wfc_card is not None:
                         return _wfc_card
+                # T171 FASE 1 — rentetan slide create_item memakai gerbang
+                # "lanjut" yang SAMA. Diperiksa SETELAH antrean bukti (kalau
+                # keduanya hidup, bukti menang — ia lebih dulu ada) dan hanya
+                # menyala kalau percakapan ini memang punya baris batch yang
+                # slide berjalannya sudah dijawab.
+                _t171_card = await _advance_item_slide(
+                    ctx, body.session_id, body.conversation_id
+                )
+                if _t171_card is not None:
+                    return _t171_card
                 # Queue empty/absent → fall through to normal handling (recon
                 # and other flows also use "lanjut"; never swallow it here).
         except Exception:
@@ -3636,6 +3646,202 @@ Aturan:
         logger.error(
             "[FIX_MULTIDOC] _process_one_document failed: %s", _doc_err, exc_info=True
         )
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# T171 FASE 1 — RENTETAN SLIDE create_item
+#
+# MENYAMBUNG ke mekanisme rentetan yang sudah hidup (FIX_MULTIDOC_WFC):
+# gerbang "lanjut" yang sama, `workflow_continuation` yang sama, auto-maju FE
+# dua arah (Confirm DAN Batal) yang sama. Yang berbeda hanya ISI antreannya —
+# baris barang, bukan berkas bukti — dan karena itu antrean disimpan di
+# `pending_actions.action_plan` slide berjalan, bukan di
+# `chat_session_state.document_context` (yang ditulis ulang oleh
+# StateUpdateHooks.after_propose setelah tiap propose).
+#
+# TTL/slide gratis: tiap slide adalah pending_action BARU dengan expires_at
+# sendiri.
+# ══════════════════════════════════════════════════════════════════════
+
+_T171_KUNCI_BATCH = (
+    "_batch_id",
+    "_batch_index",
+    "_batch_total",
+    "_batch_queue",
+    "_batch_dilewati_awal",
+)
+
+
+async def _t171_baris_batch(ctx: dict, kunci: list):
+    """Baris pending_actions TERBARU milik rentetan slide di percakapan ini.
+
+    WASPADA: pending_actions.conversation_id BERISI SESSION ID, bukan
+    conversation_id — _execute_propose_direct menulis `self.session_id or ""`
+    ke kolom itu. Terukur [SQL] 2026-08-28: baris slide-1 tersimpan dengan
+    conversation_id = session_id. Keduanya dicocokkan.
+    """
+    _kunci = [k for k in (kunci or []) if k]
+    if not _kunci:
+        return None
+    _pool = await get_session_db_pool()
+    return await _pool.fetchrow(
+        """SELECT id::text AS id, status, action_plan, created_at
+             FROM pending_actions
+            WHERE tenant_id = $1
+              AND conversation_id = ANY($2::text[])
+              AND action_id = 'create_item'
+              AND action_plan ? '_batch_id'
+            ORDER BY created_at DESC
+            LIMIT 1""",
+        ctx["tenant_id"],
+        _kunci,
+    )
+
+
+def _t171_plan(row) -> dict:
+    _ap = row["action_plan"]
+    if isinstance(_ap, str):
+        try:
+            _ap = json.loads(_ap)
+        except Exception:
+            _ap = {}
+    return _ap if isinstance(_ap, dict) else {}
+
+
+async def _t171_ringkasan(ctx: dict, batch_id: str, dilewati_awal: list) -> str:
+    """Ringkasan penutup — DIBACA DARI pending_actions, bukan dari akumulator.
+
+    Yang DILEWATI wajib disebut dengan nama (itu satu-satunya jejak bahwa
+    owner memang menolak barang itu, bukan bahwa sistem kehilangannya).
+    """
+    _pool = await get_session_db_pool()
+    _rows = await _pool.fetch(
+        """SELECT action_plan->>'name' AS nama, status
+             FROM pending_actions
+            WHERE tenant_id = $1 AND action_plan->>'_batch_id' = $2
+            ORDER BY (action_plan->>'_batch_index')::int""",
+        ctx["tenant_id"],
+        batch_id,
+    )
+    _dibuat = [r["nama"] for r in _rows if r["status"] == "COMPLETED"]
+    _dilewati = [
+        r["nama"] for r in _rows if r["status"] in ("CANCELLED", "EXPIRED")
+    ]
+    _gagal = [r["nama"] for r in _rows if r["status"] == "FAILED"]
+    _total = len(_rows) + len(dilewati_awal or [])
+    _bag = ["Selesai. %d dari %d barang dibuat." % (len(_dibuat), _total)]
+    if _dibuat:
+        _bag.append("Dibuat: " + " · ".join(_dibuat))
+    if _dilewati:
+        _bag.append("Dilewati: " + " · ".join(_dilewati))
+    if _gagal:
+        _bag.append("Gagal: " + " · ".join(_gagal))
+    if dilewati_awal:
+        _bag.append("Tidak ditampilkan: " + " · ".join(dilewati_awal))
+    logger.warning(
+        "[T171_RINGKASAN] batch=%s dibuat=%d dilewati=%d gagal=%d awal=%d",
+        str(batch_id)[:8],
+        len(_dibuat),
+        len(_dilewati),
+        len(_gagal),
+        len(dilewati_awal or []),
+    )
+    return _bag[0] + (" " + " — ".join(_bag[1:]) if len(_bag) > 1 else "")
+
+
+async def _advance_item_slide(
+    ctx: dict, session_id: Optional[str], conversation_id: str
+) -> Optional[ChatMessageResponse]:
+    """Lahirkan slide BERIKUTNYA, atau ringkasan penutup kalau antrean habis.
+
+    Mengembalikan None kalau percakapan ini tidak sedang dalam rentetan slide,
+    atau slide berjalan masih PENDING (belum dijawab) — jadi "lanjut" milik
+    alur lain tak pernah tertelan.
+    """
+    try:
+        _row = await _t171_baris_batch(ctx, [session_id, conversation_id])
+        if _row is None or _row["status"] == "PENDING":
+            return None
+        _ap = _t171_plan(_row)
+        _bid = _ap.get("_batch_id")
+        if not _bid:
+            return None
+        _queue = _ap.get("_batch_queue") or []
+        _total = int(_ap.get("_batch_total") or 1)
+        _idx = int(_ap.get("_batch_index") or 1)
+        _awal = _ap.get("_batch_dilewati_awal") or []
+
+        if not _queue:
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text=await _t171_ringkasan(ctx, _bid, _awal),
+                session_id=session_id,
+            )
+
+        from ..services.unified_agent.direct_action_registry import (  # noqa: E402
+            t171_baris_ke_payload as _t171_ke_payload,
+        )
+
+        _next = _queue[0]
+        _payload = _t171_ke_payload(_next)
+        _payload["_batch_id"] = _bid
+        _payload["_batch_index"] = _idx + 1
+        _payload["_batch_total"] = _total
+        _payload["_batch_queue"] = _queue[1:]
+        _payload["_batch_dilewati_awal"] = _awal
+
+        logger.warning(
+            "[T171_SLIDE] maju: batch=%s slide=%d/%d sisa=%d nama=%r",
+            str(_bid)[:8],
+            _idx + 1,
+            _total,
+            len(_queue) - 1,
+            str(_next.get("nama_produk"))[:40],
+        )
+
+        _te = ToolExecutor(
+            context=TenantContext(
+                tenant_id=ctx["tenant_id"],
+                user_id=ctx["user_id"],
+                auth_token=ctx["auth_token"],
+                tenant_name=ctx.get("tenant_name", ctx["tenant_id"]),
+            ),
+            session_id=session_id or conversation_id,
+        )
+        _res = await _te._execute_propose_direct(
+            {"action_key": "create_item", "payload": _payload}
+        )
+        if _res.get("message_type") != "DIRECT_ACTION_PREVIEW":
+            logger.warning(
+                "[T171_SLIDE] slide %d/%d gagal dipropose: %s",
+                _idx + 1,
+                _total,
+                str(_res)[:300],
+            )
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text=(
+                    "Barang %d dari %d (%s) tidak bisa saya tampilkan: %s"
+                    % (
+                        _idx + 1,
+                        _total,
+                        str(_next.get("nama_produk") or "(tanpa nama)"),
+                        _res.get("text") or _res.get("error") or "sebab tak diketahui",
+                    )
+                ),
+                session_id=session_id,
+            )
+        return ChatMessageResponse(
+            message_type="DIRECT_ACTION_PREVIEW",
+            text=_res.get("content", ""),
+            data=_res["data"],
+            pending_action_id=_res["data"].get("pending_action_id"),
+            session_id=session_id,
+            workflow_continuation=True,
+        )
+    except Exception as _t171_err:
+        logger.error("[T171_SLIDE] advance gagal: %s", _t171_err, exc_info=True)
         return None
 
 
@@ -6574,6 +6780,17 @@ async def _confirm_direct_action(
             # T143: penanda judul-eksplisit, kelas yang sama.
             clean_payload.pop("_user_subject", None)
             clean_payload.pop("_user_stated_subject", None)
+            # T171 FASE 1: penanda slide batch. Data biasa di action_plan
+            # (NOL perubahan skema), tapi bukan field CreateItemRequest ->
+            # wajib dibuang dari body POST /api/items (unknown field -> 422).
+            for _t171_k in (
+                "_batch_id",
+                "_batch_index",
+                "_batch_total",
+                "_batch_queue",
+                "_batch_dilewati_awal",
+            ):
+                clean_payload.pop(_t171_k, None)
 
         if config.rest_method.upper() == "DELETE":
             id_keys = {"id", "account_id", f"{config.entity_type}_id"}
@@ -6581,179 +6798,30 @@ async def _confirm_direct_action(
             if not request_body:
                 request_body = None  # Send no body for empty DELETE
 
-        # ══════════════════ T144 FASE 2 — EKSEKUSI BULK create_item ══════════════════
-        # D2: LOOP `POST /api/items` TUNGGAL — endpoint yang SAMA dengan jalur
-        # skalar dan dengan form UI. BUKAN /api/items/bulk-import: endpoint itu
-        # `return {"success": True, ...}` apa pun yang terjadi, penamaan fieldnya
-        # berbeda (code/type/unit/selling_price), dan ia INSERT langsung
-        # melewati default_accounts_policy, SKU auto-generate, dan tiga pagar
-        # duplikat.
-        #
-        # JANGAN `raise` di tengah loop (D3): 8 jadi 2 gagal harus MENAMPILKAN
-        # semuanya dan menyebut baris mana yang gagal — bukan menolak semuanya,
-        # bukan menyimpan sebagian tanpa mengatakannya.
-        _t144_baris = None
-        if action_key == "create_item":
-            _t144_raw = clean_payload.get("items")
-            if isinstance(_t144_raw, list) and _t144_raw:
-                _t144_baris = _t144_raw
-        # `items` bukan field CreateItemRequest -> selalu dibuang dari body.
-        if isinstance(clean_payload, dict):
-            clean_payload.pop("items", None)
-
-        if _t144_baris is not None:
-            from ..services.unified_agent.direct_action_registry import (  # noqa: E402
-                t144_baris_bisa_dibuat as _t144_bisa,
-                t144_masalah_baris as _t144_masalah,
-            )
-
-            _t144_dibuat: list = []
-            _t144_gagal: list = []
-            # Kunci yang boleh diwarisi dari kartu (akun default hasil
-            # default_accounts_policy + tanggal). Nama/harga/satuan/tipe TIDAK
-            # diwarisi — tiap baris membawa miliknya sendiri, kalau tidak baris
-            # ke-2..ke-5 akan lahir sebagai salinan baris ke-1.
-            _t144_warisan = {
-                k: v
-                for k, v in clean_payload.items()
-                if k
-                in (
-                    "sales_account_id",
-                    "purchase_account_id",
-                    "inventory_account_id",
-                    "cogs_account_id",
-                )
-                and v
-            }
-            async with httpx.AsyncClient(timeout=20.0) as _t144_client:
-                for _i, _b in enumerate(_t144_baris, start=1):
-                    _nama = str(_b.get("nama_produk") or "").strip()
-                    if not _t144_bisa(_b):
-                        _t144_gagal.append(
-                            {
-                                "line": _i,
-                                "name": _nama or "(tanpa nama)",
-                                "reason": "data belum lengkap: "
-                                + ", ".join(_t144_masalah(_b)),
-                            }
-                        )
-                        continue
-                    _body = dict(_t144_warisan)
-                    _body["name"] = _nama
-                    _body["base_unit"] = str(_b.get("base_unit") or "pcs")
-                    _t144_tipe = str(_b.get("item_type") or "goods")
-                    _body["item_type"] = (
-                        _t144_tipe
-                        if _t144_tipe in ("goods", "service", "non_inventory")
-                        else "goods"
-                    )
-                    for _k in (
-                        "sales_price",
-                        "purchase_price",
-                        "sku",
-                        "kategori",
-                        "deskripsi",
-                    ):
-                        if _b.get(_k) not in (None, ""):
-                            _body[_k] = _b[_k]
-                    if _b.get("description") and "deskripsi" not in _body:
-                        _body["deskripsi"] = _b["description"]
-                    try:
-                        _r = await _t144_client.post(
-                            f"{base_url}/api/items",
-                            json=_body,
-                            headers={
-                                "Authorization": auth_header,
-                                "Content-Type": "application/json",
-                                "X-Tenant-ID": tenant_id,
-                            },
-                        )
-                    except Exception as _t144_e:  # noqa: BLE001
-                        logger.warning(
-                            "[T144_BULK] baris %d (%s) exception: %s",
-                            _i,
-                            _nama,
-                            _t144_e,
-                        )
-                        _t144_gagal.append(
-                            {
-                                "line": _i,
-                                "name": _nama,
-                                "reason": "gagal terhubung ke server",
-                            }
-                        )
-                        continue
-                    if _r.status_code in (200, 201):
-                        _j = _r.json()
-                        _t144_dibuat.append(
-                            {
-                                "line": _i,
-                                "name": _nama,
-                                "id": str(
-                                    _j.get("id")
-                                    or (_j.get("data") or {}).get("id")
-                                    or ""
-                                ),
-                            }
-                        )
-                    else:
-                        _alasan = ""
-                        try:
-                            _alasan = str((_r.json() or {}).get("detail") or "")
-                        except Exception:  # noqa: BLE001
-                            _alasan = ""
-                        logger.warning(
-                            "[T144_BULK] baris %d (%s) HTTP %s: %s",
-                            _i,
-                            _nama,
-                            _r.status_code,
-                            _alasan[:200],
-                        )
-                        _t144_gagal.append(
-                            {
-                                "line": _i,
-                                "name": _nama,
-                                "reason": _alasan[:200]
-                                or ("HTTP %d" % _r.status_code),
-                            }
-                        )
+        # T171 FASE 1 — LOOP BULK `POST /api/items` DIBUBARKAN.
+        # N>1 barang tidak pernah lagi tiba di sini sebagai satu payload:
+        # _execute_propose_direct memecahnya jadi N slide SKALAR sebelum
+        # kartu dibangun, jadi tiap barang lahir dari confirm-nya SENDIRI
+        # dan punya entity_id sendiri. `items` bukan field CreateItemRequest
+        # -> tetap dibuang dari body.
+        if isinstance(clean_payload, dict) and clean_payload.pop("items", None):
             logger.warning(
-                "[T144_BULK] eksekusi selesai: %d dibuat, %d gagal (dari %d baris)",
-                len(_t144_dibuat),
-                len(_t144_gagal),
-                len(_t144_baris),
+                "[T171_SISA_BULK] action_plan create_item MASIH membawa `items` "
+                "saat eksekusi -- pemecahan slide tidak terjadi (pending=%s)",
+                pending_action_id,
             )
 
-            class _T144Resp:  # bentuk minimal yang dibaca jalur sukses di bawah
-                def __init__(self, kode, badan):
-                    self.status_code = kode
-                    self._badan = badan
-                    self.text = json.dumps(badan, default=str)
-
-                def json(self):
-                    return self._badan
-
-            response = _T144Resp(
-                200 if _t144_dibuat else 400,
-                {
-                    "created": _t144_dibuat,
-                    "failed": _t144_gagal,
-                    "total": len(_t144_baris),
-                    "id": _t144_dibuat[0]["id"] if _t144_dibuat else "",
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.request(
+                method=config.rest_method,
+                url=f"{base_url}{endpoint}",
+                json=request_body,
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json",
+                    "X-Tenant-ID": tenant_id,
                 },
             )
-        else:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.request(
-                    method=config.rest_method,
-                    url=f"{base_url}{endpoint}",
-                    json=request_body,
-                    headers={
-                        "Authorization": auth_header,
-                        "Content-Type": "application/json",
-                        "X-Tenant-ID": tenant_id,
-                    },
-                )
 
         if response.status_code in (200, 201):
             result_data = response.json()
@@ -6904,42 +6972,6 @@ async def _confirm_direct_action(
             # dok. 81 (4): sertakan badan respons endpoint supaya nomor
             # dokumen yang baru lahir bisa masuk kalimat sukses.
             success_msg = config.get_success_message(payload, result_data)
-
-            # T144 FASE 2 (D3): hasil bulk disebut PER BARIS. Template skalar
-            # ("Barang/jasa 'X' berhasil dibuat") akan menamai SATU barang dan
-            # membuat empat sisanya menguap — persis cacat yang dilaporkan.
-            if _t144_baris is not None:
-                _ok = result_data.get("created") or []
-                _ng = result_data.get("failed") or []
-                _bag = []
-                if _ok:
-                    _bag.append(
-                        "%d dari %d barang berhasil didaftarkan: %s."
-                        % (
-                            len(_ok),
-                            result_data.get("total", len(_t144_baris)),
-                            ", ".join(
-                                "%s (baris %s)" % (c.get("name"), c.get("line"))
-                                for c in _ok
-                            ),
-                        )
-                    )
-                else:
-                    _bag.append(
-                        "Tidak ada satu pun dari %d barang yang berhasil "
-                        "didaftarkan." % result_data.get("total", len(_t144_baris))
-                    )
-                if _ng:
-                    _bag.append(
-                        "Gagal: "
-                        + "; ".join(
-                            "baris %s (%s) — %s"
-                            % (g.get("line"), g.get("name"), g.get("reason"))
-                            for g in _ng
-                        )
-                        + "."
-                    )
-                success_msg = " ".join(_bag)
 
             # Clear document_context from Layer 2 (only for document actions)
             if action_key == "confirm_document_draft" and session_id:
@@ -7162,41 +7194,6 @@ async def _confirm_direct_action(
                 "[F3] galat endpoint action=%s detail=%s",
                 action_key, str(error_detail)[:500],
             )
-            # T144 FASE 2 (D3): kalau SELURUH baris bulk gagal, sebab tiap
-            # baris SUDAH diketahui per baris. Kalimat generik
-            # ("ada isian yang belum lengkap") membuangnya dan mengembalikan
-            # kebisuan yang jadi sebab tiket ini — lima barang menguap tanpa
-            # satu pun kata. Sebutkan barisnya.
-            if _t144_baris is not None:
-                _ng = (error_json or {}).get("failed") if isinstance(
-                    locals().get("error_json"), dict
-                ) else None
-                if not _ng:
-                    try:
-                        _ng = (response.json() or {}).get("failed")
-                    except Exception:  # noqa: BLE001
-                        _ng = None
-                if _ng:
-                    return ChatMessageResponse(
-                        message_type="ACTION_RESULT",
-                        text=(
-                            "Tidak ada satu pun dari %d barang yang berhasil "
-                            "didaftarkan. Gagal: %s."
-                            % (
-                                len(_t144_baris),
-                                "; ".join(
-                                    "baris %s (%s) \u2014 %s"
-                                    % (
-                                        g.get("line"),
-                                        g.get("name"),
-                                        g.get("reason"),
-                                    )
-                                    for g in _ng
-                                ),
-                            )
-                        ),
-                        data={"success": False},
-                    )
 
             return ChatMessageResponse(
                 message_type="ACTION_RESULT",

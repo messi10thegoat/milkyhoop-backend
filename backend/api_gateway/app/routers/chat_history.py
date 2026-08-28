@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -96,6 +96,74 @@ def _serialize_messages(rows, limit: int, att_map: dict = None) -> dict:
         "next_cursor": messages[-1]["created_at"].isoformat() if has_more and messages else None,
     }
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+# T171 FASE 1 — DITINGGAL DI TENGAH
+#
+# Rentetan slide create_item bisa ditinggalkan (panel ditutup di 3 dari 5).
+# Yang dihidupkan kembali adalah DAFTARNYA, bukan kartunya: menghidupkan N
+# kartu sekaligus menabrak gerbang satu-kartu-per-percakapan dan membuat satu
+# `remainingSeconds` global mengatur lima kartu sekaligus.
+# ══════════════════════════════════════════════════════════════════════
+
+
+async def _t171_sisipkan_sisa_slide(pool, ctx, session_id: str, data: dict) -> None:
+    """Sisipkan SATU kalimat kalau ada slide yang belum sempat ditampilkan."""
+    try:
+        row = await pool.fetchrow(
+            """SELECT status, action_plan
+                 FROM pending_actions
+                WHERE tenant_id = $1
+                  AND conversation_id = $2
+                  AND action_id = 'create_item'
+                  AND action_plan ? '_batch_id'
+                ORDER BY created_at DESC
+                LIMIT 1""",
+            ctx["tenant_id"],
+            session_id,
+        )
+        if row is None or row["status"] == "PENDING":
+            return
+        ap = row["action_plan"]
+        if isinstance(ap, str):
+            ap = json.loads(ap)
+        if not isinstance(ap, dict):
+            return
+        queue = ap.get("_batch_queue") or []
+        if not queue:
+            return
+        nama = [
+            str(b.get("nama_produk") or "(tanpa nama)").strip()
+            for b in queue
+            if isinstance(b, dict)
+        ]
+        if not nama:
+            return
+        logger.warning(
+            "[T171_SISA] session=%s sisa=%d nama=%r",
+            str(session_id)[:8],
+            len(nama),
+            nama,
+        )
+        data.setdefault("messages", []).insert(
+            0,
+            {
+                "id": "t171-sisa-" + str(session_id),
+                "role": "assistant",
+                "content": (
+                    "%d barang belum sempat ditampilkan: %s. Ketik 'lanjut'."
+                    % (len(nama), " · ".join(nama))
+                ),
+                "message_type": "TEXT",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "session_id": str(session_id),
+                "metadata": {"t171_sisa_slide": True},
+                "attachments": [],
+            },
+        )
+    except Exception as _e:
+        logger.warning("[T171_SISA] gagal menyisipkan kalimat sisa: %s", _e)
 
 
 async def _enrich_messages(pool, rows, limit: int) -> dict:
@@ -372,7 +440,10 @@ async def get_session_messages(
             session_id, fetch_limit,
         )
 
-    return {"data": await _enrich_messages(pool, rows, limit)}
+    _data = await _enrich_messages(pool, rows, limit)
+    if not before:
+        await _t171_sisipkan_sisa_slide(pool, ctx, session_id, _data)
+    return {"data": _data}
 
 
 # =============================================================================

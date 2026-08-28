@@ -15,6 +15,9 @@ The `creates_journal` flag serves as documentation and code-review signal.
 """
 
 from dataclasses import dataclass, field
+import logging
+
+logger = logging.getLogger(__name__)
 from typing import Optional
 
 
@@ -5379,6 +5382,50 @@ def t144_peringatan(baris_list: list) -> list[dict]:
     return keluar
 
 
+# ══════════════════════════════════════════════════════════════════════
+# T171 FASE 1 — SLIDE MULTI-BARANG
+#
+# N>1 barang dalam satu pesan TIDAK lagi jadi satu kartu tabel. Ia jadi:
+#   (a) satu KALIMAT PEMBUKA yang menyebut jumlah + SELURUH N nama, dan
+#   (b) N slide `CREATE_ITEM` SKALAR biasa, lahir SATU PER SATU.
+#
+# Kalimat pembuka adalah satu-satunya kesempatan owner membandingkan harga
+# berdampingan sebelum slide memisahkan mereka -> ia WAJIB memuat seluruh N
+# nama, tidak terpotong. Ia memakai ulang t144_baris_teks (T144), bukan
+# format baru.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def t171_kalimat_pembuka(baris_list: list) -> str:
+    """Kalimat pembuka slide 1: jumlah + SELURUH N nama, tanpa potong."""
+    _n = len(baris_list)
+    _keluar = [
+        "Ada %d barang di pesan ini. Saya tampilkan satu per satu supaya "
+        "tiap barang bisa dicek — dan dilewati — sendiri-sendiri.\n" % _n
+    ]
+    for _i, _b in enumerate(baris_list, start=1):
+        _lb, _vl = t144_baris_teks(_i, _b)
+        _keluar.append("%s — %s" % (_lb, _vl))
+    return "\n".join(_keluar)
+
+
+def t171_baris_ke_payload(baris: dict, warisan: dict | None = None) -> dict:
+    """Satu baris bulk -> payload create_item SKALAR (kunci body POST /api/items).
+
+    ⚠️ `name`, bukan `nama_produk`: `nama_produk` adalah kolom DB; body
+    CreateItemRequest memakai `name`.
+    """
+    _p = dict(warisan or {})
+    _p["name"] = str(baris.get("nama_produk") or "").strip()
+    for _k in ("item_type", "base_unit", "sales_price", "purchase_price"):
+        _v = baris.get(_k)
+        if _v not in (None, ""):
+            _p[_k] = _v
+        else:
+            _p.pop(_k, None)
+    return _p
+
+
 def build_confirmation_table(
     action_key: str, payload: dict, journal_preview: list | None = None
 ) -> str:
@@ -5387,26 +5434,16 @@ def build_confirmation_table(
     if not config:
         return ""
 
-    # T144 FASE 2 — bulk create_item: SATU tabel, SATU baris per barang.
-    _t144_baris = t144_items_bulk(action_key, payload)
-    if _t144_baris is not None:
-        _t = ["### Buat %d Barang/Jasa\n" % len(_t144_baris)]
-        _t.append("| # | Nama | Harga Jual | Harga Beli | Satuan | Tipe |")
-        _t.append("|---|------|-----------|-----------|--------|------|")
-        for _i, _b in enumerate(_t144_baris, start=1):
-            _tanda = "\u26a0 " if t144_masalah_baris(_b) else ""
-            _t.append("| %s%d | %s | %s | %s | %s | %s |" % (
-                _tanda, _i,
-                str(_b.get("nama_produk") or "(tanpa nama)"),
-                _t144_rupiah(_b.get("sales_price")) if _b.get("sales_price") else "-",
-                _t144_rupiah(_b.get("purchase_price")) if _b.get("purchase_price") else "-",
-                str(_b.get("base_unit") or "-"),
-                _API_TO_LABEL_MAP.get(str(_b.get("item_type") or "").lower(), str(_b.get("item_type") or "-")),
-            ))
-        for _w in t144_peringatan(_t144_baris):
-            _t.append("")
-            _t.append("> %s" % _w["message"])
-        return "\n".join(_t)
+    # T171 FASE 1 — cabang bulk DIBUBARKAN. N>1 barang tidak lagi menjadi satu
+    # tabel; ia dipecah jadi N slide skalar di _execute_propose_direct, dan isi
+    # tabel lama pindah ke KALIMAT PEMBUKA (t171_kalimat_pembuka). Pembantu
+    # render baris (t144_baris_teks dst) DIPERTAHANKAN dan dipakai ulang di sana.
+    if t144_items_bulk(action_key, payload) is not None:
+        logger.warning(
+            "[T171_SISA_BULK] payload create_item MASIH membawa `items` saat "
+            "kartu dibangun -- pemecahan slide tidak terjadi. baris=%d",
+            len(payload.get("items") or []),
+        )
 
     lines = [f"### {config.display_name}\n"]
     lines.append("| Field | Value |")
@@ -5555,44 +5592,9 @@ def build_review_card_payload(
     if not config:
         return None
 
-    # T144 FASE 2 — bulk create_item. Kartu dibangun SENDIRI, bukan lewat
-    # loop FieldSpec: sepuluh FieldSpec skalar hanya menggambarkan barang
-    # PERTAMA, dan blok `items` generik di bawah membaca kunci baris
-    # faktur (description/quantity/unit_price) yang TIDAK ADA di baris
-    # create_item -> lima baris akan jadi "Item / 0 / Rp 0".
-    #
-    # ⚠️ Baris dirender sebagai `header` (label/value), BUKAN `items`:
-    # tabel `items` di FE terpasang kolom Qty + Subtotal, dan create_item
-    # tidak punya qty. Mengisinya 1 = mengarang angka di layar (kelas
-    # T144-b). Ini BATAS FE terpasang, bukan pilihan estetika.
-    _t144_baris = t144_items_bulk(action_key, payload)
-    if _t144_baris is not None:
-        _t144_header = [
-            {
-                "label": _lb,
-                "value": _vl,
-                "field_type": "string",
-                "key": "items",
-                "editable": False,
-            }
-            for _lb, _vl in (
-                t144_baris_teks(_i, _b)
-                for _i, _b in enumerate(_t144_baris, start=1)
-            )
-        ]
-        return {
-            "render_target": "inline",
-            "title": "Buat %d Barang/Jasa" % len(_t144_baris),
-            "header": _t144_header,
-            "items": None,
-            "totals": None,
-            "journal_lines": None,
-            "journal_balanced": None,
-            "warnings": t144_peringatan(_t144_baris) or None,
-            "impact_notes": None,
-            "category_label": None,
-            "version": 1,
-        }
+    # T171 FASE 1 — cabang bulk DIBUBARKAN (lihat build_confirmation_table).
+    # Kartu create_item selalu skema G1 (kunci per-field), tidak pernah lagi
+    # skema M1 (5x kunci "items").
 
     # Header fields — from FieldSpec, same iteration as build_confirmation_table
     header = []
@@ -5624,11 +5626,17 @@ def build_review_card_payload(
         if f.options and isinstance(value, str):
             _api_to_label = _build_api_to_label(f.options)
             display_value = _api_to_label.get(str(value).lower(), display_value)
+        # T171 FASE 1 — pensil MATI untuk slide batch. Slide lahir dari daftar
+        # yang owner ketik sendiri; mengeditnya di tengah rentetan akan menabrak
+        # antrean (`_batch_queue` sudah terkunci di action_plan slide ini).
+        # Efek samping DISETUJUI: tombol "Edit" ikut hilang (nolFieldEditable).
+        # NOL sentuhan payloadOverridesRef -> T160 tak tersentuh.
         _is_editable = (
             f.editable
             and not f.display_only
             and not f.name.endswith("_id")
             and f.field_type not in ("enum", "boolean")
+            and not payload.get("_batch_id")
         )
         header.append(
             {

@@ -1564,6 +1564,93 @@ class ToolExecutor:
                 "UNKNOWN_ACTION", f"Action '{action_key}' tidak ditemukan di registry."
             )
 
+        # ═════════════ T171 FASE 1 — PEMECAHAN SLIDE MULTI-BARANG ═════════════
+        # `items` (daftar baris create_item, hasil _t144_normalisasi_items)
+        # DIBONGKAR DI SINI, sebelum normalisasi/validasi/enrichment, supaya
+        # setiap slide melewati pipeline yang SAMA PERSIS dengan jalur skalar
+        # satu-barang (G1). Yang lahir dari sini adalah payload SKALAR biasa.
+        #
+        # Sisa antrean disimpan di `_batch_queue` DI DALAM payload -> ia ikut
+        # ke pending_actions.action_plan (jsonb). Sengaja BUKAN di
+        # chat_session_state.document_context: hook after_propose menulis ulang
+        # document_context setelah propose selesai, jadi antrean di sana bisa
+        # tertimpa diam-diam. action_plan tak pernah disentuh siapa pun lagi.
+        #
+        # ⚠️ Slide lahir SATU PER SATU, tidak pernah N sekaligus: FE
+        # `pendingAction` skalar + `remainingSeconds` prop global, dan gerbang
+        # satu-kartu-per-percakapan menolak kartu kedua selagi satu PENDING
+        # masih hidup.
+        _t171_pembuka = None
+        if action_key == "create_item" and isinstance(payload.get("items"), list):
+            from .direct_action_registry import (  # noqa: E402
+                t144_baris_bisa_dibuat as _t171_bisa,
+                t144_masalah_baris as _t171_masalah,
+                t171_baris_ke_payload as _t171_ke_payload,
+                t171_kalimat_pembuka as _t171_pembuka_fn,
+            )
+
+            _t171_semua = [b for b in payload["items"] if isinstance(b, dict)]
+            # Baris yang TIDAK BISA dibuat tak pernah jadi slide (endpoint pasti
+            # menolaknya). Ia TIDAK dibuang diam-diam: namanya dicatat dan
+            # disebut di ringkasan penutup sebagai dilewati, dengan sebabnya.
+            _t171_baris = [b for b in _t171_semua if _t171_bisa(b)]
+            _t171_awal = [
+                "%s (%s)"
+                % (
+                    str(b.get("nama_produk") or "(tanpa nama)").strip(),
+                    ", ".join(_t171_masalah(b)) or "data belum lengkap",
+                )
+                for b in _t171_semua
+                if not _t171_bisa(b)
+            ]
+            payload.pop("items", None)
+            if _t171_baris:
+                _t171_total = len(_t171_baris)
+                # Slot skalar DITIMPA dari baris PERTAMA. Wajib ditimpa, bukan
+                # sekadar diisi kalau kosong: _t144_normalisasi_items mengangkat
+                # tiap slot dari baris PERTAMA YANG PUNYA nilai itu, jadi
+                # top-level bisa mencampur harga baris 1 dengan satuan baris 3.
+                for _k in (
+                    "name",
+                    "item_name",
+                    "item_type",
+                    "base_unit",
+                    "sales_price",
+                    "purchase_price",
+                ):
+                    payload.pop(_k, None)
+                payload.update(_t171_ke_payload(_t171_baris[0]))
+                if _t171_total > 1 or _t171_awal:
+                    import uuid as _t171_uuid  # noqa: E402
+
+                    payload["_batch_id"] = str(_t171_uuid.uuid4())
+                    payload["_batch_index"] = 1
+                    payload["_batch_total"] = _t171_total
+                    payload["_batch_queue"] = _t171_baris[1:]
+                    payload["_batch_dilewati_awal"] = _t171_awal
+                    _t171_pembuka = _t171_pembuka_fn(_t171_baris)
+                    if _t171_awal:
+                        _t171_pembuka += (
+                            "\n\nTidak saya tampilkan (datanya belum cukup untuk "
+                            "disimpan): " + " · ".join(_t171_awal)
+                        )
+                    logger.warning(
+                        "[T171_SLIDE] pemecahan AKTIF: batch=%s total=%d "
+                        "dilewati_awal=%d nama=%r",
+                        payload["_batch_id"][:8],
+                        _t171_total,
+                        len(_t171_awal),
+                        [str(b.get("nama_produk"))[:40] for b in _t171_baris],
+                    )
+            elif _t171_awal:
+                return {
+                    "message_type": "TEXT",
+                    "text": (
+                        "Tidak ada satu pun barang yang bisa saya simpan dari "
+                        "pesan ini: " + " · ".join(_t171_awal) + "."
+                    ),
+                }
+
         # === PRE-FLIGHT CHECKS ===
         pre_flight = await self._run_pre_flight_checks(config, payload)
         if pre_flight.get("blocked"):
@@ -2077,6 +2164,39 @@ class ToolExecutor:
 
         if journal_preview:
             response_data["journal_preview"] = journal_preview
+
+        # ═════════════ T171 FASE 1 — NARASI + PROGRESS + AUTO-MAJU ═════════════
+        # Berlaku untuk SLIDE 1 (dipecah di atas) MAUPUN slide 2..N (dipropose
+        # ulang oleh _advance_item_slide di router) — keduanya lewat sini.
+        #
+        # `content` diisi NARASI, BUKAN tabel: FE merender narasi hanya bila
+        # `msg.content !== directData.confirmation_table` (MessageRenderer
+        # showNarrative). Kalau keduanya sama, penanda "Barang k dari N" DAN
+        # bilah progress tidak pernah muncul.
+        #
+        # workflow_continuation=True bahkan pada slide TERAKHIR: "lanjut"
+        # terakhir itulah yang memunculkan ringkasan penutup.
+        _t171_bid = payload.get("_batch_id")
+        if _t171_bid:
+            try:
+                _t171_i = int(payload.get("_batch_index") or 1)
+                _t171_n = int(payload.get("_batch_total") or 1)
+            except (TypeError, ValueError):
+                _t171_i, _t171_n = 1, 1
+            _t171_teks = "Barang %d dari %d: **%s**" % (
+                _t171_i,
+                _t171_n,
+                str(payload.get("name") or "(tanpa nama)"),
+            )
+            if _t171_pembuka:
+                _t171_teks = _t171_pembuka + "\n\n" + _t171_teks
+            response_data["content"] = _t171_teks
+            response_data["data"]["progress"] = {
+                "current": _t171_i,
+                "total": _t171_n,
+            }
+            response_data["data"]["workflow_continuation"] = True
+            response_data["data"]["_batch_id"] = _t171_bid
 
         return response_data
 
