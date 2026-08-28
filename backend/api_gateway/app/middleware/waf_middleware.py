@@ -143,6 +143,27 @@ class WAFMiddleware(BaseHTTPMiddleware):
         "/api/auth/refresh",
     }
 
+    # Paths yang membawa PROSA KETIKAN MANUSIA (chatmode).
+    # HANYA tiga path EKSAK ini. Sengaja BUKAN prefix "/api/v3/chat/": prefix
+    # itu ikut mengenai chat_history, chat_usage, dan userguide_doc
+    # (main.py:752-755) yang tidak menerima teks bebas. /confirm dan /cancel
+    # membawa id, bukan prosa. /message/upload sudah multipart sehingga
+    # sudah dikecualikan lewat jalur is_file_upload.
+    HUMAN_TEXT_PATHS: Set[str] = {
+        "/api/v3/chat/message",
+        "/api/v3/chat/message/stream",
+        "/api/v3/chat/action/edit",
+    }
+
+    # Pola SQL yang dilewati HANYA untuk body HUMAN_TEXT_PATHS: penanda
+    # komentar SQL "--". Kalimat Indonesia biasa ("laporan -- yang mana")
+    # memicunya. Dicocokkan lewat .pattern (string) supaya tidak bergantung
+    # pada urutan definisi kelas; bila regex di SQL_INJECTION_PATTERNS diubah,
+    # skip ini berhenti cocok dan perilakunya kembali MEMBLOKIR (fail-closed).
+    HUMAN_TEXT_SKIP_SQL_PATTERNS: Set[str] = {
+        r"(--\s*$|--\s+)",
+    }
+
     def __init__(self, app, enabled: bool = True, strict_mode: bool = False):
         super().__init__(app)
         self.enabled = enabled
@@ -224,13 +245,24 @@ class WAFMiddleware(BaseHTTPMiddleware):
             content_type = request.headers.get("content-type", "")
             is_file_upload = "multipart/form-data" in content_type
 
+            # Body dari tiga endpoint chat berisi kalimat yang diketik
+            # manusia. Untuk itu SAJA, pola komentar SQL "--" dilewati pada
+            # BODY. Aturan "--" TIDAK dicabut secara global: URL (:182) dan
+            # header (:205) tetap memanggil _detect_threat tanpa argumen skip.
+            is_human_text = request.url.path in self.HUMAN_TEXT_PATHS
+            body_skip_sql = (
+                self.HUMAN_TEXT_SKIP_SQL_PATTERNS if is_human_text else None
+            )
+
             # Read and check body (skip threat detection for file uploads)
             if not is_file_upload:
                 try:
                     body = await request.body()
                     if body:
                         body_str = body.decode("utf-8", errors="ignore")
-                        threat = self._detect_threat(body_str, "Body")
+                        threat = self._detect_threat(
+                            body_str, "Body", skip_sql_patterns=body_skip_sql
+                        )
                         if threat:
                             logger.warning(
                                 f"WAF: {threat} in body from {request.client.host}"
@@ -254,13 +286,27 @@ class WAFMiddleware(BaseHTTPMiddleware):
                 return True
         return False
 
-    def _detect_threat(self, content: str, location: str) -> Optional[str]:
-        """Detect threats in content"""
+    def _detect_threat(
+        self,
+        content: str,
+        location: str,
+        skip_sql_patterns: Optional[Set[str]] = None,
+    ) -> Optional[str]:
+        """Detect threats in content.
+
+        skip_sql_patterns: kumpulan .pattern (string regex) dari
+        SQL_INJECTION_PATTERNS yang dilewati. HANYA berlaku untuk lapisan
+        SQL; XSS, Path Traversal, dan Command Injection tidak terpengaruh.
+        Pemanggil yang tidak mengoper argumen ini berperilaku persis seperti
+        sebelumnya.
+        """
         if not content:
             return None
 
         # SQL Injection
         for pattern in self.SQL_INJECTION_PATTERNS:
+            if skip_sql_patterns and pattern.pattern in skip_sql_patterns:
+                continue
             if pattern.search(content):
                 return "SQL Injection"
 
