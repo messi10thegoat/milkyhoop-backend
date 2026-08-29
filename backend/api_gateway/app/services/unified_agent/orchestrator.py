@@ -4345,14 +4345,29 @@ class UnifiedAgent:
             # ini jamak — nol salah-tuduh, nol perubahan data.
             _t174_content = propose_result.get("content", "")
             if _t174_sisa:
-                _t174_content = (
+                _t174_peringatan = (
                     "⚠️ Pesan ini sepertinya memuat beberapa barang, tapi saya "
                     "cuma berhasil menyusun satu kartu — periksa namanya "
                     "baik-baik.\n"
                     "Yang tidak tersusun: «%s»\n"
                     "Kalau memang beberapa, kirim ulang sisanya bernomor "
-                    "(1. … 2. …).\n\n" % _t174_sisa[:200]
-                ) + _t174_content
+                    "(1. … 2. …)." % _t174_sisa[:200]
+                )
+                # T176 (kosmetik) - MENIMPA, bukan menyambung.
+                # `content` kartu tunggal SAMA PERSIS dengan
+                # `data.confirmation_table` (satu variabel yang sama di
+                # tool_executor._propose_direct_action). FE merender narasi
+                # hanya bila `msg.content !== directData.confirmation_table`
+                # (MessageRenderer.tsx showNarrative). Menyambung memutus
+                # kesamaan itu -> tabelnya terender LAGI di atas kartu.
+                # Kalau `content` BUKAN tabel (narasi slide T171),
+                # peringatan tetap DISAMBUNG supaya penanda
+                # "Barang k dari N" tidak hilang.
+                _t174_tabel = (direct_data or {}).get("confirmation_table") or ""
+                if _t174_content and _t174_content == _t174_tabel:
+                    _t174_content = _t174_peringatan
+                else:
+                    _t174_content = _t174_peringatan + "\n\n" + _t174_content
 
             return AgentResponse(
                 message_type="DIRECT_ACTION_PREVIEW",
