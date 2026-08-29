@@ -108,15 +108,22 @@ _DUE_DATE_SLOT_CRUD_INTENTS = frozenset(
 T144_BATAS_ITEM = 10
 
 
-def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int]:
-    # -> (baris_bersih, jumlah_kalau_melebihi_batas)
+def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int, str]:
+    # -> (baris_bersih, jumlah_kalau_melebihi_batas, sisa_mentah_gagal_parse)
+    #
+    # T174: sisa_mentah_gagal_parse = string `items` APA ADANYA ketika
+    # json.loads GAGAL (model mengirim daftar nama datar, bukan JSON array).
+    # Dulu kegagalan ini berhenti DIAM: kartu tetap terbit untuk satu barang,
+    # sisanya menguap tanpa satu pun jejak di layar. Sekarang string mentahnya
+    # dikembalikan supaya pengguna melihat apa yang TIDAK tersusun.
     #
     # (None, 0) = jalur SKALAR, yang lama, TAK TERSENTUH (`items` di-pop
     #             supaya tak pernah ikut ke body POST).
     # (None, N) = N > batas: NOL yang diproses (D5).
     if not isinstance(entities, dict):
-        return None, 0
+        return None, 0, ""
     mentah = entities.get("items")
+    _t174_sisa_mentah = ""
     if isinstance(mentah, str):
         _asli = mentah
         try:
@@ -129,9 +136,10 @@ def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int]:
                 _asli[:200],
             )
             mentah = None
+            _t174_sisa_mentah = _asli
     if not isinstance(mentah, list):
         entities.pop("items", None)
-        return None, 0
+        return None, 0, _t174_sisa_mentah
     bersih = [
         b
         for b in mentah
@@ -141,9 +149,9 @@ def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int]:
         # D1: `items` kosong -> jalur skalar SEKARANG, tak tersentuh.
         # JANGAN mengarang satu baris dari field top-level (kelas T144-b).
         entities.pop("items", None)
-        return None, 0
+        return None, 0, ""
     if len(bersih) > T144_BATAS_ITEM:
-        return None, len(bersih)
+        return None, len(bersih), ""
     entities["items"] = bersih
     # Angkat nilai skalar dari baris PERTAMA yang memilikinya, HANYA bila
     # slot top-level masih kosong. Nilainya NYATA (milik salah satu baris),
@@ -1410,6 +1418,7 @@ class UnifiedAgent:
                         list(merged_entities.keys()),
                     )
 
+        _t174_sisa = ""
         # ═══════════════ T144 FASE 2 — NORMALISASI items create_item ═══════════════
         # SITUS KONVERSI untuk jalur non-pil. Jalur pil (_ep_items, ~L3050)
         # meng-parse ke SALINAN payload dan tak pernah dilewati create_item
@@ -1417,8 +1426,8 @@ class UnifiedAgent:
         # Tanpa blok ini `items` tetap STRING sepanjang jalur dan setiap gate
         # isinstance(..., list) di hilir mati diam-diam.
         if extraction.intent == "create_item":
-            _t144_baris, _t144_terlalu_banyak = _t144_normalisasi_items(
-                extraction.entities
+            _t144_baris, _t144_terlalu_banyak, _t174_sisa = (
+                _t144_normalisasi_items(extraction.entities)
             )
             if _t144_terlalu_banyak:
                 # D5: JANGAN potong diam-diam, JANGAN tolak diam-diam —
@@ -4327,9 +4336,27 @@ class UnifiedAgent:
                 except Exception:
                     pass
 
+            # T174 — kegagalan parse `items` TIDAK BOLEH berhenti diam.
+            # Kartunya TETAP terbit (ia usulan yang memang untuk diperiksa,
+            # dan pada separuh kasus namanya memang barang sah yang diketik
+            # pengguna); yang ditambahkan hanya SATU kalimat + string mentah
+            # yang gagal tersusun. Bukan heuristik: model sendiri yang
+            # mengirim field `items`, jadi model sendiri sudah menilai pesan
+            # ini jamak — nol salah-tuduh, nol perubahan data.
+            _t174_content = propose_result.get("content", "")
+            if _t174_sisa:
+                _t174_content = (
+                    "⚠️ Pesan ini sepertinya memuat beberapa barang, tapi saya "
+                    "cuma berhasil menyusun satu kartu — periksa namanya "
+                    "baik-baik.\n"
+                    "Yang tidak tersusun: «%s»\n"
+                    "Kalau memang beberapa, kirim ulang sisanya bernomor "
+                    "(1. … 2. …).\n\n" % _t174_sisa[:200]
+                ) + _t174_content
+
             return AgentResponse(
                 message_type="DIRECT_ACTION_PREVIEW",
-                content=propose_result.get("content", ""),
+                content=_t174_content,
                 pending_action_id=direct_data.get("pending_action_id", ""),
                 preview=direct_data,
                 expires_at=direct_data.get("expires_at", ""),
