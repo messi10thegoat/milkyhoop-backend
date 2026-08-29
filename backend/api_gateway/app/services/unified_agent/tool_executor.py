@@ -4210,9 +4210,69 @@ class ToolExecutor:
             elapsed_ms,
         )
 
+        # T168 2026-08-29: satu-satunya pemanggilan penanda yatim, di
+        # dispatcher — bukan di tiap enricher — supaya satu kegagalan tak
+        # pernah terbit dua kali (pelajaran T178).
+        self._log_orphan_items(result, action_type)
+
         return result
 
     # --- Shared enrichment helpers ---
+
+    def _backfill_top_item_id(self, payload: Dict[str, Any]) -> None:
+        """T168 2026-08-29: backfill item_id tingkat-atas HANYA ke items[0].
+
+        Bentuk lama di 6 situs melakukan `for item in items` — persis kebalikan
+        dari komentarnya sendiri ("into items[0]"). Ekstraktor kadang memancarkan
+        `item_name` TINGKAT-ATAS yang isinya nama barang BARIS PERTAMA saja;
+        _resolve_item menghasilkan satu payload["item_id"], lalu loop lama
+        menempelkannya ke SETIAP baris yang belum punya id. _enrich_items
+        kemudian menimpa description/product_name dengan nama master, sehingga
+        baris ke-2 kehilangan identitasnya SEBELUM resolve per-baris pernah
+        jalan (ciri khas: qty & price baris 2 tetap utuh).
+
+        Dokumen satu-baris: perilaku identik dengan sebelumnya (items[0] = satu-
+        satunya baris). Itulah kontrol negatif utama perubahan ini.
+        """
+        items = payload.get("items")
+        if not items or not isinstance(items, list):
+            return
+        _top_item_id = payload.get("item_id")
+        if not _top_item_id:
+            return
+        _first = items[0]
+        if isinstance(_first, dict) and not _first.get("item_id"):
+            _first["item_id"] = _top_item_id
+
+    def _log_orphan_items(self, payload: Dict[str, Any], action_key: str) -> None:
+        """T168 2026-08-29: SATU-SATUNYA situs yang menerbitkan [T168_YATIM].
+
+        Sengaja hanya satu situs: T178 menunjukkan satu kegagalan bisa muncul
+        dua kali di log kalau penanda diterbitkan dari dua tempat.
+        """
+        items = payload.get("items")
+        if not items or not isinstance(items, list):
+            return
+        _n = len(items)
+        for _idx, _it in enumerate(items):
+            if not isinstance(_it, dict):
+                continue
+            if _it.get("item_id") or _it.get("product_id"):
+                continue
+            _typed = (
+                _it.get("description")
+                or _it.get("product_name")
+                or _it.get("item_name")
+                or _it.get("name")
+                or ""
+            )
+            logger.info(
+                "[T168_YATIM] action=%s baris=%d dari=%d nama_user=%r",
+                action_key,
+                _idx,
+                _n,
+                _typed,
+            )
 
     async def _enrich_items(
         self,
@@ -4761,14 +4821,7 @@ class ToolExecutor:
                         payload["notes"] = _note_text
 
             # Backfill item_id from top-level into items[0]
-            items = payload.get("items", [])
-            if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
+            self._backfill_top_item_id(payload)
 
             # Item descriptions + backfill unit_price
             payload = await self._enrich_items(payload, client)
@@ -4994,25 +5047,16 @@ class ToolExecutor:
             # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
             # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
             # ketikan user + unit_price kosong.
-            items = payload.get("items", [])
-            if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
+            self._backfill_top_item_id(payload)
 
             payload = await self._enrich_items(payload, client)
 
+            self._backfill_top_item_id(payload)
             items = payload.get("items", [])
             if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
                     item_id = item.get("item_id")
                     # _enrich_items tidak mengurus satuan; hanya itu yang tersisa
                     # di sini, dan hanya kalau memang belum terisi.
@@ -5366,14 +5410,7 @@ class ToolExecutor:
                         payload["notes"] = _note_text
 
             # Backfill item_id from top-level into items[0]
-            items = payload.get("items", [])
-            if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
+            self._backfill_top_item_id(payload)
 
             # FIX_NAMA_HARGA_SATU_SUMBER 2026-08-24: salinan-terpisah dihapus.
             # Bill kini memakai _enrich_items yang SAMA dengan 5 pemanggil sisi
@@ -5714,25 +5751,16 @@ class ToolExecutor:
             # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
             # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
             # ketikan user + unit_price kosong.
-            items = payload.get("items", [])
-            if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
+            self._backfill_top_item_id(payload)
 
             payload = await self._enrich_items(payload, client)
 
+            self._backfill_top_item_id(payload)
             items = payload.get("items", [])
             if items and isinstance(items, list):
-                _top_item_id = payload.get("item_id")
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    if not item.get("item_id") and _top_item_id:
-                        item["item_id"] = _top_item_id
                     item_id = item.get("item_id")
                     # _enrich_items tidak mengurus satuan; hanya itu yang tersisa
                     # di sini, dan hanya kalau memang belum terisi.
