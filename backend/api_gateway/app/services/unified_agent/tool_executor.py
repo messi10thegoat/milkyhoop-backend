@@ -4219,7 +4219,7 @@ class ToolExecutor:
 
     # --- Shared enrichment helpers ---
 
-    def _backfill_top_item_id(self, payload: Dict[str, Any]) -> None:
+    def _backfill_top_item_id(self, payload: Dict[str, Any], action_key: str = "?") -> None:
         """T168 2026-08-29: backfill item_id tingkat-atas HANYA ke items[0].
 
         Bentuk lama di 6 situs melakukan `for item in items` — persis kebalikan
@@ -4234,15 +4234,43 @@ class ToolExecutor:
         Dokumen satu-baris: perilaku identik dengan sebelumnya (items[0] = satu-
         satunya baris). Itulah kontrol negatif utama perubahan ini.
         """
+        # T168-R2 2026-08-29: penanda PEMICU. LOG-ONLY, nol perubahan perilaku.
+        # SATU-SATUNYA situs yang menerbitkan [T168_PICU] (pelajaran T178).
         items = payload.get("items")
+        _n = len(items) if isinstance(items, list) else -1
+        _top = {
+            _k: payload.get(_k)
+            for _k in ("item_id", "product_id", "item_name")
+            if payload.get(_k) is not None
+        }
+
+        def _picu(diterapkan, alasan, ditulis):
+            logger.info(
+                "[T168_PICU] action=%s baris=%s atas=%r diterapkan=%s alasan=%s ditulis=%s",
+                action_key,
+                _n,
+                _top,
+                diterapkan,
+                alasan,
+                ditulis,
+            )
+
         if not items or not isinstance(items, list):
+            _picu("TIDAK", "items_kosong_atau_bukan_list", "-")
             return
         _top_item_id = payload.get("item_id")
         if not _top_item_id:
+            _picu("TIDAK", "payload.item_id_kosong", "-")
             return
         _first = items[0]
-        if isinstance(_first, dict) and not _first.get("item_id"):
-            _first["item_id"] = _top_item_id
+        if not isinstance(_first, dict):
+            _picu("TIDAK", "items[0]_bukan_dict", "-")
+            return
+        if _first.get("item_id"):
+            _picu("TIDAK", "items[0].item_id_sudah_terisi", "-")
+            return
+        _first["item_id"] = _top_item_id
+        _picu("YA", "backfill_items[0]", "items[0].item_id")
 
     def _log_orphan_items(self, payload: Dict[str, Any], action_key: str) -> None:
         """T168 2026-08-29: SATU-SATUNYA situs yang menerbitkan [T168_YATIM].
@@ -4821,7 +4849,7 @@ class ToolExecutor:
                         payload["notes"] = _note_text
 
             # Backfill item_id from top-level into items[0]
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "si")
 
             # Item descriptions + backfill unit_price
             payload = await self._enrich_items(payload, client)
@@ -5047,11 +5075,11 @@ class ToolExecutor:
             # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
             # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
             # ketikan user + unit_price kosong.
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "so_pre")
 
             payload = await self._enrich_items(payload, client)
 
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "so_post")
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 for item in items:
@@ -5410,7 +5438,7 @@ class ToolExecutor:
                         payload["notes"] = _note_text
 
             # Backfill item_id from top-level into items[0]
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "bill")
 
             # FIX_NAMA_HARGA_SATU_SUMBER 2026-08-24: salinan-terpisah dihapus.
             # Bill kini memakai _enrich_items yang SAMA dengan 5 pemanggil sisi
@@ -5751,11 +5779,11 @@ class ToolExecutor:
             # _enrich_items -> cabang FIX_NAMA_HARGA_SATU_SUMBER (nama + harga
             # dari master) TAK PERNAH dijalankan, dan baris keluar dengan nama
             # ketikan user + unit_price kosong.
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "quote_pre")
 
             payload = await self._enrich_items(payload, client)
 
-            self._backfill_top_item_id(payload)
+            self._backfill_top_item_id(payload, "quote_post")
             items = payload.get("items", [])
             if items and isinstance(items, list):
                 for item in items:
