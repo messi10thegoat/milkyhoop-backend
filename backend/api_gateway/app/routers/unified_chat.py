@@ -3730,15 +3730,24 @@ async def _t171_ringkasan(ctx: dict, batch_id: str, dilewati_awal: list) -> str:
     ]
     _gagal = [r["nama"] for r in _rows if r["status"] == "FAILED"]
     _total = len(_rows) + len(dilewati_awal or [])
+    # T173 (kosmetik): satu baris per barang, bukan satu paragraf padat.
+    # Header blok HANYA dicetak kalau blok itu berisi. item_code TIDAK
+    # tersedia di `pending_actions.result` (isinya id/name/item_type/
+    # track_inventory saja) — jadi nama saja, kode TIDAK dikarang.
     _bag = ["Selesai. %d dari %d barang dibuat." % (len(_dibuat), _total)]
-    if _dibuat:
-        _bag.append("Dibuat: " + " · ".join(_dibuat))
-    if _dilewati:
-        _bag.append("Dilewati: " + " · ".join(_dilewati))
-    if _gagal:
-        _bag.append("Gagal: " + " · ".join(_gagal))
-    if dilewati_awal:
-        _bag.append("Tidak ditampilkan: " + " · ".join(dilewati_awal))
+    if not _dibuat:
+        _bag.append("Tidak ada satu pun yang saya simpan.")
+    for _judul, _tanda, _isi in (
+        ("Dibuat", "✓", _dibuat),
+        ("Dilewati", "⊘", _dilewati),
+        ("Gagal", "✗", _gagal),
+        ("Tidak ditampilkan", "⊘", list(dilewati_awal or [])),
+    ):
+        if not _isi:
+            continue
+        _bag.append("")
+        _bag.append("**%s**" % _judul)
+        _bag.extend("- %s %s" % (_tanda, _n) for _n in _isi)
     logger.warning(
         "[T171_RINGKASAN] batch=%s dibuat=%d dilewati=%d gagal=%d awal=%d",
         str(batch_id)[:8],
@@ -3747,7 +3756,7 @@ async def _t171_ringkasan(ctx: dict, batch_id: str, dilewati_awal: list) -> str:
         len(_gagal),
         len(dilewati_awal or []),
     )
-    return _bag[0] + (" " + " — ".join(_bag[1:]) if len(_bag) > 1 else "")
+    return "\n".join(_bag)
 
 
 async def _advance_item_slide(
