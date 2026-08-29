@@ -108,56 +108,6 @@ _DUE_DATE_SLOT_CRUD_INTENTS = frozenset(
 T144_BATAS_ITEM = 10
 
 
-# ═════════ T179 Q4 — PAGAR DAFTAR-KEPENDEKAN ═════════
-# Gejala terukur: model kadang mengirim `items` yang SAH sebagai JSON tapi
-# SATU ELEMEN HILANG dan harga bergeser satu baris. T174 tidak menangkapnya
-# (ia menjaga parse-GAGAL); jalur bulk tetap terbit dengan percaya diri
-# ("Ada 2 barang di pesan ini") sementara satu barang lenyap TANPA jejak.
-#
-# Pagar ini MEMBANDINGKAN jumlah token-harga di teks pengguna dengan jumlah
-# elemen hasil parse. Ia hanya BERSUARA dan MENCATAT.
-#
-# NOL MUTASI. Fungsi-fungsi di bawah tidak menerima payload dan tidak
-# mengembalikan apa pun selain bilangan. Salah-tuduh berbiaya satu kalimat;
-# mengubah data akan berbiaya pembukuan.
-#
-# TITIK BUTA YANG DINYATAKAN: angka yang DIEJA ("dua ratus ribu") tidak
-# menghasilkan token-harga sama sekali -> pagar DIAM. Diterima, tidak
-# dikejar di ronde ini.
-
-
-def _t179_hitung_token_harga(teks: str) -> int:
-    """Jumlah token-harga di teks pengguna. Non-overlap, kiri-ke-kanan."""
-    import re as _t179_re
-
-    if not teks:
-        return 0
-    pola = _t179_re.compile(
-        r"\d{1,3}(?:\.\d{3})+"
-        r"|\d+(?:[.,]\d+)?\s*(?:rb|ribu|jt|juta|k)\b"
-        r"|(?<!\d)\d{4,}(?!\d)",
-        _t179_re.IGNORECASE,
-    )
-    return len(pola.findall(teks))
-
-
-def _t179_faktor_harga(teks: str) -> int:
-    """1 kalau pesan menyebut SATU jenis harga, 2 kalau jual DAN beli.
-
-    Tanpa faktor ini pesan SEHAT "harga jual X harga beli Y" untuk 2 barang
-    menghasilkan 4 token-harga vs 2 elemen dan pagar MENYALA di jalur yang
-    benar-benar sehat (TERUKUR sebelum fix: stimulus Hoodie/Sweater, 4 token,
-    2 elemen, keduanya lengkap). Pagar yang menyala di jalur sehat lebih
-    merusak daripada gejala yang ditutupnya.
-    """
-    import re as _t179_re
-
-    t = teks or ""
-    jual = bool(_t179_re.search(r"\b(jual|sell)\w*", t, _t179_re.I))
-    beli = bool(_t179_re.search(r"\b(beli|belinya|modal|pokok|buy)\b", t, _t179_re.I))
-    return 2 if (jual and beli) else 1
-
-
 def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int, str]:
     # -> (baris_bersih, jumlah_kalau_melebihi_batas, sisa_mentah_gagal_parse)
     #
@@ -1469,7 +1419,6 @@ class UnifiedAgent:
                     )
 
         _t174_sisa = ""
-        _t179_kependekan = None
         # ═══════════════ T144 FASE 2 — NORMALISASI items create_item ═══════════════
         # SITUS KONVERSI untuk jalur non-pil. Jalur pil (_ep_items, ~L3050)
         # meng-parse ke SALINAN payload dan tak pernah dilewati create_item
@@ -1480,27 +1429,6 @@ class UnifiedAgent:
             _t144_baris, _t144_terlalu_banyak, _t174_sisa = (
                 _t144_normalisasi_items(extraction.entities)
             )
-            # T179 Q4 -- pagar daftar-kependekan. HANYA dipasang di situs
-            # panggilan INI. `_t144_normalisasi_items` juga dipanggil di
-            # normalisasi KEDUA (~L4165) dan karenanya menerbitkan
-            # [T144_BULK] DUA KALI per kejadian (terukur di log produksi);
-            # penanda [T179_KEPENDEKAN] harus terbit SEKALI supaya bisa
-            # dihitung apa adanya sebagai alat ukur.
-            if isinstance(_t144_baris, list) and _t144_baris:
-                _t179_n_harga = _t179_hitung_token_harga(user_text or "")
-                _t179_n_items = len(_t144_baris)
-                _t179_faktor = _t179_faktor_harga(user_text or "")
-                if _t179_n_harga > _t179_n_items * _t179_faktor:
-                    _t179_kependekan = (_t179_n_harga, _t179_n_items)
-                    logger.warning(
-                        "[T179_KEPENDEKAN] n_harga=%d n_items=%d faktor=%d "
-                        "action=%s tenant=%s",
-                        _t179_n_harga,
-                        _t179_n_items,
-                        _t179_faktor,
-                        extraction.intent,
-                        context.tenant_id,
-                    )
             if _t144_terlalu_banyak:
                 # D5: JANGAN potong diam-diam, JANGAN tolak diam-diam —
                 # SEBUT jumlahnya. Dihitung saat `items` sudah struktur,
@@ -4440,31 +4368,6 @@ class UnifiedAgent:
                     _t174_content = _t174_peringatan
                 else:
                     _t174_content = _t174_peringatan + "\n\n" + _t174_content
-            elif _t179_kependekan:
-                # T179 Q4 -- sebabnya BEDA dari T174 (di sini `items` BERHASIL
-                # di-parse), jadi kalimatnya beda. `elif`: T174 MENANG kalau
-                # keduanya mungkin. Keduanya sebenarnya saling meniadakan
-                # (T174 => _t144_baris None => _t179_kependekan tak pernah
-                # diset), tapi ditulis eksplisit supaya satu pesan tak pernah
-                # membawa dua peringatan sekaligus.
-                _t179_nh, _t179_ni = _t179_kependekan
-                _t179_peringatan = (
-                    "\u26a0\ufe0f Saya membaca %d harga di pesan ini tapi hanya "
-                    "menyusun %d baris \u2014 periksa kartunya, mungkin ada barang "
-                    "yang terlewat." % (_t179_nh, _t179_ni)
-                )
-                # Gerbang T176 yang SAMA PERSIS dengan T174 di atas: MENIMPA
-                # bila `content` identik dengan `confirmation_table` (kalau
-                # menyambung, FE merender tabelnya DUA KALI -- MessageRenderer
-                # showNarrative), MENYAMBUNG bila `content` adalah narasi
-                # slide T171 (supaya "Barang k dari N" tidak hilang).
-                _t179_tabel = (direct_data or {}).get("confirmation_table") or ""
-                if _t174_content and _t174_content == _t179_tabel:
-                    _t174_content = _t179_peringatan
-                elif _t174_content:
-                    _t174_content = _t179_peringatan + "\n\n" + _t174_content
-                else:
-                    _t174_content = _t179_peringatan
 
             return AgentResponse(
                 message_type="DIRECT_ACTION_PREVIEW",
