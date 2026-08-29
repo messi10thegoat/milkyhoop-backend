@@ -188,7 +188,7 @@ def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int, str]:
         len(bersih),
         [str(b.get("nama_produk"))[:40] for b in bersih],
     )
-    return bersih, 0
+    return bersih, 0, ""
 
 
 def _is_due_date_slot_answer_collision(wf_intent, query_intent):
