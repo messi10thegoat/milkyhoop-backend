@@ -2101,6 +2101,35 @@ def classify_document_action(user_text: str) -> tuple:
     return None, None, None
 
 
+# TIKET SALAH-RUTE FASE 1 (2026-08-30) - BATAS KATA KETAT.
+# Dulu Step 2 memakai substring telanjang (remaining.find(kw)), sehingga
+# "catat pembelian dari ..." cocok dengan keyword "pembeli" (_customer) dan
+# sisa kalimat ("an dari ...") dipakai sebagai customer_name.
+# Sekarang keyword hanya cocok pada BATAS KATA: tidak boleh didahului/diikuti
+# huruf a-z atau angka. TANPA akomodasi klitik/sufiks - kasus yang tidak lagi
+# ditangkap guard jatuh ke LLM (gemini), yang memang classifier utamanya.
+_ENTITY_KW_PATTERN_CACHE = {}
+
+
+def _entity_kw_find(haystack: str, kw: str) -> int:
+    """Posisi kemunculan kw PERTAMA di haystack dengan batas kata ketat.
+
+    Mengembalikan indeks awal, atau -1 bila tidak ada. Pengganti langsung
+    haystack.find(kw). Case-insensitive karena kedua sisi sudah lowercase;
+    IGNORECASE dipasang eksplisit agar tetap benar bila pemanggil berubah.
+    Keyword multi-kata (mis. "faktur pembelian", "uang muka pelanggan") tetap
+    bekerja karena spasi di dalam keyword ikut di-escape apa adanya.
+    """
+    pat = _ENTITY_KW_PATTERN_CACHE.get(kw)
+    if pat is None:
+        pat = _re.compile(
+            r"(?<![a-z0-9])" + _re.escape(kw) + r"(?![a-z0-9])", _re.IGNORECASE
+        )
+        _ENTITY_KW_PATTERN_CACHE[kw] = pat
+    m = pat.search(haystack)
+    return m.start() if m else -1
+
+
 def classify_crud_intent(user_text: str) -> tuple:
     """
     Classify CRUD intent from user text using keyword matching.
@@ -2154,13 +2183,13 @@ def classify_crud_intent(user_text: str) -> tuple:
 
     _entity_candidates = []  # (position, keyword_len, suffix, config, end_pos, source)
     for _, kw, suffix, config in sorted_entities:
-        idx = remaining.find(kw)
+        idx = _entity_kw_find(remaining, kw)
         if idx != -1:
             _entity_candidates.append(
                 (idx, len(kw), suffix, config, idx + len(kw), "remaining")
             )
         else:
-            idx_full = search_text.find(kw)
+            idx_full = _entity_kw_find(search_text, kw)
             if idx_full != -1 and idx_full >= action_end_pos - 2:
                 _adj_end = (idx_full + len(kw)) - action_end_pos
                 if _adj_end < 0:
