@@ -158,6 +158,30 @@ def _t179_faktor_harga(teks: str) -> int:
     return 2 if (jual and beli) else 1
 
 
+def _t181_hitung_baris(nilai):
+    """(jumlah_baris, nama_tipe) untuk sebuah nilai items/lines. NOL MUTASI.
+
+    Dipakai HANYA oleh instrumentasi T181. Tidak menerima payload, tidak
+    mengembalikan apa pun selain bilangan dan nama tipe.
+      -1 = kunci tidak ada / None
+      -2 = string yang ter-parse tapi bukan list
+      -3 = string yang gagal di-parse
+      -4 = tipe lain yang tak terduga
+    """
+    tipe = type(nilai).__name__
+    if nilai is None:
+        return -1, tipe
+    if isinstance(nilai, list):
+        return len(nilai), tipe
+    if isinstance(nilai, str):
+        try:
+            terurai = json.loads(nilai)
+        except Exception:
+            return -3, tipe
+        return (len(terurai) if isinstance(terurai, list) else -2), tipe
+    return -4, tipe
+
+
 def _t144_normalisasi_items(entities: dict) -> tuple[list | None, int, str]:
     # -> (baris_bersih, jumlah_kalau_melebihi_batas, sisa_mentah_gagal_parse)
     #
@@ -1467,6 +1491,43 @@ class UnifiedAgent:
                         list(_s2_result.keys()),
                         list(merged_entities.keys()),
                     )
+
+                # ── T181 LANGKAH 1 (LOG-ONLY) ──────────────────────────
+                # SATU-SATUNYA situs yang menerbitkan [MERGE_ITEMS].
+                # pre  = jumlah baris yang DIKEMBALIKAN Stage-2
+                # post = jumlah baris yang BERTAHAN setelah merge
+                # pre=2 & post=1 -> H-B (merge menimpa). pre=1 -> H-A.
+                # keys_scalar = field skalar Stage-1 yang ikut bertahan
+                # berdampingan dengan items[] (kandidat sebab demosi field).
+                # Nol mutasi: hanya variabel lokal + logger.
+                try:
+                    _t181_kunci = "lines" if (
+                        "lines" in (_s2_result or {}) or "lines" in merged_entities
+                    ) else "items"
+                    _t181_pre, _t181_tpre = _t181_hitung_baris(
+                        (_s2_result or {}).get(_t181_kunci)
+                    )
+                    _t181_post, _t181_tpost = _t181_hitung_baris(
+                        merged_entities.get(_t181_kunci)
+                    )
+                    _t181_skalar = [
+                        _k
+                        for _k in ("item_name", "quantity", "unit_price", "description")
+                        if _k in merged_entities
+                    ]
+                    logger.warning(
+                        "[MERGE_ITEMS] pre=%s post=%s kunci=%s tipe_pre=%s "
+                        "tipe_post=%s keys_scalar=%s intent=%s",
+                        _t181_pre,
+                        _t181_post,
+                        _t181_kunci,
+                        _t181_tpre,
+                        _t181_tpost,
+                        ",".join(_t181_skalar) or "-",
+                        extraction.intent,
+                    )
+                except Exception as _t181_e:
+                    logger.warning("[MERGE_ITEMS] ERR err=%s", _t181_e)
 
         _t174_sisa = ""
         _t179_kependekan = None

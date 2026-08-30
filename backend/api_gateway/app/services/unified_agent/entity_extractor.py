@@ -2724,6 +2724,41 @@ class FieldExtractor:
             parsed = _json.loads(raw_text)
             extracted = {k: v for k, v in parsed.items() if v is not None}
 
+            # ── T181 LANGKAH 1 (LOG-ONLY) ───────────────────────────────
+            # SATU-SATUNYA situs yang menerbitkan n_items Stage-2.
+            # Dulu penanda ini hanya mencetak DAFTAR KUNCI, tak pernah
+            # jumlah baris -> H-A ("Stage-2 memang pulang 1 elemen") tak
+            # bisa dibedakan dari H-B ("merge yang menimpanya").
+            # TIPE ikut dicetak: build_intent_schema memetakan field_type
+            # "json" ke ["string","null"], jadi kunci items BISA pulang sebagai
+            # STRING; kalau begitu, itu jawaban tersendiri.
+            # Nol mutasi: hanya variabel lokal + logger.
+            try:
+                _t181_v = extracted.get("items", extracted.get("lines"))
+                _t181_tipe = type(_t181_v).__name__
+                if _t181_v is None and "items" not in extracted and "lines" not in extracted:
+                    _t181_n = -1
+                elif isinstance(_t181_v, list):
+                    _t181_n = len(_t181_v)
+                elif isinstance(_t181_v, str):
+                    try:
+                        import json as _t181_json
+
+                        _t181_p = _t181_json.loads(_t181_v)
+                        _t181_n = len(_t181_p) if isinstance(_t181_p, list) else -2
+                    except Exception:
+                        _t181_n = -3
+                else:
+                    _t181_n = -4
+                logger.warning(
+                    "[EXTRACT_S2] n_items=%s tipe=%s intent=%s",
+                    _t181_n,
+                    _t181_tipe,
+                    intent,
+                )
+            except Exception as _t181_e:  # instrumentasi tak boleh menjatuhkan jalur
+                logger.warning("[EXTRACT_S2] n_items=ERR err=%s", _t181_e)
+
             logger.warning(
                 "[EXTRACT_S2] intent=%s extracted=%s from='%s'",
                 intent,
