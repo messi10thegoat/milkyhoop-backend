@@ -2751,8 +2751,8 @@ class FieldExtractor:
                         # ── T181 LANGKAH 2 (LOG-ONLY) ───────────────────
                         # SATU-SATUNYA situs yang menerbitkan [T181_PUING]
                         # (pelajaran T178: dua penerbit = kegagalan dobel).
-                        # n_items=-3 selama ini hanya bilang \"string gagal
-                        # di-parse\" tanpa pernah memperlihatkan ISI string
+                        # n_items=-3 selama ini hanya bilang “string gagal
+                        # di-parse” tanpa pernah memperlihatkan ISI string
                         # itu, jadi bentuk kerusakannya tak terbaca.
                         # ⚠️ Penanda ini mencetak DATA USER (nama barang,
                         # jumlah, harga). WAJIB DICABUT sebelum dibiarkan
