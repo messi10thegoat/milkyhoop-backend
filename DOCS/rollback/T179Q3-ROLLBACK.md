@@ -17,7 +17,7 @@ docker inspect -f '{{.State.StartedAt}}' milkyhoop-dev-api_gateway   # WAJIB ber
 
 ## Rollback — kalau harus lewat revert
 Cabut SEMUA commit branch ini, urutan terbalik (isi SHA sesudah commit dibuat):
-  git -C /root/milkyhoop-dev revert --no-edit <SHA-N> ... <SHA-1>
+  git -C /root/milkyhoop-dev revert --no-edit 796dc4029d7074574a4538f21ba442f1c64ae5d5 1244b74c8acd93ec2cb48542803317dde1ca54b5
 Satu `git revert` untuk satu SHA TIDAK CUKUP dan sudah pernah MANDEK di tiket
 sebelumnya karena commit di atasnya menyentuh baris yang sama.
 
