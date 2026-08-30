@@ -2800,6 +2800,20 @@ class UnifiedAgent:
                             }
                         )
 
+                    # GERBANG ENTITAS FASE 1a - hasil pagar dari _execute_propose_direct.
+                    # Wajib dibaca DI SINI: tanpa cabang ini hasilnya jatuh ke penanganan
+                    # galat umum di bawah dan sampai ke layar sebagai TEXT galat.
+                    if _propose_data.get("message_type") == "CLARIFICATION":
+                        _ge_teks = _propose_data.get("content") or _propose_data.get("text") or ""
+                        return AgentResponse(
+                            message_type="CLARIFICATION",
+                            content=_ge_teks,
+                            iterations=1,
+                            model_used="pipeline",
+                            thinking_stages=["Menganalisis pesan", "Cek entitas terdaftar"],
+                            extra_data=_propose_data.get("data") or {},
+                        )
+
                     # FIX_AQUA_PRICE_ASK_RETURN 2026-05-13
                     if _propose_data.get("message_type") == "AWAITING_ITEM_PRICE":
                         _ap_data = _propose_data.get("data", {})
@@ -4370,6 +4384,20 @@ class UnifiedAgent:
                 "category": "write",
             },
         )
+
+        # GERBANG ENTITAS FASE 1a - hasil pagar dari _execute_propose_direct.
+        # Wajib dibaca DI SINI: tanpa cabang ini hasilnya jatuh ke penanganan
+        # galat umum di bawah dan sampai ke layar sebagai TEXT galat.
+        if propose_result.get("message_type") == "CLARIFICATION":
+            _ge_teks = propose_result.get("content") or propose_result.get("text") or ""
+            return AgentResponse(
+                message_type="CLARIFICATION",
+                content=_ge_teks,
+                iterations=1,
+                model_used="pipeline",
+                thinking_stages=["Menganalisis pesan", "Cek entitas terdaftar"],
+                extra_data=propose_result.get("data") or {},
+            )
 
         # FIX_AQUA_PRICE_ASK_RETURN 2026-05-13
         if propose_result.get("message_type") == "AWAITING_ITEM_PRICE":
@@ -13641,6 +13669,26 @@ class UnifiedAgent:
                         total_latency_ms=int((time.time() - start_time) * 1000),
                         thinking_stages=thinking_stages,
                         usage=accumulated_usage,
+                    )
+
+                # GERBANG ENTITAS FASE 1a - tool mengembalikan CLARIFICATION.
+                # Tanpa cabang ini hasilnya diumpankan BALIK ke model (loop tool),
+                # dan pesan pagar tidak pernah sampai ke layar apa adanya.
+                if (
+                    isinstance(result, dict)
+                    and result.get("message_type") == "CLARIFICATION"
+                ):
+                    _ge_teks = result.get("content") or result.get("text") or ""
+                    return AgentResponse(
+                        message_type="CLARIFICATION",
+                        content=_ge_teks,
+                        iterations=iteration + 1,
+                        tool_calls_made=tool_calls_log,
+                        model_used=current_model,
+                        total_latency_ms=int((time.time() - start_time) * 1000),
+                        thinking_stages=thinking_stages,
+                        usage=accumulated_usage,
+                        extra_data=result.get("data") or {},
                     )
 
                 # Special: any tool returned DIRECT_ACTION_PREVIEW → exit immediately

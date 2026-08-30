@@ -572,6 +572,8 @@ from .tutorial_progress import (  # noqa: E402
 )
 
 logger = logging.getLogger("unified_agent.tool_executor")
+
+from .gerbang_entitas import periksa_gerbang_entitas  # noqa: E402
 # ─── Phase 2C: Tool Response Cache ───────────────────────────────────────────
 import time as _cache_time  # noqa: E402
 
@@ -1753,6 +1755,15 @@ class ToolExecutor:
 
         # === RESOLVE ENTITY NAMES (for success/loading messages) ===
         await self._resolve_entity_names(action_key, payload)
+
+        # GERBANG ENTITAS FASE 1a
+        # DI SINI, bukan lebih hilir: sesudah resolver punya kesempatan
+        # TERAKHIR mengisi id, tapi SEBELUM validate_payload, SEBELUM INSERT
+        # pending_actions, dan SEBELUM kartu dibangun. Radius = create_bill
+        # saja (lihat gerbang_entitas.AKSI_DIGERBANG).
+        _gerbang = periksa_gerbang_entitas(action_key, payload)
+        if _gerbang is not None:
+            return _gerbang
 
         # Auto-resolve account_id from account_name or description keywords (for create_expense)
         if action_key == "create_expense" and not payload.get("account_id"):
