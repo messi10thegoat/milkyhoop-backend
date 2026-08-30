@@ -1,0 +1,119 @@
+"""
+Regresi T179-Q3: `items` harus dideklarasikan ke model sebagai ARRAY.
+
+Kelas bug yang ditangkap: `build_intent_schema` hanya memetakan
+number/percent/boolean; `field_type="json"` jatuh ke cabang else dan menjadi
+`["string","null"]`. Model lalu berhak mengisi `items` dengan PROSA, parse
+gagal diam-diam, dan enricher mengarang satu baris dari field skalar —
+barang kedua menguap.
+
+Terukur di produksi 2026-08-30 SEBELUM perbaikan:
+    [EXTRACT_S2] n_items=-3 tipe=str intent=create_bill   (4/4)
+SESUDAH:
+    [EXTRACT_S2] n_items=2 tipe=list intent=create_bill
+"""
+import sys
+import pytest
+
+sys.path.insert(0, "/app/backend/api_gateway")
+
+from app.services.unified_agent.entity_extractor import build_intent_schema
+from app.services.llm.gemini_client import GeminiClient
+
+
+def properti(intent: str) -> dict:
+    """Buka amplop skema dan kembalikan `properties`.
+
+    ⚠️ AMPLOP, bukan skema telanjang. `build_intent_schema` mengembalikan
+    bentuk gaya OpenAI:
+        {"type":"json_schema","json_schema":{"name":..,"schema":{"properties":..}}}
+    Membaca `skema["properties"]` langsung menghasilkan NOL yang meyakinkan —
+    kesalahan itu terjadi saat menulis tes ini, dan ia satu keluarga dengan
+    empat kegagalan alat yang sudah tercatat di proyek ini (payload Bill vs
+    Quote vs review_card, amplop `items` vs `data`).
+    """
+    s = build_intent_schema(intent)
+    assert s, f"skema {intent} kosong — tes tidak menguji apa pun"
+    assert "json_schema" in s, (
+        "bentuk amplop berubah — perbarui helper ini, JANGAN membaca "
+        "properties dari tingkat atas"
+    )
+    return s["json_schema"]["schema"]["properties"]
+
+
+def test_amplop_skema_seperti_yang_diasumsikan():
+    """PENJAGA AMPLOP. Kalau bentuknya berubah, tes lain di berkas ini akan
+    membaca tempat yang salah dan hijau tanpa arti. Ini yang gagal duluan."""
+    s = build_intent_schema("create_bill")
+    assert s["type"] == "json_schema"
+    assert set(["name", "schema"]).issubset(s["json_schema"].keys())
+    assert "properties" in s["json_schema"]["schema"]
+
+
+def test_create_bill_items_adalah_array():
+    p = properti("create_bill").get("items")
+    assert p is not None, "kunci items tidak ada di skema create_bill"
+    assert p.get("type") == "array", (
+        f"items dideklarasikan sebagai {p.get('type')!r}, bukan 'array' — "
+        "model berhak mengirim prosa dan barang kedua akan menguap (T181)"
+    )
+    baris = (p.get("items") or {}).get("properties") or {}
+    # nama field per-baris untuk BILL — bukan skema Quote/SO/SI
+    for wajib in ("product_name", "qty", "price"):
+        assert wajib in baris, f"field baris {wajib!r} hilang dari skema Bill"
+
+
+def test_array_lolos_clean_schema_tanpa_diruntuhkan():
+    """`_clean_schema` meruntuhkan union type-list (Gemini menolaknya — terbukti
+    live `400 INVALID_ARGUMENT, Proto field is not repeating`). Array TIDAK
+    boleh ikut diruntuhkan."""
+    dalam = build_intent_schema("create_bill")["json_schema"]["schema"]
+    bersih = GeminiClient._clean_schema(dalam)
+    p = bersih["properties"]["items"]
+    assert p["type"] == "array", "array runtuh saat lewat _clean_schema"
+    assert p["items"]["type"] == "object"
+    assert "product_name" in p["items"]["properties"]
+
+
+def test_clean_schema_memang_meruntuhkan_union():
+    """KONTROL POSITIF untuk tes di atas. Tanpa ini, 'array lolos' bisa hijau
+    semata karena `_clean_schema` tidak melakukan apa-apa."""
+    contoh = {"type": "object", "properties": {"x": {"type": ["string", "null"]}}}
+    bersih = GeminiClient._clean_schema(contoh)
+    assert bersih["properties"]["x"]["type"] == "string", (
+        "_clean_schema tidak meruntuhkan union — kontrol ini tidak menguji apa pun"
+    )
+
+
+AKSI_TAK_DIUBAH = [
+    "create_sales_invoice",
+    "create_sales_order",
+    "create_quote",
+    "create_stock_adjustment",
+    "create_journal_entry",
+]
+
+
+@pytest.mark.parametrize("intent", AKSI_TAK_DIUBAH)
+def test_radius_aksi_lain_belum_memakai_array(intent):
+    """Radius T179-Q3 sengaja SATU aksi.
+
+    Aksi lain masih memakai deklarasi string; mereka bekerja hari ini karena
+    model KEBETULAN mengembalikan JSON valid di dalam string — keberuntungan
+    yang sama yang dulu menutupi create_bill.
+
+    Ini PENGINGAT BERUMUR, bukan persetujuan: saat sebuah aksi diperluas ke
+    array, hapus dari daftar supaya keputusannya sadar, bukan tak sengaja.
+    """
+    try:
+        props = properti(intent)
+    except AssertionError:
+        pytest.skip(f"{intent} tak punya skema")
+    for kunci in ("items", "lines"):
+        p = props.get(kunci)
+        if p is None:
+            continue
+        assert p.get("type") != "array", (
+            f"{intent}.{kunci} kini array — bagus, tapi hapus dari "
+            "AKSI_TAK_DIUBAH dan pastikan ia punya gate produksinya sendiri"
+        )

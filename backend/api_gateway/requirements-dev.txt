@@ -1,0 +1,9 @@
+# Dependensi PENGUJIAN saja — sengaja TERPISAH dari requirements.txt.
+#
+# Alasan: requirements.txt masuk ke image runtime. Menambahkan pytest ke sana
+# membuat image produksi membawa perkakas uji tanpa alasan. Berkas ini dipasang
+# oleh scripts/jalankan_unit.sh ke dalam kontainer SEKALI-PAKAI.
+#
+# Kalau suatu saat CI dipasang, ini berkas yang dirujuk.
+pytest>=8,<10
+pytest-asyncio>=0.24
