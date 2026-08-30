@@ -520,6 +520,19 @@ Contoh: "ubah harga produk Emas" -> intent=update_item, item_name="Emas"
 - "transfer stok" / "pindah barang" -> create_stock_transfer
 - PENTING: "faktur pembelian" = _bill, "faktur penjualan" = _sales_invoice
 
+== ARAH DOKUMEN: PREPOSISI MENENTUKAN, BUKAN NAMA PIHAK ==
+"faktur"/"tagihan" TELANJANG (tanpa kata "penjualan" atau "pembelian") ditentukan
+oleh PREPOSISI ARAH:
+- "faktur untuk <NAMA>" / "faktur ke <NAMA>"      -> create_sales_invoice, customer_name=<NAMA>
+- "tagihan untuk <NAMA>" / "tagihan ke <NAMA>"    -> create_sales_invoice, customer_name=<NAMA>
+- "buat faktur untuk <NAMA>" / "faktur baru untuk <NAMA>" -> create_sales_invoice, customer_name=<NAMA>
+- "jual ke <NAMA>" / "tagih <NAMA>" / "buat tagihan untuk <NAMA>" -> create_sales_invoice, customer_name=<NAMA>
+- "faktur dari <NAMA>" / "tagihan dari <NAMA>"    -> create_bill, vendor_name=<NAMA>
+- "tagihan masuk dari <NAMA>" / "beli dari <NAMA>" -> create_bill, vendor_name=<NAMA>
+- "catat pembelian dari <NAMA>" / "faktur supplier <NAMA>" / "faktur vendor <NAMA>" -> create_bill, vendor_name=<NAMA>
+Alasan: "untuk"/"ke" = dokumen KELUAR kepada pelanggan (piutang).
+        "dari" = dokumen MASUK dari pemasok (hutang).
+
 == AKSI KHUSUS — Pembayaran (Subject-Aware) ==
 
 Aturan utama: tentukan SUBJEK kalimat (siapa yang membayar) untuk pilih intent.
