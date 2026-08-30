@@ -1,6 +1,6 @@
 # T181 FASE 1 — Daftar probe untuk OWNER (dijalankan SESUDAH deploy)
 
-Branch: feat/t181-tolak · HEAD cd02be2e (kode: 8bfc168d) · baseline master a0179147
+Branch: feat/t181-tolak (kode: 8bfc168d) · baseline master a0179147
 Tenant probe: **kaos-biru-konveksi SAJA**. NOL tulisan ke grapgrap-manado.
 BERHENTI di kartu konfirmasi. JANGAN terbitkan jurnal.
 JANGAN SENTUH: BRG-0003 · BRG-0004 · QUO-2608-0002 · 0010 · 0011 · 0013 ·
@@ -76,7 +76,7 @@ SQL:
     git -C /root/milkyhoop-dev rev-parse master        # HARUS a0179147...
     docker inspect -f "{{.State.StartedAt}}" milkyhoop-dev-api_gateway   # catat SEBELUM
     git -C /root/milkyhoop-dev merge --ff-only feat/t181-tolak
-    git -C /root/milkyhoop-dev rev-parse master        # HARUS cd02be2e...
+    git -C /root/milkyhoop-dev rev-parse master        # HARUS = git -C /root/mh-t181c rev-parse feat/t181-tolak
     docker compose -f /root/milkyhoop-dev/docker-compose.yml up -d api_gateway
     docker inspect -f "{{.State.StartedAt}}" milkyhoop-dev-api_gateway   # HARUS BERGESER
 
