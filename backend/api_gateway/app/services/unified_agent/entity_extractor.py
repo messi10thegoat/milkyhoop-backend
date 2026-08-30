@@ -2543,6 +2543,22 @@ def build_intent_schema(intent: str):
         if f.display_only:
             continue
 
+        # T179-Q3 FASE 0 (2026-08-30): satu FieldSpec kini boleh membawa skema
+        # PER-BARIS (FieldSpec.item_schema). Cabang ini HANYA aktif kalau
+        # item_schema TERISI; satu-satunya yang mengisinya hari ini adalah
+        # create_bill.items. Untuk SEMUA FieldSpec lain item_schema=None dan
+        # jalur di bawah berjalan persis seperti sebelum patch, sehingga
+        # responseSchema aksi lain byte-identik (dibuktikan dengan diff skema).
+        if f.item_schema:
+            prop = {"type": "array", "items": f.item_schema}
+            desc_parts = [f.label]
+            if f.description:
+                desc_parts.append(f.description)
+            prop["description"] = " — ".join(desc_parts)
+            properties[f.name] = prop
+            required.append(f.name)
+            continue
+
         if f.field_type in ("number", "percent"):
             json_type = ["number", "null"]
         elif f.field_type == "boolean":

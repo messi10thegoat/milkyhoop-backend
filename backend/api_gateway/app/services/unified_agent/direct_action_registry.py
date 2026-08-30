@@ -36,6 +36,14 @@ class FieldSpec:
     aliases: list[str] = field(
         default_factory=list
     )  # LLM variant names → normalized to `name`
+    # T179-Q3 FASE 0 (2026-08-30): skema PER-BARIS untuk field berbentuk
+    # daftar. Kalau None (DEFAULT untuk SEMUA field yang ada), build_intent_schema
+    # berperilaku persis seperti sebelum patch -> responseSchema aksi lain
+    # byte-identik. Kalau diisi, field itu dideklarasikan sebagai
+    # {"type":"array","items":{"type":"object",...}} — bentuk yang TERBUKTI
+    # diterima Gemini responseSchema (probe live 2026-08-30, HTTP 200) dan
+    # TERBUKTI lolos GeminiClient._clean_schema tanpa diruntuhkan.
+    item_schema: Optional[dict] = None
 
 
 @dataclass
@@ -1011,6 +1019,43 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
+                # T179-Q3 FASE 0: sebelum ini `items` dideklarasikan ke Gemini
+                # sebagai ["string","null"] (field_type="json" jatuh ke cabang
+                # else di build_intent_schema), jadi model MENGARANG teks yang
+                # gagal di-json.loads -> produksi mengukur n_items=-3 tipe=str
+                # 4 dari 4. Deklarasi array ini memberi model bentuk yang benar.
+                # Nama kunci per-baris = product_name/qty/price, konsisten dengan
+                # deskripsi di bawah dan skema bills/v2; jalur hilir
+                # _enrich_purchase_invoice tetap menerima alias lama, jadi ia
+                # tetap jadi jaring bila model sesekali kembali mengirim string.
+                item_schema={
+                    "type": "object",
+                    "properties": {
+                        "product_name": {
+                            "type": "string",
+                            "description": (
+                                "Nama barang/jasa. WAJIB nama barang, "
+                                "BUKAN nama vendor."
+                            ),
+                        },
+                        "qty": {"type": "number", "description": "Kuantitas"},
+                        "price": {
+                            "type": "number",
+                            "description": "Harga satuan BELI dalam Rupiah",
+                        },
+                        "unit": {
+                            "type": ["string", "null"],
+                            "description": "Satuan bila user sebut",
+                        },
+                        "discount_percent": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "Diskon per-baris persen bila user EKSPLISIT sebut"
+                            ),
+                        },
+                    },
+                    "required": ["product_name", "qty", "price"],
+                },
                 description=(
                     "Array of items. Each item dapat berisi: "
                     "product_id, product_name (nama barang), qty, unit, price, "
