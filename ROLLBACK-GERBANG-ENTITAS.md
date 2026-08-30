@@ -4,7 +4,7 @@ Branch: `feat/gerbang-entitas` (dari `master` = e6b44a34).
 BELUM di-merge, BELUM di-deploy.
 
 ## Commit yang dibuat batch ini
-- (diisi saat commit) SHA1 — gerbang + gate unit
+- 57c53be1b5829258c4eaca945b485063bfb8ec62 — gerbang entitas create_bill + gate unit (38 hijau / 4 merah di e6b44a34)
 
 ## Cara membatalkan
 Belum di-merge → cukup:
