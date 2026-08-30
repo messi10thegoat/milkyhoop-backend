@@ -90,3 +90,36 @@ walau restart gagal).
     docker compose -f /root/milkyhoop-dev/docker-compose.yml up -d api_gateway
 JANGAN `--hard` (tree kotor 75 entri milik orang lain).
 **Kalau SATU SAJA kontrol sehat rusak: ROLLBACK LANGSUNG, baru diagnosis.**
+
+## ADDENDUM OWNER 2026-08-30 — gerbang diperluas, gate offline diperkuat
+Rumusan gerbang BUKAN lagi "exception terjadi", melainkan:
+**"ADA teks daftar mentah, DAN kita berakhir TANPA baris."**
+Satu fungsi murni tingkat-modul `_t181_urai_items(payload)` dipakai KEEMPAT
+situs (menggantikan empat salinan try/except). Gate offline:
+
+    python3 /root/mh-t181c/scripts/gate_t181_fase1.py
+
+memanggil fungsi itu APA ADANYA dari berkas (ast + exec), dengan payload yang
+disusun sendiri — deterministik, offline, nol produksi.
+
+Keluaran terukur:
+    B1 JSONDecodeError       -> TOLAK  n_baris=0  sentinel=ADA
+    B2 sukses tapi dict      -> TOLAK  n_baris=0  sentinel=ADA
+    B3 teks biasa            -> TOLAK  n_baris=0  sentinel=ADA
+    B4 daftar kosong '[]'    -> TOLAK  n_baris=0  sentinel=ADA
+    B5 daftar sah 2 baris    -> BARIS  n_baris=2  sentinel=tidak
+    A  items tidak ada       -> KARANG n_baris=1  sentinel=tidak
+    A2 items=[] (list asli)  -> KARANG
+
+### KEPUTUSAN OWNER YANG MASIH TERBUKA: `items = '[]'`
+Rumusan gerbang owner ("ada teks mentah, berakhir tanpa baris") membuat teks
+`'[]'` **DITOLAK**. Ini DILAPORKAN, bukan diputuskan agen. Kalau owner menilai
+daftar kosong eksplisit itu SAH, perubahannya satu baris di `_t181_urai_items`:
+kecualikan hasil parse berupa list kosong. Sampai owner memutuskan: TOLAK.
+
+### Probe hidup
+Tidak ada stimulus alami yang diketahui menghasilkan `items='[]'` atau dict;
+keduanya sudah tercakup deterministik oleh gate offline di atas. Daftar probe
+hidup P0/K1-K7 TIDAK berubah. **K4 (bill SATU barang: PT Grosir Kaos +
+Kaos Biru 30s) tetap kontrol paling menentukan** — ia satu-satunya yang menguji
+kasus (A), jalur mengarang yang SAH. Rusak = ROLLBACK LANGSUNG.

@@ -788,6 +788,33 @@ def _amankan_nomor_dokumen(payload: dict, action_key: str) -> None:
             )
             _simpan_ke_ref(_inv.strip())
 
+def _t181_urai_items(payload: dict) -> None:
+    """T181 FASE 1 (addendum owner 2026-08-30): urai `items` + gerbang TOLAK.
+
+    RUMUSAN GERBANG (bukan "exception terjadi"):
+        ADA teks daftar mentah, DAN kita berakhir TANPA baris.
+
+    Sebabnya: `json.loads` yang SUKSES tapi menghasilkan non-list (mis. dict)
+    berakhir persis sama seperti JSONDecodeError -- `items=[]`, lalu jalur
+    skalar mengarang satu baris dari slot Stage-1 dan barang kedua menguap.
+    Yang dilihat pengguna IDENTIK pada kedua cabang, jadi membedakannya di
+    kode berarti membedakan dua hal yang tidak berbeda baginya.
+
+    Keadaan (A) -- `items` TIDAK PERNAH ADA sebagai teks -- tak tersentuh:
+    sentinel tak pernah disetel, jalur mengarang tetap SAH dan tetap jalan.
+    """
+    _raw_items = payload.get("items")
+    if not isinstance(_raw_items, str):
+        return
+    try:
+        _parsed = json.loads(_raw_items)
+        payload["items"] = _parsed if isinstance(_parsed, list) else []
+    except (ValueError, TypeError):
+        payload["items"] = []
+    if _raw_items.strip() and not payload.get("items"):
+        payload["_t181_items_mentah"] = _raw_items
+
+
 def _t181_pesan_tolak(mentah) -> str:
     """T181 FASE 1: kegagalan parse `items` bersuara, bukan mengarang.
 
@@ -800,8 +827,9 @@ def _t181_pesan_tolak(mentah) -> str:
         "saya TIDAK membuat kartunya \u2014 daripada mengarang isinya dan "
         "menghilangkan barang yang lain.\n\n"
         "Yang tidak terbaca:\n\u00ab" + _kutip + "\u00bb\n\n"
-        "Tolong ketik ulang barangnya bernomor, satu baris satu barang. "
-        "Contoh:\n1. Kain Katun 10 meter @ 40000\n"
+        "Coba ketik ulang satu barang per baris \u2014 nama, jumlah, lalu "
+        "harga satuan. Contoh:\n"
+        "1. Kain Katun 10 meter @ 40000\n"
         "2. Benang Jahit 5 pcs @ 50000"
     )
 
@@ -4763,19 +4791,7 @@ class ToolExecutor:
                             self._add_due_date(payload, days=_terms2, hari_ini=today)
 
             # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
-            _raw_items = payload.get("items")
-            if isinstance(_raw_items, str):
-                try:
-                    _parsed = json.loads(_raw_items)
-                    payload["items"] = _parsed if isinstance(_parsed, list) else []
-                except (ValueError, TypeError):
-                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
-                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
-                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
-                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
-                    # yang jalur karangannya SAH dan tak diubah.
-                    payload["items"] = []
-                    payload["_t181_items_mentah"] = _raw_items
+            _t181_urai_items(payload)
 
             # Scalar-fallback: build items[] from top-level fields if empty
             # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
@@ -5046,19 +5062,7 @@ class ToolExecutor:
                             payload["customer_name"] = resolved["name"]
 
             # Parse items if stringified JSON
-            _raw_items = payload.get("items")
-            if isinstance(_raw_items, str):
-                try:
-                    _parsed = json.loads(_raw_items)
-                    payload["items"] = _parsed if isinstance(_parsed, list) else []
-                except (ValueError, TypeError):
-                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
-                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
-                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
-                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
-                    # yang jalur karangannya SAH dan tak diubah.
-                    payload["items"] = []
-                    payload["_t181_items_mentah"] = _raw_items
+            _t181_urai_items(payload)
 
             # Scalar-fallback
             # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
@@ -5439,19 +5443,7 @@ class ToolExecutor:
                                 pass
 
             # Parse items if stringified JSON (Stage-2 sometimes returns it that way)
-            _raw_items = payload.get("items")
-            if isinstance(_raw_items, str):
-                try:
-                    _parsed = json.loads(_raw_items)
-                    payload["items"] = _parsed if isinstance(_parsed, list) else []
-                except (ValueError, TypeError):
-                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
-                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
-                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
-                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
-                    # yang jalur karangannya SAH dan tak diubah.
-                    payload["items"] = []
-                    payload["_t181_items_mentah"] = _raw_items
+            _t181_urai_items(payload)
 
             # Scalar-fallback: build items[] from top-level fields if empty
             # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
@@ -5768,18 +5760,7 @@ class ToolExecutor:
                             payload["customer_name"] = resolved["name"]
 
             # Parse items if string (Stage-2 extractor sometimes returns JSON-stringified)
-            _raw_items = payload.get("items")
-            if isinstance(_raw_items, str):
-                try:
-                    _parsed = json.loads(_raw_items)
-                    if isinstance(_parsed, list):
-                        payload["items"] = _parsed
-                    else:
-                        payload["items"] = []
-                except (ValueError, TypeError):
-                    # T181 FASE 1 2026-08-30 — lihat _enrich_sales_invoice.
-                    payload["items"] = []
-                    payload["_t181_items_mentah"] = _raw_items
+            _t181_urai_items(payload)
 
             # Fallback: build items[] from top-level scalar fields if empty/missing
             # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
