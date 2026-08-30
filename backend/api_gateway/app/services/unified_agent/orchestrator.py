@@ -10453,6 +10453,15 @@ class UnifiedAgent:
                     extraction.intent = _remapped
             # ── end P4 downstream remap ──
 
+        # T-SALAHRUTE Langkah 2 (2026-08-30) — LOG-ONLY.
+        # [SHADOW] hanya membandingkan LLM vs extractor PRA-guard, jadi ia tak
+        # pernah melihat rute FINAL (pasca CRUD_GUARD/DOC_DETAIL_GUARD/
+        # AKSI_DOKUMEN) — instrumen yang bisa hijau padahal rute akhir salah.
+        # Holder ini menyimpan pilihan LLM agar bisa dibandingkan LAGI di
+        # [SHADOW_FINAL], sesudah seluruh guard mengunci intent. Diinisialisasi
+        # DI LUAR try PHASE 1 supaya tetap terdefinisi walau shadow gagal init.
+        # NOL perubahan perilaku: hanya tulis+baca dict lokal, lalu logger.
+        _sh_llm_holder = {"intent": None, "confidence": 0.0, "ran": False}
         # ═══ PHASE 1: LLM Router Shadow (async, zero latency impact) ═══
         _read_promote_result = None  # FIX_READ_PROMOTE: sync router pick (flag ON)
         try:
@@ -10496,6 +10505,9 @@ class UnifiedAgent:
                         else None,
                         workflow_state=_shadow_wf_state,
                     )
+                    _sh_llm_holder["intent"] = _sh_result.intent
+                    _sh_llm_holder["confidence"] = _sh_result.confidence
+                    _sh_llm_holder["ran"] = True
                     _agrees = _sh_result.intent == _sh_regex_intent
                     logger.warning(
                         "[SHADOW] llm=%s(%.2f) regex=%s(%.2f) agree=%s ready=%s [%dms]",
@@ -11088,6 +11100,27 @@ class UnifiedAgent:
                 # tak punya TTL (dok. 79 M1f). Batas yang dipilih sadar.
                 if _da_nomor and _da_field:
                     extraction.entities[_da_field] = _da_nomor
+
+            # T-SALAHRUTE Langkah 2 — LOG-ONLY: rute FINAL pasca SELURUH guard.
+            try:
+                _shf_llm = _sh_llm_holder.get("intent")
+                _shf_pra = locals().get("_sh_regex_intent", "n/a")
+                _shf_final = extraction.intent if extraction else None
+                logger.warning(
+                    "[SHADOW_FINAL] llm=%s(%.2f) regex_pra=%s final=%s "
+                    "agree_pra=%s agree_final=%s guard=%s src=%s llm_ran=%s",
+                    _shf_llm,
+                    float(_sh_llm_holder.get("confidence") or 0.0),
+                    _shf_pra,
+                    _shf_final,
+                    _shf_llm == _shf_pra,
+                    _shf_llm == _shf_final,
+                    _tel_guard,
+                    _tel_decision_source,
+                    _sh_llm_holder.get("ran"),
+                )
+            except Exception as _shf_err:  # noqa: BLE001
+                logger.warning("[SHADOW_FINAL] gagal: %s", _shf_err)
 
             logger.warning(
                 "[CLASSIFY_FINAL] intent=%s confidence=%.2f",
