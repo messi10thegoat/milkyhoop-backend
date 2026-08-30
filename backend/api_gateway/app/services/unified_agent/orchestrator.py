@@ -126,6 +126,28 @@ T144_BATAS_ITEM = 10
 # dikejar di ronde ini.
 
 
+# T181 LANGKAH 1 -- daftar intent BER-items[]/lines[], DIVERIFIKASI dari
+# direct_action_registry.py (FieldSpec name="items" / name="lines"), bukan
+# dikarang. create_item TIDAK ada di sini: ia sudah punya pagar sendiri di
+# situs normalisasi dan tidak boleh menerbitkan penanda dua kali (T178).
+#
+# Enam yang diminta owner ADA SEMUA. EMPAT tambahan yang owner tidak sebut
+# tapi memang membawa array dan karenanya diikutkan:
+#   update_sales_invoice, update_sales_order, update_bill (items opsional),
+#   dan create_journal_entry memakai nama "lines", bukan "items".
+_T179_INTENT_BERITEM = {
+    "create_bill": "items",
+    "create_sales_invoice": "items",
+    "create_quote": "items",
+    "create_sales_order": "items",
+    "create_stock_adjustment": "items",
+    "create_journal_entry": "lines",
+    "update_sales_invoice": "items",
+    "update_sales_order": "items",
+    "update_bill": "items",
+}
+
+
 def _t179_hitung_token_harga(teks: str) -> int:
     """Jumlah token-harga di teks pengguna. Non-overlap, kiri-ke-kanan."""
     import re as _t179_re
@@ -1531,6 +1553,40 @@ class UnifiedAgent:
 
         _t174_sisa = ""
         _t179_kependekan = None
+
+        # ── T181 LANGKAH 1 (LOG-ONLY) — PERLUASAN PAGAR [T179_KEPENDEKAN] ──
+        # Pagar aslinya terkurung di dalam cabang create_item (satu-satunya
+        # intent yang melewati _t144_normalisasi_items), karena itu ia NOL
+        # pada T181 yang ber-intent create_bill.
+        #
+        # Cabang ini TIDAK memanggil normalisasi apa pun -- ia hanya
+        # MEMBACA extraction.entities. Nol mutasi, nol pengaruh ke alur.
+        # `_t179_kependekan` SENGAJA tidak disetel di sini: variabel itu
+        # dipakai jalur create_item untuk menyusun kalimat ke pengguna, dan
+        # ronde ini wajib nol perubahan perilaku.
+        if extraction.intent in _T179_INTENT_BERITEM:
+            try:
+                _t181_k = _T179_INTENT_BERITEM[extraction.intent]
+                _t181_n2, _t181_t2 = _t181_hitung_baris(
+                    (extraction.entities or {}).get(_t181_k)
+                )
+                if _t181_n2 > 0:
+                    _t181_h = _t179_hitung_token_harga(user_text or "")
+                    _t181_f = _t179_faktor_harga(user_text or "")
+                    if _t181_h > _t181_n2 * _t181_f:
+                        logger.warning(
+                            "[T179_KEPENDEKAN] n_harga=%d n_items=%d faktor=%d "
+                            "kunci=%s tipe=%s action=%s tenant=%s",
+                            _t181_h,
+                            _t181_n2,
+                            _t181_f,
+                            _t181_k,
+                            _t181_t2,
+                            extraction.intent,
+                            context.tenant_id,
+                        )
+            except Exception as _t181_e:
+                logger.warning("[T179_KEPENDEKAN] ERR err=%s", _t181_e)
         # ═══════════════ T144 FASE 2 — NORMALISASI items create_item ═══════════════
         # SITUS KONVERSI untuk jalur non-pil. Jalur pil (_ep_items, ~L3050)
         # meng-parse ke SALINAN payload dan tak pernah dilewati create_item
