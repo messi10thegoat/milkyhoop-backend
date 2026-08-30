@@ -2746,37 +2746,8 @@ class FieldExtractor:
 
                         _t181_p = _t181_json.loads(_t181_v)
                         _t181_n = len(_t181_p) if isinstance(_t181_p, list) else -2
-                    except Exception as _t181_puing_e:
+                    except Exception:
                         _t181_n = -3
-                        # ── T181 LANGKAH 2 (LOG-ONLY) ───────────────────
-                        # SATU-SATUNYA situs yang menerbitkan [T181_PUING]
-                        # (pelajaran T178: dua penerbit = kegagalan dobel).
-                        # n_items=-3 selama ini hanya bilang \"string gagal
-                        # di-parse\" tanpa pernah memperlihatkan ISI string
-                        # itu, jadi bentuk kerusakannya tak terbaca.
-                        # ⚠️ Penanda ini mencetak DATA USER (nama barang,
-                        # jumlah, harga). WAJIB DICABUT sebelum dibiarkan
-                        # jalan lama di tenant nyata. Lihat T181_ROLLBACK.md.
-                        # Nol mutasi: variabel lokal + logger, dan logger
-                        # dibungkus try/except sendiri supaya kegagalan
-                        # pencetakan tak pernah mengubah _t181_n atau
-                        # menjatuhkan penanda [EXTRACT_S2] di bawahnya.
-                        try:
-                            _t181_raw = _t181_v
-                            _t181_panjang = len(_t181_raw)
-                            _t181_potong = _t181_panjang > 2000
-                            logger.warning(
-                                "[T181_PUING] intent=%s err=%s len=%d "
-                                "dipotong=%s raw=%r",
-                                intent,
-                                f"{type(_t181_puing_e).__name__}: "
-                                f"{_t181_puing_e}",
-                                _t181_panjang,
-                                "YA" if _t181_potong else "TIDAK",
-                                _t181_raw[:2000],
-                            )
-                        except Exception:
-                            logger.warning("[T181_PUING] cetak GAGAL")
                 else:
                     _t181_n = -4
                 logger.warning(
