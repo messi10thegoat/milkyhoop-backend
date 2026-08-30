@@ -788,6 +788,24 @@ def _amankan_nomor_dokumen(payload: dict, action_key: str) -> None:
             )
             _simpan_ke_ref(_inv.strip())
 
+def _t181_pesan_tolak(mentah) -> str:
+    """T181 FASE 1: kegagalan parse `items` bersuara, bukan mengarang.
+
+    Teks yang dikutip adalah teks pengguna sendiri, dikembalikan kepadanya —
+    BUKAN ditulis ke log (itu sebabnya [T181_PUING] dicabut).
+    """
+    _kutip = str(mentah)[:400]
+    return (
+        "\u26a0\ufe0f Daftar barang di pesan ini tidak bisa saya urai, jadi "
+        "saya TIDAK membuat kartunya \u2014 daripada mengarang isinya dan "
+        "menghilangkan barang yang lain.\n\n"
+        "Yang tidak terbaca:\n\u00ab" + _kutip + "\u00bb\n\n"
+        "Tolong ketik ulang barangnya bernomor, satu baris satu barang. "
+        "Contoh:\n1. Kain Katun 10 meter @ 40000\n"
+        "2. Benang Jahit 5 pcs @ 50000"
+    )
+
+
 class TenantContext:
     """Tenant context passed to tool executor."""
 
@@ -1682,6 +1700,14 @@ class ToolExecutor:
             action_key.replace("create_", "CREATE_").replace("void_", "VOID_").upper()
         )
         payload = await self._enrich_payload(_enrich_action_type, payload)
+
+        # T181 FASE 1: keadaan (B) — jangan bangun kartu dari baris karangan.
+        _t181_mentah = payload.pop("_t181_items_mentah", None)
+        if _t181_mentah:
+            return {
+                "message_type": "TEXT",
+                "text": _t181_pesan_tolak(_t181_mentah),
+            }
 
         # FIX_AQUA_PERLINE_HINT 2026-05-09: pop per-line hint sentinel here
         # (BEFORE price-ask short-circuit so it propagates if user resumes
@@ -4133,6 +4159,16 @@ class ToolExecutor:
         enricher = getattr(self, enricher_name)
         result = await enricher(payload)
 
+        # T181 FASE 1 2026-08-30: SATU-SATUNYA situs yang menerbitkan
+        # [T181_TOLAK] (pelajaran T178: dua penerbit = satu kegagalan tampak
+        # dobel). Isi string TIDAK dicetak — hanya action_key + panjang.
+        if isinstance(result, dict) and result.get("_t181_items_mentah"):
+            logger.warning(
+                "[T181_TOLAK] action=%s len=%d",
+                action_type,
+                len(str(result.get("_t181_items_mentah"))),
+            )
+
         # --- Diff before vs after for structured log ---
         elapsed_ms = int((_time.monotonic() - _t0) * 1000)
         _after_keys = set(result.keys())
@@ -4733,10 +4769,21 @@ class ToolExecutor:
                     _parsed = json.loads(_raw_items)
                     payload["items"] = _parsed if isinstance(_parsed, list) else []
                 except (ValueError, TypeError):
+                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
+                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
+                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
+                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
+                    # yang jalur karangannya SAH dan tak diubah.
                     payload["items"] = []
+                    payload["_t181_items_mentah"] = _raw_items
 
             # Scalar-fallback: build items[] from top-level fields if empty
-            if not payload.get("items"):
+            # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
+            # Kalau `items` ADA tapi gagal diurai, mengarang baris di
+            # sini yang membuat barang kedua menguap tanpa suara.
+            if not payload.get("items") and not payload.get(
+                "_t181_items_mentah"
+            ):
                 _it_id = payload.get("item_id")
                 _it_name = payload.get("item_name") or payload.get("name")
                 _qty = payload.get("quantity")
@@ -5005,10 +5052,21 @@ class ToolExecutor:
                     _parsed = json.loads(_raw_items)
                     payload["items"] = _parsed if isinstance(_parsed, list) else []
                 except (ValueError, TypeError):
+                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
+                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
+                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
+                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
+                    # yang jalur karangannya SAH dan tak diubah.
                     payload["items"] = []
+                    payload["_t181_items_mentah"] = _raw_items
 
             # Scalar-fallback
-            if not payload.get("items"):
+            # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
+            # Kalau `items` ADA tapi gagal diurai, mengarang baris di
+            # sini yang membuat barang kedua menguap tanpa suara.
+            if not payload.get("items") and not payload.get(
+                "_t181_items_mentah"
+            ):
                 _it_id = payload.get("item_id")
                 _it_name = payload.get("item_name") or payload.get("name")
                 _qty = payload.get("quantity")
@@ -5387,10 +5445,21 @@ class ToolExecutor:
                     _parsed = json.loads(_raw_items)
                     payload["items"] = _parsed if isinstance(_parsed, list) else []
                 except (ValueError, TypeError):
+                    # T181 FASE 1 2026-08-30: kegagalan parse TIDAK BOLEH
+                    # ditelan lalu dikarang ulang dari slot skalar Stage-1.
+                    # Sentinel ini membedakan keadaan (B) "items ADA tapi
+                    # gagal diurai" dari keadaan (A) "items tak pernah ada",
+                    # yang jalur karangannya SAH dan tak diubah.
                     payload["items"] = []
+                    payload["_t181_items_mentah"] = _raw_items
 
             # Scalar-fallback: build items[] from top-level fields if empty
-            if not payload.get("items"):
+            # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
+            # Kalau `items` ADA tapi gagal diurai, mengarang baris di
+            # sini yang membuat barang kedua menguap tanpa suara.
+            if not payload.get("items") and not payload.get(
+                "_t181_items_mentah"
+            ):
                 _it_id = payload.get("item_id")
                 _it_name = payload.get("item_name") or payload.get("name")
                 _qty = payload.get("quantity")
@@ -5708,10 +5777,17 @@ class ToolExecutor:
                     else:
                         payload["items"] = []
                 except (ValueError, TypeError):
+                    # T181 FASE 1 2026-08-30 — lihat _enrich_sales_invoice.
                     payload["items"] = []
+                    payload["_t181_items_mentah"] = _raw_items
 
             # Fallback: build items[] from top-level scalar fields if empty/missing
-            if not payload.get("items"):
+            # T181 FASE 1: keadaan (A) saja — `items` tak pernah ada.
+            # Kalau `items` ADA tapi gagal diurai, mengarang baris di
+            # sini yang membuat barang kedua menguap tanpa suara.
+            if not payload.get("items") and not payload.get(
+                "_t181_items_mentah"
+            ):
                 _it_id = payload.get("item_id")
                 _it_name = payload.get("item_name") or payload.get("name")
                 _qty = payload.get("quantity")
@@ -6585,6 +6661,12 @@ class ToolExecutor:
         # LLM provides intent (IDs, qty, price).
         # Enrichment adds kernel-required fields (names, defaults, descriptions).
         payload = await self._enrich_payload(action_type, payload)
+
+        # T181 FASE 1: keadaan (B) — jangan teruskan payload berbaris karangan
+        # ke validator.
+        _t181_mentah = payload.pop("_t181_items_mentah", None)
+        if _t181_mentah:
+            return _error("ITEMS_TIDAK_TERBACA", _t181_pesan_tolak(_t181_mentah))
         logger.info(
             f"propose_action: type={action_type}, payload_keys={list(payload.keys())}"
         )
@@ -6701,6 +6783,12 @@ class ToolExecutor:
 
         # === SAME ENRICHMENT ===
         payload = await self._enrich_payload(action_type, payload)
+
+        # T181 FASE 1: keadaan (B) — jangan teruskan payload berbaris karangan
+        # ke validator.
+        _t181_mentah = payload.pop("_t181_items_mentah", None)
+        if _t181_mentah:
+            return _error("ITEMS_TIDAK_TERBACA", _t181_pesan_tolak(_t181_mentah))
 
         # dry_run_action expects individual params
         dry_run_result = await self.validator_client.dry_run_action(
