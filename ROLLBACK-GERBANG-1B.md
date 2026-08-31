@@ -7,7 +7,9 @@ Basis: master `09e4441d` — TIDAK di-merge oleh agen. Merge+deploy = langkah ma
 (diperbarui tiap commit)
 - `beb67a97` feat(gerbang): perluas radius gerbang entitas ke quote/SI/SO (Fase 1b)
 - `dc5c5e06` docs(rollback): catat commit beb67a97
-- `HEAD` docs(rollback): daftar commit lengkap + catatan pre-empsi orchestrator
+- `5deda1ec` docs(rollback): daftar commit lengkap + catatan pre-empsi orchestrator
+- `184218be` fix(gerbang): pesan menyebut NAMA barang + KATA BENDA dokumen (Fase 1b-r2)
+- `HEAD` docs(rollback): catat commit Fase 1b-r2
 
 ## Langkah darurat (SESUDAH deploy, kalau produksi rusak)
 git -C /root/milkyhoop-dev reset --keep 09e4441d
@@ -19,7 +21,18 @@ JANGAN `git reset --hard` (75 entri kotor di /root/milkyhoop-dev bukan milik bat
 ## Radius perubahan
 - backend/api_gateway/app/services/unified_agent/gerbang_entitas.py
 - backend/api_gateway/tests/unit/test_gerbang_entitas.py
-Tidak ada perubahan di tool_executor.py (situs pemasangan sudah action-agnostic).
+- backend/api_gateway/app/services/unified_agent/tool_executor.py
+  (SEJAK 184218be — SATU baris pemanggilan gerbang meneruskan
+  `teks_user=getattr(self, "user_text", None)`. Tidak ada perubahan lain di
+  berkas itu; situs pemasangan tetap action-agnostic.)
+
+## Fase 1b-r2 (`184218be`) — yang TIDAK berubah
+Mekanisme gerbang tidak disentuh: radius (4 aksi), urutan pemasangan (sesudah
+`_resolve_entity_names`, sebelum `validate_payload`/INSERT), keputusan blokir,
+dan bentuk amplop rangkap. Yang berubah HANYA kalimat.
+Pesan `create_bill` DIJAGA BYTE-EXACT oleh
+`test_bill_pesan_byte_exact_tidak_berubah_sedikit_pun` (dua kasus). Kalau
+sesudah deploy pesan create_bill berbeda satu karakter pun, itu regresi.
 
 ## Catatan pre-empsi (WAJIB dibaca sebelum membaca hasil probe)
 Di `orchestrator.py` ada cabang klarifikasi deterministik yang menyala LEBIH
