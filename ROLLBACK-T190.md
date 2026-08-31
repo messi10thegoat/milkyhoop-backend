@@ -10,11 +10,13 @@ Flag `PIPELINE_ENTITAS_V2` default OFF; walau kode ini sampai ke produksi
 tanpa flag, jalur create_quote tidak berubah satu byte pun.
 
 ## Commit di cabang ini (urut; diisi saat dibuat)
-- <SHA-1> docs(t190): berkas rollback SEBELUM menyentuh kode
-- <SHA-2> feat(t190): Fase A `hasil_resolve.py` + invarian
-- <SHA-3> feat(t190): Fase B `resolver_entitas.py` (satu situs resolve)
-- <SHA-4> feat(t190): Fase C `gerbang_keputusan.py` (murni)
-- <SHA-5> feat(t190): Fase D sambungan di balik flag + tes
+- 7561bc6a docs(t190): berkas rollback SEBELUM menyentuh kode
+- 35e344a3 feat(t190): Fase A/B/C (hasil_resolve, resolver_entitas, gerbang_keputusan)
+- 48587dbf feat(t190): Fase D sambungan di balik flag + 75 tes
+- (commit ini) docs(t190): isi SHA
+
+Baseline suite unit 154 lulus; sesudah batch 229 lulus (154 lama TETAP
+hijau, diukur terpisah dengan --ignore berkas tes baru).
 
 ## Cara membatalkan
 Karena nol penyebaran, membatalkan = TIDAK melakukan apa pun.
