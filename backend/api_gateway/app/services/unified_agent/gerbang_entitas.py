@@ -14,9 +14,25 @@ Yang dikerjakan DI SINI hanyalah PAGAR: menolak membangun kartu. Ronde ini
 TIDAK membangun alur bersambung (pendaftaran otomatis, sentinel `create_new:`
 tetap perilakunya sekarang).
 
-RADIUS: HANYA `create_bill`. Aksi lain — termasuk create_customer /
-create_vendor / create_item, yang justru MEMBUAT entitasnya sehingga id kosong
-adalah keadaan yang benar — tidak boleh berubah perilakunya sedikit pun.
+RADIUS (Fase 1b): `create_bill` + `create_quote` /
+`create_sales_invoice` / `create_sales_order`. Aksi lain — termasuk
+create_customer / create_vendor / create_item / create_expense, yang justru
+MEMBUAT entitasnya sehingga id kosong adalah keadaan yang benar — tidak boleh
+berubah perilakunya sedikit pun.
+
+PENAMAAN BERBEDA PER AKSI, dan itu sumber bug berulang: Bill memakai
+vendor_id / vendor_name / items[].product_id; Quote/SO/SI memakai
+customer_id / customer_name / items[].item_id (+ `description` sebagai nama
+baris). Karena itu peta field DIDEKLARASIKAN per aksi di PETA_AKSI, bukan
+di-hardcode — membaca amplop yang salah menghasilkan nol yang meyakinkan.
+
+CATATAN KECOCOKAN (terverifikasi di direct_action_registry.py): untuk
+Quote/SO/SI `customer_id` adalah required=True, sedangkan `vendor_id` pada
+Bill hidden=True/tidak required. Jadi validate_payload SUDAH menangkap
+customer_id yang benar-benar KOSONG. Yang TIDAK ia tangkap — dan justru
+alasan pagar ini diperluas — ada dua: (1) sentinel `create_new:<nama>` yang
+truthy sehingga lolos cek required; (2) baris item yatim, karena `items`
+hanya dicek truthy sebagai list, tidak pernah per-baris.
 
 Kenapa cek id EKSPLISIT dan bukan `preview_warnings`: warning bersifat
 non-fatal, bisa None, dan sumbernya endpoint pratinjau yang boleh gagal diam.
@@ -30,8 +46,40 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Radius pagar. Menambah anggota daftar ini = mengubah radius = tiket baru.
-AKSI_DIGERBANG = frozenset({"create_bill"})
+# Peta field per aksi. Menambah anggota = mengubah radius = tiket baru.
+# `label_pihak` masuk ke kalimat user, jadi ia bagian dari kontrak pesan.
+PETA_AKSI: Dict[str, Dict[str, Any]] = {
+    "create_bill": {
+        "id_pihak": "vendor_id",
+        "nama_pihak": "vendor_name",
+        "label_pihak": "vendor",
+        "id_baris": "product_id",
+        "nama_baris": ("product_name", "name", "item_name", "description"),
+    },
+    "create_quote": {
+        "id_pihak": "customer_id",
+        "nama_pihak": "customer_name",
+        "label_pihak": "pelanggan",
+        "id_baris": "item_id",
+        "nama_baris": ("description", "item_name", "name", "product_name"),
+    },
+    "create_sales_invoice": {
+        "id_pihak": "customer_id",
+        "nama_pihak": "customer_name",
+        "label_pihak": "pelanggan",
+        "id_baris": "item_id",
+        "nama_baris": ("description", "item_name", "name", "product_name"),
+    },
+    "create_sales_order": {
+        "id_pihak": "customer_id",
+        "nama_pihak": "customer_name",
+        "label_pihak": "pelanggan",
+        "id_baris": "item_id",
+        "nama_baris": ("description", "item_name", "name", "product_name"),
+    },
+}
+
+AKSI_DIGERBANG = frozenset(PETA_AKSI)
 
 KODE_GERBANG = "ENTITAS_BELUM_TERDAFTAR"
 
@@ -51,11 +99,14 @@ def _id_kosong(nilai: Any) -> bool:
     return t == "" or t.lower().startswith("create_new:")
 
 
-def _nama_baris(baris: Dict[str, Any]) -> str:
-    # Penamaan payload Bill = product_name/price/product_id.
-    # (Quote/SO/SI memakai description/unit_price/item_id — beda amplop;
-    # membaca amplop yang salah menghasilkan nol yang meyakinkan.)
-    for k in ("product_name", "name", "item_name", "description"):
+def _nama_baris(baris: Dict[str, Any], kunci: Any) -> str:
+    """Nama baris dibaca menurut urutan kunci milik AKSI ITU.
+
+    Bill menaruh nama di `product_name`; Quote/SO/SI di `description`.
+    Urutannya berbeda per aksi supaya kunci yang paling mungkin benar dibaca
+    lebih dulu — bukan karena kunci lain terlarang.
+    """
+    for k in kunci:
         t = _teks(baris.get(k))
         if t:
             return t
@@ -74,36 +125,46 @@ def periksa_gerbang_entitas(
     Fungsi MURNI: tanpa DB, tanpa HTTP, tanpa LLM — supaya bisa diuji
     deterministik di suite unit.
     """
-    if action_key not in AKSI_DIGERBANG:
+    peta = PETA_AKSI.get(action_key)
+    if peta is None:
         return None
     if not isinstance(payload, dict):
         return None
 
-    vendor_nama = _teks(payload.get("vendor_name"))
-    vendor_hilang = bool(vendor_nama) and _id_kosong(payload.get("vendor_id"))
+    pihak_nama = _teks(payload.get(peta["nama_pihak"]))
+    pihak_hilang = bool(pihak_nama) and _id_kosong(payload.get(peta["id_pihak"]))
 
     baris = payload.get("items")
     yatim: List[str] = []
     if isinstance(baris, list):
         for b in baris:
-            if isinstance(b, dict) and _id_kosong(b.get("product_id")):
-                yatim.append(_nama_baris(b))
+            if isinstance(b, dict) and _id_kosong(b.get(peta["id_baris"])):
+                yatim.append(_nama_baris(b, peta["nama_baris"]))
 
-    if not vendor_hilang and not yatim:
+    if not pihak_hilang and not yatim:
         return None
 
     # SATU situs log. Tanpa nama entitas, tanpa isi payload — T181_PUING
     # dicabut persis karena mencetak isi payload ke log.
+    # Fase 1a mencetak `vendor=`; diseragamkan jadi `pihak=` karena radius
+    # kini memuat aksi yang pihaknya PELANGGAN, bukan vendor. Perubahan baris
+    # log create_bill ini DISENGAJA.
     logger.warning(
-        "[GERBANG_ENTITAS] action=%s vendor=%s item_yatim=%d",
+        "[GERBANG_ENTITAS] action=%s pihak=%s item_yatim=%d",
         action_key,
-        "kosong" if vendor_hilang else "ada",
+        "kosong" if pihak_hilang else "ada",
         len(yatim),
     )
 
+    # DIFERENSIAL: tiap klausa hanya muncul kalau penyebabnya memang ada.
+    # Kalau cuma barang yang kurang, kalimat TIDAK menyebut pihak, dan
+    # sebaliknya — kalimat buram yang selalu menyebut keduanya membuat user
+    # memperbaiki hal yang tidak rusak.
     bagian: List[str] = []
-    if vendor_hilang:
-        bagian.append(f"{vendor_nama} belum terdaftar sebagai vendor")
+    if pihak_hilang:
+        bagian.append(
+            f"{pihak_nama} belum terdaftar sebagai {peta['label_pihak']}"
+        )
     if yatim:
         bagian.append(f"{_rangkai(yatim)} belum ada di master barang")
     pesan = (

@@ -22,6 +22,7 @@ sys.path.insert(0, "/app/backend/api_gateway")
 from app.services.unified_agent.gerbang_entitas import (  # noqa: E402
     AKSI_DIGERBANG,
     KODE_GERBANG,
+    PETA_AKSI,
     periksa_gerbang_entitas,
 )
 
@@ -38,6 +39,122 @@ def _bill(vendor_id=None, vendor_name="Knitto Textile", items=None):
         else [{"product_name": "Kain Katun", "qty": 10, "price": 50000,
                "product_id": "11111111-1111-1111-1111-111111111111"}],
     }
+
+
+def _jual(customer_id="55555555-5555-5555-5555-555555555555",
+          customer_name="Toko Melati", items=None):
+    """Amplop Quote/SO/SI: customer_id/customer_name + items[].item_id.
+
+    SENGAJA beda dari _bill: menyalin amplop Bill ke aksi penjualan adalah
+    cara rapi melahirkan tiga bug sekaligus.
+    """
+    return {
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        # Tanggal WAJIB diisi: tanpa ini validate_payload menolak lebih dulu
+        # dan KONTROL POSITIF jadi palsu — lolos tanpa pernah mencapai pagar.
+        "quote_date": "2026-08-31",
+        "invoice_date": "2026-08-31",
+        "order_date": "2026-08-31",
+        "due_date": "2026-09-30",
+        "items": items
+        if items is not None
+        else [{"description": "Kain Katun", "quantity": 2, "unit_price": 1000,
+               "item_id": "44444444-4444-4444-4444-444444444444"}],
+    }
+
+
+AKSI_JUAL = ["create_quote", "create_sales_invoice", "create_sales_order"]
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_customer_tak_ter_resolve_diblokir(action_key):
+    hasil = periksa_gerbang_entitas(
+        action_key, _jual(customer_id="create_new:Toko Melati")
+    )
+    assert hasil is not None, "pelanggan tak ter-resolve tapi kartu dibangun"
+    assert hasil["message_type"] == "CLARIFICATION"
+    assert "Toko Melati" in hasil["content"]
+    assert "pelanggan" in hasil["content"].lower()
+    assert "vendor" not in hasil["content"].lower(), (
+        "aksi penjualan memakai label vendor - peta field tertukar"
+    )
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_item_yatim_diblokir(action_key):
+    hasil = periksa_gerbang_entitas(
+        action_key,
+        _jual(items=[{"description": "Benang Jahit", "unit_price": 2000}]),
+    )
+    assert hasil is not None
+    assert "Benang Jahit" in hasil["content"]
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_semua_ter_resolve_lolos(action_key):
+    """Kontrol positif: pagar tidak menelan kasus yang sah."""
+    assert periksa_gerbang_entitas(action_key, _jual()) is None
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_pesan_diferensial_barang_tidak_menyebut_pelanggan(action_key):
+    """WAJIB DIFERENSIAL: kalau hanya barang yang kurang, pesan TIDAK boleh
+    menyebut pelanggan — dan sebaliknya. Kalimat buram membuat user
+    memperbaiki hal yang tidak rusak."""
+    h_barang = periksa_gerbang_entitas(
+        action_key, _jual(items=[{"description": "Benang Jahit"}])
+    )
+    assert "Benang Jahit" in h_barang["content"]
+    assert "Toko Melati" not in h_barang["content"]
+    assert "pelanggan" not in h_barang["content"].lower()
+
+    h_pihak = periksa_gerbang_entitas(
+        action_key, _jual(customer_id="create_new:Toko Melati")
+    )
+    assert "Toko Melati" in h_pihak["content"]
+    assert "master barang" not in h_pihak["content"]
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_customer_id_terisi_tapi_item_id_kosong_bukan_soal_pihak(action_key):
+    """Penjaga peta: pagar harus membaca `item_id`, BUKAN `product_id`.
+
+    Kalau ia keliru membaca product_id, baris ini (yang punya item_id sah)
+    akan disebut yatim - nol yang meyakinkan.
+    """
+    hasil = periksa_gerbang_entitas(
+        action_key,
+        _jual(
+            items=[{"description": "Kain Katun", "unit_price": 1,
+                    "item_id": "44444444-4444-4444-4444-444444444444",
+                    "product_id": None}]
+        ),
+    )
+    assert hasil is None, hasil
+
+
+@pytest.mark.parametrize("action_key", AKSI_JUAL)
+def test_jual_amplop_rangkap_terisi(action_key):
+    """Amplop rangkap mencegah `text = content_text or None` -> layar kosong."""
+    h = periksa_gerbang_entitas(action_key, _jual(customer_id=""))
+    assert h["success"] is False
+    for kunci in ("content", "text"):
+        assert isinstance(h[kunci], str) and h[kunci].strip()
+    assert h["error"]["code"] == KODE_GERBANG
+    assert h["error"]["message"].strip()
+    assert h["data"]["question"].strip()
+    assert h["data"]["allow_freetext"] is True
+    assert (h["content"] or None) is not None
+
+
+def test_bill_pesan_tetap_menyebut_vendor_bukan_pihak():
+    """create_bill WAJIB berperilaku PERSIS SAMA sesudah perluasan radius."""
+    h = periksa_gerbang_entitas("create_bill", _bill(vendor_id=None))
+    assert h["content"] == (
+        "Knitto Textile belum terdaftar sebagai vendor. "
+        "Daftarkan dulu, lalu kirim ulang faktur ini."
+    ), h["content"]
 
 
 def test_bill_vendor_nama_ada_id_kosong_diblokir():
@@ -101,9 +218,6 @@ def test_bill_vendor_name_kosong_tidak_memicu_pagar_vendor():
         "create_customer",
         "create_vendor",
         "create_item",
-        "create_quote",
-        "create_sales_invoice",
-        "create_sales_order",
         "create_expense",
     ],
 )
@@ -123,9 +237,32 @@ def test_aksi_di_luar_radius_tidak_pernah_diblokir(action_key):
     assert periksa_gerbang_entitas(action_key, payload) is None
 
 
-def test_radius_tepat_satu_aksi():
+def test_radius_tepat_empat_aksi():
     """Penjaga radius: menambah anggota = tiket baru, bukan efek samping."""
-    assert AKSI_DIGERBANG == frozenset({"create_bill"})
+    assert AKSI_DIGERBANG == frozenset(
+        {
+            "create_bill",
+            "create_quote",
+            "create_sales_invoice",
+            "create_sales_order",
+        }
+    )
+
+
+def test_peta_aksi_tidak_mencampur_penamaan():
+    """Penjaga KECOCOKAN FIELD — sumber bug berulang di proyek ini.
+
+    Bill = vendor_*/product_id; Quote/SO/SI = customer_*/item_id. Kalau peta
+    tertukar, pagar membaca kunci yang selalu kosong (memblokir semuanya) atau
+    selalu terisi (tak memblokir apa pun) — dua-duanya gagal DIAM-DIAM.
+    """
+    assert PETA_AKSI["create_bill"]["id_pihak"] == "vendor_id"
+    assert PETA_AKSI["create_bill"]["id_baris"] == "product_id"
+    for ak in ("create_quote", "create_sales_invoice", "create_sales_order"):
+        assert PETA_AKSI[ak]["id_pihak"] == "customer_id"
+        assert PETA_AKSI[ak]["nama_pihak"] == "customer_name"
+        assert PETA_AKSI[ak]["id_baris"] == "item_id"
+        assert PETA_AKSI[ak]["label_pihak"] == "pelanggan"
 
 
 # ══════════════════ penjaga BENTUK amplop ══════════════════
@@ -322,25 +459,68 @@ async def test_e2e_create_vendor_item_tanpa_id_tidak_diblokir(
 
 
 @pytest.mark.asyncio
-async def test_e2e_quote_item_yatim_tidak_diblokir(monkeypatch):
-    """Di luar radius: quote dengan item yatim tetap jalan seperti sebelumnya."""
+@pytest.mark.parametrize(
+    "action_key", ["create_quote", "create_sales_invoice", "create_sales_order"]
+)
+async def test_e2e_penjualan_item_yatim_diblokir_sebelum_db(
+    monkeypatch, action_key
+):
+    """FASE 1b: quote/SI/SO dengan baris tanpa item_id tidak boleh berkartu.
+
+    validate_payload TIDAK menangkap ini — `items` hanya dicek truthy sebagai
+    list, tidak pernah per-baris. Peledak membuktikan blokirnya terjadi
+    SEBELUM INSERT pending_actions.
+    """
+    te, peledak = _executor_uji(monkeypatch)
+    hasil = await te._execute_propose_direct(
+        {
+            "action_key": action_key,
+            "payload": _jual(
+                items=[
+                    {
+                        "description": "Kain Katun",
+                        "unit_price": 1000,
+                        "item_id": "44444444-4444-4444-4444-444444444444",
+                    },
+                    {"description": "Benang Jahit", "unit_price": 2000},
+                ]
+            ),
+        }
+    )
+    assert hasil.get("message_type") == "CLARIFICATION", hasil
+    assert "Benang Jahit" in hasil["content"]
+    assert "Kain Katun" not in hasil["content"]
+    assert peledak.disentuh is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action_key", ["create_quote", "create_sales_invoice", "create_sales_order"]
+)
+async def test_e2e_penjualan_semua_ter_resolve_lewat_gerbang(
+    monkeypatch, action_key
+):
+    """KONTROL POSITIF: payload SAH tidak tertahan pagar.
+
+    Buktinya bukan 'tidak ada CLARIFICATION' (itu juga terjadi kalau kode tak
+    pernah jalan), melainkan eksekusi BERLANJUT sampai menyentuh peledak.
+    """
     te, peledak = _executor_uji(monkeypatch)
     try:
         hasil = await te._execute_propose_direct(
-            {
-                "action_key": "create_quote",
-                "payload": {
-                    "customer_name": "Toko Melati",
-                    "customer_id": None,
-                    # Quote memakai description/unit_price/item_id.
-                    "items": [{"description": "Kain Katun", "unit_price": 1000}],
-                },
-            }
+            {"action_key": action_key, "payload": _jual()}
         )
     except AssertionError as e:
         assert "DB DISENTUH" in str(e)
+        assert peledak.disentuh is True
         return
     _bukan_gerbang(hasil)
+    # Lolos TANPA menyentuh peledak = kode berhenti di tahap lain (mis.
+    # validate_payload) dan kontrol positif ini tidak membuktikan apa pun.
+    assert peledak.disentuh is True, (
+        "eksekusi tidak pernah mencapai DB - 'tidak diblokir' tak terbukti: %r"
+        % (hasil,)
+    )
 
 
 # ══════════════════ penjaga PEMASANGAN (wiring) ══════════════════
