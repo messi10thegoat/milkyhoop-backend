@@ -33,7 +33,7 @@ Deklaratif saja: mengisi FieldSpec.item_schema sehingga build_intent_schema
 mengambil cabang array. NOL perubahan skema DB, NOL migrasi, NOL tulisan DB,
 NOL perubahan jalur hilir (enricher/scalar-fallback/gerbang entitas).
 
-3. <SHA-3> docs(rollback): tutup daftar commit T182-C
+3. 7b62f5e2 docs(rollback): tutup daftar commit T182-C
    (commit ini sendiri — hanya berkas ROLLBACK-T182C.md)
 
 ## Bukti gate A (2026-08-31)
