@@ -207,13 +207,67 @@ def test_array_quote_lolos_clean_schema_tanpa_diruntuhkan():
     assert p["items"]["properties"]["unit"]["type"] == "string"
 
 
+def test_create_stock_adjustment_items_adalah_array():
+    """T182-D (A). Sebelum ini `items` create_stock_adjustment =
+    ["string","null"] — terukur dari dump skema BASELINE seluruh 61 aksi di
+    worktree ini pada 4bec354a."""
+    p = properti("create_stock_adjustment").get("items")
+    assert p is not None, "kunci items tidak ada di skema create_stock_adjustment"
+    assert p.get("type") == "array", (
+        f"items dideklarasikan sebagai {p.get('type')!r}, bukan 'array' — "
+        "model berhak mengirim prosa, json.loads gagal diam-diam, dan "
+        "scalar-fallback mengarang satu baris palsu"
+    )
+    baris = (p.get("items") or {}).get("properties") or {}
+    # Nama field per-baris untuk PENYESUAIAN STOK — BUKAN skema Bill/Quote.
+    # Sumber: StockAdjustmentItemCreate di
+    # app/schemas/stock_adjustments.py (product_id, quantity_adjustment,
+    # reason_detail, physical_quantity). Sensus pending_actions TIDAK bisa
+    # dipakai di sini: CREATE_STOCK_ADJUSTMENT nol baris di produksi.
+    for wajib in ("product_name", "quantity_adjustment"):
+        assert wajib in baris, f"field baris {wajib!r} hilang dari skema penyesuaian stok"
+    for asing in ("qty", "price", "unit_price", "description"):
+        assert asing not in baris, (
+            f"{asing!r} adalah nama field Bill/Quote — skema penyesuaian "
+            "stok tidak memakainya"
+        )
+    # product_id sengaja TIDAK dideklarasikan ke model: UUID tak bisa dikarang.
+    assert "product_id" not in baris, (
+        "product_id dideklarasikan ke model — model akan mengarang UUID"
+    )
+
+
+def test_stock_adjustment_required_baris_minimal():
+    """T182-D (A). `required` per-baris sengaja MINIMAL.
+
+    physical_quantity/reason_detail TIDAK boleh required: tak ada nilai master
+    yang bisa mengisinya, jadi required = memaksa model mengarang. Beda dari
+    SI, di mana unit_price required aman karena enricher mengisi dari master.
+    """
+    p = properti("create_stock_adjustment")["items"]
+    req = set((p.get("items") or {}).get("required") or [])
+    assert req == {"product_name", "quantity_adjustment"}, req
+    assert "physical_quantity" not in req
+    assert "reason_detail" not in req
+
+
+def test_array_stock_adjustment_lolos_clean_schema_tanpa_diruntuhkan():
+    dalam = build_intent_schema("create_stock_adjustment")["json_schema"]["schema"]
+    bersih = GeminiClient._clean_schema(dalam)
+    p = bersih["properties"]["items"]
+    assert p["type"] == "array"
+    assert p["items"]["type"] == "object"
+    assert "product_name" in p["items"]["properties"]
+
+
 AKSI_TAK_DIUBAH = [
     # T182-A: `create_sales_invoice` DIKELUARKAN dari daftar ini secara sadar.
     # T182-C: `create_sales_order` DAN `create_quote` DIKELUARKAN — keputusan
     # sadar, dua commit terpisah, masing-masing dengan tes positifnya sendiri
     # (test_create_sales_order_items_adalah_array,
     # test_create_quote_items_adalah_array).
-    "create_stock_adjustment",
+    # T182-D: `create_stock_adjustment` DIKELUARKAN dari daftar ini secara
+    # sadar (tes positif: test_create_stock_adjustment_items_adalah_array).
     "create_journal_entry",
 ]
 

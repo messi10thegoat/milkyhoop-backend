@@ -1364,8 +1364,62 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
-                description="Array of {product_id, quantity_adjustment, reason_detail}. "
-                "quantity_adjustment: positive=increase, negative=decrease.",
+                # T182-D (A): sebelum ini `items` dideklarasikan ke model sebagai
+                # ["string","null"] (field_type="json" jatuh ke cabang else di
+                # build_intent_schema) SEKALIGUS deskripsinya meminta
+                # `product_id` -- sebuah UUID yang model TIDAK MUNGKIN tahu.
+                # Jadi model diminta mengarang dua hal sekaligus: bentuk (prosa,
+                # bukan array) dan isi (UUID). Deklarasi array ini memberi bentuk
+                # yang benar, dan sengaja TIDAK memuat product_id sama sekali --
+                # persis seperti keempat item_schema yang sudah LIVE
+                # (bill/SI/quote/SO) yang juga hanya meminta NAMA, bukan id.
+                #
+                # `required` per-baris sengaja MINIMAL: hanya product_name dan
+                # quantity_adjustment, dua hal yang memang ada di kalimat user
+                # ("kurangi stok kaos hitam 5"). physical_quantity dan
+                # reason_detail nullable: tak ada nilai master yang bisa
+                # mengisinya, jadi menaruhnya di required = memaksa model
+                # mengarang. Ini BEDA dari kasus SI, di mana `unit_price`
+                # required aman karena enricher mengisi dari master barang;
+                # penyesuaian stok TIDAK punya sumber master untuk kuantitas.
+                description="Array baris penyesuaian stok. Sebut NAMA barang, "
+                "jangan id. quantity_adjustment bertanda: positif=menambah "
+                "stok, negatif=mengurangi stok.",
+                item_schema={
+                    "type": "object",
+                    "properties": {
+                        "product_name": {
+                            "type": "string",
+                            "description": (
+                                "Nama barang yang stoknya disesuaikan. "
+                                "WAJIB nama barang."
+                            ),
+                        },
+                        "quantity_adjustment": {
+                            "type": "number",
+                            "description": (
+                                "Selisih kuantitas BERTANDA: positif=menambah "
+                                "stok, negatif=mengurangi stok. Contoh: "
+                                "'kurangi 5' -> -5, 'tambah 5' -> 5."
+                            ),
+                        },
+                        "physical_quantity": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "Kuantitas hasil hitung fisik, HANYA bila user "
+                                "menyebut hasil opname/stok fisik sebenarnya."
+                            ),
+                        },
+                        "reason_detail": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "Alasan per-baris bila user EKSPLISIT sebut "
+                                "(mis. rusak, kadaluarsa, hilang)."
+                            ),
+                        },
+                    },
+                    "required": ["product_name", "quantity_adjustment"],
+                },
             ),
             FieldSpec(
                 name="storage_location_id", label="Lokasi Penyimpanan", hidden=True
