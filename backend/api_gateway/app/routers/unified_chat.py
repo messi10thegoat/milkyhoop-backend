@@ -1232,11 +1232,24 @@ async def tangani_jawaban_pil(
     # kartu palsu. Nilai sah = id salah satu kandidat, atau sentinel create_new.
     _sah = _entry is not None and (
         _val.startswith("create_new:")
+        # T194: sentinel jalur daftar-barang. Diperlukan karena entity_queue
+        # TIDAK menyimpan nama mentah, jadi namanya ikut di dalam nilai pil.
+        or _val.startswith(_T194_SENTINEL)
         or _val
         in {str(c.get("id")) for c in (_entry.get("candidates") or []) if c.get("id")}
     )
 
-    if _entry is None or _sah:
+    # ── CANCEL dihitung LEBIH DULU dari teks bebas: jalur T194 tidak boleh
+    # menelan "batal". Ambang <= 3 token meniru gerbang T58 supaya
+    # "batalkan saja pesanan lama itu" tidak ikut tertangkap.
+    _tok = _val.lower().strip().split()
+    _cancel = bool(
+        0 < len(_tok) <= 3 and any(kw in set(_tok) for kw in CANCEL_KEYWORDS)
+    )
+    # T194: teks bebas HANYA lolos ketika sebuah pendaftaran barang menggantung.
+    _bebas_t194 = bool(doc_ctx.get("pending_item_create")) and not _cancel
+
+    if _entry is None or _sah or _bebas_t194:
         # Antrean rusak → jalur lama menjawab "Sesi pemilihan sudah berakhir".
         # Nilai sah → perilaku lama dipertahankan PENUH.
         try:
@@ -1270,8 +1283,7 @@ async def tangani_jawaban_pil(
 
     # ── Aturan 2 — CANCEL. Ambang <= 3 token meniru gerbang T58 supaya
     # "batalkan saja pesanan lama itu" tidak ikut tertangkap.
-    _tok = _val.lower().strip().split()
-    if 0 < len(_tok) <= 3 and any(kw in set(_tok) for kw in CANCEL_KEYWORDS):
+    if _cancel:
         logger.warning("[T92] CANCEL pil entity: sid=%s text=%r", sid[:8], _val[:40])
         await _bersihkan_pil_entity(sm, sid)
         return (
@@ -1335,37 +1347,33 @@ async def _jalankan_pil_entity(
     _ep_etype = _ep_entry.get("entity_type")
     _ep_line_index = _ep_entry.get("line_index")
 
-    # ── create_new sentinel → graceful guidance, clear flag ──
-    if _ep_value.startswith("create_new:"):
-        _cn_type = _ep_value.split(":", 1)[1] or _ep_etype or ""
-        _cn_label = {
-            "vendor": "vendor",
-            "customer": "pelanggan",
-            "item": "barang",
-        }.get(_cn_type, _cn_type or "data")
-        _cn_cmd = {
-            "vendor": "tambah vendor <nama>",
-            "customer": "tambah pelanggan <nama>",
-            "item": "tambah barang <nama>",
-        }.get(_cn_type, "")
-        try:
-            await sm.update_state(
-                sid,
-                document_context={"pending_entity_selection": False},
-            )
-        except Exception:
-            pass
-        _cn_text = (
-            f"Oke, {_cn_label} ini belum terdaftar. Daftarkan dulu"
+    # ── T194: entity_type "item" masuk jalur daftar-baru; vendor & customer
+    #    TETAP perilaku lama (dipindah apa adanya ke _pil_create_new_lama). ──
+    _t194_sentinel = _ep_value.startswith(_T194_SENTINEL)
+    _t194_create_item = _ep_value.startswith("create_new:") and (
+        (_ep_value.split(":", 1)[1] or _ep_etype or "") == "item"
+    )
+    _t194_bebas = bool(doc_ctx.get("pending_item_create")) and not (
+        _t194_sentinel or _ep_value.startswith("create_new:")
+    )
+    if _t194_sentinel or _t194_create_item or _t194_bebas:
+        return await _pil_buat_barang(
+            sm=sm,
+            sid=sid,
+            session_id=session_id,
+            ctx=ctx,
+            pool=pool,
+            nilai=_ep_value,
+            doc_ctx=doc_ctx,
+            ep_queue=_ep_queue,
+            ep_cursor=_ep_cursor,
+            ep_action_key=_ep_action_key,
+            ep_payload=_ep_payload,
+            ep_line_index=_ep_line_index,
         )
-        if _cn_cmd:
-            _cn_text += f" dengan ketik:\n\n`{_cn_cmd}`\n\nLalu kirim ulang permintaan ini."
-        else:
-            _cn_text += " lewat modulnya, lalu kirim ulang permintaan ini."
-        return ChatMessageResponse(
-            message_type="TEXT",
-            text=_cn_text,
-            session_id=sid,
+    if _ep_value.startswith("create_new:"):
+        return await _pil_create_new_lama(
+            sm=sm, sid=sid, ep_value=_ep_value, ep_etype=_ep_etype
         )
 
     # ── Chosen id → inject into saved payload at the slot ──
@@ -1533,6 +1541,624 @@ async def _gerbang_lanjut(
         text=str(_ep_err) if _ep_err else "Gagal menyiapkan data.",
         session_id=session_id,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# T194 — jalur "daftarkan barang baru" dari pil entity.
+#
+# Keputusan owner yang dikodekan di sini:
+#   1. Efek samping permanen DITERIMA: barang lahir sebelum kartu dikonfirmasi.
+#      Syaratnya (a) tawaran memuat NAMA PERSIS, (b) pesan sukses memisahkan
+#      pendaftaran dari kartu.
+#   2. HANYA DUA pertanyaan yang boleh muncul: TIPE dan HARGA. Satuan TIDAK
+#      pernah ditanyakan (terukur: 1264/1438 baris satuan tertangkap dari
+#      kalimat; sisanya di-backfill dari master atau default "pcs").
+#   3. Praperiksa TIGA TINGKAT di dalam advisory lock SEBELUM POST.
+#      T1 nama persis hidup  → pakai id itu, JANGAN buat.
+#      T2 nama persis TERHAPUS → tanya user, JANGAN diam-diam buat ulang.
+#      T3 cocok longgar      → tawarkan pilihan, JANGAN PERNAH pilih otomatis
+#                              (terukur: "kaos hitam" menyambung ke DUA master).
+#      T4 nihil              → baru buat.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Sentinel nilai pil yang dikenali jalur baru. `create_new:item` (lama)
+# DIALIASKAN ke `buat_barang` karena entity_queue tidak menyimpan nama mentah.
+_T194_SENTINEL = ("buat_barang:", "buat_paksa:", "pakai_barang:")
+
+# Penamaan baris payload berbeda per dokumen:
+#   bill / purchase_order → product_name / price / unit / product_id
+#   quote / SO / SI       → description  / unit_price / unit / item_id
+_T194_KUNCI_NAMA = ("product_name", "description", "name", "item_name", "nama")
+_T194_KUNCI_HARGA = ("price", "unit_price", "harga")
+_T194_KUNCI_SATUAN = ("unit", "satuan", "base_unit")
+
+_T194_LABEL_KURANG = {
+    "nama": "nama barang",
+    "tipe": "tipe (barang atau jasa)",
+    "harga": "harga",
+}
+
+
+def _t194_baris_payload(payload: dict, line_index) -> dict:
+    """Baris items[line_index] kalau ada; {} kalau tidak."""
+    _items = (payload or {}).get("items")
+    if (
+        isinstance(_items, list)
+        and isinstance(line_index, int)
+        and 0 <= line_index < len(_items)
+        and isinstance(_items[line_index], dict)
+    ):
+        return _items[line_index]
+    return {}
+
+
+def _t194_ambil_str(sumber: dict, kunci) -> str:
+    for _k in kunci:
+        _v = (sumber or {}).get(_k)
+        if isinstance(_v, str) and _v.strip():
+            return _v.strip()
+    return ""
+
+
+def _t194_nama_baris(payload: dict, line_index) -> str:
+    """Nama mentah dari baris payload, lalu dari tingkat atas sebagai cadangan."""
+    _n = _t194_ambil_str(_t194_baris_payload(payload, line_index), _T194_KUNCI_NAMA)
+    if _n:
+        return _n
+    return _t194_ambil_str(payload or {}, _T194_KUNCI_NAMA)
+
+
+def _t194_field_harga(action_key: str) -> str:
+    """Dokumen pembelian mengisi purchase_price; penjualan mengisi sales_price.
+
+    Registry `at_least_one_groups` hanya menuntut SALAH SATU terisi.
+    """
+    _ak = (action_key or "").lower()
+    if "bill" in _ak or "purchase" in _ak or _ak.startswith("create_po"):
+        return "purchase_price"
+    return "sales_price"
+
+
+def _t194_parse_tipe(teks) -> str | None:
+    _t = str(teks or "").strip().lower()
+    if not _t:
+        return None
+    if _t in {"service", "jasa", "layanan", "tipe:service", "servis"}:
+        return "service"
+    if _t in {"goods", "barang", "produk", "tipe:goods", "item"}:
+        return "goods"
+    if "jasa" in _t or "service" in _t or "layanan" in _t:
+        return "service"
+    if "barang" in _t or "goods" in _t or "produk" in _t:
+        return "goods"
+    return None
+
+
+def _t194_parse_harga(teks):
+    """Angka rupiah dari teks bebas. 'Rp 25.000' / '25000' / '25,5' → float."""
+    import re as _re
+
+    if isinstance(teks, (int, float)):
+        return float(teks) if float(teks) >= 0 else None
+    _t = str(teks or "").strip().lower()
+    if not _t:
+        return None
+    _t = _t.replace("rp", " ").strip()
+    _m = _re.search(r"\d[\d.,]*", _t)
+    if not _m:
+        return None
+    _angka = _m.group(0)
+    # "25.000,50" → "25000.50" ; "25.000" → "25000" ; "25,5" → "25.5"
+    if "." in _angka and "," in _angka:
+        _angka = _angka.replace(".", "").replace(",", ".")
+    elif "," in _angka:
+        _angka = _angka.replace(",", ".")
+    elif _angka.count(".") >= 1:
+        _ekor = _angka.rsplit(".", 1)[1]
+        _angka = _angka.replace(".", "") if len(_ekor) == 3 else _angka
+    try:
+        _v = float(_angka)
+    except (TypeError, ValueError):
+        return None
+    return _v if _v >= 0 else None
+
+
+def _t194_kurang(nama: str, fields: dict, field_harga: str) -> list:
+    """HANYA tiga hal yang boleh menahan alur; satuan TIDAK termasuk."""
+    _k = []
+    if not (nama or "").strip():
+        _k.append("nama")
+    if not (fields or {}).get("item_type"):
+        _k.append("tipe")
+    if (fields or {}).get("sales_price") is None and (fields or {}).get(
+        "purchase_price"
+    ) is None:
+        _k.append("harga")
+    return _k
+
+
+def _t194_sidik(cursor, kurang: list) -> str:
+    """PENJAGA PUTARAN: sidik yang tak berubah = tak ada kemajuan."""
+    return f"{cursor}|{len(kurang)}|{','.join(sorted(kurang))}"
+
+
+def _t194_pasang_id(ep_payload: dict, line_index, item_id: str) -> None:
+    """Persis seperti cabang UUID: isi item_id di baris, atau di tingkat atas."""
+    _items = (ep_payload or {}).get("items")
+    if (
+        isinstance(_items, list)
+        and isinstance(line_index, int)
+        and 0 <= line_index < len(_items)
+        and isinstance(_items[line_index], dict)
+    ):
+        _items[line_index]["item_id"] = item_id
+    else:
+        ep_payload["item_id"] = item_id
+
+
+async def _t194_praperiksa(pool, tenant_id: str, nama: str) -> dict:
+    """Praperiksa T1-T3 DI DALAM advisory lock (Law 13).
+
+    Lock dilepas saat blok transaksi keluar — SEBELUM pemanggil melakukan I/O
+    HTTP. Menahan koneksi pool melintasi jaringan pernah men-deadlock pool
+    (2026-05-29), jadi jangan pernah menggabungkan keduanya.
+    """
+    import re as _re
+
+    _nm = (nama or "").strip()
+    if not pool or not _nm:
+        return {"tingkat": "T4"}
+    _kunci = f"CHAT_ITEM_CREATE:{tenant_id}:{_nm.casefold()}"
+    async with pool.acquire() as _conn:
+        async with _conn.transaction():
+            await _conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", _kunci
+            )
+            _exact = await _conn.fetch(
+                "SELECT id, nama_produk, base_unit, deleted_at FROM products "
+                "WHERE tenant_id = $1 AND lower(nama_produk) = lower($2) "
+                "ORDER BY (deleted_at IS NULL) DESC LIMIT 5",
+                tenant_id,
+                _nm,
+            )
+            _hidup = [r for r in _exact if r["deleted_at"] is None]
+            if _hidup:
+                return {
+                    "tingkat": "T1",
+                    "id": str(_hidup[0]["id"]),
+                    "nama": _hidup[0]["nama_produk"],
+                    "base_unit": _hidup[0]["base_unit"],
+                }
+            if _exact:
+                return {"tingkat": "T2", "nama": _exact[0]["nama_produk"]}
+            _tok = [
+                t for t in _re.split(r"\s+", _nm.casefold()) if len(t) >= 3
+            ]
+            if _tok:
+                _cond = " AND ".join(
+                    f"nama_produk ILIKE ${i + 2}" for i in range(len(_tok))
+                )
+                _rows = await _conn.fetch(
+                    "SELECT id, nama_produk FROM products "
+                    "WHERE tenant_id = $1 AND deleted_at IS NULL "
+                    f"AND {_cond} ORDER BY nama_produk LIMIT 5",
+                    tenant_id,
+                    *[f"%{t}%" for t in _tok],
+                )
+                if _rows:
+                    return {
+                        "tingkat": "T3",
+                        "kandidat": [
+                            {"id": str(r["id"]), "name": r["nama_produk"]}
+                            for r in _rows
+                        ],
+                    }
+    return {"tingkat": "T4"}
+
+
+async def _t194_buat_item_http(ctx: dict, nama: str, fields: dict, satuan: str) -> dict:
+    """POST /api/items. 409 BUKAN galat — pulihkan id lewat GET ?search=.
+
+    Amplop GET memakai kunci `items` (BUKAN `data`); amplop POST menaruh id
+    di `data.id`.
+    """
+    import httpx
+
+    _body = {
+        "name": nama,
+        "base_unit": (satuan or "").strip() or "pcs",
+        "item_type": (fields or {}).get("item_type") or "goods",
+    }
+    for _k in ("sales_price", "purchase_price"):
+        _v = (fields or {}).get(_k)
+        if _v is not None:
+            _body[_k] = float(_v)
+    _hdr = {
+        "Authorization": f"Bearer {ctx['auth_token']}",
+        "X-Tenant-ID": ctx["tenant_id"],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as _cl:
+            _r = await _cl.post(
+                "http://localhost:8000/api/items", json=_body, headers=_hdr
+            )
+            if _r.status_code == 409:
+                _g = await _cl.get(
+                    "http://localhost:8000/api/items",
+                    params={"search": nama},
+                    headers=_hdr,
+                )
+                _daftar = (_g.json() or {}).get("items") or []
+                for _it in _daftar:
+                    if str(_it.get("name") or "").casefold() == nama.casefold():
+                        return {
+                            "ok": True,
+                            "id": str(_it.get("id")),
+                            "dipakai_ulang": True,
+                        }
+                return {
+                    "ok": False,
+                    "galat": (
+                        "Nama itu sudah dipakai barang lain, tapi aku tidak "
+                        "berhasil menemukan barangnya kembali."
+                    ),
+                }
+            if _r.status_code >= 400:
+                return {
+                    "ok": False,
+                    "galat": f"Pendaftaran barang ditolak (HTTP {_r.status_code}).",
+                }
+            _id = ((_r.json() or {}).get("data") or {}).get("id")
+            if not _id:
+                return {"ok": False, "galat": "Barang terdaftar tapi id-nya tidak terbaca."}
+            return {"ok": True, "id": str(_id)}
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[T194] POST /api/items gagal: %s", _e, exc_info=True)
+        return {"ok": False, "galat": "Pendaftaran barang gagal dihubungi."}
+
+
+async def _pil_create_new_lama(*, sm, sid, ep_value: str, ep_etype) -> ChatMessageResponse:
+    """Cabang `create_new:` LAMA, dipindah apa adanya (vendor/customer).
+
+    Dipindah, bukan ditulis ulang: item kini punya jalur sendiri, tapi vendor
+    dan pelanggan HARUS tetap berperilaku persis seperti sebelumnya.
+    """
+    _cn_type = ep_value.split(":", 1)[1] or ep_etype or ""
+    _cn_label = {
+        "vendor": "vendor",
+        "customer": "pelanggan",
+        "item": "barang",
+    }.get(_cn_type, _cn_type or "data")
+    _cn_cmd = {
+        "vendor": "tambah vendor <nama>",
+        "customer": "tambah pelanggan <nama>",
+        "item": "tambah barang <nama>",
+    }.get(_cn_type, "")
+    try:
+        await sm.update_state(
+            sid,
+            document_context={"pending_entity_selection": False},
+        )
+    except Exception:
+        pass
+    _cn_text = f"Oke, {_cn_label} ini belum terdaftar. Daftarkan dulu"
+    if _cn_cmd:
+        _cn_text += f" dengan ketik:\n\n`{_cn_cmd}`\n\nLalu kirim ulang permintaan ini."
+    else:
+        _cn_text += " lewat modulnya, lalu kirim ulang permintaan ini."
+    return ChatMessageResponse(
+        message_type="TEXT",
+        text=_cn_text,
+        session_id=sid,
+    )
+
+
+async def _pil_buat_barang(
+    *,
+    sm,
+    sid,
+    session_id,
+    ctx: dict,
+    pool,
+    nilai: str,
+    doc_ctx: dict,
+    ep_queue,
+    ep_cursor,
+    ep_action_key: str,
+    ep_payload: dict,
+    ep_line_index,
+) -> ChatMessageResponse:
+    """Daftarkan barang lalu KEMBALI ke `_gerbang_lanjut` — bukan lompat kartu."""
+    import urllib.parse as _urlparse
+
+    _pic = doc_ctx.get("pending_item_create") or {}
+    _line = _pic.get("line_index")
+    if _line is None:
+        _line = ep_line_index
+    _nama = str(_pic.get("nama") or "").strip()
+    _fields = dict(_pic.get("fields") or {})
+    _praperiksa_selesai = bool(_pic.get("praperiksa_selesai"))
+    _kelas = "bebas"
+
+    # ── klasifikasi nilai ────────────────────────────────────────────────
+    if nilai.startswith("pakai_barang:"):
+        _kelas = "pakai"
+    elif nilai.startswith(("buat_barang:", "buat_paksa:")):
+        _kelas = "paksa" if nilai.startswith("buat_paksa:") else "buat"
+        _n = _urlparse.unquote(nilai.split(":", 1)[1] or "").strip()
+        if _n:
+            if _n.casefold() != _nama.casefold():
+                _fields = {}
+                _praperiksa_selesai = False
+            _nama = _n
+        if ep_line_index is not None:
+            _line = ep_line_index
+        if _kelas == "paksa":
+            _praperiksa_selesai = True
+    elif nilai.startswith("create_new:"):
+        # Alias jalur lama: entity_queue tak menyimpan nama, jadi diambil
+        # dari baris payload.
+        _kelas = "create_new"
+        if ep_line_index is not None:
+            _line = ep_line_index
+        if not _nama:
+            _nama = _t194_nama_baris(ep_payload, _line)
+
+    logger.warning(
+        "[T194] tahap=jawab nilai=%s baris=%s", _kelas, _line
+    )
+
+    # ── T1 tak perlu dicari lagi: user menunjuk id master secara eksplisit ─
+    if _kelas == "pakai":
+        _id = nilai.split(":", 1)[1].strip()
+        _t194_pasang_id(ep_payload, _line, _id)
+        doc_ctx = await _tulis_doc_ctx(
+            sm,
+            sid,
+            doc_ctx,
+            resolved_payload=ep_payload,
+            pending_item_create=None,
+            pil_progres={},
+        )
+        _resp = await _gerbang_lanjut(
+            sm=sm, sid=sid, session_id=session_id, ctx=ctx,
+            ep_queue=ep_queue, ep_cursor=ep_cursor,
+            ep_action_key=ep_action_key, ep_payload=ep_payload, doc_ctx=doc_ctx,
+        )
+        _resp.text = f"Oke, saya pakai barang yang sudah ada di master.\n\n{_resp.text or ''}".strip()
+        return _resp
+
+    # ── jawaban teks bebas atas pertanyaan yang tergantung ────────────────
+    if _kelas == "bebas":
+        _kur_lama = list(_pic.get("kurang") or [])
+        _target = _kur_lama[0] if _kur_lama else None
+        if _target == "nama":
+            _nama = nilai.strip()
+            _praperiksa_selesai = False
+        elif _target == "tipe":
+            _t = _t194_parse_tipe(nilai)
+            if _t:
+                _fields["item_type"] = _t
+        elif _target == "harga":
+            _h = _t194_parse_harga(nilai)
+            if _h is not None:
+                _fields[_t194_field_harga(ep_action_key)] = _h
+
+    # ── cadangan nama & prefill dari baris (satuan TIDAK PERNAH ditanya) ──
+    if not _nama:
+        _nama = _t194_nama_baris(ep_payload, _line)
+    _baris = _t194_baris_payload(ep_payload, _line)
+    _satuan = _t194_ambil_str(_baris, _T194_KUNCI_SATUAN) or "pcs"
+    _fh = _t194_field_harga(ep_action_key)
+    if _fields.get("sales_price") is None and _fields.get("purchase_price") is None:
+        for _k in _T194_KUNCI_HARGA:
+            _h0 = _t194_parse_harga(_baris.get(_k))
+            if _h0:
+                _fields[_fh] = _h0
+                break
+
+    # ── praperiksa TIGA TINGKAT (di dalam lock, sebelum POST) ─────────────
+    if _nama and not _praperiksa_selesai:
+        try:
+            _pp = await _t194_praperiksa(pool, ctx["tenant_id"], _nama)
+        except Exception:  # noqa: BLE001
+            logger.warning("[T194] praperiksa gagal", exc_info=True)
+            _pp = {"tingkat": "T4"}
+
+        if _pp["tingkat"] == "T1":
+            logger.warning("[T194] tahap=gerbang keputusan=T1_pakai_master n=1")
+            _t194_pasang_id(ep_payload, _line, _pp["id"])
+            doc_ctx = await _tulis_doc_ctx(
+                sm, sid, doc_ctx,
+                resolved_payload=ep_payload,
+                pending_item_create=None,
+                pil_progres={},
+            )
+            _resp = await _gerbang_lanjut(
+                sm=sm, sid=sid, session_id=session_id, ctx=ctx,
+                ep_queue=ep_queue, ep_cursor=ep_cursor,
+                ep_action_key=ep_action_key, ep_payload=ep_payload,
+                doc_ctx=doc_ctx,
+            )
+            _resp.text = (
+                f"\"{_pp['nama']}\" sudah ada di master, saya pakai itu.\n\n"
+                f"{_resp.text or ''}"
+            ).strip()
+            return _resp
+
+        if _pp["tingkat"] == "T2":
+            logger.warning("[T194] tahap=gerbang keputusan=T2_terhapus n=1")
+            doc_ctx = await _tulis_doc_ctx(
+                sm, sid, doc_ctx,
+                pending_item_create={
+                    "line_index": _line,
+                    "nama": _nama,
+                    "fields": _fields,
+                    "kurang": [],
+                },
+            )
+            _q2 = (
+                f"\"{_pp['nama']}\" pernah ada di master tapi sudah dihapus. "
+                "Aku tidak akan membuatnya ulang diam-diam — mau bagaimana?"
+            )
+            return ChatMessageResponse(
+                message_type="CLARIFICATION",
+                text=_q2,
+                data={
+                    "question": _q2,
+                    "options": [
+                        {
+                            "label": f"Buat baru \"{_nama}\"",
+                            "value": f"buat_paksa:{_urlparse.quote(_nama)}",
+                            "description": "",
+                        },
+                        {"label": "Batal", "value": "batal", "description": ""},
+                    ],
+                    "allow_freetext": False,
+                },
+                session_id=sid,
+            )
+
+        if _pp["tingkat"] == "T3":
+            _kand = _pp.get("kandidat") or []
+            logger.warning(
+                "[T194] tahap=gerbang keputusan=T3_tawar_pilihan n=%d", len(_kand)
+            )
+            doc_ctx = await _tulis_doc_ctx(
+                sm, sid, doc_ctx,
+                pending_item_create={
+                    "line_index": _line,
+                    "nama": _nama,
+                    "fields": _fields,
+                    "kurang": [],
+                },
+            )
+            _q3 = "Maksud Anda barang yang sudah ada ini?"
+            _opsi = [
+                {
+                    "label": _c["name"],
+                    "value": f"pakai_barang:{_c['id']}",
+                    "description": "",
+                }
+                for _c in _kand
+            ]
+            # NAMA PERSIS yang akan didaftarkan, supaya salah ketik terlihat
+            # sebelum di-tap (keputusan owner 1a).
+            _opsi.append(
+                {
+                    "label": f"Buat baru \"{_nama}\"",
+                    "value": f"buat_paksa:{_urlparse.quote(_nama)}",
+                    "description": "",
+                }
+            )
+            return ChatMessageResponse(
+                message_type="CLARIFICATION",
+                text=_q3,
+                data={"question": _q3, "options": _opsi, "allow_freetext": False},
+                session_id=sid,
+            )
+        _praperiksa_selesai = True
+
+    # ── field yang masih kurang → PALING BANYAK dua pertanyaan ────────────
+    _kurang = _t194_kurang(_nama, _fields, _fh)
+    if _kurang:
+        _sidik = _t194_sidik(ep_cursor, _kurang)
+        _prog = dict(doc_ctx.get("pil_progres") or {})
+        _pk = str(ep_cursor)
+        _lama = _prog.get(_pk) or {}
+        _tanya_lama = int(_lama.get("tanya") or 0) if _lama.get("sidik") == _sidik else 0
+        if _tanya_lama >= 1:
+            # PENJAGA PUTARAN: sidik sama + sudah pernah bertanya = macet.
+            logger.warning("[T194] tahap=gerbang keputusan=macet n=%d", len(_kurang))
+            _macet = ", ".join(_T194_LABEL_KURANG.get(k, k) for k in _kurang)
+            return ChatMessageResponse(
+                message_type="TEXT",
+                text=(
+                    "Aku sudah menanyakan hal yang sama dan jawabannya belum "
+                    f"terbaca, jadi aku berhenti di sini. Yang masih kurang: {_macet}"
+                    f" untuk \"{_nama or '(nama belum terbaca)'}\". "
+                    "Coba tulis ulang dengan jelas, atau daftarkan barangnya lewat "
+                    "menu Barang & Jasa."
+                ),
+                session_id=sid,
+            )
+        _prog[_pk] = {"tanya": _tanya_lama + 1, "sidik": _sidik}
+        doc_ctx = await _tulis_doc_ctx(
+            sm, sid, doc_ctx,
+            pending_item_create={
+                "line_index": _line,
+                "nama": _nama,
+                "fields": _fields,
+                "kurang": _kurang,
+                "praperiksa_selesai": _praperiksa_selesai,
+            },
+            pil_progres=_prog,
+        )
+        _t = _kurang[0]
+        logger.warning("[T194] tahap=gerbang keputusan=tanya_%s n=%d", _t, len(_kurang))
+        if _t == "nama":
+            _q = (
+                "Aku belum bisa membaca nama barang yang mau didaftarkan dari "
+                "permintaan tadi. Nama barangnya apa?"
+            )
+            _opsi = []
+        elif _t == "tipe":
+            _q = f"\"{_nama}\" ini barang atau jasa?"
+            _opsi = [
+                {"label": "Barang", "value": "barang", "description": ""},
+                {"label": "Jasa", "value": "jasa", "description": ""},
+            ]
+        else:
+            _q = f"Harga \"{_nama}\" berapa?"
+            _opsi = []
+        return ChatMessageResponse(
+            message_type="CLARIFICATION",
+            text=_q,
+            data={"question": _q, "options": _opsi, "allow_freetext": True},
+            session_id=sid,
+        )
+
+    # ── T4 / paksa → daftarkan ────────────────────────────────────────────
+    _hasil = await _t194_buat_item_http(ctx, _nama, _fields, _satuan)
+    if not _hasil.get("ok"):
+        logger.warning("[T194] tahap=gerbang keputusan=gagal_daftar n=0")
+        await _tulis_doc_ctx(
+            sm, sid, doc_ctx,
+            pending_item_create={
+                "line_index": _line,
+                "nama": _nama,
+                "fields": _fields,
+                "kurang": [],
+                "praperiksa_selesai": True,
+            },
+        )
+        return ChatMessageResponse(
+            message_type="TEXT",
+            text=str(_hasil.get("galat") or "Pendaftaran barang gagal."),
+            session_id=sid,
+        )
+
+    logger.warning("[T194] tahap=gerbang keputusan=terdaftar n=1")
+    _t194_pasang_id(ep_payload, _line, _hasil["id"])
+    doc_ctx = await _tulis_doc_ctx(
+        sm, sid, doc_ctx,
+        resolved_payload=ep_payload,
+        pending_item_create=None,
+        pil_progres={},
+    )
+    _resp = await _gerbang_lanjut(
+        sm=sm, sid=sid, session_id=session_id, ctx=ctx,
+        ep_queue=ep_queue, ep_cursor=ep_cursor,
+        ep_action_key=ep_action_key, ep_payload=ep_payload, doc_ctx=doc_ctx,
+    )
+    # Keputusan owner 1b: pendaftaran disebut TERPISAH dari kartu.
+    _kabar = (
+        f"\"{_nama}\" sudah terdaftar di master barang."
+        if not _hasil.get("dipakai_ulang")
+        else f"\"{_nama}\" ternyata sudah terdaftar, saya pakai yang itu."
+    )
+    _resp.text = f"{_kabar}\n\n{_resp.text or ''}".strip()
+    return _resp
 
 
 @router.post("/message", response_model=ChatMessageResponse)
