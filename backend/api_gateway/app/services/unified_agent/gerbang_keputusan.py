@@ -36,10 +36,13 @@ sama sekali) dan digantikan kalimat yang jujur bahwa namanya tak terbaca.
 Ketegangan yang disadari: daftar kata perintah adalah daftar kata, dan
 `gerbang_entitas` sudah pernah memperingatkan bahwa daftar semacam itu akan
 salah untuk sebagian tenant (bayangkan barang bernama "Kaos Untuk Anak").
-Batasnya dipersempit supaya kerugiannya sekecil mungkin: kata perintah
-hanya berarti bila potongan itu punya LEBIH DARI DUA kata — nama pendek
-seperti "Kaos Untuk Anak" tetap dikutip utuh, sementara kalimat penuh
-ditolak. Ini kompromi yang dipilih sadar, bukan kelalaian.
+Batasnya dipersempit supaya kerugiannya sekecil mungkin. Kata perintah
+hanya menjadi bukti kalimat dalam dua keadaan: ia kata PERTAMA ("buat
+penawaran untuk"), atau potongan itu sudah sepanjang kalimat (>= 5 kata).
+Nama master yang wajar seperti "Kaos Untuk Anak" — tiga kata, kata
+perintahnya di tengah — TETAP dikutip utuh. Ini kompromi yang dipilih
+sadar, bukan kelalaian; tes `test_nama_master_wajar_tetap_dikutip`
+menguncinya supaya pelonggaran di kemudian hari terlihat.
 """
 
 from __future__ import annotations
@@ -55,8 +58,9 @@ BATAS_POTONGAN = 80
 # Kata perintah: penanda bahwa yang kita pegang adalah kalimat, bukan nama.
 KATA_PERINTAH = frozenset({"buat", "catat", "penawaran", "untuk"})
 
-# Berapa kata minimum sebelum KATA_PERINTAH dianggap bukti kalimat.
-MIN_KATA_KALIMAT = 3
+# Sepanjang apa sebuah potongan sebelum kata perintah di TENGAHnya dianggap
+# bukti kalimat. Kata perintah di posisi PERTAMA selalu jadi bukti.
+MIN_KATA_KALIMAT = 5
 
 JENIS_TAWARAN = "TAWARAN_DAFTAR"
 JENIS_PIL = "PIL"
@@ -101,6 +105,8 @@ def potongan_aman(mentah: str) -> str | None:
     if len(t) > BATAS_POTONGAN:
         return None
     kata = t.casefold().split()
+    if kata[0] in KATA_PERINTAH:
+        return None
     if len(kata) >= MIN_KATA_KALIMAT and any(k in KATA_PERINTAH for k in kata):
         return None
     return t
