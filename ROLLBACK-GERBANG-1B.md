@@ -5,7 +5,7 @@ Basis: master `09e4441d` — TIDAK di-merge oleh agen. Merge+deploy = langkah ma
 
 ## Commit batch ini
 (diperbarui tiap commit)
-- (belum ada commit)
+- `beb67a97` feat(gerbang): perluas radius gerbang entitas ke quote/SI/SO (Fase 1b)
 
 ## Langkah darurat (SESUDAH deploy, kalau produksi rusak)
 git -C /root/milkyhoop-dev reset --keep 09e4441d
