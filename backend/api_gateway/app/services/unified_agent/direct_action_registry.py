@@ -834,6 +834,55 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
+                # T182-A: sebelum ini `items` dideklarasikan ke model sebagai
+                # ["string","null"] (field_type="json" jatuh ke cabang else di
+                # build_intent_schema karena cabang array HANYA aktif bila
+                # item_schema TERISI, dan satu-satunya yang mengisinya adalah
+                # create_bill sejak T179-Q3). Model lalu berhak mengisi `items`
+                # dengan PROSA, json.loads gagal diam-diam -> items=[] ->
+                # scalar-fallback di _enrich_sales_invoice mengarang satu baris
+                # {description:"Item", quantity:1, unit_price:0}.
+                #
+                # Nama kunci per-baris SENGAJA BEDA dari create_bill
+                # (product_name/qty/price). Untuk faktur PENJUALAN jalur hilir
+                # memakai description/quantity/unit_price -- diverifikasi dari
+                # tiga sumber: FieldSpec.description di bawah, scalar-fallback
+                # + _enrich_items di tool_executor.py, dan 272 baris nyata
+                # pending_actions.action_plan->items (kunci terukur:
+                # quantity 305, unit_price 305, description 305, item_id 296,
+                # unit 259, discount_percent 2).
+                #
+                # item_id sengaja TIDAK dideklarasikan (mengikuti create_bill
+                # yang juga tak mendeklarasikan product_id): UUID tidak bisa
+                # dikarang model, ia diresolusi _enrich_items lewat description.
+                item_schema={
+                    "type": "object",
+                    "properties": {
+                        "description": {
+                            "type": "string",
+                            "description": (
+                                "Nama barang/jasa. WAJIB nama barang, "
+                                "BUKAN nama pelanggan."
+                            ),
+                        },
+                        "quantity": {"type": "number", "description": "Kuantitas"},
+                        "unit_price": {
+                            "type": "number",
+                            "description": "Harga satuan JUAL dalam Rupiah",
+                        },
+                        "unit": {
+                            "type": ["string", "null"],
+                            "description": "Satuan bila user sebut",
+                        },
+                        "discount_percent": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "Diskon per-baris persen bila user EKSPLISIT sebut"
+                            ),
+                        },
+                    },
+                    "required": ["description", "quantity", "unit_price"],
+                },
                 description=(
                     "Array of items. Each item dapat berisi: "
                     "item_id, description (nama barang/jasa), quantity, unit, "

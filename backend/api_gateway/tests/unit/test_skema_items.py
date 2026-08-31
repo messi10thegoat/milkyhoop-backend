@@ -85,8 +85,54 @@ def test_clean_schema_memang_meruntuhkan_union():
     )
 
 
+def test_create_sales_invoice_items_adalah_array():
+    """T182-A. Sebelum ini `items` create_sales_invoice = ["string","null"] —
+    terukur dari dump skema di worktree /root/mh-t182a sebelum patch."""
+    p = properti("create_sales_invoice").get("items")
+    assert p is not None, "kunci items tidak ada di skema create_sales_invoice"
+    assert p.get("type") == "array", (
+        f"items dideklarasikan sebagai {p.get('type')!r}, bukan 'array' — "
+        "model berhak mengirim prosa, json.loads gagal diam-diam, dan "
+        "scalar-fallback mengarang {description:'Item', quantity:1, unit_price:0}"
+    )
+    baris = (p.get("items") or {}).get("properties") or {}
+    # nama field per-baris untuk SALES INVOICE — BUKAN skema Bill.
+    # Diverifikasi dari 272 baris pending_actions.action_plan->items di
+    # produksi: quantity/unit_price/description ada di 305 baris item.
+    for wajib in ("description", "quantity", "unit_price"):
+        assert wajib in baris, f"field baris {wajib!r} hilang dari skema SI"
+    for asing in ("product_name", "qty", "price"):
+        assert asing not in baris, (
+            f"{asing!r} adalah nama field BILL — jalur hilir sales invoice "
+            "(_enrich_items, scalar-fallback) tidak mengenalinya"
+        )
+
+
+def test_skema_bill_tidak_ikut_bergerak():
+    """RADIUS. T182-A menyentuh SATU aksi. Kalau skema Bill ikut berubah,
+    patch bocor keluar radius."""
+    baris = (
+        properti("create_bill")["items"]["items"]["properties"]
+    )
+    assert set(["product_name", "qty", "price"]).issubset(baris.keys())
+    assert "unit_price" not in baris, "nama field SI bocor ke skema Bill"
+
+
+def test_array_si_lolos_clean_schema_tanpa_diruntuhkan():
+    dalam = build_intent_schema("create_sales_invoice")["json_schema"]["schema"]
+    bersih = GeminiClient._clean_schema(dalam)
+    p = bersih["properties"]["items"]
+    assert p["type"] == "array", "array SI runtuh saat lewat _clean_schema"
+    assert p["items"]["type"] == "object"
+    assert "description" in p["items"]["properties"]
+    # union per-baris ikut diruntuhkan (bukti rekursi benar-benar masuk)
+    assert p["items"]["properties"]["unit"]["type"] == "string"
+
+
 AKSI_TAK_DIUBAH = [
-    "create_sales_invoice",
+    # T182-A: `create_sales_invoice` DIKELUARKAN dari daftar ini secara sadar.
+    # Ia kini array (lihat test_create_sales_invoice_items_adalah_array).
+    # `create_quote` dan `create_sales_order` SENGAJA tetap string ronde ini.
     "create_sales_order",
     "create_quote",
     "create_stock_adjustment",
