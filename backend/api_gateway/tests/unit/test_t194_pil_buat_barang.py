@@ -33,6 +33,7 @@ from app.routers.unified_chat import (  # noqa: E402
     _pil_buat_barang,
     _pil_create_new_lama,
     _t194_sidik,
+    _t194_sidik_tawar,
 )
 
 
@@ -351,3 +352,178 @@ async def test_jalankan_pil_entity_meneruskan_vendor_ke_jalur_lama(monkeypatch, 
     )
     assert dipanggil == [], "vendor TIDAK BOLEH masuk _pil_buat_barang"
     assert "vendor ini belum terdaftar" in resp.text
+
+
+# ───────── klaim 8: PENJAGA PUTARAN cabang TAWARAN (T2/T3) ──────────────────
+#
+# Cabang T2/T3 menulis `kurang: []`, jadi jawaban teks bebas TIDAK terserap
+# (`_kur_lama` kosong -> `_target` None). `praperiksa_selesai` juga tak ditulis
+# cabang ini, jadi praperiksa jalan LAGI dan menerbitkan tawaran yang sama.
+# Tes berikut mengunci: giliran kedua dengan keadaan sama = BERHENTI.
+
+
+def pasang_praperiksa_urut(monkeypatch, hasil_urut):
+    """Praperiksa yang mengembalikan hasil BERBEDA tiap panggilan.
+
+    Dipakai kontrol negatif: membuktikan penjaga membaca KEADAAN, bukan
+    sekadar menghitung berapa kali cabang tawaran terbit.
+    """
+    dipanggil = []
+    sisa = list(hasil_urut)
+
+    async def _pp(pool, tenant_id, nama):
+        dipanggil.append(nama)
+        return sisa.pop(0) if len(sisa) > 1 else sisa[0]
+
+    monkeypatch.setattr(uc, "_t194_praperiksa", _pp)
+    return dipanggil
+
+
+def _t3(n):
+    return {
+        "tingkat": "T3",
+        "kandidat": [
+            {"id": f"ID-{i}", "name": f"Kaos Hitam {i}"} for i in range(n)
+        ],
+    }
+
+
+_T2 = {"tingkat": "T2", "id": "ID-MATI", "nama": "Kaos Hitam"}
+
+
+@pytest.mark.asyncio
+async def test_t3_terbit_dua_kali_keadaan_sama_giliran_kedua_berhenti(
+    monkeypatch, rekam
+):
+    pasang_praperiksa(monkeypatch, _t3(2))
+    payload = {"items": [{"product_name": "Kaos Hitam", "qty": 2}]}
+    sm = SMPalsu(doc_ctx_awal(payload))
+
+    r1 = await panggil(sm, "create_new:item", payload)
+    assert r1.message_type == "CLARIFICATION", "giliran pertama harus menawarkan"
+    prog = sm.document_context["pil_progres"]["0"]
+    assert prog["tanya"] == 1
+    assert prog["sidik"] == _t194_sidik_tawar(0, "t3", 2)
+
+    # jawaban teks bebas: tak ada yang terserap (kurang == []), keadaan SAMA
+    r2 = await panggil(sm, "yang mana ya", payload)
+    assert r2.message_type == "TEXT", (
+        "tawaran T3 KETIGA tidak boleh terbit; penjaga harus berhenti"
+    )
+    assert "berhenti" in r2.text.lower()
+    # menyebut keadaan yang macet dengan bahasa manusia
+    assert "Kaos Hitam" in r2.text
+    assert "2 barang yang sudah ada" in r2.text
+    # TIDAK menyalahkan user
+    low = r2.text.lower()
+    for tuduhan in ("anda salah", "kamu salah", "jawaban anda salah", "keliru"):
+        assert tuduhan not in low, f"pesan menyalahkan user: {r2.text!r}"
+    assert rekam.post == [], "tidak boleh ada item dibuat saat macet"
+    assert rekam.gerbang == [], "tidak boleh lanjut ke gerbang saat macet"
+
+
+@pytest.mark.asyncio
+async def test_t2_terbit_dua_kali_keadaan_sama_giliran_kedua_berhenti(
+    monkeypatch, rekam
+):
+    pasang_praperiksa(monkeypatch, _T2)
+    payload = {"items": [{"product_name": "Kaos Hitam", "qty": 2}]}
+    sm = SMPalsu(doc_ctx_awal(payload))
+
+    r1 = await panggil(sm, "create_new:item", payload)
+    assert r1.message_type == "CLARIFICATION", "giliran pertama harus menawarkan"
+    assert "sudah dihapus" in r1.text
+    prog = sm.document_context["pil_progres"]["0"]
+    assert prog["tanya"] == 1
+    assert prog["sidik"] == _t194_sidik_tawar(0, "t2", 1)
+
+    r2 = await panggil(sm, "gimana ya", payload)
+    assert r2.message_type == "TEXT", (
+        "tawaran T2 KEDUA tidak boleh terbit; penjaga harus berhenti"
+    )
+    assert "berhenti" in r2.text.lower()
+    assert "sudah " + "dihapus" in r2.text
+    assert "Kaos Hitam" in r2.text
+    low = r2.text.lower()
+    for tuduhan in ("anda salah", "kamu salah", "keliru"):
+        assert tuduhan not in low, f"pesan menyalahkan user: {r2.text!r}"
+    assert rekam.post == [], "T2 macet TIDAK BOLEH mendaftarkan diam-diam"
+    assert rekam.gerbang == []
+
+
+# ─────────────────── KONTROL NEGATIF: penjaga tidak terlalu galak ───────────
+
+
+@pytest.mark.asyncio
+async def test_kontrol_negatif_jumlah_kandidat_berubah_penjaga_tidak_menyala(
+    monkeypatch, rekam
+):
+    """ADA KEMAJUAN (2 -> 3 kandidat) → tawaran BOLEH terbit lagi."""
+    pasang_praperiksa_urut(monkeypatch, [_t3(2), _t3(3)])
+    payload = {"items": [{"product_name": "Kaos Hitam", "qty": 2}]}
+    sm = SMPalsu(doc_ctx_awal(payload))
+
+    r1 = await panggil(sm, "create_new:item", payload)
+    assert r1.message_type == "CLARIFICATION"
+    assert len(r1.data["options"]) == 3  # 2 kandidat + buat-baru
+
+    r2 = await panggil(sm, "yang mana ya", payload)
+    assert r2.message_type == "CLARIFICATION", (
+        "keadaan BERUBAH (kandidat 2->3) — penjaga TIDAK BOLEH menyala"
+    )
+    assert len(r2.data["options"]) == 4  # 3 kandidat + buat-baru
+    prog = sm.document_context["pil_progres"]["0"]
+    assert prog["tanya"] == 1, "sidik baru → hitungan tanya kembali ke 1"
+    assert prog["sidik"] == _t194_sidik_tawar(0, "t3", 3)
+
+
+@pytest.mark.asyncio
+async def test_kontrol_negatif_tahap_berpindah_t3_ke_t2_penjaga_tidak_menyala(
+    monkeypatch, rekam
+):
+    """ADA KEMAJUAN (vonis t3 → t2) → tawaran BOLEH terbit lagi."""
+    # SATU kandidat, supaya n_kandidat SAMA (1) di kedua giliran: yang
+    # berbeda HANYA `tahap`. Ini mengisolasi unsur tahap di dalam sidik.
+    pasang_praperiksa_urut(monkeypatch, [_t3(1), _T2])
+    payload = {"items": [{"product_name": "Kaos Hitam", "qty": 2}]}
+    sm = SMPalsu(doc_ctx_awal(payload))
+
+    r1 = await panggil(sm, "create_new:item", payload)
+    assert r1.message_type == "CLARIFICATION"
+    assert "Maksud Anda" in r1.text
+    assert len(r1.data["options"]) == 2  # 1 kandidat + buat-baru
+    assert sm.document_context["pil_progres"]["0"]["sidik"] == _t194_sidik_tawar(
+        0, "t3", 1
+    )
+
+    r2 = await panggil(sm, "yang mana ya", payload)
+    assert r2.message_type == "CLARIFICATION", (
+        "vonis praperiksa BERUBAH t3->t2 — penjaga TIDAK BOLEH menyala"
+    )
+    assert "sudah dihapus" in r2.text, "harus tawaran T2, bukan pesan berhenti"
+    prog = sm.document_context["pil_progres"]["0"]
+    assert prog["tanya"] == 1
+    assert prog["sidik"] == _t194_sidik_tawar(0, "t2", 1)
+
+
+# ───────────── state append-only TETAP di cabang tawaran T2/T3 ──────────────
+
+
+@pytest.mark.asyncio
+async def test_cabang_tawaran_menulis_pil_progres_tanpa_menghapus_kunci_lama(
+    monkeypatch, rekam
+):
+    pasang_praperiksa(monkeypatch, _t3(2))
+    payload = {"items": [{"product_name": "Kaos Hitam", "qty": 2}]}
+    sm = SMPalsu(doc_ctx_awal(payload))
+
+    await panggil(sm, "create_new:item", payload)
+    d = sm.document_context
+    for kunci in ("resolved_payload", "entity_queue", "entity_cursor",
+                  "resolved_action_key"):
+        assert kunci in d, f"{kunci} LENYAP — penulisan tidak append-only"
+    assert d["entity_queue"] == ANTREAN
+    assert d["entity_cursor"] == 0
+    # pil_progres DAN pending_item_create ditulis BARENGAN (satu tulis)
+    assert d["pending_item_create"]["nama"] == "Kaos Hitam"
+    assert d["pil_progres"]["0"]["sidik"] == _t194_sidik_tawar(0, "t3", 2)

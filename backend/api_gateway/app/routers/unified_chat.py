@@ -1682,6 +1682,73 @@ def _t194_sidik(cursor, kurang: list) -> str:
     return f"{cursor}|{len(kurang)}|{','.join(sorted(kurang))}"
 
 
+def _t194_sidik_tawar(cursor, tahap: str, n_kandidat: int) -> str:
+    """PENJAGA PUTARAN untuk cabang TAWARAN (T2/T3).
+
+    Kenapa tidak memakai _t194_sidik: cabang tawaran menulis `kurang: []`,
+    jadi sidik berbasis `kurang` selalu menghasilkan string yang sama dan
+    tak bisa membedakan T2 dari T3 — persis kebutaan yang membuat T2/T3
+    bisa terbit berulang tanpa penjaga.
+
+    Tiga unsur, masing-masing berubah HANYA kalau ada kemajuan nyata:
+      - `cursor` : pindah baris/entitas = pekerjaan lain, bukan putaran.
+      - `tahap`  : t3->t2 (atau sebaliknya) = vonis praperiksa BERUBAH,
+                   artinya yang dicari sudah bukan keadaan yang sama.
+      - `n`      : jumlah kandidat bergeser = hasil pencarian berbeda,
+                   jadi tawaran berikutnya bukan tawaran yang itu-itu juga.
+
+    Kalau ketiganya identik, praperiksa memutuskan hal yang persis sama atas
+    keadaan yang persis sama; menerbitkan tawaran lagi cuma mengulang layar
+    yang barusan tidak menghasilkan apa-apa.
+
+    Awalan "tawar:" menjaga ruang-nama sidik ini terpisah dari sidik cabang
+    pertanyaan field, supaya perpindahan antar-cabang terbaca sebagai
+    KEMAJUAN (sidik beda -> hitungan tanya balik ke nol), bukan putaran.
+    """
+    return f"tawar:{cursor}|{tahap}|{n_kandidat}"
+
+
+def _t194_jaga_tawar(doc_ctx: dict, cursor, tahap: str, n_kandidat: int):
+    """Kembalikan (macet: bool, pil_progres_baru: dict).
+
+    Ambang SAMA dengan penjaga cabang pertanyaan field: sidik sama dan sudah
+    pernah terbit >= 1 kali -> macet. pil_progres yang dikembalikan sengaja
+    tidak ditulis di sini supaya pemanggil bisa menggabungkannya ke dalam
+    SATU panggilan _tulis_doc_ctx bersama kunci lain cabang itu.
+    """
+    _sidik = _t194_sidik_tawar(cursor, tahap, n_kandidat)
+    _prog = dict(doc_ctx.get("pil_progres") or {})
+    _pk = str(cursor)
+    _lama = _prog.get(_pk) or {}
+    _tanya_lama = int(_lama.get("tanya") or 0) if _lama.get("sidik") == _sidik else 0
+    if _tanya_lama >= 1:
+        return True, _prog
+    _prog[_pk] = {"tanya": _tanya_lama + 1, "sidik": _sidik}
+    return False, _prog
+
+
+def _t194_teks_macet_tawar(tahap: str, nama: str, n_kandidat: int) -> str:
+    """Sebut keadaan yang macet dengan bahasa manusia, TANPA menyalahkan user."""
+    _n = nama or "(nama belum terbaca)"
+    if tahap == "t2":
+        _keadaan = (
+            f'"{_n}" cocok dengan barang yang dulu ada di master tapi sudah '
+            "dihapus, dan jawaban atas tawaran tadi belum terbaca sebagai pilihan"
+        )
+    else:
+        _keadaan = (
+            f'"{_n}" masih mirip dengan {n_kandidat} barang yang sudah ada, '
+            "dan jawaban atas tawaran tadi belum terbaca sebagai pilihan"
+        )
+    return (
+        "Aku berhenti di sini supaya tidak menawarkan layar yang sama "
+        f"berulang-ulang. Keadaannya: {_keadaan}. "
+        "Tawaran tadi hanya bisa dijawab dengan menekan salah satu tombolnya; "
+        "kalau tombolnya tidak muncul, barangnya bisa didaftarkan langsung "
+        "lewat menu Barang & Jasa."
+    )
+
+
 def _t194_pasang_id(ep_payload: dict, line_index, item_id: str) -> None:
     """Persis seperti cabang UUID: isi item_id di baris, atau di tingkat atas."""
     _items = (ep_payload or {}).get("items")
@@ -1988,6 +2055,16 @@ async def _pil_buat_barang(
 
         if _pp["tingkat"] == "T2":
             logger.warning("[T194] tahap=gerbang keputusan=T2_terhapus n=1")
+            _macet2, _prog2 = _t194_jaga_tawar(doc_ctx, ep_cursor, "t2", 1)
+            if _macet2:
+                logger.warning(
+                    "[T194] tahap=gerbang keputusan=macet_tawar tahap_tawar=t2 n=1"
+                )
+                return ChatMessageResponse(
+                    message_type="TEXT",
+                    text=_t194_teks_macet_tawar("t2", _nama, 1),
+                    session_id=sid,
+                )
             doc_ctx = await _tulis_doc_ctx(
                 sm, sid, doc_ctx,
                 pending_item_create={
@@ -1996,6 +2073,7 @@ async def _pil_buat_barang(
                     "fields": _fields,
                     "kurang": [],
                 },
+                pil_progres=_prog2,
             )
             _q2 = (
                 f"\"{_pp['nama']}\" pernah ada di master tapi sudah dihapus. "
@@ -2024,6 +2102,19 @@ async def _pil_buat_barang(
             logger.warning(
                 "[T194] tahap=gerbang keputusan=T3_tawar_pilihan n=%d", len(_kand)
             )
+            _macet3, _prog3 = _t194_jaga_tawar(
+                doc_ctx, ep_cursor, "t3", len(_kand)
+            )
+            if _macet3:
+                logger.warning(
+                    "[T194] tahap=gerbang keputusan=macet_tawar tahap_tawar=t3 n=%d",
+                    len(_kand),
+                )
+                return ChatMessageResponse(
+                    message_type="TEXT",
+                    text=_t194_teks_macet_tawar("t3", _nama, len(_kand)),
+                    session_id=sid,
+                )
             doc_ctx = await _tulis_doc_ctx(
                 sm, sid, doc_ctx,
                 pending_item_create={
@@ -2032,6 +2123,7 @@ async def _pil_buat_barang(
                     "fields": _fields,
                     "kurang": [],
                 },
+                pil_progres=_prog3,
             )
             _q3 = "Maksud Anda barang yang sudah ada ini?"
             _opsi = [
