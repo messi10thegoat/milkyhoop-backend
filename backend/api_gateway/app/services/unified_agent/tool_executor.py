@@ -1684,6 +1684,11 @@ class ToolExecutor:
         _enrich_action_type = (
             action_key.replace("create_", "CREATE_").replace("void_", "VOID_").upper()
         )
+        # T190: pipa entitas V2 di balik flag. Radius create_quote saja.
+        # Flag mati -> _pipa_entitas_v2 pulang None tanpa menyentuh apa pun.
+        _v2 = await self._pipa_entitas_v2(action_key, payload)
+        if _v2 is not None:
+            return _v2
         payload = await self._enrich_payload(_enrich_action_type, payload)
 
         # FIX_AQUA_PERLINE_HINT 2026-05-09: pop per-line hint sentinel here
@@ -4112,6 +4117,176 @@ class ToolExecutor:
                 }
             )
         return missing
+
+    # ── T190 PIPELINE ENTITAS V2 (flag `PIPELINE_ENTITAS_V2`, default OFF) ──
+    # Radius: `create_quote` SAJA. Flag mati = blok ini pulang None sebelum
+    # menyentuh apa pun, jadi nol byte berubah untuk aksi lain DAN untuk
+    # create_quote saat flag mati.
+    #
+    # Kenapa DI SINI: tepat SEBELUM `_enrich_payload`. Itu satu-satunya titik
+    # di mana payload masih memuat apa yang user tulis dan BELUM dilewati
+    # lapisan-lapisan yang menghapus (`item["description"] = None`,
+    # `payload.pop(...)`). Di hilir titik ini nama mentah sudah bisa hilang,
+    # dan pipa yang berjanji "nama mentah tidak pernah hilang" tak bisa
+    # menepatinya kalau dipasang setelahnya.
+    #
+    # APPEND-ONLY: blok ini TIDAK PERNAH memanggil `payload.pop`, tidak pernah
+    # menulis None ke `item_id`/`description`. Satu-satunya tulisan yang ia
+    # lakukan adalah MENGISI id yang tadinya kosong (keputusan KARTU).
+    @staticmethod
+    def _v2_aktif(action_key: str) -> bool:
+        """Flag + radius. Dipisah supaya "flag mati" bisa diuji sebagai fakta."""
+        import os as _os  # noqa: E402
+
+        if action_key != "create_quote":
+            return False
+        return str(_os.getenv("PIPELINE_ENTITAS_V2", "")).strip().lower() in (
+            "1",
+            "true",
+            "on",
+            "yes",
+        )
+
+    @staticmethod
+    def _v2_entitas_mentah(payload: Dict[str, Any]) -> List[tuple]:
+        """(tipe, mentah, baris_index) untuk tiap entitas yang perlu dicari.
+
+        Membaca dengan urutan kunci milik create_quote yang SUDAH
+        dideklarasikan di `gerbang_entitas.PETA_AKSI` — bukan salinan kedua.
+        Peta itu ada persis karena membaca kunci yang salah menghasilkan nol
+        yang meyakinkan.
+
+        Baris yang SUDAH punya id tidak dicari ulang: id yang sudah terikat
+        bukan pertanyaan.
+        """
+        from .gerbang_entitas import PETA_AKSI, _id_kosong, _nama_baris
+
+        peta = PETA_AKSI["create_quote"]
+        keluar: List[tuple] = []
+
+        nama_pihak = payload.get(peta["nama_pihak"])
+        if isinstance(nama_pihak, str) and nama_pihak.strip():
+            if _id_kosong(payload.get(peta["id_pihak"])):
+                keluar.append(("customer", nama_pihak, None))
+
+        baris = payload.get("items")
+        if isinstance(baris, str):
+            # Stage-2 kadang mengirim items ter-JSON-kan. Diurai ke variabel
+            # LOKAL; payload TIDAK disentuh (append-only sampai gerbang).
+            try:
+                _p = json.loads(baris)
+                baris = _p if isinstance(_p, list) else []
+            except (ValueError, TypeError):
+                baris = []
+        if isinstance(baris, list):
+            for i, b in enumerate(baris):
+                if not isinstance(b, dict):
+                    continue
+                if not _id_kosong(b.get(peta["id_baris"])):
+                    continue
+                nm = _nama_baris(b, peta["nama_baris"])
+                if nm:
+                    keluar.append(("item", nm, i))
+        return keluar
+
+    async def _pipa_entitas_v2(
+        self, action_key: str, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Jalankan pipa V2. Amplop CLARIFICATION = berhenti; None = lanjut.
+
+        None berarti keputusan KARTU: entitas semuanya terikat, jadi alur
+        diteruskan ke jalur yang sudah ada supaya kartu yang terbit PERSIS
+        seperti hari ini.
+
+        CATATAN JUJUR tentang "melewati enricher lama": pada keputusan
+        TAWARAN_DAFTAR dan PIL, enricher memang TIDAK PERNAH dijalankan —
+        itu tepat titik yang penting, karena di sanalah lapisan-lapisan
+        penghapus bekerja dan di sanalah tiga bug besar sesi ini lahir. Pada
+        keputusan KARTU enricher tetap dipanggil, dan itu DISENGAJA: dialah
+        satu-satunya sumber tanggal, harga, satuan, dan judul dokumen.
+        Melewatinya akan menerbitkan kartu tanpa tanggal dan tanpa harga —
+        yaitu perubahan perilaku, hal yang justru tidak boleh terjadi
+        sebelum Fase E.
+        """
+        if not self._v2_aktif(action_key):
+            return None
+
+        entitas = self._v2_entitas_mentah(payload)
+        if not entitas:
+            logger.warning("[PIPA_V2] tahap=resolve tipe=- n=0 (nol entitas mentah)")
+            return None
+
+        from .db_utils import get_session_db_pool
+        from .gerbang_keputusan import JENIS_KARTU, putuskan
+        from .resolver_entitas import log_ringkas, resolve_entitas
+
+        pool = await get_session_db_pool()
+        hasil: List[Any] = []
+        for tipe, mentah, idx in entitas:
+            hasil.append(
+                await resolve_entitas(
+                    pool, self.context.tenant_id, mentah, tipe, baris_index=idx
+                )
+            )
+        for _t in ("customer", "item"):
+            _sub = [h for h in hasil if h.tipe == _t]
+            if _sub:
+                log_ringkas(_t, _sub)
+
+        keputusan = putuskan(hasil)
+        logger.warning(
+            "[PIPA_V2] tahap=gerbang keputusan=%s n=%d",
+            keputusan.jenis,
+            len(hasil),
+        )
+
+        if keputusan.jenis == JENIS_KARTU:
+            # Satu-satunya tulisan ke payload: MENGISI id yang tadinya kosong.
+            # Tidak ada kunci yang dihapus, tidak ada nilai yang ditimpa
+            # dengan None, dan `description` dibiarkan apa adanya supaya nama
+            # yang user tulis tetap ada saat kartu disusun.
+            _baris = payload.get("items")
+            for h in hasil:
+                if h.baris_index is None:
+                    payload["customer_id"] = h.id
+                    payload["_nama_master_pihak_v2"] = h.nama
+                elif isinstance(_baris, list) and h.baris_index < len(_baris):
+                    _b = _baris[h.baris_index]
+                    if isinstance(_b, dict):
+                        _b["item_id"] = h.id
+                        # Nama MASTER ditambahkan sebagai kunci BARU, bukan
+                        # menimpa `description`. Dua nama boleh hidup
+                        # berdampingan; yang dilarang adalah menghapus salah
+                        # satunya.
+                        _b["_nama_master_v2"] = h.nama
+            return None
+
+        # TAWARAN_DAFTAR / PIL: amplop rangkap, bentuknya SAMA dengan yang
+        # sudah terbukti digambar FE (lihat `kontrak_render.KONTRAK`).
+        pesan = keputusan.pesan
+        amplop = {
+            "success": False,
+            "message_type": "CLARIFICATION",
+            "content": pesan,
+            "text": pesan,
+            "error": {"code": "PIPA_V2_" + keputusan.jenis, "message": pesan},
+            "data": {
+                "question": pesan,
+                "options": [dict(o) for o in keputusan.opsi],
+                "allow_freetext": True,
+                "pipa_v2": {"keputusan": keputusan.jenis, **keputusan.extra_data},
+            },
+        }
+        from .kontrak_render import periksa_kontrak_render
+
+        _salah = periksa_kontrak_render(
+            amplop["message_type"], amplop["text"], amplop["data"]
+        )
+        if _salah:
+            # Amplop yang melanggar kontrak = layar kosong. Lebih baik
+            # terlihat di log daripada jadi gelembung yang tak pernah muncul.
+            logger.error("[PIPA_V2] amplop melanggar kontrak render: %s", _salah)
+        return amplop
 
     async def _enrich_payload(
         self, action_type: str, payload: Dict[str, Any]
