@@ -978,6 +978,52 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 field_type="json",
                 required=True,
                 hidden=True,
+                # T182-C: sebelum ini `items` dideklarasikan ke model sebagai
+                # ["string","null"] (field_type="json" jatuh ke cabang else di
+                # build_intent_schema; cabang array HANYA aktif bila
+                # item_schema TERISI). Model lalu berhak mengisi `items` dengan
+                # PROSA, json.loads gagal diam-diam -> items=[] -> scalar-
+                # fallback mengarang satu baris {description:"Item",
+                # quantity:1, unit_price:0}. Kelas bug yang sama sudah
+                # diperbaiki untuk create_bill (T179-Q3) dan
+                # create_sales_invoice (T182-A), keduanya hijau di produksi.
+                #
+                # Nama kunci per-baris diverifikasi dari DUA sumber, bukan
+                # disalin dari tiket: (a) docstring + jalur hilir
+                # _enrich_sales_order di tool_executor.py, (b) sensus
+                # pending_actions.action_plan->items untuk CREATE_SALES_ORDER
+                # di produksi (SELECT saja): item_id 255, description 255,
+                # quantity 255, unit 255, unit_price 172.
+                #
+                # discount_percent per-baris SENGAJA TIDAK dideklarasikan:
+                # nol kemunculan di sensus itu (beda dari create_sales_invoice
+                # yang punya 2). Diskon SO hidup di tingkat header.
+                #
+                # item_id sengaja TIDAK dideklarasikan (mengikuti create_bill
+                # dan create_sales_invoice): UUID tidak bisa dikarang model,
+                # ia diresolusi _enrich_items lewat description.
+                item_schema={
+                    "type": "object",
+                    "properties": {
+                        "description": {
+                            "type": "string",
+                            "description": (
+                                "Nama barang/jasa. WAJIB nama barang, "
+                                "BUKAN nama pelanggan."
+                            ),
+                        },
+                        "quantity": {"type": "number", "description": "Kuantitas"},
+                        "unit_price": {
+                            "type": "number",
+                            "description": "Harga satuan JUAL dalam Rupiah",
+                        },
+                        "unit": {
+                            "type": ["string", "null"],
+                            "description": "Satuan bila user sebut",
+                        },
+                    },
+                    "required": ["description", "quantity", "unit_price"],
+                },
                 description="Array of {item_id, description, quantity, unit_price, unit}",
             ),
             FieldSpec(

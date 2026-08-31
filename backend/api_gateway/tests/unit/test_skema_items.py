@@ -129,11 +129,50 @@ def test_array_si_lolos_clean_schema_tanpa_diruntuhkan():
     assert p["items"]["properties"]["unit"]["type"] == "string"
 
 
+def test_create_sales_order_items_adalah_array():
+    """T182-C. Sebelum ini `items` create_sales_order = ["string","null"] —
+    terukur dari dump skema BASELINE seluruh 61 aksi di worktree ini."""
+    p = properti("create_sales_order").get("items")
+    assert p is not None, "kunci items tidak ada di skema create_sales_order"
+    assert p.get("type") == "array", (
+        f"items dideklarasikan sebagai {p.get('type')!r}, bukan 'array' — "
+        "model berhak mengirim prosa, json.loads gagal diam-diam, dan "
+        "scalar-fallback mengarang satu baris palsu"
+    )
+    baris = (p.get("items") or {}).get("properties") or {}
+    # Nama field per-baris untuk SALES ORDER — BUKAN skema Bill.
+    # Sensus produksi pending_actions.action_plan->items CREATE_SALES_ORDER:
+    # item_id 255, description 255, quantity 255, unit 255, unit_price 172.
+    for wajib in ("description", "quantity", "unit_price"):
+        assert wajib in baris, f"field baris {wajib!r} hilang dari skema SO"
+    for asing in ("product_name", "qty", "price"):
+        assert asing not in baris, (
+            f"{asing!r} adalah nama field BILL — jalur hilir sales order "
+            "(_enrich_sales_order, _enrich_items) tidak mengenalinya"
+        )
+    # item_id sengaja TIDAK dideklarasikan ke model: UUID tak bisa dikarang.
+    assert "item_id" not in baris, (
+        "item_id dideklarasikan ke model — model akan mengarang UUID; "
+        "resolusinya tugas _enrich_items lewat description"
+    )
+
+
+def test_array_so_lolos_clean_schema_tanpa_diruntuhkan():
+    dalam = build_intent_schema("create_sales_order")["json_schema"]["schema"]
+    bersih = GeminiClient._clean_schema(dalam)
+    p = bersih["properties"]["items"]
+    assert p["type"] == "array", "array SO runtuh saat lewat _clean_schema"
+    assert p["items"]["type"] == "object"
+    assert "description" in p["items"]["properties"]
+    # union per-baris ikut diruntuhkan (bukti rekursi benar-benar masuk)
+    assert p["items"]["properties"]["unit"]["type"] == "string"
+
+
 AKSI_TAK_DIUBAH = [
     # T182-A: `create_sales_invoice` DIKELUARKAN dari daftar ini secara sadar.
-    # Ia kini array (lihat test_create_sales_invoice_items_adalah_array).
-    # `create_quote` dan `create_sales_order` SENGAJA tetap string ronde ini.
-    "create_sales_order",
+    # T182-C: `create_sales_order` DIKELUARKAN — keputusan sadar, lihat
+    # test_create_sales_order_items_adalah_array. `create_quote` SENGAJA
+    # masih string sampai commit berikutnya di tiket yang sama.
     "create_quote",
     "create_stock_adjustment",
     "create_journal_entry",
