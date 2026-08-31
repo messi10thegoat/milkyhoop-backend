@@ -9,7 +9,8 @@ BELUM di-merge. BELUM di-deploy. Produksi (`/root/milkyhoop-dev`) TIDAK disentuh
 
 ## Commit di branch ini
 (diperbarui tiap commit)
-- (belum ada)
+- `5d2f86e9` fix(chat): items create_sales_invoice dideklarasikan sebagai ARRAY (T182-A)
+- `<commit dok>` docs(rollback): catat commit T182-A + bukti gate
 
 ## Berkas yang disentuh
 - `backend/api_gateway/app/services/unified_agent/direct_action_registry.py`
@@ -33,6 +34,16 @@ redis-misconf-capdrop-20260725).
 git -C /root/milkyhoop-dev worktree remove /root/mh-t182a
 git -C /root/milkyhoop-dev branch -D feat/t182a-array-si
 ```
+
+## Bukti (Gate A)
+- Unit di branch: **83 passed** (baseline master = 81).
+- Bukti MERAH di `97d9cff6` (tes dibawa, pemasangan TIDAK dibawa):
+  **2 failed, 81 passed**, nol ModuleNotFoundError. Worktree bukti-merah
+  `/root/mh-t182a-merah` sudah dihapus.
+- Diff skema 61 aksi (dump `build_intent_schema` sebelum vs sesudah):
+  tepat **1 aksi berubah** = `create_sales_invoice`. `create_bill`,
+  `create_quote`, `create_sales_order`, `create_stock_adjustment`,
+  `create_journal_entry`, dan 9 `update_*` byte-identik.
 
 ## Risiko sisa
 Perubahan HANYA deklarasi skema yang dikirim ke model. Jalur hilir
