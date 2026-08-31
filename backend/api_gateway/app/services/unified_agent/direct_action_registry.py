@@ -5612,6 +5612,60 @@ def t171_baris_ke_payload(baris: dict, warisan: dict | None = None) -> dict:
     return _p
 
 
+AKUN_TAK_DIKENALI = "(akun belum dikenali)"
+
+
+def bangun_pratinjau_jurnal_dari_lines(payload: dict) -> list | None:
+    """Pratinjau jurnal untuk `create_journal_entry`, DIHITUNG LOKAL.
+
+    Kenapa lokal dan bukan endpoint pratinjau: barisnya SUDAH ADA di payload --
+    user sendiri yang mengarangnya. Memanggil jaringan untuk menyusun ulang apa
+    yang sudah dipegang menambah satu jalur non-fatal yang mengembalikan None
+    diam-diam (`_get_journal_preview`: `if resp.status_code >= 400: return None`),
+    dan None di sana berarti kartu kembali kosong -- persis penyakit yang
+    diperbaiki tiket ini. Nol panggilan jaringan = nol cara gagal senyap.
+
+    NAMA AKUN, BUKAN UUID. `account_id` pada baris jurnal adalah UUID mentah;
+    memuntahkannya ke layar sudah pernah terjadi (kartu quick_stock_adjustment)
+    dan tidak diulang di sini. Yang memuat nama akun adalah `description` tiap
+    baris (terukur dari dump `pending_actions.action_plan`: "Beban Sewa",
+    "Bank"). Kalau `description` kosong, kartu berkata jujur
+    "(akun belum dikenali)" -- tidak pernah menambal dengan UUID.
+
+    Bentuk keluaran SENGAJA sama dengan yang dibalas endpoint pratinjau
+    (`account_name` / `debit` / `credit`) supaya dua konsumen yang sudah ada --
+    `build_confirmation_table` dan `build_review_card_payload` -- memakainya
+    tanpa cabang khusus. Keseimbangan tetap dihitung oleh
+    `build_review_card_payload`, satu tempat, sama untuk semua aksi.
+    """
+    lines = payload.get("lines")
+    if isinstance(lines, str):
+        try:
+            import json as _json
+
+            lines = _json.loads(lines)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(lines, list) or not lines:
+        return None
+
+    pratinjau = []
+    for baris in lines:
+        if not isinstance(baris, dict):
+            continue
+        # `debit`/`credit` bisa TIDAK ADA sama sekali pada satu sisi (terukur:
+        # baris kredit yang tak memuat kunci "debit"), jadi `or 0` wajib.
+        try:
+            dr = float(baris.get("debit", 0) or 0)
+            cr = float(baris.get("credit", 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        nama = str(baris.get("description") or "").strip() or AKUN_TAK_DIKENALI
+        pratinjau.append({"account_name": nama, "debit": dr, "credit": cr})
+
+    return pratinjau or None
+
+
 def build_confirmation_table(
     action_key: str, payload: dict, journal_preview: list | None = None
 ) -> str:
@@ -5692,6 +5746,28 @@ def build_confirmation_table(
             if credit > 0:
                 lines.append(f"  Cr. {account}  Rp {int(credit):,}".replace(",", "."))
 
+        # T184 -- baris total + status seimbang pada versi TEKS kartu, dengan
+        # radius yang sama seperti di build_review_card_payload: hanya jurnal
+        # umum. Aksi lain memakai fungsi ini juga; menambah baris di sana akan
+        # mengubah teks konfirmasi mereka tanpa diminta.
+        if action_key == "create_journal_entry":
+            _tdr = sum(float(jl.get("debit", 0) or 0) for jl in journal_preview)
+            _tcr = sum(float(jl.get("credit", 0) or 0) for jl in journal_preview)
+            lines.append(
+                "  Total Debit  Rp {:,.0f}".format(_tdr).replace(",", ".")
+            )
+            lines.append(
+                "  Total Kredit Rp {:,.0f}".format(_tcr).replace(",", ".")
+            )
+            if abs(_tdr - _tcr) < 0.01:
+                lines.append("  Status: SEIMBANG")
+            else:
+                lines.append(
+                    "  Status: TIDAK SEIMBANG (selisih Rp {:,.0f})".format(
+                        abs(_tdr - _tcr)
+                    ).replace(",", ".")
+                )
+
     return "\n".join(lines)
 
 
@@ -5704,6 +5780,27 @@ def _pesan_jurnal_tanpa_dampak(
     valid" memindahkan pekerjaan diagnosa ke user yang bukan akuntan; "Jumlah
     untuk 'jasa sablon' belum diisi" memberi tahu tombol mana yang harus ditekan.
     """
+    # T184 -- JURNAL UMUM: barisnya DIARANG USER, jadi diagnosanya berbeda.
+    #
+    # Cabang di bawah berkata "laporkan ke tim MilkyHoop" karena untuk faktur
+    # dan pembayaran barisnya disusun SERVER: jurnal sepihak di sana memang bug
+    # kami. Pada jurnal umum manual barisnya diketik user, jadi kalimat yang
+    # sama menyuruh user melapor atas kesalahan yang bisa ia perbaiki sendiri
+    # dalam satu kalimat -- dan menyembunyikan apa yang sebenarnya kurang.
+    if action_key == "create_journal_entry":
+        if total_dr > 0 or total_cr > 0:
+            ada = "debit" if total_dr > 0 else "kredit"
+            kurang = "kredit" if total_dr > 0 else "debit"
+            return (
+                f"Jurnal ini hanya punya sisi {ada}; sisi {kurang}-nya belum "
+                "ada. Setiap jurnal butuh dua sisi yang jumlahnya sama. "
+                f"Sebutkan akun {kurang}-nya lalu kirim lagi."
+            )
+        return (
+            "Semua baris jurnal ini bernilai Rp 0, jadi belum ada yang bisa "
+            "dicatat. Sebutkan nominal tiap barisnya lalu kirim lagi."
+        )
+
     # Satu sisi saja padahal ada nilai: ini bukan kesalahan input user.
     if total_dr > 0 or total_cr > 0:
         sisi = "kredit" if total_dr > 0 else "debit"
@@ -5912,6 +6009,57 @@ def build_review_card_payload(
             )
         else:
             journal_balanced = abs(total_dr - total_cr) < 0.01
+
+            # T184 -- TOTAL DAN STATUS SEIMBANG HARUS TERBACA, BUKAN TERSIRAT.
+            #
+            # Renderer kartu (ReviewCardArtifact / InlineReviewCard) hanya
+            # menggambar lencana POSITIF: `journal_balanced && "checkmark
+            # Balance"`. Untuk journal_balanced=False ia menggambar NOL --
+            # tidak ada teks "tidak seimbang" di mana pun di kartu chat
+            # (terukur di bundel terpasang main.82ce0f51.js: "Tidak Seimbang"
+            # muncul 5x, semuanya di neraca/arus kas/trial balance, nol di
+            # kartu chat). Jadi jurnal timpang tampil sebagai KETIADAAN
+            # lencana, dan ketiadaan tidak pernah terbaca sebagai peringatan.
+            #
+            # Slot `warnings` DIGAMBAR TANPA SYARAT oleh kedua renderer, jadi
+            # di situlah kalimatnya ditaruh. Sekalian totalnya: kartu tidak
+            # punya slot total untuk jurnal (`totals` milik baris barang), dan
+            # meminjam slot itu akan salah merender.
+            #
+            # RADIUS: hanya create_journal_entry. Aksi lain (faktur jual/beli,
+            # biaya, terima bayar, bayar tagihan) memakai renderer yang sama;
+            # menambah catatan di sana akan mengubah kartu mereka byte demi
+            # byte tanpa diminta. Kebutaan "tidak seimbang" pada aksi-aksi itu
+            # NYATA tapi diusulkan terpisah -- di sana barisnya disusun server
+            # dari dokumen, bukan diarang user.
+            if action_key == "create_journal_entry":
+                _dr = "Rp {:,.0f}".format(total_dr).replace(",", ".")
+                _cr = "Rp {:,.0f}".format(total_cr).replace(",", ".")
+                if journal_balanced:
+                    warnings.append(
+                        {
+                            "type": "info",
+                            "message": (
+                                f"Total debit {_dr} = total kredit {_cr}. "
+                                "Jurnal SEIMBANG."
+                            ),
+                        }
+                    )
+                else:
+                    _selisih = "Rp {:,.0f}".format(abs(total_dr - total_cr)).replace(
+                        ",", "."
+                    )
+                    warnings.append(
+                        {
+                            "type": "warning",
+                            "message": (
+                                f"JURNAL TIDAK SEIMBANG. Total debit {_dr}, "
+                                f"total kredit {_cr}, selisih {_selisih}. "
+                                "Jurnal ini akan DITOLAK saat disimpan -- "
+                                "perbaiki barisnya dulu."
+                            ),
+                        }
+                    )
 
     # Items + totals (for invoice-type actions)
     items = None

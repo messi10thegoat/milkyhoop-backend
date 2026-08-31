@@ -550,6 +550,7 @@ from .direct_action_registry import (  # noqa: E402
     validate_payload,
     apply_defaults,
     build_confirmation_table,
+    bangun_pratinjau_jurnal_dari_lines,
     build_review_card_payload,
     build_ux_metadata,
     get_query_action,
@@ -1990,6 +1991,13 @@ class ToolExecutor:
             else:
                 # endpoint pratinjau lama yang membalas daftar telanjang
                 journal_preview = _pv
+        elif action_key == "create_journal_entry":
+            # T184. Jurnal umum tak punya endpoint pratinjau dan TIDAK
+            # membutuhkannya: barisnya sudah ada di payload. Tanpa cabang ini
+            # `journal_preview` tetap None, dan kartu yang sampai ke user hanya
+            # berisi [Tanggal, Keterangan] -- nol baris, nol total, nol status
+            # seimbang, padahal tombol "Betul" memposting ke buku besar.
+            journal_preview = bangun_pratinjau_jurnal_dari_lines(payload)
 
         # Store pending action
         pending_id = str(uuid.uuid4())
