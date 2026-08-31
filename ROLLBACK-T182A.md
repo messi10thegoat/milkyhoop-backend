@@ -10,7 +10,7 @@ BELUM di-merge. BELUM di-deploy. Produksi (`/root/milkyhoop-dev`) TIDAK disentuh
 ## Commit di branch ini
 (diperbarui tiap commit)
 - `5d2f86e9` fix(chat): items create_sales_invoice dideklarasikan sebagai ARRAY (T182-A)
-- `<commit dok>` docs(rollback): catat commit T182-A + bukti gate
+- `811cacb2` docs(rollback): catat commit T182-A + bukti gate
 
 ## Berkas yang disentuh
 - `backend/api_gateway/app/services/unified_agent/direct_action_registry.py`
