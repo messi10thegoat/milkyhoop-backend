@@ -4,8 +4,8 @@ Branch: feat/t182c-array-quote-so (worktree /root/mh-t182c)
 Basis: master 1f7d2358d2391a1c068eb71ad45951dfc282e4b6
 
 ## Commit yang termasuk tiket ini (daftar LENGKAP, diisi saat dibuat)
-1. <SHA-1> feat(t182c): items ARRAY untuk create_sales_order
-2. <SHA-2> feat(t182c): items ARRAY untuk create_quote
+1. e2318c56 feat(t182c): items ARRAY untuk create_sales_order
+2. de8071bc feat(t182c): items ARRAY untuk create_quote
 
 Berkas yang disentuh:
 - backend/api_gateway/app/services/unified_agent/direct_action_registry.py
@@ -32,3 +32,17 @@ JANGAN `git reset --hard` (pohon utama punya 75 entri kotor milik sesi lain).
 Deklaratif saja: mengisi FieldSpec.item_schema sehingga build_intent_schema
 mengambil cabang array. NOL perubahan skema DB, NOL migrasi, NOL tulisan DB,
 NOL perubahan jalur hilir (enricher/scalar-fallback/gerbang entitas).
+
+3. <SHA-3> docs(rollback): tutup daftar commit T182-C
+   (commit ini sendiri — hanya berkas ROLLBACK-T182C.md)
+
+## Bukti gate A (2026-08-31)
+- Harness: 83 baseline -> 85 passed di branch.
+- Bukti MERAH bermakna: worktree detached di 1f7d2358 dengan berkas tes
+  DIBAWA tapi pemasangan TIDAK dibawa -> 4 failed, 81 passed, NOL error
+  impor. Alasan gagal = AssertionError "items dideklarasikan sebagai
+  ['string', 'null'], bukan 'array'". Worktree bukti sudah dihapus.
+- DIFF SKEMA seluruh 61 aksi: TEPAT 2 berubah (create_quote,
+  create_sales_order); 59 byte-identik, termasuk create_bill,
+  create_sales_invoice, create_stock_adjustment, create_journal_entry,
+  dan kesembilan update_*.
