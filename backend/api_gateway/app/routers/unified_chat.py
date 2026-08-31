@@ -1140,6 +1140,25 @@ def _teks_pil_dibatalkan(entity_type: str | None) -> str:
     )
 
 
+async def _tulis_doc_ctx(sm, sid, doc_ctx: dict, **kunci_baru) -> dict:
+    """Read-merge-write. update_state me-REPLACE seluruh kolom document_context
+    (session_manager.py:413-446), jadi menulis {'a':1} MENGHAPUS sisanya.
+    Semua penulisan document_context WAJIB lewat sini.
+
+    Mengembalikan dict hasil merge supaya pemanggil bisa memakainya lagi
+    tanpa membaca ulang state.
+    """
+    _gabung = dict(doc_ctx or {})
+    _gabung.update(kunci_baru)
+    # FK safety: sama seperti pola yang sudah ada di jalur pil entity.
+    try:
+        await sm.get_or_create_session(sid)
+    except Exception:  # noqa: BLE001
+        pass
+    await sm.update_state(sid, document_context=_gabung)
+    return _gabung
+
+
 async def _bersihkan_pil_entity(sm, sid) -> None:
     """Padamkan pending_entity_selection; kegagalannya tak boleh membuntukan."""
     try:
@@ -1228,6 +1247,7 @@ async def tangani_jawaban_pil(
                 ctx=ctx,
                 text=_val,
                 doc_ctx=doc_ctx,
+                pool=pool,
             )
         except Exception:  # noqa: BLE001
             # Kontrak leak-safety FIX_ENTITY_PILLS: jawaban pil yang melempar
@@ -1273,7 +1293,7 @@ async def tangani_jawaban_pil(
 
 
 async def _jalankan_pil_entity(
-    *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict
+    *, sm, sid, session_id, ctx: dict, text: str, doc_ctx: dict, pool=None
 ) -> ChatMessageResponse:
     """Perilaku pil entity yang LAMA, dipindah apa adanya dari /message:1594.
 
@@ -1367,6 +1387,43 @@ async def _jalankan_pil_entity(
     else:
         _ep_payload[_ep_slot] = _ep_value
 
+    return await _gerbang_lanjut(
+        sm=sm,
+        sid=sid,
+        session_id=session_id,
+        ctx=ctx,
+        ep_queue=_ep_queue,
+        ep_cursor=_ep_cursor,
+        ep_action_key=_ep_action_key,
+        ep_payload=_ep_payload,
+        doc_ctx=doc_ctx,
+    )
+
+
+async def _gerbang_lanjut(
+    *,
+    sm,
+    sid,
+    session_id,
+    ctx: dict,
+    ep_queue,
+    ep_cursor,
+    ep_action_key,
+    ep_payload,
+    doc_ctx: dict,
+) -> ChatMessageResponse:
+    """Gerbang lanjut: maju cursor -> CLARIFICATION berikutnya, atau propose kartu.
+
+    PEMINDAHAN MURNI dari ekor _jalankan_pil_entity (dulu baris 1370-1482).
+    Satu-satunya perubahan: penulisan state memakai _tulis_doc_ctx (read-merge-
+    write). Dipisah supaya alur bisa KEMBALI ke gerbang ini sesudah entitas
+    dibuat, bukan lompat langsung ke kartu.
+    """
+    _ep_queue = ep_queue
+    _ep_cursor = ep_cursor
+    _ep_action_key = ep_action_key
+    _ep_payload = ep_payload
+
     # ── Advance cursor: more entities to ask? ──
     _ep_next_cursor = _ep_cursor + 1
     if _ep_next_cursor < len(_ep_queue):
@@ -1403,19 +1460,15 @@ async def _jalankan_pil_entity(
             "item": "Pilih barang yang dimaksud:",
         }.get(_ep_next.get("entity_type"), "Pilih yang dimaksud:")
         # FK safety + full-dict rewrite (advanced cursor, same payload).
-        try:
-            await sm.get_or_create_session(sid)
-        except Exception:
-            pass
-        await sm.update_state(
+        await _tulis_doc_ctx(
+            sm,
             sid,
-            document_context={
-                "pending_entity_selection": True,
-                "resolved_action_key": _ep_action_key,
-                "resolved_payload": _ep_payload,
-                "entity_queue": _ep_queue,
-                "entity_cursor": _ep_next_cursor,
-            },
+            doc_ctx,
+            pending_entity_selection=True,
+            resolved_action_key=_ep_action_key,
+            resolved_payload=_ep_payload,
+            entity_queue=_ep_queue,
+            entity_cursor=_ep_next_cursor,
         )
         return ChatMessageResponse(
             message_type="CLARIFICATION",
