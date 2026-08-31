@@ -10,7 +10,7 @@ Ditulis SEBELUM kode disentuh. Diperbarui dengan SHA sesudah commit.
 ## Commit di branch ini
 - `6c324f991547dddef940724d83cb8b62e03d15a6` — fix(chat): kartu jurnal umum memperlihatkan barisnya sebelum tombol ditekan (satu-satunya commit KODE)
 
-- `06ad5b10` — docs(rollback): isi SHA commit T184 (berkas ini saja, nol kode)
+- commit `docs(rollback)` TERAKHIR di branch ini — berkas ini saja, nol kode. SHA-nya sengaja tidak dikutip: ia berubah tiap kali berkas ini disunting, dan SHA yang salah lebih buruk daripada tak ada. `git -C /root/mh-t184 log --oneline`
 
 ## Berkas yang disentuh
 - `backend/api_gateway/app/services/unified_agent/direct_action_registry.py`
