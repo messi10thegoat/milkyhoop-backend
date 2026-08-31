@@ -87,6 +87,37 @@ class Keputusan:
     opsi: Tuple[Dict[str, str], ...] = field(default=())
     extra_data: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """T193 - SATU tempat penyeragaman bentuk `extra_data["baris_index"]`.
+
+        Kenapa DI SINI dan bukan di tiap cabang `putuskan`: tiga cabang berarti
+        tiga kesempatan untuk lupa, dan cabang keempat yang ditambahkan nanti
+        akan lupa secara default. Amplop keputusan hanya bisa lahir lewat
+        konstruktor ini, jadi penyeragaman di sini berlaku untuk SEMUA
+        keputusan yang pernah ada dan yang belum ditulis.
+
+        Kontraknya: `baris_index` SELALU list.
+          TAWARAN_DAFTAR : sudah list       -> dibiarkan apa adanya
+          PIL            : int satu baris   -> dibungkus jadi [int]
+          KARTU          : tidak ada baris  -> [] (bukan absen, bukan None)
+
+        `[]` dan absen BUKAN hal yang sama bagi pembaca di hilir: absen memaksa
+        tiap pembaca menulis penjaganya sendiri, dan penjaga yang lupa ditulis
+        adalah persis kelas bug yang pipa ini dibuat untuk menutup. Karena itu
+        kunci ini SELALU ADA.
+
+        Ini mengubah BENTUK, bukan isi: tak satu pun indeks ditambah atau
+        dibuang. Dataclass ini `frozen`, tapi `extra_data` adalah dict biasa;
+        yang disentuh isinya, bukan atributnya - jadi kebekuan tetap utuh.
+        """
+        ex = self.extra_data
+        if not isinstance(ex, dict):
+            return
+        bi = ex.get("baris_index")
+        if isinstance(bi, list):
+            return
+        ex["baris_index"] = [] if bi is None else [bi]
+
 
 def _kata(tipe: str) -> Tuple[str, str]:
     return _KATA.get(tipe, ("entitas", "master"))

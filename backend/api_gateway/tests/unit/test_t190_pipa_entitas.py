@@ -209,7 +209,8 @@ def test_pil_hanya_satu_baris_walau_dua_ambigu():
 def test_pil_membawa_baris_index_bukan_nol():
     """Jawaban pil harus bisa ditulis ke BARIS ITU, bukan selalu baris 0."""
     k = putuskan([_ada("A", baris_index=0), _ambigu("kaos", 2, baris_index=2)])
-    assert k.extra_data["baris_index"] == 2
+    # T193: bentuknya kini SELALU list (isinya sama: baris ke-2, bukan 0).
+    assert k.extra_data["baris_index"] == [2]
 
 
 def test_pil_punya_opsi_kandidat_plus_bukan_semuanya():
@@ -803,3 +804,72 @@ async def test_kontrol_kontrak_render_bisa_gagal():
     from app.services.unified_agent.kontrak_render import periksa_kontrak_render
 
     assert periksa_kontrak_render("CLARIFICATION", "ada teks", None) != []
+
+
+# ── T193 — `baris_index` SELALU list, di KETIGA keputusan ──────────────────
+#
+# Tes BERPARAMETER, sengaja: memeriksa satu cabang saja tidak menutup apa pun,
+# karena bug yang ditakuti justru "satu cabang lupa". Ketiga jenis keputusan
+# dijalankan lewat parameter yang sama sehingga cabang yang lupa akan MERAH.
+
+_T193_KASUS = [
+    (
+        JENIS_TAWARAN,
+        [HasilResolve(status="TIDAK_ADA", mentah="Meja Jati", tipe="item", baris_index=0)],
+        [0],
+    ),
+    (
+        JENIS_PIL,
+        [
+            HasilResolve(
+                status="AMBIGU",
+                mentah="Kaos Hitam",
+                tipe="item",
+                baris_index=2,
+                kandidat=(Kandidat(id="a", nama="Kaos Hitam 24s"), Kandidat(id="b", nama="Kaos Hitam 30s")),
+            )
+        ],
+        [2],
+    ),
+    (
+        JENIS_KARTU,
+        [
+            HasilResolve(
+                status="DITEMUKAN", mentah="Kaos Hitam 24s", tipe="item", baris_index=0, id="a", nama="Kaos Hitam 24s"
+            )
+        ],
+        [],
+    ),
+]
+
+
+@pytest.mark.parametrize("jenis_diharap,hasil,indeks_diharap", _T193_KASUS)
+def test_t193_baris_index_selalu_list(jenis_diharap, hasil, indeks_diharap):
+    k = putuskan(hasil)
+    assert k.jenis == jenis_diharap
+    assert "baris_index" in k.extra_data, "kunci wajib ADA, bukan absen"
+    assert isinstance(k.extra_data["baris_index"], list), (
+        "baris_index wajib list di SEMUA keputusan; didapat "
+        + type(k.extra_data["baris_index"]).__name__
+    )
+    assert k.extra_data["baris_index"] == indeks_diharap
+
+
+def test_t193_kontrol_penyeragam_bisa_gagal():
+    """Kontrol positif: penyeragam BEKERJA, bukan lolos karena tak pernah jalan.
+
+    Kalau `__post_init__` dihapus, amplop di bawah akan menyimpan int/None apa
+    adanya dan kedua assertion ini MERAH. Ia juga membuktikan penyeragaman
+    terjadi di KONSTRUKTOR, bukan di `putuskan` - jadi cabang baru mana pun
+    ikut terlindungi.
+    """
+    from app.services.unified_agent.gerbang_keputusan import Keputusan
+
+    assert Keputusan(jenis="X", pesan="p", extra_data={"baris_index": 7}).extra_data[
+        "baris_index"
+    ] == [7]
+    assert Keputusan(jenis="X", pesan="p", extra_data={}).extra_data["baris_index"] == []
+    # bentuk yang SUDAH list tidak diutak-atik
+    assert Keputusan(jenis="X", pesan="p", extra_data={"baris_index": [1, 3]}).extra_data[
+        "baris_index"
+    ] == [1, 3]
