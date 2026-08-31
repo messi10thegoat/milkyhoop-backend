@@ -578,3 +578,253 @@ async def test_e2e_bill_semua_ter_resolve_lewat_gerbang(monkeypatch):
         assert peledak.disentuh is True
         return
     _bukan_gerbang(hasil)
+
+
+# ══════════════ FASE 1b-r2 — PESAN gerbang (nama + kata benda) ══════════════
+#
+# Dua cacat terukur di produksi, MEKANISME gerbang tidak disentuh:
+#   (1) quote -> "Item, Item belum ada di master barang."
+#       SI    -> "(tanpa nama), (tanpa nama) belum ada di master barang."
+#   (2) quote berbunyi "kirim ulang FAKTUR ini" untuk sebuah PENAWARAN.
+#
+# CATATAN PROVENANS (diukur, bukan disimpulkan): peta kunci nama TIDAK salah.
+# `description` memang kunci nama untuk quote/SI/SO (sensus pending_actions:
+# ada di 1365/1365 baris quote, 305/305 SI, 249/249 SO) dan `product_name`
+# untuk bill (859/859). Yang terjadi: PENGAYAAN menimpa nama asli dengan
+# penanda "Item" (ekor _enrich_quote/_enrich_sales_order dan _enrich_items)
+# atau None (cabang BUG-item-slot proper-noun-bleed) SEBELUM gerbang membaca
+# payload. Karena itu perbaikannya bukan "ganti kunci" melainkan: kenali
+# penanda kosong-makna, KATAKAN namanya tidak terbaca, dan kutip teks user.
+
+
+# Daftar ini DIDEKLARASIKAN DI TES, bukan diimpor dari implementasi: tes yang
+# mengimpor konstanta yang ia periksa hanya membuktikan konstanta itu sama
+# dengan dirinya sendiri. Ia juga membuat berkas ini bisa dijalankan apa
+# adanya di basis LAMA -> gagalnya perilaku, bukan ImportError.
+PENANDA_KOSONG_MAKNA = ("item", "(tanpa nama)")
+
+
+def _nama_barang_nyata(pesan):
+    """Tak satu pun penanda kosong-makna boleh sampai ke layar."""
+    for penanda in PENANDA_KOSONG_MAKNA:
+        assert penanda not in pesan.lower().split("yang anda tulis")[0], (
+            "penanda kosong makna %r tercetak: %r" % (penanda, pesan)
+        )
+
+
+def test_quote_pesan_memuat_nama_barang_sebenarnya():
+    """CACAT (1) sisi quote: nama asli, bukan penanda "Item"."""
+    h = periksa_gerbang_entitas(
+        "create_quote",
+        _jual(items=[{"description": "jasa sablon 2 warna", "quantity": 3}]),
+    )
+    assert "jasa sablon 2 warna" in h["content"], h["content"]
+    _nama_barang_nyata(h["content"])
+
+
+def test_si_pesan_memuat_nama_barang_sebenarnya():
+    """CACAT (1) sisi SI: nama asli, bukan "(tanpa nama)"."""
+    h = periksa_gerbang_entitas(
+        "create_sales_invoice",
+        _jual(items=[{"description": "Kaos Biru 30s", "quantity": 3}]),
+    )
+    assert "Kaos Biru 30s" in h["content"], h["content"]
+    _nama_barang_nyata(h["content"])
+
+
+@pytest.mark.parametrize("nilai_penanda", ["Item", "item", "ITEM"])
+def test_penanda_item_tidak_pernah_dicetak_sebagai_nama(nilai_penanda):
+    """"Item" adalah PENANDA yang ditulis pengayaan, bukan nama barang.
+
+    Mencetaknya memberi user kata yang tak bisa ia cari di master mana pun.
+    """
+    h = periksa_gerbang_entitas(
+        "create_quote", _jual(items=[{"description": nilai_penanda}])
+    )
+    assert h is not None, "baris yatim tetap wajib diblokir"
+    _nama_barang_nyata(h["content"])
+    assert "tidak terbaca" in h["content"], h["content"]
+
+
+def test_si_nama_hilang_mengutip_teks_user_bukan_placeholder():
+    """Cabang BUG-item-slot menulis description=None. Yang jujur = mengaku
+    namanya tidak terbaca lalu mengutip apa yang user KETIK."""
+    h = periksa_gerbang_entitas(
+        "create_sales_invoice",
+        _jual(items=[{"quantity": 3}, {"quantity": 1}]),
+        teks_user="buat faktur untuk Toko Melati 3 kaos hitam gramsi 30s",
+    )
+    _nama_barang_nyata(h["content"])
+    assert "2 baris barang" in h["content"], h["content"]
+    assert "tidak terbaca" in h["content"], h["content"]
+    assert "kaos hitam gramsi 30s" in h["content"], h["content"]
+
+
+def test_nama_hilang_tanpa_teks_user_tetap_kalimat_utuh():
+    """Kontrol negatif: tanpa teks user, kalimat tetap bisa ditindaklanjuti
+    dan TIDAK berakhir dengan kutipan kosong."""
+    h = periksa_gerbang_entitas(
+        "create_quote", _jual(items=[{"quantity": 1}])
+    )
+    _nama_barang_nyata(h["content"])
+    assert "Yang Anda tulis" not in h["content"], h["content"]
+    assert h["content"].endswith("penawaran ini."), h["content"]
+
+
+def test_campuran_nama_terbaca_dan_tidak_disebut_dua_duanya():
+    """Baris yang namanya terbaca TIDAK boleh ikut hilang ke dalam hitungan."""
+    h = periksa_gerbang_entitas(
+        "create_quote",
+        _jual(items=[{"description": "sablon foil"}, {"description": "Item"}]),
+    )
+    assert "sablon foil" in h["content"], h["content"]
+    assert "1 baris barang lain" in h["content"], h["content"]
+    _nama_barang_nyata(h["content"])
+
+
+def test_kutipan_teks_user_dipotong_tidak_membanjiri_layar():
+    h = periksa_gerbang_entitas(
+        "create_quote", _jual(items=[{"quantity": 1}]), teks_user="x" * 500
+    )
+    assert len(h["content"]) < 400, len(h["content"])
+    assert "\u2026" in h["content"], h["content"]
+
+
+# ── CACAT (2): kata benda dokumen ──────────────────────────────────────
+
+def test_quote_menyebut_penawaran_bukan_faktur():
+    h = periksa_gerbang_entitas("create_quote", _jual(customer_id=""))
+    assert "penawaran ini" in h["content"], h["content"]
+    assert "faktur" not in h["content"].lower(), (
+        "penawaran disebut faktur - kata benda dokumen salah: %r" % h["content"]
+    )
+
+
+def test_si_menyebut_faktur_penjualan():
+    h = periksa_gerbang_entitas("create_sales_invoice", _jual(customer_id=""))
+    assert "faktur penjualan ini" in h["content"], h["content"]
+
+
+def test_so_menyebut_pesanan_penjualan():
+    h = periksa_gerbang_entitas("create_sales_order", _jual(customer_id=""))
+    assert "pesanan penjualan ini" in h["content"], h["content"]
+
+
+def test_kata_dokumen_diturunkan_dari_registry_bukan_konstanta():
+    """JANGAN hardcode: kata benda datang dari display_name registry.
+
+    Kalau seseorang menuliskannya sebagai konstanta di gerbang_entitas,
+    mengubah registry tidak akan mengubah kalimat - dan tes ini gagal.
+    """
+    from app.services.unified_agent import direct_action_registry as reg
+
+    asli = reg.DIRECT_ACTIONS["create_quote"].display_name
+    try:
+        reg.DIRECT_ACTIONS["create_quote"].display_name = "Buat Surat Sakti"
+        h = periksa_gerbang_entitas("create_quote", _jual(customer_id=""))
+        assert "surat sakti ini" in h["content"], h["content"]
+    finally:
+        reg.DIRECT_ACTIONS["create_quote"].display_name = asli
+    h2 = periksa_gerbang_entitas("create_quote", _jual(customer_id=""))
+    assert "penawaran ini" in h2["content"], h2["content"]
+
+
+def test_bill_kata_dokumen_dipin_bukan_diturunkan():
+    """create_bill SENGAJA menyimpang dari registry ("Buat Faktur Pembelian").
+
+    Kalimatnya SUDAH LIVE berbunyi "faktur ini"; menurunkannya akan mengubah
+    pesan produksi. Pin ini disengaja dan dijaga di sini + oleh tes byte-exact.
+    """
+    from app.services.unified_agent import direct_action_registry as reg
+
+    assert reg.DIRECT_ACTIONS["create_bill"].display_name == "Buat Faktur Pembelian"
+    assert PETA_AKSI["create_bill"].get("kata_dokumen") == "faktur", (
+        "kata dokumen create_bill tidak dipin -> pesan produksi bisa bergeser"
+    )
+    # Kontrol positif pin: ubah registry, kalimat bill WAJIB TIDAK bergerak.
+    asli = reg.DIRECT_ACTIONS["create_bill"].display_name
+    try:
+        reg.DIRECT_ACTIONS["create_bill"].display_name = "Buat Surat Sakti"
+        h = periksa_gerbang_entitas("create_bill", _bill(vendor_id=None))
+        assert h["content"].endswith("kirim ulang faktur ini."), h["content"]
+    finally:
+        reg.DIRECT_ACTIONS["create_bill"].display_name = asli
+
+
+def test_bill_pesan_byte_exact_tidak_berubah_sedikit_pun():
+    """PAGAR REGRESI: create_bill sudah di produksi. Byte-exact, dua kasus."""
+    h1 = periksa_gerbang_entitas("create_bill", _bill(vendor_id=None))
+    assert h1["content"] == (
+        "Knitto Textile belum terdaftar sebagai vendor. "
+        "Daftarkan dulu, lalu kirim ulang faktur ini."
+    ), h1["content"]
+
+    h2 = periksa_gerbang_entitas(
+        "create_bill",
+        _bill(vendor_id=None, items=[{"product_name": "Benang Jahit"}]),
+    )
+    assert h2["content"] == (
+        "Knitto Textile belum terdaftar sebagai vendor, dan "
+        "Benang Jahit belum ada di master barang. "
+        "Daftarkan dulu, lalu kirim ulang faktur ini."
+    ), h2["content"]
+
+
+def test_bill_teks_user_tidak_mengubah_pesan_bill_yang_bernama():
+    """teks_user adalah parameter BARU; ia tidak boleh menggeser jalur live."""
+    tanpa = periksa_gerbang_entitas("create_bill", _bill(vendor_id=None))
+    dengan = periksa_gerbang_entitas(
+        "create_bill", _bill(vendor_id=None), teks_user="beli kain dari Knitto"
+    )
+    assert tanpa["content"] == dengan["content"]
+
+
+# ── B2. lewat _execute_propose_direct sungguhan (kontrol positif peledak) ──
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action_key,kata",
+    [
+        ("create_quote", "penawaran ini"),
+        ("create_sales_invoice", "faktur penjualan ini"),
+        ("create_sales_order", "pesanan penjualan ini"),
+    ],
+)
+async def test_e2e_jual_kata_dokumen_benar_sebelum_db(monkeypatch, action_key, kata):
+    te, peledak = _executor_uji(monkeypatch)
+    hasil = await te._execute_propose_direct(
+        {"action_key": action_key, "payload": _jual(customer_id="create_new:Toko Melati")}
+    )
+    assert hasil.get("message_type") == "CLARIFICATION", hasil
+    assert kata in hasil.get("content", ""), hasil.get("content")
+    assert peledak.disentuh is False, "INSERT pending_actions tetap dijalankan"
+
+
+@pytest.mark.asyncio
+async def test_e2e_jual_nama_hilang_mengutip_user_text(monkeypatch):
+    """Membuktikan teks_user BENAR-BENAR sampai dari executor ke gerbang."""
+    te, peledak = _executor_uji(monkeypatch)
+    te.user_text = "buatkan penawaran 3 pcs untuk Toko Melati"
+    hasil = await te._execute_propose_direct(
+        {"action_key": "create_quote", "payload": _jual(items=[{"quantity": 3}])}
+    )
+    assert hasil.get("message_type") == "CLARIFICATION", hasil
+    assert "buatkan penawaran 3 pcs untuk Toko Melati" in hasil["content"], hasil
+    assert peledak.disentuh is False
+
+
+@pytest.mark.asyncio
+async def test_e2e_jual_lengkap_lolos_gerbang_dan_meledak(monkeypatch):
+    """KONTROL POSITIF: payload sah -> gerbang TIDAK menyala -> DB disentuh.
+
+    Tanpa ini, "tidak diblokir" bisa berarti "kode tak pernah dijalankan".
+    """
+    te, peledak = _executor_uji(monkeypatch)
+    try:
+        hasil = await te._execute_propose_direct(
+            {"action_key": "create_quote", "payload": _jual()}
+        )
+    except AssertionError as e:
+        assert "DB DISENTUH" in str(e)
+    else:
+        _bukan_gerbang(hasil)

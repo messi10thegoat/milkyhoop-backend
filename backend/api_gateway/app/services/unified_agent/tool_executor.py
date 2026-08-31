@@ -1761,7 +1761,12 @@ class ToolExecutor:
         # TERAKHIR mengisi id, tapi SEBELUM validate_payload, SEBELUM INSERT
         # pending_actions, dan SEBELUM kartu dibangun. Radius = create_bill
         # saja (lihat gerbang_entitas.AKSI_DIGERBANG).
-        _gerbang = periksa_gerbang_entitas(action_key, payload)
+        # teks_user diteruskan HANYA untuk dikutip balik saat nama baris
+        # sudah hilang dari payload sebelum gerbang membacanya. Tidak
+        # dipakai untuk memutuskan blokir — keputusan tetap dari payload.
+        _gerbang = periksa_gerbang_entitas(
+            action_key, payload, teks_user=getattr(self, "user_text", None)
+        )
         if _gerbang is not None:
             return _gerbang
 

@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 # `label_pihak` masuk ke kalimat user, jadi ia bagian dari kontrak pesan.
 PETA_AKSI: Dict[str, Dict[str, Any]] = {
     "create_bill": {
+        # kata_dokumen create_bill DIPIN, TIDAK diturunkan dari registry.
+        # display_name registry = "Buat Faktur Pembelian" -> "faktur pembelian",
+        # sedangkan kalimat yang SUDAH LIVE berbunyi "kirim ulang faktur ini".
+        # Seluruh argumen keamanan batch ini bertumpu pada create_bill tidak
+        # tergores, jadi kata ini dipin + dijaga tes byte-exact. Memperbaiki
+        # kata bill = tiket sendiri dengan probe produksinya sendiri.
+        "kata_dokumen": "faktur",
         "id_pihak": "vendor_id",
         "nama_pihak": "vendor_name",
         "label_pihak": "vendor",
@@ -57,6 +64,8 @@ PETA_AKSI: Dict[str, Dict[str, Any]] = {
         "nama_baris": ("product_name", "name", "item_name", "description"),
     },
     "create_quote": {
+        # None = DITURUNKAN dari display_name registry (_kata_dokumen).
+        "kata_dokumen": None,
         "id_pihak": "customer_id",
         "nama_pihak": "customer_name",
         "label_pihak": "pelanggan",
@@ -64,6 +73,8 @@ PETA_AKSI: Dict[str, Dict[str, Any]] = {
         "nama_baris": ("description", "item_name", "name", "product_name"),
     },
     "create_sales_invoice": {
+        # None = DITURUNKAN dari display_name registry (_kata_dokumen).
+        "kata_dokumen": None,
         "id_pihak": "customer_id",
         "nama_pihak": "customer_name",
         "label_pihak": "pelanggan",
@@ -71,6 +82,8 @@ PETA_AKSI: Dict[str, Dict[str, Any]] = {
         "nama_baris": ("description", "item_name", "name", "product_name"),
     },
     "create_sales_order": {
+        # None = DITURUNKAN dari display_name registry (_kata_dokumen).
+        "kata_dokumen": None,
         "id_pihak": "customer_id",
         "nama_pihak": "customer_name",
         "label_pihak": "pelanggan",
@@ -99,18 +112,73 @@ def _id_kosong(nilai: Any) -> bool:
     return t == "" or t.lower().startswith("create_new:")
 
 
-def _nama_baris(baris: Dict[str, Any], kunci: Any) -> str:
-    """Nama baris dibaca menurut urutan kunci milik AKSI ITU.
+# Nilai penanda yang DITULIS OLEH PENGAYAAN saat nama asli hilang, bukan nama
+# barang. Terukur di `tool_executor`: `item["description"] = item.get("name")
+# or "Item"` (ekor _enrich_quote / _enrich_sales_order) dan
+# `item["description"] = detail.get("name", "Item")` (_enrich_items). Cabang
+# BUG-item-slot malah menulis `description = None`. Jadi pada saat gerbang
+# membaca payload, nama baris bisa sudah hilang — bukan karena kunci yang
+# dibaca salah. Mencetaknya apa adanya melahirkan kalimat "Item, Item belum
+# ada di master barang" yang tak bisa ditindaklanjuti siapa pun.
+PENANDA_TANPA_MAKNA = frozenset({"item", "(tanpa nama)", "-", "n/a"})
+
+
+def _nama_baris(baris: Dict[str, Any], kunci: Any) -> Optional[str]:
+    """Nama baris menurut urutan kunci milik AKSI ITU, atau None.
 
     Bill menaruh nama di `product_name`; Quote/SO/SI di `description`.
     Urutannya berbeda per aksi supaya kunci yang paling mungkin benar dibaca
     lebih dulu — bukan karena kunci lain terlarang.
+
+    None berarti "nama tidak terbaca", BUKAN "baris tidak ada". Pemanggil
+    wajib mengatakannya kepada user, bukan mencetak penanda kosong makna.
     """
     for k in kunci:
         t = _teks(baris.get(k))
-        if t:
+        if t and t.lower() not in PENANDA_TANPA_MAKNA:
             return t
-    return "(tanpa nama)"
+    return None
+
+
+def _kata_dokumen(action_key: str, peta: Dict[str, Any]) -> str:
+    """Kata benda dokumen untuk kalimat user.
+
+    Diturunkan dari `display_name` registry (satu sumber), yang berbentuk
+    "Buat <Dokumen>" -> "<dokumen>". Bukan konstanta di berkas ini: kalau
+    registry berubah nama dokumen, kalimat ikut, tanpa ada yang perlu ingat.
+    `create_bill` DIPIN (lihat komentar di PETA_AKSI).
+    """
+    dipin = peta.get("kata_dokumen")
+    if dipin:
+        return dipin
+    try:
+        from .direct_action_registry import DIRECT_ACTIONS
+
+        dn = _teks(getattr(DIRECT_ACTIONS.get(action_key), "display_name", ""))
+    except Exception:  # registry tak bisa diimpor = pagar tetap harus bicara
+        dn = ""
+    if not dn:
+        # Bukan diam-diam: kalimat tetap benar secara umum, dan barisnya
+        # tercetak supaya penurunan yang putus bisa ditemukan.
+        logger.warning(
+            "[GERBANG_ENTITAS] display_name registry tak terbaca action=%s",
+            action_key,
+        )
+        return "dokumen"
+    for awalan in ("Buat ", "Catat ", "Ubah ", "Edit "):
+        if dn.startswith(awalan):
+            dn = dn[len(awalan):]
+            break
+    return dn.lower()
+
+
+def _kutipan(teks_user: Any, batas: int = 160) -> str:
+    t = _teks(teks_user)
+    if not t:
+        return ""
+    if len(t) > batas:
+        t = t[: batas - 1].rstrip() + "\u2026"
+    return t
 
 
 def _rangkai(nama: List[str]) -> str:
@@ -118,7 +186,9 @@ def _rangkai(nama: List[str]) -> str:
 
 
 def periksa_gerbang_entitas(
-    action_key: str, payload: Dict[str, Any]
+    action_key: str,
+    payload: Dict[str, Any],
+    teks_user: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Kembalikan dict CLARIFICATION bila kartu TIDAK boleh dibangun, else None.
 
@@ -135,13 +205,19 @@ def periksa_gerbang_entitas(
     pihak_hilang = bool(pihak_nama) and _id_kosong(payload.get(peta["id_pihak"]))
 
     baris = payload.get("items")
-    yatim: List[str] = []
+    yatim: List[str] = []          # baris yatim yang NAMANYA terbaca
+    yatim_tanpa_nama = 0           # baris yatim yang namanya sudah hilang
     if isinstance(baris, list):
         for b in baris:
             if isinstance(b, dict) and _id_kosong(b.get(peta["id_baris"])):
-                yatim.append(_nama_baris(b, peta["nama_baris"]))
+                nm = _nama_baris(b, peta["nama_baris"])
+                if nm is None:
+                    yatim_tanpa_nama += 1
+                else:
+                    yatim.append(nm)
 
-    if not pihak_hilang and not yatim:
+    ada_yatim = bool(yatim) or yatim_tanpa_nama > 0
+    if not pihak_hilang and not ada_yatim:
         return None
 
     # SATU situs log. Tanpa nama entitas, tanpa isi payload — T181_PUING
@@ -153,7 +229,7 @@ def periksa_gerbang_entitas(
         "[GERBANG_ENTITAS] action=%s pihak=%s item_yatim=%d",
         action_key,
         "kosong" if pihak_hilang else "ada",
-        len(yatim),
+        len(yatim) + yatim_tanpa_nama,
     )
 
     # DIFERENSIAL: tiap klausa hanya muncul kalau penyebabnya memang ada.
@@ -165,12 +241,29 @@ def periksa_gerbang_entitas(
         bagian.append(
             f"{pihak_nama} belum terdaftar sebagai {peta['label_pihak']}"
         )
-    if yatim:
+    if yatim and yatim_tanpa_nama:
+        bagian.append(
+            f"{_rangkai(yatim)} belum ada di master barang, dan "
+            f"{yatim_tanpa_nama} baris barang lain namanya tidak terbaca"
+        )
+    elif yatim:
         bagian.append(f"{_rangkai(yatim)} belum ada di master barang")
+    elif yatim_tanpa_nama:
+        # TIDAK mencetak "(tanpa nama)": itu memberi user kata yang tak bisa
+        # ia cari di mana pun. Yang jujur = katakan namanya tidak terbaca,
+        # lalu kutip apa yang ia tulis supaya ia tahu kalimat mana yang salah.
+        bagian.append(
+            f"{yatim_tanpa_nama} baris barang belum ada di master barang, "
+            "dan nama barangnya tidak terbaca"
+        )
+
     pesan = (
         ", dan ".join(bagian)
-        + ". Daftarkan dulu, lalu kirim ulang faktur ini."
+        + f". Daftarkan dulu, lalu kirim ulang {_kata_dokumen(action_key, peta)} ini."
     )
+    kutip = _kutipan(teks_user) if yatim_tanpa_nama else ""
+    if kutip:
+        pesan += f' Yang Anda tulis: "{kutip}".'
 
     # Bentuk amplop SENGAJA rangkap. `_execute_propose_direct` dipanggil dari
     # ~20 situs; masing-masing membaca kunci yang berbeda kalau hasilnya BUKAN
