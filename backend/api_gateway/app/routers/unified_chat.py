@@ -936,15 +936,28 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         # Tutorial step: preview contains TutorialStepData
         data = preview or {}
     elif message_type == "CLARIFICATION":
-        data = (
-            extra_data
-            if (
-                extra_data
-                and isinstance(extra_data, dict)
-                and extra_data.get("options")
-            )
-            else None
-        )
+        # T185. Syarat sebelumnya adalah `extra_data.get("options")` TRUTHY.
+        # `options: []` — daftar kosong yang sah, artinya "tak ada pil untuk
+        # ditekan, jawab dengan mengetik" — adalah FALSY, jadi amplop yang
+        # BENAR dipaksa jadi `data=None`. Untuk CLARIFICATION, FE tidak pernah
+        # menggambar `text`; ia hanya menggambar `actionData.data`, dan
+        # bubble-nya dibuka dengan `return t?(...):null`. Jadi baris ini,
+        # bukan FE dan bukan gerbang, yang mengubah kalimat sebab yang benar
+        # menjadi layar kosong.
+        #
+        # Syarat yang benar bukan "ada pilnya" melainkan "ada yang bisa
+        # digambar": sebuah `question`. `options` tetap diteruskan apa adanya
+        # (FE mengakses `.length` langsung) dan didefaultkan ke list kosong
+        # kalau tak ada, supaya tidak ada jalur yang mengirim None ke `.length`.
+        # Pil entitas (options berisi) melewati cabang yang sama, tak berubah.
+        if isinstance(extra_data, dict) and (
+            extra_data.get("options") or extra_data.get("question")
+        ):
+            data = dict(extra_data)
+            if not isinstance(data.get("options"), list):
+                data["options"] = []
+        else:
+            data = None
     elif message_type == "VALIDATION_ERROR" and errors:
         data = {"errors": errors}
 
