@@ -6826,7 +6826,17 @@ async def _confirm_direct_action(
         # kartu dibangun, jadi tiap barang lahir dari confirm-nya SENDIRI
         # dan punya entity_id sendiri. `items` bukan field CreateItemRequest
         # -> tetap dibuang dari body.
-        if isinstance(clean_payload, dict) and clean_payload.pop("items", None):
+        # T187: pagar `action_key`. Radius blok ini SELALU dimaksud hanya
+        # create_item (T171 memecah N barang jadi N slide skalar; `items`
+        # bukan field CreateItemRequest). Tanpa pagar, `request_body` yang
+        # merupakan ALIAS clean_payload kehilangan `items` untuk SEMUA aksi
+        # berjalur generik — terukur di produksi: POST /api/quotes -> 422
+        # {"loc":["body","items"],"msg":"Field required"}.
+        if (
+            action_key == "create_item"
+            and isinstance(clean_payload, dict)
+            and clean_payload.pop("items", None)
+        ):
             logger.warning(
                 "[T171_SISA_BULK] action_plan create_item MASIH membawa `items` "
                 "saat eksekusi -- pemecahan slide tidak terjadi (pending=%s)",
