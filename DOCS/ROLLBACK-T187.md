@@ -5,7 +5,7 @@ Basis: master 07a8ba92dfb7cdccb0fde8852c5980b62d06ce66
 
 ## Commit yang dibuat tiket ini
 (diisi setelah commit; lihat `git -C /root/mh-t187 log --oneline master..HEAD`)
-- <SHA1> pagar action_key pada blok T171_SISA_BULK + tes unit T187
+- 24b286cbf65aecdd2d1f69e8e7df7967f489dc08 pagar action_key pada blok T171_SISA_BULK + tes unit T187
 
 Tak satu pun commit ini di-merge ke master. Produksi TIDAK disentuh.
 
