@@ -165,6 +165,36 @@ async def issued_total_for_order(
     return float(row["total"] or 0)
 
 
+async def deposit_totals_for_order(conn, tenant_id: str, sales_order_id) -> dict:
+    """DITERIMA = TURUNAN. Dua angka, satu query, atribusi lewat sales_order_id
+    dan proforma_id — TIDAK PERNAH lewat tanggal.
+
+    received_total   = semua customer_deposits milik SO ini yang bukan 'void'.
+    unbilled_received = bagian dari itu yang TIDAK menunjuk proforma mana pun.
+      Angka ini sengaja tidak disembunyikan: uang yang masuk tanpa tagihan
+      adalah uang yang belum diatribusikan, dan user perlu melihatnya.
+
+    `void` dikecualikan karena depositnya sudah dibatalkan; 'applied' TETAP
+    dihitung karena uangnya benar-benar diterima, hanya sudah dipakai.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(amount), 0) AS received,
+               COALESCE(SUM(amount) FILTER (WHERE proforma_id IS NULL), 0) AS unbilled
+        FROM customer_deposits
+        WHERE tenant_id = $1
+          AND sales_order_id = $2
+          AND status <> 'void'
+        """,
+        tenant_id,
+        sales_order_id,
+    )
+    return {
+        "received_total": float(row["received"] or 0),
+        "unbilled_received": float(row["unbilled"] or 0),
+    }
+
+
 async def assert_within_order_total(
     conn, tenant_id: str, sales_order_id, order_total: float, amount: float, exclude_id=None
 ):
@@ -420,14 +450,22 @@ async def list_proformas_for_order(request: Request, order_id: str):
             ]
             issued_total = await issued_total_for_order(conn, ctx["tenant_id"], oid)
             order_total = _f(order["total_amount"]) or 0.0
+            # T201: agregat "diterima". Dihitung, tidak disimpan — tak satu pun
+            # kolom ringkasan ditambahkan ke tabel mana pun.
+            diterima = await deposit_totals_for_order(conn, ctx["tenant_id"], oid)
 
             return {
                 "items": items,
                 "total": len(items),
                 "has_more": False,
+                # `order_total_amount` dipertahankan (dipakai FE sejak T200);
+                # `order_total` adalah nama kanonik panel agregat.
                 "order_total_amount": order_total,
+                "order_total": order_total,
                 "issued_total": issued_total,
                 "billable_remaining": round(order_total - issued_total, 2),
+                "received_total": diterima["received_total"],
+                "unbilled_received": diterima["unbilled_received"],
             }
 
     except HTTPException:
