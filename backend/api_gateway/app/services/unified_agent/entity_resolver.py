@@ -16,6 +16,7 @@ bank_accounts.coa_id (BUKAN chart_of_account_id!).
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,6 +44,37 @@ _SQL_TETANGGA_DEKAT = """
        AND similarity(tk.w, $2::text) >= $3::real
      LIMIT 1
 """
+
+
+# T196 (A) — NORMALISASI TANDA BACA, HANYA untuk pencocokan EXACT dan untuk
+# saringan teks mentah (C). SENGAJA TIDAK dipakai untuk memperlebar query ILIKE:
+# normalisasi yang MEMPERLEBAR menaikkan risiko tabrakan; yang MENYEMPITKAN tidak.
+# Terukur: nol tabrakan normalisasi di seluruh milkydb (65 produk, 2 tenant).
+# POLA ditulis SEKALI dan dipakai di DUA sisi (Python `re` dan `regexp_replace`
+# Postgres). Kalau disalin, dua salinan akan menyimpang diam-diam dan Step 0
+# akan berhenti setara dengan _norm_cocok tanpa satu pun tes yang merah.
+_POLA_TANDA_BACA = r"[()\[\]\-+.,/_&:;]+"
+_POLA_SPASI = r"\s+"
+_RE_TANDA_BACA = re.compile(_POLA_TANDA_BACA)
+_RE_SPASI = re.compile(_POLA_SPASI)
+
+# T196 STEP 0 — kesamaan PENUH atas nama yang ternormalisasi, dihitung di DB
+# dengan pola yang SAMA PERSIS dengan _norm_cocok.
+_SQL_EXACT_TERNORMALISASI = f"""
+    SELECT id, nama_produk, sales_price_amount, purchase_price_amount, item_type
+      FROM products
+     WHERE tenant_id = $1
+       AND status = 'active' AND deleted_at IS NULL
+       AND regexp_replace(
+             regexp_replace(lower(nama_produk), '{_POLA_TANDA_BACA}', ' ', 'g'),
+             '{_POLA_SPASI}', ' ', 'g') = $2
+     LIMIT 2
+"""
+
+
+def _norm_cocok(t: str) -> str:
+    """Turunkan teks ke bentuk banding: tanda baca -> spasi, spasi rapat, huruf kecil."""
+    return _RE_SPASI.sub(" ", _RE_TANDA_BACA.sub(" ", (t or "").lower())).strip()
 
 
 def is_untrusted_id_field(key: str) -> bool:
@@ -162,7 +194,7 @@ class EntityResolver:
             and not intent.startswith("create_item")
             and intent != "create_expense"
         ):
-            resolve_tasks.append(self._resolve_item(entities["item_name"]))
+            resolve_tasks.append(self._resolve_item(entities["item_name"], user_text))
         if entities.get("bank_name") and not _skip_bank_resolve:
             resolve_tasks.append(self._resolve_bank_account(entities["bank_name"]))
         if entities.get("warehouse_name"):
@@ -1074,7 +1106,9 @@ class EntityResolver:
             logger.warning("[RESOLVE] Vendor lookup failed: %s", e)
             return None
 
-    async def _resolve_item(self, name_fragment: str) -> Optional[ResolvedEntity]:
+    async def _resolve_item(
+        self, name_fragment: str, user_text: str = ""
+    ) -> Optional[ResolvedEntity]:
         """products.nama_produk (Bahasa!) — with fuzzy fallback for typos."""
         # T144 FASE 2 — JEJAK WAJIB. Fungsi ini MENCARI barang yang SUDAH ADA.
         # Pada jalur bulk create_item ia tidak boleh terpanggil: ambang fuzzy
@@ -1090,11 +1124,65 @@ class EntityResolver:
         try:
             search_term = name_fragment.strip()
 
+            # ── Step 0 (T196): EXACT TERNORMALISASI, sebelum apa pun ────────
+            # KENAPA harus di sini dan bukan cukup di loop exact-match bawah:
+            # loop itu bekerja ATAS `candidates`, sedangkan baris yang benar
+            # sudah TERSINGKIR lebih dulu di lapisan ILIKE. Terukur pada
+            # fragment 'Kaos 20s + Sablon Plastisol (Size 3XL)': token '(Size'
+            # BERTAHAN (cocok 4 baris berkurung) sementara '3XL)' dibuang,
+            # sehingga satu-satunya baris yang benar -- 'Kaos 20s + Sablon
+            # Plastisol size 3XL', TANPA kurung -- disaring keluar sebelum
+            # `candidates` terbentuk, dan sistem mengikat DIAM-DIAM ke (Size
+            # 2XL) dengan confidence 0.9. Jadi normalisasi harus dapat
+            # kesempatan SEBELUM penyaringan itu terjadi.
+            #
+            # Ini BUKAN pelebaran pencarian: kesamaan PENUH, bukan substring,
+            # bukan fuzzy. Risikonya hanya dua nama master yang MELEBUR setelah
+            # normalisasi -- terukur NOL di seluruh milkydb. ⚠️ populasinya
+            # kecil (65 produk, 2 tenant), jadi angka itu BUKAN jaminan
+            # permanen; pagarnya adalah LIMIT 2 di bawah, bukan angka nol itu.
+            #
+            # LIMIT 2 disengaja: TEPAT 1 -> putuskan; 0 atau >= 2 -> JANGAN
+            # putuskan apa pun, lanjut ke Step 1 seperti biasa. Dengan begitu
+            # Step 0 hanya bisa MENAMBAH pengikatan benar, tak pernah mengurangi.
+            _s0_norm = _norm_cocok(name_fragment)
+            if _s0_norm:
+                _s0_rows = await self.db.fetch(
+                    _SQL_EXACT_TERNORMALISASI, self.tenant_id, _s0_norm
+                )
+                if len(_s0_rows) == 1:
+                    # T89: logger modul ini TIDAK punya handler .info -> .warning.
+                    logger.warning(
+                        "[RESOLVE][T196] Step 0 exact ternormalisasi: %r -> %r "
+                        "(1 baris, diikat confidence 1.0)",
+                        name_fragment,
+                        _s0_rows[0]["nama_produk"],
+                    )
+                    return ResolvedEntity(
+                        entity_type="item",
+                        entity_id=str(_s0_rows[0]["id"]),
+                        entity_name=_s0_rows[0]["nama_produk"],
+                        confidence=1.0,
+                        candidates=[
+                            {
+                                "id": str(_s0_rows[0]["id"]),
+                                "name": _s0_rows[0]["nama_produk"],
+                            }
+                        ],
+                        low_trust=False,
+                    )
+                if len(_s0_rows) >= 2:
+                    logger.warning(
+                        "[RESOLVE][T196] Step 0 TIDAK memutuskan: %r cocok >= 2 "
+                        "baris ternormalisasi -- lanjut ke Step 1",
+                        name_fragment,
+                    )
+
             # Step 1: Exact ILIKE match (full name)
             rows = await self.db.fetch(
                 """SELECT id, nama_produk, sales_price_amount, purchase_price_amount, item_type
                    FROM products
-                   WHERE tenant_id = $1 AND status = 'active'
+                   WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL
                      AND (nama_produk ILIKE $2 OR item_code ILIKE $2 OR sku ILIKE $2)
                    ORDER BY nama_produk LIMIT 5""",
                 self.tenant_id,
@@ -1146,7 +1234,7 @@ class EntityResolver:
                         f"""SELECT id, nama_produk, sales_price_amount,
                                    purchase_price_amount, item_type
                             FROM products
-                            WHERE tenant_id = $1 AND status = 'active'
+                            WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL
                               AND {_kondisi}
                             ORDER BY nama_produk LIMIT 5""",
                         self.tenant_id,
@@ -1170,7 +1258,7 @@ class EntityResolver:
                                        purchase_price_amount, item_type,
                                        ({_ekspr}) AS cakupan
                                 FROM products
-                                WHERE tenant_id = $1 AND status = 'active'
+                                WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL
                             ) AS c
                             WHERE cakupan >= {min_cakupan}
                             ORDER BY cakupan DESC, nama_produk
@@ -1192,7 +1280,7 @@ class EntityResolver:
                     for _t in _tokens:
                         _cek = await self.db.fetch(
                             """SELECT 1 FROM products
-                               WHERE tenant_id = $1 AND status = 'active'
+                               WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL
                                  AND (nama_produk ILIKE $2 OR item_code ILIKE $2
                                       OR sku ILIKE $2) LIMIT 1""",
                             self.tenant_id,
@@ -1396,7 +1484,7 @@ class EntityResolver:
                     """SELECT id, nama_produk, sales_price_amount, purchase_price_amount, item_type,
                               similarity(nama_produk, $2) AS sim
                        FROM products
-                       WHERE tenant_id = $1 AND status = 'active'
+                       WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL
                          AND similarity(nama_produk, $2) > 0.5
                        ORDER BY sim DESC LIMIT 5""",
                     self.tenant_id,
@@ -1411,6 +1499,34 @@ class EntityResolver:
                     entity_name=name_fragment,
                     confidence=0.0,
                 )
+            # T196 (C) — SARINGAN TEKS MENTAH. Nama MASTER dicari DI DALAM teks
+            # user (bukan sebaliknya): itu yang membuat "Bunaken Oasis",
+            # "tanggal", "19 pcs" tak mengganggu. Syarat `== 1` MUTLAK —
+            # terukur: teks 5 baris memuat 5 nama master, saringan mengembalikan
+            # 5, bukan 1. Saringan hanya boleh MENAMBAH pengikatan benar,
+            # tak pernah mengurangi.
+            if len(rows) > 1 and user_text:
+                _ltxt = _norm_cocok(user_text)
+                _tersebut = [
+                    r for r in rows if _norm_cocok(r["nama_produk"]) in _ltxt
+                ]
+                if len(_tersebut) == 1:
+                    # T89: logger modul ini TIDAK punya handler .info -> .warning.
+                    logger.warning(
+                        "[RESOLVE][T196] %d kandidat menyempit jadi 1 lewat teks "
+                        "mentah: %r disebut utuh oleh user",
+                        len(rows),
+                        _tersebut[0]["nama_produk"],
+                    )
+                    rows = _tersebut
+                    _low_trust = False
+                else:
+                    logger.warning(
+                        "[RESOLVE][T196] saringan teks mentah TIDAK menyempitkan: "
+                        "%d kandidat, %d disebut utuh -- rows dipertahankan apa adanya",
+                        len(rows),
+                        len(_tersebut),
+                    )
             candidates = [{"id": str(r["id"]), "name": r["nama_produk"]} for r in rows]
             best = candidates[0]
             # FIX_AQUA_FUZZY_TIGHTEN 2026-05-19: decouple confidence from candidate count
@@ -1429,7 +1545,7 @@ class EntityResolver:
             else:
                 confidence = 0.9
             for c in candidates:
-                if c["name"].lower().strip() == name_fragment.lower().strip():
+                if _norm_cocok(c["name"]) == _norm_cocok(name_fragment):
                     best = c
                     confidence = 1.0
                     break
