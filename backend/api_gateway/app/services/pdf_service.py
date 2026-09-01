@@ -272,6 +272,58 @@ class PDFService:
 
         return pdf_bytes
 
+    PROFORMA_PURPOSE_LABELS = {
+        "DP": "Uang Muka (DP)",
+        "TERMIN": "Pembayaran Termin",
+        "PELUNASAN": "Pelunasan",
+    }
+
+    def generate_proforma_pdf(self, proforma_data, tenant_info):
+        """
+        Generate PDF for a proforma (tagihan uang muka atas Sales Order).
+
+        NON-POSTING document: this is a payment request, NOT a tax invoice.
+
+        Args:
+            proforma_data: Proforma dict (nomor, tanggal, SO ref, purpose, amount, rekening).
+            tenant_info: Tenant info dict with name, address, phone, email, logo_data.
+
+        Returns:
+            PDF content as bytes
+        """
+        template = self.jinja_env.get_template("proforma.html")
+
+        purpose = proforma_data.get("purpose") or "DP"
+        purpose_label = self.PROFORMA_PURPOSE_LABELS.get(purpose, purpose)
+
+        status = proforma_data.get("status", "draft")
+        status_label = self.STATUS_LABELS.get(status, str(status).upper())
+
+        company = {
+            "name": tenant_info.get("name"),
+            "address": tenant_info.get("address"),
+            "phone": tenant_info.get("phone"),
+            "email": tenant_info.get("email"),
+            "logo_base64": tenant_info.get("logo_data"),
+        }
+
+        html_content = template.render(
+            proforma=proforma_data,
+            company=company,
+            purpose_label=purpose_label,
+            status_label=status_label,
+            generated_at=datetime.now(),
+        )
+
+        css_path = TEMPLATE_DIR / "invoice.css"
+        stylesheets = []
+        if css_path.exists():
+            stylesheets.append(CSS(filename=str(css_path)))
+
+        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+
+        return pdf_bytes
+
     def generate_income_statement_pdf(
         self, data: dict, company_name: str, basis: str = "Akrual"
     ) -> bytes:

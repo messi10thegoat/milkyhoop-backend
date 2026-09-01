@@ -48,6 +48,11 @@ class CreateCustomerDepositRequest(BaseModel):
     sales_order_id: Optional[str] = Field(
         None, description="Sales Order UUID this DP was taken against (SO stage)"
     )
+    # T200: atribusi pembayaran ke PROFORMA. Lewat id, BUKAN tanggal —
+    # tanggal pecah pada cicilan / dua proforma di hari yang sama.
+    proforma_id: Optional[str] = Field(
+        None, description="Proforma UUID this DP settles (tagihan uang muka)"
+    )
     idempotency_key: Optional[str] = Field(
         None,
         max_length=255,

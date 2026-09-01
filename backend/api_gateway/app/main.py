@@ -58,6 +58,7 @@ from .routers import receive_payments
 from .routers import purchase_orders
 from .routers import price_lists
 from .routers import quotes
+from .routers import proformas
 from .routers import sales_orders
 from .routers import currencies
 from .routers import bank_reconciliation
@@ -561,6 +562,10 @@ app.include_router(
 
 # Quotes router (Penawaran Harga)
 app.include_router(quotes.router, prefix="/api/quotes", tags=["quotes"])
+app.include_router(proformas.router, prefix="/api/proformas", tags=["proformas"])
+app.include_router(
+    proformas.so_router, prefix="/api/sales-orders", tags=["proformas"]
+)
 
 # Sales Orders router (Pesanan Penjualan)
 app.include_router(

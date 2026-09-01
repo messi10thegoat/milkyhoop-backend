@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Proforma {{ proforma.proforma_number or '-' }}</title></head>
+<body>
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Tagihan Uang Muka</h1>
+            <div class="doc-subtitle">Faktur Proforma &mdash; bukan faktur pajak</div>
+        </div>
+        {% if company and company.logo_base64 %}
+        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
+
+    <!-- 2. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">Nomor Proforma</td>
+                <td class="meta-value">{{ proforma.proforma_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ proforma.proforma_date | date_id }}</td>
+            </tr>
+            {% if proforma.due_date %}
+            <tr>
+                <td class="meta-label">Jatuh Tempo</td>
+                <td class="meta-value">{{ proforma.due_date | date_id }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="meta-label">Sales Order</td>
+                <td class="meta-value">{{ proforma.sales_order_number or '-' }}</td>
+            </tr>
+            {% if proforma.sales_order_date %}
+            <tr>
+                <td class="meta-label">Tanggal SO</td>
+                <td class="meta-value">{{ proforma.sales_order_date | date_id }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="meta-label">Tujuan Tagihan</td>
+                <td class="meta-value">{{ purpose_label }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- 3. Parties -->
+    <div class="parties">
+        {% if company %}
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
+            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+            {% if company.email %}<div class="party-detail">{{ company.email }}</div>{% endif %}
+        </div>
+        {% endif %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ proforma.customer_name or '-' }}</div>
+        </div>
+    </div>
+
+    <!-- 4. Hero Amount -->
+    <div class="hero">
+        <div class="hero-amount">Rp {{ proforma.amount | currency }}</div>
+        {% if proforma.due_date %}
+        <div class="hero-due">Mohon dibayar sebelum {{ proforma.due_date | date_id }}</div>
+        {% endif %}
+    </div>
+
+    <div style="height: 28px;"></div>
+
+    <!-- 5. Rincian tagihan -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Keterangan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="col-desc">
+                    {{ purpose_label }} atas Sales Order {{ proforma.sales_order_number or '-' }}
+                    {% if proforma.percent_of_order %}
+                    <br><span class="text-muted">{{ proforma.percent_of_order | round(2) }}% dari nilai pesanan</span>
+                    {% endif %}
+                </td>
+                <td class="col-amount">Rp {{ proforma.amount | currency }}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- 6. Ringkasan -->
+    <div class="summary">
+        <table class="summary-table">
+            {% if proforma.order_total_amount %}
+            <tr>
+                <td class="label">Nilai Sales Order</td>
+                <td class="value">Rp {{ proforma.order_total_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="label">Yang ditagih</td>
+                <td class="value">Rp {{ proforma.amount | currency }}</td>
+            </tr>
+            {% if proforma.paid_amount and proforma.paid_amount|float > 0 %}
+            <tr>
+                <td class="label">Sudah diterima</td>
+                <td class="value">-Rp {{ proforma.paid_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label">Sisa yang harus dibayar</td>
+                <td class="value">Rp {{ proforma.outstanding_amount | currency }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- Rekening Pembayaran -->
+    {% if proforma.payment_bank_name or proforma.payment_account_number %}
+    <div class="notes-section">
+        <div class="notes-label">Rekening Pembayaran</div>
+        <div class="notes-text">
+            {% if proforma.payment_bank_name %}{{ proforma.payment_bank_name }}<br>{% endif %}
+            {% if proforma.payment_account_number %}{{ proforma.payment_account_number }}<br>{% endif %}
+            {% if proforma.payment_account_holder %}a.n. {{ proforma.payment_account_holder }}{% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if proforma.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ proforma.notes }}</div>
+    </div>
+    {% endif %}
+
+    {% if proforma.terms %}
+    <div class="notes-section">
+        <div class="notes-label">Syarat &amp; Ketentuan</div>
+        <div class="notes-text">{{ proforma.terms }}</div>
+    </div>
+    {% endif %}
+
+    <div class="notes-section">
+        <div class="notes-text">
+            Dokumen ini adalah tagihan uang muka (proforma) dan BUKAN faktur pajak.
+            Faktur pajak diterbitkan terpisah sesuai ketentuan yang berlaku.
+        </div>
+    </div>
+
+    <!-- 7. Footer -->
+    <div class="footer-line">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
+</body>
+</html>
