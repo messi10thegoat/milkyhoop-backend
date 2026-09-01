@@ -732,6 +732,34 @@ def _amankan_nomor_dokumen(payload: dict, action_key: str) -> None:
     dokumen — ia disimpan ke ref_no. Salah menebak jadi murah karena taruhannya
     bukan lagi identitas dokumen.
     """
+    # T197: create_quote. quote_number BUKAN FieldSpec create_quote — ia
+    # `entity_name_field`, jadi tak ada satu pun label yang memintanya, namun
+    # model tetap mengisinya, dan yang mendarat di sana adalah PROSA MENTAH
+    # seluruh kalimat user ("dp 60 persen untuk bunaken oasis\n1. kaos 20s...").
+    #
+    # Hari ini kolom di DB tidak ikut tercemar: routers/quotes.py:518 SELALU
+    # memanggil generate_quote_number() dan QuoteCreate tak punya field
+    # quote_number (Pydantic membuang yang tak dikenal). Yang tercemar adalah
+    # LAPISAN TAMPILAN — get_entity_name(payload) membaca persis kunci ini,
+    # sehingga kalimat user muncul sebagai nama dokumen di kartu.
+    #
+    # Nomor dokumen milik generator, bukan milik model. Nilai dibuang di sini,
+    # SATU titik yang dilewati kedua jalur propose (langsung dan re-propose
+    # setelah pil entitas), supaya tak ada yang mewariskannya ke hilir —
+    # termasuk bila kelak ada yang menambahkan quote_number ke QuoteCreate,
+    # perubahan yang tampak rapi dan akan membangunkan bug ini seketika.
+    # Tidak ada penyelamatan ke ref_no: penawaran tidak punya nomor rujukan
+    # eksternal, dan nomor penawaran vendor bukan konsep yang ada.
+    if action_key == "create_quote":
+        _qn = payload.pop("quote_number", None)
+        if _qn is not None:
+            logger.info(
+                "[FIX_NOMOR_DOKUMEN] quote_number dari payload dibuang "
+                "(nomor lahir di generate_quote_number): %r",
+                str(_qn)[:60],
+            )
+        return
+
     if action_key not in ("create_bill", "create_purchase_invoice"):
         return
 

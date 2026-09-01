@@ -2968,6 +2968,53 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 hidden=True,
             ),
             FieldSpec(name="notes", label="Catatan"),
+            # T197: DP (uang muka) penawaran. Sebelum ini create_quote punya
+            # NOL field DP walaupun tabel `quotes`, skema QuoteCreate, endpoint
+            # POST /api/quotes (resolve_dp), form FE, dan template PDF
+            # (quote.html blok "Jadwal Pembayaran") SEMUANYA sudah mendukung
+            # dp_amount/dp_percent. Akibatnya "DP 60 persen" mendarat di
+            # `notes` — satu-satunya laci yang tersisa bagi model — lalu
+            # hilang sebagai NILAI: tak tersimpan ke kolom, tak muncul di PDF.
+            #
+            # Tidak ada whitelist di jalur konfirmasi (unified_chat.py hanya
+            # membuang field display_only), jadi begitu kedua nama ini hidup di
+            # payload mereka ikut apa adanya ke body POST /api/quotes.
+            #
+            # field_type: dp_percent = "percent" (bukan "number") supaya kartu
+            # mencetak "60%", bukan "Rp 60" — build_review_card_payload
+            # memformat "number" sebagai Rupiah. Keduanya sama-sama
+            # dideklarasikan ke model sebagai ["number","null"]
+            # (build_intent_schema), jadi ekstraksi tidak berubah bentuk.
+            FieldSpec(
+                name="dp_percent",
+                label="DP (%)",
+                field_type="percent",
+                # JANGAN menambahkan alias telanjang "dp" di sini. "dp" secara
+                # alami ambigu: "DP 60" berarti persen, "DP 5 juta" berarti
+                # nominal. Alias telanjang memaksa keduanya masuk ke dp_percent,
+                # sehingga "DP 5 juta" jadi dp_percent=5000000 -> 422 dari
+                # POST /api/quotes. Deskripsi kedua field sudah mengarahkan
+                # model memilih dp_percent vs dp_amount dengan benar.
+                aliases=["uang_muka_persen", "down_payment_percent"],
+                description=(
+                    "Uang muka dalam PERSEN. Isi HANYA bila user menyebut "
+                    "persentase, mis. \"DP 60 persen\" -> 60. JANGAN mengisi "
+                    "dp_percent dan dp_amount sekaligus. JANGAN menaruh "
+                    "informasi DP di `notes`."
+                ),
+            ),
+            FieldSpec(
+                name="dp_amount",
+                label="DP (Rp)",
+                field_type="number",
+                aliases=["uang_muka", "dp_nominal", "down_payment"],
+                description=(
+                    "Uang muka dalam RUPIAH. Isi HANYA bila user menyebut "
+                    "nominal, mis. \"DP 5 juta\" -> 5000000. JANGAN mengisi "
+                    "dp_amount dan dp_percent sekaligus. JANGAN menaruh "
+                    "informasi DP di `notes`."
+                ),
+            ),
         ],
     ),
     # ═══════════════ BATCH 3: Bank Transfer Actions ═══════════════
