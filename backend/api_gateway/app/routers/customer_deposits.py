@@ -974,7 +974,8 @@ async def update_customer_deposit(
                 # Check status
                 dep = await conn.fetchrow(
                     """
-                    SELECT id, status FROM customer_deposits
+                    SELECT id, status, sales_order_id, proforma_id
+                    FROM customer_deposits
                     WHERE id = $1 AND tenant_id = $2
                 """,
                     deposit_id,
@@ -1022,6 +1023,30 @@ async def update_customer_deposit(
                             status_code=400,
                             detail="Payment account must be an asset account",
                         )
+
+                # T204 2026-09-01: PAGAR PLAFON UANG MUKA — JALUR PATCH.
+                # T203 memasang pagar di POST saja; PATCH menerima `amount` baru
+                # sehingga plafon bisa dilewati dengan membuat DP kecil lalu
+                # menaikkan nilainya selagi draft. Pagar yang bisa dilewati lewat
+                # pintu sebelah bukan pagar. `exclude_id` WAJIB: deposit yang
+                # sedang diedit tidak boleh menghitung dirinya sendiri.
+                # sales_order_id/proforma_id TIDAK dapat diubah lewat PATCH
+                # (tidak ada di UpdateCustomerDepositRequest), jadi SO acuan =
+                # SO deposit itu sendiri.
+                if "amount" in update_data and update_data["amount"] is not None:
+                    _guard_order_id = await resolve_order_id_for_deposit(
+                        conn,
+                        ctx["tenant_id"],
+                        dep["sales_order_id"],
+                        dep["proforma_id"],
+                    )
+                    await assert_deposit_within_order_total(
+                        conn,
+                        ctx["tenant_id"],
+                        _guard_order_id,
+                        update_data["amount"],
+                        exclude_id=deposit_id,
+                    )
 
                 # Build update query
                 updates = []
