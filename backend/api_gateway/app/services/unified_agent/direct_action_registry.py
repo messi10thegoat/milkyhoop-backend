@@ -2187,11 +2187,87 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 label="Item",
                 field_type="json",
                 required=False,
+                # T205 (kelas T182): sebelum ini `items` TIDAK punya
+                # item_schema, jadi build_intent_schema jatuh ke cabang else
+                # dan mendeklarasikannya ke model sebagai ["string","null"].
+                # Terukur di produksi: [EXTRACT_S2] n_items=-3 tipe=str, lalu
+                # [T144_BULK] items string gagal di-parse dengan head berisi
+                # DAFTAR NAMA DATAR ("A, B") — harga per baris HILANG total,
+                # `items` di-pop, jalur skalar kehabisan harga, dan bot
+                # balik bertanya harga padahal user sudah menyebutnya.
+                # create_bill/create_sales_invoice/create_sales_order/
+                # create_quote sudah diperbaiki lebih dulu; create_item
+                # satu-satunya yang tertinggal.
+                #
+                # Nama kunci per-baris DIVERIFIKASI dari hilir, bukan dikarang:
+                # T144_FIELD_BARIS = ("nama_produk","item_type","base_unit",
+                # "sales_price","purchase_price"), t144_baris_bisa_dibuat,
+                # t171_baris_ke_payload, dan pengangkatan top-level di
+                # orchestrator._t144_normalisasi_items membaca kunci yang
+                # SAMA PERSIS. `nama_produk`, BUKAN `name` (lihat catatan
+                # T144 FASE 2 di bawah).
+                item_schema={
+                    "type": "object",
+                    "properties": {
+                        "nama_produk": {
+                            "type": "string",
+                            "description": (
+                                "Nama barang/jasa. WAJIB nama barang, "
+                                "BUKAN nama kategori atau nama vendor."
+                            ),
+                        },
+                        "sales_price": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "Harga JUAL baris ini dalam Rupiah, angka "
+                                "polos tanpa titik/Rp. WAJIB diisi bila user "
+                                "menyebut harga jual untuk barang ini."
+                            ),
+                        },
+                        "purchase_price": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "Harga BELI baris ini dalam Rupiah, angka "
+                                "polos tanpa titik/Rp. WAJIB diisi bila user "
+                                "menyebut harga beli untuk barang ini."
+                            ),
+                        },
+                        "item_type": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "persediaan | jasa | non-persediaan. "
+                                "Kosongkan bila user tak menyebut."
+                            ),
+                        },
+                        "base_unit": {
+                            "type": ["string", "null"],
+                            "description": "Satuan, contoh: pcs, meter, kg",
+                        },
+                        "sku": {
+                            "type": ["string", "null"],
+                            "description": "Kode/SKU bila user sebut",
+                        },
+                        "kategori": {
+                            "type": ["string", "null"],
+                            "description": "Kategori barang bila user sebut",
+                        },
+                        "description": {
+                            "type": ["string", "null"],
+                            "description": "Deskripsi bebas bila user sebut",
+                        },
+                    },
+                    "required": ["nama_produk"],
+                },
                 description=(
                     "Barang bila user menyebut LEBIH DARI SATU barang dalam "
-                    "satu pesan. Tiap barang dapat berisi: nama_produk, "
-                    "item_type, base_unit, sales_price, purchase_price, sku, "
-                    "kategori, description. Kosongkan bila user hanya "
+                    "satu pesan. WAJIB berupa ARRAY OBJEK, satu objek per "
+                    "barang — BUKAN daftar nama dalam satu string. Tiap "
+                    "objek dapat berisi: nama_produk, item_type, base_unit, "
+                    "sales_price, purchase_price, sku, kategori, description. "
+                    "Harga yang disebut user untuk sebuah barang WAJIB ikut "
+                    "di objek barang ITU (sales_price untuk harga jual, "
+                    "purchase_price untuk harga beli); jangan pernah "
+                    "membuang harga per baris. Kosongkan bila user hanya "
                     "menyebut satu barang."
                 ),
             ),
