@@ -151,6 +151,13 @@ class UpdateSalesOrderRequest(BaseModel):
     discount_amount: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = None
     internal_notes: Optional[str] = None
+    # T199: syarat DP dapat diubah di SO draft (butir 2.3).
+    dp_percent: Optional[Decimal] = None
+    dp_amount: Optional[Decimal] = None
+    payment_terms: Optional[str] = None
+    payment_bank_name: Optional[str] = None
+    payment_account_number: Optional[str] = None
+    payment_account_holder: Optional[str] = None
     items: Optional[List[SalesOrderItemUpdate]] = None
 
 
@@ -228,6 +235,17 @@ class SalesOrderDetail(BaseModel):
     invoiced_qty: float = 0
     notes: Optional[str] = None
     internal_notes: Optional[str] = None
+    # T199: syarat DP dibawa dari Penawaran (V224). Aditif + opsional:
+    # SO lama tanpa DP tetap valid dengan seluruh field ini None.
+    # WAJIB float, BUKAN Decimal: pydantic v2 menyerialkan Decimal sebagai
+    # STRING ("60.00", bahkan "3E+4") -> matematika di FE rusak.
+    # Aturan repo: REQUEST boleh Decimal, RESPONSE tetap float.
+    dp_percent: Optional[float] = None
+    dp_amount: Optional[float] = None
+    payment_terms: Optional[str] = None
+    payment_bank_name: Optional[str] = None
+    payment_account_number: Optional[str] = None
+    payment_account_holder: Optional[str] = None
     items: List[SalesOrderItemResponse] = []
     shipments: List[ShipmentDetail] = []
     invoices: List[Dict[str, Any]] = []  # List of related invoices

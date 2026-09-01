@@ -1513,18 +1513,35 @@ async def convert_to_sales_order(
                 tax_total = sum(item["tax_amount"] for item in items)
                 total = subtotal + tax_total
 
+                # T199 (2026-09-01): syarat DP terbawa dari Penawaran ke Sales Order.
+                # SEBELUMNYA keenam kolom DP quote (dp_percent, dp_amount, terms,
+                # payment_bank_name, payment_account_number, payment_account_holder)
+                # LENYAP tanpa peringatan saat konversi -- Proforma (Tahap 3) tidak
+                # punya sumber untuk tahu berapa yang ditagih.
+                # `notes` adalah bagian dari PERBAIKAN YANG SAMA: kolomnya sudah ADA
+                # di sales_orders sejak awal, tapi tidak pernah disalin.
+                # Pemetaan nama: quotes.terms -> sales_orders.payment_terms (V224).
+                # Tetap TIDAK menjurnal: konversi quote->SO nol journal_entries.
                 await conn.execute(
                     """
                     INSERT INTO sales_orders (
                         id, tenant_id, order_number, order_date, expected_ship_date,
                         customer_id, customer_name,
                         subtotal, tax_amount, total_amount,
-                        status, quote_id, created_by
+                        status, quote_id, created_by,
+                        notes,
+                        dp_percent, dp_amount, payment_terms,
+                        payment_bank_name, payment_account_number,
+                        payment_account_holder
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7,
                         $8, $9, $10,
-                        'draft', $11, $12
+                        'draft', $11, $12,
+                        $13,
+                        $14, $15, $16,
+                        $17, $18,
+                        $19
                     )
                 """,
                     so_id,
@@ -1539,6 +1556,13 @@ async def convert_to_sales_order(
                     total,
                     uuid_module.UUID(quote_id),
                     ctx["user_id"],
+                    quote["notes"],
+                    quote["dp_percent"],
+                    quote["dp_amount"],
+                    quote["terms"],
+                    quote["payment_bank_name"],
+                    quote["payment_account_number"],
+                    quote["payment_account_holder"],
                 )
 
                 # Copy items to sales_order_items
