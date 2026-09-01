@@ -464,6 +464,13 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     invoiced_qty=float(order["invoiced_qty"] or 0),
                     notes=order["notes"],
                     internal_notes=order["internal_notes"],
+                    # T199: syarat DP yang dibawa dari Penawaran (V224).
+                    dp_percent=order["dp_percent"],
+                    dp_amount=order["dp_amount"],
+                    payment_terms=order["payment_terms"],
+                    payment_bank_name=order["payment_bank_name"],
+                    payment_account_number=order["payment_account_number"],
+                    payment_account_holder=order["payment_account_holder"],
                     items=[
                         SalesOrderItemResponse(
                             id=str(item["id"]),
@@ -690,6 +697,13 @@ async def update_sales_order(
                     "discount_amount": body.discount_amount,
                     "notes": body.notes,
                     "internal_notes": body.internal_notes,
+                    # T199: syarat DP boleh diubah selama SO masih draft.
+                    "dp_percent": body.dp_percent,
+                    "dp_amount": body.dp_amount,
+                    "payment_terms": body.payment_terms,
+                    "payment_bank_name": body.payment_bank_name,
+                    "payment_account_number": body.payment_account_number,
+                    "payment_account_holder": body.payment_account_holder,
                 }
 
                 for field, value in update_fields.items():
