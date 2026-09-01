@@ -1015,112 +1015,44 @@ async def close_sales_order(request: Request, order_id: str):
 
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
 async def create_shipment(request: Request, order_id: str, body: CreateShipmentRequest):
-    """Create a shipment for the order."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
+    """DINONAKTIFKAN — keputusan K2 (rencana Proforma, butir 3.4.5).
 
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                order = await conn.fetchrow(
-                    """
-                    SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
-                """,
-                    uuid_module.UUID(order_id),
-                    ctx["tenant_id"],
-                )
+    Jalur penyerahan barang di MilkyHoop adalah JALUR TUNGGAL:
+    `invoice_fulfillments` (buat/pakai faktur penjualan, lalu catat penyerahan
+    lewat POST /api/sales-invoices/{invoice_id}/fulfill). Jalur itulah yang
+    mengakui penyerahan, pendapatan, DAN HPP dengan jurnal seimbang.
 
-                if not order:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
+    Jalur Sales Order (`sales_order_shipments`) TIDAK PERNAH dieksekusi di
+    produksi (0 baris) dan TIDAK menjurnal apa pun — stok keluar tanpa HPP,
+    pendapatan tak diakui. Dua jalur penyerahan yang hidup berdampingan =
+    pembukuan bercabang; sistem ini sudah punya dua presedennya (dua sumber
+    navigasi, dua sumber status PKP).
 
-                if order["status"] not in ("confirmed", "partial_shipped"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot ship order with status '{order['status']}'",
-                    )
+    Endpoint SENGAJA TIDAK DIHAPUS: pemanggil lama harus menerima pesan yang
+    menunjuk jalur pengganti, bukan 404 yang membingungkan.
 
-                # Validate quantities
-                for item in body.items:
-                    soi = await conn.fetchrow(
-                        """
-                        SELECT quantity, quantity_shipped FROM sales_order_items WHERE id = $1 AND sales_order_id = $2
-                    """,
-                        uuid_module.UUID(item.sales_order_item_id),
-                        uuid_module.UUID(order_id),
-                    )
+    HTTP 409 Conflict dipilih (bukan 400/410/501): permintaannya sendiri sah
+    dan terbentuk benar, yang bertabrakan adalah ATURAN BISNIS — hanya boleh
+    ada satu jalur penyerahan. 410 Gone salah karena endpoint masih ada dan
+    ada penggantinya; 501 salah karena fitur ini pernah diimplementasikan,
+    bukan belum dibuat; 400 salah karena tak ada yang keliru pada payload.
 
-                    if not soi:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Item {item.sales_order_item_id} not found",
-                        )
-
-                    remaining = float(soi["quantity"]) - float(soi["quantity_shipped"])
-                    if item.quantity_shipped > remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Quantity {item.quantity_shipped} exceeds remaining {remaining}",
-                        )
-
-                shipment_number = await conn.fetchval(
-                    "SELECT generate_shipment_number($1, 'SHP')", ctx["tenant_id"]
-                )
-
-                shipment_id = uuid_module.uuid4()
-                shipment_date = body.shipment_date or date.today()
-
-                await conn.execute(
-                    """
-                    INSERT INTO sales_order_shipments (
-                        id, tenant_id, sales_order_id, shipment_number, shipment_date,
-                        carrier, tracking_number, status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
-                """,
-                    shipment_id,
-                    ctx["tenant_id"],
-                    uuid_module.UUID(order_id),
-                    shipment_number,
-                    shipment_date,
-                    body.carrier,
-                    body.tracking_number,
-                    ctx["user_id"],
-                )
-
-                for item in body.items:
-                    await conn.execute(
-                        """
-                        INSERT INTO sales_order_shipment_items (id, shipment_id, sales_order_item_id, quantity_shipped)
-                        VALUES ($1, $2, $3, $4)
-                    """,
-                        uuid_module.uuid4(),
-                        shipment_id,
-                        uuid_module.UUID(item.sales_order_item_id),
-                        item.quantity_shipped,
-                    )
-
-                    await conn.execute(
-                        """
-                        UPDATE sales_order_items SET quantity_shipped = quantity_shipped + $2
-                        WHERE id = $1
-                    """,
-                        uuid_module.UUID(item.sales_order_item_id),
-                        item.quantity_shipped,
-                    )
-
-                return SalesOrderResponse(
-                    success=True,
-                    message="Shipment created",
-                    data={
-                        "shipment_id": str(shipment_id),
-                        "shipment_number": shipment_number,
-                    },
-                )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating shipment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create shipment")
+    ⚠️ JANGAN "diperbaiki" balik menjadi jalur tulis. Menghidupkan kembali blok
+    INSERT ke sales_order_shipments = membelah pembukuan. Lihat keputusan K2.
+    Tabel `sales_order_shipments` sengaja TIDAK di-DROP (0 baris, tak ada data
+    hilang, tapi menghapus tabel produksi berisiko tanpa manfaat), dan
+    GET /{order_id}/shipments TETAP HIDUP untuk membaca riwayat.
+    """
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Pencatatan pengiriman lewat Sales Order sudah dinonaktifkan. "
+            "Gunakan jalur resmi: buat atau pakai Faktur Penjualan untuk pesanan ini, "
+            "lalu catat penyerahan barang lewat faktur tersebut "
+            "(POST /api/sales-invoices/{invoice_id}/fulfill) sehingga penyerahan, "
+            "pendapatan, dan HPP tercatat dalam satu jurnal yang seimbang."
+        ),
+    )
 
 
 @router.get("/{order_id}/shipments")
