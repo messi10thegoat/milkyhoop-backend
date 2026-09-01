@@ -747,8 +747,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                             amount, deposit_date, payment_method,
                             account_id, bank_account_id, reference, notes,
                             status, created_by,
-                            quote_id, sales_order_id, idempotency_key
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15)
+                            quote_id, sales_order_id, idempotency_key, proforma_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16)
                         RETURNING id
                     """,
                         ctx["tenant_id"],
@@ -766,6 +766,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         UUID(body.quote_id) if body.quote_id else None,
                         UUID(body.sales_order_id) if body.sales_order_id else None,
                         body.idempotency_key,
+                        # T200: proforma yang ditagih oleh uang masuk ini.
+                        UUID(body.proforma_id) if body.proforma_id else None,
                     )
                 except asyncpg.exceptions.UniqueViolationError:
                     # FIX_P3_BRIDGE 2026-06-16 (b): lost the create race on the
