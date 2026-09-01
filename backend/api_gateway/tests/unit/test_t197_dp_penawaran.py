@@ -30,6 +30,20 @@ def test_u1_create_quote_punya_dp_percent_dan_dp_amount():
     assert f["dp_amount"].hidden is False
 
 
+def test_u1c_alias_dp_telanjang_tidak_boleh_ada():
+    """Alias "dp" ambigu: "DP 60" (persen) vs "DP 5 juta" (nominal).
+
+    Bila alias telanjang "dp" hidup pada dp_percent, "DP 5 juta" mendarat
+    sebagai dp_percent=5000000 dan POST /api/quotes menolak dengan 422.
+    """
+    f = _fields()
+    assert "dp" not in f["dp_percent"].aliases, (
+        "alias telanjang 'dp' hidup lagi pada dp_percent — ambigu persen "
+        "vs nominal, lihat komentar di direct_action_registry.py"
+    )
+    assert "dp" not in (f["dp_amount"].aliases or [])
+
+
 def test_u1b_dp_dideklarasikan_ke_model_sebagai_angka():
     """Schema ekstraksi Stage-2 harus memuat kedua field sebagai number."""
     schema = build_intent_schema("create_quote")

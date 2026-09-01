@@ -2989,7 +2989,13 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
                 name="dp_percent",
                 label="DP (%)",
                 field_type="percent",
-                aliases=["uang_muka_persen", "dp", "down_payment_percent"],
+                # JANGAN menambahkan alias telanjang "dp" di sini. "dp" secara
+                # alami ambigu: "DP 60" berarti persen, "DP 5 juta" berarti
+                # nominal. Alias telanjang memaksa keduanya masuk ke dp_percent,
+                # sehingga "DP 5 juta" jadi dp_percent=5000000 -> 422 dari
+                # POST /api/quotes. Deskripsi kedua field sudah mengarahkan
+                # model memilih dp_percent vs dp_amount dengan benar.
+                aliases=["uang_muka_persen", "down_payment_percent"],
                 description=(
                     "Uang muka dalam PERSEN. Isi HANYA bila user menyebut "
                     "persentase, mis. \"DP 60 persen\" -> 60. JANGAN mengisi "
