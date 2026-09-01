@@ -296,6 +296,10 @@ async def list_customer_deposits(
         Literal["all", "draft", "posted", "partial", "applied", "void"]
     ] = Query("all"),
     customer_id: Optional[str] = Query(None),
+    sales_order_id: Optional[str] = Query(
+        None,
+        description="T198: batasi daftar ke uang muka milik satu Sales Order",
+    ),
     search: Optional[str] = Query(
         None, description="Search by number or customer name"
     ),
@@ -330,6 +334,13 @@ async def list_customer_deposits(
             if customer_id:
                 conditions.append(f"customer_id = ${param_idx}")
                 params.append(customer_id)
+                param_idx += 1
+
+            # T198: filter opsional milik-SO. Tanpa param ini perilaku
+            # daftar lama tidak berubah sama sekali.
+            if sales_order_id:
+                conditions.append(f"sales_order_id = ${param_idx}")
+                params.append(uuid_module.UUID(sales_order_id))
                 param_idx += 1
 
             if search:
@@ -2486,6 +2497,16 @@ def _terbilang(n: int) -> str:
     return _to_words(n).strip() + " Rupiah"
 
 
+def _deposit_purpose_label(sales_order_id) -> str:
+    """Label keperluan pada kwitansi uang muka (T198, butir 1.3).
+
+    Uang muka yang terikat Sales Order dicetak sebagai "Uang Muka Pesanan"
+    supaya kwitansi menyebut KEPERLUANNYA, bukan sekadar jenis dokumennya.
+    Tanpa SO, label lama ("Uang Muka") dipertahankan persis.
+    """
+    return "Uang Muka Pesanan" if sales_order_id else "Uang Muka"
+
+
 @router.get("/{deposit_id}/pdf")
 async def get_customer_deposit_pdf(
     request: Request,
@@ -2556,7 +2577,7 @@ async def get_customer_deposit_pdf(
                 "amount_words": _terbilang(_amt),
                 "method": method_label,
                 "bank_name": bank_name,
-                "purpose_label": "Uang Muka",
+                "purpose_label": _deposit_purpose_label(dep["sales_order_id"]),
                 "purpose_ref": purpose_ref,
                 "remaining": remaining,
                 "notes": dep["notes"],
