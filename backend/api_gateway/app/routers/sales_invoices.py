@@ -1674,6 +1674,90 @@ async def _execute_fulfillment(
 
 
 # =============================================================================
+# =============================================================================
+# T206 - PAGAR FAKTUR CAMPURAN (baris barang berstok + baris jasa satu faktur)
+# =============================================================================
+# KENAPA pagar ini ada:
+#   Pemilihan jalur 3-Event di _internal_post_invoice bersifat EKSKLUSIF: bila
+#   faktur memuat SATU saja baris ber-track_inventory, SELURUH faktur masuk
+#   cabang persediaan dan cabang JASA (pengakuan pendapatan seketika) TIDAK
+#   PERNAH dijalankan untuk faktur itu. Sementara nilai pendapatan yang diakui
+#   saat penyerahan (_execute_fulfillment) hanya menjumlahkan baris yang ADA DI
+#   DAFTAR PENYERAHAN - dan daftar itu hanya berisi baris ber-track_inventory
+#   dengan harga pokok > 0. Baris jasa tidak pernah masuk.
+#   Akibatnya nilai terakui < nilai tertagih SELAMANYA; selisihnya mengendap
+#   PERMANEN sebagai saldo 2-10750 Pendapatan Diterima Dimuka di neraca dan
+#   bertambah tiap faktur campuran, tanpa mekanisme apa pun yang menutupnya.
+#   Memaksa baris jasa masuk daftar penyerahan bukan jalan keluar - ia akan
+#   kena penolakan stok/WAC.
+#
+# KAPAN pagar ini boleh DICABUT:
+#   Setelah peristiwa penyelesaian kewajiban pelaksanaan (performance
+#   obligation) untuk baris JASA dibangun - yakni ketika baris non-persediaan
+#   punya jalur pengakuan pendapatannya sendiri yang berjalan berdampingan
+#   dengan penyerahan barang, sehingga sisa 2-10750 selalu tertutup. Sebelum
+#   itu ada, mencabut pagar ini menghidupkan kembali kebocoran neraca di atas.
+#   Ini BUKAN pembatasan sewenang-wenang.
+#
+# Klasifikasi baris DISENGAJA MENCERMINKAN PERSIS predikat cabangnya sendiri
+# (item_id ada DAN produk ada DAN track_inventory bukan false), supaya pagar
+# menyala tepat pada kondisi yang menyebabkan kebocoran - tidak lebih lebar.
+# Baris non-persediaan bernilai 0 diabaikan (tak ada pendapatan yang tersangkut).
+def _t206_classify_lines(rows):
+    """Bagi baris faktur menjadi (baris_barang, baris_jasa).
+
+    baris_barang = baris yang AKAN masuk jalur persediaan. baris_jasa = baris
+    bernilai > 0 yang TIDAK akan masuk jalur itu (tanpa item_id, produk tidak
+    ditemukan, atau track_inventory = false).
+    """
+    goods, services = [], []
+    for r in rows:
+        label = r.get("description") or r.get("item_code") or "(tanpa nama)"
+        if r.get("is_inventory"):
+            goods.append(label)
+        elif _d(r.get("line_value") or 0) > 0:
+            services.append(label)
+    return goods, services
+
+
+async def _t206_reject_mixed_invoice(conn, tenant_id, invoice_id, invoice_number):
+    """Tolak posting faktur yang memuat baris barang berstok DAN baris jasa."""
+    rows = await conn.fetch(
+        """
+        SELECT sii.description,
+               sii.item_code,
+               (sii.quantity * sii.unit_price
+                    - COALESCE(sii.discount_amount, 0)) AS line_value,
+               (sii.item_id IS NOT NULL
+                    AND p.id IS NOT NULL
+                    AND COALESCE(p.track_inventory, TRUE)) AS is_inventory
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si
+          ON si.id = sii.invoice_id AND si.tenant_id = $1
+        LEFT JOIN products p
+          ON p.id = sii.item_id AND p.tenant_id = $1
+        WHERE sii.invoice_id = $2
+        """,
+        tenant_id,
+        invoice_id,
+    )
+    goods, services = _t206_classify_lines([dict(r) for r in rows])
+    if not goods or not services:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Faktur {invoice_number} memuat barang berstok DAN jasa sekaligus, "
+            f"sehingga tidak dapat diposting. Baris barang berstok "
+            f"({len(goods)}): {', '.join(goods)}. Baris jasa ({len(services)}): "
+            f"{', '.join(services)}. Pada faktur campuran, pendapatan baris jasa "
+            f"tidak pernah diakui - selisihnya mengendap permanen di 2-10750 "
+            f"Pendapatan Diterima Dimuka. Jalan keluar: pisahkan menjadi dua "
+            f"faktur - satu berisi barang berstok saja, satu berisi jasa saja."
+        ),
+    )
+
+
 async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_amount):
     """Internal helper to post an invoice within the same transaction.
     3-Event Revenue Recognition (PSAK 72):
@@ -1691,6 +1775,11 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Law 13: Advisory lock - prevent concurrent posting
     await conn.execute(
         "SELECT pg_advisory_xact_lock(hashtext($1))", f"INVOICE:{invoice_id}"
+    )
+
+    # T206: pagar faktur campuran - tolak SEBELUM jurnal apa pun dibuat.
+    await _t206_reject_mixed_invoice(
+        conn, ctx["tenant_id"], invoice_id, invoice_number
     )
 
     # Get invoice data
