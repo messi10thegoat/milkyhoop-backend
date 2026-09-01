@@ -6365,6 +6365,115 @@ async def _process_document_background(pool, doc_id: str, tenant_id: str):
         )
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# T207 — SUNTINGAN INLINE HARUS IKUT TERSIMPAN DI RIWAYAT
+#
+# `payload_overrides` selama ini hanya di-merge ke payload eksekusi lalu
+# dibuang; `preview_snapshot` di chat_messages.metadata tetap memuat usulan
+# PRA-SUNTING. Akibatnya DB transaksi benar, tapi kartu di riwayat chat
+# menampilkan lagi nilai lama sesudah halaman dimuat ulang.
+#
+# Nilai kartu tersimpan REDUNDAN di TIGA tempat di dalam snapshot:
+#   1. `payload`                    (dipakai form Edit)
+#   2. `review_card.header[].value` (INI yang benar-benar dirender di layar)
+#   3. `confirmation_table`         (markdown, dipakai renderer lama)
+# Menambal `payload` saja lolos uji metadata tapi LAYAR TETAP SALAH.
+#
+# Kedua builder di direct_action_registry adalah fungsi murni dari
+# (action_key, payload, journal_preview) -- dipakai ulang apa adanya, TIDAK
+# ada builder kedua yang ditulis di sini.
+#
+# BARIS JURNAL TIDAK DIHITUNG ULANG. Menghitungnya menuntut panggilan HTTP ke
+# endpoint pratinjau yang sudah tidak tersedia di jalur confirm. Ia dibangun
+# ulang dari kartu lama supaya bagian jurnal tidak HILANG, dan kartu berkata
+# jujur lewat satu peringatan bahwa nilainya berasal dari saat usulan dibuat.
+# ══════════════════════════════════════════════════════════════════════════
+
+CATATAN_JURNAL_SNAPSHOT = (
+    "Baris jurnal di bawah adalah yang ditampilkan saat usulan dibuat; "
+    "nilainya tidak dihitung ulang setelah suntingan."
+)
+
+
+def _jurnal_dari_kartu(kartu: dict | None) -> list | None:
+    """Balikkan `review_card.journal_lines` ke bentuk `journal_preview`."""
+    baris = (kartu or {}).get("journal_lines")
+    if not isinstance(baris, list) or not baris:
+        return None
+    keluar = []
+    for b in baris:
+        if not isinstance(b, dict):
+            continue
+        try:
+            nilai = float(b.get("amount") or 0)
+        except (ValueError, TypeError):
+            continue
+        _dr = str(b.get("dir") or "").strip().lower().startswith("d")
+        keluar.append(
+            {
+                "account_name": str(b.get("account") or ""),
+                "debit": nilai if _dr else 0.0,
+                "credit": 0.0 if _dr else nilai,
+            }
+        )
+    return keluar or None
+
+
+def _bangun_snapshot_final(
+    snapshot_lama: dict | None, action_key: str, payload: dict
+) -> dict | None:
+    """Snapshot yang mencerminkan payload FINAL (pasca-merge override).
+
+    Menyimpan usulan asli di `original_snapshot` -- SEKALI SAJA, tidak pernah
+    bersarang berlapis walau dijalankan berkali-kali.
+    """
+    from ..services.unified_agent.direct_action_registry import (
+        build_confirmation_table,
+        build_review_card_payload,
+    )
+
+    if not isinstance(snapshot_lama, dict) or not action_key:
+        return None
+
+    _kartu_lama = snapshot_lama.get("review_card")
+    if not isinstance(_kartu_lama, dict):
+        _kartu_lama = {}
+
+    _jp = _jurnal_dari_kartu(_kartu_lama)
+    _catatan = [CATATAN_JURNAL_SNAPSHOT] if _jp else None
+
+    kartu = build_review_card_payload(
+        action_key, payload, _jp, preview_warnings=_catatan
+    )
+    if not isinstance(kartu, dict):
+        return None
+
+    # Peringatan dari endpoint pratinjau (stok minus, periode tertutup, ...)
+    # tidak bisa dilahirkan ulang dari payload -- dipertahankan dari kartu lama.
+    _pesan_baru = {
+        w.get("message") for w in (kartu.get("warnings") or []) if isinstance(w, dict)
+    }
+    _tambahan = [
+        w
+        for w in (_kartu_lama.get("warnings") or [])
+        if isinstance(w, dict) and w.get("message") and w["message"] not in _pesan_baru
+    ]
+    if _tambahan:
+        kartu["warnings"] = (kartu.get("warnings") or []) + _tambahan
+
+    tabel = build_confirmation_table(action_key, payload, _jp)
+
+    _tanpa_asli = {k: v for k, v in snapshot_lama.items() if k != "original_snapshot"}
+    _asli = snapshot_lama.get("original_snapshot") or _tanpa_asli
+
+    baru = dict(_tanpa_asli)
+    baru["payload"] = payload
+    baru["review_card"] = kartu
+    baru["confirmation_table"] = tabel
+    baru["original_snapshot"] = _asli
+    return baru
+
+
 async def _confirm_direct_action(
     pending_action_id: str,
     tenant_id: str,
@@ -6977,14 +7086,60 @@ async def _confirm_direct_action(
                 uuid_mod.UUID(pending_action_id),
             )
 
+            # T207: snapshot final HANYA bila memang ada suntingan. Tanpa
+            # override, snapshot lama sudah benar -- nol tulisan, nol risiko.
+            # Kegagalan di sini NON-FATAL: `_snap_final_json` tetap None dan
+            # UPDATE di bawah berperilaku persis seperti sebelum T207.
+            _snap_final_json = None
+            if payload_overrides:
+                try:
+                    _snap_row = await pool.fetchrow(
+                        """SELECT metadata->'preview_snapshot' AS snap
+                           FROM chat_messages
+                           WHERE metadata->>'pending_action_id' = $1
+                             AND tenant_id = $2
+                             AND metadata->'preview_snapshot' IS NOT NULL
+                           ORDER BY created_at DESC
+                           LIMIT 1""",
+                        str(pending_action_id),
+                        tenant_id,
+                    )
+                    _snap_lama = _snap_row["snap"] if _snap_row else None
+                    if isinstance(_snap_lama, str):
+                        _snap_lama = json.loads(_snap_lama)
+                    _snap_baru = _bangun_snapshot_final(
+                        _snap_lama, action_key, payload
+                    )
+                    if _snap_baru is not None:
+                        _snap_final_json = json.dumps(_snap_baru, default=str)
+                    else:
+                        logger.warning(
+                            "[T207] snapshot final tidak terbangun untuk pa=%s "
+                            "(snapshot lama kosong atau action_key tak dikenal)",
+                            str(pending_action_id)[:8],
+                        )
+                except Exception as _snap_err:
+                    logger.warning(
+                        "[T207] Gagal membangun preview_snapshot final: %s",
+                        _snap_err,
+                    )
+
             # Phase D: Update chat message metadata status to COMPLETED
+            # (+ T207: preview_snapshot final, satu tulisan yang sama)
             try:
                 await pool.execute(
                     """
                     UPDATE chat_messages
                     SET metadata = jsonb_set(
                         jsonb_set(
-                            COALESCE(metadata, '{}'::jsonb),
+                            CASE
+                                WHEN $3::jsonb IS NULL
+                                    THEN COALESCE(metadata, '{}'::jsonb)
+                                ELSE jsonb_set(
+                                    COALESCE(metadata, '{}'::jsonb),
+                                    '{preview_snapshot}', $3::jsonb
+                                )
+                            END,
                             '{status}', '"COMPLETED"'
                         ),
                         '{completed_at}', to_jsonb(NOW()::text)
@@ -6994,6 +7149,7 @@ async def _confirm_direct_action(
                 """,
                     str(pending_action_id),
                     tenant_id,
+                    _snap_final_json,
                 )
             except Exception as _md_err:
                 logger.warning(
