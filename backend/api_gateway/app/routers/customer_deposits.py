@@ -647,6 +647,105 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
 # =============================================================================
 
 
+# =============================================================================
+# T203 (B-01): PLAFON UANG MUKA PER SALES ORDER
+# -----------------------------------------------------------------------------
+# Temuan audit B-01: tidak ada batas total uang muka per Sales Order. Lima kali
+# "Terima DP" atas pesanan Rp 2.280.000 menghasilkan liabilitas Uang Muka
+# Pelanggan Rp 6.840.000 — SALAH SAJI LANGSUNG di neraca.
+#
+# Yang ditambahkan adalah PLAFON, bukan pembatasan jumlah transaksi. DP dicicil
+# (30% saat pesan, 30% saat bahan datang, sisanya saat kirim) TETAP SAH selama
+# akumulasinya tidak melewati nilai Sales Order.
+#
+# Pola ditiru dari pagar Proforma (T200, `assert_within_order_total` di
+# routers/proformas.py): hitung akumulasi, hitung sisa, tolak 400 dengan pesan
+# yang MENYEBUT angka, dengan toleransi pembulatan +0.005 supaya DP tepat-sisa
+# TIDAK ditolak.
+# =============================================================================
+
+
+async def received_total_for_order(
+    conn, tenant_id: str, sales_order_id, exclude_id=None
+) -> float:
+    """Akumulasi uang muka non-'void' untuk satu Sales Order.
+
+    'void' DIKECUALIKAN karena depositnya sudah dibatalkan (jurnalnya dibalik).
+    'draft', 'posted', 'partial', 'applied' SEMUA dihitung: uangnya nyata
+    diterima (atau sudah dijanjikan pada draft), hanya sebagian sudah dipakai.
+    Sama persis dengan basis `deposit_totals_for_order` di routers/proformas.py.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM customer_deposits
+        WHERE tenant_id = $1
+          AND sales_order_id = $2
+          AND status <> 'void'
+          AND ($3::uuid IS NULL OR id <> $3::uuid)
+        """,
+        tenant_id,
+        sales_order_id,
+        exclude_id,
+    )
+    return float(row["total"] or 0)
+
+
+async def resolve_order_id_for_deposit(
+    conn, tenant_id: str, sales_order_id, proforma_id
+):
+    """SO acuan pagar. Kalau proforma diberikan tanpa sales_order_id, SO
+    diturunkan dari proforma itu — kalau tidak, pagar bisa dilewati hanya
+    dengan mengirim proforma_id saja."""
+    if sales_order_id:
+        return sales_order_id
+    if not proforma_id:
+        return None
+    row = await conn.fetchrow(
+        """
+        SELECT sales_order_id FROM proformas
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        proforma_id,
+        tenant_id,
+    )
+    return row["sales_order_id"] if row else None
+
+
+async def assert_deposit_within_order_total(
+    conn, tenant_id: str, sales_order_id, amount: float, exclude_id=None
+) -> None:
+    """Pagar plafon. Deposit TANPA Sales Order tidak terkena pagar (tak ada
+    acuan) — itu perilaku sah hari ini dan sengaja dibiarkan lolos."""
+    if not sales_order_id:
+        return
+    order = await conn.fetchrow(
+        """
+        SELECT order_number, total_amount FROM sales_orders
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        sales_order_id,
+        tenant_id,
+    )
+    if not order:
+        raise HTTPException(status_code=400, detail="Sales Order not found")
+
+    order_total = float(order["total_amount"] or 0)
+    already = await received_total_for_order(
+        conn, tenant_id, sales_order_id, exclude_id=exclude_id
+    )
+    sisa = round(order_total - already, 2)
+    if round(float(amount), 2) > sisa + 0.005:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Uang muka {float(amount):,.2f} melebihi sisa yang masih dapat "
+                f"diterima. Nilai Sales Order {order_total:,.2f}, sudah diterima "
+                f"{already:,.2f}, sisa yang masih dapat diterima {sisa:,.2f}."
+            ),
+        )
+
+
 @router.post("", response_model=CustomerDepositResponse, status_code=201)
 async def create_customer_deposit(request: Request, body: CreateCustomerDepositRequest):
     """
@@ -729,6 +828,19 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         status_code=400,
                         detail="Payment account must be an asset account (Kas/Bank)",
                     )
+
+                # T203 (B-01): plafon uang muka per Sales Order. Akumulasi
+                # DP non-'void' + DP baru ini tidak boleh melewati nilai SO.
+                # DP bertahap TETAP diizinkan — yang dibatasi totalnya.
+                _guard_order_id = await resolve_order_id_for_deposit(
+                    conn,
+                    ctx["tenant_id"],
+                    UUID(body.sales_order_id) if body.sales_order_id else None,
+                    UUID(body.proforma_id) if body.proforma_id else None,
+                )
+                await assert_deposit_within_order_total(
+                    conn, ctx["tenant_id"], _guard_order_id, body.amount
+                )
 
                 # Generate deposit number
                 dep_number = await conn.fetchval(
