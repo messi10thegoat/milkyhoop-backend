@@ -30,6 +30,7 @@ from ..schemas.bom import (
     WhereUsedResponse,
     BOMResponse,
 )
+from ..services.bom_unit_guard import resolve_component_unit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -584,6 +585,12 @@ async def create_bom(request: Request, body: CreateBOMRequest):
 
                 # Create components
                 for comp in body.components:
+                    comp_unit = await resolve_component_unit(
+                        conn,
+                        ctx["tenant_id"],
+                        comp.component_product_id,
+                        comp.unit,
+                    )
                     await conn.execute(
                         """
                         INSERT INTO bom_components (
@@ -595,7 +602,7 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                         bom_id,
                         comp.component_product_id,
                         comp.quantity,
-                        comp.unit,
+                        comp_unit,
                         comp.wastage_percent,
                         comp.sequence_order,
                         comp.operation_id,
@@ -827,6 +834,12 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
                         "DELETE FROM bom_components WHERE bom_id = $1", bom_id
                     )
                     for idx, c in enumerate(components_payload):
+                        c_unit = await resolve_component_unit(
+                            conn,
+                            ctx["tenant_id"],
+                            c["component_product_id"],
+                            c.get("unit"),
+                        )
                         await conn.execute(
                             """
                             INSERT INTO bom_components
@@ -836,7 +849,7 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
                             bom_id,
                             c["component_product_id"],
                             c["quantity"],
-                            c.get("unit"),
+                            c_unit,
                             c.get("wastage_percent") or 0,
                             c.get("unit_cost") or 0,
                             c.get("notes"),
@@ -1335,6 +1348,13 @@ async def add_component(request: Request, bom_id: UUID, body: BOMComponentInput)
                     status_code=400, detail="Can only modify draft BOMs"
                 )
 
+            body_unit = await resolve_component_unit(
+                conn,
+                ctx["tenant_id"],
+                body.component_product_id,
+                body.unit,
+            )
+
             comp_id = await conn.fetchval(
                 """
                 INSERT INTO bom_components (
@@ -1346,7 +1366,7 @@ async def add_component(request: Request, bom_id: UUID, body: BOMComponentInput)
                 bom_id,
                 body.component_product_id,
                 body.quantity,
-                body.unit,
+                body_unit,
                 body.wastage_percent,
                 body.sequence_order,
                 body.operation_id,
