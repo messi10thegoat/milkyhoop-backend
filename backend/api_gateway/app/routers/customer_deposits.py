@@ -2696,11 +2696,41 @@ async def get_customer_deposit_pdf(
                 if q_row and q_row["quote_number"]:
                     purpose_ref = q_row["quote_number"]
 
-            # Remaining = amount - applied - refunded
+            # Remaining = amount - applied - refunded (SALDO UANG MUKA, konsep internal)
             _amt = int(dep["amount"] or 0)
             _applied = int(dep["amount_applied"] or 0)
             _refunded = int(dep["amount_refunded"] or 0)
             remaining = _amt - _applied - _refunded
+
+            # T199: baris "Sisa / Saldo" menyesatkan pelanggan pada kwitansi DP.
+            # Kasus A (DP bertambat Sales Order): ganti dengan tiga baris yang
+            # bisa dijumlahkan pembaca — Nilai Pesanan / Total Uang Muka Diterima /
+            # Sisa Nilai Pesanan. BUKAN "tagihan"/"piutang": belum ada faktur.
+            # Kasus B (DP lepas): pertahankan satu baris, tapi labelnya jujur
+            # "Saldo Uang Muka".
+            order_total = None
+            dp_received_total = None
+            order_remaining = None
+            remaining_label = "Saldo Uang Muka"
+            if dep["sales_order_id"]:
+                so_total_row = await conn.fetchrow(
+                    "SELECT total_amount FROM sales_orders "
+                    "WHERE id = $1 AND tenant_id = $2",
+                    dep["sales_order_id"],
+                    ctx["tenant_id"],
+                )
+                if so_total_row is not None:
+                    order_total = int(float(so_total_row["total_amount"] or 0))
+                    # SELURUH DP untuk pesanan ini (termasuk yang sedang dicetak),
+                    # supaya kwitansi cicilan kedua menunjukkan sisa yang benar.
+                    dp_received_total = int(
+                        await received_total_for_order(
+                            conn, ctx["tenant_id"], dep["sales_order_id"]
+                        )
+                    )
+                    order_remaining = order_total - dp_received_total
+                    # Baris saldo internal disembunyikan di kasus A.
+                    remaining = None
 
             method_label = (
                 "Tunai" if (dep["payment_method"] or "").lower() == "cash"
@@ -2719,6 +2749,10 @@ async def get_customer_deposit_pdf(
                 "purpose_label": _deposit_purpose_label(dep["sales_order_id"]),
                 "purpose_ref": purpose_ref,
                 "remaining": remaining,
+                "remaining_label": remaining_label,
+                "order_total": order_total,
+                "dp_received_total": dp_received_total,
+                "order_remaining": order_remaining,
                 "notes": dep["notes"],
             }
 

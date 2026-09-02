@@ -86,9 +86,22 @@
                 <td class="value">{{ receipt.purpose_ref }}</td>
             </tr>
             {% endif %}
-            {% if receipt.remaining is not none %}
+            {% if receipt.get('order_total') is not none %}
+            <tr>
+                <td class="label">Nilai Pesanan</td>
+                <td class="value">Rp {{ receipt.order_total | currency }}</td>
+            </tr>
+            <tr>
+                <td class="label">Total Uang Muka Diterima</td>
+                <td class="value">Rp {{ receipt.dp_received_total | currency }}</td>
+            </tr>
             <tr class="total-row">
-                <td class="label">Sisa / Saldo</td>
+                <td class="label">Sisa Nilai Pesanan</td>
+                <td class="value">Rp {{ receipt.order_remaining | currency }}</td>
+            </tr>
+            {% elif receipt.get('remaining') is not none %}
+            <tr class="total-row">
+                <td class="label">{{ receipt.get('remaining_label') or 'Sisa / Saldo' }}</td>
                 <td class="value">Rp {{ receipt.remaining | currency }}</td>
             </tr>
             {% endif %}
