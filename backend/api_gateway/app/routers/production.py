@@ -1069,14 +1069,45 @@ async def complete_order(request: Request, order_id: UUID):
                 )
 
                 if wip_account_id and variance_account_id:
-                    # Get WIP balance from material issue + FG receipt journals of this order
+                    # Sisa WIP = SEMUA jurnal POSTED yang menyentuh akun WIP dan
+                    # tertaut ke WO ini. Ada DUA jenis tautan:
+                    #   (a) source_id = order_id  -> MATERIAL_ISSUE, PRODUCTION_LABOR,
+                    #       PRODUCTION_OVERHEAD, PRODUCTION_OUTPUT, PRODUCTION_VARIANCE
+                    #   (b) source_id = bill_id   -> BILL faktur maklun/subkontrak
+                    #       (post_bill mengalihkan debit ke WIP_SUBCONTRACT, yang
+                    #       ter-resolve ke akun WIP yang sama)
+                    # Sebelum perbaikan ini HANYA (a) yang dihitung, sehingga tiap WO
+                    # bermaklun tampak bersaldo kredit persis sebesar nilai maklunnya
+                    # dan melahirkan JV-VAR palsu yang justru MENGENDAPKAN WIP.
+                    #
+                    # Baris subkontrak di-void: TIDAK disaring di sini dengan sengaja.
+                    # Void faktur menerbitkan jurnal REVERSAL yang membawa
+                    # source_id = bill_id yang sama, jadi debit asal dan kreditnya
+                    # saling meniadakan lewat data jurnal. Menyaring status='voided'
+                    # justru akan membuang kredit pembalik tapi tetap meninggalkan
+                    # debit aslinya tak terhitung. bill_id NULL (maklun belum
+                    # difakturkan) nol kontribusi dengan sendirinya.
+                    #
+                    # Predikat jurnal SENGAJA dibiarkan `je.status = 'POSTED'` persis
+                    # seperti kode lama (bukan is_effective_journal) supaya perubahan
+                    # perilaku terbatas pada perluasan cakupan source_id saja.
                     wip_residual = await conn.fetchval(
                         """
                         SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
                         FROM journal_lines jl
                         JOIN journal_entries je ON je.id = jl.journal_id
-                        WHERE je.source_id = $1 AND je.tenant_id = $2
+                        WHERE je.tenant_id = $2
                           AND je.status = 'POSTED' AND jl.account_id = $3
+                          AND (
+                            je.source_id = $1
+                            OR je.source_id IN (
+                                SELECT ps.bill_id
+                                FROM production_subcontracts ps
+                                WHERE ps.production_order_id = $1
+                                  AND ps.tenant_id = $2
+                                  AND ps.bill_id IS NOT NULL
+                            )
+                          )
                     """,
                         order_id,
                         ctx["tenant_id"],
