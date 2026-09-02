@@ -54,8 +54,10 @@ def classify_doc_number(number: str) -> str:
 # the invoice amount, so amount-match alone fails). Stop at a separator / amount /
 # transfer word so we don't swallow the rest of the sentence.
 _PARTY_STOP = (
-    r"(?=$|[,.;]|\s+(?:untuk|sebesar|sejumlah|senilai|via|lewat|pakai|pake|"
-    r"transfer|tf|tgl|tanggal|no\b|nomor|faktur|invoice|tagihan|yang)\b)"
+    # fix/docintake-caption-party: angka / "Rp" juga kata henti
+    # ("bayar ke PT Grosir Kaos 100rb" → "PT Grosir Kaos").
+    r"(?=$|[,.;]|\s+(?:\d|rp\b|(?:untuk|sebesar|sejumlah|senilai|via|lewat|pakai|pake|"
+    r"transfer|tf|tgl|tanggal|no\b|nomor|faktur|invoice|tagihan|yang)\b))"
 )
 _PARTY_IN_RE = re.compile(
     # FIX_PARTY_KEYWORD_OPTIONAL (2026-06-18): the party-type word

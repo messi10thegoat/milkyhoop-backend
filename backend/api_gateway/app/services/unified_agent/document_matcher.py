@@ -194,6 +194,9 @@ class DocumentMatcher:
         self.tenant_id = tenant_id
 
     async def match(self, ocr_result: dict) -> SmartMatchResult:
+        # TIDAK di jalur live sejak V2 (DocumentIntakePipeline memanggil match_ar/
+        # match_ap langsung) — lihat fix/docintake-caption-party. Jangan titipkan
+        # fix jalur upload ke sini atau ke _match_payment.
         """
         Main entry point. Takes an OCR extraction result and returns match.
 
@@ -382,6 +385,7 @@ class DocumentMatcher:
         self, ocr: dict, doc_category: str, direction: str
     ) -> Tuple[Optional[MatchCandidate], List[MatchCandidate]]:
         """Match OCR against open AR (in) or AP (out) documents."""
+        # TIDAK di jalur live sejak V2 — lihat fix/docintake-caption-party.
         amount = ocr.get("amount")
         counterparty = ocr.get("counterparty") or ""
         doc_date = ocr.get("date")
@@ -501,6 +505,63 @@ class DocumentMatcher:
         """FIX_DIR_PARTYNAME: open AP bills for a named vendor, OLDEST first."""
         return await self._find_open_by_party(vendor_name, "ap")
 
+    async def find_open_by_id(self, side: str, doc_id: str) -> List[MatchCandidate]:
+        """fix/docintake-caption-party: satu dokumen terbuka by id (jawaban pil
+        `doc:<dir>:<id>`). Journal-derived via compute_*_outstanding; tanpa
+        filter nominal karena pembayaran boleh parsial."""
+        if not doc_id or not str(doc_id).strip():
+            return []
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
+                if side == "ar":
+                    rows = await conn.fetch(
+                        """
+                        SELECT invoice_id, invoice_number, customer_name,
+                               invoice_total, outstanding, due_date
+                        FROM compute_ar_outstanding($1)
+                        WHERE outstanding > 0 AND invoice_id::text = $2
+                        LIMIT 1
+                        """,
+                        self.tenant_id,
+                        str(doc_id).strip(),
+                    )
+                    return [
+                        MatchCandidate(
+                            source_type="sales_invoice",
+                            source_id=str(r["invoice_id"]),
+                            label=r["invoice_number"] or "",
+                            counterparty=r["customer_name"] or "",
+                            amount=Decimal(str(r["invoice_total"] or 0)),
+                            outstanding=Decimal(str(r["outstanding"] or 0)),
+                            due_date=r["due_date"],
+                        )
+                        for r in rows
+                    ]
+                rows = await conn.fetch(
+                    """
+                    SELECT bill_id, bill_number, vendor_name,
+                           bill_total, outstanding, due_date
+                    FROM compute_ap_outstanding($1)
+                    WHERE outstanding > 0 AND bill_id::text = $2
+                    LIMIT 1
+                    """,
+                    self.tenant_id,
+                    str(doc_id).strip(),
+                )
+                return [
+                    MatchCandidate(
+                        source_type="bill",
+                        source_id=str(r["bill_id"]),
+                        label=r["bill_number"] or "",
+                        counterparty=r["vendor_name"] or "",
+                        amount=Decimal(str(r["bill_total"] or 0)),
+                        outstanding=Decimal(str(r["outstanding"] or 0)),
+                        due_date=r["due_date"],
+                    )
+                    for r in rows
+                ]
+
     async def _find_open_by_party(self, party_name: str, side: str):
         """side 'ar'→receivables by customer_name, 'ap'→payables by vendor_name."""
         if not party_name or not party_name.strip():
@@ -584,6 +645,10 @@ class DocumentMatcher:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
 
+                # fix/docintake-caption-party: cabang nama dulunya `elif` dari
+                # cabang nominal → tak pernah tercapai bila nominal ada (parsial
+                # mustahil match). Kini fallback bila hasil rentang KOSONG.
+                rows = []
                 if amount_min is not None and amount_max is not None:
                     rows = await conn.fetch(
                         """
@@ -599,7 +664,7 @@ class DocumentMatcher:
                         float(amount_min),
                         float(amount_max),
                     )
-                elif counterparty:
+                if not rows and counterparty:
                     rows = await conn.fetch(
                         """
                         SELECT invoice_id, invoice_number, customer_name,
@@ -613,7 +678,7 @@ class DocumentMatcher:
                         self.tenant_id,
                         f"%{counterparty}%",
                     )
-                else:
+                if not rows:
                     return []
 
         return [
@@ -640,6 +705,10 @@ class DocumentMatcher:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{self.tenant_id}'")
 
+                # fix/docintake-caption-party: cabang nama dulunya `elif` dari
+                # cabang nominal → tak pernah tercapai bila nominal ada (parsial
+                # mustahil match). Kini fallback bila hasil rentang KOSONG.
+                rows = []
                 if amount_min is not None and amount_max is not None:
                     rows = await conn.fetch(
                         """
@@ -655,7 +724,7 @@ class DocumentMatcher:
                         float(amount_min),
                         float(amount_max),
                     )
-                elif counterparty:
+                if not rows and counterparty:
                     rows = await conn.fetch(
                         """
                         SELECT bill_id, bill_number, vendor_name,
@@ -669,7 +738,7 @@ class DocumentMatcher:
                         self.tenant_id,
                         f"%{counterparty}%",
                     )
-                else:
+                if not rows:
                     return []
 
         return [

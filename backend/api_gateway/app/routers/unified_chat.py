@@ -1724,13 +1724,25 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 # ── Direction selection: value starts with "direction:" ──
                 # Direction pills inherit document_context TTL (~10 min).
                 # If expired, saved_ocr_data will be None → graceful fallback.
-                if _selected_value.startswith("direction:"):
+                # fix/docintake-caption-party: pil pilihan dokumen "doc:<in|out>:<id>"
+                # menumpang cabang ini — arah dipaksa + forced_doc_id ke intake.
+                if _selected_value.startswith("direction:") or _selected_value.startswith(
+                    "doc:"
+                ):
                     _dir_pill_answer = True  # FIX_DOCDIR_NORESOLVE
-                    _forced_dir = _selected_value.split(":", 1)[1]  # "in" or "out"
+                    _forced_doc_id = None
+                    if _selected_value.startswith("doc:"):
+                        _dparts = _selected_value.split(":", 2)
+                        _forced_dir = _dparts[1] if len(_dparts) > 1 else "in"
+                        _forced_doc_id = _dparts[2] if len(_dparts) > 2 else None
+                    else:
+                        _forced_dir = _selected_value.split(":", 1)[1]  # "in" or "out"
                     _saved_ocr = _doc_ctx.get("saved_ocr_data")
 
                     if _saved_ocr:
                         _saved_ocr["forced_direction"] = _forced_dir
+                        if _forced_doc_id:
+                            _saved_ocr["forced_doc_id"] = _forced_doc_id
 
                         # Re-run via DocumentIntakePipeline with forced_direction
                         import os as _v3_dir_os
@@ -4844,6 +4856,7 @@ Aturan:
 
                     # -- Smart Document Matching (bridge to Financial Intelligence) --
                     _match_result = None
+                    _intake_result = None  # fix/docintake-caption-party: dipakai kartu fallback
                     try:
                         # Extract bank hint from caption text (e.g. "transfer dari BCA utama")
                         _caption_lower = text.strip().lower() if text else ""
@@ -4859,6 +4872,29 @@ Aturan:
                             if _bm_cap:
                                 _bank_hint = _bm_cap.group(1).strip()
                                 break
+                        # fix/docintake-caption-party: "dari Ferrenlita ..." adalah
+                        # NAMA PIHAK, bukan bank → jangan jadikan bank_hint.
+                        if _bank_hint:
+                            try:
+                                from ..services.unified_agent.document_intake_v3.signals import (
+                                    extract_party_name as _epn_bh,
+                                )
+
+                                _party_bh = (
+                                    _epn_bh(text, "in") or _epn_bh(text, "out") or ""
+                                ).strip().lower()
+                            except Exception:
+                                _party_bh = ""
+                            if _party_bh and (
+                                _bank_hint == _party_bh
+                                or _party_bh in _bank_hint
+                                or _bank_hint in _party_bh
+                            ):
+                                logger.info(
+                                    "[DocSimple] bank_hint %r = nama pihak → diabaikan",
+                                    _bank_hint,
+                                )
+                                _bank_hint = ""
                         if _bank_hint:
                             _ocr_data["bank_hint"] = _bank_hint
                             logger.info(
@@ -5462,6 +5498,13 @@ Aturan:
                                     "match_label": _intake_result.best_match.label
                                     if _intake_result.best_match
                                     else None,
+                                    # fix/docintake-caption-party: pil doc:<dir>:<id>
+                                    # butuh OCR tersimpan untuk re-run intake.
+                                    "saved_ocr_data": {
+                                        k: v
+                                        for k, v in _ocr_data.items()
+                                        if k != "image_bytes"
+                                    },
                                 }
                                 _doc_json = _ctx_json.dumps(_doc_ctx_cl, default=str)
                                 _sid_uuid = __import__("uuid").UUID(session_id)
@@ -5541,11 +5584,23 @@ Aturan:
                             "e_wallet": "Pembayaran E-Wallet",
                         }
                         _type_display = _type_labels.get(_doc_type, _doc_type)
+                        # fix/docintake-caption-party: label pihak & judul ikut ARAH
+                        # hasil intake, bukan hard-coded "Vendor"/doc_type OCR.
+                        _fb_dir = getattr(_intake_result, "direction", None)
+                        _fb_cat = getattr(_intake_result, "doc_category", None)
+                        if _fb_dir == "in":
+                            _party_label = "Pelanggan"
+                        elif _fb_dir == "out":
+                            _party_label = "Vendor"
+                        else:
+                            _party_label = "Vendor/Pihak"
+                        if _fb_dir == "in" and _fb_cat == "payment":
+                            _type_display = "Penerimaan Pembayaran"
 
                         # Build confirmation table
                         _table_lines = ["| Field | Value |", "|---|---|"]
                         _table_lines.append(f"| Tipe | {_type_display} |")
-                        _table_lines.append(f"| Vendor | {_vendor} |")
+                        _table_lines.append(f"| {_party_label} | {_vendor} |")
                         if _doc_number != "-":
                             _table_lines.append(f"| No. Dokumen | {_doc_number} |")
                         if _doc_date != "-":
@@ -5595,7 +5650,7 @@ Aturan:
                         ]
                         if _vendor != "Unknown":
                             _rc_header.append(
-                                {"label": "Vendor/Pihak", "value": _vendor}
+                                {"label": _party_label, "value": _vendor}
                             )
                         if _doc_number != "-":
                             _rc_header.append(
