@@ -19,8 +19,7 @@
     {% if company %}
     <div class="parties">
         <div class="party">
-            <div class="party-label">Dari</div>
-            <div class="party-name">{{ company.name }}</div>
+            <div class="party-label">{{ company.name }}</div>
             {% if company.address %}
             <div class="party-detail">{{ company.address }}</div>
             {% endif %}
@@ -32,7 +31,7 @@
             {% endif %}
         </div>
         <div class="party">
-            <div class="party-label">Diterima dari</div>
+            <div class="party-label">Telah Terima Dari</div>
             <div class="party-name">{{ receipt.payer_name or '-' }}</div>
         </div>
     </div>
@@ -116,7 +115,14 @@
     </div>
     {% endif %}
 
-    <!-- 8. Footer -->
+    <!-- 8. Tanda tangan penerima -->
+    <div style="margin-top: 36px; text-align: right;">
+        <div class="party-label">Penerima,</div>
+        <div style="height: 64px;"></div>
+        <div class="party-name">( {{ company.name if company and company.name else '-' }} )</div>
+    </div>
+
+    <!-- 9. Footer -->
     <div class="footer-line">
         Dicetak {{ generated_at | date_id }}
     </div>
