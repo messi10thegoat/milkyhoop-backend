@@ -26,6 +26,20 @@ After V216/V217 this diff is **EMPTY** except `journal_entries_YYYY_MM` (superse
 
 **Create a class-A table only when there is an OBSERVED real failure** (like `chat_attachments`' 500 in the log). Until then: leave it missing → it fails loud if touched → that is the desired signal.
 
+### C. Created on an OBSERVED failure (the policy working as intended)
+- **V226** `product_units` — **2026-09-02.** Owner pressed `+ Buat satuan "Kilogram"` in the
+  Tambah Item form repeatedly, nothing happened. Measured:
+  `to_regclass('public.product_units')` = NULL while `unit_conversions` exists; every endpoint
+  in `routers/units.py` touching it returns 500. That is the observed failure the policy below
+  requires, so the table was reconstructed with **code as arbiter**, per column, citing line
+  numbers in the migration header.
+  **The rolled-back V215 schema would NOT have fixed this**: it omitted `is_active` and
+  `updated_at`, both of which `units.py` reads (l.66,114,126) and writes (l.258,316) — and its
+  own DO-block did not check for them, so it would have reported OK while list/dropdown/update/
+  delete still 500'd. Rebuilding from the code beat reusing the archived migration.
+  Tested on scratch DB `milkydb_satuan_test`; rollback in
+  `V226__create_product_units_ROLLBACK.sql`, tested in both directions.
+
 ## BACKLOG — code-referenced, no DDL anywhere, NOT created (fail-loud if touched)
 Create only on an observed failure, reconstructing carefully with code as arbiter.
 
@@ -36,7 +50,6 @@ Create only on an observed failure, reconstructing carefully with code as arbite
 | `granular_permissions` | Layer-2 permissions (permission_service.py) | Multi-shape INSERT + `module` column + ON CONFLICT — needs careful read. Reachable via Team & Access. |
 | `action_patterns`, `chat_telemetry` | Chat learning/telemetry (action_memory.py, telemetry.py) | Fire-and-forget (try/except) — will not hard-500. |
 | `master_data_audit_log` | audit_log.py + vendors.py (master-data edit audit) | Ex-V215 (rolled back). Create on observed failure. |
-| `product_units` | units.py (item unit master) | Ex-V215 (rolled back). Create on observed failure. |
 | `journal_sequences` | fixed_assets.py (per-tenant counter) | Ex-V215 (rolled back). Create on observed failure. |
 | `tool_call_logs` | unified_agent/observability.py (fire-and-forget) | Ex-V215 (rolled back). Will not hard-500. |
 | `kds_order_history`, `menu_item_modifiers`, `recipe_modifier_groups`, `recipe_modifier_options`, `reservations` | Resto/POS (kds.py, recipes.py, tables.py) | IRRELEVANT to a konveksi/garment tenant. Do not create. |
