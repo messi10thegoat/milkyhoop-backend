@@ -2241,14 +2241,23 @@ async def report_output(
 
                 # Calculate unit cost (include subcontract cost)
                 subcontract_cost = Decimal(str(order["subcontract_cost"] or 0))
-                # Bug #5 fix: block FG receipt if subcontract bill not posted
+                # Bug #5 fix: block FG receipt if subcontract bill not posted.
+                # SUMBER SAHIH = bills.status_v2 (kolom warisan bills.status TIDAK ANDAL:
+                # berubah jadi 'paid' setelah dibayar -> penjaga lama salah memblokir).
+                # Aturan kanonik: sudah di-posting bila status_v2 NOT IN ('draft','void').
+                # Fail-closed: status_v2 NULL, atau baris subkontrak tanpa bill_id, dihitung BELUM di-posting.
                 if subcontract_cost > 0:
                     unposted = await conn.fetchval(
                         """
                         SELECT COUNT(*) FROM production_subcontracts ps
-                        JOIN bills b ON b.id = ps.bill_id
+                        LEFT JOIN bills b ON b.id = ps.bill_id
                         WHERE ps.production_order_id = $1 AND ps.tenant_id = $2
-                          AND (b.status IS NULL OR b.status != 'posted')
+                          AND (
+                                ps.bill_id IS NULL
+                                OR b.id IS NULL
+                                OR b.status_v2 IS NULL
+                                OR b.status_v2 IN ('draft', 'void')
+                          )
                     """,
                         str(order_id),
                         ctx["tenant_id"],
