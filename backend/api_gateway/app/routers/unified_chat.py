@@ -7146,6 +7146,13 @@ async def _confirm_direct_action(
             # Kegagalan di sini NON-FATAL: `_snap_final_json` tetap None dan
             # UPDATE di bawah berperilaku persis seperti sebelum T207.
             _snap_final_json = None
+            # T207b: `chat_messages.content` (markdown tabel pra-sunting) tidak
+            # ikut ditulis ulang oleh T207 -> konsumen yang membaca `content`
+            # (salin-teks, AssistantActions, riwayat dimuat ulang) memuat nilai
+            # LAMA. Kedua tabel di bawah dipakai untuk mengganti HANYA potongan
+            # tabel di dalam content, sehingga narasi/hint di luarnya utuh.
+            _tabel_lama_t207b = None
+            _tabel_baru_t207b = None
             if payload_overrides:
                 try:
                     _snap_row = await pool.fetchrow(
@@ -7167,6 +7174,19 @@ async def _confirm_direct_action(
                     )
                     if _snap_baru is not None:
                         _snap_final_json = json.dumps(_snap_baru, default=str)
+                        # T207b: hanya bila KEDUANYA tabel non-kosong dan
+                        # memang berbeda -- kalau sama, replace() no-op.
+                        _tl = (_snap_lama or {}).get("confirmation_table")
+                        _tb = _snap_baru.get("confirmation_table")
+                        if (
+                            isinstance(_tl, str)
+                            and isinstance(_tb, str)
+                            and _tl.strip()
+                            and _tb.strip()
+                            and _tl != _tb
+                        ):
+                            _tabel_lama_t207b = _tl
+                            _tabel_baru_t207b = _tb
                     else:
                         logger.warning(
                             "[T207] snapshot final tidak terbangun untuk pa=%s "
@@ -7198,13 +7218,23 @@ async def _confirm_direct_action(
                             '{status}', '"COMPLETED"'
                         ),
                         '{completed_at}', to_jsonb(NOW()::text)
-                    )
+                    ),
+                    -- T207b: ganti HANYA potongan tabel di dalam content.
+                    -- replace() no-op bila substring tak ada (narasi batch
+                    -- T171) atau sudah tergantikan -> idempoten.
+                    content = CASE
+                        WHEN $4::text IS NULL OR $5::text IS NULL THEN content
+                        WHEN content IS NULL THEN content
+                        ELSE replace(content, $4::text, $5::text)
+                    END
                     WHERE metadata->>'pending_action_id' = $1
                       AND tenant_id = $2
                 """,
                     str(pending_action_id),
                     tenant_id,
                     _snap_final_json,
+                    _tabel_lama_t207b,
+                    _tabel_baru_t207b,
                 )
             except Exception as _md_err:
                 logger.warning(
