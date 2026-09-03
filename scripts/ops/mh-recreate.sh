@@ -30,8 +30,14 @@ fi
 
 TREE=/root/milkyhoop-dev
 CTR="milkyhoop-dev-${SVC}"
-docker inspect "$CTR" >/dev/null 2>&1 || CTR="milkyhoop-dev-${SVC}-1"
-if ! docker inspect "$CTR" >/dev/null 2>&1; then
+# 2026-09-03: WAJIB `docker container inspect`, bukan `docker inspect`.
+# `docker inspect` juga mencocokkan IMAGE. Untuk service `frontend`, image
+# bernama `milkyhoop-dev-frontend` sedangkan kontainernya
+# `milkyhoop-dev-frontend-1` -> tebakan pertama SUKSES atas image, fallback
+# `-1` tak pernah dipakai, lalu `docker logs` gagal atas sebuah image dan
+# recreate dibatalkan. Terjadi nyata saat deploy FE 2026-09-03.
+docker container inspect "$CTR" >/dev/null 2>&1 || CTR="milkyhoop-dev-${SVC}-1"
+if ! docker container inspect "$CTR" >/dev/null 2>&1; then
     echo "GAGAL: tak menemukan kontainer untuk service '$SVC'." >&2
     exit 2
 fi
@@ -49,13 +55,21 @@ echo "arsip : $OUT ($(stat -c%s "$OUT") byte)"
 cd "$TREE"
 docker compose up -d --no-deps "$SVC"
 
+# 2026-09-03: probe harus menguji SERVICE YANG DI-RECREATE. Sebelumnya ia
+# selalu menembak healthz api_gateway, jadi recreate `frontend` dilaporkan
+# "healthz: 200" berdasarkan proses yang sama sekali lain -- sinyal sehat yang
+# menutupi frontend mati. Sekarang per-service.
+case "$SVC" in
+    frontend) PROBE="http://localhost:3001/BUILD_INFO.json" ;;
+    *)        PROBE="http://localhost:8001/healthz" ;;
+esac
 for i in $(seq 1 12); do
-    CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/healthz || echo 000)
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' "$PROBE" || echo 000)
     if [ "$CODE" = "200" ]; then
-        echo "healthz: 200 (percobaan $i)"
+        echo "probe $PROBE: 200 (percobaan $i)"
         exit 0
     fi
     sleep 5
 done
-echo "PERINGATAN: healthz belum 200 sesudah ~60 detik — periksa manual." >&2
+echo "PERINGATAN: $PROBE belum 200 sesudah ~60 detik — periksa manual." >&2
 exit 1

@@ -28,7 +28,9 @@ if [ -z "$CTR" ]; then
     exit 2
 fi
 
-if ! docker inspect "$CTR" >/dev/null 2>&1; then
+# 2026-09-03: `docker container inspect`, bukan `docker inspect` — yang
+# terakhir juga mencocokkan IMAGE bernama sama (lihat mh-recreate.sh).
+if ! docker container inspect "$CTR" >/dev/null 2>&1; then
     echo "GAGAL: kontainer '$CTR' tidak ada." >&2
     exit 2
 fi
