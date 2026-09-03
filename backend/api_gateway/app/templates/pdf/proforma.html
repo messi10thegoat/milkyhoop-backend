@@ -8,7 +8,6 @@
     <div class="header">
         <div>
             <h1 class="doc-title">Tagihan Uang Muka</h1>
-            <div class="doc-subtitle">Faktur Proforma &mdash; bukan faktur pajak</div>
         </div>
         {% if company and company.logo_base64 %}
         <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
@@ -81,17 +80,37 @@
         <thead>
             <tr>
                 <th class="col-desc">Keterangan</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-price">Harga satuan</th>
                 <th class="col-amount">Jumlah</th>
             </tr>
         </thead>
         <tbody>
+            {# Rincian item pesanan. `.get()` dipakai karena Jinja Undefined
+               BUKAN None: proforma tanpa SO tidak boleh meledak, ia hanya
+               kehilangan blok rincian. #}
+            {% for item in proforma.get('order_items') or [] %}
+            <tr>
+                <td class="col-desc">{{ item.description or '-' }}</td>
+                <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+                <td class="col-price">Rp {{ item.unit_price | currency }}</td>
+                <td class="col-amount">Rp {{ item.line_total | currency }}</td>
+            </tr>
+            {% endfor %}
+            {% if proforma.get('order_items') and proforma.get('order_total_amount') %}
+            <tr>
+                <td class="col-desc"><strong>Nilai Pesanan</strong></td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
+                <td class="col-amount"><strong>Rp {{ proforma.order_total_amount | currency }}</strong></td>
+            </tr>
+            {% endif %}
             <tr>
                 <td class="col-desc">
                     {{ purpose_label }} atas Sales Order {{ proforma.sales_order_number or '-' }}
-                    {% if proforma.percent_of_order %}
-                    <br><span class="text-muted">{{ proforma.percent_of_order | round(2) }}% dari nilai pesanan</span>
-                    {% endif %}
                 </td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
                 <td class="col-amount">Rp {{ proforma.amount | currency }}</td>
             </tr>
         </tbody>
@@ -100,26 +119,37 @@
     <!-- 6. Ringkasan -->
     <div class="summary">
         <table class="summary-table">
-            {% if proforma.order_total_amount %}
+            {% if proforma.get('order_total_amount') %}
             <tr>
-                <td class="label">Nilai Sales Order</td>
+                <td class="label">Nilai Pesanan</td>
                 <td class="value">Rp {{ proforma.order_total_amount | currency }}</td>
             </tr>
             {% endif %}
-            <tr>
-                <td class="label">Yang ditagih</td>
-                <td class="value">Rp {{ proforma.amount | currency }}</td>
+            <tr class="total-row">
+                <td class="label"><strong>Uang Muka yang Ditagih{% if proforma.get('dp_percent_display') is not none %} ({{ proforma.dp_percent_display }}%){% endif %}</strong></td>
+                <td class="value"><strong>Rp {{ proforma.amount | currency }}</strong></td>
             </tr>
-            {% if proforma.paid_amount and proforma.paid_amount|float > 0 %}
+            {% if proforma.get('remaining_after_dp') is not none %}
             <tr>
-                <td class="label">Sudah diterima</td>
-                <td class="value">-Rp {{ proforma.paid_amount | currency }}</td>
+                <td class="label">
+                    Pelunasan setelah uang muka
+                    <br><span class="text-muted">(ditagih terpisah saat barang siap)</span>
+                </td>
+                <td class="value">Rp {{ proforma.remaining_after_dp | currency }}</td>
             </tr>
             {% endif %}
+            {# Baris sisa HANYA saat dibayar sebagian. Belum dibayar sama
+               sekali -> tidak ada baris sisa apa pun. #}
+            {% if proforma.get('is_partially_paid') %}
+            <tr>
+                <td class="label">Sudah Dibayar</td>
+                <td class="value">-Rp {{ proforma.paid_amount | currency }}</td>
+            </tr>
             <tr class="total-row">
-                <td class="label">Sisa yang harus dibayar</td>
+                <td class="label">Sisa Tagihan Ini</td>
                 <td class="value">Rp {{ proforma.outstanding_amount | currency }}</td>
             </tr>
+            {% endif %}
         </table>
     </div>
 

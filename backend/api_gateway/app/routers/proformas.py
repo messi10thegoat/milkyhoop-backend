@@ -819,6 +819,33 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
 
             paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
 
+            # Rincian item Sales Order untuk tabel Keterangan.
+            # `sales_order_items` TIDAK punya kolom `deleted_at` (diukur
+            # 2026-09-03 lewat information_schema), jadi tak ada saringan
+            # soft-delete yang bisa dipasang -- baris yang ada adalah baris
+            # yang berlaku.
+            _order_items = []
+            if row["sales_order_id"]:
+                _oi = await conn.fetch(
+                    """
+                    SELECT description, quantity, unit, unit_price, line_total
+                    FROM sales_order_items
+                    WHERE sales_order_id = $1
+                    ORDER BY sort_order, description
+                    """,
+                    row["sales_order_id"],
+                )
+                _order_items = [
+                    {
+                        "description": r["description"],
+                        "quantity": _f(r["quantity"]),
+                        "unit": r["unit"],
+                        "unit_price": _f(r["unit_price"]),
+                        "line_total": _f(r["line_total"]),
+                    }
+                    for r in _oi
+                ]
+
             tenant_row = await conn.fetchrow(
                 'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
                 ctx["tenant_id"],
@@ -871,6 +898,24 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
                 "amount": amount,
                 "paid_amount": paid,
                 "outstanding_amount": round(amount - paid, 2),
+                # ── angka turunan untuk ringkasan kanan ──
+                # Persen ditampilkan HANYA bila nilai SO > 0; tanpa penjaga itu
+                # proforma tanpa SO membagi dengan nol.
+                "order_items": _order_items,
+                "dp_percent_display": (
+                    int(round(amount / _f(row["order_total_amount"]) * 100))
+                    if _f(row["order_total_amount"])
+                    else None
+                ),
+                # Pelunasan = nilai pesanan - uang muka. Ditagih terpisah nanti.
+                "remaining_after_dp": (
+                    round(_f(row["order_total_amount"]) - amount, 2)
+                    if _f(row["order_total_amount"])
+                    else None
+                ),
+                # Baris "Sudah Dibayar"/"Sisa Tagihan Ini" HANYA saat proforma
+                # dibayar SEBAGIAN. Belum dibayar sama sekali -> nol baris sisa.
+                "is_partially_paid": bool(0 < paid < amount),
                 "currency": row["currency"],
                 "terms": row["terms"],
                 "notes": row["notes"],
