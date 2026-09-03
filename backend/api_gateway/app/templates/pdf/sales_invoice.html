@@ -240,21 +240,7 @@
         </table>
     </div>
 
-    <!-- Rekening Pembayaran -->
-    <!-- Tiket MASTER: instruksi cetak "bayar ke mana". Salinan IDENTIK dari
-         quote.html:190-200 (dan proforma.html:126-133). Penjaga yang sama:
-         blok tak muncul sama sekali bila kedua field utama kosong -- bukan
-         "-" hampa. `.get()` dipakai karena Jinja Undefined != None. -->
-    {% if invoice.get('payment_bank_name') or invoice.get('payment_account_number') %}
-    <div class="notes-section">
-        <div class="notes-label">Rekening Pembayaran</div>
-        <div class="notes-text">
-            {% if invoice.get('payment_bank_name') %}{{ invoice.get('payment_bank_name') }}<br>{% endif %}
-            {% if invoice.get('payment_account_number') %}{{ invoice.get('payment_account_number') }}<br>{% endif %}
-            {% if invoice.get('payment_account_holder') %}a.n. {{ invoice.get('payment_account_holder') }}{% endif %}
-        </div>
-    </div>
-    {% endif %}
+    {% with dok = invoice %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
 
     {% if invoice.notes %}
     <div class="notes-section">

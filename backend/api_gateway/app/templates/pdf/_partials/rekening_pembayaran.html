@@ -1,0 +1,34 @@
+{#
+  Blok "Rekening Pembayaran" — SATU definisi untuk quote, proforma, dan
+  faktur penjualan. Sebelumnya tiga salinan identik yang harus diubah
+  bertiga; ini partial pertama di direktori templates, jadi ia sekaligus
+  menetapkan polanya.
+
+  Pemakaian (nama variabel konteks berbeda-beda di tiap template):
+      {% with dok = quote %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
+
+  `dok` WAJIB berupa dict — ketiga pemanggil mengirim dict
+  (`quote_data`, `proforma_data`, `invoice`), jadi `.get()` aman dan
+  sekaligus melindungi dari kunci yang hilang: di Jinja, `Undefined` BUKAN
+  `None`, dan `dok.payment_bank_name` pada dict tanpa kunci itu menghasilkan
+  Undefined yang diam-diam falsy — `.get()` membuat maksudnya eksplisit.
+
+  Penjaga `or` disengaja: blok TIDAK MUNCUL SAMA SEKALI bila kedua field
+  utama kosong — bukan tampil sebagai kotak hampa.
+
+  Isi blok ini disalin apa adanya dari salinan yang sudah berjalan; nol
+  perubahan tampilan. Kalau baris di sini diubah, KETIGA dokumen berubah —
+  itu memang tujuannya, dan itu pula kontrol negatif yang membuktikan
+  ketiganya benar-benar memakai berkas ini.
+#}
+    <!-- Rekening Pembayaran -->
+    {% if dok.get('payment_bank_name') or dok.get('payment_account_number') %}
+    <div class="notes-section">
+        <div class="notes-label">Rekening Pembayaran</div>
+        <div class="notes-text">
+            {% if dok.get('payment_bank_name') %}{{ dok.get('payment_bank_name') }}<br>{% endif %}
+            {% if dok.get('payment_account_number') %}{{ dok.get('payment_account_number') }}<br>{% endif %}
+            {% if dok.get('payment_account_holder') %}a.n. {{ dok.get('payment_account_holder') }}{% endif %}
+        </div>
+    </div>
+    {% endif %}

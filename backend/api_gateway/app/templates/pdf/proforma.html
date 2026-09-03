@@ -153,17 +153,7 @@
         </table>
     </div>
 
-    <!-- Rekening Pembayaran -->
-    {% if proforma.payment_bank_name or proforma.payment_account_number %}
-    <div class="notes-section">
-        <div class="notes-label">Rekening Pembayaran</div>
-        <div class="notes-text">
-            {% if proforma.payment_bank_name %}{{ proforma.payment_bank_name }}<br>{% endif %}
-            {% if proforma.payment_account_number %}{{ proforma.payment_account_number }}<br>{% endif %}
-            {% if proforma.payment_account_holder %}a.n. {{ proforma.payment_account_holder }}{% endif %}
-        </div>
-    </div>
-    {% endif %}
+    {% with dok = proforma %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
 
     {% if proforma.notes %}
     <div class="notes-section">

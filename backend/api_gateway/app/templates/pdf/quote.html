@@ -187,17 +187,7 @@
     </div>
 {%- endif %}
 
-    <!-- Rekening Pembayaran -->
-    {% if quote.payment_bank_name or quote.payment_account_number %}
-    <div class="notes-section">
-        <div class="notes-label">Rekening Pembayaran</div>
-        <div class="notes-text">
-            {% if quote.payment_bank_name %}{{ quote.payment_bank_name }}<br>{% endif %}
-            {% if quote.payment_account_number %}{{ quote.payment_account_number }}<br>{% endif %}
-            {% if quote.payment_account_holder %}a.n. {{ quote.payment_account_holder }}{% endif %}
-        </div>
-    </div>
-    {% endif %}
+    {% with dok = quote %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
 
     <!-- Closing text -->
     {% if quote.closing_text %}
