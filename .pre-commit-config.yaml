@@ -122,6 +122,22 @@ repos:
             frontend/service-worker\.js
           )$
 
+  # GUC lepas — menahan pertumbuhan penyetel `app.*` yang MATI di luar
+  # transaksi. Bukan pembersihan: jumlahnya DIBEKUKAN pada baseline
+  # (2026-09-03: 325) supaya tak tumbuh, tanpa memaksa menyunting 300+ situs
+  # yang terbukti nol dampak. Alasan lengkap ada di kepala skripnya.
+  # `always_run` + `pass_filenames: false` karena pemeriksaan ini bersifat
+  # SELURUH-POHON: sebuah situs baru bisa muncul di berkas yang tak ikut
+  # di-stage pada commit ini.
+  - repo: local
+    hooks:
+      - id: cek-guc-lepas
+        name: GUC app.* di luar transaksi (baseline)
+        entry: python3 scripts/cek_guc_lepas.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
 # CI configuration
 ci:
   autofix_prs: false

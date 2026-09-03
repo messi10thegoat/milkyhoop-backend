@@ -599,10 +599,6 @@ async def get_budget_vs_actual(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
         budget = await conn.fetchrow(
             "SELECT * FROM budgets WHERE id = $1 AND tenant_id = $2",
             budget_id,
@@ -611,9 +607,28 @@ async def get_budget_vs_actual(
         if not budget:
             raise HTTPException(status_code=404, detail="Budget not found")
 
-        rows = await conn.fetch(
-            "SELECT * FROM get_budget_vs_actual($1, $2)", budget_id, month
-        )
+        # `get_budget_vs_actual` menyaring realisasi lewat
+        #     WHERE je.tenant_id = current_setting('app.tenant_id', true)
+        # dan TIDAK menyetel GUC itu sendiri — ia satu-satunya fungsi DB di
+        # basis kode ini yang benar-benar bergantung pada penyetelan dari
+        # pemanggil (diukur 2026-09-03: 10 fungsi membaca GUC, 5 menyetel
+        # sendiri dari parameter, 4 hanya di cabang penjaga non-BYPASSRLS).
+        #
+        # `set_config(..., true)` HANYA hidup di dalam transaksi, dan asyncpg
+        # menjadikan tiap `execute()` transaksi implisitnya sendiri — jadi
+        # sebagai statement lepas ia MATI sebelum baris berikutnya, TANPA
+        # peringatan apa pun. Terukur: 95 journal_entries ada, tetapi saringan
+        # yang sama di bawah pola lepas mencocokkan 0.
+        # Karena itu SET dan pemanggilan harus berbagi SATU transaksi.
+        # JANGAN menggantinya dengan is_local=false: nilainya akan bertahan di
+        # sesi dan bocor antar-permintaan lewat connection pool.
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
+            rows = await conn.fetch(
+                "SELECT * FROM get_budget_vs_actual($1, $2)", budget_id, month
+            )
 
         items = [
             BudgetVsActualItem(
