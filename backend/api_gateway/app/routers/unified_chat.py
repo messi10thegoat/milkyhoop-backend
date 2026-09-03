@@ -6724,9 +6724,31 @@ async def _confirm_direct_action(
         _ocr_text = None
         if session_id:
             try:
+                # PAGAR TENANT (3 Sep 2026). `session_id` di sini datang
+                # LANGSUNG dari body permintaan (dioper di :7595 sebagai
+                # `session_id=body.session_id`) dan TIDAK pernah diperiksa
+                # kepemilikannya -- berbeda dengan `pending_action_id` di atas
+                # yang dicari `WHERE id = $1 AND tenant_id = $2`.
+                #
+                # Tanpa saringan ini, pemanggil di tenant A yang mengirim
+                # session_id milik tenant B membaca `document_context` tenant B,
+                # dan `ocr_text`-nya dipakai _coerce_phone_fields untuk
+                # memulihkan nomor telepon yang lalu masuk ke record milik A.
+                # Diukur atas data produksi 3 Sep 2026: bentuk tanpa saringan
+                # mengembalikan 1 baris milik grapgrap-manado untuk pemanggil
+                # kaos-biru; dengan saringan, nol.
+                #
+                # Mengeksploitasinya menuntut uuid sesi tenant lain yang tak
+                # bisa ditebak, jadi ini pagar BERLAPIS yang hilang, bukan pintu
+                # terbuka. Lapisan itu justru penting di sini: RLS dekoratif dan
+                # seluruh koneksi gateway BYPASSRLS, jadi tak ada apa pun di
+                # bawah kode ini. Bandingkan session_manager.py:448 yang sejak
+                # awal menyaring dengan tenant_id.
                 _ocr_row = await pool.fetchrow(
-                    "SELECT document_context FROM chat_session_state WHERE session_id = $1::uuid",
+                    "SELECT document_context FROM chat_session_state "
+                    "WHERE session_id = $1::uuid AND tenant_id = $2",
                     str(session_id),
+                    tenant_id,
                 )
                 if _ocr_row and _ocr_row["document_context"]:
                     _dc = _ocr_row["document_context"]
