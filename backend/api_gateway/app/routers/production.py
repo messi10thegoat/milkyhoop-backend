@@ -1487,6 +1487,61 @@ async def cancel_order(request: Request, order_id: UUID):
                             "MATERIAL_ISSUE",
                         )
 
+                # 2b. Balik SEMUA jurnal LABOR + OVERHEAD milik WO ini.
+                #
+                # Sebelum ini `cancel` hanya membalik FG receipt dan material
+                # issue. Labor dan overhead TIDAK PERNAH dibalik, sehingga
+                # setiap WO yang pernah dicatat labor lalu dibatalkan
+                # meninggalkan WIP (1-10650) di pembukuan SELAMANYA. Terukur
+                # 2026-09-03: empat WO ber-status `cancelled` menahan
+                # Rp 7.850.000 di WIP.
+                #
+                # DICARI LEWAT source_id, BUKAN lewat kolom. `production_orders`
+                # hanya punya SATU `labor_journal_id` (dan nol kolom untuk
+                # overhead), sedangkan labor dicatat BERKALI-KALI per WO —
+                # terukur 3-4 jurnal labor + 3-4 overhead per WO. Membalik
+                # kolomnya saja akan menyisakan sisanya, yaitu memperbaiki
+                # sebagian lalu melaporkannya sebagai selesai.
+                # `production_order_labor` TIDAK menyimpan journal_id, jadi
+                # source_id memang satu-satunya tautan yang ada.
+                #
+                # `reversed_by_id IS NULL` menjaga idempotensi: jurnal yang
+                # sudah pernah dibalik (mis. lewat pembersihan manual) tidak
+                # dibalik dua kali. Nol DISABLE TRIGGER, nol DELETE — memakai
+                # `_reverse_journal` yang sama dengan langkah 1 dan 2 (Law 2/26,
+                # jurnal pembalik ber-`reversal_of_id`).
+                #
+                # Nol sentuhan pada ledger PERSEDIAAN: labor/overhead tidak
+                # menggerakkan stok, hanya WIP dan akun applied.
+                _jurnal_lo = await conn.fetch(
+                    """
+                    SELECT id, journal_number
+                    FROM journal_entries
+                    WHERE tenant_id = $1
+                      AND source_id = $2
+                      AND source_type IN ('PRODUCTION_LABOR', 'PRODUCTION_OVERHEAD')
+                      AND status = 'POSTED'
+                      AND reversed_by_id IS NULL
+                    ORDER BY journal_number
+                    """,
+                    ctx["tenant_id"],
+                    order_id,
+                )
+                for _j in _jurnal_lo:
+                    await _reverse_journal(
+                        conn,
+                        ctx["tenant_id"],
+                        ctx["user_id"],
+                        _j["id"],
+                        "Production order cancelled",
+                    )
+                if _jurnal_lo:
+                    logger.info(
+                        "[CANCEL_WO] %s: %d jurnal labor/overhead dibalik",
+                        order["order_number"],
+                        len(_jurnal_lo),
+                    )
+
                 # 3. Reset WO counters (cumulative fields set to 0; original rows preserved for audit)
                 await conn.execute(
                     """
