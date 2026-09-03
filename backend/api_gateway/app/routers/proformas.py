@@ -46,6 +46,26 @@ SO_BILLABLE_STATUSES = (
 VALID_PURPOSES = ("DP", "TERMIN", "PELUNASAN")
 
 
+def _normalisasi_purpose(nilai):
+    """Rapikan `purpose` sebelum dicocokkan ke VALID_PURPOSES.
+
+    Enumnya HURUF BESAR, dan sebelum ini dicocokkan mentah-mentah: `"dp"`,
+    `"Dp"`, atau `" DP "` sama-sama ditolak 400 padahal maksud penggunanya
+    tidak ambigu sedikit pun. Yang ditolak seharusnya nilai yang MEMANG di luar
+    daftar (mis. "lunas"), bukan selisih kapitalisasi atau spasi tempel dari
+    form.
+
+    Ini PENGERASAN, BUKAN PELEBARAN: himpunan nilai yang diterima tetap tiga.
+    Nilai yang dikembalikan inilah yang disimpan, sehingga kolomnya tetap
+    kanonik huruf besar dan pembaca hilir tak perlu ikut menormalisasi.
+
+    None diteruskan apa adanya — pada PATCH ia berarti "jangan ubah".
+    """
+    if nilai is None:
+        return None
+    return str(nilai).strip().upper()
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get singleton connection pool (Law 32)."""
     from ..services.db_pool import get_db_pool
@@ -487,7 +507,8 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
         ctx = get_user_context(request)
         oid = _uuid_or_404(body.sales_order_id, "Sales Order")
 
-        if body.purpose not in VALID_PURPOSES:
+        _purpose = _normalisasi_purpose(body.purpose)
+        if _purpose not in VALID_PURPOSES:
             raise HTTPException(
                 status_code=400,
                 detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
@@ -553,7 +574,7 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 oid,
                 order["customer_id"],
                 order["customer_name"],
-                body.purpose,
+                _purpose,
                 Decimal(str(percent)) if percent is not None else None,
                 Decimal(str(amount)),
                 body.currency or "IDR",
@@ -602,7 +623,8 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
             order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
             order_total = _f(order["total_amount"]) or 0.0
 
-            if body.purpose is not None and body.purpose not in VALID_PURPOSES:
+            _purpose = _normalisasi_purpose(body.purpose)
+            if _purpose is not None and _purpose not in VALID_PURPOSES:
                 raise HTTPException(
                     status_code=400,
                     detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
@@ -646,7 +668,7 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
                 """,
                 pid,
                 ctx["tenant_id"],
-                body.purpose,
+                _purpose,
                 Decimal(str(percent)) if percent is not None else None,
                 Decimal(str(body.amount)) if body.amount is not None else None,
                 Decimal(str(amount)) if amount is not None else None,
