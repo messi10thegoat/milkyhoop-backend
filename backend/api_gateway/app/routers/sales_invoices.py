@@ -2592,8 +2592,24 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
 async def update_invoice(
     request: Request, invoice_id: UUID, body: UpdateInvoiceRequest
 ):
-    """Update a draft invoice."""
+    """Update a draft invoice.
+
+    TIDAK mem-posting. `auto_post=true` ditolak 400 — lihat catatan di
+    `UpdateInvoiceRequest.auto_post`.
+    """
     try:
+        # Ditolak SEBELUM sentuhan DB apa pun: jawabannya tidak bergantung pada
+        # keadaan faktur, dan pengguna berhak tahu segera bahwa tombolnya tidak
+        # melakukan apa yang dijanjikan.
+        if body.auto_post is True:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "auto_post tidak didukung pada PATCH — gunakan "
+                    "POST /api/sales-invoices/{id}/post untuk memposting faktur."
+                ),
+            )
+
         ctx = get_user_context(request)
         pool = await get_pool()
 
@@ -2749,7 +2765,13 @@ async def update_invoice(
                     )
 
                 # Update other fields
-                update_data = body.model_dump(exclude_unset=True, exclude={"items"})
+                # `auto_post` BUKAN kolom sales_invoices; ia hanya sinyal niat dari FE.
+                # Tanpa dikecualikan di sini, ia ikut masuk pembangun UPDATE
+                # dinamis dan menghasilkan 500 (kolom tak ada) untuk
+                # auto_post=false -- terungkap oleh gerbang T222 butir (3).
+                update_data = body.model_dump(
+                    exclude_unset=True, exclude={"items", "auto_post"}
+                )
                 if update_data:
                     updates = []
                     params = []

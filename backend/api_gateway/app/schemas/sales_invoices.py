@@ -186,6 +186,21 @@ class CreateInvoiceRequest(BaseModel):
 class UpdateInvoiceRequest(BaseModel):
     """Request body for updating a draft invoice."""
 
+    # DIKENALI TAPI TIDAK DIDUKUNG — sengaja. Pydantic default MENGABAIKAN kunci
+    # tak dikenal, jadi `auto_post` yang dikirim tombol "Simpan Perubahan" FE
+    # dibuang DIAM-DIAM: pengguna menekan tombol yang menjanjikan posting, server
+    # membalas 200, dan fakturnya tetap draft. Dengan dideklarasikan di sini,
+    # nilainya sampai ke handler dan bisa DITOLAK dengan pesan yang jujur alih-alih
+    # hilang tanpa jejak.
+    #
+    # KENAPA PATCH TIDAK BOLEH MEM-POST (diukur, bukan selera): posting punya
+    # endpointnya sendiri, `POST /{invoice_id}/post`, yang menjalankan
+    # `check_period_is_open` lalu membuat AR + jurnal. Membiarkan PATCH mem-post
+    # berarti JALUR KEDUA menuju status `posted` yang harus menirukan seluruh
+    # validasi itu — dan setiap validasi yang lupa ditiru menjadi lubang senyap.
+    # PATCH tetap satu hal saja: menyunting draft.
+    auto_post: Optional[bool] = None
+
     customer_id: Optional[str] = None
     customer_name: Optional[str] = Field(None, max_length=255)
     invoice_date: Optional[date] = None
