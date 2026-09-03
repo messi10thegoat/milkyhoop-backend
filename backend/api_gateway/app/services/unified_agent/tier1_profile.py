@@ -49,7 +49,7 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 SELECT v.name, COUNT(*) as cnt
                 FROM bills b
                 JOIN vendors v ON v.id = b.vendor_id
-                WHERE b.status IN ('POSTED', 'PARTIAL')
+                WHERE COALESCE(b.status_v2, 'draft') NOT IN ('draft', 'void')
                 GROUP BY v.id, v.name
                 HAVING COUNT(*) >= 1
                 ORDER BY cnt DESC LIMIT 5

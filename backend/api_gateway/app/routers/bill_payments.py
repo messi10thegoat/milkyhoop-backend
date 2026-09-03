@@ -1982,7 +1982,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                     ), 0) as journal_remaining
                 FROM bills b
                 WHERE b.tenant_id = $1 AND b.vendor_id = $2::uuid
-                  AND b.status IN ('posted', 'partial', 'overdue')
+                  AND COALESCE(b.status_v2, 'draft') NOT IN ('draft', 'void')
                 ORDER BY b.due_date ASC, b.issue_date ASC""",
                 ctx["tenant_id"],
                 vendor_id,

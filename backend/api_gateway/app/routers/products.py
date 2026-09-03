@@ -194,7 +194,7 @@ async def get_product_by_barcode(request: Request, barcode: str):
                 LEFT JOIN products p_inner ON p_inner.id = bi.product_id
                 WHERE b.tenant_id = $1
                   AND bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 LIMIT 1)
-                  AND b.status != 'void'
+                  AND COALESCE(b.status_v2, 'draft') <> 'void'
                 ORDER BY b.issue_date DESC, b.created_at DESC
                 LIMIT 1
             """
@@ -356,7 +356,7 @@ async def get_last_purchase(
                     bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
                     OR LOWER(bi.product_name) = LOWER($2)
                   )
-                  AND b.status != 'void'
+                  AND COALESCE(b.status_v2, 'draft') <> 'void'
                 ORDER BY b.issue_date DESC, b.created_at DESC
                 LIMIT 1
             """
@@ -464,7 +464,7 @@ async def get_all_products(request: Request, limit: int = Query(1000, ge=1, le=2
                     FROM (
                         SELECT bi.product_id FROM bill_items bi
                         JOIN bills b ON b.id = bi.bill_id
-                        WHERE b.tenant_id = $1 AND b.status != 'void' AND bi.product_id IS NOT NULL
+                        WHERE b.tenant_id = $1 AND COALESCE(b.status_v2, 'draft') <> 'void' AND bi.product_id IS NOT NULL
                         UNION ALL
                         SELECT si.item_id FROM sales_invoice_items si
                         JOIN sales_invoices s ON s.id = si.invoice_id
@@ -552,7 +552,7 @@ async def search_products(
                     COALESCE(
                         (SELECT COUNT(*) FROM bill_items bi
                          JOIN bills b ON b.id = bi.bill_id
-                         WHERE b.tenant_id = $1 AND bi.product_id = pm.id AND b.status != 'void')
+                         WHERE b.tenant_id = $1 AND bi.product_id = pm.id AND COALESCE(b.status_v2, 'draft') <> 'void')
                         +
                         (SELECT COUNT(*) FROM sales_invoice_items si
                          JOIN sales_invoices s ON s.id = si.invoice_id
@@ -800,7 +800,7 @@ async def search_products_for_kulakan(
                     WHERE b.tenant_id = $1
                       AND bi.product_name IS NOT NULL
                       AND bi.product_name != ''
-                      AND b.status != 'void'
+                      AND COALESCE(b.status_v2, 'draft') <> 'void'
                       AND (
                           bi.product_name ILIKE '%' || $2 || '%'
                           OR similarity(LOWER(bi.product_name), LOWER($2)) > 0.1
@@ -867,7 +867,7 @@ async def search_products_for_kulakan(
                         bi.product_id = (SELECT id FROM products WHERE tenant_id = $1 AND LOWER(nama_produk) = LOWER($2) LIMIT 1)
                         OR LOWER(bi.product_name) = LOWER($2)
                       )
-                      AND b.status != 'void'
+                      AND COALESCE(b.status_v2, 'draft') <> 'void'
                     ORDER BY b.issue_date DESC, b.created_at DESC
                     LIMIT 1
                     """,

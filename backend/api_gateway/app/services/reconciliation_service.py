@@ -160,7 +160,7 @@ class ReconciliationService:
                 JOIN accounts_payable ap ON ap.id = b.ap_id
                 WHERE b.tenant_id = $1
                   AND b.amount != ap.amount::BIGINT
-                  AND b.status NOT IN ('void', 'paid')
+                  AND COALESCE(b.status_v2, 'draft') NOT IN ('void', 'paid')
             """, tenant_id)
 
             return {
