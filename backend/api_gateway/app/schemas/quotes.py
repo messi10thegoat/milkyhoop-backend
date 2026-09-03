@@ -286,6 +286,13 @@ class QuoteSummary(BaseModel):
     declined_count: int
     expired_count: int
     converted_count: int
+    # 2026-09-03: dua status terakhir dari CHECK constraint `quotes.status`
+    # akhirnya punya count-nya sendiri. Sebelum ini `void` (10 dari 31 baris di
+    # tenant nyata, ~32%) tidak masuk count MANA PUN kecuali `total_quotes`,
+    # sehingga jumlah count != total dan layar menunjukkan selisih yang terlihat
+    # seperti bug. Kini kedelapan status tercakup dan Sum(count) == total_quotes.
+    viewed_count: int
+    void_count: int
     total_value: int  # Sum of all quote totals
     accepted_value: int  # Sum of accepted quotes
     pending_value: int  # Sum of sent quotes

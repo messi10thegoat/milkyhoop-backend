@@ -350,6 +350,8 @@ async def get_quote_summary(request: Request):
                     COUNT(*) FILTER (WHERE status = 'declined') as declined_count,
                     COUNT(*) FILTER (WHERE status = 'expired') as expired_count,
                     COUNT(*) FILTER (WHERE status = 'converted') as converted_count,
+                    COUNT(*) FILTER (WHERE status = 'viewed') as viewed_count,
+                    COUNT(*) FILTER (WHERE status = 'void') as void_count,
                     COALESCE(SUM(total_amount), 0) as total_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status = 'accepted'), 0) as accepted_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status = 'sent'), 0) as pending_value
@@ -368,6 +370,8 @@ async def get_quote_summary(request: Request):
                     "declined_count": row["declined_count"],
                     "expired_count": row["expired_count"],
                     "converted_count": row["converted_count"],
+                    "viewed_count": row["viewed_count"],
+                    "void_count": row["void_count"],
                     "total_value": row["total_value"],
                     "accepted_value": row["accepted_value"],
                     "pending_value": row["pending_value"],
