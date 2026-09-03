@@ -1988,6 +1988,8 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 # saat dibuat, jadi operasi yang sah adalah operasi milik BOM WO
                 # ini. Itu pula yang divalidasi di bawah.
                 _rate_source = "order"
+                _labor_src = "order"
+                _oh_src = "order"
                 _rate_wc_id = order["work_center_id"]
                 labor_rate_std = Decimal(str(order["labor_rate_per_hour"] or 0))
                 oh_rate_std = Decimal(str(order["overhead_rate_per_hour"] or 0))
@@ -2000,6 +2002,8 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                     _op = await conn.fetchrow(
                         """
                         SELECT bo.id, bo.work_center_id,
+                               bo.labor_rate_per_hour AS own_labor_rate,
+                               bo.overhead_rate_per_hour AS own_oh_rate,
                                wc.labor_rate_per_hour AS op_labor_rate,
                                wc.overhead_rate_per_hour AS op_oh_rate
                         FROM bom_operations bo
@@ -2024,11 +2028,44 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                                 "yang sedang dicatat."
                             ),
                         )
+                    # ── PRESEDEN TARIF (keputusan sadar 2026-09-03) ──
+                    #   1. tarif OPERASI sendiri (bom_operations.*_rate_per_hour)
+                    #   2. work center OPERASI
+                    #   3. work center WO            <- default lama
+                    # Tarif operasi menang karena ia yang PALING SPESIFIK: ia
+                    # ditulis untuk satu langkah kerja tertentu, sedangkan tarif
+                    # work center berlaku untuk semua operasi di mesin/stasiun
+                    # itu. "Terisi" = NOT NULL DAN > 0; nol diperlakukan sebagai
+                    # "tidak diisi", bukan sebagai "gratis" -- kolomnya default 0
+                    # dan mayoritas baris memang 0, jadi menghormati 0 sebagai
+                    # tarif nyata akan diam-diam menggratiskan hampir semua
+                    # operasi.
+                    #
+                    # PER-FIELD, bukan pasangan: kalau hanya labor yang diisi di
+                    # operasi, overhead TETAP jatuh ke work center. Memaksa
+                    # keduanya ikut sumber yang sama akan MENGOSONGKAN overhead
+                    # hanya karena labor di-override -- diam-diam menghapus biaya
+                    # yang sah. Karena itu sumbernya dilaporkan per-field juga
+                    # (`labor_rate_source`, `overhead_rate_source`); `rate_source`
+                    # tetap ada sebagai ringkasan supaya kontrak lama tak patah.
                     if _op["work_center_id"] is not None:
                         _rate_source = "operation"
                         _rate_wc_id = _op["work_center_id"]
                         labor_rate_std = Decimal(str(_op["op_labor_rate"] or 0))
                         oh_rate_std = Decimal(str(_op["op_oh_rate"] or 0))
+                        _labor_src = "operation"
+                        _oh_src = "operation"
+
+                    _own_labor = Decimal(str(_op["own_labor_rate"] or 0))
+                    _own_oh = Decimal(str(_op["own_oh_rate"] or 0))
+                    if _own_labor > 0:
+                        labor_rate_std = _own_labor
+                        _labor_src = "operation_rate"
+                    if _own_oh > 0:
+                        oh_rate_std = _own_oh
+                        _oh_src = "operation_rate"
+                    if "operation_rate" in (_labor_src, _oh_src):
+                        _rate_source = "operation_rate"
 
                 actual_hours = Decimal(str(body.actual_hours))
 
@@ -2245,6 +2282,12 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         # user tahu operasi mana yang menentukan biaya.
                         "work_center_id": str(_rate_wc_id) if _rate_wc_id else None,
                         "rate_source": _rate_source,
+                        # Sumber PER-FIELD: labor dan overhead bisa datang dari
+                        # tingkat preseden yang BERBEDA (mis. tarif labor
+                        # di-override di operasi, overhead tetap dari work
+                        # center). `rate_source` di atas hanya ringkasan.
+                        "labor_rate_source": _labor_src,
+                        "overhead_rate_source": _oh_src,
                     },
                 }
 
