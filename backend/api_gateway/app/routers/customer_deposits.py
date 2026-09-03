@@ -1127,10 +1127,23 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
                     detail="Only draft deposits can be deleted. Use void for posted.",
                 )
 
-            # Delete
-            await conn.execute(
-                "DELETE FROM customer_deposits WHERE id = $1", deposit_id
-            )
+            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
+            # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
+            # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
+            # menghasilkan WARNING "SET LOCAL can only be used in transaction
+            # blocks" dan statement berikutnya membaca kosong. Karena itu SET
+            # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
+            # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
+            # sehingga tak ada interpolasi string ke dalam SQL.
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.user_id', $1, true)",
+                    str(ctx["user_id"] or ""),
+                )
+                # Delete
+                await conn.execute(
+                    "DELETE FROM customer_deposits WHERE id = $1", deposit_id
+                )
 
             logger.info(f"Customer deposit deleted: {deposit_id}")
 

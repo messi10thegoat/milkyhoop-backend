@@ -1251,7 +1251,9 @@ class BillsService:
     # =========================================================================
     # DELETE BILL
     # =========================================================================
-    async def delete_bill(self, tenant_id: str, bill_id: UUID) -> Dict[str, Any]:
+    async def delete_bill(
+        self, tenant_id: str, bill_id: UUID, user_id: str | None = None
+    ) -> Dict[str, Any]:
         """
         Hard-delete a draft bill. Only allowed if doc_status='draft' AND
         no payments/allocations/dependent records exist.
@@ -1333,7 +1335,13 @@ class BillsService:
                         }
 
                 # Delete bill — bill_items + bill_attachments cascade.
+                # V230: `app.user_id` untuk trigger `trg_log_deletion`. Blok
+                # ini SUDAH berada di dalam transaksi, jadi GUC-nya hidup.
                 try:
+                    await conn.execute(
+                        "SELECT set_config('app.user_id', $1, true)",
+                        str(user_id or ""),
+                    )
                     await conn.execute(
                         "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
                         bill_id,

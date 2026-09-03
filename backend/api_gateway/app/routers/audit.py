@@ -824,6 +824,13 @@ async def list_retention_policies(request: Request):
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        # ⚠️ V230 — SYARAT YANG BELUM DIBANGUN. Bila pemangkasan retensi
+        # benar-benar diaktifkan (tabel ini masih 0 baris per 2026-09-03),
+        # `eventType = 'DOCUMENT_DELETED'` WAJIB DIKECUALIKAN dari
+        # pemangkasan. Baris itu adalah SATU-SATUNYA jejak bahwa sebuah
+        # dokumen pernah ada dan siapa yang menghapusnya; memangkasnya berarti
+        # menghapus bukti penghapusan. Lihat kepala fungsi
+        # `log_document_deletion()` di V230__audit_document_deletion.sql.
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """

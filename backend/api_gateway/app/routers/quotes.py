@@ -873,14 +873,25 @@ async def delete_quote(request: Request, quote_id: str):
                     status_code=400, detail="Only draft quotes can be deleted"
                 )
 
-            # Delete (cascade deletes items)
-            await conn.execute(
-                """
-                DELETE FROM quotes WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
+            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
+            # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
+            # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
+            # menghasilkan WARNING "SET LOCAL can only be used in transaction
+            # blocks" dan statement berikutnya membaca kosong. Karena itu SET
+            # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
+            # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
+            # sehingga tak ada interpolasi string ke dalam SQL.
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.user_id', $1, true)",
+                    str(ctx["user_id"] or ""),
+                )
+                # Delete (cascade deletes items)
+                await conn.execute(
+                    "DELETE FROM quotes WHERE id = $1 AND tenant_id = $2",
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
+                )
 
             return QuoteResponse(
                 success=True,

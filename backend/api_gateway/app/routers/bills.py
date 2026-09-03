@@ -1054,7 +1054,9 @@ async def delete_bill(request: Request, bill_id: UUID):
         ctx = get_user_context(request)
         service = await get_bills_service()
 
-        result = await service.delete_bill(tenant_id=ctx["tenant_id"], bill_id=bill_id)
+        result = await service.delete_bill(
+            tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"]
+        )
 
         if not result["success"]:
             status_code = 404 if result["message"] == "Bill not found" else 400
