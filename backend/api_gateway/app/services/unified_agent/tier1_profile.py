@@ -37,7 +37,7 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 SELECT c.nama as name, COUNT(*) as cnt
                 FROM sales_invoices si
                 JOIN customers c ON c.id = si.customer_id
-                WHERE si.status IN ('POSTED', 'PARTIAL')
+                WHERE COALESCE(si.status, 'draft') NOT IN ('draft', 'void')
                 GROUP BY c.id, c.nama
                 HAVING COUNT(*) >= 1
                 ORDER BY cnt DESC LIMIT 5
@@ -62,7 +62,7 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 FROM sales_invoice_items sii
                 JOIN sales_invoices si ON si.id = sii.invoice_id
                 JOIN products p ON p.id = sii.item_id
-                WHERE si.status IN ('POSTED', 'PARTIAL') AND sii.item_id IS NOT NULL
+                WHERE COALESCE(si.status, 'draft') NOT IN ('draft', 'void') AND sii.item_id IS NOT NULL
                 GROUP BY p.id, p.nama_produk
                 ORDER BY cnt DESC LIMIT 10
             """
@@ -113,7 +113,7 @@ async def _query_payment_patterns(pool, tenant_id: str) -> Optional[str]:
                 JOIN receive_payment_allocations rpa ON rpa.payment_id = rp.id
                 JOIN sales_invoices si ON si.id = rpa.invoice_id
                 JOIN customers c ON c.id = si.customer_id
-                WHERE rp.status = 'POSTED'
+                WHERE rp.status = 'posted'
                 GROUP BY c.id, c.nama
                 HAVING COUNT(*) >= $1
                 ORDER BY cnt DESC LIMIT 5
@@ -153,7 +153,7 @@ async def _query_warehouse_defaults(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT tax_rate, COUNT(*) as cnt
                 FROM sales_invoices
-                WHERE status IN ('POSTED', 'PARTIAL')
+                WHERE COALESCE(status, 'draft') NOT IN ('draft', 'void')
                   AND tax_rate IS NOT NULL AND tax_rate > 0
                 GROUP BY tax_rate
                 ORDER BY cnt DESC LIMIT 1
@@ -180,7 +180,7 @@ async def _query_overdue_counts(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT COUNT(*) as cnt
                 FROM sales_invoices
-                WHERE status IN ('POSTED', 'PARTIAL')
+                WHERE COALESCE(status, 'draft') NOT IN ('draft', 'void')
                   AND due_date < CURRENT_DATE
                   AND (total_amount - COALESCE(amount_paid, 0)) > 0
             """
@@ -190,7 +190,7 @@ async def _query_overdue_counts(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT COUNT(*) as cnt
                 FROM bills
-                WHERE status IN ('POSTED', 'PARTIAL')
+                WHERE COALESCE(status_v2, 'draft') NOT IN ('draft', 'void')
                   AND due_date < CURRENT_DATE
                   AND (amount - COALESCE(amount_paid, 0)) > 0
             """
