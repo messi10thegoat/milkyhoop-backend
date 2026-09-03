@@ -811,6 +811,33 @@ async def update_sales_order(
         raise HTTPException(status_code=500, detail="Failed to update sales order")
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# GUARD UANG MUKA — dipakai OLEH DUA JALUR TERMINAL di modul ini.
+#
+# DP kanonik ditambatkan ke SALES ORDER, jadi ini jalur yang benar-benar
+# dipakai tenant (terukur: 11 baris customer_deposits menunjuk sales_orders).
+# Dua kebocoran terukur 2026-09-03, keduanya HTTP 200:
+#   - `cancel` : SO jadi 'cancelled', DP tetap 'posted' menunjuk SO mati.
+#   - `delete` : baris SO LENYAP dan FK `ON DELETE SET NULL` MENGHAPUS
+#                tautannya -- DP bertahan dengan jurnal utuh tapi tanpa
+#                penambat sama sekali, jadi asal-usulnya tak bisa dilacak
+#                lagi. Ini lebih buruk daripada yatim biasa.
+#
+# Guard ini dipasang SESUDAH guard yang sudah ada (status, shipped_qty,
+# invoiced_qty) supaya pesannya tidak bertabrakan: SO yang sudah dikirim
+# atau difaktur tetap ditolak dengan alasan aslinya, dan pesan uang muka
+# hanya muncul untuk SO yang sebetulnya masih boleh dibatalkan.
+# ═════════════════════════════════════════════════════════════════════════
+
+from ..services.dp_guard import tolak_bila_ada_uang_muka_aktif
+
+
+async def _tolak_bila_ada_uang_muka_aktif(conn, order_id, tenant_id, aksi: str):
+    await tolak_bila_ada_uang_muka_aktif(
+        conn, "sales_order_id", order_id, tenant_id, aksi, "Pesanan penjualan"
+    )
+
+
 @router.delete("/{order_id}", response_model=SalesOrderResponse)
 async def delete_sales_order(request: Request, order_id: str):
     """Delete a sales order (draft only)."""
@@ -834,6 +861,10 @@ async def delete_sales_order(request: Request, order_id: str):
                 raise HTTPException(
                     status_code=400, detail="Only draft orders can be deleted"
                 )
+
+            await _tolak_bila_ada_uang_muka_aktif(
+                conn, uuid_module.UUID(order_id), ctx["tenant_id"], "dihapus"
+            )
 
             await conn.execute(
                 "DELETE FROM sales_orders WHERE id = $1", uuid_module.UUID(order_id)
@@ -938,6 +969,10 @@ async def cancel_sales_order(
                     status_code=400,
                     detail="Cannot cancel order with shipments or invoices",
                 )
+
+            await _tolak_bila_ada_uang_muka_aktif(
+                conn, uuid_module.UUID(order_id), ctx["tenant_id"], "dibatalkan"
+            )
 
             await conn.execute(
                 """
