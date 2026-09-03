@@ -20,9 +20,11 @@ ini tidak mengukur apa pun dan tak boleh dipercaya.
 
 Seluruh uji berjalan di dalam SATU transaksi yang selalu ROLLBACK.
 
-CAKUPAN YANG JUJUR: ini menempuh fungsi sungguhan + basis data sungguhan,
-tetapi BUKAN lewat HTTP. Gerbang tingkat HTTP menunggu akun uji non-owner
-(tiket terpisah); login owner dilarang karena mencabut sesi layar owner.
+CATATAN SESUDAH V236 (3 Sep 2026): kolom `chat_session_id` kini bertipe
+`uuid`, jadi pembakuan dijamin DUA KALI -- oleh helper di Python dan oleh tipe
+kolom. Uji ini tetap bernilai karena ia menguji sisi BACA: helper yang dicabut
+di sisi baca tetap membuat pencarian berhuruf kapital MELESET, tipe kolom tidak
+menolongnya. Kontrol negatif di bawah membuktikan itu.
 
 Pakai: python3 scripts/uji_bakukan_dua_ujung.py
 """
@@ -74,9 +76,11 @@ async def utama() -> int:
 
         # --- UJUNG 1: TULIS dengan huruf KAPITAL -------------------------
         await engine._load_or_create(KAPITAL, JENIS)
+        # V236 mengubah kolom ini jadi `uuid`, jadi `lower(...)` tak lagi ada
+        # (dan tak lagi perlu). Bandingkan bentuk teksnya.
         tersimpan = await conn.fetchval(
-            "SELECT chat_session_id FROM chat_workflow_state WHERE workflow_type = $1 "
-            "AND lower(chat_session_id) = $2",
+            "SELECT chat_session_id::text FROM chat_workflow_state "
+            "WHERE workflow_type = $1 AND chat_session_id = $2::uuid",
             JENIS,
             sid,
         )

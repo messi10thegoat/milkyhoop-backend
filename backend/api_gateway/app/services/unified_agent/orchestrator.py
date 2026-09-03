@@ -2866,7 +2866,7 @@ class UnifiedAgent:
                                         timeout=5.0
                                     ) as _conn_ap3:
                                         await _conn_ap3.execute(
-                                            "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
+                                            "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::uuid AND workflow_type = $2",
                                             bakukan_session_id(tool_executor.session_id),
                                             "crud_form",
                                             "awaiting_item_prices",
@@ -4457,7 +4457,7 @@ class UnifiedAgent:
                         _pool_ap = await _ap_pool2()
                         async with _pool_ap.acquire(timeout=5.0) as _conn_ap:
                             await _conn_ap.execute(
-                                "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
+                                "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::uuid AND workflow_type = $2",
                                 bakukan_session_id(tool_executor.session_id),
                                 "crud_form",
                                 "awaiting_item_prices",

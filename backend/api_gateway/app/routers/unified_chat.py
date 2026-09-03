@@ -3773,7 +3773,11 @@ async def _t171_baris_batch(ctx: dict, kunci: list):
         """SELECT id::text AS id, status, action_plan, created_at
              FROM pending_actions
             WHERE tenant_id = $1
-              AND conversation_id = ANY($2::text[])
+              -- V236 mengubah kolom ini jadi `uuid`; pemaksaan ::text[]
+              -- membuat Postgres mencari operator `uuid = text` yang TIDAK
+              -- ADA, dan kuerinya galat. Cast eksplisit yang salah tipe
+              -- tidak ditolong oleh inferensi parameter.
+              AND conversation_id = ANY($2::uuid[])
               AND action_id = 'create_item'
               AND action_plan ? '_batch_id'
             ORDER BY created_at DESC
