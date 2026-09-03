@@ -25,6 +25,8 @@ from typing import Optional, List, Dict, Any
 import asyncpg
 import json
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 
 from ..llm import LLMRouter, TaskComplexity, LLMMessage
 
@@ -63,6 +65,7 @@ class StructuredState:
     pending_action_id: Optional[str] = None
     fsm_state: str = "IDLE"
     document_context: Optional[Dict] = None
+    document_context_expires_at: Optional[Any] = None
     entity_graph: Dict = field(default_factory=dict)
     pending_payload: Dict = field(default_factory=dict)
     pending_intent: str = ""
@@ -205,6 +208,86 @@ class StructuredState:
 # ============================================================================
 # SESSION MANAGER
 # ============================================================================
+
+
+# ── T-b (2026-09-03): TTL untuk document_context ────────────────────────────
+# `document_context` dulu SATU-SATUNYA konteks sesi tanpa kedaluwarsa, padahal
+# selama ia hidup system prompt menyuntikkan steer "koreksi ->
+# update_document_context". Sesi yang meninggalkan kartu dokumen tanpa
+# konfirmasi menahannya SELAMANYA; terukur pada satu sesi: konteks >24 jam
+# membajak pesan biasa menjadi "Vendor diubah".
+#
+# Kedaluwarsa DIABAIKAN, BUKAN DIHAPUS: pembaca memperlakukannya sebagai tidak
+# ada, barisnya dibiarkan utuh. Menghapus baris dari jalur BACA berarti
+# operasi tulis diam-diam di permintaan GET, dan menghilangkan jejak forensik
+# ("kenapa bot menjawab begitu tadi?").
+#
+# NULL = tak pernah kedaluwarsa. Itu keadaan baris PRA-V234; ia jadi berbatas
+# begitu konteksnya ditulis ulang.
+DOCUMENT_CONTEXT_TTL_SECONDS = int(
+    os.environ.get("DOCUMENT_CONTEXT_TTL_SECONDS", "1800")
+)
+
+
+def _fresh_document_context(ctx, expires_at, fallback_updated_at=None):
+    """Kembalikan ctx, atau None bila sudah kedaluwarsa.
+
+    Baris PRA-V234 punya cap NULL. Kalau NULL diperlakukan sebagai "tak pernah
+    kedaluwarsa", justru baris-baris LAMA -- yang persis jadi alasan tiket ini
+    -- tetap abadi, dan migrasinya tidak memperbaiki apa pun sampai konteksnya
+    kebetulan ditulis ulang. Terukur pada sesi owner ff4b5c92…: cap NULL,
+    konteks masih terbaca hidup.
+
+    Karena itu, saat cap NULL kita mundur ke `updated_at + TTL`. Ini
+    SELF-HEALING: nol backfill, nol DDL yang menyentuh data sesi.
+
+    Batasnya jujur: `updated_at` bergerak pada SETIAP penulisan state, bukan
+    hanya penulisan konteks dokumen. Sesi yang aktif dipakai untuk hal lain
+    bisa menahan konteks lama lebih lama daripada 30 menit. Itu tetap jauh
+    lebih ketat daripada "tak pernah kedaluwarsa", dan begitu konteksnya
+    ditulis sekali saja, cap sungguhan mengambil alih selamanya.
+    """
+    if not ctx:
+        return ctx
+    if expires_at is not None:
+        return None if _document_context_is_expired(expires_at) else ctx
+    if fallback_updated_at is not None:
+        legacy_cap = _plus_ttl(fallback_updated_at)
+        if legacy_cap is not None and _document_context_is_expired(legacy_cap):
+            return None
+    return ctx
+
+
+def _plus_ttl(ts):
+    """ts + TTL, toleran bentuk. None bila tak terbaca (gagal ke arah aman)."""
+    try:
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts + timedelta(seconds=DOCUMENT_CONTEXT_TTL_SECONDS)
+    except Exception:
+        return None
+
+
+def _document_context_is_expired(expires_at) -> bool:
+    """True bila cap kedaluwarsa ADA dan sudah lewat.
+
+    Toleran bentuk: kolom timestamptz datang sebagai ``datetime`` dari asyncpg,
+    tapi bisa berupa ``str`` ISO kalau baris melewati json. Bentuk tak dikenal
+    diperlakukan sebagai TIDAK kedaluwarsa -- gagal ke arah aman (konteks tetap
+    hidup) daripada membuang konteks sah karena salah baca.
+    """
+    if not expires_at:
+        return False
+    try:
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= expires_at
+    except Exception:
+        return False
 
 
 class SessionManager:
@@ -400,9 +483,17 @@ class SessionManager:
             if row["pending_action_id"]
             else None,
             fsm_state=row["fsm_state"] or "IDLE",
-            document_context=json.loads(row["document_context"])
-            if isinstance(row["document_context"], str) and row["document_context"]
-            else row["document_context"],
+            # T-b: konteks yang sudah kedaluwarsa dibaca sebagai TIDAK ADA.
+            # Satu chokepoint -- semua pembaca hilir (steer system prompt,
+            # DOC-REPROPOSE, resolver pil) lewat sini.
+            document_context=_fresh_document_context(
+                json.loads(row["document_context"])
+                if isinstance(row["document_context"], str) and row["document_context"]
+                else row["document_context"],
+                row.get("document_context_expires_at"),
+                row.get("updated_at"),
+            ),
+            document_context_expires_at=row.get("document_context_expires_at"),
             entity_graph=json.loads(row["entity_graph"])
             if isinstance(row.get("entity_graph"), str) and row["entity_graph"]
             else (row.get("entity_graph") or {}),
@@ -437,6 +528,19 @@ class SessionManager:
         """Update specific fields in structured state. Backend calls this, NOT LLM."""
         if not updates:
             return
+
+        # T-b: setiap penulisan document_context memperbarui capnya sendiri.
+        # Ditaruh DI SINI, bukan di tiap pemanggil: ada belasan situs yang
+        # menulis kolom ini (upload, koreksi, pil bank/entitas/post, antrean
+        # multi-dokumen) dan satu saja yang lupa akan mengembalikan konteks
+        # abadi. Menulis None -> cap ikut NULL.
+        if "document_context" in updates:
+            if updates["document_context"] is None:
+                updates["document_context_expires_at"] = None
+            else:
+                updates["document_context_expires_at"] = datetime.now(
+                    timezone.utc
+                ) + timedelta(seconds=DOCUMENT_CONTEXT_TTL_SECONDS)
 
         set_clauses = []
         values = [session_id, self.tenant_id]

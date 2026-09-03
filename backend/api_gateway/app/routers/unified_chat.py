@@ -71,6 +71,26 @@ except ImportError:
     CONVERSATION_SERVICE_AVAILABLE = False
 
 logger = logging.getLogger("unified_chat")
+
+
+def _doc_ctx_expiry():
+    """Cap kedaluwarsa untuk penulisan document_context lewat SQL mentah.
+
+    Jalur INSERT mentah di bawah TIDAK lewat ``SessionManager.update_state``,
+    jadi ia tidak ikut mendapat cap otomatis. Nilainya diambil dari
+    KONSTANTA yang sama supaya umur konteks ditentukan satu tempat saja --
+    menuliskan 30 menit langsung di SQL akan menciptakan sumber kebenaran
+    kedua yang pasti menyimpang.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from ..services.unified_agent.session_manager import (
+        DOCUMENT_CONTEXT_TTL_SECONDS,
+    )
+
+    return datetime.now(timezone.utc) + timedelta(
+        seconds=DOCUMENT_CONTEXT_TTL_SECONDS
+    )
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     _uc_handler = logging.StreamHandler()
@@ -1722,7 +1742,11 @@ async def send_message(request: Request, body: ChatMessageRequest):
                 _selected_value = body.text.strip()
 
                 # ── Direction selection: value starts with "direction:" ──
-                # Direction pills inherit document_context TTL (~10 min).
+                # T-b 2026-09-03: komentar lama di sini mengklaim pil arah
+                # 'mewarisi document_context TTL (~10 menit)'. TTL itu TIDAK
+                # PERNAH ADA -- diukur: nol kolom, nol konstanta, nol
+                # pemeriksaan di seluruh kode. Sejak V234 barulah TTL nyata
+                # (30 menit, DOCUMENT_CONTEXT_TTL_SECONDS).
                 # If expired, saved_ocr_data will be None → graceful fallback.
                 # fix/docintake-caption-party: pil pilihan dokumen "doc:<in|out>:<id>"
                 # menumpang cabang ini — arah dipaksa + forced_doc_id ke intake.
@@ -3579,12 +3603,14 @@ Aturan:
                             ctx["user_id"],
                         )
                         await _rls_conn.execute(
-                            "INSERT INTO chat_session_state (session_id, tenant_id, document_context) "
-                            "VALUES ($1::uuid, $2, $3::jsonb) "
-                            "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, updated_at = now()",
+                            "INSERT INTO chat_session_state (session_id, tenant_id, document_context, document_context_expires_at) "
+                            "VALUES ($1::uuid, $2, $3::jsonb, $4) "
+                            "ON CONFLICT (session_id) DO UPDATE SET document_context = EXCLUDED.document_context, "
+                            "document_context_expires_at = EXCLUDED.document_context_expires_at, updated_at = now()",
                             _sid_uuid,
                             _tid,
                             _doc_json,
+                            _doc_ctx_expiry(),
                         )
             except Exception as _store_err:
                 logger.error("[FIX_MULTIDOC] clarification persist failed: %s", _store_err)
@@ -7726,6 +7752,52 @@ async def cancel_action(request: Request, body: CancelActionRequest):
             ctx["tenant_id"],
         )
         _batal_ok = _hasil_batal.strip().split()[-1] == "1"
+
+        # ── T-b 2026-09-03: BATAL kartu dokumen JUGA membuang konteksnya ──
+        # Sebelum ini konteks hanya dibuang saat dokumen DIKONFIRMASI. Kartu
+        # yang dibatalkan meninggalkan `document_context` hidup, dan selama ia
+        # hidup system prompt terus menyuntikkan steer "koreksi -> dokumen".
+        # Itulah jalur yang menghasilkan pembajakan terukur: pesan biasa
+        # dijawab "Vendor diubah". TTL 30 menit menutup kasus lupa; ini
+        # menutup kasus SENGAJA — user menekan Batal, jadi niatnya jelas dan
+        # konteks tak perlu menunggu kedaluwarsa.
+        #
+        # Digantung pada pembatalan yang BENAR-BENAR terjadi (`_batal_ok`),
+        # bukan pada permintaannya: rowcount 0 berarti kartunya sudah
+        # confirmed/cancelled/expired, dan di kasus itu konteksnya bukan milik
+        # pembatalan ini untuk dibuang.
+        #
+        # Best-effort: kegagalan membersihkan TIDAK boleh menggagalkan
+        # pembatalan yang sudah tercatat di DB.
+        # `is_edit=True` memakai ULANG endpoint ini untuk MENGEDIT kartu
+        # (pelajaran FIX_MULTIDOC_WFC). Membuang konteks di situ justru
+        # mematikan hal yang sedang dipakai user -- edit dokumen BUTUH
+        # konteksnya. Karena itu hanya pembatalan SUNGGUHAN yang membersihkan.
+        if _batal_ok and not getattr(body, "is_edit", False):
+            try:
+                _sid_cancel = getattr(body, "session_id", None) or getattr(
+                    body, "conversation_id", None
+                )
+                if _sid_cancel:
+                    _sm_cancel = SessionManager(
+                        await get_session_db_pool(),
+                        ctx["tenant_id"],
+                        ctx["user_id"],
+                    )
+                    await _sm_cancel.update_state(
+                        str(_sid_cancel), document_context=None
+                    )
+                    logger.info(
+                        "[T-b] document_context dibuang sesudah batal kartu "
+                        "(session=%s, pending_action=%s)",
+                        str(_sid_cancel)[:8],
+                        str(body.pending_action_id)[:8],
+                    )
+            except Exception as _tb_clear_err:
+                logger.warning(
+                    "[T-b] gagal membuang document_context sesudah batal: %s",
+                    _tb_clear_err,
+                )
 
         if _batal_ok:
             _batal_pesan = "Dibatalkan."
