@@ -1148,7 +1148,7 @@ async def _hari_ini_tenant(tenant_id: str) -> str:
     kartu mengusulkan 2026-08-11, dan owner melihat gejala yang persis sama
     walau setiap default sudah benar.
     """
-    from .db_utils import get_session_db_pool  # noqa: E402
+    from .db_utils import bakukan_session_id, get_session_db_pool  # noqa: E402
     from ...utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
 
     pool = await get_session_db_pool()
@@ -1283,7 +1283,7 @@ class UnifiedAgent:
 
         # Resolve + Complete
         from .entity_resolver import EntityResolver
-        from .db_utils import get_session_db_pool
+        from .db_utils import bakukan_session_id, get_session_db_pool
 
         pool = await get_session_db_pool()
         resolver = EntityResolver(pool, context.tenant_id)
@@ -1984,7 +1984,7 @@ class UnifiedAgent:
         if tool_executor and tool_executor.session_id:
             try:
                 from .workflow_engine import WorkflowEngine
-                from .db_utils import get_session_db_pool as _wf_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool as _wf_pool
 
                 _wf_db = await _wf_pool()
                 _wf_engine = WorkflowEngine(
@@ -2867,7 +2867,7 @@ class UnifiedAgent:
                                     ) as _conn_ap3:
                                         await _conn_ap3.execute(
                                             "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
-                                            tool_executor.session_id,
+                                            bakukan_session_id(tool_executor.session_id),
                                             "crud_form",
                                             "awaiting_item_prices",
                                             __import__("json").dumps(_ap_missing),
@@ -3130,7 +3130,7 @@ class UnifiedAgent:
             and tool_executor.session_id
         ):
             try:
-                from .db_utils import get_session_db_pool as _bp_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool as _bp_pool
 
                 _bp_db = await _bp_pool()
                 # Prefer resolver candidates (narrowed to matches, e.g. "BCA" → 4 BCA accounts)
@@ -3743,7 +3743,7 @@ class UnifiedAgent:
             elif tool_executor and tool_executor.session_id and not _wf_engine:
                 try:
                     from .workflow_engine import WorkflowEngine
-                    from .db_utils import get_session_db_pool as _wf_pool2
+                    from .db_utils import bakukan_session_id, get_session_db_pool as _wf_pool2
 
                     _wf_db2 = await _wf_pool2()
                     _wf_engine_new = WorkflowEngine(
@@ -4430,7 +4430,7 @@ class UnifiedAgent:
                         _wf_eng_ap = self.workflow_engine
                     else:
                         from .workflow_engine import WorkflowEngine
-                        from .db_utils import get_session_db_pool as _ap_pool
+                        from .db_utils import bakukan_session_id, get_session_db_pool as _ap_pool
 
                         _wf_eng_ap = WorkflowEngine(
                             await _ap_pool(),
@@ -4452,13 +4452,13 @@ class UnifiedAgent:
                     # Force workflow row to 'active' so resume handler at next turn picks it up.
                     # process() can auto-mark completed; we need it staying active for the price-reply.
                     try:
-                        from .db_utils import get_session_db_pool as _ap_pool2
+                        from .db_utils import bakukan_session_id, get_session_db_pool as _ap_pool2
 
                         _pool_ap = await _ap_pool2()
                         async with _pool_ap.acquire(timeout=5.0) as _conn_ap:
                             await _conn_ap.execute(
                                 "UPDATE chat_workflow_state SET status='active', data = jsonb_set(jsonb_set(coalesce(data,'{}'::jsonb), '{phase}', to_jsonb($3::text)), '{missing_prices}', $4::jsonb) WHERE chat_session_id = $1::text AND workflow_type = $2",
-                                tool_executor.session_id,
+                                bakukan_session_id(tool_executor.session_id),
                                 "crud_form",
                                 "awaiting_item_prices",
                                 __import__("json").dumps(_ap_missing),
@@ -6499,7 +6499,7 @@ class UnifiedAgent:
             if _cname_dd:
                 try:
                     from .entity_resolver import EntityResolver
-                    from .db_utils import get_session_db_pool
+                    from .db_utils import bakukan_session_id, get_session_db_pool
 
                     _pool_dd = await get_session_db_pool()
                     _res_dd = EntityResolver(_pool_dd, context.tenant_id)
@@ -6522,7 +6522,7 @@ class UnifiedAgent:
             if _vname_dd:
                 try:
                     from .entity_resolver import EntityResolver
-                    from .db_utils import get_session_db_pool
+                    from .db_utils import bakukan_session_id, get_session_db_pool
 
                     _pool_dd = await get_session_db_pool()
                     _res_dd = EntityResolver(_pool_dd, context.tenant_id)
@@ -6542,7 +6542,7 @@ class UnifiedAgent:
         # Resolve item by name -> get ID for {id} endpoints
         if "{id}" in endpoint and extraction.entities.get("item_name"):
             from .entity_resolver import EntityResolver
-            from .db_utils import get_session_db_pool
+            from .db_utils import bakukan_session_id, get_session_db_pool
 
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
@@ -6597,7 +6597,7 @@ class UnifiedAgent:
         # Resolve warehouse by name -> get ID
         if "{id}" in endpoint and extraction.entities.get("warehouse_name"):
             from .entity_resolver import EntityResolver
-            from .db_utils import get_session_db_pool
+            from .db_utils import bakukan_session_id, get_session_db_pool
 
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
@@ -6637,7 +6637,7 @@ class UnifiedAgent:
                 "customer_name"
             ) or extraction.entities.get("name")
             from .entity_resolver import EntityResolver
-            from .db_utils import get_session_db_pool
+            from .db_utils import bakukan_session_id, get_session_db_pool
 
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
@@ -6665,7 +6665,7 @@ class UnifiedAgent:
             and (not extraction.intent or extraction.intent in _VENDOR_RESOLVE_INTENTS)
         ):
             from .entity_resolver import EntityResolver
-            from .db_utils import get_session_db_pool
+            from .db_utils import bakukan_session_id, get_session_db_pool
 
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
@@ -6703,7 +6703,7 @@ class UnifiedAgent:
 
         if "{id}" in endpoint and extraction.entities.get("bank_name"):
             from .entity_resolver import EntityResolver
-            from .db_utils import get_session_db_pool
+            from .db_utils import bakukan_session_id, get_session_db_pool
 
             pool = await get_session_db_pool()
             resolver = EntityResolver(pool, context.tenant_id)
@@ -6736,7 +6736,7 @@ class UnifiedAgent:
                 "work_order_number"
             )
             if _wo_name:
-                from .db_utils import get_session_db_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool
 
                 _wo_pool = await get_session_db_pool()
                 logger.warning("[MFG_RESOLVE_WO] Looking up: %s", _wo_name)
@@ -6787,7 +6787,7 @@ class UnifiedAgent:
                 "bom_code"
             )
             if _bom_name:
-                from .db_utils import get_session_db_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool
 
                 _bom_pool = await get_session_db_pool()
                 logger.warning("[MFG_RESOLVE_BOM] Looking up: %s", _bom_name)
@@ -6840,7 +6840,7 @@ class UnifiedAgent:
             )
             if _acc_match:
                 _acc_name = _acc_match.group(1).strip()
-                from .db_utils import get_session_db_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool
 
                 pool = await get_session_db_pool()
                 async with pool.acquire() as conn:
@@ -6875,7 +6875,7 @@ class UnifiedAgent:
         ) and extraction.entities.get("item_name"):
             if "{id}" not in endpoint:  # Only for non-path-param endpoints
                 from .entity_resolver import EntityResolver
-                from .db_utils import get_session_db_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool
 
                 pool = await get_session_db_pool()
                 resolver = EntityResolver(pool, context.tenant_id)
@@ -7013,7 +7013,7 @@ class UnifiedAgent:
                     if _search_val and _resolver_method:
                         try:
                             from .entity_resolver import EntityResolver
-                            from .db_utils import get_session_db_pool
+                            from .db_utils import bakukan_session_id, get_session_db_pool
 
                             _pool = await get_session_db_pool()
                             _resolver = EntityResolver(_pool, context.tenant_id)
@@ -7492,7 +7492,7 @@ class UnifiedAgent:
             return None
 
         from .entity_resolver import EntityResolver
-        from .db_utils import get_session_db_pool
+        from .db_utils import bakukan_session_id, get_session_db_pool
 
         pool = await get_session_db_pool()
         resolver = EntityResolver(pool, context.tenant_id)
@@ -7708,7 +7708,7 @@ class UnifiedAgent:
         if not (_is_ar or _is_ap):
             return None
 
-        from .db_utils import get_session_db_pool
+        from .db_utils import bakukan_session_id, get_session_db_pool
 
         pool = await get_session_db_pool()
 
@@ -9173,7 +9173,7 @@ class UnifiedAgent:
         if tool_executor and tool_executor.session_id:
             try:
                 from .workflow_engine import WorkflowEngine
-                from .db_utils import get_session_db_pool as _wf_pool_fn
+                from .db_utils import bakukan_session_id, get_session_db_pool as _wf_pool_fn
 
                 _wf_db = await _wf_pool_fn()
                 _wf_eng = WorkflowEngine(
@@ -10144,7 +10144,7 @@ class UnifiedAgent:
             try:
                 from .summary_generator import get_last_session_context
                 from .preference_manager import PreferenceManager
-                from .db_utils import get_session_db_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool
                 from datetime import datetime, timezone
 
                 _b2_pool = await get_session_db_pool()
@@ -10268,7 +10268,7 @@ class UnifiedAgent:
         ):
             try:
                 from .workflow_engine import WorkflowEngine
-                from .db_utils import get_session_db_pool as _wf_pool_p0
+                from .db_utils import bakukan_session_id, get_session_db_pool as _wf_pool_p0
 
                 _wf_db_p0 = await _wf_pool_p0()
                 _wf_engine_p0 = WorkflowEngine(
@@ -10471,7 +10471,7 @@ class UnifiedAgent:
                         MAX_REASK,
                         ABANDON_WORD_THRESHOLD,
                     )
-                    from .db_utils import get_session_db_pool as _clar_pool_fn
+                    from .db_utils import bakukan_session_id, get_session_db_pool as _clar_pool_fn
 
                     _clar_db = await _clar_pool_fn()
 
@@ -10778,7 +10778,7 @@ class UnifiedAgent:
                         )
                     else:
                         from .clarification_slots import emit_period_clarification
-                        from .db_utils import get_session_db_pool as _fresh_pool_fn
+                        from .db_utils import bakukan_session_id, get_session_db_pool as _fresh_pool_fn
 
                         _fresh_db = await _fresh_pool_fn()
                         await emit_period_clarification(
@@ -10855,7 +10855,7 @@ class UnifiedAgent:
             if tool_executor and tool_executor.session_id:
                 try:
                     from .workflow_engine import WorkflowEngine
-                    from .db_utils import get_session_db_pool as _sh_pool
+                    from .db_utils import bakukan_session_id, get_session_db_pool as _sh_pool
 
                     _sh_db = await _sh_pool()
                     _sh_wf = WorkflowEngine(
@@ -11534,7 +11534,7 @@ class UnifiedAgent:
             _tel_guard_conflict = len(_tel_guard_matches) > 1
             try:
                 from .telemetry import IntentTelemetry, estimate_cost
-                from .db_utils import get_session_db_pool as _tel_get_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool as _tel_get_pool
 
                 _tel_pool = await _tel_get_pool()
                 _tel = IntentTelemetry(_tel_pool, context.tenant_id)
@@ -11863,7 +11863,7 @@ class UnifiedAgent:
                 if tool_executor and tool_executor.session_id:
                     try:
                         from .workflow_engine import WorkflowEngine
-                        from .db_utils import get_session_db_pool as _rp_pool
+                        from .db_utils import bakukan_session_id, get_session_db_pool as _rp_pool
 
                         _rp_db = await _rp_pool()
                         _rp_engine = WorkflowEngine(
@@ -12713,7 +12713,7 @@ class UnifiedAgent:
         try:
             _ug_pool = db_pool
             if _ug_pool is None:
-                from .db_utils import get_session_db_pool as _ug_get_pool
+                from .db_utils import bakukan_session_id, get_session_db_pool as _ug_get_pool
 
                 _ug_pool = await _ug_get_pool()
             userguide_enabled = await is_userguide_rag_enabled(

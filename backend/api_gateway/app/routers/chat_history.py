@@ -45,7 +45,10 @@ def _get_user_context(request: Request) -> dict:
 # ─── DB Pool ──────────────────────────────────────────────────────────────────
 
 async def _get_pool():
-    from ..services.unified_agent.db_utils import get_session_db_pool
+    from ..services.unified_agent.db_utils import (
+        bakukan_session_id,
+        get_session_db_pool,
+    )
     return await get_session_db_pool()
 
 
@@ -121,7 +124,7 @@ async def _t171_sisipkan_sisa_slide(pool, ctx, session_id: str, data: dict) -> N
                 ORDER BY created_at DESC
                 LIMIT 1""",
             ctx["tenant_id"],
-            session_id,
+            bakukan_session_id(session_id),
         )
         if row is None or row["status"] == "PENDING":
             return

@@ -1865,13 +1865,15 @@ class WorkflowEngine:
         return await self._load(chat_session_id, workflow_type)
 
     async def cancel(self, chat_session_id: str, workflow_type: str) -> bool:
+        from .db_utils import bakukan_session_id  # noqa: E402
+
         """Cancel an active workflow. Returns True if a workflow was cancelled."""
         result = await self.db.execute(
             """UPDATE chat_workflow_state
                SET status = 'cancelled', updated_at = NOW()
                WHERE chat_session_id = $1 AND workflow_type = $2
                  AND status IN ('active', 'failed')""",
-            chat_session_id, workflow_type
+            bakukan_session_id(chat_session_id), workflow_type
         )
         cancelled = result and result != "UPDATE 0"
         if cancelled:
@@ -2235,6 +2237,10 @@ class WorkflowEngine:
         - Both end up on same workflow → safe
         """
         import json
+
+        from .db_utils import bakukan_session_id  # noqa: E402
+
+        chat_session_id = bakukan_session_id(chat_session_id)
         initial_state = WORKFLOW_TRANSITIONS.get(workflow_type, {}).get("initial_state", "IDENTIFY_ACCOUNT")
 
         # Step 1: Try load existing active/failed workflow
@@ -2305,6 +2311,13 @@ class WorkflowEngine:
     async def _load(self, chat_session_id: str, workflow_type: str) -> Optional[WorkflowContext]:
         """Load active or failed workflow context from database."""
         import json
+
+        from .db_utils import bakukan_session_id  # noqa: E402
+
+        # BACA dibakukan di pintu DB, sepasang dengan sisi TULIS di
+        # _load_or_create. Membakukan satu sisi saja mematikan alur bagi
+        # klien yang mengirim UUID huruf kapital.
+        chat_session_id = bakukan_session_id(chat_session_id)
         row = await self.db.fetchrow(
             """SELECT id, tenant_id, user_id, current_state, status, data, updated_at
                FROM chat_workflow_state

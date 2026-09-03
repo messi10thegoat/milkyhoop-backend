@@ -45,7 +45,10 @@ from ..services.action_service import (
     detect_edit_intent,
 )
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
-from ..services.unified_agent.db_utils import get_session_db_pool
+from ..services.unified_agent.db_utils import (
+    bakukan_session_id,
+    get_session_db_pool,
+)
 from ..services.unified_agent.fsm import FSMState
 from ..services.unified_agent.tutorial_progress import (
     get_active_tutorial,
@@ -792,7 +795,7 @@ async def _kartu_menunggu(pool, conversation_id, tenant_id: str):
             "UPDATE pending_actions SET status = 'EXPIRED' "
             "WHERE conversation_id = $1 AND tenant_id = $2 "
             "  AND status = 'PENDING' AND expires_at <= now()",
-            str(conversation_id),
+            bakukan_session_id(str(conversation_id)),
             tenant_id,
         )
     except Exception as _exp_err:  # noqa: BLE001
@@ -804,7 +807,7 @@ async def _kartu_menunggu(pool, conversation_id, tenant_id: str):
         "WHERE conversation_id = $1 AND tenant_id = $2 AND status = 'PENDING' "
         "  AND expires_at > now() "
         "ORDER BY created_at DESC LIMIT 1",
-        str(conversation_id),
+        bakukan_session_id(str(conversation_id)),
         tenant_id,
     )
     return str(row["id"]) if row else None
@@ -3732,7 +3735,7 @@ async def _t171_baris_batch(ctx: dict, kunci: list):
     ke kolom itu. Terukur [SQL] 2026-08-28: baris slide-1 tersimpan dengan
     conversation_id = session_id. Keduanya dicocokkan.
     """
-    _kunci = [k for k in (kunci or []) if k]
+    _kunci = [bakukan_session_id(k) for k in (kunci or []) if k]
     if not _kunci:
         return None
     _pool = await get_session_db_pool()
@@ -6311,7 +6314,7 @@ async def _propose_document_draft(
             _uuid.UUID(pending_id),
             ctx["tenant_id"],
             ctx["user_id"],
-            conversation_id or "",
+            bakukan_session_id(conversation_id) or "",
             "confirm_document_draft",
             "confirm_document_draft",
             "DOCUMENT",
