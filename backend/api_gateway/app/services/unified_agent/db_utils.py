@@ -10,6 +10,54 @@ import uuid as _uuid
 from typing import Optional
 
 
+class IdSesiTidakSah(ValueError):
+    """Id sesi yang dikirim klien bukan uuid dan bukan string kosong."""
+
+
+def _berbentuk_uuid(teks: str) -> bool:
+    try:
+        _uuid.UUID(teks)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def validasi_id_sesi(nilai, nama_field: str = "session_id"):
+    """Terima id sesi dari LUAR, atau tolak dengan sebab yang bisa dibaca.
+
+    KENAPA DI TEPI, BUKAN MENERJEMAHKAN GALAT DRIVER
+    Sebelum ini, id cacat menempuh seluruh jalur sampai
+    `session_manager.get_or_create_session` menyisipkannya ke `chat_sessions`
+    (yang `id`-nya bertipe `uuid`). asyncpg melempar DataError dan permintaan
+    berakhir **500** -- klien diberi tahu "server kami rusak" padahal
+    PERMINTAANNYA yang salah, dan siapa pun yang mendiagnosis nanti harus
+    menebak sebabnya dari galat driver. Menangkap DataError lalu
+    menerjemahkannya akan MENGAWETKAN tebakan itu; validasi di tepi
+    menghapusnya.
+
+    Aturan (sengaja mempertahankan perilaku yang SUDAH ADA):
+      None          -> None
+      "" (kosong)   -> "" ; server membangkitkan id baru. Itu perilaku hari ini
+                       (HTTP 200) dan BUKAN kesalahan klien, jadi tidak boleh
+                       berubah jadi 422 -- itu akan memutus klien yang sedang
+                       memulai percakapan baru.
+      uuid apa pun  -> bentuk kanonik huruf kecil (kapital maupun tanpa tanda
+                       hubung ikut dibakukan; lihat bakukan_session_id)
+      selain itu    -> IdSesiTidakSah -> 422 di tepi
+    """
+    if nilai is None:
+        return None
+    teks = str(nilai)
+    if teks == "":
+        return teks
+    if not _berbentuk_uuid(teks):
+        raise IdSesiTidakSah(
+            f"{nama_field} harus berupa UUID (atau dikosongkan untuk memulai "
+            f"percakapan baru); diterima: {teks[:40]!r}"
+        )
+    return bakukan_session_id(teks)
+
+
 def bakukan_session_id(nilai):
     """Bakukan id sesi chat yang disimpan sebagai TEKS ke bentuk kanonik.
 
