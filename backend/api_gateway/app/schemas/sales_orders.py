@@ -128,6 +128,20 @@ class CreateSalesOrderRequest(BaseModel):
     discount_amount: int = Field(0, ge=0, description="Order discount")
     notes: Optional[str] = Field(None, description="Notes to customer")
     internal_notes: Optional[str] = Field(None, description="Internal notes")
+    # Syarat DP boleh diisi SEJAK PEMBUATAN. Sebelum ini ketiganya hanya ada di
+    # UpdateSalesOrderRequest, sehingga form "buat SO" yang mengetikkan DP
+    # mengirimkannya, Pydantic MENGABAIKANNYA diam-diam (kunci tak dikenal),
+    # server membalas 201, dan SO lahir dengan dp_percent/dp_amount NULL —
+    # kegagalan yang menyamar jadi keberhasilan. Terukur: SO-2609-0023 dp NULL.
+    #
+    # Tipe dan semantiknya SENGAJA dicerminkan PERSIS dari PATCH (`Optional`,
+    # tanpa batas tambahan): kalau create lebih ketat daripada update, nilai
+    # yang sah lewat satu pintu jadi ditolak di pintu lain, dan itu kelas bug
+    # baru. Validasi yang lebih keras (mis. percent 0-100, dp_amount <= total)
+    # harus dipasang di KEDUA pintu sekaligus, sebagai tiket tersendiri.
+    dp_percent: Optional[Decimal] = None
+    dp_amount: Optional[Decimal] = None
+    payment_terms: Optional[str] = None
     items: List[SalesOrderItemCreate] = Field(..., min_length=1, description="Order line items")
 
     @field_validator('customer_name')

@@ -580,10 +580,12 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         customer_id, customer_name, quote_id, reference,
                         shipping_address, shipping_method,
                         subtotal, discount_amount, tax_amount, shipping_amount, total_amount,
-                        status, notes, internal_notes, created_by
+                        status, notes, internal_notes, created_by,
+                        dp_percent, dp_amount, payment_terms
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                        $12, $13, $14, $15, $16, 'draft', $17, $18, $19
+                        $12, $13, $14, $15, $16, 'draft', $17, $18, $19,
+                        $20, $21, $22
                     )
                 """,
                     order_id,
@@ -605,6 +607,10 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                     body.notes,
                     body.internal_notes,
                     ctx["user_id"],
+                    # DP ikut ditulis SEJAK PEMBUATAN ($20-$22).
+                    body.dp_percent,
+                    body.dp_amount,
+                    body.payment_terms,
                 )
 
                 for idx, item in enumerate(calculated_items):
