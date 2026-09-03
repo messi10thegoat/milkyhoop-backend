@@ -2764,7 +2764,30 @@ class ToolExecutor:
 
         # Use conversation session_id as chat_session_id
         from .db_utils import bakukan_session_id  # noqa: E402
-        chat_session_id = bakukan_session_id(self.session_id) or "unknown"
+
+        chat_session_id = bakukan_session_id(self.session_id)
+        if not chat_session_id:
+            # SENTINEL "unknown" DIBUANG (3 Sep 2026). Ia TIDAK PERNAH
+            # tertulis -- nol baris di seluruh riwayat (3.790 baris cadangan
+            # pra-hapus) -- tapi kalau sekali saja terpicu, akibatnya jauh
+            # lebih buruk daripada galat:
+            #
+            #   UNIQUE (chat_session_id, workflow_type)   <- TANPA tenant_id
+            #
+            # Jadi "unknown" adalah SATU baris global yang dipakai bersama
+            # semua tenant dan semua pengguna. Dua tenant berbeda yang
+            # kehilangan session_id akan bertemu di baris yang sama, dan yang
+            # satu memuat state rekonsiliasi bank milik yang lain. Menebak
+            # ("pakai saja 'unknown'") menukar galat yang kelihatan dengan
+            # kebocoran state antar-tenant yang tak bersuara.
+            #
+            # Sejalan dengan role_resolution.py: ketidaktahuan TIDAK dijawab
+            # dengan tebakan.
+            return _error(
+                "SESSION_ID_MISSING",
+                "Alur ini butuh sesi percakapan yang aktif. Muat ulang "
+                "percakapan lalu coba lagi.",
+            )
 
         # Detect REVIEWING state → use resume() to increment reviewed_count
         # Also detect AWAITING_DECISION for document review resume
@@ -3056,7 +3079,16 @@ class ToolExecutor:
 
         workflow_type = params.get("workflow_type", "bank_reconciliation")
         from .db_utils import bakukan_session_id  # noqa: E402
-        chat_session_id = bakukan_session_id(self.session_id) or "unknown"
+
+        # Sentinel "unknown" dibuang di sini juga; alasan lengkap di
+        # _execute_start_workflow. Membatalkan "workflow milik unknown" berarti
+        # membatalkan milik tenant lain.
+        chat_session_id = bakukan_session_id(self.session_id)
+        if not chat_session_id:
+            return _error(
+                "SESSION_ID_MISSING",
+                "Tidak ada sesi percakapan aktif untuk dibatalkan.",
+            )
 
         pool = await get_session_db_pool()
 
