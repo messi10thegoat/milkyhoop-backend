@@ -5,11 +5,40 @@ Source: Products table + bill_items/sales_invoice_items (Pure Ledger)
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List, Optional
+from decimal import Decimal, InvalidOperation
 import logging
 import asyncpg
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _rasio(pembilang, penyebut):
+    """Bagi dua nilai yang tipenya bisa BERCAMPUR, kembalikan Decimal|None.
+
+    Kenapa perlu: SQL di berkas ini menghitung `hpp_per_unit` sebagai
+    `bi.subtotal::float / bi.quantity`, jadi asyncpg mengembalikannya sebagai
+    FLOAT, sementara `last_price` (`bi.unit_price`, numeric) datang sebagai
+    DECIMAL. `Decimal / float` melempar TypeError -- dan karena pembagian itu
+    berada di dalam handler, galatnya muncul sebagai HTTP 500 buram
+    ("Last purchase lookup failed"), bukan sebagai nilai yang salah.
+    Terukur 2026-09-03: GET /api/products/last-purchase 500 untuk produk yang
+    punya hpp_per_unit.
+
+    Keduanya dinormalisasi lewat `Decimal(str(...))` -- `str` dulu supaya
+    float biner tidak membawa ekornya ke Decimal. Hasilnya rasio tak bersatuan
+    (dipakai untuk `units_per_pack`), bukan nilai uang.
+    """
+    if pembilang is None or penyebut is None:
+        return None
+    try:
+        a = Decimal(str(pembilang))
+        b = Decimal(str(penyebut))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if b == 0:
+        return None
+    return a / b
 
 # Global connection pool for fast queries
 
@@ -373,8 +402,8 @@ async def get_last_purchase(
             # Compute units_per_pack from price / hpp
             units_per_pack = None
             if row["hpp_per_unit"] and row["hpp_per_unit"] > 0 and row["last_price"]:
-                computed = row["last_price"] / row["hpp_per_unit"]
-                if computed >= 1:
+                computed = _rasio(row["last_price"], row["hpp_per_unit"])
+                if computed is not None and computed >= 1:
                     units_per_pack = int(round(computed))
 
             # Determine if wholesale based on unit name
@@ -576,8 +605,8 @@ async def search_products(
                     and row["hpp_per_unit"] > 0
                     and row["last_price"]
                 ):
-                    computed = row["last_price"] / row["hpp_per_unit"]
-                    if computed >= 1:
+                    computed = _rasio(row["last_price"], row["hpp_per_unit"])
+                    if computed is not None and computed >= 1:
                         units_per_pack = int(round(computed))
 
                 suggestions.append(
