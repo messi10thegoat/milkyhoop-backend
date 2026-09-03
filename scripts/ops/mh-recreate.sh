@@ -24,7 +24,8 @@
 # dua alat bersaudara dengan dua bahasa, dan yang salah menebak dihukum
 # kegagalan alih-alih diterjemahkan.
 #
-# ⚠️ GERBANG "LIVE" WAJIB LEWAT HTTP NYATA KE KONTAINER (lihat mh-lib.sh).
+# ⚠️ GERBANG "LIVE" WAJIB LEWAT PERMINTAAN NYATA KE KONTAINER — HTTP,
+# atau gRPC untuk chatbot_service/ragcrud_service (lihat mh-lib.sh).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,7 +66,7 @@ fi
 rc=0
 mh_tunggu_probe "$MH_SVC" || rc=$?
 case "$rc" in
-    0) echo "HASIL: $MH_SVC terbukti melayani HTTP." ;;
+    0) echo "HASIL: $MH_SVC terbukti melayani permintaan." ;;
     3) echo "HASIL: $MH_SVC berjalan, kesehatan TIDAK terbukti (tanpa probe)." ;;
     *) echo "HASIL: $MH_SVC TIDAK sehat." >&2 ;;
 esac

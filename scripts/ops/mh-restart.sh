@@ -21,7 +21,8 @@
 #   ./scripts/ops/mh-restart.sh api_gateway                 # nama service
 #   ./scripts/ops/mh-restart.sh milkyhoop-dev-api_gateway   # nama kontainer
 #
-# ⚠️ GERBANG "LIVE" WAJIB LEWAT HTTP NYATA KE KONTAINER.
+# ⚠️ GERBANG "LIVE" WAJIB LEWAT PERMINTAAN NYATA KE KONTAINER
+# (HTTP, atau gRPC untuk chatbot_service/ragcrud_service).
 # Skrip ini mencetak StartedAt sebelum/sesudah supaya restart yang TIDAK
 # terjadi tak bisa menyamar jadi sukses. Harness in-process (TestClient)
 # membaca kode SUMBER, bukan kontainer — ia pernah melaporkan 7/7 atas
@@ -62,7 +63,7 @@ fi
 rc=0
 mh_tunggu_probe "$MH_SVC" || rc=$?
 case "$rc" in
-    0) echo "HASIL: $MH_SVC terbukti melayani HTTP." ;;
+    0) echo "HASIL: $MH_SVC terbukti melayani permintaan." ;;
     3) echo "HASIL: $MH_SVC berjalan, kesehatan TIDAK terbukti (tanpa probe)." ;;
     *) echo "HASIL: $MH_SVC TIDAK sehat." >&2 ;;
 esac

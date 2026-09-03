@@ -30,14 +30,25 @@ TREE=${TREE:-/root/milkyhoop-dev}
 # milik proses lain dan melaporkan sehat atas sesuatu yang mati (kelas
 # kegagalan yang sudah pernah terjadi pada recreate `frontend`).
 mh_probe_url() {
-    # Hanya service yang probe-nya TERBUKTI 200. chatbot_service (7003) dan
-    # ragcrud_service (7001) sengaja TIDAK diberi probe: /health di kedua
-    # port itu DIUJI 2026-09-03 dan menjawab 000 (tak ada HTTP dari host).
-    # Memasangnya akan membuat kedua service MUSTAHIL di-restart lewat
-    # skrip ini -- probe yang selalu merah.
+    # Hanya service yang probe-nya TERBUKTI 200.
+    # chatbot_service & ragcrud_service TIDAK punya HTTP sama sekali: port
+    # 7003/7001 memetakan ke 5002/5001 yang melayani gRPC, itu sebabnya curl
+    # menjawab 000. Keduanya dijaga mh_probe_grpc, bukan di sini.
     case "$1" in
         api_gateway)      echo "http://localhost:8001/healthz" ;;
         frontend)         echo "http://localhost:3001/BUILD_INFO.json" ;;
+        *)                echo "" ;;
+    esac
+}
+
+# Alamat gRPC per-service. Sumbernya BUKAN tebakan: ia dibaca dari
+# healthcheck compose yang sudah berjalan
+# (`docker container inspect -f '{{json .Config.Healthcheck}}'`), yang
+# memang memakai grpc_health_probe dan mencatat "status: SERVING".
+mh_probe_grpc() {
+    case "$1" in
+        chatbot_service)  echo "localhost:5002" ;;
+        ragcrud_service)  echo "localhost:5001" ;;
         *)                echo "" ;;
     esac
 }
@@ -87,7 +98,27 @@ mh_started_at() {
 
 # Probe HTTP NYATA. Mengembalikan 0 hanya kalau benar-benar 200.
 mh_tunggu_probe() {
-    local svc="$1" url code i
+    local svc="$1" url code i addr ctr
+    # gRPC dulu: dua service ini tak punya HTTP sama sekali, jadi probe HTTP
+    # atas mereka akan selalu merah dan membuatnya mustahil di-restart.
+    addr=$(mh_probe_grpc "$svc")
+    if [ -n "$addr" ]; then
+        ctr="${MH_CTR:-}"
+        [ -n "$ctr" ] || ctr="milkyhoop-dev-${svc}-1"
+        for i in $(seq 1 12); do
+            # KODE KELUAR, bukan grep: grpc_health_probe menulis
+            # "status: SERVING" ke STDERR, sehingga `2>/dev/null | grep SERVING`
+            # membuang persis teks yang dicari -- probe yang HANYA BISA MERAH.
+            # 0 = SERVING, bukan-0 = tidak.
+            if docker exec "$ctr" grpc_health_probe -addr="$addr" >/dev/null 2>&1; then
+                echo "probe grpc $addr: SERVING (percobaan $i)"
+                return 0
+            fi
+            sleep 5
+        done
+        echo "PERINGATAN: grpc $addr belum SERVING sesudah ~60 detik." >&2
+        return 1
+    fi
     url=$(mh_probe_url "$svc")
     if [ -z "$url" ]; then
         echo "CATATAN: tak ada probe HTTP yang ditetapkan untuk service '$svc'." >&2
