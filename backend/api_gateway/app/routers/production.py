@@ -2471,6 +2471,55 @@ async def report_output(
                 unit_cost = int(total_actual / total_qty) if total_qty > 0 else 0
                 total_cost = int(unit_cost * Decimal(str(body.good_quantity)))
 
+                # ── SISA WIP DIKREDIT DI OUTPUT TERAKHIR ───────────────────
+                # `unit_cost` dibulatkan ke bawah ke rupiah bulat, lalu dikali
+                # qty. Sisa pembagiannya tidak pernah ikut terkredit, jadi WIP
+                # tak pernah benar-benar nol. Terukur: WO-2026-000014,
+                # 745.000 / 15 = 49.666,67 -> int 49.666 x 15 = 744.990 ->
+                # **Rp 10 tertinggal di 1-10650 selamanya**. Nominalnya sepele;
+                # yang tidak sepele adalah WIP yang tak pernah nol mengotori
+                # SETIAP rekonsiliasi sesudahnya, dan menyamarkan sisa yang
+                # betulan.
+                #
+                # Pada output TERAKHIR (kuantitas rencana tercapai), yang
+                # dikredit adalah SISA SESUNGGUHNYA: total biaya aktual dikurangi
+                # yang sudah pernah dikredit oleh completion sebelumnya. Output
+                # yang BUKAN terakhir tidak berubah sama sekali.
+                #
+                # Sumber "sudah dikredit" = `production_completions.total_cost`,
+                # catatan aplikasi sendiri untuk tiap penerimaan FG — bukan
+                # query ke jurnal lewat kode akun. Kode akun WIP di-resolve lewat
+                # AccountRole.WIP_GENERIC, jadi mengetik '1-10650' di sini akan
+                # menciptakan sumber kebenaran kedua yang pasti menyimpang.
+                _rencana = Decimal(str(order["planned_quantity"] or 0))
+                _output_terakhir = _rencana > 0 and total_qty >= _rencana
+                if _output_terakhir:
+                    _sudah_dikredit = await conn.fetchval(
+                        """
+                        SELECT COALESCE(SUM(total_cost), 0)
+                        FROM production_completions
+                        WHERE production_order_id = $1
+                        """,
+                        order_id,
+                    )
+                    _sisa = int(
+                        Decimal(str(total_actual)) - Decimal(str(_sudah_dikredit or 0))
+                    )
+                    # Jaga-jaga: jangan pernah mengkredit negatif (mis. bila
+                    # completion lama sudah melebihi biaya aktual karena data
+                    # lama). Dalam kasus itu perilaku lama dipertahankan.
+                    if _sisa > 0:
+                        if _sisa != total_cost:
+                            logger.info(
+                                "[OUTPUT_SISA] %s: output terakhir, kredit WIP "
+                                "disesuaikan %s -> %s (selisih pembulatan %s)",
+                                order["order_number"],
+                                total_cost,
+                                _sisa,
+                                _sisa - total_cost,
+                            )
+                        total_cost = _sisa
+
                 # Record completion
                 completion_id = await conn.fetchval(
                     """
