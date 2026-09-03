@@ -159,12 +159,37 @@ class JournalListItem(BaseModel):
 
 
 class JournalSummary(BaseModel):
-    """Summary statistics for journal list."""
+    """Ringkasan SELURUH data yang cocok filter -- BUKAN halaman ini.
+
+    Semua angka di sini dihitung server-side atas seluruh himpunan terfilter,
+    jadi kartu ringkasan tidak boleh dihitung ulang dari array halaman: itu
+    membuat angkanya berubah saat digulir, yang mudah dibaca sebagai "sedang
+    memuat" alih-alih "tadi salah".
+
+    PARTISI (saling lepas, jumlahnya = total_count):
+        draft_count + posted_count + void_count == total_count
+
+    BUKAN bagian partisi:
+        reversed_count -- jurnal yang SUDAH DIBALIK (`reversed_by_id` terisi).
+        Ia SUBSET dari posted_count, jadi TIDAK boleh dijumlahkan bersama
+        ketiganya.
+
+    ⚠️ `reversed_count` DIPERBAIKI 3 Sep 2026. Sebelumnya ia dihitung
+    `status='VOID' OR reversal_of_id IS NOT NULL`, dan itu salah dua kali:
+      1. `reversal_of_id` berarti "jurnal ini ADALAH jurnal pembalik", bukan
+         "jurnal ini sudah dibalik" -- dua hal yang berbeda;
+      2. jurnal pembalik itu sendiri ber-status POSTED, jadi ia terhitung DI
+         KEDUA ember.
+    Terukur di kaos-biru: 0 draft + 295 posted + 121 "reversed" = 416, padahal
+    totalnya 299. Ringkasan yang tak pernah berjumlah benar.
+    """
 
     total_count: int
     draft_count: int
     posted_count: int
+    void_count: int
     reversed_count: int
+    total_amount: Decimal
 
 
 class JournalListResponse(BaseModel):

@@ -225,12 +225,28 @@ async def list_journals(
             where_clause = " AND ".join(conditions)
 
             # Count totals
+            # Dihitung atas SELURUH himpunan terfilter, bukan halaman ini.
+            # `total_amount` ditambahkan 3 Sep 2026 karena FE menghitungnya dari
+            # array halaman: layar menunjukkan 299 jurnal sementara rupiahnya
+            # hanya mencakup 20, dan angkanya berubah saat digulir.
+            #
+            # Nilai diambil dari `total_debit` di header. Diverifikasi 3 Sep
+            # 2026 bahwa header = SUM(journal_lines.debit) persis
+            # (193.064.615,00 keduanya), jadi ini tetap turunan jurnal, bukan
+            # SUM tabel pembungkus.
+            #
+            # `void_count` dipisahkan supaya ketiganya SALING LEPAS dan
+            # berjumlah tepat `total`. `reversed_count` kini berarti "sudah
+            # DIBALIK" (`reversed_by_id`), bukan "ia adalah jurnal pembalik"
+            # (`reversal_of_id`) -- lihat catatan panjang di JournalSummary.
             count_query = f"""
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE status = 'DRAFT') as draft_count,
+                    COUNT(*) FILTER (WHERE status = 'DRAFT')  as draft_count,
                     COUNT(*) FILTER (WHERE status = 'POSTED') as posted_count,
-                    COUNT(*) FILTER (WHERE status = 'VOID' OR reversal_of_id IS NOT NULL) as reversed_count
+                    COUNT(*) FILTER (WHERE status = 'VOID')   as void_count,
+                    COUNT(*) FILTER (WHERE reversed_by_id IS NOT NULL) as reversed_count,
+                    COALESCE(SUM(je.total_debit), 0) as total_amount
                 FROM journal_entries je
                 WHERE {where_clause}
             """
@@ -287,7 +303,9 @@ async def list_journals(
                     total_count=counts["total"],
                     draft_count=counts["draft_count"],
                     posted_count=counts["posted_count"],
+                    void_count=counts["void_count"],
                     reversed_count=counts["reversed_count"],
+                    total_amount=counts["total_amount"] or Decimal("0"),
                 ),
                 pagination={
                     "page": page,
