@@ -1968,9 +1968,68 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         detail="Tidak bisa mencatat labor: output WO sudah penuh (selesai dilaporkan). Catat labor SEBELUM menyelesaikan output; biaya labor setelah output penuh akan terdampar di WIP.",
                     )
 
-                # Standard rates from work_centers (NULL-safe)
+                # ── Tarif standar: OPERASI dulu, baru WO ──────────────────
+                # Sebelum ini tarif SELALU dari work center WO
+                # (`po.work_center_id`), sementara `body.operation_id` diterima
+                # skema lalu DIABAIKAN untuk penetapan tarif. Padahal satu BOM
+                # boleh punya banyak operasi di work center BERBEDA
+                # (`bom_operations.work_center_id`), masing-masing dengan tarif
+                # labor/overhead sendiri. Akibatnya: menjahit dan memotong
+                # dibebankan dengan tarif yang sama, dan WIP salah per operasi.
+                #
+                # Aturan: kalau `operation_id` dikirim DAN operasinya punya work
+                # center -> tarif dari work center OPERASI. Selain itu -> tetap
+                # work center WO, PERSIS seperti sebelumnya (nol perubahan
+                # perilaku untuk pemanggil lama yang tak mengirim operation_id).
+                #
+                # `operation_id` menunjuk `bom_operations` (FK terukur:
+                # production_order_labor_operation_id_fkey). TIDAK ADA tabel
+                # `production_order_operations` -- WO tidak menyalin operasi BOM
+                # saat dibuat, jadi operasi yang sah adalah operasi milik BOM WO
+                # ini. Itu pula yang divalidasi di bawah.
+                _rate_source = "order"
+                _rate_wc_id = order["work_center_id"]
                 labor_rate_std = Decimal(str(order["labor_rate_per_hour"] or 0))
                 oh_rate_std = Decimal(str(order["overhead_rate_per_hour"] or 0))
+
+                if body.operation_id is not None:
+                    # Lingkup tenant DAN lingkup BOM sekaligus: operasi milik
+                    # WO lain / tenant lain tidak boleh menetapkan tarif di sini.
+                    # `bom_operations` tak punya tenant_id -> lewat
+                    # bill_of_materials.
+                    _op = await conn.fetchrow(
+                        """
+                        SELECT bo.id, bo.work_center_id,
+                               wc.labor_rate_per_hour AS op_labor_rate,
+                               wc.overhead_rate_per_hour AS op_oh_rate
+                        FROM bom_operations bo
+                        JOIN bill_of_materials b ON b.id = bo.bom_id
+                        LEFT JOIN work_centers wc
+                               ON wc.id = bo.work_center_id
+                              AND wc.tenant_id = $1
+                        WHERE bo.id = $2
+                          AND b.tenant_id = $1
+                          AND bo.bom_id = $3
+                        """,
+                        ctx["tenant_id"],
+                        body.operation_id,
+                        order["bom_id"],
+                    )
+                    if not _op:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=(
+                                "Operasi tidak ditemukan pada BOM work order ini. "
+                                "operation_id harus merujuk operasi milik BOM WO "
+                                "yang sedang dicatat."
+                            ),
+                        )
+                    if _op["work_center_id"] is not None:
+                        _rate_source = "operation"
+                        _rate_wc_id = _op["work_center_id"]
+                        labor_rate_std = Decimal(str(_op["op_labor_rate"] or 0))
+                        oh_rate_std = Decimal(str(_op["op_oh_rate"] or 0))
+
                 actual_hours = Decimal(str(body.actual_hours))
 
                 labor_cost_applied = (actual_hours * labor_rate_std).quantize(
@@ -2182,6 +2241,10 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         "labor_rate_std": str(labor_rate_std),
                         "overhead_rate_std": str(oh_rate_std),
                         "audit_input_cost": audit_cost,
+                        # Dari MANA tarif diambil. FE menampilkan ini supaya
+                        # user tahu operasi mana yang menentukan biaya.
+                        "work_center_id": str(_rate_wc_id) if _rate_wc_id else None,
+                        "rate_source": _rate_source,
                     },
                 }
 
