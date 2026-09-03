@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
-"""Penegak: id sesi chat yang disimpan sebagai TEKS harus sama huruf dengan chat_sessions.id.
+"""Penegak: id sesi chat yang disimpan di luar `chat_sessions` tetap baku.
 
-KENAPA BERKAS INI ADA
-3 Sep 2026. Saat memangkas sesi chat (sisakan 30/tenant), 112 baris
-`pending_actions` dan 42 `chat_workflow_state` terbaca sebagai YATIM. Ternyata
-153 dari 154 itu BUKAN yatim: induknya hidup, hanya saja id-nya tersimpan
-dengan huruf heks KAPITAL sedangkan `chat_sessions.id` bertipe `uuid` yang
-selalu dinormalisasi Postgres menjadi huruf kecil.
+RIWAYAT BERKAS INI (penting, karena artinya BERUBAH)
+-----------------------------------------------------
+Versi pertama (3 Sep 2026) menjaga `pending_actions.conversation_id` dan
+`chat_workflow_state.chat_session_id` yang saat itu bertipe TEXT: ia menghitung
+baris berhuruf KAPITAL, karena `chat_sessions.id` bertipe `uuid` (selalu huruf
+kecil) sementara kolom teks menyimpan apa adanya dari klien. 153 baris pernah
+terbaca "yatim" gara-gara itu.
 
-    chat_sessions.id            uuid  -> 'a1b2...'  (SELALU huruf kecil)
-    pending_actions.conversation_id   text  -> 'A1B2...'  (apa adanya dari klien)
-    chat_workflow_state.chat_session_id text -> idem
+V236 mengubah kedua kolom itu menjadi `uuid`. Sesudah itu versi lama berkas ini
+MATI TOTAL -- bukan merah, tapi MELEDAK: `lower(uuid)` bukan fungsi yang ada.
+Gerbang yang meledak karena sebab yang tak ada hubungannya dengan yang diukur
+sama tak bergunanya dengan gerbang yang tak bisa merah. Itu sebabnya berkas ini
+ditulis ulang, bukan ditambal.
 
-Satu identitas yang sama disimpan dalam dua tipe: yang satu membakukan, yang
-satu tidak. Akibatnya `WHERE conversation_id = $1` MELESET secara diam-diam,
-dan setiap JOIN antar keduanya menjatuhkan baris tanpa galat.
+APA YANG DIJAGA SEKARANG
+  1. TIPE kolom masih `uuid`. Kalau seseorang mengembalikannya ke `text`,
+     jaminan pembakuan hilang diam-diam dan bug 29-30 Agustus bisa lahir lagi.
+  2. Tak ada baris yang menunjuk sesi yang tidak ada.
 
-Sumbernya terukur: 111 baris, satu pengguna, satu tenant, 29-30 Agt 2026 —
-jendela tertutup, konsisten dengan klien yang membangkitkan UUID huruf besar
-(mis. `UUID().uuidString` di Swift).
+KONTROL (--kontrol) menanam nilai berhuruf KAPITAL lalu menuntut yang
+TERSIMPAN berbentuk kanonik huruf kecil.
 
-KENAPA GERBANG, BUKAN TAMBALAN
-Gerbang verifikasiku sendiri saat penghapusan memakai perbandingan persis, jadi
-ia MUSTAHIL merah atas keadaan ini — ia melaporkan "yatim 0" justru karena
-barisnya sudah tersapu. Penegak ini dibuat supaya keadaan itu bisa MERAH.
+⚠️ Dugaan pertamaku keliru dan kontrolnya sendiri yang membantah: tipe `uuid`
+TIDAK MENOLAK huruf kapital -- masukan uuid di Postgres case-insensitive, jadi
+`'AABB...'::uuid` diterima lalu DIBAKUKAN. Jaminannya karena itu bukan
+"menolak" melainkan "menyimpan kanonik". Kalau tipe kolom kelak dikembalikan
+ke `text`, nilai kapital akan tersimpan APA ADANYA dan kontrol ini MERAH.
 
-Pakai:  python3 scripts/cek_sesi_id_beda_huruf.py            # gerbang
-        python3 scripts/cek_sesi_id_beda_huruf.py --kontrol  # bukti bisa MERAH
+Pakai:  python3 scripts/cek_sesi_id_beda_huruf.py
+        python3 scripts/cek_sesi_id_beda_huruf.py --kontrol
 """
 
 import asyncio
@@ -35,20 +39,10 @@ import sys
 
 import asyncpg
 
-# (tabel, kolom teks yang menyimpan id sesi)
 PASANGAN = [
     ("pending_actions", "conversation_id"),
     ("chat_workflow_state", "chat_session_id"),
 ]
-
-SQL = """
-SELECT
-  count(*) FILTER (WHERE {k} <> lower({k}))                       AS beda_huruf,
-  count(*) FILTER (WHERE lower({k}) NOT IN
-                         (SELECT lower(id::text) FROM chat_sessions)) AS yatim_sungguhan
-FROM {t}
-WHERE {k} IS NOT NULL AND {k} <> ''
-"""
 
 
 async def utama(kontrol: bool) -> int:
@@ -60,8 +54,6 @@ async def utama(kontrol: bool) -> int:
     conn = await asyncpg.connect(dsn)
     try:
         if kontrol:
-            # Kontrol MERAH: tanam satu baris berhuruf kapital, buktikan gerbang
-            # menangkapnya, lalu batalkan. Tanpa ini "hijau" tak membuktikan apa pun.
             tx = conn.transaction()
             await tx.start()
             try:
@@ -72,42 +64,70 @@ async def utama(kontrol: bool) -> int:
                 if not induk:
                     print("GAGAL: tak ada sesi untuk dijadikan kontrol.", file=sys.stderr)
                     return 2
+                kapital = induk["id"].upper()
                 await conn.execute(
                     "INSERT INTO chat_workflow_state "
-                    "(chat_session_id, tenant_id, user_id) VALUES ($1, $2, $3)",
-                    induk["id"].upper(),
+                    "(chat_session_id, tenant_id, user_id, workflow_type) "
+                    "VALUES ($1, $2, $3, $4)",
+                    kapital,
                     induk["tenant_id"],
                     induk["user_id"],
+                    "_kontrol_pembakuan",
                 )
-                baris = await conn.fetchrow(
-                    SQL.format(t="chat_workflow_state", k="chat_session_id")
+                tersimpan = await conn.fetchval(
+                    "SELECT chat_session_id::text FROM chat_workflow_state "
+                    "WHERE workflow_type = $1",
+                    "_kontrol_pembakuan",
                 )
-                merah = baris["beda_huruf"] > 0
+                if tersimpan == induk["id"]:
+                    print(
+                        f"KONTROL: dikirim {kapital[:8]}... (KAPITAL) -> "
+                        f"tersimpan {tersimpan[:8]}... (kanonik). Jaminan tipe bekerja."
+                    )
+                    return 0
                 print(
-                    "KONTROL: baris huruf-kapital ditanam -> beda_huruf="
-                    f"{baris['beda_huruf']} ({'MERAH, gerbang bekerja' if merah else 'HIJAU -- GERBANG RUSAK'})"
+                    f"KONTROL MERAH: dikirim KAPITAL, tersimpan {tersimpan!r} "
+                    "apa adanya. Tipe kolom kemungkinan sudah dikembalikan ke "
+                    "`text` -- jaminan pembakuan HILANG.",
+                    file=sys.stderr,
                 )
-                return 0 if merah else 1
+                return 1
             finally:
                 await tx.rollback()
 
-        total = 0
-        for tabel, kolom in PASANGAN:
-            baris = await conn.fetchrow(SQL.format(t=tabel, k=kolom))
-            beda, yatim = baris["beda_huruf"], baris["yatim_sungguhan"]
-            total += beda + yatim
-            tanda = "OK " if (beda == 0 and yatim == 0) else "GAGAL"
-            print(f"{tanda} {tabel}.{kolom}: beda_huruf={beda} yatim_sungguhan={yatim}")
+        gagal = []
 
-        if total:
-            print(
-                "\nGAGAL: id sesi tersimpan dengan huruf yang tak dibakukan, atau "
-                "menunjuk sesi yang tak ada. Keduanya membuat pencocokan MELESET "
-                "TANPA GALAT.",
-                file=sys.stderr,
+        # 1. tipe kolom
+        for tabel, kolom in PASANGAN:
+            tipe = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=$1 AND column_name=$2",
+                tabel,
+                kolom,
             )
+            if tipe == "uuid":
+                print(f"OK   {tabel}.{kolom}: tipe `uuid`")
+            else:
+                gagal.append(f"{tabel}.{kolom}: tipe `{tipe}`, seharusnya `uuid` (V236)")
+
+        # 2. baris yatim
+        for tabel, kolom in PASANGAN:
+            n = await conn.fetchval(
+                f"SELECT count(*) FROM {tabel} "  # noqa: S608 - nama tabel dari konstanta
+                f"WHERE {kolom} IS NOT NULL "
+                f"  AND {kolom} NOT IN (SELECT id FROM chat_sessions)"
+            )
+            if n == 0:
+                print(f"OK   {tabel}.{kolom}: nol baris yatim")
+            else:
+                gagal.append(f"{tabel}.{kolom}: {n} baris menunjuk sesi yang tak ada")
+
+        if gagal:
+            print("\nGAGAL:", file=sys.stderr)
+            for g in gagal:
+                print("  - " + g, file=sys.stderr)
             return 1
-        print("\nOK: semua id sesi berbentuk baku dan punya induk.")
+        print("\nOK: tipe terjaga dan tak ada baris yatim.")
         return 0
     finally:
         await conn.close()
