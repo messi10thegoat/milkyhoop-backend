@@ -5944,6 +5944,197 @@ class UnifiedAgent:
             total_latency_ms=int((_time2.monotonic() - _csr_start) * 1000),
         )
 
+    # ── ENTITY_SEARCH (2026-09-03, tiket MASTER: cari entitas chat) ────────
+    _ES_SPEC = {
+        "search_customer": {
+            "tool": "search_customers",
+            "param": "q",
+            "noun": "pelanggan",
+            "domain": "customers",
+        },
+        "search_vendor": {
+            "tool": "search_vendors",
+            "param": "q",
+            "noun": "vendor",
+            "domain": "vendors",
+        },
+        "search_item": {
+            "tool": "search_items",
+            "param": "search",
+            "noun": "barang",
+            "domain": "items",
+        },
+    }
+
+    @staticmethod
+    def _es_rows(data) -> list:
+        """Pull the result list out of a search tool payload, shape-agnostic."""
+        if isinstance(data, list):
+            return [r for r in data if isinstance(r, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("items", "data", "results", "customers", "vendors", "products"):
+            v = data.get(key)
+            if isinstance(v, list):
+                return [r for r in v if isinstance(r, dict)]
+            if isinstance(v, dict):
+                inner = UnifiedAgent._es_rows(v)
+                if inner:
+                    return inner
+        return []
+
+    @staticmethod
+    def _es_name_of(row: dict) -> str:
+        for key in ("name", "nama", "display_name", "product_name", "item_name"):
+            v = row.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return "(tanpa nama)"
+
+    async def _handle_entity_search(
+        self,
+        intent: str,
+        name: str,
+        user_text: str,
+        context,
+        tool_executor=None,
+        event_callback=None,
+    ) -> "AgentResponse":
+        """Deterministic master-data existence search (customer/vendor/item).
+
+        Calls the EXISTING search tool (``search_customers`` / ``search_vendors``
+        / ``search_items``) and renders the result in code. READ-ONLY: no
+        journal mutation, no advisory lock, no LLM polish -- so Iron Law 1 holds
+        by construction (every figure/name printed comes straight from the
+        endpoint payload). Never creates the entity; a miss only OFFERS to.
+        """
+        import time as _time_es
+
+        _es_start = _time_es.monotonic()
+        spec = self._ES_SPEC[intent]
+        _tool_calls = [
+            {"name": spec["tool"], "args": {spec["param"]: name}, "success": False}
+        ]
+
+        def _resp(content: str) -> "AgentResponse":
+            return AgentResponse(
+                message_type="TEXT",
+                content=content,
+                iterations=1,
+                tool_calls_made=_tool_calls,
+                model_used="entity_search",
+                total_latency_ms=int((_time_es.monotonic() - _es_start) * 1000),
+            )
+
+        if tool_executor is None:
+            logger.warning("[ENTITY_SEARCH] no tool_executor, cannot search")
+            return _resp(
+                "Maaf, pencarian " + spec["noun"] + " sedang tidak bisa dijalankan. "
+                "Silakan coba lagi."
+            )
+
+        try:
+            result = await tool_executor._execute_read(
+                spec["tool"], {spec["param"]: name, "limit": 10}
+            )
+        except Exception as _es_err:
+            import traceback as _tb_es
+
+            logger.warning(
+                "[ENTITY_SEARCH] tool %s failed: %s\n%s",
+                spec["tool"],
+                _es_err,
+                _tb_es.format_exc(),
+            )
+            return _resp(
+                "Maaf, terjadi kendala saat mencari " + spec["noun"] + ". "
+                "Silakan coba lagi."
+            )
+
+        if not result.get("success"):
+            logger.warning(
+                "[ENTITY_SEARCH] tool %s returned error: %s",
+                spec["tool"],
+                str(result.get("error"))[:200],
+            )
+            return _resp(
+                "Maaf, terjadi kendala saat mencari " + spec["noun"] + ". "
+                "Silakan coba lagi."
+            )
+
+        _tool_calls[0]["success"] = True
+        rows = self._es_rows(result.get("data"))
+        logger.warning(
+            "[ENTITY_SEARCH] intent=%s name=%r hits=%d", intent, name, len(rows)
+        )
+
+        # ── Render (deterministic, no LLM) ────────────────────────────────
+        if not rows:
+            content = (
+                "Tidak ditemukan " + spec["noun"] + " bernama **" + name + "**.\n\n"
+                "Mau saya daftarkan?"
+            )
+        elif len(rows) == 1:
+            row = rows[0]
+            _name = self._es_name_of(row)
+            bits = []
+            for key, label in (
+                ("code", "kode"),
+                ("item_code", "kode"),
+                ("phone", "telp"),
+                ("telepon", "telp"),
+                ("email", "email"),
+            ):
+                v = row.get(key)
+                if isinstance(v, str) and v.strip() and not any(
+                    b.startswith(label) for b in bits
+                ):
+                    bits.append(label + " " + v.strip())
+            suffix = (" — " + ", ".join(bits)) if bits else ""
+            content = "Ada: **" + _name + "**" + suffix + "."
+        else:
+            shown = rows[:5]
+            lines = [
+                "Ada " + str(len(rows)) + " " + spec["noun"] + ' yang cocok dengan "'
+                + name
+                + '":'
+            ]
+            for row in shown:
+                lines.append("- " + self._es_name_of(row))
+            if len(rows) > len(shown):
+                lines.append("_(dan " + str(len(rows) - len(shown)) + " lainnya)_")
+            content = "\n".join(lines)
+
+        # ── REC / session state so follow-ups keep working ────────────────
+        if (
+            tool_executor
+            and getattr(tool_executor, "session_manager", None)
+            and getattr(tool_executor, "session_id", None)
+        ):
+            try:
+                _updates = {
+                    "last_action_type": intent,
+                    "last_action_result": {"response_text": content[:2000]},
+                    "last_domain": spec["domain"],
+                    "last_response_items": [
+                        {"name": self._es_name_of(r), "id": str(r.get("id") or "")}
+                        for r in rows[:10]
+                    ],
+                }
+                if len(rows) == 1:
+                    _updates["active_entity"] = {
+                        "type": spec["domain"].rstrip("s"),
+                        "name": self._es_name_of(rows[0]),
+                        "id": str(rows[0].get("id") or ""),
+                    }
+                await tool_executor.session_manager.update_state(
+                    tool_executor.session_id, **_updates
+                )
+            except Exception:
+                pass
+
+        return _resp(content)
+
     async def _handle_customer_sales(
         self,
         user_text: str,
@@ -9437,6 +9628,53 @@ class UnifiedAgent:
             except Exception:
                 pass
             return self._clarify_arap_side(int((_time.time() - start_time) * 1000))
+
+        # ── ENTITY_SEARCH_OVERRIDE (2026-09-03) ────────────────────────────
+        # "apakah ada pelanggan bernama Sharon?" is a master-data EXISTENCE
+        # question. Measured on master 656b8db3 it never reached a search tool:
+        # the LLM extractor returned query_customer_sales (conf 1.00 in one
+        # session, 0.70 in another) or query_vendor_ap, tool_calls=[], and the
+        # user got "Permintaan itu belum bisa saya proses lewat jalur ini".
+        # classify_entity_search returns search_customer/search_vendor/
+        # search_item deterministically; honor it HERE, BEFORE any _intent-gated
+        # branch (CHITCHAT, extraction, LLM router), so the LLM can never take
+        # the turn. Mirrors CUST_SALES_TOTAL_OVERRIDE / MFG_OVERRIDE.
+        # READ-ONLY, no advisory lock. Self-contained: no var leaks.
+        try:
+            from .entity_extractor import classify_entity_search as _es_cls
+
+            _es_guard, _es_name = _es_cls(user_text)
+        except Exception:
+            _es_guard, _es_name = None, None
+        if _es_guard:
+            logger.warning(
+                "[ENTITY_SEARCH_OVERRIDE] -> %s name=%r user='%s'",
+                _es_guard,
+                _es_name,
+                user_text[:60],
+            )
+            try:
+                import uuid as _uuid_es
+
+                await emit(
+                    "intent_classified",
+                    {
+                        "request_id": str(_uuid_es.uuid4()),
+                        "final_intent": _es_guard,
+                        "decision_source": "entity_search_override",
+                        "confidence": 1.0,
+                    },
+                )
+            except Exception:
+                pass
+            return await self._handle_entity_search(
+                intent=_es_guard,
+                name=_es_name,
+                user_text=user_text,
+                context=context,
+                tool_executor=tool_executor,
+                event_callback=event_callback,
+            )
 
         # ── FIX_DOGFOOD_RESTOCK_PRIORITY (2026-06-08) ──────────────────────
         # "item barang apa yang penjualannya bagus tapi stok-nya menipis?" is a

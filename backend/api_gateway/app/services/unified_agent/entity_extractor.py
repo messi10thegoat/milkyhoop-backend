@@ -1102,6 +1102,99 @@ _ENTITY_KEYWORDS = {
 }
 
 
+# ── ENTITY SEARCH (2026-09-03, tiket MASTER: cari entitas chat) ─────────────
+# "apakah ada pelanggan bernama Sharon?" / "cari vendor X" / "cek barang Dryfit"
+# is a MASTER-DATA EXISTENCE question. Before this block the LLM extractor
+# answered it stochastically (measured on master 656b8db3: query_customer_sales
+# conf 1.00 in one session, conf 0.70 in another, query_vendor_ap for the vendor
+# phrasing) -> tool_calls=[] -> dead-end "Permintaan itu belum bisa saya proses".
+# Deterministic regex, 0ms, no LLM. Runs FIRST inside classify_query_intent so
+# it beats every financial block below AND (via ENTITY_SEARCH_OVERRIDE in the
+# orchestrator) the LLM router.
+#
+# Deliberately NARROW — all three must hold:
+#   1. a SEARCH verb (ada/adakah/cari/cek/lihat/temukan/search),
+#   2. an entity NOUN (pelanggan|customer / vendor|pemasok|supplier /
+#      barang|item|produk|jasa),
+#   3. a non-empty NAME after it.
+# Plus two hard exclusions so neighbouring routes are untouched:
+#   - any financial noun (piutang/hutang/saldo/faktur/tagihan/penjualan/...)
+#     -> "berapa piutang Sharon?" keeps its AR route,
+#   - any CRUD verb (buat/tambah/hapus/edit/...) -> "buat pelanggan Sharon"
+#     keeps the create route.
+# "daftar pelanggan" has no search verb; "lihat pelanggan" has no name -> both
+# fall through to the list route exactly as before.
+
+_ES_VERB = (
+    r"(?:apa(?:kah)?\s+ada|adakah|ada(?:\s+(?:ga|gak|nggak|engga|enggak|kah))?"
+    r"|cari(?:kan)?|carikan|cek|periksa|lihat|temukan|search|find)"
+)
+_ES_ENTITIES = (
+    ("search_customer", r"(?:pelanggan|customer|klien)"),
+    ("search_vendor", r"(?:vendor|pemasok|supplier)"),
+    ("search_item", r"(?:barang|item|produk|jasa)"),
+)
+_ES_NAMED = r"(?:\s+yang)?(?:\s+(?:bernama|dengan\s+nama|atas\s+nama|nama(?:nya)?))?"
+_ES_FINANCIAL = (
+    r"(?:piutang|hutang|utang|receivable|payable|saldo|balance|faktur|invoice"
+    r"|tagihan|nota|penjualan|pembelian|omzet|laba|profit|biaya|pengeluaran"
+    r"|jatuh\s+tempo|telat\s+bayar|menunggak|stok|harga|transaksi|belanja)"
+)
+_ES_CRUD = (
+    r"\b(?:buat(?:kan)?|bikin(?:kan)?|tambah(?:kan)?|daftar[ki]an|input|catat"
+    r"|hapus|delete|buang|edit|ubah|ganti|update|void|batal(?:kan)?)\b"
+)
+# A "name" that is really a question word / quantifier is NOT a name.
+_ES_NOT_A_NAME = (
+    r"^(?:mana|apa|apa\s+saja|siapa|itu|ini|semua|seluruh|saja|aja|tidak|nggak"
+    r"|ga|gak|yang\s+.*|di\s+.*|dengan\s+.*)$"
+)
+_ES_TRAIL_LOC = r"\s+di\s+(?:sistem|database|data|db)\s*$"
+_ES_STRIP = "?!.,;: \t\"'‘’“”"
+
+
+def classify_entity_search(user_text: str) -> tuple:
+    """Deterministic master-data search classifier.
+
+    Returns ``(intent, name)`` where intent is one of ``search_customer`` /
+    ``search_vendor`` / ``search_item``, or ``(None, None)`` when this is not
+    an entity search. Pure function: no I/O, no LLM, no session state.
+    """
+    import re as _esre
+
+    raw = (user_text or "").strip()
+    t = raw.lower()
+    if not t:
+        return None, None
+    if _esre.search(_ES_FINANCIAL, t):
+        return None, None
+    if _esre.search(_ES_CRUD, t):
+        return None, None
+
+    for _intent, _noun in _ES_ENTITIES:
+        m = _esre.search(
+            r"\b" + _ES_VERB + r"\s+" + _noun + r"\b" + _ES_NAMED + r"\s+(?P<name>.+)$",
+            t,
+        )
+        if not m:
+            continue
+        lowered = m.group("name").strip(_ES_STRIP)
+        lowered = _esre.sub(_ES_TRAIL_LOC, "", lowered).strip(_ES_STRIP)
+        if not lowered or _esre.match(_ES_NOT_A_NAME, lowered):
+            return None, None
+        # Preserve the ORIGINAL casing of the matched span (``t`` is lowercased,
+        # and lowering/stripping never changes offsets because both are
+        # character-preserving on this input).
+        start, end = m.span("name")
+        original = raw[start:end].strip(_ES_STRIP)
+        original = _esre.sub(
+            _ES_TRAIL_LOC, "", original, flags=_esre.IGNORECASE
+        ).strip(_ES_STRIP)
+        return _intent, (original or lowered)
+
+    return None, None
+
+
 def classify_query_intent(user_text: str) -> tuple:
     """Code-driven query intent classifier. 0ms, deterministic."""
     import re as _qre
@@ -1113,6 +1206,13 @@ def classify_query_intent(user_text: str) -> tuple:
     from .domain_vocab import rank_pattern as _rank
 
     t = user_text.strip().lower()
+
+    # ENTITY_SEARCH (2026-09-03) -- deterministic master-data existence
+    # check. MUST be first: every block below is financial, and the LLM
+    # extractor answered these stochastically. See classify_entity_search.
+    _es_intent, _es_name = classify_entity_search(user_text)
+    if _es_intent:
+        return _es_intent, _es_name, None
 
     # ── Gross-profit projection (2026-06-04) — MUST run FIRST so what-if /
     # projection questions win over any calc_*/margin pattern. Trigger needs
