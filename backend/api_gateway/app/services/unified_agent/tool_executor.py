@@ -1591,8 +1591,29 @@ class ToolExecutor:
 
         config = get_direct_action(action_key)
         if not config:
+            # T-a(ii) 2026-09-03: pesan ini PERNAH SAMPAI KE LAYAR OWNER —
+            # "Action 'query_customer_sales' tidak ditemukan di registry."
+            # Itu terjadi ketika LLM memanggil tool AKSI-TULIS ini untuk sebuah
+            # intent BACA; `action_key` yang dikirimnya memang tak pernah ada
+            # di registry aksi. Nama internal dan kata "registry" bukan urusan
+            # pengguna.
+            #
+            # Sekarang: rinciannya ke LOG (ERROR, supaya terlihat saat
+            # ditelusuri), dan yang dikembalikan hanya kalimat netral. Bentuk
+            # kembaliannya tetap `_error(...)` sehingga agent loop membacanya
+            # sebagai TOOL GAGAL dan boleh mencoba jalan lain — bukan berhenti
+            # dengan teks mentah.
+            logger.error(
+                "[UNKNOWN_ACTION] action_key=%r tidak terdaftar di DirectAction "
+                "registry; kemungkinan intent BACA salah dialirkan ke "
+                "propose_direct_action. params=%s",
+                action_key,
+                sorted(params.keys()),
+            )
             return _error(
-                "UNKNOWN_ACTION", f"Action '{action_key}' tidak ditemukan di registry."
+                "UNKNOWN_ACTION",
+                "Permintaan itu belum bisa saya proses lewat jalur ini. "
+                "Coba sampaikan dengan kalimat lain.",
             )
 
         # ═════════════ T171 FASE 1 — PEMECAHAN SLIDE MULTI-BARANG ═════════════

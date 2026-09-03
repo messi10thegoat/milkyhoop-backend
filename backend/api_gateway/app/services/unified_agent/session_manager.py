@@ -151,10 +151,18 @@ class StructuredState:
             # Yang dijaga: koreksi dokumen tetap harus lewat
             # update_document_context (fitur itu tidak dimatikan).
             parts.append(
-                "   >> Bila pesan user MENGOREKSI data dokumen ini, panggil "
-                "update_document_context(edits={...}). Bila pesan adalah "
-                "pertanyaan atau permintaan LAIN, jawab normal dan boleh "
-                "memakai tool pencarian (search_customers/search_vendors)."
+                "   >> KOREKSI DOKUMEN: bila pesan berbentuk koreksi "
+                "('ubah/ganti/koreksi/bukan X tapi Y'), ATAU menyebut field "
+                "dokumen aktif (vendor/pelanggan/nominal/tanggal/nomor) dengan "
+                "nilai baru -> panggil update_document_context(edits={...}), "
+                "BUKAN update_vendor/update_customer (itu mengubah master data, "
+                "bukan dokumen ini)."
+            )
+            parts.append(
+                "   >> BUKAN KOREKSI: bila pesan adalah pertanyaan atau "
+                "pencarian ('apakah ada', 'adakah', 'cari', 'berapa', "
+                "'tampilkan') -> jawab normal dan BOLEH memakai tool pencarian "
+                "(search_customers/search_vendors/search_items)."
             )
 
             if edits:
