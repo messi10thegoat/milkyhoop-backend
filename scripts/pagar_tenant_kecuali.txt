@@ -1,0 +1,9 @@
+# Pengecualian penegak cek_pagar_tenant.py.
+# Bentuk:  <path relatif app/>:<baris>  # ALASAN
+# Baris TANPA alasan (atau alasan <10 karakter) DITOLAK oleh pemindainya
+# sendiri -- pengecualian tanpa sebab sama saja dengan mematikan penegaknya.
+#
+# Belum ada isinya: garis dasar 580/45 sudah mencakup keadaan hari ini, jadi
+# tak ada yang perlu dikecualikan untuk membuatnya hijau. Berkas ini untuk
+# kueri BARU yang memang tak bisa menyaring tenant, dan tiap barisnya harus
+# menjelaskan kenapa.

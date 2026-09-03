@@ -138,6 +138,23 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # Pagar tenant — menahan pertumbuhan kueri yang mencari lewat id pada tabel
+  # ber-`tenant_id` TANPA menyaring tenant di kueri yang sama. Sapuan 3 Sep
+  # 2026 menemukan hampir semua tempat aman karena RANTAI (baris di atasnya
+  # memeriksa kepemilikan), dan rantai itu putus TANPA SUARA kalau pemeriksaan
+  # dipindah atau fungsinya dipakai ulang dari pemanggil baru. RLS dekoratif
+  # dan seluruh koneksi gateway BYPASSRLS, jadi tak ada jaring di bawahnya.
+  # Sama seperti cek_guc_lepas: jumlahnya DIBEKUKAN (580 statis, 45 dinamis),
+  # bukan dibereskan sekaligus. Pengecualian WAJIB menyertakan ALASAN.
+  - repo: local
+    hooks:
+      - id: cek-pagar-tenant
+        name: kueri tanpa saringan tenant (baseline)
+        entry: python3 scripts/cek_pagar_tenant.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
 # CI configuration
 ci:
   autofix_prs: false
