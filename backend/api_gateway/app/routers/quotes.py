@@ -687,33 +687,33 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 params = []
                 param_idx = 1
 
-                update_fields = {
-                    "quote_date": body.quote_date,
-                    "expiry_date": body.expiry_date,
-                    "customer_id": uuid_module.UUID(body.customer_id)
-                    if body.customer_id
-                    else None,
-                    "customer_name": body.customer_name,
-                    "customer_email": body.customer_email,
-                    "reference": body.reference,
-                    "subject": body.subject,
-                    "discount_type": body.discount_type,
-                    "discount_value": body.discount_value,
-                    "notes": body.notes,
-                    "terms": body.terms,
-                    "footer": body.footer,
-                    "opening_text": body.opening_text,
-                    "closing_text": body.closing_text,
-                    "payment_bank_name": body.payment_bank_name,
-                    "payment_account_number": body.payment_account_number,
-                    "payment_account_holder": body.payment_account_holder,
-                }
+                # `exclude_unset=True` adalah pembedanya: Pydantic mencatat
+                # field mana yang BENAR-BENAR dikirim (`model_fields_set`), jadi
+                # null eksplisit ikut terbawa sementara yang absen tidak.
+                #
+                # Yang lama, `if value is not None`, membuat TIGA bentuk
+                # permintaan tak bisa dibedakan sama sekali:
+                #   kunci absen -> tak diubah        (benar)
+                #   null        -> DIABAIKAN, 200    (SALAH: pengguna meminta
+                #                                     mengosongkan, dijawab
+                #                                     "berhasil", nilainya tetap)
+                #   ""          -> tersimpan sebagai string kosong
+                # Akibatnya Pesanan menyimpan NULL dan Penawaran menyimpan ''
+                # untuk makna yang sama. Sekarang keduanya seragam:
+                # absen = jangan ubah, null ATAU "" = NULL.
+                #
+                # Sama dengan PATCH Pesanan (f1ce3564) dan faktur (fd5a9dc5).
+                # `items` dan field DP ditangani blok tersendiri di bawah.
+                update_data = body.model_dump(
+                    exclude_unset=True, exclude={"items", "dp_amount", "dp_percent"}
+                )
 
-                for field, value in update_fields.items():
-                    if value is not None:
-                        updates.append(f"{field} = ${param_idx}")
-                        params.append(value)
-                        param_idx += 1
+                for field, value in update_data.items():
+                    if field == "customer_id" and value is not None:
+                        value = uuid_module.UUID(str(value))
+                    updates.append(f"{field} = ${param_idx}")
+                    params.append(value)
+                    param_idx += 1
 
                 # Update items if provided
                 if body.items is not None:

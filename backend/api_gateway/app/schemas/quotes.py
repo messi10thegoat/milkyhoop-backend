@@ -135,6 +135,31 @@ class UpdateQuoteRequest(BaseModel):
     dp_percent: Optional[float] = Field(None, ge=0, le=100)
     items: Optional[List[QuoteItemUpdate]] = None
 
+    # Cermin f1ce3564 (SO) dan fd5a9dc5 (faktur): "" dari form dinormalisasi
+    # ke NULL, supaya "sudah diisi" bisa dibedakan dari "belum diisi".
+    # Sebelum ini Penawaran menyimpan '' sementara Pesanan menyimpan NULL untuk
+    # makna yang SAMA -- dua bentuk data untuk satu arti, dan setiap pembaca
+    # harus tahu tabel mana yang memakai bentuk mana.
+    @field_validator(
+        "reference",
+        "subject",
+        "notes",
+        "terms",
+        "footer",
+        "opening_text",
+        "closing_text",
+        "customer_email",
+        "payment_bank_name",
+        "payment_account_number",
+        "payment_account_holder",
+    )
+    @classmethod
+    def _kosongkan_teks_quote(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
 
 # ============================================================================
 # QUOTE WORKFLOW SCHEMAS
