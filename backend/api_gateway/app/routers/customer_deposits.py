@@ -40,9 +40,12 @@ Endpoints:
 - POST   /customer-deposits/{id}/refund  - Issue refund to customer
 - POST   /customer-deposits/{id}/void    - Void deposit
 - GET    /customers/{id}/deposits        - List deposits for customer
+- POST   /customer-deposits/{id}/attachments        - Upload lampiran
+- GET    /customer-deposits/{id}/attachments        - Daftar lampiran
+- DELETE /customer-deposits/{id}/attachments/{aid}  - Lepas lampiran
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -71,6 +74,7 @@ from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
 )
+from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -2820,3 +2824,281 @@ async def get_customer_deposit_pdf(
     except Exception as e:
         logger.error(f"Error generating deposit receipt PDF: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate receipt PDF")
+
+
+# =============================================================================
+# LAMPIRAN (2026-09-03, tiket MASTER: lampiran uang muka)
+#
+# Bentuk RESPONS sengaja dibuat IDENTIK dengan lampiran faktur penjualan
+# (`sales_invoices.py`) supaya frontend bisa memakai ulang komponennya tanpa
+# percabangan: POST -> {"success", "data":{id, filename, url, size, mime_type}},
+# GET -> {"attachments":[{id, filename, url, size, mime_type, uploaded_at,
+# uploaded_by_name}]}, DELETE -> {"success", "message"}.
+#
+# Yang BERBEDA dari faktur, dan disengaja: PENYIMPANANNYA. Faktur memakai
+# tabel warisan `sales_invoice_attachments`, sehingga endpoint fakturnya kini
+# harus meng-UNION dua tabel agar lampiran dari chat ikut terlihat. Modul baru
+# memakai jalur modern saja -- `documents` (arsip kanonik) + `document_attachments`
+# (tautan M:N, entity_type='customer_deposit', diizinkan oleh V233). Pola yang
+# sama dipakai `expenses`. Nol tabel baru.
+#
+# GUC: `async with conn.transaction()` + `set_config(..., true)`. `SET LOCAL`
+# sebagai statement LEPAS adalah NO-OP di asyncpg (tiap execute = transaksi
+# implisit sendiri) -- lihat aturan G3 di skill milkyhoop-git. Rute faktur
+# masih memakai bentuk lepas yang cacat itu; rute baru ini tidak menirunya.
+# =============================================================================
+
+_DEP_ATT_MAX_BYTES = 5 * 1024 * 1024
+_DEP_ATT_ALLOWED_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/pdf",
+}
+_DEP_ATT_ENTITY = "customer_deposit"
+
+
+async def _dep_att_load_deposit(conn, deposit_id: UUID, tenant_id: str):
+    """Ambil deposit milik tenant ini, atau 404.
+
+    Penyaringan tenant_id ADA DI PREDIKAT, bukan bersandar pada RLS: lalu
+    lintas gateway memakai peran BYPASSRLS (Hukum Besi 24), jadi RLS bukan
+    pagar di jalur ini.
+    """
+    row = await conn.fetchrow(
+        "SELECT id FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+        deposit_id,
+        tenant_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Customer deposit not found")
+    return row
+
+
+@router.post("/{deposit_id}/attachments", status_code=201)
+async def upload_deposit_attachment(
+    request: Request,
+    deposit_id: UUID,
+    file: UploadFile = File(..., description="Image or PDF file (max 5MB)"),
+):
+    """Unggah lampiran ke sebuah uang muka pelanggan (disimpan di MinIO)."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        content = await file.read()
+        if len(content) > _DEP_ATT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+        await file.seek(0)
+
+        if file.content_type not in _DEP_ATT_ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"File type {file.content_type} not allowed. "
+                    "Use JPEG, PNG, WebP, or PDF."
+                ),
+            )
+
+        tenant_id = ctx["tenant_id"]
+        user_id = ctx["user_id"]
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+                await _dep_att_load_deposit(conn, deposit_id, tenant_id)
+
+                storage = get_storage_service()
+                result = await storage.upload_file(
+                    file=file,
+                    tenant_id=tenant_id,
+                    category="deposit-attachments",
+                )
+
+                document_id = uuid_module.uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO documents (
+                        id, tenant_id, file_name, original_name, file_type,
+                        file_size, storage_type, file_path, category, uploaded_by
+                    ) VALUES ($1, $2, $3, $3, $4, $5, 's3', $6, $7, $8)
+                    """,
+                    document_id,
+                    tenant_id,
+                    file.filename,
+                    file.content_type,
+                    len(content),
+                    result.file_path,
+                    # `documents.category` dibatasi CHECK `chk_doc_category` ke 9
+                    # nilai (invoice/receipt/contract/photo/report/statement/
+                    # certificate/other/unclassified). Bukti uang muka = bukti
+                    # terima uang -> receipt; itu juga nilai yang dipakai baris
+                    # nyata di tabel. JANGAN pakai nama folder MinIO di sini --
+                    # "deposit-attachments" ditolak CHECK (terukur 2026-09-03).
+                    "receipt",
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO document_attachments (
+                        tenant_id, document_id, entity_type, entity_id,
+                        attachment_type, display_order, attached_by
+                    ) VALUES ($1, $2, $3, $4, 'receipt', 0, $5)
+                    ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING
+                    """,
+                    tenant_id,
+                    document_id,
+                    _DEP_ATT_ENTITY,
+                    deposit_id,
+                    user_id,
+                )
+
+        return {
+            "success": True,
+            "data": {
+                "id": str(document_id),
+                "filename": file.filename,
+                "url": result.url,
+                "size": len(content),
+                "mime_type": file.content_type,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error uploading attachment for customer deposit {deposit_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+
+
+@router.get("/{deposit_id}/attachments")
+async def list_deposit_attachments(
+    request: Request,
+    deposit_id: UUID,
+):
+    """Daftar lampiran sebuah uang muka pelanggan."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            await _dep_att_load_deposit(conn, deposit_id, tenant_id)
+
+            rows = await conn.fetch(
+                """
+                SELECT d.id, d.file_name, d.file_path, d.file_size,
+                       d.file_type, d.uploaded_at, d.uploaded_by,
+                       COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name
+                FROM document_attachments da
+                JOIN documents d ON d.id = da.document_id
+                LEFT JOIN "User" u ON u.id = d.uploaded_by::text
+                WHERE da.entity_type = $1
+                  AND da.entity_id = $2
+                  AND da.tenant_id = $3
+                  AND d.deleted_at IS NULL
+                ORDER BY d.uploaded_at DESC
+                """,
+                _DEP_ATT_ENTITY,
+                deposit_id,
+                tenant_id,
+            )
+
+    storage = get_storage_service()
+    attachments = []
+    for r in rows:
+        try:
+            url = (
+                await storage.generate_signed_url(r["file_path"])
+                if r["file_path"]
+                else None
+            )
+        except Exception:
+            url = None
+        attachments.append(
+            {
+                "id": str(r["id"]),
+                "filename": r["file_name"],
+                "url": url,
+                "size": r["file_size"],
+                "mime_type": r["file_type"],
+                "uploaded_at": r["uploaded_at"].isoformat()
+                if r["uploaded_at"]
+                else None,
+                "uploaded_by_name": r["uploaded_by_name"],
+            }
+        )
+
+    return {"attachments": attachments}
+
+
+@router.delete("/{deposit_id}/attachments/{attachment_id}")
+async def delete_deposit_attachment(
+    request: Request,
+    deposit_id: UUID,
+    attachment_id: UUID,
+):
+    """Lepas sebuah lampiran dari uang muka pelanggan.
+
+    Tautannya DIHAPUS, dokumennya di-SOFT-DELETE (`deleted_at`), berkas MinIO
+    TIDAK disentuh. Berbeda dari rute faktur yang menghapus berkas MinIO:
+    `documents` adalah arsip kanonik dengan kewajiban retensi 10 tahun
+    (UU KUP), dan satu dokumen bisa tertaut ke lebih dari satu entitas —
+    menghapus objeknya akan melubangi lampiran entitas lain.
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            await _dep_att_load_deposit(conn, deposit_id, tenant_id)
+
+            row = await conn.fetchrow(
+                """
+                SELECT d.id
+                FROM document_attachments da
+                JOIN documents d ON d.id = da.document_id
+                WHERE d.id = $1
+                  AND da.entity_type = $2
+                  AND da.entity_id = $3
+                  AND da.tenant_id = $4
+                  AND d.deleted_at IS NULL
+                """,
+                attachment_id,
+                _DEP_ATT_ENTITY,
+                deposit_id,
+                tenant_id,
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Attachment not found")
+
+            await conn.execute(
+                """
+                DELETE FROM document_attachments
+                WHERE document_id = $1 AND entity_type = $2 AND entity_id = $3
+                """,
+                attachment_id,
+                _DEP_ATT_ENTITY,
+                deposit_id,
+            )
+            await conn.execute(
+                "UPDATE documents SET deleted_at = now() WHERE id = $1 AND tenant_id = $2",
+                attachment_id,
+                tenant_id,
+            )
+
+    return {"success": True, "message": "Attachment deleted"}
