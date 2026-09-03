@@ -1,6 +1,7 @@
 """Test fixtures for V3 parity suite."""
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from decimal import Decimal
@@ -13,7 +14,17 @@ sys.path.insert(0, "/app/backend/api_gateway")
 from app.services.db_pool import get_db_pool  # noqa: E402
 
 
-TENANT = "grapgrap"
+# Tenant fixture. Dulu "grapgrap"; tenant itu HILANG saat pemulihan basis data
+# (diukur 2026-09-03: compute_ar_outstanding('grapgrap') = 0 baris,
+# compute_ap_outstanding('grapgrap') = 0 baris), sehingga kelima skenario
+# parity gagal bukan karena V2/V3 berbeda, melainkan karena tak ada satu pun
+# faktur/tagihan untuk disintesiskan jadi OCR.
+#
+# Dialihkan ke tenant uji yang HIDUP (1 AR + 15 AP saat diukur). Dibuat
+# env-override supaya siapa pun bisa mengarahkannya ke tenant lain tanpa
+# menyunting berkas -- tenant fixture berumur pendek, dan tes yang mati karena
+# datanya pindah adalah tes yang melatih pembaca mengabaikan merah.
+TENANT = os.environ.get("PARITY_TENANT", "kaos-biru-konveksi")
 
 
 # pytest-asyncio 1.x: session-scoped loop so the singleton asyncpg pool binds once.
@@ -62,7 +73,12 @@ async def _fetch_ar(pool) -> ARFixture:
                        ar.invoice_date::text AS issue_date
                 FROM compute_ar_outstanding($1) ar
                 JOIN sales_invoices si ON si.id = ar.invoice_id
-                JOIN customers c ON c.id::text = si.customer_id
+                -- `::text` di sini adalah DRIFT: diukur 2026-09-03, `customers.id` DAN
+                -- `sales_invoices.customer_id` SAMA-SAMA uuid, sehingga cast ke
+                -- text menghasilkan `operator does not exist: text = uuid` dan
+                -- MEMATIKAN seluruh fixture AR (skenario 1 & 2) sebelum satu
+                -- assert pun berjalan.
+                JOIN customers c ON c.id = si.customer_id
                 WHERE ar.outstanding > 0
                   AND si.status NOT IN ('draft', 'void')
                 ORDER BY ar.outstanding DESC
