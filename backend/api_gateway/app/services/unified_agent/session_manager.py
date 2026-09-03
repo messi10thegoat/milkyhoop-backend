@@ -138,8 +138,23 @@ class StructuredState:
                 + (f" (PPN Rp {tax:,.0f})" if tax else "")
             )
             parts.append("   Status: Menunggu konfirmasi user")
+            # T-c 2026-09-03: larangan MUTLAK diganti aturan BERSYARAT.
+            #
+            # Bentuk lama berbunyi "JANGAN search_vendors/search_customers"
+            # tanpa syarat, sehingga berlaku untuk SETIAP pesan selama dokumen
+            # aktif. Akibatnya terukur: pada sesi dengan dokumen hidup,
+            # pertanyaan "Sharon Vanesa, coba cek lagi" dibaca sebagai koreksi
+            # dokumen dan dijawab "Vendor diubah menjadi Sharon Vanesa" —
+            # padahal user sedang mencari PELANGGAN. Model tidak bingung; ia
+            # menuruti perintah.
+            #
+            # Yang dijaga: koreksi dokumen tetap harus lewat
+            # update_document_context (fitur itu tidak dimatikan).
             parts.append(
-                "   >> Jika user koreksi data dokumen ini, WAJIB panggil update_document_context(edits={...}). JANGAN search_vendors/search_customers."
+                "   >> Bila pesan user MENGOREKSI data dokumen ini, panggil "
+                "update_document_context(edits={...}). Bila pesan adalah "
+                "pertanyaan atau permintaan LAIN, jawab normal dan boleh "
+                "memakai tool pencarian (search_customers/search_vendors)."
             )
 
             if edits:
