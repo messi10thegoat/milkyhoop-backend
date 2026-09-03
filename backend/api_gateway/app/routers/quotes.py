@@ -1028,6 +1028,56 @@ async def accept_quote(request: Request, quote_id: str):
         raise HTTPException(status_code=500, detail="Failed to accept quote")
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# GUARD UANG MUKA — dipakai OLEH DUA JALUR (decline dan void)
+#
+# Keduanya memindahkan penawaran ke keadaan terminal tanpa pernah melihat
+# uang muka yang menempel padanya, sehingga bisa meninggalkan DP YATIM:
+# baris `customer_deposits` (beserta jurnalnya) yang menunjuk penawaran yang
+# sudah tak berlaku, tanpa jalur untuk menutupnya.
+#
+# "AKTIF" didefinisikan dari yang benar-benar ada di skema, bukan dari
+# ingatan (diukur 2026-09-03):
+#   - `chk_cust_deposit_status` mengizinkan draft/posted/partial/applied/void.
+#     TIDAK ADA status 'refunded' -- refund dicatat sebagai NOMINAL di kolom
+#     `amount_refunded` (+ tabel `customer_deposit_refunds`).
+#   - Jadi "sudah tidak aktif" = status 'void' ATAU sisa nominalnya habis
+#     (amount - amount_refunded <= 0). Sisanya aktif, termasuk 'draft'
+#     (belum berjurnal, tapi tetap baris yatim) dan 'applied'.
+#
+# Guard ini TIDAK menghapus atau mengubah apa pun -- ia hanya menolak, dan
+# menyerahkan urutan yang benar kepada pengguna: tutup dulu uang mukanya.
+# ═════════════════════════════════════════════════════════════════════════
+
+SQL_DP_AKTIF_ATAS_QUOTE = """
+    SELECT deposit_number
+    FROM customer_deposits
+    WHERE quote_id = $1
+      AND tenant_id = $2
+      AND status <> 'void'
+      AND (amount - COALESCE(amount_refunded, 0)) > 0
+    ORDER BY deposit_number
+"""
+
+
+async def _tolak_bila_ada_uang_muka_aktif(conn, quote_id, tenant_id, aksi: str):
+    """400 bila penawaran ini masih memegang uang muka aktif.
+
+    `aksi` hanya untuk kalimat pesan ("dibatalkan" / "ditolak").
+    """
+    baris = await conn.fetch(SQL_DP_AKTIF_ATAS_QUOTE, quote_id, tenant_id)
+    if not baris:
+        return
+    nomor = ", ".join(r["deposit_number"] for r in baris)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Penawaran memiliki uang muka aktif ({nomor}) dan tidak bisa {aksi}. "
+            "Batalkan atau refund uang muka itu lebih dulu."
+        ),
+    )
+
+
 @router.post("/{quote_id}/decline", response_model=QuoteResponse)
 async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteRequest):
     """Mark quote as declined."""
@@ -1053,6 +1103,10 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
                     status_code=400,
                     detail=f"Cannot decline quote with status '{quote['status']}'",
                 )
+
+            await _tolak_bila_ada_uang_muka_aktif(
+                conn, uuid_module.UUID(quote_id), ctx["tenant_id"], "ditolak"
+            )
 
             await conn.execute(
                 """
@@ -1111,6 +1165,10 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                     status_code=400,
                     detail=f"Cannot void quote with status '{quote['status']}'. Only draft or sent quotes can be voided.",
                 )
+
+            await _tolak_bila_ada_uang_muka_aktif(
+                conn, uuid_module.UUID(quote_id), ctx["tenant_id"], "dibatalkan"
+            )
 
             await conn.execute(
                 """
