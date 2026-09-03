@@ -635,6 +635,51 @@ async def fetch_detail(conn, tax_invoice_id, tenant_id: str) -> dict:
 # ─── ENDPOINTS ───────────────────────────────────────────────
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# GATE NON-PKP — kelas `bank_deleted_at`: benerin KODE, jangan tambah tabel.
+#
+# Seluruh modul e-Faktur bersandar pada 9 tabel yang TIDAK ADA di database
+# mana pun (`tax_info`, `tax_invoices`, `tax_invoice_sources`,
+# `tax_invoice_items`, `nsfp_assignments`, `tax_groups`, `tax_group_items`,
+# `product_djp_mapping`, `efaktur_exports`) -- lihat
+# `backend/migrations/RECOVERY_MISSING_TABLES_BACKLOG.md` BARIS 48, yang
+# menandainya "Coherent module — all-or-nothing".
+#
+# Akibatnya `GET /api/tax-invoices/by-source` 500 setiap kali, dan itu
+# TERPANGGIL DI LIMA HALAMAN DETAIL HARIAN (Faktur Penjualan, Faktur
+# Pembelian, Nota Kredit x2, Vendor Credit). Terukur 2026-09-03: 22 request,
+# 44 galat `relation "tax_invoice_sources" does not exist`, sejak satu
+# restart saja.
+#
+# Kenapa frontend tidak bisa menahannya sendiri: `TaxInvoiceStatusSection`
+# SUDAH punya `if (!isPKP) return null` -- tetapi `useTaxInvoiceStatus()`
+# dipanggil SEBELUM baris itu, dan hook React wajib berjalan sebelum early
+# return. Jadi permintaannya selalu terkirim walau hasilnya tak pernah
+# dirender. Penjagaan HARUS di sisi server.
+#
+# Sumber kebenaran PKP = `"Tenant".is_pkp` (kolom ini ADA dan terisi), BUKAN
+# `tax_info.is_pkp` yang tabelnya hilang. Terukur: kedua tenant `is_pkp = f`.
+#
+# Untuk tenant PKP jalur lama DIBIARKAN APA ADANYA -- ia akan tetap 500
+# sampai 9 tabel itu dimigrasikan. Itu DISENGAJA: menambalnya di sini akan
+# menyembunyikan modul yang memang belum ada.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def _tenant_pkp(conn, tenant_id: str) -> bool:
+    """True bila tenant ini PKP menurut `"Tenant".is_pkp`.
+
+    Gagal-tertutup: bila baris tenant tak ditemukan, diperlakukan NON-PKP --
+    yang berarti balasan kosong yang sah, bukan 500.
+    """
+    return bool(
+        await conn.fetchval(
+            'SELECT is_pkp FROM "Tenant" WHERE id = $1',
+            tenant_id,
+        )
+    )
+
+
 @router.get("")
 async def list_tax_invoices(
     request: Request,
@@ -651,6 +696,11 @@ async def list_tax_invoices(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
+        if not await _tenant_pkp(conn, ctx["tenant_id"]):
+            # Bentuk yang SAMA dengan hasil kosong biasa, supaya FE tidak
+            # perlu tahu bedanya "tenant bukan PKP" dan "belum ada faktur".
+            return {"data": [], "total": 0, "page": page, "per_page": per_page}
+
         conditions = ["ti.tenant_id = $1"]
         params: list = [ctx["tenant_id"]]
         idx = 2
@@ -759,6 +809,12 @@ async def get_tax_invoice_by_source(
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
+        if not await _tenant_pkp(conn, ctx["tenant_id"]):
+            # Bentuk PERSIS seperti cabang "tidak ketemu" di bawah, jadi
+            # `useTaxInvoiceStatus` menerimanya sebagai "belum ada faktur
+            # pajak" dan section tetap tidak merender apa pun.
+            return {"has_tax_invoice": False, "tax_invoice": None}
+
         row = await conn.fetchrow(
             """
             SELECT ti.id, ti.faktur_number, ti.status, ti.direction,
