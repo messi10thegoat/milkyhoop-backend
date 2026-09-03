@@ -174,6 +174,24 @@ class UpdateSalesOrderRequest(BaseModel):
     payment_account_holder: Optional[str] = None
     items: Optional[List[SalesOrderItemUpdate]] = None
 
+    # SEMANTIK PENGOSONGAN (cermin faktur fd5a9dc5).
+    # "" dari form dinormalisasi ke NULL supaya DB tidak menyimpan string
+    # kosong: string kosong lolos penjaga `{% if %}` di template PDF dan
+    # mencetak blok yang isinya hampa, dan ia juga membuat "sudah diisi" vs
+    # "belum diisi" tak bisa dibedakan di layar.
+    @field_validator(
+        "reference",
+        "payment_terms",
+        "payment_bank_name",
+        "payment_account_number",
+        "payment_account_holder",
+    )
+    @classmethod
+    def _kosongkan_teks_so(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
 class CancelSalesOrderRequest(BaseModel):
     """Schema for cancelling a sales order."""

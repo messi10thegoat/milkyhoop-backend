@@ -689,34 +689,37 @@ async def update_sales_order(
                 params = []
                 param_idx = 1
 
-                update_fields = {
-                    "order_date": body.order_date,
-                    "expected_ship_date": body.expected_ship_date,
-                    "customer_id": uuid_module.UUID(body.customer_id)
-                    if body.customer_id
-                    else None,
-                    "customer_name": body.customer_name,
-                    "reference": body.reference,
-                    "shipping_address": body.shipping_address,
-                    "shipping_method": body.shipping_method,
-                    "shipping_amount": body.shipping_amount,
-                    "discount_amount": body.discount_amount,
-                    "notes": body.notes,
-                    "internal_notes": body.internal_notes,
-                    # T199: syarat DP boleh diubah selama SO masih draft.
-                    "dp_percent": body.dp_percent,
-                    "dp_amount": body.dp_amount,
-                    "payment_terms": body.payment_terms,
-                    "payment_bank_name": body.payment_bank_name,
-                    "payment_account_number": body.payment_account_number,
-                    "payment_account_holder": body.payment_account_holder,
-                }
+                # SEMANTIK PATCH: kunci ABSEN = jangan ubah; kunci TERKIRIM
+                # (termasuk null / "") = terapkan, sehingga field BISA
+                # DIKOSONGKAN.
+                #
+                # Bentuk lama membangun dict SELURUH field lalu melewati yang
+                # bernilai None. Akibatnya "tidak dikirim" dan "dikirim sebagai
+                # null" tak bisa dibedakan, dan MENGOSONGKAN `reference`
+                # (juga dp_percent/dp_amount/payment_terms/payment_bank_*)
+                # menjadi MUSTAHIL lewat API — satu-satunya jalan adalah SQL
+                # langsung. Pengguna yang menghapus isi kolom lalu menyimpan
+                # mendapat 200 dan nilai lamanya tetap berdiri.
+                #
+                # `exclude_unset=True` adalah pembedanya: Pydantic mencatat
+                # field mana yang BENAR-BENAR dikirim (`model_fields_set`),
+                # jadi null eksplisit ikut terbawa sementara yang absen tidak.
+                # Ini pola yang sama dengan PATCH faktur penjualan.
+                # `items` dikecualikan karena ditangani blok tersendiri di bawah
+                # (hapus + sisip ulang baris), bukan kolom `sales_orders`.
+                update_data = body.model_dump(exclude_unset=True, exclude={"items"})
 
-                for field, value in update_fields.items():
-                    if value is not None:
+                for field, value in update_data.items():
+                    if field == "customer_id":
+                        # customer_id tetap butuh cast uuid; null tetap boleh
+                        # lewat (mengosongkan relasi) tanpa memanggil UUID(None).
+                        if value is not None:
+                            value = uuid_module.UUID(str(value))
                         updates.append(f"{field} = ${param_idx}")
-                        params.append(value)
-                        param_idx += 1
+                    else:
+                        updates.append(f"{field} = ${param_idx}")
+                    params.append(value)
+                    param_idx += 1
 
                 if body.items is not None:
                     await conn.execute(
