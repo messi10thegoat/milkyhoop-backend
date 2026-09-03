@@ -957,6 +957,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "due_date": invoice["due_date"].isoformat(),
                     "ref_no": invoice["ref_no"],
                     "notes": invoice["notes"],
+                    "payment_bank_name": invoice["payment_bank_name"],
+                    "payment_account_number": invoice["payment_account_number"],
+                    "payment_account_holder": invoice["payment_account_holder"],
                     "subtotal": invoice["subtotal"],
                     "discount_percent": float(invoice["discount_percent"] or 0),
                     "discount_amount": invoice["discount_amount"],
@@ -2377,8 +2380,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         invoice_date, due_date, ref_no, notes,
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
-                        status, created_by, recognize_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16)
+                        status, created_by, recognize_at,
+                        payment_bank_name, payment_account_number, payment_account_holder
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16, $17, $18, $19)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -2406,6 +2410,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     total_amount,
                     ctx["user_id"],
                     body.recognize_at,
+                    body.payment_bank_name,
+                    body.payment_account_number,
+                    body.payment_account_holder,
                 )
 
                 # Insert items
@@ -4437,6 +4444,9 @@ async def get_invoice_pdf(
                 else None,
                 "ref_no": invoice["ref_no"],
                 "notes": invoice["notes"],
+                "payment_bank_name": invoice["payment_bank_name"],
+                "payment_account_number": invoice["payment_account_number"],
+                "payment_account_holder": invoice["payment_account_holder"],
                 "subtotal": invoice["subtotal"],
                 "discount_percent": float(invoice["discount_percent"] or 0),
                 "discount_amount": invoice["discount_amount"],

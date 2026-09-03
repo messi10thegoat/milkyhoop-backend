@@ -179,6 +179,12 @@ class ConvertToInvoiceRequest(BaseModel):
     warehouse_id: Optional[str] = Field(
         None, description="Header warehouse for the created invoice (uuid)"
     )
+    # Rekening tujuan cetak (tiket MASTER). Bila diisi, MENANG atas nilai
+    # warisan dari dokumen sumber; bila absen/null, faktur mewarisi sumbernya.
+    payment_bank_name: Optional[str] = Field(None, max_length=100)
+    payment_account_number: Optional[str] = Field(None, max_length=50)
+    payment_account_holder: Optional[str] = Field(None, max_length=100)
+
 
 
 # ============================================================================

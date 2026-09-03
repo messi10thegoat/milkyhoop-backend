@@ -163,6 +163,11 @@ class ConvertToInvoiceRequest(BaseModel):
     invoice_date: Optional[date] = Field(None, description="Invoice date (defaults to today)")
     due_date: Optional[date] = Field(None, description="Invoice due date")
     item_ids: Optional[List[str]] = Field(None, description="Specific items to include (all if empty)")
+    # Rekening tujuan cetak (tiket MASTER). Bila diisi, MENANG atas nilai
+    # warisan dari dokumen sumber; bila absen/null, faktur mewarisi sumbernya.
+    payment_bank_name: Optional[str] = Field(None, max_length=100)
+    payment_account_number: Optional[str] = Field(None, max_length=50)
+    payment_account_holder: Optional[str] = Field(None, max_length=100)
 
 
 class ConvertToOrderRequest(BaseModel):

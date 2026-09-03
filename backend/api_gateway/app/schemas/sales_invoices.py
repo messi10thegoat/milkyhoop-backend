@@ -136,6 +136,28 @@ class CreateInvoiceRequest(BaseModel):
     #   'delivery' -> defer; recognize at fulfillment (/fulfill)
     recognize_at: Optional[str] = None
 
+    # Rekening tujuan cetak (tiket MASTER). HANYA instruksi "bayar ke mana" di
+    # PDF -- NOL dampak jurnal, dan sengaja TEKS bukan FK ke bank_accounts
+    # (cermin quotes/sales_orders/proformas; lihat V227). Akun kas/bank untuk
+    # uang masuk tetap dipilih terpisah di Penerimaan Pembayaran.
+    payment_bank_name: Optional[str] = Field(None, max_length=100)
+    payment_account_number: Optional[str] = Field(None, max_length=50)
+    payment_account_holder: Optional[str] = Field(None, max_length=100)
+
+    # Tiket MASTER "rekening tujuan faktur": semantik pengosongan.
+    # "" (string kosong dari form) dinormalisasi ke NULL supaya DB tidak
+    # menyimpan string kosong yang lolos penjaga `{% if %}` di template PDF
+    # dan mencetak blok rekening yang isinya hampa.
+    @field_validator(
+        "payment_bank_name", "payment_account_number", "payment_account_holder"
+    )
+    @classmethod
+    def _kosongkan_rekening(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
     @field_validator("recognize_at")
     @classmethod
     def validate_recognize_at(cls, v):
@@ -174,6 +196,28 @@ class UpdateInvoiceRequest(BaseModel):
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     discount_amount: Optional[int] = Field(None, ge=0)
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
+
+    # Rekening tujuan cetak (tiket MASTER). HANYA instruksi "bayar ke mana" di
+    # PDF -- NOL dampak jurnal, dan sengaja TEKS bukan FK ke bank_accounts
+    # (cermin quotes/sales_orders/proformas; lihat V227). Akun kas/bank untuk
+    # uang masuk tetap dipilih terpisah di Penerimaan Pembayaran.
+    payment_bank_name: Optional[str] = Field(None, max_length=100)
+    payment_account_number: Optional[str] = Field(None, max_length=50)
+    payment_account_holder: Optional[str] = Field(None, max_length=100)
+
+    # Tiket MASTER "rekening tujuan faktur": semantik pengosongan.
+    # "" (string kosong dari form) dinormalisasi ke NULL supaya DB tidak
+    # menyimpan string kosong yang lolos penjaga `{% if %}` di template PDF
+    # dan mencetak blok rekening yang isinya hampa.
+    @field_validator(
+        "payment_bank_name", "payment_account_number", "payment_account_holder"
+    )
+    @classmethod
+    def _kosongkan_rekening(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
 
 class PostInvoiceRequest(BaseModel):
@@ -259,6 +303,12 @@ class InvoiceDetail(BaseModel):
     due_date: str
     ref_no: Optional[str] = None
     notes: Optional[str] = None
+
+    # Rekening tujuan cetak (tiket MASTER) -- string mentah/null, BUKAN objek
+    # bersarang, supaya bentuknya sama persis dengan respons Penawaran.
+    payment_bank_name: Optional[str] = None
+    payment_account_number: Optional[str] = None
+    payment_account_holder: Optional[str] = None
 
     # Amounts
     subtotal: float

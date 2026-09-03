@@ -1289,6 +1289,20 @@ async def duplicate_quote(
 # ============================================================================
 
 
+def _rek_eksplisit(body, nama: str):
+    """Nilai rekening yang dikirim EKSPLISIT di body convert, kalau ada.
+
+    `body` boleh None (kedua endpoint convert memberinya default None), dan
+    string kosong diperlakukan sama dengan tidak mengirim -- keduanya jatuh ke
+    nilai warisan lewat `or` di sisi pemanggil.
+    """
+    nilai = getattr(body, nama, None) if body is not None else None
+    if isinstance(nilai, str):
+        nilai = nilai.strip() or None
+    return nilai
+
+
+
 @router.post("/{quote_id}/to-invoice", response_model=QuoteResponse)
 async def convert_to_invoice(
     request: Request, quote_id: str, body: ConvertToInvoiceRequest = None
@@ -1365,12 +1379,13 @@ async def convert_to_invoice(
                         id, tenant_id, invoice_number, invoice_date, due_date,
                         customer_id, customer_name,
                         subtotal, tax_amount, total_amount,
-                        status, quote_id, created_by
+                        status, quote_id, created_by,
+                        payment_bank_name, payment_account_number, payment_account_holder
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7,
                         $8, $9, $10,
-                        'draft', $11, $12
+                        'draft', $11, $12, $13, $14, $15
                     )
                 """,
                     invoice_id,
@@ -1385,6 +1400,16 @@ async def convert_to_invoice(
                     total,
                     uuid_module.UUID(quote_id),
                     ctx["user_id"],
+                    # Pewarisan rekening tujuan cetak (tiket MASTER). Yang
+                    # EKSPLISIT di body menang; kalau absen, warisi dari
+                    # Penawaran. Preseden persis ini sudah ada di T199
+                    # (quote -> Sales Order).
+                    _rek_eksplisit(body, "payment_bank_name")
+                    or quote["payment_bank_name"],
+                    _rek_eksplisit(body, "payment_account_number")
+                    or quote["payment_account_number"],
+                    _rek_eksplisit(body, "payment_account_holder")
+                    or quote["payment_account_holder"],
                 )
 
                 # Copy items to invoice_items

@@ -1126,6 +1126,20 @@ async def get_order_shipments(request: Request, order_id: str):
 # ============================================================================
 
 
+def _rek_eksplisit(body, nama: str):
+    """Nilai rekening yang dikirim EKSPLISIT di body convert, kalau ada.
+
+    `body` boleh None (kedua endpoint convert memberinya default None), dan
+    string kosong diperlakukan sama dengan tidak mengirim -- keduanya jatuh ke
+    nilai warisan lewat `or` di sisi pemanggil.
+    """
+    nilai = getattr(body, nama, None) if body is not None else None
+    if isinstance(nilai, str):
+        nilai = nilai.strip() or None
+    return nilai
+
+
+
 @router.post("/{order_id}/to-invoice", response_model=SalesOrderResponse)
 async def convert_to_invoice(
     request: Request, order_id: str, body: ConvertToInvoiceRequest = None
@@ -1252,8 +1266,9 @@ async def convert_to_invoice(
                         customer_id, customer_name,
                         subtotal, tax_rate, tax_amount, total_amount,
                         status, sales_order_id, created_by,
-                        recognize_at, warehouse_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15)
+                        recognize_at, warehouse_id,
+                        payment_bank_name, payment_account_number, payment_account_holder
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18)
                 """,
                     invoice_id,
                     ctx["tenant_id"],
@@ -1270,6 +1285,13 @@ async def convert_to_invoice(
                     ctx["user_id"],
                     _recognize_at,
                     _warehouse_id,
+                    # Pewarisan rekening tujuan cetak (tiket MASTER); eksplisit menang.
+                    _rek_eksplisit(body, "payment_bank_name")
+                    or order["payment_bank_name"],
+                    _rek_eksplisit(body, "payment_account_number")
+                    or order["payment_account_number"],
+                    _rek_eksplisit(body, "payment_account_holder")
+                    or order["payment_account_holder"],
                 )
 
                 for line_idx, item in enumerate(items_to_invoice, start=1):
