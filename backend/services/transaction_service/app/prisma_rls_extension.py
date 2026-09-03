@@ -69,8 +69,21 @@ class RLSPrismaClient:
         """
         async with self._prisma.tx() as tx:
             # Set RLS context at transaction start
+            # KEAMANAN: nilai dikirim sebagai PARAMETER, tidak pernah masuk
+            # teks SQL. `tenant_id` berasal dari `request.tenant_id` (gRPC),
+            # jadi ia masukan luar. Terukur 2026-09-03 dengan
+            # tenant_id = "x'; SELECT 1; --":
+            #   f-string  -> SELECT set_config(..., 'x'; SELECT 1; --', TRUE)
+            #                = TIGA statement; PostgreSQL menolak dengan
+            #                `syntax error at or near ";"`.
+            #   parameter -> query tetap satu statement, nilainya diperlakukan
+            #                sebagai teks biasa.
+            # `execute_raw(query: LiteralString, *args)` memang menerima
+            # parameter; tipe `LiteralString` itu sendiri dipasang pustakanya
+            # untuk mencegah query dirakit dengan f-string.
             await tx.execute_raw(
-                f"SELECT set_config('app.current_tenant_id', '{self.tenant_id}', TRUE)"
+                "SELECT set_config('app.current_tenant_id', $1, TRUE)",
+                self.tenant_id,
             )
             
             if self.bypass_rls:

@@ -82,11 +82,21 @@ import sys
 # dalam teks SQL lewat f-string (`f"SELECT set_config('app.current_tenant_id',
 # '{self.tenant_id}', TRUE)"`). Selain mati di luar transaksi, itu juga
 # permukaan injeksi. TIDAK diperbaiki di tiket ini — dicatat supaya tak hilang.
-BASELINE = 325
+BASELINE = 315
 
 AKAR_BAWAAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend")
 
-PAT_TXN = re.compile(r"^\s*async with .*\.transaction\(\)")
+# Dua pustaka, dua nama untuk hal yang sama: asyncpg memakai
+# `conn.transaction()`, Prisma memakai `prisma.tx()`. Versi pertama skrip ini
+# hanya mengenali yang pertama, sehingga 10 situs di
+# `*/prisma_rls_extension.py` dilaporkan MATI padahal berada di dalam
+# `async with self._prisma.tx() as tx:` — POSITIF-PALSU. Ditemukan
+# 2026-09-03 saat situs itu diperiksa satu per satu.
+#
+# Pelajaran yang dibawa ke sini: alat ukur wajib dibuktikan bisa MERAH
+# pada masukan buruk DAN bisa HIJAU pada masukan baik. Versi pertama hanya
+# diuji arah pertama.
+PAT_TXN = re.compile(r"^\s*async with .*\.(transaction|tx)\(\)")
 PAT_SET = re.compile(
     r"SET\s+LOCAL\s+app\.[a-z_]+|set_config\(\s*['\"]app\.[a-z_]+", re.IGNORECASE
 )
