@@ -16,60 +16,57 @@
 #
 # PAKAI INI, JANGAN `docker compose up -d` LANGSUNG.
 #
-#   ./scripts/ops/mh-recreate.sh api_gateway
+#   ./scripts/ops/mh-recreate.sh frontend                 # nama service
+#   ./scripts/ops/mh-recreate.sh milkyhoop-dev-frontend-1 # nama kontainer
 #
-# Catatan: argumennya NAMA SERVICE di compose (`api_gateway`), sedangkan
-# `mh-restart.sh` memakai NAMA KONTAINER (`milkyhoop-dev-api_gateway`).
+# Sejak 2026-09-03 kedua bentuk diterima di KEDUA skrip. Sebelumnya
+# mh-restart menuntut nama kontainer dan mh-recreate menuntut nama service —
+# dua alat bersaudara dengan dua bahasa, dan yang salah menebak dihukum
+# kegagalan alih-alih diterjemahkan.
+#
+# ⚠️ GERBANG "LIVE" WAJIB LEWAT HTTP NYATA KE KONTAINER (lihat mh-lib.sh).
 set -euo pipefail
 
-SVC="${1:-}"
-if [ -z "$SVC" ]; then
-    echo "pemakaian: $0 <nama-service-compose>   (mis. api_gateway)" >&2
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=mh-lib.sh
+. "$HERE/mh-lib.sh"
+
+if [ $# -lt 1 ]; then
+    echo "pemakaian: $0 <nama-service-compose|nama-kontainer>   (mis. api_gateway)" >&2
+    mh_daftar_kontainer
     exit 2
 fi
 
-TREE=/root/milkyhoop-dev
-CTR="milkyhoop-dev-${SVC}"
-# 2026-09-03: WAJIB `docker container inspect`, bukan `docker inspect`.
-# `docker inspect` juga mencocokkan IMAGE. Untuk service `frontend`, image
-# bernama `milkyhoop-dev-frontend` sedangkan kontainernya
-# `milkyhoop-dev-frontend-1` -> tebakan pertama SUKSES atas image, fallback
-# `-1` tak pernah dipakai, lalu `docker logs` gagal atas sebuah image dan
-# recreate dibatalkan. Terjadi nyata saat deploy FE 2026-09-03.
-docker container inspect "$CTR" >/dev/null 2>&1 || CTR="milkyhoop-dev-${SVC}-1"
-if ! docker container inspect "$CTR" >/dev/null 2>&1; then
-    echo "GAGAL: tak menemukan kontainer untuk service '$SVC'." >&2
-    exit 2
-fi
+mh_resolve "$1"
+echo "service: $MH_SVC   kontainer: $MH_CTR"
 
-DIR=/root/logs
-mkdir -p "$DIR"
-OUT="$DIR/${CTR}-$(date +%s)-prerecreate.log"
-if ! docker logs "$CTR" > "$OUT" 2>&1; then
-    echo "GAGAL: tak bisa mengarsipkan log '$CTR'. Recreate DIBATALKAN." >&2
-    rm -f "$OUT"
-    exit 1
-fi
-echo "arsip : $OUT ($(stat -c%s "$OUT") byte)"
+SEBELUM=$(mh_started_at "$MH_CTR")
+echo "StartedAt sebelum : $SEBELUM"
+
+mh_arsip_log "$MH_CTR" "-prerecreate"
 
 cd "$TREE"
-docker compose up -d --no-deps "$SVC"
+docker compose up -d --no-deps "$MH_SVC"
 
-# 2026-09-03: probe harus menguji SERVICE YANG DI-RECREATE. Sebelumnya ia
-# selalu menembak healthz api_gateway, jadi recreate `frontend` dilaporkan
-# "healthz: 200" berdasarkan proses yang sama sekali lain -- sinyal sehat yang
-# menutupi frontend mati. Sekarang per-service.
-case "$SVC" in
-    frontend) PROBE="http://localhost:3001/BUILD_INFO.json" ;;
-    *)        PROBE="http://localhost:8001/healthz" ;;
+# Recreate mengganti kontainer, jadi resolve ULANG: nama/id bisa berubah.
+mh_resolve "$MH_SVC"
+SESUDAH=$(mh_started_at "$MH_CTR")
+echo "StartedAt sesudah : $SESUDAH  (kontainer: $MH_CTR)"
+if [ "$SEBELUM" = "$SESUDAH" ]; then
+    echo "PERINGATAN: StartedAt tidak bergeser — compose mungkin menganggap" >&2
+    echo "            kontainer sudah mutakhir dan TIDAK me-recreate apa pun." >&2
+    exit 1
+fi
+
+# `set -e` akan membunuh skrip diam-diam kalau probe mengembalikan bukan-0,
+# jadi hasilnya ditangani EKSPLISIT: 0 = terbukti sehat, 3 = tak ada probe
+# (kontainer jalan tapi kesehatan TIDAK dibuktikan -- bukan kegagalan, tapi
+# juga bukan klaim sehat), selain itu = gagal.
+rc=0
+mh_tunggu_probe "$MH_SVC" || rc=$?
+case "$rc" in
+    0) echo "HASIL: $MH_SVC terbukti melayani HTTP." ;;
+    3) echo "HASIL: $MH_SVC berjalan, kesehatan TIDAK terbukti (tanpa probe)." ;;
+    *) echo "HASIL: $MH_SVC TIDAK sehat." >&2 ;;
 esac
-for i in $(seq 1 12); do
-    CODE=$(curl -s -o /dev/null -w '%{http_code}' "$PROBE" || echo 000)
-    if [ "$CODE" = "200" ]; then
-        echo "probe $PROBE: 200 (percobaan $i)"
-        exit 0
-    fi
-    sleep 5
-done
-echo "PERINGATAN: $PROBE belum 200 sesudah ~60 detik — periksa manual." >&2
-exit 1
+exit "$rc"

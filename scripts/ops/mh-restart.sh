@@ -18,48 +18,52 @@
 #
 # PAKAI INI, JANGAN `docker restart` LANGSUNG.
 #
-#   ./scripts/ops/mh-restart.sh milkyhoop-dev-api_gateway
+#   ./scripts/ops/mh-restart.sh api_gateway                 # nama service
+#   ./scripts/ops/mh-restart.sh milkyhoop-dev-api_gateway   # nama kontainer
 #
+# ⚠️ GERBANG "LIVE" WAJIB LEWAT HTTP NYATA KE KONTAINER.
+# Skrip ini mencetak StartedAt sebelum/sesudah supaya restart yang TIDAK
+# terjadi tak bisa menyamar jadi sukses. Harness in-process (TestClient)
+# membaca kode SUMBER, bukan kontainer — ia pernah melaporkan 7/7 atas
+# kontainer yang gagal di-restart. Lihat scripts/ops/mh-lib.sh.
 set -euo pipefail
 
-CTR="${1:-}"
-if [ -z "$CTR" ]; then
-    echo "pemakaian: $0 <nama-kontainer>" >&2
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=mh-lib.sh
+. "$HERE/mh-lib.sh"
+
+if [ $# -lt 1 ]; then
+    echo "pemakaian: $0 <nama-service-compose|nama-kontainer>" >&2
+    mh_daftar_kontainer
     exit 2
 fi
 
-# 2026-09-03: `docker container inspect`, bukan `docker inspect` — yang
-# terakhir juga mencocokkan IMAGE bernama sama (lihat mh-recreate.sh).
-if ! docker container inspect "$CTR" >/dev/null 2>&1; then
-    echo "GAGAL: kontainer '$CTR' tidak ada." >&2
-    exit 2
-fi
+mh_resolve "$1"
+echo "service: $MH_SVC   kontainer: $MH_CTR"
 
-DIR=/root/logs
-mkdir -p "$DIR"
-OUT="$DIR/${CTR}-$(date +%s).log"
+SEBELUM=$(mh_started_at "$MH_CTR")
+echo "StartedAt sebelum : $SEBELUM"
 
-# Arsip WAJIB berhasil sebelum restart. Kalau gagal, berhenti — kehilangan log
-# jauh lebih mahal daripada menunda restart.
-if ! docker logs "$CTR" > "$OUT" 2>&1; then
-    echo "GAGAL: tak bisa mengarsipkan log '$CTR'. Restart DIBATALKAN." >&2
-    rm -f "$OUT"
+mh_arsip_log "$MH_CTR"
+
+docker restart "$MH_CTR" >/dev/null
+
+SESUDAH=$(mh_started_at "$MH_CTR")
+echo "StartedAt sesudah : $SESUDAH"
+if [ "$SEBELUM" = "$SESUDAH" ]; then
+    echo "GAGAL: StartedAt tidak bergeser — kontainer TIDAK benar-benar restart." >&2
     exit 1
 fi
 
-echo "arsip : $OUT ($(stat -c%s "$OUT") byte)"
-docker restart "$CTR"
-
-# Tunggu sehat, jangan anggap restart = siap.
-for i in $(seq 1 12); do
-    if [ "$(docker inspect -f '{{.State.Running}}' "$CTR")" = "true" ]; then
-        CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/healthz || echo 000)
-        if [ "$CODE" = "200" ]; then
-            echo "healthz: 200 (percobaan $i)"
-            exit 0
-        fi
-    fi
-    sleep 5
-done
-echo "PERINGATAN: healthz belum 200 sesudah ~60 detik — periksa manual." >&2
-exit 1
+# `set -e` akan membunuh skrip diam-diam kalau probe mengembalikan bukan-0,
+# jadi hasilnya ditangani EKSPLISIT: 0 = terbukti sehat, 3 = tak ada probe
+# (kontainer jalan tapi kesehatan TIDAK dibuktikan -- bukan kegagalan, tapi
+# juga bukan klaim sehat), selain itu = gagal.
+rc=0
+mh_tunggu_probe "$MH_SVC" || rc=$?
+case "$rc" in
+    0) echo "HASIL: $MH_SVC terbukti melayani HTTP." ;;
+    3) echo "HASIL: $MH_SVC berjalan, kesehatan TIDAK terbukti (tanpa probe)." ;;
+    *) echo "HASIL: $MH_SVC TIDAK sehat." >&2 ;;
+esac
+exit "$rc"
