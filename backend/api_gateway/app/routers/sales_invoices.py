@@ -2479,10 +2479,22 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     item_batch_id = item.get("batch_id")
                     if item_batch_id and (not item_batch_no or not item_exp_date):
                         batch_info = await conn.fetchrow(
-                            "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
+                            # PAGAR TENANT (3 Sep 2026). `batch_id` datang dari badan
+                            # permintaan dan TIDAK dipasangkan dengan apa pun yang
+                            # sudah diverifikasi -- beda dengan jalur fulfillment,
+                            # yang memasangkannya dengan warehouse_id ber-tenant
+                            # sehingga terlindung SECARA KEBETULAN.
+                            #
+                            # Tanpa saringan ini, nomor batch dan tanggal
+                            # kedaluwarsa milik tenant lain masuk ke baris faktur
+                            # penyerang. `item_batches` masih 0 baris saat ini,
+                            # tapi kosong itu PENUNDAAN, bukan perlindungan.
+                            "SELECT batch_number, expiry_date FROM item_batches "
+                            "WHERE id = $1 AND tenant_id = $2",
                             UUID(item_batch_id)
                             if isinstance(item_batch_id, str)
                             else item_batch_id,
+                            ctx["tenant_id"],
                         )
                         if batch_info:
                             if not item_batch_no:
@@ -2692,10 +2704,22 @@ async def update_invoice(
                         item_batch_id = item.batch_id
                         if item_batch_id and (not item_batch_no or not item_exp_date):
                             batch_info = await conn.fetchrow(
-                                "SELECT batch_number, expiry_date FROM item_batches WHERE id = $1",
+                                # PAGAR TENANT (3 Sep 2026). `batch_id` datang dari badan
+                                # permintaan dan TIDAK dipasangkan dengan apa pun yang
+                                # sudah diverifikasi -- beda dengan jalur fulfillment,
+                                # yang memasangkannya dengan warehouse_id ber-tenant
+                                # sehingga terlindung SECARA KEBETULAN.
+                                #
+                                # Tanpa saringan ini, nomor batch dan tanggal
+                                # kedaluwarsa milik tenant lain masuk ke baris faktur
+                                # penyerang. `item_batches` masih 0 baris saat ini,
+                                # tapi kosong itu PENUNDAAN, bukan perlindungan.
+                                "SELECT batch_number, expiry_date FROM item_batches "
+                                "WHERE id = $1 AND tenant_id = $2",
                                 UUID(item_batch_id)
                                 if isinstance(item_batch_id, str)
                                 else item_batch_id,
+                                ctx["tenant_id"],
                             )
                             if batch_info:
                                 if not item_batch_no:
