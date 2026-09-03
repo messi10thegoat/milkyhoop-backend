@@ -90,3 +90,6 @@ frontend/manifest.json
 # Backup files from in-flight patches
 *.bak
 *.bak_*
+
+# Harness sekali-pakai yang di-mount ke dalam worktree saat uji (t2NN.py).
+/t2*.py
