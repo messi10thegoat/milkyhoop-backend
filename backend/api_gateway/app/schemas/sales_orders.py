@@ -142,6 +142,20 @@ class CreateSalesOrderRequest(BaseModel):
     dp_percent: Optional[Decimal] = None
     dp_amount: Optional[Decimal] = None
     payment_terms: Optional[str] = None
+    # Rekening tujuan cetak, boleh diisi SEJAK PEMBUATAN. Sebelumnya ketiganya
+    # HANYA ada di UpdateSalesOrderRequest, jadi form "buat SO" yang mengisi
+    # rekening mengirimkannya dan Pydantic MEMBUANGNYA diam-diam (kunci tak
+    # dikenal, tanpa galat) -- pengguna dapat 201 lalu kolomnya NULL. Ini
+    # pengulangan persis pola dp_* (85b50523).
+    #
+    # HANYA instruksi "bayar ke mana" untuk dokumen cetak: NOL dampak jurnal,
+    # dan sengaja TEKS bukan FK ke bank_accounts (cermin quotes/faktur/proforma).
+    # TANPA max_length: kolomnya `text` dan PATCH juga tak membatasi -- memberi
+    # batas di sini akan membuat CREATE lebih ketat daripada UPDATE, sehingga
+    # nilai yang diterima PATCH ditolak 422 saat create.
+    payment_bank_name: Optional[str] = None
+    payment_account_number: Optional[str] = None
+    payment_account_holder: Optional[str] = None
     items: List[SalesOrderItemCreate] = Field(..., min_length=1, description="Order line items")
 
     @field_validator('customer_name')
@@ -151,6 +165,23 @@ class CreateSalesOrderRequest(BaseModel):
             raise ValueError('Customer name is required')
         return v.strip()
 
+    # Cermin f1ce3564: "" dari form dinormalisasi ke NULL, supaya create tidak
+    # menanam string kosong yang persis baru dibersihkan di jalur PATCH.
+    # String kosong lolos penjaga `{% if %}` di template PDF (mencetak blok
+    # hampa) dan membuat "sudah diisi" tak bisa dibedakan dari "belum diisi".
+    @field_validator(
+        "reference",
+        "payment_terms",
+        "payment_bank_name",
+        "payment_account_number",
+        "payment_account_holder",
+    )
+    @classmethod
+    def _kosongkan_teks_so_create(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
 class UpdateSalesOrderRequest(BaseModel):
     """Schema for updating an existing sales order (draft only)."""
