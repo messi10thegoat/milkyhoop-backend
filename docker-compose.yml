@@ -194,6 +194,14 @@ services:
     volumes:
     - ./backend/api_gateway:/app/backend/api_gateway:ro
     - ./backend/services/accounting_kernel:/app/backend/services/accounting_kernel:ro
+    # Tes yang membaca DDL sebagai kebenaran (mis. tests/unit/test_t200_proforma.py
+    # yang menegaskan `proformas` tak menyimpan angka terbayar) mencari berkas
+    # migrasi lewat parents berkas tes: /app/backend/migrations. Tanpa mount ini
+    # dua tes itu MERAH PERMANEN dengan sebab "V225__proformas.sql tidak
+    # ditemukan" -- merah yang tak ada hubungannya dengan kode, jadi ia melatih
+    # pembaca mengabaikan tes merah. READ-ONLY: kontainer tidak pernah menulis
+    # migrasi, dan runner migrasi berjalan lewat psql di kontainer postgres.
+    - ./backend/migrations:/app/backend/migrations:ro
     - ./logs/api_gateway:/var/log
     - ./data/logos:/app/backend/api_gateway/app/static/logos
     healthcheck:
