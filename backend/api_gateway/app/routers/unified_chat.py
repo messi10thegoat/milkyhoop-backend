@@ -25,7 +25,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Dict, Any, List
 import asyncio as _asyncio_stream
 import json as _json_stream
@@ -46,8 +46,10 @@ from ..services.action_service import (
 )
 from ..services.unified_agent.session_manager import SessionManager, StateUpdateHooks
 from ..services.unified_agent.db_utils import (
+    IdSesiTidakSah,
     bakukan_session_id,
     get_session_db_pool,
+    validasi_id_sesi,
 )
 from ..services.unified_agent.fsm import FSMState
 from ..services.unified_agent.tutorial_progress import (
@@ -618,6 +620,13 @@ class ChatMessageRequest(BaseModel):
 
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+
+    # Ditolak di TEPI dengan 422, bukan dibiarkan jatuh menjadi 500 saat
+    # penyisipan chat_sessions. Alasan lengkap di validasi_id_sesi().
+    @field_validator("conversation_id", "session_id")
+    @classmethod
+    def _validasi_id_sesi(cls, v, info):
+        return validasi_id_sesi(v, info.field_name)
     text: str = Field(..., min_length=1, max_length=2000, description="User message")
 
 
@@ -626,6 +635,13 @@ class ConfirmActionRequest(BaseModel):
 
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+
+    # Ditolak di TEPI dengan 422, bukan dibiarkan jatuh menjadi 500 saat
+    # penyisipan chat_sessions. Alasan lengkap di validasi_id_sesi().
+    @field_validator("conversation_id", "session_id")
+    @classmethod
+    def _validasi_id_sesi(cls, v, info):
+        return validasi_id_sesi(v, info.field_name)
     pending_action_id: str = Field(
         ..., description="ID of the pending action to confirm"
     )
@@ -644,6 +660,13 @@ class CancelActionRequest(BaseModel):
 
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+
+    # Ditolak di TEPI dengan 422, bukan dibiarkan jatuh menjadi 500 saat
+    # penyisipan chat_sessions. Alasan lengkap di validasi_id_sesi().
+    @field_validator("conversation_id", "session_id")
+    @classmethod
+    def _validasi_id_sesi(cls, v, info):
+        return validasi_id_sesi(v, info.field_name)
     pending_action_id: str = Field(
         ..., description="ID of the pending action to cancel"
     )
@@ -660,6 +683,13 @@ class EditActionRequest(BaseModel):
 
     conversation_id: str = Field(..., description="Conversation session ID")
     session_id: Optional[str] = Field(None, description="Session ID for 4-layer memory")
+
+    # Ditolak di TEPI dengan 422, bukan dibiarkan jatuh menjadi 500 saat
+    # penyisipan chat_sessions. Alasan lengkap di validasi_id_sesi().
+    @field_validator("conversation_id", "session_id")
+    @classmethod
+    def _validasi_id_sesi(cls, v, info):
+        return validasi_id_sesi(v, info.field_name)
     pending_action_id: str = Field(..., description="ID of the pending action to edit")
     text: str = Field(
         ...,
@@ -4015,6 +4045,14 @@ async def send_message_with_files(
     and their metadata is injected into LLM context.
     """
     ctx = _get_user_context(request)
+
+    # Form tidak melewati validator Pydantic di atas, jadi tepi ini dijaga
+    # sendiri -- kalau tidak, /message/upload tetap 500 sementara /message 422.
+    try:
+        conversation_id = validasi_id_sesi(conversation_id, "conversation_id")
+        session_id = validasi_id_sesi(session_id, "session_id")
+    except IdSesiTidakSah as _e:
+        raise HTTPException(status_code=422, detail=str(_e))
 
     # ── File Validation (at boundary, reject early) ──
     actual_files = [f for f in files if f.filename]  # Filter empty file fields
