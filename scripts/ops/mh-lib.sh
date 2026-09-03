@@ -21,6 +21,14 @@
 # Harness in-process membuktikan kode sumber benar; ia TIDAK BISA membuktikan
 # kontainer menyajikannya. Untuk klaim "sudah live", pakai curl ke port, lalu
 # periksa efeknya di DB.
+#
+# ATURAN: berkas SQL untuk psql-di-dalam-docker WAJIB lewat stdin host
+# (`docker exec -i ... psql ... < berkas.sql`), BUKAN `-f berkas.sql`.
+# `-f` diselesaikan DI DALAM kontainer, jadi berkas yang ada di host dijawab
+# "No such file or directory" -- 3 Sep 2026 ini membuat sebuah penghapusan
+# produksi tampak "sudah disetujui tapi tak terjadi apa-apa" berkali-kali,
+# dan pesan galatnya tidak menyebut kontainer sama sekali.
+
 set -euo pipefail
 
 TREE=${TREE:-/root/milkyhoop-dev}
