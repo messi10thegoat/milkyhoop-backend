@@ -1304,7 +1304,7 @@ class ToolExecutor:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     headers = {
                         "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.context.auth_token}",
+                        **self._auth_header(),
                     }
                     resp = await client.get(
                         f"http://localhost:8000{endpoint}",
@@ -1352,7 +1352,7 @@ class ToolExecutor:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 headers = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.context.auth_token}",
+                    **self._auth_header(),
                 }
                 resp = await client.post(
                     f"http://localhost:8000{endpoint}",
@@ -2504,7 +2504,7 @@ class ToolExecutor:
             async with httpx.AsyncClient(timeout=READ_TOOL_TIMEOUT) as client:
                 headers = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.context.auth_token}",
+                    **self._auth_header(),
                 }
                 api_params = (
                     {}
@@ -2591,7 +2591,7 @@ class ToolExecutor:
             async with httpx.AsyncClient(timeout=READ_TOOL_TIMEOUT) as client:
                 headers = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.context.auth_token}",
+                    **self._auth_header(),
                 }
                 api_params = (
                     {}
@@ -4038,10 +4038,31 @@ class ToolExecutor:
     #   3. Registry-based dispatch (no scattered if/else)
     # =========================================================
 
+    def _auth_header(self) -> Dict[str, str]:
+        """Header Authorization, atau TIDAK SAMA SEKALI bila token kosong.
+
+        httpx MENOLAK nilai header ``Bearer `` (token kosong) dengan
+        ``LocalProtocolError: Illegal header value b'Bearer '``. Karena itu
+        permintaannya TIDAK PERNAH keluar dari proses: pemanggil melihat
+        CRASH transport, bukan 401 yang bisa dibaca. Terukur 2026-09-03 lewat
+        jalur sumber-internal (``X-Source: action_executor``), yang membuat
+        ``ctx['auth_token']`` kosong -- di situ SETIAP read-tool gagal.
+
+        Menghilangkan header saat token kosong BUKAN pelebaran hak akses:
+        tanpa token tetap tidak ada wewenang, server tetap menjawab 401.
+        Yang berubah hanya: gagal dengan cara yang bisa dibaca dan dicatat.
+        Pola ini SUDAH dipakai di tempat lain pada repo yang sama --
+        ``orchestrator.fetch_post_drafts`` (``if auth_token else {}``) dan
+        ``kernel_document_executor`` (``if self.auth_token``); di sini ia
+        cuma belum diterapkan.
+        """
+        token = (getattr(self.context, "auth_token", "") or "").strip()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
     def _build_headers(self) -> Dict[str, str]:
         """Build auth headers for kernel API calls."""
         return {
-            "Authorization": f"Bearer {self.context.auth_token}",
+            **self._auth_header(),
             "X-Tenant-ID": self.context.tenant_id,
             "Content-Type": "application/json",
         }
