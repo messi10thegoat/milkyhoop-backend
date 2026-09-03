@@ -2058,7 +2058,10 @@ class ToolExecutor:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=config.ttl_seconds)
 
         try:
-            from ..unified_agent.db_utils import get_session_db_pool  # noqa: E402
+            from ..unified_agent.db_utils import (  # noqa: E402
+            bakukan_session_id,
+            get_session_db_pool,
+        )
 
             pool = await get_session_db_pool()
             await pool.execute(
@@ -2072,7 +2075,9 @@ class ToolExecutor:
                 uuid.UUID(pending_id),
                 self.context.tenant_id,
                 self.context.user_id,
-                self.session_id or "",
+                # TULIS dibakukan; sisi BACA di unified_chat._kartu_menunggu
+                # dan _t171_baris_batch dibakukan dengan fungsi yang sama.
+                bakukan_session_id(self.session_id) or "",
                 action_key,
                 action_key.upper(),
                 "MASTER_DATA",
@@ -2758,7 +2763,8 @@ class ToolExecutor:
                 )
 
         # Use conversation session_id as chat_session_id
-        chat_session_id = self.session_id or "unknown"
+        from .db_utils import bakukan_session_id  # noqa: E402
+        chat_session_id = bakukan_session_id(self.session_id) or "unknown"
 
         # Detect REVIEWING state → use resume() to increment reviewed_count
         # Also detect AWAITING_DECISION for document review resume
@@ -3049,7 +3055,8 @@ class ToolExecutor:
         from .db_utils import get_session_db_pool  # noqa: E402
 
         workflow_type = params.get("workflow_type", "bank_reconciliation")
-        chat_session_id = self.session_id or "unknown"
+        from .db_utils import bakukan_session_id  # noqa: E402
+        chat_session_id = bakukan_session_id(self.session_id) or "unknown"
 
         pool = await get_session_db_pool()
 
@@ -3877,7 +3884,10 @@ class ToolExecutor:
                         )
 
                     from ..column_mapper import auto_detect_columns  # noqa: E402
-                    from ..unified_agent.db_utils import get_session_db_pool  # noqa: E402
+                    from ..unified_agent.db_utils import (  # noqa: E402
+            bakukan_session_id,
+            get_session_db_pool,
+        )
 
                     pool = await get_session_db_pool()
                     detect_result = await auto_detect_columns(

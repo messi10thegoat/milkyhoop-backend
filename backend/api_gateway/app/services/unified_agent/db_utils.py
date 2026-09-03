@@ -6,7 +6,41 @@ Separate from Prisma since chat_* tables are managed via SQL directly.
 """
 import asyncpg
 import os
+import uuid as _uuid
 from typing import Optional
+
+
+def bakukan_session_id(nilai):
+    """Bakukan id sesi chat yang disimpan sebagai TEKS ke bentuk kanonik.
+
+    KENAPA FUNGSI INI ADA
+    `chat_sessions.id` bertipe `uuid`, jadi Postgres SELALU menyimpannya huruf
+    kecil. Tapi `pending_actions.conversation_id` dan
+    `chat_workflow_state.chat_session_id` bertipe TEXT, jadi mereka menyimpan
+    apa adanya yang dikirim klien. Klien yang membangkitkan UUID huruf KAPITAL
+    (mis. `UUID().uuidString` di Swift) membuat `WHERE conversation_id = $1`
+    MELESET tanpa galat: 111 baris pada 29-30 Agt 2026 terbaca sebagai yatim
+    padahal induknya hidup.
+
+    ⚠️ WAJIB DIPAKAI DI DUA UJUNG — TULIS **DAN** BACA.
+    Kalau hanya sisi TULIS yang dibakukan, klien yang mengirim kapital akan
+    menulis huruf kecil lalu MENCARI dengan huruf kapital dan tidak menemukan
+    apa pun. Hari ini klien itu konsisten-salah (kapital di kedua ujung)
+    sehingga tetap berfungsi; membakukan satu sisi saja justru MEMATIKAN aksi
+    tertunda baginya. Setengah tambalan lebih buruk daripada tak menambal.
+
+    Nilai yang BUKAN uuid dikembalikan apa adanya (mis. sentinel "unknown" di
+    tool_executor). Terukur 3 Sep 2026: sentinel itu nol baris di seluruh
+    riwayat, tapi jalurnya masih ada, jadi fungsi ini tidak boleh menolaknya.
+    """
+    if nilai is None:
+        return nilai
+    teks = str(nilai)
+    try:
+        return str(_uuid.UUID(teks))
+    except (ValueError, AttributeError, TypeError):
+        return teks
+
 
 _session_db_pool: Optional[asyncpg.Pool] = None
 
