@@ -75,3 +75,35 @@ Setelah mengubah tipe, jalankan setiap penegak yang menyentuh kolom itu, lalu:
    `schema_migrations` dengan checksum **md5** (konvensi baris-baris lain).
 8. Verifikasi lewat **HTTP ke jalur yang benar-benar dipakai**, bukan lewat
    suite unit saja.
+
+---
+
+# Membaca respons daftar: kosong bukan berarti tidak ada
+
+Diukur 5 September 2026 setelah sebuah laporan bug yang ternyata salah baca.
+
+**Daftar kosong WAJIB dibaca bersama `total` dan `has_more`.** Halaman yang
+melewati ujung data menjawab `200` dengan `data: []` — dan itu BENAR:
+
+```
+GET /api/journals?limit=100&page=1   -> 200, 100 baris, total=328, has_more=true
+GET /api/journals?limit=100&page=4   -> 200,  28 baris, total=328, has_more=false
+GET /api/journals?limit=100&page=99  -> 200,   0 baris, total=328, has_more=false
+```
+
+Responsnya tidak berbohong; `total` tetap 328. Yang menipu adalah klien yang
+membaca `data` sendirian lalu menyimpulkan "tidak ada data". Sebuah laporan bug
+lahir dari situ dan sempat dibaca sebagai "`limit>100` mengembalikan daftar
+kosong" — padahal `limit>100` sudah ditolak `422` oleh `Query(..., le=N)`,
+terbukti dari log akses produksi (`/api/sales-orders?limit=200` → 422).
+
+## Jangan seragamkan `le=` tanpa mengukur pemakainya
+
+Nilai `le=` memang BERBEDA per endpoint dan itu disengaja: 82× `le=100`,
+39× `le=200`, 15× `le=50`, 6× `le=500`, 3× `le=2000`. Menyeragamkannya ke 100
+akan mematikan lalu lintas yang sah — terukur dalam 48 jam:
+`/api/production/fg-receipts?limit=500` → 200 (8×),
+`/api/production/material-issues?limit=500` → 200 (7×), `/api/accounts` → 200.
+
+Ini bentuk lain dari pelajaran yang sama: **mengetatkan kontrak tanpa memeriksa
+siapa yang sudah memakainya.** Sebelum mengubah batas apa pun, baca log akses.

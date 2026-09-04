@@ -82,7 +82,21 @@ mh_resolve() {
 
     # (b) Nama service: tanya compose, jangan menebak sufiks.
     if id=$(cd "$TREE" && docker compose ps -q "$arg" 2>/dev/null) && [ -n "$id" ]; then
-        MH_CTR=$(docker container inspect -f '{{.Name}}' "$id" 2>/dev/null | sed 's|^/||')
+        # `|| true` WAJIB. Tanpa itu, `set -euo pipefail` membunuh skrip di
+        # baris INI begitu `docker container inspect` gagal -- misalnya
+        # kontainernya lenyap antara `compose ps -q` dan pemanggilan ini --
+        # sehingga baris fallback di bawah TAK PERNAH JALAN dan pemanggil
+        # melihat keluaran KOSONG dengan exit bukan-nol.
+        #
+        # Kelas yang sama persis membuat `fe-rollback.sh --check` berhenti di
+        # "[3/6]" tanpa sepatah kata pada 4 Sep 2026, dan jaring rollback
+        # efektif mati beberapa menit tanpa ada yang tahu. Diuji ulang 5 Sep:
+        # pola tanpa `|| true` memberi keluaran kosong + exit 1; dengan
+        # `|| true`, fallback-nya jalan.
+        #
+        # Guard yang BENAR tapi BISU sama menyesatkannya dengan guard yang
+        # tidak ada.
+        MH_CTR=$(docker container inspect -f '{{.Name}}' "$id" 2>/dev/null | sed 's|^/||' || true)
         [ -n "$MH_CTR" ] || MH_CTR="$id"
         MH_SVC="$arg"
         return 0
