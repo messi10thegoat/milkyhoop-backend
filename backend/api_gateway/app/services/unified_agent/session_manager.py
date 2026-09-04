@@ -351,6 +351,28 @@ class SessionManager:
                 # kira masih hidup ikut hilang. Hanya FE yang tahu ada draf
                 # belum terkirim; BE tak punya cara mengetahuinya. Penundaan
                 # rotasi selagi ada draf = tiket FE tersendiri.
+                if await self._ada_aksi_tertunda(str(row["id"])):
+                    # JANGAN merotasi sesi yang punya aksi tertunda AKTIF.
+                    #
+                    # Perilaku ini SUDAH benar sebelum baris ini ada, tapi benar
+                    # SECARA KEBETULAN: jalur "aksi menunggu konfirmasi" pulang
+                    # lebih awal sehingga rotasi tak pernah tercapai. Tak
+                    # seorang pun memutuskannya. Kalau `return` awal itu kelak
+                    # dipindahkan, rotasi akan MEMBUANG kartu konfirmasi yang
+                    # sedang dilihat pengguna -- dan tak ada yang berbunyi.
+                    # Kelas yang sama dengan `batch_warehouse_stock` yang
+                    # terlindung hanya karena dipasangkan dengan warehouse_id.
+                    #
+                    # Terukur 4 Sep 2026: TTL aksi langsung 300 detik,
+                    # sementara ambang rotasi 2 jam -- jadi dalam praktiknya
+                    # cabang ini hampir tak pernah menyala. Ia ada untuk saat
+                    # TTL dinaikkan atau jenis aksi berumur panjang ditambahkan.
+                    logger.info(
+                        "[SESSION] rotasi DIBATALKAN untuk %s: ada aksi "
+                        "tertunda aktif; pengguna sedang di tengah alur",
+                        str(session_id)[:8],
+                    )
+                    return str(row["id"])
                 self.sesi_dirotasi = True
                 logger.info(
                     "[SESSION] rotasi: %s tak aktif > %s jam, sesi BARU dibuat "
@@ -393,6 +415,39 @@ class SessionManager:
 
         # Create new session (no ID provided)
         return await self._buat_sesi_baru()
+
+    async def _ada_aksi_tertunda(self, session_id: str) -> bool:
+        """Adakah kartu konfirmasi yang MASIH menunggu keputusan manusia?
+
+        `expires_at > now()` itu WAJIB: kartu yang sudah lewat waktunya bukan
+        lagi alur yang sedang berjalan, dan menahannya akan mengunci sesi itu
+        selamanya. Terukur 4 Sep 2026: ada 19 baris berstatus PENDING yang
+        sudah lewat kedaluwarsa (terlama 81,6 jam) -- ia dibersihkan secara
+        MALAS, hanya saat permintaan berikutnya menyentuh sesi itu, dan tak ada
+        penjadwal yang membersihkannya. Tanpa syarat waktu di sini, ke-19 sesi
+        itu tak akan pernah berotasi.
+        """
+        try:
+            return bool(
+                await self.db.fetchval(
+                    """SELECT EXISTS (
+                           SELECT 1 FROM pending_actions
+                            WHERE conversation_id = $1::uuid
+                              AND tenant_id = $2
+                              AND status = 'PENDING'
+                              AND expires_at > now())""",
+                    session_id,
+                    self.tenant_id,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            # Gagal-TUTUP: kalau tak bisa memastikan, JANGAN merotasi. Salah
+            # menahan rotasi cuma menunda sesi baru; salah merotasi membuang
+            # kartu konfirmasi yang sedang dilihat pengguna.
+            logger.warning(
+                "[SESSION] gagal memeriksa aksi tertunda (%s) -- rotasi ditahan", e
+            )
+            return True
 
     async def _buat_sesi_baru(self) -> str:
         """Sesi baru dengan id dari basis data. Dipakai dua pemanggil: tak ada
