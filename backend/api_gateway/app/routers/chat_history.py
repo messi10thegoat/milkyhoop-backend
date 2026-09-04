@@ -115,7 +115,25 @@ async def _t171_sisipkan_sisa_slide(pool, ctx, session_id: str, data: dict) -> N
     """Sisipkan SATU kalimat kalau ada slide yang belum sempat ditampilkan."""
     try:
         row = await pool.fetchrow(
-            """SELECT status, action_plan
+            # STATUS TURUNAN, bukan status mentah. Kartu yang sudah lewat
+            # `expires_at` BUKAN lagi kartu yang menunggu keputusan manusia,
+            # walau kolom `status`-nya masih berbunyi 'PENDING'.
+            #
+            # Penandaan EXPIRED di basis data terjadi MALAS -- hanya saat
+            # permintaan berikutnya menyentuh sesi itu (unified_chat.py:835).
+            # Tak ada penjadwal. Terukur 5 Sep 2026: 19 baris berstatus PENDING
+            # SEMUANYA sudah kedaluwarsa, terlama 87,3 jam, dan NOL yang masih
+            # hidup. Membaca `status` mentah membuat riwayat terus mengaku ada
+            # slide yang menunggu, padahal tak satu pun hidup.
+            #
+            # Diturunkan saat DIBACA, bukan ditulis ulang oleh penjadwal:
+            # benar juga untuk baris yang tak pernah disentuh lagi, dan tidak
+            # menambah permukaan baru (kita tak punya penjadwal apa pun).
+            """SELECT CASE
+                        WHEN status = 'PENDING' AND expires_at < now()
+                        THEN 'EXPIRED' ELSE status
+                      END AS status,
+                      action_plan
                  FROM pending_actions
                 WHERE tenant_id = $1
                   AND conversation_id = $2
@@ -218,8 +236,18 @@ async def _enrich_messages(pool, rows, limit: int) -> dict:
         try:
             pa_rows = await pool.fetch(
                 """
-                SELECT id::text, status FROM pending_actions
-                WHERE id = ANY($1::uuid[])
+                -- STATUS TURUNAN; lihat catatan panjang di atas. Di sini
+                -- akibatnya paling langsung: pemanggil hanya memperbaiki kartu
+                -- bila status BUKAN 'PENDING', jadi baris PENDING yang sudah
+                -- kedaluwarsa membuat kartu di riwayat TERUS menampilkan
+                -- "menunggu keputusan" selamanya.
+                SELECT id::text,
+                       CASE
+                         WHEN status = 'PENDING' AND expires_at < now()
+                         THEN 'EXPIRED' ELSE status
+                       END AS status
+                  FROM pending_actions
+                 WHERE id = ANY($1::uuid[])
                 """,
                 [_uuid_mod.UUID(p) for p in pa_ids],
             )
