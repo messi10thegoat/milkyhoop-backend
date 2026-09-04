@@ -284,6 +284,9 @@ class SessionAwareAgent:
             "trace_id": agent_response.trace_id,
             "fsm_state": fsm_state,
             "session_id": session_id,
+            # Sesi ini BARU karena rotasi umur, bukan karena pengguna
+            # menekan "percakapan baru". FE memakainya untuk memberi tahu.
+            "session_rotated": getattr(session_manager, "sesi_dirotasi", False),
             "thinking_stages": thinking_stages,
             "usage": usage,
             "extra_data": getattr(agent_response, "extra_data", None) or None,

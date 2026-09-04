@@ -290,6 +290,20 @@ def _document_context_is_expired(expires_at) -> bool:
         return False
 
 
+# Ambang umur sesi chat. SATU tempat; jangan disebar.
+#
+# Diukur 4 Sep 2026: BE menerima session_id BERUMUR 15,3 JAM tanpa pemeriksaan
+# apa pun, mengembalikan id yang sama, dan bot MELANJUTKAN ALUR LAMANYA --
+# balasannya "Baik, saya akan daftarkan pelanggan baru" untuk percakapan yang
+# ditinggalkan 15 jam sebelumnya. Keluhan pemilik "sesi tidak pernah berganti"
+# sebenarnya bergejala sebagai KONTEKS BASI YANG HIDUP LAGI.
+#
+# Dihitung dari `updated_at` (aktivitas TERAKHIR), BUKAN `created_at`. Sesi yang
+# dipakai lintas hari itu SAH; memutus berdasarkan umur-sejak-dibuat akan
+# membunuh pekerjaan panjang di tengah jalan.
+UMUR_SESI_MAKS_JAM = 2
+
+
 class SessionManager:
     """Manages 4-layer memory for a chat session."""
 
@@ -297,6 +311,11 @@ class SessionManager:
         self.db = db_pool
         self.tenant_id = tenant_id
         self.user_id = user_id
+        # Disetel oleh get_or_create_session. Dibaca session_orchestrator lalu
+        # diteruskan ke respons sebagai `session_rotated`, supaya FE bisa
+        # MEMBERI TAHU pengguna. Rotasi yang diam-diam = konteks lenyap tanpa
+        # sebab yang terlihat.
+        self.sesi_dirotasi = False
 
     # ========================================================================
     # SESSION LIFECYCLE
@@ -304,15 +323,47 @@ class SessionManager:
 
     async def get_or_create_session(self, session_id: Optional[str] = None) -> str:
         """Get existing session or create new one."""
+        self.sesi_dirotasi = False
         if session_id:
             # Verify session exists and belongs to this tenant/user
             row = await self.db.fetchrow(
-                "SELECT id FROM chat_sessions WHERE id = $1::uuid AND tenant_id = $2",
+                """SELECT id,
+                          updated_at < now() - ($3 || ' hours')::interval AS basi
+                     FROM chat_sessions
+                    WHERE id = $1::uuid AND tenant_id = $2""",
                 session_id,
                 self.tenant_id,
+                str(UMUR_SESI_MAKS_JAM),
             )
-            if row:
+            if row and not row["basi"]:
                 return str(row["id"])
+            if row and row["basi"]:
+                # ROTASI. Sesi lama TIDAK disentuh sama sekali -- ia tetap utuh
+                # dan tetap muncul di halaman Riwayat Chat. Sesi yang lenyap
+                # akan terbaca pengguna sebagai kehilangan data.
+                #
+                # Keputusan diambil SEKALI di sini, di awal permintaan; tak ada
+                # yang boleh merotasi di tengah aliran SSE.
+                #
+                # ⚠️ BATAS YANG DIKETAHUI, sengaja TIDAK ditangani di sini:
+                # pengguna yang mengetik 90 menit TANPA mengirim lalu menekan
+                # kirim akan dirotasi tepat pada saat itu, dan konteks yang ia
+                # kira masih hidup ikut hilang. Hanya FE yang tahu ada draf
+                # belum terkirim; BE tak punya cara mengetahuinya. Penundaan
+                # rotasi selagi ada draf = tiket FE tersendiri.
+                self.sesi_dirotasi = True
+                logger.info(
+                    "[SESSION] rotasi: %s tak aktif > %s jam, sesi BARU dibuat "
+                    "(sesi lama dibiarkan utuh)",
+                    str(session_id)[:8],
+                    UMUR_SESI_MAKS_JAM,
+                )
+                # Sengaja TIDAK jatuh ke blok "create WITH this ID" di bawah:
+                # blok itu menyisipkan `id = $1` dan akan meledak
+                # (NotNullViolation) begitu id-nya dikosongkan. Rotasi harus
+                # memakai jalur "sesi baru tanpa id" di bagian paling bawah
+                # fungsi ini, yang membiarkan basis data membangkitkan id.
+                return await self._buat_sesi_baru()
             # Session ID provided but doesn't exist — create WITH this ID
             try:
                 await self.db.execute(
@@ -341,6 +392,11 @@ class SessionManager:
                     return str(row["id"])
 
         # Create new session (no ID provided)
+        return await self._buat_sesi_baru()
+
+    async def _buat_sesi_baru(self) -> str:
+        """Sesi baru dengan id dari basis data. Dipakai dua pemanggil: tak ada
+        id sama sekali, dan rotasi karena umur."""
         row = await self.db.fetchrow(
             "INSERT INTO chat_sessions (tenant_id, user_id) VALUES ($1, $2::uuid) RETURNING id",
             self.tenant_id,
