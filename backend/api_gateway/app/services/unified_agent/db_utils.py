@@ -5,6 +5,7 @@ Lightweight asyncpg pool management for 4-layer memory tables.
 Separate from Prisma since chat_* tables are managed via SQL directly.
 """
 import asyncpg
+import logging
 import os
 import uuid as _uuid
 from typing import Optional
@@ -51,10 +52,30 @@ def validasi_id_sesi(nilai, nama_field: str = "session_id"):
     if teks == "":
         return teks
     if not _berbentuk_uuid(teks):
-        raise IdSesiTidakSah(
-            f"{nama_field} harus berupa UUID (atau dikosongkan untuk memulai "
-            f"percakapan baru); diterima: {teks[:40]!r}"
+        # PENANDA USANG DIPERLAKUKAN SEBAGAI ABSEN, BUKAN DITOLAK.
+        #
+        # 4 Sep 2026: versi pertama fungsi ini melempar 422 di sini, dan itu
+        # MEMATIKAN chatbot di produksi. Klien menyimpan id buatannya sendiri
+        # berformat `conv-<ms>-<acak>` di localStorage sejak 31 Agustus; begitu
+        # 422 mendarat, SETIAP permintaan dari peramban itu ditolak -- di jalur
+        # stream MAUPUN jalur biasa -- dan tak ada cara pulih selain
+        # membersihkan localStorage. Peramban BERBATA PERMANEN.
+        #
+        # 422 tepat untuk permintaan yang NIATNYA salah. Peramban yang membawa
+        # penanda usang niatnya benar: ia ingin sesi, cuma memegang penanda
+        # lama. Jadi ia diperlakukan sama persis seperti nilai KOSONG -- server
+        # membangkitkan sesi baru dan mengembalikan id barunya. Ini konsisten
+        # dengan aturan yang sudah ada di atas, bukan pelonggaran.
+        #
+        # WARNING WAJIB: menerima TANPA mencatat sama saja dengan mengubur bug
+        # klien. Selama baris ini masih muncul di log, penanda usang itu masih
+        # beredar.
+        _log.warning(
+            "[SESI] %s bukan UUID, diperlakukan sebagai sesi baru; diterima: %r",
+            nama_field,
+            teks[:60],
         )
+        return ""
     return bakukan_session_id(teks)
 
 
@@ -89,6 +110,8 @@ def bakukan_session_id(nilai):
     except (ValueError, AttributeError, TypeError):
         return teks
 
+
+_log = logging.getLogger(__name__)
 
 _session_db_pool: Optional[asyncpg.Pool] = None
 
