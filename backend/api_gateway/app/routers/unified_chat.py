@@ -720,6 +720,16 @@ class ChatMessageResponse(BaseModel):
     )
     model_used: Optional[str] = Field(None, description="LLM model used")
     latency_ms: Optional[int] = Field(None, description="Total processing time in ms")
+    session_rotated: bool = Field(
+        False,
+        description=(
+            "True HANYA bila sesi ini baru karena ROTASI UMUR (tak aktif "
+            "lebih dari UMUR_SESI_MAKS_JAM). TIDAK true saat pengguna "
+            "menekan 'percakapan baru' — FE perlu membedakan keduanya "
+            "untuk menampilkan pesan yang berbeda. Rotasi yang tak "
+            "diberitahukan membuat konteks lenyap tanpa sebab yang terlihat."
+        ),
+    )
     session_id: Optional[str] = Field(
         None, description="Session ID for conversation continuity"
     )
@@ -950,6 +960,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used = agent_resp.get("model_used")
         latency_ms = agent_resp.get("total_latency_ms")
         session_id = agent_resp.get("session_id")
+        session_rotated = bool(agent_resp.get("session_rotated", False))
         thinking_stages = agent_resp.get("thinking_stages")
         extra_data = agent_resp.get("extra_data")
     else:
@@ -965,6 +976,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used = agent_resp.model_used
         latency_ms = agent_resp.total_latency_ms
         session_id = getattr(agent_resp, "session_id", None)
+        session_rotated = bool(getattr(agent_resp, "session_rotated", False))
         thinking_stages = getattr(agent_resp, "thinking_stages", None)
         extra_data = getattr(agent_resp, "extra_data", None)
 
@@ -1025,6 +1037,7 @@ def _to_chat_response(agent_resp) -> ChatMessageResponse:
         model_used=model_used or None,
         latency_ms=latency_ms,
         session_id=session_id,
+        session_rotated=session_rotated,
         thinking_stages=thinking_stages or None,
     )
 
