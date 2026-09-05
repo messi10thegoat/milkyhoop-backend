@@ -31,7 +31,7 @@
     <div>Workshop : {{ t.get('workshop_address') or '' }}</div>
   </div>
 </div>
-<div class="garis-kop"></div>
+<table class="garis-kop"><tr><td></td></tr></table>
 
 <div class="judul">INVOICE</div>
 
@@ -95,7 +95,9 @@
   <tr class="garis-penuh">
     <td class="b-sisi">
       <div class="bank-lepas">
-        {% if invoice.payment_bank_name %}<div>{{ invoice.payment_bank_name }}</div>{% endif %}
+        {# "Bank BCA", bukan "BCA": acuan menulis kata Bank di depan. Ditambahkan
+           hanya kalau namanya belum memuatnya, supaya tidak jadi "Bank Bank BCA". #}
+        {% if invoice.payment_bank_name %}<div>{{ invoice.payment_bank_name if 'bank' in invoice.payment_bank_name|lower else 'Bank ' ~ invoice.payment_bank_name }}</div>{% endif %}
         {% if invoice.payment_bank_branch %}<div>{{ invoice.payment_bank_branch }}</div>{% endif %}
         {% if invoice.payment_account_holder %}<div>Account name&nbsp;&nbsp;: {{ invoice.payment_account_holder }}</div>{% endif %}
         {% if invoice.payment_account_number %}<div>Account no&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {{ invoice.payment_account_number }}</div>{% endif %}

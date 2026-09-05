@@ -49,13 +49,28 @@ body {
    acuan) dan lebar mengikuti bentuk aslinya. Ini beda yang DISENGAJA. */
 .logo { max-width: 67mm; max-height: 14mm; display: block; }
 .nama-perusahaan { font-size: 9.5pt; margin-top: 1.2mm; text-transform: uppercase; }
-.kop-kanan { width: 101.2mm; font-size: 8pt; line-height: 1.5; }
+.kop-kanan { width: 101.2mm; font-size: 10pt; line-height: 1.35; }
 
 /* Garis kop GANDA (dua garis 0.7mm terpisah), persis acuan. */
 /* 0.8pt, BUKAN 0.5pt: garis 0.5pt pada blok biasa terender sub-piksel dan
    keluar abu-abu 195 -- terlihat "ada" di layar tapi nyaris hilang di cetak.
    Garis tabel selamat karena border-collapse membulatkannya ke piksel penuh. */
-.garis-kop { height: 0.7mm; border-top: 1pt solid #000; border-bottom: 1pt solid #000; margin-top: 2.0mm; }
+/* Acuan memang GANDA -- terukur dua garis di y=26.5 dan y=27.3 (jarak
+   0.8mm), bukan satu garis tebal. Digambar sebagai KOTAK TERISI, bukan
+   border: border pada blok biasa terender abu-abu 153-187 sementara kotak
+   terisi selalu pekat. Kepekatan acuan: min 25-53. */
+/* Digambar sebagai TABEL, bukan blok.
+   Terukur di image ini, untuk garis yang sama-sama 1pt:
+     border pada <div>      -> abu-abu 153-187
+     kotak terisi 0.25mm    -> abu-abu 200-249 (nyaris tak terlihat)
+     border pada sel tabel  -> 20-90 (pekat, sebanding acuan 25-53)
+   Sebabnya penempatan sub-piksel, dan hanya jalur tabel yang konsisten
+   membulatkan ke piksel penuh. Jarak 0.55mm = jarak dua garis acuan. */
+.garis-kop { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 2.0mm; }
+.garis-kop td { height: 0.75mm; padding: 0; border-top: 1.2pt solid #000; border-bottom: 1pt solid #000; }
+/* Tebal DUA garis kop dipilih dgn mengukur hasilnya, bukan dgn menyamakan
+   angka CSS-nya: pada 0.75/0.9pt kedua garis menyusut jadi SATU garis
+   0.48pt di raster. Acuan: 1.20pt dan 1.44pt, jarak 0.72mm. */
 
 /* TINGGI TETAP 64mm: dari awal isi (5.7mm) sampai tepi atas tabel (69.7mm).
    Tanpa ini, faktur dengan alamat pelanggan dua baris mendorong tabel turun
@@ -69,13 +84,17 @@ body {
 
 /* ── Pelanggan + meta ────────────────────────────────────────────── */
 .blok-atas { display: flex; justify-content: space-between; align-items: flex-start; }
-.pelanggan { font-size: 8pt; line-height: 1.55; width: 110mm; }
+/* line-height 1.3, bukan 1.45: dengan alamat pelanggan dua baris + NPWP,
+   blok ini mencapai 70.3mm sementara .atas dipotong di 69.7mm -- alamat
+   pelanggan HILANG DIAM-DIAM dari faktur yang dikirim ke pelanggan itu
+   sendiri. Ditemukan gerbang tabrakan, bukan mata. */
+.pelanggan { font-size: 9.5pt; line-height: 1.3; width: 110mm; }
 
 .meta { border-collapse: collapse; font-size: 8pt; }
 .meta td { padding: 0 0 0.2mm 0; }
 .meta .meta-k { text-align: right; padding-right: 1.5mm; }
 /* Pembatas tegak di x 176.1; kolom nilai selebar 30.5mm sampai 206.6. */
-.meta .meta-v { text-align: right; border-left: 1pt solid #000; width: 30.5mm; padding-left: 1.5mm; }
+.meta .meta-v { text-align: right; border-left: 0.75pt solid #000; width: 30.5mm; padding-left: 1.5mm; }
 
 .curr { text-align: right; font-size: 8pt; margin: 1.5mm 0 1.2mm 0; }
 
@@ -97,6 +116,10 @@ body {
           table-layout: fixed; }
 /* Garis TEGAK di semua sel; garis MENDATAR hanya di batas kepala dan tepi
    tabel. Acuan TIDAK menggambar garis antar baris barang. */
+/* SEMUA garis 0.75pt. TERUKUR dari acuan: tebal garisnya di raster 300dpi
+   adalah 1.20-2.16pt, sedangkan goresan 1pt milikku terukur 1.92-3.12pt --
+   yakni kira-kira DUA KALI nilai CSS-nya. Jadi acuan memakai ~0.75pt, dan
+   "lebih tebal = lebih mirip" itu salah arah. Riwayat lama: */
 /* SEMUA garis 1pt. Riwayat yang penting: 0.5pt terender ABU-ABU 195 (nyaris
    hilang), 0.8pt masih 90-190 -- terbaca "ada" oleh mata di layar tapi jauh
    lebih pucat daripada acuan (25-53). Hairline yang jatuh di antara dua
@@ -111,9 +134,11 @@ body {
    jadi padding 1.5mm kiri-kanan DITAMBAHKAN ke tiap kolom -- enam kolom =
    18mm, dan tabel meluber keluar halaman dengan kolom AMOUNT terpotong.
    Terukur: tabel 222.5mm di dalam kotak isi 203.5mm. */
-.barang th, .barang td { box-sizing: border-box; border-left: 1pt solid #000; padding: 0 1.5mm; }
-.barang th:last-child, .barang td:last-child { border-right: 1pt solid #000; }
-.barang thead th { border-top: 1pt solid #000; border-bottom: 1pt solid #000;
+.barang th, .barang td { box-sizing: border-box; border-left: 0.75pt solid #000; padding: 0 1.5mm; }
+.barang th:last-child, .barang td:last-child { border-right: 0.75pt solid #000; }
+/* Garis bawah kepala acuan 2.16pt = paling tebal di tabel; 0.75pt terukur
+   hanya 1.44pt. Angkanya dipilih dari HASIL UKUR, bukan disamakan. */
+.barang thead th { border-top: 0.75pt solid #000; border-bottom: 1.1pt solid #000;
                    height: 10.2mm; text-align: center; font-weight: normal; vertical-align: middle; }
 .barang tbody td { height: 9.23mm; vertical-align: top; padding-top: 1.2mm; }
 /* Garis mendatar DI DALAM tabel dinyatakan di KEDUA sisi batas.
@@ -123,8 +148,8 @@ body {
    border yang SAMA di kedua sisi menghapus konfliknya.
    Kelas dipasang dari template, bukan lewat :first-child/:last-child, supaya
    tak bergantung pada dukungan selektor mesin cetak. */
-.barang tbody .baris-awal td { border-top: 1pt solid #000; }
-.barang tbody .baris-akhir td { border-bottom: 1pt solid #000; }
+.barang tbody .baris-awal td { border-top: 0.75pt solid #000; }
+.barang tbody .baris-akhir td { border-bottom: 0.75pt solid #000; }
 .barang thead { display: table-header-group; }
 .barang tr { page-break-inside: avoid; }
 
@@ -137,8 +162,10 @@ body {
 
 /* QTY = dua sub-kolom sejajar: angka rata KANAN, satuan rata KIRI.
    Acuan menulis "1.590   Pcs", bukan "1590 pcs" menyatu. */
-.qty-angka { display: inline-block; width: 54%; text-align: right; }
-.qty-unit  { display: inline-block; width: 42%; text-align: left; padding-left: 4%; }
+.qty-angka { display: inline-block; width: 49.5%; text-align: right; }
+/* Terukur dari acuan: angka berakhir di 25.3mm dan satuan MULAI di 28.6mm
+   dalam kolom 14.3..36.5mm. Dua sub-kolom sejajar, tanpa garis pemisah. */
+.qty-unit  { display: inline-block; width: 33.3%; text-align: left; padding-left: 17.2%; }
 
 /* ── Blok bawah ──────────────────────────────────────────────────── */
 .bawah { width: 100%; border-collapse: collapse; font-size: 8pt; table-layout: fixed; }
@@ -146,19 +173,27 @@ body {
 .b-sisi  { width: 69.66%; border: none; }          /* 3.2 .. 145.1 */
 .b-label { width: 15.24%; text-align: right; }     /* 145.1 .. 176.1 */
 .b-nilai { width: 14.99%; text-align: right; }     /* 176.1 .. 206.6 */
-.kotak { border: 1pt solid #000; }
+.kotak { border: 0.75pt solid #000; }
 /* Garis bawah baris Subtotal membentang SELEBAR HALAMAN, termasuk melintasi
    area bank di kiri — ciri acuan yang mudah terlewat. */
-.garis-penuh td { border-bottom: 1pt solid #000; }
+.garis-penuh td { border-bottom: 0.75pt solid #000; }
 /* Acuan: garis tegak tepi kiri (x=3.3) turun sampai 196.8mm, yakni MELEWATI
    baris Subtotal. Tanpa ini sisi kiri baris itu menganga. */
-.garis-penuh .b-sisi { border-left: 1pt solid #000; }
+.garis-penuh .b-sisi { border-left: 0.75pt solid #000; }
+/* Acuan: kotak PAY hanya selebar kolom AMOUNT (175.8..207.0mm) dengan
+   garis 2.16pt -- paling tebal di halaman. */
 .bayar td { height: 6.3mm; text-align: center; }
+.bayar .b-nilai { border-width: 1.2pt; }
 
 /* Blok bank duduk DI ATAS area kosong kiri tanpa mengubah tinggi baris:
    tinggi 0 + luapan terlihat. Kalau ia ikut menambah tinggi baris, kotak
    PAY THIS AMOUNT akan turun dan seluruh geometri bawah meleset. */
-.bank-lepas { height: 0; overflow: visible; line-height: 1.72; padding-top: 0.6mm; }
+/* Jarak baris acuan 5.9mm pada 8pt -> line-height 2.1. */
+.bank-lepas { height: 0; overflow: visible; line-height: 2.1; padding-top: 0; }
+/* padding 0: dengan 1.0mm, huruf baris pertama turun sampai y=197.18mm
+   sementara garis Subtotal ada di 196.72 -- teks MENYENTUH garis. Itu
+   yang pemilik sebut tabrakan, dan gerbang posisi tak bisa melihatnya
+   karena garisnya sendiri ada di tempat yang benar. */
 
 .ttd { width: 61.7mm; margin-left: auto; text-align: center; font-size: 8pt; }
 /* Terukur: 'Faithfully yours,' acuan di y=233.7 dan nama di 275.4. */
