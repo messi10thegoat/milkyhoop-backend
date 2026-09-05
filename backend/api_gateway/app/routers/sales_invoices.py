@@ -839,9 +839,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # Get invoice
             invoice = await conn.fetchrow(
                 """
-                SELECT si.*, so.order_number AS sales_order_number
+                SELECT si.*, so.order_number AS sales_order_number,
+                       c.alamat  AS pelanggan_alamat,
+                       c.telepon AS pelanggan_telepon,
+                       c.tax_id  AS pelanggan_npwp
                   FROM sales_invoices si
                   LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                  LEFT JOIN customers c ON c.id = si.customer_id
                  WHERE si.id = $1 AND si.tenant_id = $2
             """,
                 invoice_id,
@@ -4440,9 +4444,13 @@ async def get_invoice_pdf(
             # Fetch invoice with full details
             invoice = await conn.fetchrow(
                 """
-                SELECT si.*, so.order_number AS sales_order_number
+                SELECT si.*, so.order_number AS sales_order_number,
+                       c.alamat  AS pelanggan_alamat,
+                       c.telepon AS pelanggan_telepon,
+                       c.tax_id  AS pelanggan_npwp
                   FROM sales_invoices si
                   LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                  LEFT JOIN customers c ON c.id = si.customer_id
                  WHERE si.id = $1 AND si.tenant_id = $2
             """,
                 invoice_id,
@@ -4565,8 +4573,20 @@ async def get_invoice_pdf(
                 else None,
                 "ref_no": invoice["ref_no"],
                 "purchase_order_no": invoice["purchase_order_no"],
-                # NPWP pelanggan: acuan mencetak baris "TAX :" di blok Customer.
-                "customer_npwp": invoice["customer_npwp"],
+                # Alamat/telepon/NPWP pelanggan diambil dari kartu pelanggan
+                # kalau faktur tidak menyimpannya sendiri.
+                #
+                # CACAT YANG DITUTUP: rute ini hanya `SELECT si.*` tanpa JOIN
+                # ke `customers`, jadi alamat dan telepon pelanggan TIDAK
+                # PERNAH sampai ke cetakan -- padahal datanya ada. Terukur
+                # pada PT. USAHA LOKA: alamat dan telepon terisi di kartu
+                # pelanggan, tapi fakturnya tercetak tanpa keduanya. Bukan
+                # data kosong, melainkan medan yang tak pernah diambil.
+                "customer_address": invoice["pelanggan_alamat"],
+                "customer_phone": invoice["pelanggan_telepon"],
+                # Nilai di faktur MENANG (ia potret saat faktur dibuat);
+                # kartu pelanggan hanya mengisi kekosongan.
+                "customer_npwp": invoice["customer_npwp"] or invoice["pelanggan_npwp"],
                 # Nilai CETAK: kolom kalau diisi, kalau tidak nomor pengiriman.
                 "delivery_order_no": no_surat_jalan,
                 "notes": invoice["notes"],

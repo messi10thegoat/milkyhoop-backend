@@ -69,7 +69,7 @@ def _logo_data(nama):
 async def konteks(conn, invoice_id):
     inv = await conn.fetchrow(
         """SELECT si.*, c.nama AS customer_nama, c.alamat AS customer_alamat,
-                  c.telepon AS customer_telepon
+                  c.telepon AS customer_telepon, c.tax_id AS customer_tax_id
              FROM sales_invoices si
              LEFT JOIN customers c ON c.id = si.customer_id
             WHERE si.id = $1""",
@@ -79,10 +79,18 @@ async def konteks(conn, invoice_id):
         "SELECT * FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number",
         invoice_id,
     )
+    # Tenant diambil DARI FAKTURNYA, bukan dari tetapan TENANT.
+    #
+    # CACAT YANG DIPERBAIKI: harness ini mematok kaos-biru-konveksi, jadi saat
+    # dipakai untuk faktur tenant LAIN ia merender kop dan bendera is_pkp milik
+    # tenant yang salah -- terukur: faktur adhita-ariyani (PKP) dirender dengan
+    # is_pkp=False milik kaos-biru, sehingga baris Tax hilang tanpa alasan.
+    # Ini kelas yang sama dengan logo dulu: harness yang menyimpang dari jalur
+    # nyata akan memfitnah kode yang sehat, atau menyembunyikan cacatnya.
     t = await conn.fetchrow(
         'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, pdf_template '
         'FROM "Tenant" WHERE id = $1',
-        TENANT,
+        inv["tenant_id"],
     )
     return {
         "invoice_number": inv["invoice_number"],
@@ -91,7 +99,7 @@ async def konteks(conn, invoice_id):
         "customer_name": inv["customer_nama"],
         "customer_address": inv["customer_alamat"],
         "customer_phone": inv["customer_telepon"],
-        "customer_npwp": inv["customer_npwp"],
+        "customer_npwp": inv["customer_npwp"] or inv["customer_tax_id"],
         "ref_no": inv["ref_no"] if "ref_no" in inv else None,
         "payment_terms": inv["payment_terms"] if "payment_terms" in inv else None,
         "payment_bank_name": inv["payment_bank_name"] if "payment_bank_name" in inv else None,
@@ -122,6 +130,9 @@ async def konteks(conn, invoice_id):
                 "quantity": float(it["quantity"]),
                 "unit": it["unit"],
                 "unit_price": it["unit_price"],
+                # KEDUANYA dibawa: `subtotal` pra-pajak (yang dicetak di
+                # kolom AMOUNT) dan `total` yang sudah termasuk pajak.
+                "subtotal": it["subtotal"],
                 "total": it["total"],
                 "line_number": it["line_number"],
             }

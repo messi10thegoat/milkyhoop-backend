@@ -23,7 +23,12 @@
     <div class="nama-perusahaan">{{ t.get('name') or '' }}</div>
   </div>
   <div class="kop-kanan">
-    <div>Head Office : {{ t.get('address') or '' }}</div>
+    {# Awalan hanya ditambahkan kalau nilainya BELUM memuatnya. Pemilik
+       mengetik sendiri "Head Office :" ke dalam medan alamat (karena medan
+       Workshop belum ada), dan hasilnya tercetak "Head Office : Head Office :
+       ...". Deteksi sederhana, tanpa memandang besar-kecil huruf. #}
+    {% set _al = (t.get('address') or '') %}
+    <div>{{ _al if 'head office' in _al|lower else ('Head Office : ' ~ _al if _al else 'Head Office :') }}</div>
     {# "Workshop" belum punya kolom di tabel Tenant. Barisnya TETAP dicetak
        supaya tata letak sama dengan acuan, dan supaya ketiadaannya terlihat
        sebagai medan yang belum diisi -- bukan sebagai konsep yang tak dikenal
@@ -79,7 +84,17 @@
       <td class="c-kode">{{ it.item_code or '' }}</td>
       <td class="c-desc">{{ it.description or '' }}</td>
       <td class="c-harga">{{ it.unit_price | currency2 }}</td>
-      <td class="c-jml">{{ it.total | currency2 }}</td>
+      {# AMOUNT = subtotal baris (qty x harga, PRA-pajak), BUKAN it.total.
+         `sales_invoice_items` punya DUA kolom: `subtotal` pra-pajak dan
+         `total` yang SUDAH termasuk pajak baris. Memakai `total` membuat
+         kolom AMOUNT tax-INCLUSIVE sementara Subtotal di bawahnya
+         tax-EXCLUSIVE -- penjumlahan kolom tidak sama dengan Subtotal, di
+         kertas yang sama, pada dokumen yang dikirim ke pelanggan.
+         Terukur pada INV-2609-0001: baris 1 tercetak 22.061.250,00 padahal
+         1.590 x 12.500 = 19.875.000,00 (selisih tepat 1,11x).
+         Template A (sales_invoice.html) sudah memakai `subtotal` sejak awal,
+         jadi cacat ini HANYA di B dan tak pernah terkirim lewat A. #}
+      <td class="c-jml">{{ (it.subtotal if it.subtotal is not none else it.total) | currency2 }}</td>
     </tr>
     {% endfor %}
     {% for _ in range(BARIS_TETAP - (items | length)) %}
