@@ -13,6 +13,24 @@ satu permintaan HTTP nyata per endpoint utama, menuntut 200 (atau 403 yang
 memang DIHARAPKAN karena peran akun uji). Bukan healthz -- healthz 200
 sementara setiap detail faktur 500.
 
+BUKTI DUA ARAH, 2026-09-05 (tanggal WAJIB ada: gerbang tanpa tanggal uji
+lapuk tanpa ada yang tahu kapan ia terakhir benar-benar bisa gagal):
+  - atas produksi yang SEDANG rusak (a3931d80, :8001) -> exit 1, menyebut
+    "GET  /api/sales-invoices/{id} (DETAIL) -> 500"
+  - atas kontainer uji yang sudah diperbaiki (:8002)  -> exit 0, sembilan
+    pemeriksaan hijau
+Kalau kau mengubah gerbang ini, ULANGI kedua arah itu dan perbarui tanggalnya.
+
+KENAPA 403 UNTUK PESANAN/PENAWARAN DITERIMA, dan JANGAN "dirapikan".
+Akun uji berperan Collaborator dan memang tidak punya izin baca kedua modul
+itu; 403 di situ adalah jawaban yang BENAR, bukan kerusakan. Dua godaan yang
+harus ditolak:
+  - menjadikannya menuntut 200 -> gerbang MERAH selamanya, lalu diabaikan
+    persis seperti gerbang yang selalu hijau;
+  - menjadikannya menerima apa saja -> 500 di rute itu lolos tanpa suara.
+Yang benar: terima HANYA {200, 403}. Kalau peran akun uji kelak dinaikkan,
+ubah harapannya jadi {200} dan catat tanggalnya di sini.
+
 Pakai: gate_asap.py <basis-url>
 """
 import json
