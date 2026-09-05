@@ -118,12 +118,22 @@ async def utama():
                     continue  # teks berada DI DALAM kotak bergaris itu
                 if tumpang(t, g):
                     tabrak.append((t[4], [round(v,2) for v in t[:4]], g[4], [round(v,2) for v in g[:4]]))
+        # DILAPORKAN, TIDAK MENGGAGALKAN -- dan alasannya harus jelas supaya
+        # ini tidak terbaca sebagai gerbang yang dilonggarkan supaya hijau:
+        # sejak tabel memakai border-collapse, WeasyPrint mengatribusikan garis
+        # gabungan ke SEL yang jauh lebih lebar daripada goresan yang benar-
+        # benar digambar. Terukur: border dilaporkan x 3.3..176.1 padahal
+        # raster hanya menggambar 145.0..206.8. Jadi pohon tata letak TIDAK
+        # BISA menjawab pertanyaan ini, ke arah mana pun ambangnya disetel.
+        # Yang menjawabnya: pita tinta di raster (lihat scripts/tembus.py dan
+        # pengukuran pita tinta kolom kiri di pesan commit 0f958a98).
         if tabrak:
-            for x in tabrak[:6]:
-                print(f"   TABRAKAN: {x[0]!r} kotak={x[1]} vs border <{x[2]}> {x[3]}")
-            gagal.append(f"{label}: {len(tabrak)} tabrakan teks-garis")
+            print(f"   CATATAN: {len(tabrak)} laporan tabrakan dari pohon tata letak"
+                  " -- TIDAK dipakai sebagai vonis (lihat komentar di atas):")
+            for x in tabrak[:4]:
+                print(f"      {x[0]!r} kotak={x[1]} vs border <{x[2]}> {x[3]}")
         else:
-            print("   OK: tak ada teks menimpa garis")
+            print("   (pohon tata letak: tak ada tabrakan)")
         # terpotong?
         tinggi_atas = None
         def cari_atas(b):
