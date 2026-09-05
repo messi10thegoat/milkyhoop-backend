@@ -116,6 +116,11 @@ class CreateInvoiceRequest(BaseModel):
     invoice_date: date
     due_date: date
     ref_no: Optional[str] = Field(None, max_length=100)
+    # Nomor PO PELANGGAN dan nomor surat jalan. Teks bebas, TERPISAH dari
+    # `ref_no` ("No. Order" yang sudah dipakai jalur chat) -- memakai ulang
+    # ref_no akan mengubah arti medan yang sudah punya 8 pemakai.
+    purchase_order_no: Optional[str] = Field(None, max_length=100)
+    delivery_order_no: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
 
     # Items
@@ -206,6 +211,10 @@ class UpdateInvoiceRequest(BaseModel):
     invoice_date: Optional[date] = None
     due_date: Optional[date] = None
     ref_no: Optional[str] = None
+    # Absen = jangan ubah; null/"" = kosongkan. Semantik itu datang dari
+    # model_dump(exclude_unset=True) di pembangun UPDATE dinamis PATCH.
+    purchase_order_no: Optional[str] = Field(None, max_length=100)
+    delivery_order_no: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
     items: Optional[List[InvoiceItemCreate]] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
@@ -317,6 +326,11 @@ class InvoiceDetail(BaseModel):
     invoice_date: str
     due_date: str
     ref_no: Optional[str] = None
+    # KELAS BUG YANG DIHINDARI: response_model MEMBUANG medan yang tak
+    # dideklarasikan di sini -- kolom bisa terisi di basis data tapi hilang
+    # dalam perjalanan ke layar, tanpa galat.
+    purchase_order_no: Optional[str] = None
+    delivery_order_no: Optional[str] = None
     notes: Optional[str] = None
 
     # Rekening tujuan cetak (tiket MASTER) -- string mentah/null, BUKAN objek

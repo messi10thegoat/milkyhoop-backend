@@ -72,12 +72,17 @@
     <table class="meta">
       <tr><td class="meta-k">Invoice No.</td><td class="meta-v">{{ invoice.invoice_number or '-' }}</td></tr>
       <tr><td class="meta-k">Invoice Date</td><td class="meta-v">{{ invoice.invoice_date | date_id }}</td></tr>
-      {% if invoice.delivery_order_no %}
-      <tr><td class="meta-k">Delivery Order No.</td><td class="meta-v">{{ invoice.delivery_order_no }}</td></tr>
-      {% endif %}
-      {% if invoice.ref_no %}
-      <tr><td class="meta-k">Purchase Order No.</td><td class="meta-v">{{ invoice.ref_no }}</td></tr>
-      {% endif %}
+      {# Dua baris ini SELALU tampil walau kosong: acuan pemilik selalu
+         menampilkannya, dan barisnya sendiri memberi tahu pembaca bahwa medan
+         itu ADA tapi belum diisi -- baris yang lenyap terbaca seolah konsep
+         nomor PO/surat jalan tidak dikenal dokumen ini. #}
+      <tr><td class="meta-k">Delivery Order No.</td><td class="meta-v">{{ invoice.delivery_order_no or '' }}</td></tr>
+      {# `purchase_order_no`, BUKAN `ref_no`. `ref_no` adalah "No. Order" milik
+         kita sendiri (nomor SO yang diketik manual, dipakai jalur chat);
+         nomor PO diterbitkan PELANGGAN. Menaruh ref_no di baris berlabel
+         "Purchase Order No." berarti mencetak nomor kita sendiri sebagai
+         nomor mereka -- salah di mata penerima faktur. #}
+      <tr><td class="meta-k">Purchase Order No.</td><td class="meta-v">{{ invoice.purchase_order_no or '' }}</td></tr>
       {% if invoice.payment_terms %}
       <tr><td class="meta-k">Terms</td><td class="meta-v">{{ invoice.payment_terms }}</td></tr>
       {% endif %}

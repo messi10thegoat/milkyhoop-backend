@@ -956,6 +956,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "invoice_date": invoice["invoice_date"].isoformat(),
                     "due_date": invoice["due_date"].isoformat(),
                     "ref_no": invoice["ref_no"],
+                    "purchase_order_no": invoice["purchase_order_no"],
+                    "delivery_order_no": invoice["delivery_order_no"],
                     "notes": invoice["notes"],
                     "payment_bank_name": invoice["payment_bank_name"],
                     "payment_account_number": invoice["payment_account_number"],
@@ -2381,8 +2383,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
                         status, created_by, recognize_at,
-                        payment_bank_name, payment_account_number, payment_account_holder
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16, $17, $18, $19)
+                        payment_bank_name, payment_account_number, payment_account_holder,
+                        purchase_order_no, delivery_order_no
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16, $17, $18, $19, $20, $21)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -2413,6 +2416,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     body.payment_bank_name,
                     body.payment_account_number,
                     body.payment_account_holder,
+                    body.purchase_order_no,
+                    body.delivery_order_no,
                 )
 
                 # Insert items
@@ -4438,6 +4443,29 @@ async def get_invoice_pdf(
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
+            # Nomor surat jalan untuk cetakan.
+            #
+            # ARAHNYA TERBALIK dari dugaan awal: pengiriman lahir DARI faktur
+            # (invoice_fulfillments.invoice_id -> faktur), bukan faktur dari
+            # pengiriman. Jadi saat faktur DIBUAT nomor DO memang belum ada,
+            # dan pengisian otomatis saat create mustahil. Yang bisa: saat
+            # MENCETAK, faktur yang sudah dikirim sudah punya nomornya.
+            #
+            # Nilai yang ditulis pengguna MENANG; turunan ini hanya mengisi
+            # kekosongan, dan TIDAK disalin ke kolom -- kalau pengiriman
+            # kemudian di-void, cetakan berikutnya ikut berubah sendiri.
+            no_surat_jalan = invoice["delivery_order_no"]
+            if not no_surat_jalan:
+                no_surat_jalan = await conn.fetchval(
+                    """
+                    SELECT fulfillment_number FROM invoice_fulfillments
+                     WHERE invoice_id = $1 AND tenant_id = $2 AND voided_at IS NULL
+                     ORDER BY fulfillment_date DESC, created_at DESC LIMIT 1
+                    """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+
             # Fetch items
             items = await conn.fetch(
                 """
@@ -4527,6 +4555,9 @@ async def get_invoice_pdf(
                 if invoice["due_date"]
                 else None,
                 "ref_no": invoice["ref_no"],
+                "purchase_order_no": invoice["purchase_order_no"],
+                # Nilai CETAK: kolom kalau diisi, kalau tidak nomor pengiriman.
+                "delivery_order_no": no_surat_jalan,
                 "notes": invoice["notes"],
                 "payment_bank_name": invoice["payment_bank_name"],
                 "payment_account_number": invoice["payment_account_number"],
