@@ -971,8 +971,16 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "sales_order_number": invoice["sales_order_number"],
                     "notes": invoice["notes"],
                     "payment_bank_name": invoice["payment_bank_name"],
-                "payment_bank_branch": bank_row["bank_branch"] if bank_row else None,
-                "payment_bank_address": bank_row["bank_address"] if bank_row else None,
+                    # SENGAJA TIDAK ADA payment_bank_branch/address di sini.
+                    # Keduanya diturunkan dengan mencocokkan nomor rekening ke
+                    # bank_accounts, dan penurunan itu hanya ada di rute PDF --
+                    # di situlah ia dipakai. Tambalanku sempat menyisipkan dua
+                    # baris ini KE SINI JUGA (satu perintah ganti dengan n=2,
+                    # tanpa memeriksa bahwa kedua tempatnya cocok), memanggil
+                    # `bank_row` yang tak pernah didefinisikan di fungsi ini:
+                    # SETIAP GET detail faktur jadi 500. Kontrak detail memang
+                    # tak menjanjikan kedua medan itu; kalau kelak dibutuhkan,
+                    # penurunannya harus ditulis DI SINI, bukan disalin.
                     "payment_account_number": invoice["payment_account_number"],
                     "payment_account_holder": invoice["payment_account_holder"],
                     "subtotal": invoice["subtotal"],
