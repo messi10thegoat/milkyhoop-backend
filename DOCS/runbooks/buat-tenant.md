@@ -17,6 +17,21 @@ onboarding pernah tak menyisipkan peran OWNER → sidebar kosong).
    tidak bisa dibaca dari basis data. Yang bisa dipakai `magic_token` di baris
    yang sama — tautan yang SAMA dengan yang diklik pemilik dari emailnya.
 
+## Cara termudah — pakai skripnya
+
+```bash
+echo '<kata-sandi>' | python3 scripts/ops/buat-tenant.py "<email>" "<Nama Bisnis>"
+echo '<kata-sandi>' | python3 scripts/ops/buat-tenant.py --periksa "<email>"   # gerbang saja
+```
+
+Skrip menjalankan keempat langkah DAN seluruh gerbang sekali jalan; keluar 0
+hanya kalau semuanya hijau. Ia juga MENOLAK tiga hal (diuji 2026-09-05,
+masing-masing keluar bukan-nol): email yang sudah punya tenant, `business_name`
+di bawah 2 huruf, dan kata sandi yang tidak lewat stdin.
+
+Bagian di bawah menjelaskan apa yang dilakukan skrip itu — dibutuhkan kalau
+alurnya berubah atau kalau harus dikerjakan manual.
+
 ## Urutan
 
 ```bash
