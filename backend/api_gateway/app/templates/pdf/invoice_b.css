@@ -189,7 +189,10 @@ body {
    tinggi 0 + luapan terlihat. Kalau ia ikut menambah tinggi baris, kotak
    PAY THIS AMOUNT akan turun dan seluruh geometri bawah meleset. */
 /* Jarak baris acuan 5.9mm pada 8pt -> line-height 2.1. */
-.bank-lepas { height: 0; overflow: visible; line-height: 2.1; padding-top: 0; }
+/* margin-top negatif 0.8mm: acuan memberi jarak 1.3mm dari dasar huruf
+   baris pertama ke garis Subtotal; tanpa ini jaraknya cuma 0.5mm dan di
+   pandangan kecil teksnya tampak menempel garis. */
+.bank-lepas { margin-top: -0.8mm; height: 0; overflow: visible; line-height: 2.1; padding-top: 0; }
 /* padding 0: dengan 1.0mm, huruf baris pertama turun sampai y=197.18mm
    sementara garis Subtotal ada di 196.72 -- teks MENYENTUH garis. Itu
    yang pemilik sebut tabrakan, dan gerbang posisi tak bisa melihatnya
