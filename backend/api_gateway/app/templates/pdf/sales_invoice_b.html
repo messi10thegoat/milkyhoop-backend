@@ -33,7 +33,10 @@
        supaya tata letak sama dengan acuan, dan supaya ketiadaannya terlihat
        sebagai medan yang belum diisi -- bukan sebagai konsep yang tak dikenal
        dokumen ini. Lihat catatan medan-belum-ada di ujung berkas. #}
-    <div>Workshop : {{ t.get('workshop_address') or '' }}</div>
+    {# Baris Workshop hanya dicetak bila terisi. Baris berlabel tanpa isi
+       ("Workshop :" kosong) terbaca seperti data yang HILANG, bukan medan
+       yang memang belum dipakai tenant ini. #}
+    {% if t.get('workshop_address') %}<div>Workshop : {{ t.get('workshop_address') }}</div>{% endif %}
   </div>
 </div>
 <table class="garis-kop"><tr><td></td></tr></table>
@@ -120,6 +123,7 @@
            hanya kalau namanya belum memuatnya, supaya tidak jadi "Bank Bank BCA". #}
         {% if invoice.payment_bank_name %}<div>{{ invoice.payment_bank_name if 'bank' in invoice.payment_bank_name|lower else 'Bank ' ~ invoice.payment_bank_name }}</div>{% endif %}
         {% if invoice.payment_bank_branch %}<div>{{ invoice.payment_bank_branch }}</div>{% endif %}
+        {% if invoice.payment_bank_address %}<div>{{ invoice.payment_bank_address }}</div>{% endif %}
         {# Label berkolom TETAP, bukan dirapikan dengan spasi: nama medannya
            tidak pernah berubah, jadi titik dua bisa disejajarkan sungguhan.
            Dengan &nbsp; titik duanya bergeser mengikuti lebar huruf. #}

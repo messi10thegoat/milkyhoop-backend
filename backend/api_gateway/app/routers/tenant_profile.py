@@ -45,6 +45,12 @@ def _build_profile_dict(row) -> dict:
         # Pilihan template cetak faktur (V237). Bawaan tenant; endpoint
         # PDF menerima `?template=` yang MENANG atas nilai ini.
         "pdf_template": row["pdf_template"],
+        # V239. Alamat workshop dicetak di kop faktur template B; kosong =
+        # barisnya tidak dicetak sama sekali.
+        "workshop_address": row["workshop_address"],
+        # Nama penandatangan di bawah "Faithfully yours,"; kosong = memakai
+        # nama tenant.
+        "signatory_name": row["signatory_name"],
         "alias": row["alias"],
         "status": row["status"],
         "timezone": row["timezone"],
@@ -55,6 +61,7 @@ def _build_profile_dict(row) -> dict:
 
 PROFILE_SELECT = """
     SELECT display_name, address, phone, tax_id, pdf_template,
+           workshop_address, signatory_name,
            alias, status, timezone, currency, logo_url
     FROM "Tenant"
     WHERE id = $1
@@ -78,6 +85,8 @@ class UpdateTenantProfileRequest(BaseModel):
     # kolom yang bisa menampung nilai tanpa template = faktur yang gagal
     # dicetak, bukan sekadar setelan yang aneh.
     pdf_template: Optional[str] = None
+    workshop_address: Optional[str] = None
+    signatory_name: Optional[str] = None
 
 
 # ── Endpoints ───────────────────────────────────────
@@ -126,6 +135,13 @@ async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Reque
         updates["phone"] = body.phone.strip()[:50] or None
     if body.tax_id is not None:
         updates["tax_id"] = body.tax_id.strip()[:50] or None
+    # "" dan null sama-sama MENGOSONGKAN, supaya tak ada dua bentuk data
+    # untuk satu makna (kelas yang sama dengan purchase_order_no).
+    for _medan in ("workshop_address", "signatory_name"):
+        _nilai = getattr(body, _medan)
+        if _nilai is not None:
+            updates[_medan] = _nilai.strip() or None
+
     if body.pdf_template is not None:
         _tpl = body.pdf_template.strip().lower()
         if _tpl not in ("a", "b"):

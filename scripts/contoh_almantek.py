@@ -32,7 +32,25 @@ async def main():
     print(f"  telepon         : {ctx['customer_phone']!r}")
     print(f"  NPWP            : {ctx['customer_npwp']!r}")
     print(f"  is_pkp          : {ctx['tenant']['is_pkp']}")
+    # (a) apa adanya: medan V239 masih kosong -> baris Workshop TIDAK dicetak
     open("/w/contoh-almantek.pdf", "wb").write(svc.generate_sales_invoice_pdf(ctx, template="b"))
-    print(f"  /w/contoh-almantek.pdf: {os.path.getsize('/w/contoh-almantek.pdf')} byte")
+    print(f"  (a) apa adanya      : {os.path.getsize('/w/contoh-almantek.pdf')} byte")
+    # (b) seandainya medan V239 diisi -- DISUNTIK ke konteks render saja,
+    #     basis data TIDAK disentuh.
+    ctx_isi = dict(
+        ctx,
+        payment_bank_branch="KCP TEMANGGUNG",
+        payment_bank_address="Jl. R. Suprapto No.21, Kauman, Temanggung II, Temanggung, Temanggung Regency, Central Java 56200",
+    )
+    # Alamat Head Office DIPENDEKKAN: sesudah medan workshop_address ada,
+    # pemilik tak perlu lagi menjejalkan teks Workshop ke dalam `address`.
+    # Tanpa ini contohnya mencetak Workshop DUA KALI dan tak mewakili keadaan
+    # sesudah medannya dipakai.
+    ctx_isi["tenant"] = dict(ctx["tenant"],
+        address="Banyuurip Timur RT 02/RW04 No.258 Kel. Banyuurip Kec. Temanggung Kab.Temanggung Jawa Tengah 56211",
+        workshop_address="Ruko Perumahan Bumi Cikarang Makmur Blok D2 No. 3-5 Kel. Sukadami Kec. Cikarang Selatan Bekasi Jawa Barat 17550",
+        signatory_name="Vitus Dwi Nugroho W.")
+    open("/w/contoh-almantek-terisi.pdf", "wb").write(svc.generate_sales_invoice_pdf(ctx_isi, template="b"))
+    print(f"  (b) medan V239 diisi: {os.path.getsize('/w/contoh-almantek-terisi.pdf')} byte")
     await conn.close()
 asyncio.run(main())

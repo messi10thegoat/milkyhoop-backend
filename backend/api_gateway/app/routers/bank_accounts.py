@@ -420,6 +420,8 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     "account_number": row["account_number"],
                     "bank_name": row["bank_name"],
                     "bank_branch": row["bank_branch"],
+                    # V239. Dicetak di blok pembayaran faktur.
+                    "bank_address": row["bank_address"],
                     "swift_code": row["swift_code"],
                     "account_type": row["account_type"],
                     "currency": row["currency"],
@@ -595,9 +597,10 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     """
                     INSERT INTO bank_accounts (
                         id, tenant_id, account_name, account_number, bank_name, bank_branch,
+                        bank_address,
                         swift_code, coa_id, opening_balance, current_balance,  -- Law 21: current_balance column retained but deprecated. Balance computed from journal.
                         account_type, currency, is_default, notes, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $12, $13, $14, $15)
                 """,
                     bank_account_id,
                     ctx["tenant_id"],
@@ -605,6 +608,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     body.account_number,
                     body.bank_name,
                     body.bank_branch,
+                    body.bank_address,
                     body.swift_code,
                     coa_id,  # Use resolved coa_id (either from body or auto-created)
                     body.opening_balance,
@@ -839,6 +843,10 @@ async def update_bank_account(
                 if body.bank_branch is not None:
                     updates.append(f"bank_branch = ${param_idx}")
                     params.append(body.bank_branch)
+                    param_idx += 1
+                if body.bank_address is not None:
+                    updates.append(f"bank_address = ${param_idx}")
+                    params.append(body.bank_address)
                     param_idx += 1
 
                 if body.swift_code is not None:

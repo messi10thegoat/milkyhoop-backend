@@ -971,6 +971,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "sales_order_number": invoice["sales_order_number"],
                     "notes": invoice["notes"],
                     "payment_bank_name": invoice["payment_bank_name"],
+                "payment_bank_branch": bank_row["bank_branch"] if bank_row else None,
+                "payment_bank_address": bank_row["bank_address"] if bank_row else None,
                     "payment_account_number": invoice["payment_account_number"],
                     "payment_account_holder": invoice["payment_account_holder"],
                     "subtotal": invoice["subtotal"],
@@ -4460,6 +4462,26 @@ async def get_invoice_pdf(
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
+            # Cabang dan alamat bank untuk blok pembayaran.
+            #
+            # Faktur TIDAK menyimpan tautan ke rekening -- hanya tiga medan
+            # teks payment_bank_name/account_number/account_holder. Jadi
+            # cabangnya diturunkan dengan mencocokkan NOMOR REKENING di dalam
+            # tenant yang sama. Kalau tak ketemu, medan teks faktur dicetak apa
+            # adanya: faktur lama tetap tercetak seperti sebelumnya, tidak
+            # tiba-tiba kehilangan blok banknya.
+            bank_row = None
+            if invoice["payment_account_number"]:
+                bank_row = await conn.fetchrow(
+                    """
+                    SELECT bank_branch, bank_address FROM bank_accounts
+                     WHERE tenant_id = $1 AND account_number = $2
+                     ORDER BY is_default DESC, updated_at DESC LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                    invoice["payment_account_number"],
+                )
+
             # Nomor surat jalan untuk cetakan.
             #
             # ARAHNYA TERBALIK dari dugaan awal: pengiriman lahir DARI faktur
@@ -4515,6 +4537,7 @@ async def get_invoice_pdf(
             # Fetch tenant info for PDF header
             tenant_row = await conn.fetchrow(
                 'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
+                'workshop_address, signatory_name, '
                 'pdf_template FROM "Tenant" WHERE id = $1',
                 ctx["tenant_id"],
             )
@@ -4535,6 +4558,15 @@ async def get_invoice_pdf(
                     # Non-PKP yang menampilkan "Tax 0" menyiratkan ia memungut
                     # pajak nol, bukan tidak memungut.
                     "is_pkp": bool(tenant_row["is_pkp"]) if tenant_row else False,
+                    # V239. Kosong = barisnya tidak dicetak sama sekali;
+                    # baris berlabel tanpa isi terbaca seperti data yang
+                    # HILANG, bukan medan yang belum dipakai.
+                    "workshop_address": (
+                        tenant_row["workshop_address"] if tenant_row else None
+                    ),
+                    "signatory_name": (
+                        tenant_row["signatory_name"] if tenant_row else None
+                    ),
                 }
                 if tenant_row
                 else {
@@ -4591,6 +4623,8 @@ async def get_invoice_pdf(
                 "delivery_order_no": no_surat_jalan,
                 "notes": invoice["notes"],
                 "payment_bank_name": invoice["payment_bank_name"],
+                "payment_bank_branch": bank_row["bank_branch"] if bank_row else None,
+                "payment_bank_address": bank_row["bank_address"] if bank_row else None,
                 "payment_account_number": invoice["payment_account_number"],
                 "payment_account_holder": invoice["payment_account_holder"],
                 "subtotal": invoice["subtotal"],

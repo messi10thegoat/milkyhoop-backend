@@ -156,10 +156,31 @@ async def utama():
                 pass
             for ch in getattr(b, "children", []):
                 cari_atas(ch)
+        # Sejak `.atas` memakai min-height (bukan height + overflow:hidden),
+        # TERPOTONG sudah mustahil -- isi yang panjang mendorong tabel turun,
+        # tidak dibuang. Jadi pemeriksaan lama ("teks melewati 69.7mm =
+        # terpotong") sekarang MENYATAKAN HAL YANG SALAH: melewati batas kini
+        # normal dan aman.
+        #
+        # Yang masih bermakna, dan itu yang diuji sekarang: untuk faktur
+        # NORMAL geometrinya harus tetap persis, yakni blok atas berakhir di
+        # dalam 64mm sehingga tabel tetap mulai di 69.8mm. Kalau faktur biasa
+        # pun sudah melewatinya, ambang 64mm itu kekecilan dan seluruh
+        # pengukuran garis di gate_rupa ikut bergeser.
+        # Jendela < 70mm, BUKAN < 80mm. Dengan 80mm teks KEPALA TABEL (yang
+        # mulai di ~70.5mm) ikut terhitung sebagai isi blok atas dan gerbang
+        # melaporkan 76.6mm -- merah karena cara ukurnya, bukan karena tata
+        # letaknya. BATAS YANG DIAKUI: kalau blok atas benar-benar tumbuh
+        # melewati 70mm, teksnya mulai setelah ambang ini dan tak terhitung;
+        # yang menangkap kasus itu gate_rupa, yang mengukur posisi GARIS.
         bawah_teks = max((t[3] for t in teks if t[1] < 70), default=0)
-        print(f"   teks terbawah di blok atas: {bawah_teks:.1f}mm (batas .atas = 69.7mm)")
-        if bawah_teks > 69.7:
-            gagal.append(f"{label}: teks blok atas melewati batas -> TERPOTONG")
+        print(f"   teks terbawah di blok atas: {bawah_teks:.1f}mm")
+        if label == "data nyata" and bawah_teks > 69.7:
+            gagal.append(
+                f"{label}: blok atas {bawah_teks:.1f}mm > 69.7mm -- geometri "
+                "tabel bergeser untuk faktur BIASA")
+        elif bawah_teks > 69.7:
+            print("   (kop panjang mendorong tabel turun -- disengaja, tidak ada yang dibuang)")
     await conn.close()
     if gagal:
         print("\nGAGAL:")

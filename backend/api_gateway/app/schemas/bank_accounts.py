@@ -40,6 +40,7 @@ class CreateBankAccountRequest(BaseModel):
         None, max_length=100, description="Bank name e.g., 'Bank BCA'"
     )
     bank_branch: Optional[str] = Field(None, max_length=100, description="Branch name")
+    bank_address: Optional[str] = Field(None, max_length=255, description="Alamat kantor cabang, dicetak di faktur")
     swift_code: Optional[str] = Field(None, max_length=20, description="SWIFT/BIC code")
     coa_id: Optional[str] = Field(
         None,
@@ -71,6 +72,7 @@ class UpdateBankAccountRequest(BaseModel):
     account_number: Optional[str] = Field(None, max_length=50)
     bank_name: Optional[str] = Field(None, max_length=100)
     bank_branch: Optional[str] = Field(None, max_length=100)
+    bank_address: Optional[str] = Field(None, max_length=255)
     swift_code: Optional[str] = Field(None, max_length=20)
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
@@ -146,6 +148,7 @@ class BankAccountDetail(BaseModel):
     account_number: Optional[str] = None
     bank_name: Optional[str] = None
     bank_branch: Optional[str] = None
+    bank_address: Optional[str] = None
     swift_code: Optional[str] = None
     account_type: str
     currency: str

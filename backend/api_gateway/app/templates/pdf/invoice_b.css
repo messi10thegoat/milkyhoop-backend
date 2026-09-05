@@ -101,7 +101,15 @@ body {
    dan SELURUH geometri bawah bergeser -- persis yang terukur -4.6mm saat
    alamat kita hanya satu baris. Kolom fleksibel mendorong "CURR : IDR" tetap
    menempel di atas tabel berapa pun panjang alamatnya. */
-.atas { height: 64mm; overflow: hidden; display: flex; flex-direction: column; }
+/* min-height, BUKAN height, dan overflow TIDAK disembunyikan.
+   Dengan tinggi tetap + overflow:hidden, kop yang panjang MEMOTONG isi blok
+   atas -- terukur: alamat Head Office + Workshop yang panjang membuat baris
+   "Phone :" dan "TAX :" pelanggan HILANG dari faktur, tanpa satu tanda pun.
+   Kehilangan nomor telepon pelanggan dari dokumen yang dikirim KE pelanggan
+   itu lebih buruk daripada tabel yang turun beberapa milimeter. Jadi untuk
+   faktur normal geometrinya tetap persis (isi < 64mm), dan untuk kop yang
+   luar biasa panjang tabelnya bergeser turun alih-alih ada yang dibuang. */
+.atas { min-height: 64mm; display: flex; flex-direction: column; }
 .atas .blok-atas { flex: 1 1 auto; }
 
 .judul { text-align: center; font-size: 13pt; margin: 1.2mm 0 2mm 0; }
