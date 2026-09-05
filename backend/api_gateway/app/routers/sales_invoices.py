@@ -839,8 +839,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # Get invoice
             invoice = await conn.fetchrow(
                 """
-                SELECT * FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
+                SELECT si.*, so.order_number AS sales_order_number
+                  FROM sales_invoices si
+                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                 WHERE si.id = $1 AND si.tenant_id = $2
             """,
                 invoice_id,
                 ctx["tenant_id"],
@@ -958,6 +960,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "ref_no": invoice["ref_no"],
                     "purchase_order_no": invoice["purchase_order_no"],
                     "delivery_order_no": invoice["delivery_order_no"],
+                    "sales_order_id": (
+                        str(invoice["sales_order_id"])
+                        if invoice["sales_order_id"] else None
+                    ),
+                    "sales_order_number": invoice["sales_order_number"],
                     "notes": invoice["notes"],
                     "payment_bank_name": invoice["payment_bank_name"],
                     "payment_account_number": invoice["payment_account_number"],
@@ -4433,8 +4440,10 @@ async def get_invoice_pdf(
             # Fetch invoice with full details
             invoice = await conn.fetchrow(
                 """
-                SELECT * FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
+                SELECT si.*, so.order_number AS sales_order_number
+                  FROM sales_invoices si
+                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                 WHERE si.id = $1 AND si.tenant_id = $2
             """,
                 invoice_id,
                 ctx["tenant_id"],

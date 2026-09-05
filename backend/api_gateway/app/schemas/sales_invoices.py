@@ -123,6 +123,19 @@ class CreateInvoiceRequest(BaseModel):
     delivery_order_no: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
 
+
+    # "" DAN null sama-sama berarti KOSONGKAN. Tanpa ini, PATCH dengan ""
+    # menyimpan string kosong sementara null menyimpan NULL -- dua bentuk data
+    # untuk satu makna, dan setiap pembaca harus tahu mana yang dipakai. Kelas
+    # yang sama sudah ditutup di Penawaran (90b72a1d).
+    @field_validator("purchase_order_no", "delivery_order_no")
+    @classmethod
+    def _kosongkan_po_do(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
     # Items
     items: List[InvoiceItemCreate] = Field(..., min_length=1)
 
@@ -216,6 +229,18 @@ class UpdateInvoiceRequest(BaseModel):
     purchase_order_no: Optional[str] = Field(None, max_length=100)
     delivery_order_no: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
+
+    # "" DAN null sama-sama berarti KOSONGKAN. Tanpa ini, PATCH dengan ""
+    # menyimpan string kosong sementara null menyimpan NULL -- dua bentuk data
+    # untuk satu makna, dan setiap pembaca harus tahu mana yang dipakai. Kelas
+    # yang sama sudah ditutup di Penawaran (90b72a1d).
+    @field_validator("purchase_order_no", "delivery_order_no")
+    @classmethod
+    def _kosongkan_po_do(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
     items: Optional[List[InvoiceItemCreate]] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     discount_amount: Optional[int] = Field(None, ge=0)
@@ -331,6 +356,11 @@ class InvoiceDetail(BaseModel):
     # dalam perjalanan ke layar, tanpa galat.
     purchase_order_no: Optional[str] = None
     delivery_order_no: Optional[str] = None
+    # Tautan ke Pesanan asal. FE memakai keduanya untuk baris "Dari Pesanan:
+    # SO-xxx" di form edit; tanpa dideklarasikan di sini, response_model
+    # MEMBUANG-nya walau SQL sudah mengambilnya.
+    sales_order_id: Optional[str] = None
+    sales_order_number: Optional[str] = None
     notes: Optional[str] = None
 
     # Rekening tujuan cetak (tiket MASTER) -- string mentah/null, BUKAN objek
