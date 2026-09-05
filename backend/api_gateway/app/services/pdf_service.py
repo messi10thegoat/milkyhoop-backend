@@ -10,6 +10,7 @@ from datetime import datetime, date
 
 from jinja2 import Environment, FileSystemLoader
 from weasyprint import HTML, CSS
+from weasyprint.text.fonts import FontConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -352,16 +353,24 @@ class PDFService:
         # Konteks SAMA untuk A dan B — lihat _konteks_faktur().
         html_content = tpl.render(**self._konteks_faktur(invoice))
 
+        # FontConfiguration WAJIB, dan diamnya mahal: tanpa objek ini
+        # WeasyPrint MENGABAIKAN seluruh aturan @font-face tanpa satu galat
+        # pun, lalu memakai font sistem. Terukur: dengan CSS yang sama,
+        # tanpa FontConfiguration -> DejaVu-Sans; dengan -> Liberation-Sans.
+        _font_config = FontConfiguration()
+
         # Load CSS. Template B punya lembar gayanya sendiri; A tetap memakai
         # invoice.css yang sudah ada, TANPA perubahan.
         stylesheets = []
         for _nama_css in (["invoice.css"] if template == "a" else ["invoice_b.css"]):
             css_path = TEMPLATE_DIR / _nama_css
             if css_path.exists():
-                stylesheets.append(CSS(filename=str(css_path)))
+                stylesheets.append(CSS(filename=str(css_path), font_config=_font_config))
 
         # Generate PDF
-        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+        pdf_bytes = HTML(string=html_content).write_pdf(
+            stylesheets=stylesheets, font_config=_font_config
+        )
 
         return pdf_bytes
 

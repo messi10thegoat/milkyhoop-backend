@@ -47,11 +47,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     shared-mime-info \
     fonts-dejavu-core \
-    # Faktur template B meniru dokumen ber-Arial. Liberation Sans metrik-
-    # kompatibel dengan Arial; tanpa paket ini WeasyPrint diam-diam jatuh ke
-    # DejaVu -- lebih lebar dan berbeda bentuk, dan tak ada galat apa pun yang
-    # memberi tahu. scripts/gate_font.py MERAH kalau font ini tidak ada.
-    fonts-liberation \
+    # SENGAJA TIDAK ADA `fonts-liberation` di sini. Faktur template B memakai
+    # Liberation Sans dari BERKAS DI REPO
+    # (app/templates/pdf/fonts/, terdaftar lewat @font-face di invoice_b.css),
+    # bukan dari paket sistem. Alasannya bukan kemudahan deploy: font sistem
+    # membuat hasil cetak bergantung pada image yang KEBETULAN punya paket
+    # itu -- dibangun ulang di mesin lain tanpa paketnya, faktur tercetak
+    # DejaVu tanpa satu galat pun. Terbukti: dirender di image LAMA yang nol
+    # paket liberation, PDF-nya tetap menanam Liberation-Sans; dan saat kedua
+    # berkas .ttf disembunyikan, ia jatuh ke DejaVu-Sans (kontrol merah).
+    # Efek sampingnya: perubahan font tak lagi menuntut rilis kelas IMAGE.
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

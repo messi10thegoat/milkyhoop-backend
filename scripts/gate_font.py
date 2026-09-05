@@ -1,53 +1,78 @@
 #!/usr/bin/env python3
-"""Gerbang FONT pasca-deploy: apakah image yang berjalan benar-benar punya
-font metrik-Arial, atau diam-diam jatuh ke DejaVu.
+"""Gerbang FONT: faktur memakai Liberation Sans dari BERKAS REPO, bukan sistem.
 
-Ini menutup kelas kegagalan "exit 0, kontainer hidup, konten salah": mengubah
-Dockerfile lalu men-deploy dengan bind-mount + restart TIDAK memasang paket
-apa pun. Tanpa gerbang ini, faktur tercetak dengan font yang salah dan tak
-ada satu galat pun yang memberi tahu.
+Dijalankan DI DALAM kontainer (docker run ... python3 scripts/gate_font.py).
+Menguji DUA ARAH dalam satu jalan:
+  hijau  = berkas .ttf ada  -> PDF menanam Liberation
+  merah  = berkas disembunyikan -> PDF jatuh ke DejaVu
+Tanpa arah kedua, hijaunya tak membuktikan font datang dari repo -- bisa saja
+kebetulan image itu punya paket fonts-liberation.
 
-Dipakai DUA ARAH: image baru harus Liberation, image lama harus DejaVu.
+Kelas kegagalan yang ditutup: WeasyPrint TIDAK PERNAH mengeluh saat font yang
+diminta tak ada; ia diam-diam memakai penggantinya. Dan ia juga mengabaikan
+seluruh @font-face kalau FontConfiguration tidak diberikan -- juga tanpa
+galat. Dua diam yang menghasilkan faktur berhuruf salah.
 """
+import os
 import re
-import subprocess
 import sys
+import zlib
 
-SKRIP = r'''
-import sys
 sys.path.insert(0, "/app/backend/api_gateway")
-from weasyprint import CSS, HTML
-HTMLS = "<p style=\"font-family: 'Liberation Sans', Arimo, Arial, Helvetica, sans-serif\">Faktur 12.500,00</p>"
-pdf = HTML(string=HTMLS).write_pdf()
-sys.stdout.buffer.write(pdf)
-'''
+
+from weasyprint import CSS, HTML  # noqa: E402
+from weasyprint.text.fonts import FontConfiguration  # noqa: E402
+
+from app.services.pdf_service import TEMPLATE_DIR  # noqa: E402
+
+CONTOH = "<p style=\"font-family: 'Liberation Sans', Arial, sans-serif\">Faktur 12.500,00</p>"
 
 
-def font_terpakai(image):
-    p = subprocess.run(
-        ["ssh", "root@159.89.202.160",
-         f"docker run --rm -i {image} python3 - <<'EOF'\n{SKRIP}\nEOF"],
-        capture_output=True)
-    pdf = p.stdout
+def font_tertanam():
+    fc = FontConfiguration()
+    css = CSS(filename=str(TEMPLATE_DIR / "invoice_b.css"), font_config=fc)
+    pdf = HTML(string=CONTOH).write_pdf(stylesheets=[css], font_config=fc)
     nama = set(re.findall(rb"/BaseFont\s*/([A-Za-z0-9+\-_]+)", pdf))
-    if not nama:  # font di object stream terkompresi
-        import zlib
+    if not nama:
         for m in re.finditer(rb"stream\r?\n(.*?)endstream", pdf, re.S):
             try:
                 nama |= set(re.findall(rb"/BaseFont\s*/([A-Za-z0-9+\-_]+)",
                                        zlib.decompress(m.group(1))))
             except Exception:
                 pass
-    return {n.decode().split("+")[-1] for n in nama}
+    return sorted({n.decode().split("+")[-1] for n in nama})
+
+
+def utama():
+    d = TEMPLATE_DIR / "fonts"
+    ttf = sorted(d.glob("LiberationSans-*.ttf"))
+    print(f"berkas font di repo: {[f.name for f in ttf] or '(TIDAK ADA)'}")
+    if not ttf:
+        print("GAGAL: berkas font tidak ada di repo")
+        return 1
+
+    hijau = font_tertanam()
+    print(f"  dengan berkas font : {hijau}")
+    ok = any("Liberation" in f for f in hijau)
+
+    # KONTROL MERAH: sembunyikan, ukur lagi, kembalikan.
+    tersembunyi = []
+    try:
+        for f in ttf:
+            b = f.with_suffix(".ttf.uji")
+            os.rename(f, b)
+            tersembunyi.append((b, f))
+        merah = font_tertanam()
+    finally:
+        for b, f in tersembunyi:
+            os.rename(b, f)
+    print(f"  KONTROL tanpa berkas: {merah}")
+    kontrol = any("DejaVu" in f for f in merah) and not any("Liberation" in f for f in merah)
+
+    print(f"\nfont datang dari REPO      : {ok}")
+    print(f"KONTROL MERAH menyala      : {kontrol}")
+    return 0 if (ok and kontrol) else 1
 
 
 if __name__ == "__main__":
-    baru, lama = sys.argv[1], sys.argv[2]
-    fb, fl = font_terpakai(baru), font_terpakai(lama)
-    print(f"image BARU  {baru}: {sorted(fb) or '(tak terbaca)'}")
-    print(f"image LAMA  {lama}: {sorted(fl) or '(tak terbaca)'}")
-    ok = any("Liberation" in f for f in fb) and not any("DejaVu" in f for f in fb)
-    kontrol = any("DejaVu" in f for f in fl) and not any("Liberation" in f for f in fl)
-    print(f"\nimage baru pakai Liberation, bukan DejaVu : {ok}")
-    print(f"KONTROL MERAH image lama jatuh ke DejaVu  : {kontrol}")
-    sys.exit(0 if (ok and kontrol) else 1)
+    sys.exit(utama())

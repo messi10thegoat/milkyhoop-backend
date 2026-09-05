@@ -59,3 +59,41 @@ lalu `docker compose up -d api_gateway`.
 - Medan yang belum ada dan sengaja dicetak kosong supaya ketiadaannya
   terlihat: `Tenant.workshop_address`, `Tenant.signatory_name`, cabang bank
   pada faktur.
+
+---
+
+## PEMBARUAN 2026-09-05: font TIDAK LAGI membuat rilis kelas IMAGE
+
+`fonts-liberation` DICABUT dari Dockerfile. Faktur template B memakai berkas
+`.ttf` yang ada **di repo** (`app/templates/pdf/fonts/`, SIL OFL-1.1),
+didaftarkan lewat `@font-face` di `invoice_b.css`.
+
+**Alasannya bukan kemudahan deploy.** Font sistem membuat hasil cetak
+bergantung pada image yang KEBETULAN punya paketnya: dibangun ulang di mesin
+lain tanpa paket itu, faktur tercetak DejaVu tanpa satu galat pun. Font di
+repo membuatnya deterministik — berkasnya ikut kode, bukan ikut lingkungan.
+
+**Jebakan yang memakan waktu, catat baik-baik:** WeasyPrint MENGABAIKAN
+seluruh aturan `@font-face` kalau `FontConfiguration` tidak diberikan ke
+`CSS(...)` DAN ke `write_pdf(...)` — tanpa galat, tanpa peringatan. Terukur:
+CSS yang sama, tanpa `FontConfiguration` → `DejaVu-Sans`; dengan → 
+`Liberation-Sans`. Itu diam kedua di jalur ini; yang pertama, WeasyPrint juga
+tak pernah mengeluh saat font yang diminta tak ada.
+
+Bukti bahwa font benar-benar datang dari repo: dirender di image LAMA
+(`milkyhoop-dev-api_gateway`, nol paket liberation) PDF tetap menanam
+`Liberation-Sans`; saat kedua berkas `.ttf` disembunyikan ia jatuh ke
+`DejaVu-Sans`. Kedua arah itu yang dijalankan `scripts/gate_font.py`.
+
+**Akibatnya pada deploy:** kode, template, CSS, dan berkas font semuanya
+bind-mount → rilis faktur kembali ke **kelas BIASA**:
+
+```
+git -C /root/milkyhoop-dev <integrasi>            # lihat catatan izin di bawah
+/root/milkyhoop-dev/scripts/ops/mh-restart.sh api_gateway
+docker run --rm -v /root/mh-pdf:/w -v /root/mh-pdf/backend/api_gateway:/app/backend/api_gateway \
+  -w /w milkyhoop-dev-api_gateway python3 scripts/gate_font.py   # dua arah
+```
+
+Aturan kelas IMAGE di atas TETAP berlaku untuk perubahan `requirements*.txt`
+dan apa pun yang di-`COPY` saat build.

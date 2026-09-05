@@ -22,6 +22,30 @@
   Kalau salah satu diubah, UKUR ULANG — jangan menyetel dengan mata.
 */
 
+/* ── Font ikut REPO, bukan ikut sistem ───────────────────────────────
+   Berkas .ttf ada di templates/pdf/fonts/ dan didaftarkan di sini, bukan
+   dipasang lewat `apt fonts-liberation` di Dockerfile.
+
+   ALASANNYA BUKAN KEMUDAHAN DEPLOY: kalau font datang dari sistem, image yang
+   dibangun ulang di mesin lain tanpa paket itu akan mencetak faktur dengan
+   DejaVu tanpa satu galat pun -- persis kelas kegagalan senyap yang gerbang
+   font ini dipasang untuk menangkap. Font di repo membuat hasil cetak
+   deterministik: berkasnya ikut kode, bukan ikut lingkungan.
+
+   Lisensi SIL OFL-1.1, berkasnya disertakan di fonts/LISENSI-copyright.txt.
+   URL relatif diselesaikan terhadap LETAK BERKAS CSS ini karena WeasyPrint
+   memuatnya lewat CSS(filename=...). */
+@font-face {
+  font-family: "Liberation Sans";
+  font-weight: normal;
+  src: url("fonts/LiberationSans-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Liberation Sans";
+  font-weight: bold;
+  src: url("fonts/LiberationSans-Bold.ttf") format("truetype");
+}
+
 @page {
   size: A4;
   /* Acuan bermargin sempit: tabel hampir selebar halaman. */
