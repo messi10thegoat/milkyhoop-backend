@@ -4556,6 +4556,8 @@ async def get_invoice_pdf(
                 else None,
                 "ref_no": invoice["ref_no"],
                 "purchase_order_no": invoice["purchase_order_no"],
+                # NPWP pelanggan: acuan mencetak baris "TAX :" di blok Customer.
+                "customer_npwp": invoice["customer_npwp"],
                 # Nilai CETAK: kolom kalau diisi, kalau tidak nomor pengiriman.
                 "delivery_order_no": no_surat_jalan,
                 "notes": invoice["notes"],

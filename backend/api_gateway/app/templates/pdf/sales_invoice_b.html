@@ -1,158 +1,135 @@
 {#
-  TEMPLATE B — faktur penjualan gaya industri klasik Indonesia.
+  TEMPLATE B — faktur gaya industri, mengikuti PDF acuan pemilik.
 
-  Acuan: contoh faktur PT Almantek yang dikirim pemilik (5 Sep 2026). Ciri yang
-  WAJIB dipertahankan, dan alasan tiap-tiapnya:
+  Semua posisi diatur invoice_b.css yang angkanya DIUKUR dari acuan; template
+  ini hanya menentukan URUTAN dan ISI. Template A (sales_invoice.html) tidak
+  boleh ikut berubah oleh perubahan di sini.
 
-  - TINGGI TABEL TETAP. Baris kosong diisi sampai BARIS_TETAP supaya blok bawah
-    (bank + total + tanda tangan) SELALU di posisi yang sama, berapa pun item-
-    nya. Faktur ini dicetak, ditandatangani, dan diarsipkan; posisi yang
-    bergeser membuat setumpuk faktur tak bisa dibaca sekilas.
-  - Baris "Tax 11%" HANYA bila tenant PKP. Non-PKP yang menampilkan "Tax 0"
-    menyiratkan ia memungut pajak sebesar nol, bukan tidak memungut sama
-    sekali -- dan itu keliru di mata penerima faktur.
-  - NPWP dari `Tenant.tax_id`. TIDAK ada kolom npwp baru: `tax_id` sudah ada
-    dan sudah ditulis /api/tenant/profile. Dua kolom untuk satu nomor pajak =
-    dua sumber kebenaran.
-  - Alamat "Workshop" DIKOSONGKAN kalau tak ada datanya. Skema hanya punya satu
-    `Tenant.address` (dipakai sebagai Head Office); kolom alamat kedua adalah
-    keputusan pemilik, bukan sesuatu yang boleh dikarang di sini.
-
-  Konteks IDENTIK dengan template A (`PDFService._konteks_faktur`) -- kalau
-  keduanya menyusun konteks sendiri-sendiri, "faktur yang sama" akan mencetak
-  angka berbeda tergantung gaya. Jangan menghitung apa pun di berkas ini.
+  BARIS_TETAP DIUKUR: badan tabel acuan setinggi 110.8mm (79.9 -> 190.7) dan
+  tiap baris 9.23mm -> tepat 12 baris. Angka ini yang membuat blok bawah
+  selalu jatuh di tempat yang sama; kalau tinggi baris diubah, UKUR ULANG
+  dengan scripts/ukur_geometri.py, jangan disetel dengan mata.
 #}
-{# BARIS_TETAP DIUKUR, bukan ditebak. Dengan invoice_b.css dan blok bawah
-   yang ada, satu halaman A4 memuat 23 baris kalau kop sepi, tapi hanya 21
-   kalau alamat tenant + alamat pelanggan + NPWP terisi penuh. Dipakai
-   MINIMUM lintas kasus, supaya faktur berkop penuh tidak mendorong baris
-   ISIAN (yang kosong) ke halaman 2 -- halaman kedua berisi kotak kosong
-   adalah cacat yang lebih memalukan daripada sisa ruang di halaman 1.
-   BUKAN jaminan mutlak: deskripsi barang yang membungkus dua baris tetap
-   menambah tinggi. Kalau itu terjadi tabel meluber dengan wajar, karena
-   .barang thead diulang di halaman berikutnya. UKUR ULANG (scripts/ukur3.py)
-   bila tinggi baris .barang tbody td atau blok bawah diubah. #}
-{% set BARIS_TETAP = 21 %}
+{% set BARIS_TETAP = 12 %}
 {% set t = invoice.tenant or {} %}
-{% set items = invoice['items'] or [] %}
-<!DOCTYPE html>
-<html lang="id">
+{% set items = invoice.get('items') or [] %}
 <head><meta charset="UTF-8"><title>Invoice {{ invoice.invoice_number or '-' }}</title></head>
-<body>
-<div class="faktur-b">
 
-  <!-- Kop: logo + nama kiri, alamat kanan -->
-  <div class="kop">
-    <div class="kop-kiri">
-      {% if t.get('logo_data') %}<img src="{{ t.get('logo_data') }}" class="logo" alt="">{% endif %}
-      <div class="nama-perusahaan">{{ t.get('name') or '-' }}</div>
-    </div>
-    <div class="kop-kanan">
-      {% if t.get('address') %}
-      <div><span class="kop-label">Head Office :</span> {{ t.get('address') }}</div>
-      {% endif %}
-      {% if t.get('workshop_address') %}
-      <div><span class="kop-label">Workshop :</span> {{ t.get('workshop_address') }}</div>
-      {% endif %}
-      {% if t.get('phone') %}<div>Telp : {{ t.get('phone') }}</div>{% endif %}
-    </div>
+<div class="atas">
+<!-- Kop: logo besar + nama di kiri, dua blok alamat di kanan -->
+<div class="kop">
+  <div class="kop-kiri">
+    {% if t.get('logo_data') %}<img src="{{ t.get('logo_data') }}" class="logo" alt="">{% endif %}
+    <div class="nama-perusahaan">{{ t.get('name') or '' }}</div>
   </div>
-
-  <div class="judul">INVOICE</div>
-
-  <!-- Pelanggan kiri, meta kanan -->
-  <div class="blok-atas">
-    <div class="pelanggan">
-      <div class="pelanggan-label">Customer :</div>
-      <div class="pelanggan-nama">{{ invoice.customer_name or '-' }}</div>
-      {% if invoice.customer_address %}<div>{{ invoice.customer_address }}</div>{% endif %}
-      {% if invoice.customer_phone %}<div>Phone : {{ invoice.customer_phone }}</div>{% endif %}
-      {% if invoice.customer_npwp %}<div>TAX : {{ invoice.customer_npwp }}</div>{% endif %}
-    </div>
-    <table class="meta">
-      <tr><td class="meta-k">Invoice No.</td><td class="meta-v">{{ invoice.invoice_number or '-' }}</td></tr>
-      <tr><td class="meta-k">Invoice Date</td><td class="meta-v">{{ invoice.invoice_date | date_id }}</td></tr>
-      {# Dua baris ini SELALU tampil walau kosong: acuan pemilik selalu
-         menampilkannya, dan barisnya sendiri memberi tahu pembaca bahwa medan
-         itu ADA tapi belum diisi -- baris yang lenyap terbaca seolah konsep
-         nomor PO/surat jalan tidak dikenal dokumen ini. #}
-      <tr><td class="meta-k">Delivery Order No.</td><td class="meta-v">{{ invoice.delivery_order_no or '' }}</td></tr>
-      {# `purchase_order_no`, BUKAN `ref_no`. `ref_no` adalah "No. Order" milik
-         kita sendiri (nomor SO yang diketik manual, dipakai jalur chat);
-         nomor PO diterbitkan PELANGGAN. Menaruh ref_no di baris berlabel
-         "Purchase Order No." berarti mencetak nomor kita sendiri sebagai
-         nomor mereka -- salah di mata penerima faktur. #}
-      <tr><td class="meta-k">Purchase Order No.</td><td class="meta-v">{{ invoice.purchase_order_no or '' }}</td></tr>
-      {% if invoice.payment_terms %}
-      <tr><td class="meta-k">Terms</td><td class="meta-v">{{ invoice.payment_terms }}</td></tr>
-      {% endif %}
-    </table>
+  <div class="kop-kanan">
+    <div>Head Office : {{ t.get('address') or '' }}</div>
+    {# "Workshop" belum punya kolom di tabel Tenant. Barisnya TETAP dicetak
+       supaya tata letak sama dengan acuan, dan supaya ketiadaannya terlihat
+       sebagai medan yang belum diisi -- bukan sebagai konsep yang tak dikenal
+       dokumen ini. Lihat catatan medan-belum-ada di ujung berkas. #}
+    <div>Workshop : {{ t.get('workshop_address') or '' }}</div>
   </div>
-
-  <div class="curr">CURR : IDR</div>
-
-  <!-- Tabel barang: tinggi TETAP -->
-  <table class="barang">
-    <thead>
-      <tr>
-        <th class="c-no">NO.</th>
-        <th class="c-qty">QTY</th>
-        <th class="c-kode">ITEM CODE</th>
-        <th class="c-desc">DESCRIPTIONS OF GOODS</th>
-        <th class="c-harga">UNIT PRICE</th>
-        <th class="c-jml">AMOUNT</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for it in items %}
-      <tr>
-        <td class="c-no">{{ loop.index }}</td>
-        <td class="c-qty">{{ it.quantity | round(0) | int }}{% if it.unit %} {{ it.unit }}{% endif %}</td>
-        <td class="c-kode">{{ it.item_code or '' }}</td>
-        <td class="c-desc">{{ it.description or '' }}</td>
-        <td class="c-harga">{{ it.unit_price | currency }}</td>
-        <td class="c-jml">{{ it.total | currency }}</td>
-      </tr>
-      {% endfor %}
-      {# Baris kosong penjaga tinggi. Hanya bila item MUAT dalam satu halaman;
-         kalau lebih, halaman lanjutan yang mengatur dirinya sendiri. #}
-      {% if items | length < BARIS_TETAP %}
-        {% for _ in range(BARIS_TETAP - (items | length)) %}
-        <tr class="baris-kosong"><td class="c-no">&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>
-        {% endfor %}
-      {% endif %}
-    </tbody>
-  </table>
-
-  <!-- Blok bawah: bank kiri, total kanan -->
-  <div class="blok-bawah">
-    <div class="bank">
-      {% if invoice.payment_bank_name or invoice.payment_account_number %}
-        {% if invoice.payment_bank_name %}<div class="bank-nama">{{ invoice.payment_bank_name }}</div>{% endif %}
-        {% if invoice.payment_account_holder %}
-        <div>Account name&nbsp;: {{ invoice.payment_account_holder }}</div>
-        {% endif %}
-        {% if invoice.payment_account_number %}
-        <div>Account no&nbsp;&nbsp;&nbsp;&nbsp;: {{ invoice.payment_account_number }}</div>
-        {% endif %}
-      {% endif %}
-    </div>
-    <table class="total">
-      <tr><td class="t-k">Subtotal</td><td class="t-v">{{ invoice.subtotal | currency }}</td></tr>
-      {# Tax HANYA untuk tenant PKP — lihat catatan di kepala berkas. #}
-      {% if t.get('is_pkp') and invoice.tax_amount %}
-      <tr><td class="t-k">Tax 11%</td><td class="t-v">{{ invoice.tax_amount | currency }}</td></tr>
-      {% endif %}
-      <tr><td class="t-k">Total</td><td class="t-v">{{ invoice.total_amount | currency }}</td></tr>
-      <tr><td colspan="2" class="bayar">PAY THIS AMOUNT</td></tr>
-    </table>
-  </div>
-
-  <div class="ttd">
-    <div>Faithfully yours,</div>
-    <div class="ttd-nama">{{ t.get('name') or '' }}</div>
-  </div>
-
 </div>
-</body>
-</html>
+<div class="garis-kop"></div>
+
+<div class="judul">INVOICE</div>
+
+<div class="blok-atas">
+  <div class="pelanggan">
+    <div>Customer :</div>
+    <div>{{ invoice.customer_name or '' }}</div>
+    {% if invoice.customer_address %}<div>{{ invoice.customer_address }}</div>{% endif %}
+    {% if invoice.customer_phone %}<div>Phone : {{ invoice.customer_phone }}</div>{% endif %}
+    {# Acuan selalu menampilkan baris TAX (NPWP pelanggan), terisi atau tidak. #}
+    <div>TAX : {{ invoice.customer_npwp or '' }}</div>
+  </div>
+  <table class="meta">
+    <tr><td class="meta-k">Invoice No.</td><td class="meta-v">{{ invoice.invoice_number or '' }}</td></tr>
+    <tr><td class="meta-k">Invoice Date</td><td class="meta-v">{{ invoice.invoice_date | date_full }}</td></tr>
+    <tr><td class="meta-k">Delivery Order No.</td><td class="meta-v">{{ invoice.delivery_order_no or '' }}</td></tr>
+    {# purchase_order_no, BUKAN ref_no: ref_no adalah "No. Order" MILIK KITA
+       (nomor SO yang diketik manual, dipakai jalur chat). Mencetaknya di baris
+       berlabel "Purchase Order No." berarti menyodorkan nomor kita sendiri
+       sebagai nomor pelanggan -- salah di mata penerima faktur. #}
+    <tr><td class="meta-k">Purchase Order No.</td><td class="meta-v">{{ invoice.purchase_order_no or '' }}</td></tr>
+    <tr><td class="meta-k">Terms</td><td class="meta-v">{{ invoice.terms_label or '' }}</td></tr>
+  </table>
+</div>
+
+<div class="curr">CURR : IDR</div>
+</div>
+
+<table class="barang">
+  <thead>
+    <tr>
+      <th class="c-no">NO.</th>
+      <th class="c-qty">QTY</th>
+      <th class="c-kode">ITEM CODE</th>
+      <th class="c-desc">DESCRIPTIONS OF GOODS</th>
+      <th class="c-harga">UNIT PRICE</th>
+      <th class="c-jml">AMOUNT</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for it in items %}
+    <tr class="{{ 'baris-awal' if loop.first }} {{ 'baris-akhir' if loop.last and items|length >= BARIS_TETAP }}">
+      <td class="c-no">{{ loop.index }}</td>
+      <td class="c-qty"><span class="qty-angka">{{ it.quantity | currency }}</span><span class="qty-unit">{{ (it.unit or '') | capitalize }}</span></td>
+      <td class="c-kode">{{ it.item_code or '' }}</td>
+      <td class="c-desc">{{ it.description or '' }}</td>
+      <td class="c-harga">{{ it.unit_price | currency2 }}</td>
+      <td class="c-jml">{{ it.total | currency2 }}</td>
+    </tr>
+    {% endfor %}
+    {% for _ in range(BARIS_TETAP - (items | length)) %}
+    <tr class="{{ 'baris-awal' if loop.first and not items }} {{ 'baris-akhir' if loop.last }}">
+      <td class="c-no"></td><td class="c-qty"></td><td class="c-kode"></td>
+      <td class="c-desc"></td><td class="c-harga"></td><td class="c-jml"></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<table class="bawah">
+  <tr class="garis-penuh">
+    <td class="b-sisi">
+      <div class="bank-lepas">
+        {% if invoice.payment_bank_name %}<div>{{ invoice.payment_bank_name }}</div>{% endif %}
+        {% if invoice.payment_bank_branch %}<div>{{ invoice.payment_bank_branch }}</div>{% endif %}
+        {% if invoice.payment_account_holder %}<div>Account name&nbsp;&nbsp;: {{ invoice.payment_account_holder }}</div>{% endif %}
+        {% if invoice.payment_account_number %}<div>Account no&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {{ invoice.payment_account_number }}</div>{% endif %}
+      </div>
+    </td>
+    <td class="b-label kotak">Subtotal</td>
+    <td class="b-nilai kotak">{{ invoice.subtotal | currency2 }}</td>
+  </tr>
+  {# Baris Tax HANYA untuk tenant PKP. Non-PKP yang menampilkan "Tax 0"
+     menyiratkan ia memungut pajak nol, bukan tidak memungut sama sekali. #}
+  {% if t.get('is_pkp') %}
+  <tr>
+    <td class="b-sisi"></td>
+    <td class="b-label kotak">Tax 11%</td>
+    <td class="b-nilai kotak">{{ invoice.tax_amount | currency2 }}</td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td class="b-sisi"></td>
+    <td class="b-label kotak">Total</td>
+    <td class="b-nilai kotak">{{ invoice.total_amount | currency2 }}</td>
+  </tr>
+  <tr class="bayar">
+    <td class="b-sisi"></td>
+    <td class="b-label"></td>
+    <td class="b-nilai kotak">PAY THIS AMOUNT</td>
+  </tr>
+</table>
+
+<div class="ttd">
+  <div class="ttd-atas">Faithfully yours,</div>
+  {# Acuan menandatangani atas nama ORANG. Tenant belum punya medan
+     "penandatangan", jadi untuk sekarang nama tenant yang dipakai. Ini
+     dicatat sebagai medan pengaturan yang BELUM ADA, bukan sebagai pilihan
+     desain. #}
+  <div class="ttd-nama">{{ t.get('signatory_name') or t.get('name') or '' }}</div>
+</div>

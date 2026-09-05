@@ -1,82 +1,166 @@
 /*
-  Lembar gaya TEMPLATE B — faktur industri klasik.
-  Terpisah dari invoice.css supaya template A tidak berubah sedikit pun.
+  Lembar gaya TEMPLATE B — faktur industri.
 
-  Tabel bergaris PENUH dan tinggi TETAP adalah ciri yang diminta pemilik:
-  blok bawah harus selalu jatuh di posisi yang sama, berapa pun jumlah item.
+  SEMUA ANGKA DI BERKAS INI DIUKUR dari PDF acuan pemilik
+  (598d53b0-INVASA2609076_UL.pdf) dengan scripts/ukur_geometri.py pada 300dpi,
+  bukan dikira-kira dari mata. Ringkasan (mm dari tepi kiri/atas halaman A4):
+
+    tepi isi           x 3.2 .. 206.8   (margin 3.3mm kiri-kanan)
+    logo + nama        x 4.2 .. 71.2,  y 5.7 .. 24.3
+    alamat kanan       x 104.8 .. 206.0, y 6.7 .. 24.9
+    garis kop (ganda)  y 26.6 dan 27.3, selebar isi
+    judul INVOICE      y 28.5 .. 38.9, terpusat di x 105
+    blok atas          y 37.9 .. 67.9 ; pembatas meta tegak di x 176.1
+    tabel: atas 69.7   kepala berakhir 79.9 (tinggi 10.2)   bawah 190.7
+    kolom tegak        3.3 | 14.2 | 36.5 | 58.0 | 145.1 | 176.1 | 206.6
+    Subtotal           y 190.7 .. 196.7, garis bawah SELEBAR HALAMAN
+    Tax / Total        y 196.7 .. 202.6 .. 208.6, hanya x 145.1 .. 206.8
+    PAY THIS AMOUNT    y 208.6 .. 214.9, hanya x 176.3 .. 206.7
+    blok bank          x 3.2 .. 139.9, y 189.9 .. 230.1
+    tanda tangan       x 160.3 .. 191.6 (terpusat di 176), y 232.3 .. 276.9
+
+  Kalau salah satu diubah, UKUR ULANG — jangan menyetel dengan mata.
 */
 
 @page {
   size: A4;
-  margin: 14mm 12mm 12mm 12mm;
+  /* Acuan bermargin sempit: tabel hampir selebar halaman. */
+  margin: 5.7mm 3.3mm 12mm 3.2mm;
 }
 
 body {
-  font-family: Arial, Helvetica, "DejaVu Sans", sans-serif;
-  font-size: 9pt;
+  /* Acuan memakai Arial. Liberation Sans dan Arimo metrik-kompatibel dengan
+     Arial; DejaVu TIDAK (lebih lebar, huruf lebih bulat) dan akan terlihat
+     jelas di judul dan angka. Font ini WAJIB ada di image — lihat
+     scripts/gate_font.py yang MERAH kalau yang terpakai ternyata DejaVu. */
+  font-family: "Liberation Sans", Arimo, Arial, Helvetica, sans-serif;
+  font-size: 8pt;
   color: #000;
   margin: 0;
 }
 
 /* ── Kop ─────────────────────────────────────────────────────────── */
 .kop { display: flex; justify-content: space-between; align-items: flex-start; }
-.kop-kiri { max-width: 48%; }
-.logo { max-height: 52px; max-width: 210px; display: block; }
-.nama-perusahaan { font-size: 9.5pt; margin-top: 2mm; }
-.kop-kanan { text-align: left; font-size: 8pt; line-height: 1.45; max-width: 52%; }
-.kop-label { }
+.kop-kiri { width: 67mm; }
+/* Logo acuan besar: ~⅓ lebar halaman, bukan ikon 48px. */
+/* Acuan memakai logo LEBAR (wordmark) selebar 67mm. Logo tenant bisa
+   berbentuk apa saja; kalau persegi, memaksanya 67mm berarti tinggi 67mm dan
+   mendorong seluruh kop. Jadi yang dipatok TINGGI-nya (18mm, sepadan dengan
+   acuan) dan lebar mengikuti bentuk aslinya. Ini beda yang DISENGAJA. */
+.logo { max-width: 67mm; max-height: 14mm; display: block; }
+.nama-perusahaan { font-size: 9.5pt; margin-top: 1.2mm; text-transform: uppercase; }
+.kop-kanan { width: 101.2mm; font-size: 8pt; line-height: 1.5; }
 
-.judul {
-  text-align: center;
-  font-size: 15pt;
-  margin: 4mm 0 3mm 0;
-}
+/* Garis kop GANDA (dua garis 0.7mm terpisah), persis acuan. */
+/* 0.8pt, BUKAN 0.5pt: garis 0.5pt pada blok biasa terender sub-piksel dan
+   keluar abu-abu 195 -- terlihat "ada" di layar tapi nyaris hilang di cetak.
+   Garis tabel selamat karena border-collapse membulatkannya ke piksel penuh. */
+.garis-kop { height: 0.7mm; border-top: 1pt solid #000; border-bottom: 1pt solid #000; margin-top: 2.0mm; }
+
+/* TINGGI TETAP 64mm: dari awal isi (5.7mm) sampai tepi atas tabel (69.7mm).
+   Tanpa ini, faktur dengan alamat pelanggan dua baris mendorong tabel turun
+   dan SELURUH geometri bawah bergeser -- persis yang terukur -4.6mm saat
+   alamat kita hanya satu baris. Kolom fleksibel mendorong "CURR : IDR" tetap
+   menempel di atas tabel berapa pun panjang alamatnya. */
+.atas { height: 64mm; overflow: hidden; display: flex; flex-direction: column; }
+.atas .blok-atas { flex: 1 1 auto; }
+
+.judul { text-align: center; font-size: 13pt; margin: 1.2mm 0 2mm 0; }
 
 /* ── Pelanggan + meta ────────────────────────────────────────────── */
 .blok-atas { display: flex; justify-content: space-between; align-items: flex-start; }
-.pelanggan { font-size: 8pt; line-height: 1.5; max-width: 55%; }
-.pelanggan-label { }
-.pelanggan-nama { }
+.pelanggan { font-size: 8pt; line-height: 1.55; width: 110mm; }
 
 .meta { border-collapse: collapse; font-size: 8pt; }
-.meta .meta-k { text-align: right; padding: 0 2mm 0 0; }
-/* Garis vertikal tipis memisahkan label dari nilai — ciri acuan. */
-.meta .meta-v { text-align: right; padding: 0 0 0 2mm; border-left: 0.6pt solid #000; min-width: 34mm; }
+.meta td { padding: 0 0 0.2mm 0; }
+.meta .meta-k { text-align: right; padding-right: 1.5mm; }
+/* Pembatas tegak di x 176.1; kolom nilai selebar 30.5mm sampai 206.6. */
+.meta .meta-v { text-align: right; border-left: 1pt solid #000; width: 30.5mm; padding-left: 1.5mm; }
 
-.curr { text-align: right; font-size: 8pt; margin: 1.5mm 0 1mm 0; }
+.curr { text-align: right; font-size: 8pt; margin: 1.5mm 0 1.2mm 0; }
 
-/* ── Tabel barang: bergaris penuh ────────────────────────────────── */
-.barang { width: 100%; border-collapse: collapse; font-size: 8pt; }
-.barang th, .barang td { border: 0.6pt solid #000; padding: 1.1mm 1.5mm; }
-.barang thead th { text-align: center; font-weight: normal; }
-.barang tbody td { height: 4.6mm; }
+/* ── Tabel barang ────────────────────────────────────────────────── */
+/* border-bottom di TABEL, bukan mengandalkan `tbody tr:last-child td`:
+   yang terakhir itu terukur TIDAK tergambar (sisi kiri dasar tabel menganga
+   dan baris bank di bawahnya tampak tercoret garis kotak Subtotal). */
+/* border-collapse: SEPARATE, bukan collapse.
+   Terukur pada WeasyPrint di image ini: garis mendatar DI DALAM tabel yang
+   dinyatakan lewat border-collapse tidak pernah tergambar -- lebar bordernya
+   BENAR di model kotak (0.53px) tapi nol piksel gelap muncul di kertas. Yang
+   tergambar hanya tepi luar. Tiga cara dicoba dan gagal: border pada th,
+   pada grup baris <thead>, dan pada kelas di <tr>. Dengan separate + spacing
+   0 tiap sel menggambar bordernya sendiri, tanpa penyelesaian konflik.
+   Supaya garis tegak tidak menjadi ganda (dua sel bersebelahan masing-masing
+   0.8pt), border KIRI saja yang dipasang di semua sel, dan border KANAN
+   hanya di kolom terakhir. */
+.barang { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 8pt;
+          table-layout: fixed; }
+/* Garis TEGAK di semua sel; garis MENDATAR hanya di batas kepala dan tepi
+   tabel. Acuan TIDAK menggambar garis antar baris barang. */
+/* SEMUA garis 1pt. Riwayat yang penting: 0.5pt terender ABU-ABU 195 (nyaris
+   hilang), 0.8pt masih 90-190 -- terbaca "ada" oleh mata di layar tapi jauh
+   lebih pucat daripada acuan (25-53). Hairline yang jatuh di antara dua
+   piksel dibagi rata ke keduanya; hanya ketebalan >= 1pt yang menutup satu
+   piksel penuh pada 300dpi. Riwayat lama: */
+/* SEMUA garis 0.8pt, bukan 0.5pt. Terukur: 0.5pt jatuh di bawah satu piksel
+   dan terender ABU-ABU (min 41-130 dari 255) alih-alih hitam -- garisnya
+   "ada" tapi pucat, dan di kertas hampir hilang. Acuan memakai ~0.7pt.
+   Ini kelas cacat yang lolos dari mata di layar tapi tidak dari pengukuran. */
 
-.c-no    { width: 7%;  text-align: center; }
-.c-qty   { width: 11%; text-align: right; }
-.c-kode  { width: 12%; text-align: center; }
-.c-desc  { width: 42%; text-align: left; }
-.c-harga { width: 14%; text-align: right; }
-.c-jml   { width: 14%; text-align: right; }
-
-/* Header tabel diulang di tiap halaman lanjutan — WeasyPrint menghormati
-   thead pada tabel yang terpotong. Tanpa ini, halaman 2 berisi angka tanpa
-   judul kolom. */
+/* box-sizing WAJIB: pada table-layout:fixed, `width` adalah lebar KONTEN,
+   jadi padding 1.5mm kiri-kanan DITAMBAHKAN ke tiap kolom -- enam kolom =
+   18mm, dan tabel meluber keluar halaman dengan kolom AMOUNT terpotong.
+   Terukur: tabel 222.5mm di dalam kotak isi 203.5mm. */
+.barang th, .barang td { box-sizing: border-box; border-left: 1pt solid #000; padding: 0 1.5mm; }
+.barang th:last-child, .barang td:last-child { border-right: 1pt solid #000; }
+.barang thead th { border-top: 1pt solid #000; border-bottom: 1pt solid #000;
+                   height: 10.2mm; text-align: center; font-weight: normal; vertical-align: middle; }
+.barang tbody td { height: 9.23mm; vertical-align: top; padding-top: 1.2mm; }
+/* Garis mendatar DI DALAM tabel dinyatakan di KEDUA sisi batas.
+   Terukur: dengan border-collapse, sel tbody yang tidak menyebut border-top
+   membuat garis bawah <thead> TIDAK tergambar sama sekali (0 piksel gelap di
+   y=79..81) -- konflik border diselesaikan ke sisi yang kosong. Menaruh
+   border yang SAMA di kedua sisi menghapus konfliknya.
+   Kelas dipasang dari template, bukan lewat :first-child/:last-child, supaya
+   tak bergantung pada dukungan selektor mesin cetak. */
+.barang tbody .baris-awal td { border-top: 1pt solid #000; }
+.barang tbody .baris-akhir td { border-bottom: 1pt solid #000; }
 .barang thead { display: table-header-group; }
 .barang tr { page-break-inside: avoid; }
 
-.baris-kosong td { border-left: 0.6pt solid #000; border-right: 0.6pt solid #000;
-                   border-top: none; border-bottom: none; }
+.c-no    { width: 5.36%;  text-align: center; }
+.c-qty   { width: 10.96%; }
+.c-kode  { width: 10.57%; text-align: center; }
+.c-desc  { width: 42.82%; text-align: left; }
+.c-harga { width: 15.24%; text-align: right; }
+.c-jml   { width: 14.99%; text-align: right; }
+
+/* QTY = dua sub-kolom sejajar: angka rata KANAN, satuan rata KIRI.
+   Acuan menulis "1.590   Pcs", bukan "1590 pcs" menyatu. */
+.qty-angka { display: inline-block; width: 54%; text-align: right; }
+.qty-unit  { display: inline-block; width: 42%; text-align: left; padding-left: 4%; }
 
 /* ── Blok bawah ──────────────────────────────────────────────────── */
-.blok-bawah { display: flex; justify-content: space-between; align-items: flex-start; }
-.bank { font-size: 8pt; line-height: 1.7; padding-top: 1mm; max-width: 55%; }
-.bank-nama { }
+.bawah { width: 100%; border-collapse: collapse; font-size: 8pt; table-layout: fixed; }
+.bawah td { box-sizing: border-box; padding: 0 1.5mm; height: 5.93mm; }
+.b-sisi  { width: 69.66%; border: none; }          /* 3.2 .. 145.1 */
+.b-label { width: 15.24%; text-align: right; }     /* 145.1 .. 176.1 */
+.b-nilai { width: 14.99%; text-align: right; }     /* 176.1 .. 206.6 */
+.kotak { border: 1pt solid #000; }
+/* Garis bawah baris Subtotal membentang SELEBAR HALAMAN, termasuk melintasi
+   area bank di kiri — ciri acuan yang mudah terlewat. */
+.garis-penuh td { border-bottom: 1pt solid #000; }
+/* Acuan: garis tegak tepi kiri (x=3.3) turun sampai 196.8mm, yakni MELEWATI
+   baris Subtotal. Tanpa ini sisi kiri baris itu menganga. */
+.garis-penuh .b-sisi { border-left: 1pt solid #000; }
+.bayar td { height: 6.3mm; text-align: center; }
 
-.total { border-collapse: collapse; font-size: 8pt; min-width: 62mm; }
-.total td { border: 0.6pt solid #000; padding: 1.1mm 1.5mm; }
-.total .t-k { text-align: right; }
-.total .t-v { text-align: right; min-width: 30mm; }
-.total .bayar { text-align: center; }
+/* Blok bank duduk DI ATAS area kosong kiri tanpa mengubah tinggi baris:
+   tinggi 0 + luapan terlihat. Kalau ia ikut menambah tinggi baris, kotak
+   PAY THIS AMOUNT akan turun dan seluruh geometri bawah meleset. */
+.bank-lepas { height: 0; overflow: visible; line-height: 1.72; padding-top: 0.6mm; }
 
-.ttd { margin-top: 10mm; text-align: right; font-size: 8pt; }
-.ttd-nama { margin-top: 22mm; }
+.ttd { width: 61.7mm; margin-left: auto; text-align: center; font-size: 8pt; }
+/* Terukur: 'Faithfully yours,' acuan di y=233.7 dan nama di 275.4. */
+.ttd-atas { margin-top: 22.5mm; }
+.ttd-nama { margin-top: 39mm; }

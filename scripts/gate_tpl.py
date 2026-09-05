@@ -266,15 +266,17 @@ async def utama():
         satuan = [i for i in ctxb["items"] if i.get("unit")]
         if satuan:
             u = satuan[0]["unit"]
+            # Bandingkan TANPA memandang besar-kecil huruf: acuan menulis
+            # "Pcs", data menyimpan "pcs", dan kapitalisasi itu DISENGAJA.
             isi = sel_qty(hb2)
-            ada = any(u in x for x in isi)
+            ada = any(u.lower() in x.lower() for x in isi)
             print(f"    satuan {u!r} ikut di sel QTY {isi[:2]}: {ada}")
             if not ada:
                 gagal.append(f"satuan {u} tidak tercetak di kolom QTY")
         ctx_nounit = dict(ctxb, items=[dict(i, unit=None) for i in ctxb["items"]])
         h_nounit = html_env.render(**svc._konteks_faktur(ctx_nounit))
         isi_n = sel_qty(h_nounit)
-        bersih = not any("pcs" in x for x in isi_n)
+        bersih = not any("pcs" in x.lower() for x in isi_n)
         print(f"    KONTROL tanpa satuan -> sel QTY {isi_n[:2]} tanpa satuan: {bersih}")
         if not bersih:
             gagal.append("satuan tercetak padahal data tak punya satuan")

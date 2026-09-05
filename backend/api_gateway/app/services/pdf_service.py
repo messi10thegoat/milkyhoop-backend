@@ -107,7 +107,12 @@ class PDFService:
         )
         # Register custom filters
         self.jinja_env.filters["currency"] = self.format_currency
+        # Filter BARU, bukan perubahan `currency`: template A memakai format
+        # tanpa desimal dan tidak boleh ikut berubah. Faktur gaya industri
+        # menuntut dua desimal (12.500,00) karena harga satuan bisa pecahan.
+        self.jinja_env.filters["currency2"] = self.format_currency2
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
+        self.jinja_env.filters["date_full"] = self.format_date_full
         self.jinja_env.filters["date_short"] = self.format_date_short
 
     @classmethod
@@ -177,6 +182,40 @@ class PDFService:
         except (ValueError, TypeError):
             return "0"
 
+    @staticmethod
+    def format_currency2(amount: Any) -> str:
+        """Format uang gaya faktur industri: 12.500,00 / 19.875.000,00.
+
+        Pemisah ribuan TITIK, desimal KOMA, dua angka desimal SELALU. Nol
+        desimal yang dibuang membuat 12.500,50 tercetak 12.501 -- selisih yang
+        baru ketahuan saat pelanggan menjumlahkan sendiri.
+        """
+        try:
+            value = float(amount) if amount else 0.0
+        except (TypeError, ValueError):
+            value = 0.0
+        return f"{value:,.2f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+    @classmethod
+    def format_date_full(cls, date_value: Any) -> str:
+        """04 September 2026 -- nama bulan PENUH, tanggal dua digit."""
+        if not date_value:
+            return ""
+        d = date_value
+        if isinstance(d, str):
+            try:
+                d = datetime.fromisoformat(d.replace("Z", "+00:00"))
+            except ValueError:
+                return str(date_value)
+        bulan = [
+            "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+            "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+        ]
+        try:
+            return f"{d.day:02d} {bulan[d.month - 1]} {d.year}"
+        except (AttributeError, IndexError):
+            return str(date_value)
+
     @classmethod
     def format_date_indonesian(cls, date_value: Any) -> str:
         """
@@ -244,6 +283,32 @@ class PDFService:
 
         return pdf_bytes
 
+    @staticmethod
+    def _label_terms(invoice: Dict[str, Any]) -> str:
+        """'7 DAYS' dari due_date - invoice_date. Kosong kalau tak bisa dihitung.
+
+        Sengaja mengembalikan "" dan BUKAN "0 DAYS" saat tanggalnya tak ada:
+        "0 DAYS" berarti jatuh tempo hari ini, sebuah klaim; kosong berarti
+        belum diketahui.
+        """
+        def _tgl(v):
+            if isinstance(v, str):
+                try:
+                    return datetime.fromisoformat(v.replace("Z", "+00:00")).date()
+                except ValueError:
+                    return None
+            return v.date() if isinstance(v, datetime) else v
+
+        a = _tgl(invoice.get("invoice_date"))
+        b = _tgl(invoice.get("due_date"))
+        if not a or not b:
+            return ""
+        try:
+            n = (b - a).days
+        except TypeError:
+            return ""
+        return f"{n} DAYS" if n >= 0 else ""
+
     def _konteks_faktur(self, invoice: Dict[str, Any]) -> Dict[str, Any]:
         """Konteks render faktur — SATU sumber untuk SEMUA template.
 
@@ -254,6 +319,11 @@ class PDFService:
         sulit dipercaya oleh penerima faktur.
         """
         status = invoice.get("status", "draft")
+        # "Terms" acuan = jarak jatuh tempo dalam HARI ("7 DAYS"), diturunkan
+        # dari tanggal, bukan medan tersendiri. Ditaruh di konteks bersama
+        # supaya kalau template A kelak menampilkannya, angkanya sama persis.
+        invoice = dict(invoice)
+        invoice.setdefault("terms_label", self._label_terms(invoice))
         return {
             "invoice": invoice,
             "status_label": self.STATUS_LABELS.get(status, status.upper()),
