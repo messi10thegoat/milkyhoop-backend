@@ -55,4 +55,10 @@ async def main():
         open(p, "wb").write(svc.generate_sales_invoice_pdf(ctx_contoh, template=t))
         print(f"  {p}: {os.path.getsize(p)} byte")
     await conn.close()
-asyncio.run(main())
+
+
+# Penjaga __main__: tanpa ini, MENGIMPOR modul ini berarti MENJALANKANNYA —
+# ia menembak basis data dan menulis PDF sebagai efek samping impor. Aku kena
+# saat menulis contoh_n.py dan mengimpor KOP/logo_data dari sini.
+if __name__ == "__main__":
+    asyncio.run(main())
