@@ -8,6 +8,7 @@ endpoint. Jalur HTTP `?template=` tak bisa kutembak karena rute PDF menuntut
 izin `sales_invoice` aksi `E` (Export) yang tidak dimiliki akun uji
 (Collaborator); menaikkan perannya adalah keputusan pemilik.
 """
+import base64
 import os
 import re
 import sys
@@ -46,6 +47,23 @@ def halaman_html(svc, ctx, template="b") -> int:
     css_path = TEMPLATE_DIR / css_nama
     sheets = [CSS(filename=str(css_path))] if css_path.exists() else []
     return len(HTML(string=html).render(stylesheets=sheets).pages)
+
+
+def _logo_data(nama):
+    """Salinan sengaja dari logika rute PDF (routers/sales_invoices.py).
+
+    Kalau berkasnya tak ada, kembalikan None DAN berteriak: logo yang diam-diam
+    hilang persis kelas kegagalan yang membuat contoh pertama menyesatkan.
+    """
+    if not nama:
+        return None
+    for d in ("/app/backend/api_gateway/app/static/logos", "/logos"):
+        p = os.path.join(d, nama)
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+    print(f"  ! PERINGATAN: logo {nama} tak ditemukan; uji logo akan MERAH")
+    return None
 
 
 async def konteks(conn, invoice_id):
@@ -88,6 +106,12 @@ async def konteks(conn, invoice_id):
             "address": t["address"],
             "phone": t["phone"],
             "logo_url": t["logo_url"],
+            # Rute PDF sungguhan mengubah logo_url jadi data URI sebelum
+            # merender. Harness versi pertama TIDAK, jadi contoh yang kukirim
+            # ke pemilik tampil tanpa logo dan terbaca sebagai cacat template
+            # padahal produksi baik-baik saja. Harness yang lebih miskin dari
+            # jalur nyata akan MEMFITNAH kodenya sendiri.
+            "logo_data": _logo_data(t["logo_url"]),
             "tax_id": t["tax_id"],
             "is_pkp": bool(t["is_pkp"]),
         },
@@ -198,6 +222,62 @@ async def utama():
         print("    GAGAL kontrol: 'x' diterima")
     except TemplateTidakDikenal as e:
         print(f"    OK  KONTROL MERAH: 'x' ditolak -> {e}")
+
+    # ── 7. tiga unsur visual acuan: logo, blok bank, satuan
+    #
+    # Ketiganya BUKAN perubahan template -- ketiganya sudah didukung. Yang
+    # sempat hilang di contoh pertama disebabkan DATA (faktur uji tanpa
+    # rekening, baris tanpa satuan) dan HARNESS (logo tak diubah jadi data
+    # URI). Gerbang ini mengunci ketiganya supaya "hilang" berikutnya merah.
+    print("  unsur visual:")
+    bank = await conn.fetchrow(
+        """SELECT id FROM sales_invoices
+            WHERE tenant_id=$1 AND payment_bank_name IS NOT NULL AND status<>'void'
+            ORDER BY created_at DESC LIMIT 1""",
+        TENANT,
+    )
+    if not bank:
+        gagal.append("tak ada faktur ber-rekening untuk menguji blok bank")
+    else:
+        ctxb = await konteks(conn, bank["id"])
+        hb2 = html_env.render(**svc._konteks_faktur(ctxb))
+        ada_logo = "data:image/png;base64," in hb2
+        print(f"    logo tertanam: {ada_logo}")
+        if not ada_logo:
+            gagal.append("logo tenant tidak tertanam di B padahal tenant punya logo")
+        ada_bank = (ctxb.get("payment_bank_name") or "") in hb2 and "Account no" in hb2
+        print(f"    blok bank ({ctxb.get('payment_bank_name')!r}): {ada_bank}")
+        if not ada_bank:
+            gagal.append("blok rekening tidak muncul padahal faktur punya rekening")
+        # KONTROL: faktur TANPA rekening tidak boleh memunculkan blok itu
+        ctx_tanpa = dict(ctxb, payment_bank_name=None, payment_account_number=None,
+                         payment_account_holder=None)
+        h_tanpa = html_env.render(**svc._konteks_faktur(ctx_tanpa))
+        print(f"    KONTROL tanpa rekening -> 'Account no' hilang: {'Account no' not in h_tanpa}")
+        if "Account no" in h_tanpa:
+            gagal.append("blok rekening muncul padahal faktur tak punya rekening")
+        # CACAT GERBANG YANG DIPERBAIKI: mencari "pcs" di SELURUH HTML selalu
+        # cocok -- string itu ada di dalam base64 logo. Kontrolnya merah, dan
+        # itu berarti uji positifnya pun hijau karena alasan yang keliru.
+        # Cari HANYA di dalam sel QTY.
+        def sel_qty(h):
+            return re.findall(r'<td class="c-qty">(.*?)</td>', h)
+
+        satuan = [i for i in ctxb["items"] if i.get("unit")]
+        if satuan:
+            u = satuan[0]["unit"]
+            isi = sel_qty(hb2)
+            ada = any(u in x for x in isi)
+            print(f"    satuan {u!r} ikut di sel QTY {isi[:2]}: {ada}")
+            if not ada:
+                gagal.append(f"satuan {u} tidak tercetak di kolom QTY")
+        ctx_nounit = dict(ctxb, items=[dict(i, unit=None) for i in ctxb["items"]])
+        h_nounit = html_env.render(**svc._konteks_faktur(ctx_nounit))
+        isi_n = sel_qty(h_nounit)
+        bersih = not any("pcs" in x for x in isi_n)
+        print(f"    KONTROL tanpa satuan -> sel QTY {isi_n[:2]} tanpa satuan: {bersih}")
+        if not bersih:
+            gagal.append("satuan tercetak padahal data tak punya satuan")
 
     await conn.close()
     if gagal:
