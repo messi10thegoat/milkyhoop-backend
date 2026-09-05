@@ -102,6 +102,24 @@ body {
 /* border-bottom di TABEL, bukan mengandalkan `tbody tr:last-child td`:
    yang terakhir itu terukur TIDAK tergambar (sisi kiri dasar tabel menganga
    dan baris bank di bawahnya tampak tercoret garis kotak Subtotal). */
+/* border-collapse: COLLAPSE — dan ini MENGOREKSI kesimpulanku sendiri.
+   Aku sempat menyimpulkan "collapse tidak pernah menggambar garis mendatar
+   di dalam tabel" dan memilih separate karenanya. Kesimpulan itu TERLALU
+   LUAS: yang benar, collapse tidak menggambar garis pada sel KOSONG. Dengan
+   `empty-cells: show` dan `&nbsp;` di baris isian, collapse menggambar
+   semuanya -- dan hasilnya lebih baik daripada separate, terukur:
+
+     tebal garis kolom di ATAS vs di BAWAH garis kepala
+       separate : 1.20 -> 0.72pt (x=36.5) dan 1.20 -> 0.96pt (x=176.3)
+       collapse : identik di ketujuh kolom
+
+   Perbedaan tebal di satu kolom itulah yang terlihat sebagai "outline
+   kedobel"/tangga saat pemilik memperbesar. Pada separate tiap sel
+   menggambar goresannya sendiri, dan dua goresan pendek di posisi sub-piksel
+   berbeda tidak membulat sama; collapse menggabungkannya jadi SATU goresan
+   menerus.
+
+   Riwayat lama (kenapa separate sempat dipakai): */
 /* border-collapse: SEPARATE, bukan collapse.
    Terukur pada WeasyPrint di image ini: garis mendatar DI DALAM tabel yang
    dinyatakan lewat border-collapse tidak pernah tergambar -- lebar bordernya
@@ -112,7 +130,7 @@ body {
    Supaya garis tegak tidak menjadi ganda (dua sel bersebelahan masing-masing
    0.8pt), border KIRI saja yang dipasang di semua sel, dan border KANAN
    hanya di kolom terakhir. */
-.barang { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 8pt;
+.barang { width: 100%; border-collapse: collapse; empty-cells: show; font-size: 8pt;
           table-layout: fixed; }
 /* Garis TEGAK di semua sel; garis MENDATAR hanya di batas kepala dan tepi
    tabel. Acuan TIDAK menggambar garis antar baris barang. */
@@ -134,8 +152,8 @@ body {
    jadi padding 1.5mm kiri-kanan DITAMBAHKAN ke tiap kolom -- enam kolom =
    18mm, dan tabel meluber keluar halaman dengan kolom AMOUNT terpotong.
    Terukur: tabel 222.5mm di dalam kotak isi 203.5mm. */
-.barang th, .barang td { box-sizing: border-box; border-left: 0.75pt solid #000; padding: 0 1.5mm; }
-.barang th:last-child, .barang td:last-child { border-right: 0.75pt solid #000; }
+.barang th, .barang td { box-sizing: border-box; border-left: 0.75pt solid #000;
+                         border-right: 0.75pt solid #000; padding: 0 1.5mm; }
 /* Garis bawah kepala acuan 2.16pt = paling tebal di tabel; 0.75pt terukur
    hanya 1.44pt. Angkanya dipilih dari HASIL UKUR, bukan disamakan. */
 /* border-top 1.1pt: pada 0.75pt garis atas tabel jatuh di sub-piksel dan
@@ -151,7 +169,10 @@ body {
    Kelas dipasang dari template, bukan lewat :first-child/:last-child, supaya
    tak bergantung pada dukungan selektor mesin cetak. */
 .barang tbody .baris-awal td { border-top: 0.75pt solid #000; }
-.barang tbody .baris-akhir td { border-bottom: 0.75pt solid #000; }
+/* Dasar tabel 1.1pt: pada 0.75pt ia terukur cuma 0.72pt di raster,
+   sementara acuan 1.92pt. Ia salah satu dari dua garis yang memang
+   TEBAL di acuan (bersama garis bawah kepala). */
+.barang tbody .baris-akhir td { border-bottom: 1.1pt solid #000; }
 .barang thead { display: table-header-group; }
 .barang tr { page-break-inside: avoid; }
 
@@ -169,39 +190,29 @@ body {
    dalam kolom 14.3..36.5mm. Dua sub-kolom sejajar, tanpa garis pemisah. */
 .qty-unit  { display: inline-block; width: 33.3%; text-align: left; padding-left: 17.2%; }
 
-/* ── Blok bawah ──────────────────────────────────────────────────── */
-.bawah { width: 100%; border-collapse: collapse; font-size: 8pt; table-layout: fixed; }
-.bawah td { box-sizing: border-box; padding: 0 1.5mm; height: 5.93mm; }
-.b-sisi  { width: 69.66%; border: none; }          /* 3.2 .. 145.1 */
-.b-label { width: 15.24%; text-align: right; }     /* 145.1 .. 176.1 */
-.b-nilai { width: 14.99%; text-align: right; }     /* 176.1 .. 206.6 */
-.kotak { border: 0.75pt solid #000; }
-/* Garis bawah baris Subtotal membentang SELEBAR HALAMAN, termasuk melintasi
-   area bank di kiri — ciri acuan yang mudah terlewat. */
-/* 0.6pt: acuan mengukur 1.20pt di raster, 0.75pt milikku 1.92pt. */
-.garis-penuh td { border-bottom: 0.6pt solid #000; }
-/* Acuan: garis tegak tepi kiri (x=3.3) turun sampai 196.8mm, yakni MELEWATI
-   baris Subtotal. Tanpa ini sisi kiri baris itu menganga. */
-.garis-penuh .b-sisi { border-left: 0.75pt solid #000; }
-/* Acuan: kotak PAY hanya selebar kolom AMOUNT (175.8..207.0mm) dengan
-   garis 2.16pt -- paling tebal di halaman. */
-.bayar td { height: 6.3mm; text-align: center; }
-.bayar .b-nilai { border-width: 1.2pt; }
+/* ── Baris jumlah (DI DALAM tabel barang) ───────────────────────── */
+/* Semua garis kotak blok bawah memakai SATU tebal yang sama dengan garis
+   kolom tabel. Sebelumnya kotak PAY 1.2pt sementara Total 0.75pt, dan
+   perbedaan itu terlihat jelas saat pemilik memperbesar di layar. */
+.barang tbody .jumlah td { height: 5.93mm; vertical-align: middle; padding: 0 1.5mm; }
+.barang tbody .jumlah .c-harga, .barang tbody .jumlah .c-jml { text-align: right;
+    /* 1.1pt: pada 0.9pt garis kotak Total terukur 0.72pt dan garis PAY
+      cuma 0.48pt -- lebih tipis daripada garis TERTIPIS di acuan (1.20pt),
+      dan bedanya kelihatan saat diperbesar. */
+   border-bottom: 1.1pt solid #000; }
+/* Sisi kiri baris Tax/Total/PAY TIDAK bergaris: acuan hanya meneruskan garis
+   tepi kiri sampai baris Subtotal (garis tegak x=3.3 berhenti di 196.8). */
+.barang tbody .jumlah .sisi-kosong { border-left: none; }
+.barang tbody .garis-penuh td { border-bottom: 0.6pt solid #000; }
+.barang tbody .bayar .c-jml { text-align: center; height: 6.3mm; }
 
-/* Blok bank duduk DI ATAS area kosong kiri tanpa mengubah tinggi baris:
-   tinggi 0 + luapan terlihat. Kalau ia ikut menambah tinggi baris, kotak
-   PAY THIS AMOUNT akan turun dan seluruh geometri bawah meleset. */
-/* Jarak baris acuan 5.9mm pada 8pt -> line-height 2.1. */
-/* Blok bank MULAI DI BAWAH kotak baris Subtotal, bukan sejajar dengannya.
-   Terbukti dari raster acuan: baris "Bank BCA" ada setelah garis 196.7mm,
-   dan pita Subtotal di kiri dibiarkan KOSONG. Ukuranku yang lama ("baris
-   bank pertama di 194.0mm") keliru -- yang kuukur itu border kotak
-   Subtotal, bukan teks. */
-.bank-lepas { margin-top: 6.2mm; height: 0; overflow: visible; line-height: 2.1; padding-top: 0; }
-/* padding 0: dengan 1.0mm, huruf baris pertama turun sampai y=197.18mm
-   sementara garis Subtotal ada di 196.72 -- teks MENYENTUH garis. Itu
-   yang pemilik sebut tabrakan, dan gerbang posisi tak bisa melihatnya
-   karena garisnya sendiri ada di tempat yang benar. */
+/* Blok bank duduk di sel kiri baris Subtotal tanpa menambah tinggi baris:
+   tinggi 0 + luapan terlihat. Kalau ia ikut menambah tinggi, kotak PAY turun
+   dan seluruh geometri bawah meleset. */
+.bank-lepas { margin-top: 6.2mm; height: 0; overflow: visible; line-height: 2.1;
+              font-size: 8pt; }
+/* Lebar TETAP supaya titik dua sejajar; 26mm cukup untuk "Account name". */
+.bank-lepas .lbl { display: inline-block; width: 26mm; }
 
 .ttd { width: 61.7mm; margin-left: auto; text-align: center; font-size: 8pt; }
 /* Terukur: 'Faithfully yours,' acuan di y=233.7 dan nama di 275.4. */

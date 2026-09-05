@@ -84,48 +84,58 @@
     {% endfor %}
     {% for _ in range(BARIS_TETAP - (items | length)) %}
     <tr class="{{ 'baris-awal' if loop.first and not items }} {{ 'baris-akhir' if loop.last }}">
-      <td class="c-no"></td><td class="c-qty"></td><td class="c-kode"></td>
-      <td class="c-desc"></td><td class="c-harga"></td><td class="c-jml"></td>
+      {# &nbsp; WAJIB: pada border-collapse, sel yang benar-benar kosong tidak
+         menggambar border sama sekali, sehingga baris isian kehilangan garis
+         kolomnya. `empty-cells: show` saja tidak cukup di mesin ini. #}
+      <td class="c-no">&nbsp;</td><td class="c-qty">&nbsp;</td><td class="c-kode">&nbsp;</td>
+      <td class="c-desc">&nbsp;</td><td class="c-harga">&nbsp;</td><td class="c-jml">&nbsp;</td>
     </tr>
     {% endfor %}
-  </tbody>
-</table>
-
-<table class="bawah">
-  <tr class="garis-penuh">
-    <td class="b-sisi">
-      <div class="bank-lepas">
+    {#
+      BARIS JUMLAH ADA DI DALAM TABEL YANG SAMA dengan barang.
+      Sebelumnya ia tabel terpisah, dan akibatnya terukur: kolom tabel barang
+      jatuh di x=145.2/176.3/206.6 sementara kotak Subtotal/Total/PAY di
+      144.7/175.7/206.8 -- meleset 0.5-0.6mm, sehingga garis kolom yang
+      menembus dasar tabel tampak GANDA dan tepi kotaknya tidak segaris.
+      Dalam satu tabel, kolomnya mustahil berbeda.
+    #}
+    <tr class="jumlah garis-penuh">
+      <td colspan="4"><div class="bank-lepas">
         {# "Bank BCA", bukan "BCA": acuan menulis kata Bank di depan. Ditambahkan
            hanya kalau namanya belum memuatnya, supaya tidak jadi "Bank Bank BCA". #}
         {% if invoice.payment_bank_name %}<div>{{ invoice.payment_bank_name if 'bank' in invoice.payment_bank_name|lower else 'Bank ' ~ invoice.payment_bank_name }}</div>{% endif %}
         {% if invoice.payment_bank_branch %}<div>{{ invoice.payment_bank_branch }}</div>{% endif %}
-        {% if invoice.payment_account_holder %}<div>Account name&nbsp;&nbsp;: {{ invoice.payment_account_holder }}</div>{% endif %}
-        {% if invoice.payment_account_number %}<div>Account no&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: {{ invoice.payment_account_number }}</div>{% endif %}
-      </div>
-    </td>
-    <td class="b-label kotak">Subtotal</td>
-    <td class="b-nilai kotak">{{ invoice.subtotal | currency2 }}</td>
-  </tr>
-  {# Baris Tax HANYA untuk tenant PKP. Non-PKP yang menampilkan "Tax 0"
-     menyiratkan ia memungut pajak nol, bukan tidak memungut sama sekali. #}
-  {% if t.get('is_pkp') %}
-  <tr>
-    <td class="b-sisi"></td>
-    <td class="b-label kotak">Tax 11%</td>
-    <td class="b-nilai kotak">{{ invoice.tax_amount | currency2 }}</td>
-  </tr>
-  {% endif %}
-  <tr>
-    <td class="b-sisi"></td>
-    <td class="b-label kotak">Total</td>
-    <td class="b-nilai kotak">{{ invoice.total_amount | currency2 }}</td>
-  </tr>
-  <tr class="bayar">
-    <td class="b-sisi"></td>
-    <td class="b-label"></td>
-    <td class="b-nilai kotak">PAY THIS AMOUNT</td>
-  </tr>
+        {# Label berkolom TETAP, bukan dirapikan dengan spasi: nama medannya
+           tidak pernah berubah, jadi titik dua bisa disejajarkan sungguhan.
+           Dengan &nbsp; titik duanya bergeser mengikuti lebar huruf. #}
+        {% if invoice.payment_account_holder %}<div><span class="lbl">Account name</span>: {{ invoice.payment_account_holder }}</div>{% endif %}
+        {% if invoice.payment_account_number %}<div><span class="lbl">Account no</span>: {{ invoice.payment_account_number }}</div>{% endif %}
+      </div></td>
+      <td class="c-harga">Subtotal</td>
+      <td class="c-jml">{{ invoice.subtotal | currency2 }}</td>
+    </tr>
+    {# Baris Tax HANYA untuk tenant PKP. Non-PKP yang menampilkan "Tax 0"
+       menyiratkan ia memungut pajak nol, bukan tidak memungut sama sekali. #}
+    {% if t.get('is_pkp') %}
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">Tax 11%</td>
+      <td class="c-jml">{{ invoice.tax_amount | currency2 }}</td>
+    </tr>
+    {% endif %}
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">Total</td>
+      <td class="c-jml">{{ invoice.total_amount | currency2 }}</td>
+    </tr>
+    <tr class="jumlah bayar">
+      <td class="sisi-kosong" colspan="5"></td>
+      <td class="c-jml">PAY THIS AMOUNT</td>
+    </tr>
+  </tbody>
 </table>
+
+
 
 <div class="ttd">
   <div class="ttd-atas">Faithfully yours,</div>
