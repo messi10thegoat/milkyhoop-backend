@@ -4381,7 +4381,11 @@ async def get_invoice_history(
 from io import BytesIO  # noqa: E402  # pre-existing mid-file import
 from datetime import datetime, timedelta  # noqa: E402  # pre-existing mid-file import
 from fastapi.responses import StreamingResponse  # noqa: E402  # pre-existing mid-file import
-from ..services.pdf_service import get_pdf_service  # noqa: E402  # pre-existing mid-file import
+from ..services.pdf_service import (
+    TemplateTidakDikenal,
+    get_pdf_service,
+    pilih_template,
+)  # noqa: E402  # pre-existing mid-file import
 from ..services.storage_service import get_storage_service  # noqa: E402  # pre-existing mid-file import
 import base64  # noqa: E402  # pre-existing mid-file import
 from pathlib import Path as _Path  # noqa: E402  # pre-existing mid-file import
@@ -4394,6 +4398,15 @@ async def get_invoice_pdf(
     format: Literal["url", "inline"] = Query(
         "url",
         description="Response format: 'url' returns presigned URL, 'inline' returns PDF bytes",
+    ),
+    template: Optional[str] = Query(
+        None,
+        description=(
+            "Template cetak: 'a' (bawaan lama) atau 'b' (gaya faktur industri). "
+            "Kalau tidak dikirim, dipakai setelan tenant `Tenant.pdf_template`. "
+            "Parameter ini MENANG atas setelan tenant supaya faktur lama bisa "
+            "dicetak ulang dengan tampilan aslinya."
+        ),
     ),
 ):
     """
@@ -4456,7 +4469,8 @@ async def get_invoice_pdf(
 
             # Fetch tenant info for PDF header
             tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+                'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
+                'pdf_template FROM "Tenant" WHERE id = $1',
                 ctx["tenant_id"],
             )
             tenant_info = (
@@ -4467,6 +4481,15 @@ async def get_invoice_pdf(
                     "address": tenant_row["address"] if tenant_row else None,
                     "phone": tenant_row["phone"] if tenant_row else None,
                     "logo_url": tenant_row["logo_url"] if tenant_row else None,
+                    # NPWP tenant. `tax_id` adalah kolom yang SUDAH ADA dan
+                    # sudah ditulis /api/tenant/profile — sengaja TIDAK
+                    # menambah kolom `npwp` baru (dua sumber kebenaran untuk
+                    # satu nomor pajak).
+                    "tax_id": tenant_row["tax_id"] if tenant_row else None,
+                    # Menentukan apakah baris "Tax 11%" tampil di template B.
+                    # Non-PKP yang menampilkan "Tax 0" menyiratkan ia memungut
+                    # pajak nol, bukan tidak memungut.
+                    "is_pkp": bool(tenant_row["is_pkp"]) if tenant_row else False,
                 }
                 if tenant_row
                 else {
@@ -4549,7 +4572,16 @@ async def get_invoice_pdf(
 
         # Generate PDF
         pdf_service = get_pdf_service()
-        pdf_bytes = pdf_service.generate_sales_invoice_pdf(invoice_data)
+        try:
+            tpl = pilih_template(
+                tenant_row["pdf_template"] if tenant_row else "a", template
+            )
+        except TemplateTidakDikenal as _e:
+            # 422, bukan diam-diam jatuh ke 'a': pengguna yang salah ketik
+            # akan menerima faktur bergaya LAIN tanpa tanda apa pun, dan
+            # faktur adalah dokumen yang dikirim ke pelanggan.
+            raise HTTPException(status_code=422, detail=str(_e))
+        pdf_bytes = pdf_service.generate_sales_invoice_pdf(invoice_data, template=tpl)
 
         # Generate filename
         invoice_num = invoice["invoice_number"] or str(invoice_id)[:8]

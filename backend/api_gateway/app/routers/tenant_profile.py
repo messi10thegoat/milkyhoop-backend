@@ -42,6 +42,9 @@ def _build_profile_dict(row) -> dict:
         "address": row["address"],
         "phone": row["phone"],
         "tax_id": row["tax_id"],
+        # Pilihan template cetak faktur (V237). Bawaan tenant; endpoint
+        # PDF menerima `?template=` yang MENANG atas nilai ini.
+        "pdf_template": row["pdf_template"],
         "alias": row["alias"],
         "status": row["status"],
         "timezone": row["timezone"],
@@ -51,7 +54,7 @@ def _build_profile_dict(row) -> dict:
 
 
 PROFILE_SELECT = """
-    SELECT display_name, address, phone, tax_id,
+    SELECT display_name, address, phone, tax_id, pdf_template,
            alias, status, timezone, currency, logo_url
     FROM "Tenant"
     WHERE id = $1
@@ -71,6 +74,10 @@ class UpdateTenantProfileRequest(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
     tax_id: Optional[str] = None
+    # 'a' | 'b'. Divalidasi di sini DAN dijaga CHECK di basis data:
+    # kolom yang bisa menampung nilai tanpa template = faktur yang gagal
+    # dicetak, bukan sekadar setelan yang aneh.
+    pdf_template: Optional[str] = None
 
 
 # ── Endpoints ───────────────────────────────────────
@@ -119,6 +126,14 @@ async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Reque
         updates["phone"] = body.phone.strip()[:50] or None
     if body.tax_id is not None:
         updates["tax_id"] = body.tax_id.strip()[:50] or None
+    if body.pdf_template is not None:
+        _tpl = body.pdf_template.strip().lower()
+        if _tpl not in ("a", "b"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"pdf_template harus 'a' atau 'b'; diterima: {body.pdf_template!r}",
+            )
+        updates["pdf_template"] = _tpl
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")

@@ -17,6 +17,59 @@ logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "pdf"
 
 
+# ── Pemilihan template faktur ────────────────────────────────────────────
+#
+# Bawaan milik TENANT (`Tenant.pdf_template`, V237); parameter cetak
+# `?template=` MENANG atasnya. Dua-duanya perlu:
+#   - bawaan saja -> pengguna yang mengganti gaya tak bisa lagi mencetak ulang
+#     faktur lama dengan tampilan aslinya, padahal faktur SUDAH DIKIRIM ke
+#     pelanggan;
+#   - parameter saja -> tak ada bawaan, dan setiap pemanggil harus tahu, jadi
+#     kebijakan milik tenant berpindah ke klien.
+TEMPLATE_FAKTUR = {
+    "a": "sales_invoice.html",    # tampilan yang sudah berjalan; TIDAK diubah
+    "b": "sales_invoice_b.html",  # gaya faktur industri klasik
+}
+
+
+class TemplateTidakDikenal(ValueError):
+    """Nilai template di luar TEMPLATE_FAKTUR. Di tepi HTTP menjadi 422."""
+
+
+def pilih_template(bawaan_tenant, override=None) -> str:
+    """Kembalikan 'a'|'b'. `override` (dari `?template=`) menang atas bawaan.
+
+    Nilai tak dikenal DITOLAK, tidak diam-diam jatuh ke 'a'. Jatuh diam-diam
+    berarti pengguna yang salah ketik menerima faktur bergaya LAIN tanpa tanda
+    apa pun -- dan faktur adalah dokumen yang dikirim ke pelanggan, jadi
+    "diam-diam berbeda" lebih buruk daripada "gagal terang-terangan".
+
+    Nilai KOSONG pada override diperlakukan sebagai TIDAK DIKIRIM (pakai
+    bawaan), bukan sebagai nilai tak dikenal: `?template=` tanpa isi adalah
+    bentuk yang wajar keluar dari klien yang membangun query string.
+    """
+    if override is not None and str(override).strip() != "":
+        nilai = str(override).strip().lower()
+        if nilai not in TEMPLATE_FAKTUR:
+            raise TemplateTidakDikenal(
+                f"template '{override}' tidak dikenal; pilihan: "
+                + ", ".join(sorted(TEMPLATE_FAKTUR))
+            )
+        return nilai
+
+    bawaan = (bawaan_tenant or "a").strip().lower()
+    # Bawaan tenant yang tak dikenal TIDAK dilempar: kolomnya sudah dijaga
+    # CHECK di basis data, jadi nilai asing di sini berarti data lama atau
+    # basis data yang di-rollback -- dan menolak MENCETAK karena itu merugikan
+    # pengguna yang tak melakukan apa pun. Jatuh ke 'a' dan catat.
+    if bawaan not in TEMPLATE_FAKTUR:
+        logger.warning(
+            "[PDF] pdf_template tenant tak dikenal (%r) -> memakai 'a'", bawaan_tenant
+        )
+        return "a"
+    return bawaan
+
+
 class PDFService:
     """Generate PDFs from HTML templates using WeasyPrint."""
 
@@ -191,7 +244,25 @@ class PDFService:
 
         return pdf_bytes
 
-    def generate_sales_invoice_pdf(self, invoice: Dict[str, Any]) -> bytes:
+    def _konteks_faktur(self, invoice: Dict[str, Any]) -> Dict[str, Any]:
+        """Konteks render faktur — SATU sumber untuk SEMUA template.
+
+        Diangkat jadi metode tersendiri supaya template A dan B memakai dict
+        yang SAMA. Kalau tiap template menyusun konteksnya sendiri, keduanya
+        akan menyimpang perlahan dan "faktur yang sama" mencetak angka yang
+        berbeda tergantung gaya yang dipilih -- kelas kesalahan yang paling
+        sulit dipercaya oleh penerima faktur.
+        """
+        status = invoice.get("status", "draft")
+        return {
+            "invoice": invoice,
+            "status_label": self.STATUS_LABELS.get(status, status.upper()),
+            "generated_at": datetime.now(),
+        }
+
+    def generate_sales_invoice_pdf(
+        self, invoice: Dict[str, Any], template: str = "a"
+    ) -> bytes:
         """
         Generate PDF for a sales invoice.
 
@@ -203,24 +274,21 @@ class PDFService:
         Returns:
             PDF content as bytes
         """
-        template = self.jinja_env.get_template("sales_invoice.html")
+        berkas = TEMPLATE_FAKTUR.get(template)
+        if berkas is None:
+            raise TemplateTidakDikenal(f"template '{template}' tidak dikenal")
+        tpl = self.jinja_env.get_template(berkas)
 
-        # Get status label
-        status = invoice.get("status", "draft")
-        status_label = self.STATUS_LABELS.get(status, status.upper())
+        # Konteks SAMA untuk A dan B — lihat _konteks_faktur().
+        html_content = tpl.render(**self._konteks_faktur(invoice))
 
-        # Render HTML
-        html_content = template.render(
-            invoice=invoice,
-            status_label=status_label,
-            generated_at=datetime.now(),
-        )
-
-        # Load CSS
-        css_path = TEMPLATE_DIR / "invoice.css"
+        # Load CSS. Template B punya lembar gayanya sendiri; A tetap memakai
+        # invoice.css yang sudah ada, TANPA perubahan.
         stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
+        for _nama_css in (["invoice.css"] if template == "a" else ["invoice_b.css"]):
+            css_path = TEMPLATE_DIR / _nama_css
+            if css_path.exists():
+                stylesheets.append(CSS(filename=str(css_path)))
 
         # Generate PDF
         pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)

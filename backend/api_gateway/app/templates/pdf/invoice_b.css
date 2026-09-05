@@ -1,0 +1,82 @@
+/*
+  Lembar gaya TEMPLATE B — faktur industri klasik.
+  Terpisah dari invoice.css supaya template A tidak berubah sedikit pun.
+
+  Tabel bergaris PENUH dan tinggi TETAP adalah ciri yang diminta pemilik:
+  blok bawah harus selalu jatuh di posisi yang sama, berapa pun jumlah item.
+*/
+
+@page {
+  size: A4;
+  margin: 14mm 12mm 12mm 12mm;
+}
+
+body {
+  font-family: Arial, Helvetica, "DejaVu Sans", sans-serif;
+  font-size: 9pt;
+  color: #000;
+  margin: 0;
+}
+
+/* ── Kop ─────────────────────────────────────────────────────────── */
+.kop { display: flex; justify-content: space-between; align-items: flex-start; }
+.kop-kiri { max-width: 48%; }
+.logo { max-height: 52px; max-width: 210px; display: block; }
+.nama-perusahaan { font-size: 9.5pt; margin-top: 2mm; }
+.kop-kanan { text-align: left; font-size: 8pt; line-height: 1.45; max-width: 52%; }
+.kop-label { }
+
+.judul {
+  text-align: center;
+  font-size: 15pt;
+  margin: 4mm 0 3mm 0;
+}
+
+/* ── Pelanggan + meta ────────────────────────────────────────────── */
+.blok-atas { display: flex; justify-content: space-between; align-items: flex-start; }
+.pelanggan { font-size: 8pt; line-height: 1.5; max-width: 55%; }
+.pelanggan-label { }
+.pelanggan-nama { }
+
+.meta { border-collapse: collapse; font-size: 8pt; }
+.meta .meta-k { text-align: right; padding: 0 2mm 0 0; }
+/* Garis vertikal tipis memisahkan label dari nilai — ciri acuan. */
+.meta .meta-v { text-align: right; padding: 0 0 0 2mm; border-left: 0.6pt solid #000; min-width: 34mm; }
+
+.curr { text-align: right; font-size: 8pt; margin: 1.5mm 0 1mm 0; }
+
+/* ── Tabel barang: bergaris penuh ────────────────────────────────── */
+.barang { width: 100%; border-collapse: collapse; font-size: 8pt; }
+.barang th, .barang td { border: 0.6pt solid #000; padding: 1.1mm 1.5mm; }
+.barang thead th { text-align: center; font-weight: normal; }
+.barang tbody td { height: 4.6mm; }
+
+.c-no    { width: 7%;  text-align: center; }
+.c-qty   { width: 11%; text-align: right; }
+.c-kode  { width: 12%; text-align: center; }
+.c-desc  { width: 42%; text-align: left; }
+.c-harga { width: 14%; text-align: right; }
+.c-jml   { width: 14%; text-align: right; }
+
+/* Header tabel diulang di tiap halaman lanjutan — WeasyPrint menghormati
+   thead pada tabel yang terpotong. Tanpa ini, halaman 2 berisi angka tanpa
+   judul kolom. */
+.barang thead { display: table-header-group; }
+.barang tr { page-break-inside: avoid; }
+
+.baris-kosong td { border-left: 0.6pt solid #000; border-right: 0.6pt solid #000;
+                   border-top: none; border-bottom: none; }
+
+/* ── Blok bawah ──────────────────────────────────────────────────── */
+.blok-bawah { display: flex; justify-content: space-between; align-items: flex-start; }
+.bank { font-size: 8pt; line-height: 1.7; padding-top: 1mm; max-width: 55%; }
+.bank-nama { }
+
+.total { border-collapse: collapse; font-size: 8pt; min-width: 62mm; }
+.total td { border: 0.6pt solid #000; padding: 1.1mm 1.5mm; }
+.total .t-k { text-align: right; }
+.total .t-v { text-align: right; min-width: 30mm; }
+.total .bayar { text-align: center; }
+
+.ttd { margin-top: 10mm; text-align: right; font-size: 8pt; }
+.ttd-nama { margin-top: 22mm; }
