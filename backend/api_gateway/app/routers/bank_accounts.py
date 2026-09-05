@@ -810,6 +810,32 @@ async def update_bank_account(
                 params = []
                 param_idx = 1
 
+                # KONTRAK PATCH: absen = jangan ubah; null ATAU "" = KOSONGKAN.
+                #
+                # Sebelumnya semua medan memakai `is not None`, artinya null
+                # TIDAK PERNAH mengosongkan. Dan FE mengirim
+                # `bank_name: formData.bank_name || null` di SETIAP simpan --
+                # jadi pengguna yang mengosongkan nama bank lalu menyimpan
+                # tidak mengubah apa pun, diam-diam. Ini bukan sekadar
+                # keseragaman kontrak; ia menutup kegagalan senyap.
+                #
+                # `account_name` SENGAJA dikecualikan: kolomnya NOT NULL, jadi
+                # mengosongkannya akan melahirkan galat basis data, bukan pesan
+                # yang bisa dibaca pengguna. Ia ditolak 422 di bawah.
+                _dikirim = body.model_fields_set
+
+                def _bersih(_nama):
+                    _v = getattr(body, _nama)
+                    if isinstance(_v, str):
+                        _v = _v.strip() or None
+                    return _v
+
+                if "account_name" in _dikirim and not (body.account_name or "").strip():
+                    raise HTTPException(
+                        status_code=422,
+                        detail="account_name tidak boleh kosong",
+                    )
+
                 if body.account_name is not None:
                     # Check uniqueness
                     existing = await conn.fetchval(
@@ -830,28 +856,28 @@ async def update_bank_account(
                     params.append(body.account_name)
                     param_idx += 1
 
-                if body.account_number is not None:
+                if "account_number" in _dikirim:
                     updates.append(f"account_number = ${param_idx}")
-                    params.append(body.account_number)
+                    params.append(_bersih("account_number"))
                     param_idx += 1
 
-                if body.bank_name is not None:
+                if "bank_name" in _dikirim:
                     updates.append(f"bank_name = ${param_idx}")
-                    params.append(body.bank_name)
+                    params.append(_bersih("bank_name"))
                     param_idx += 1
 
-                if body.bank_branch is not None:
+                if "bank_branch" in _dikirim:
                     updates.append(f"bank_branch = ${param_idx}")
-                    params.append(body.bank_branch)
+                    params.append(_bersih("bank_branch"))
                     param_idx += 1
-                if body.bank_address is not None:
+                if "bank_address" in _dikirim:
                     updates.append(f"bank_address = ${param_idx}")
-                    params.append(body.bank_address)
+                    params.append(_bersih("bank_address"))
                     param_idx += 1
 
-                if body.swift_code is not None:
+                if "swift_code" in _dikirim:
                     updates.append(f"swift_code = ${param_idx}")
-                    params.append(body.swift_code)
+                    params.append(_bersih("swift_code"))
                     param_idx += 1
 
                 if body.is_active is not None:
@@ -875,9 +901,9 @@ async def update_bank_account(
                     params.append(body.is_default)
                     param_idx += 1
 
-                if body.notes is not None:
+                if "notes" in _dikirim:
                     updates.append(f"notes = ${param_idx}")
-                    params.append(body.notes)
+                    params.append(_bersih("notes"))
                     param_idx += 1
 
                 if not updates:
