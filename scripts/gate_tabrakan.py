@@ -127,6 +127,20 @@ async def utama():
         # BISA menjawab pertanyaan ini, ke arah mana pun ambangnya disetel.
         # Yang menjawabnya: pita tinta di raster (lihat scripts/tembus.py dan
         # pengukuran pita tinta kolom kiri di pesan commit 0f958a98).
+        #
+        # PEMBEDAAN YANG HARUS DIPEGANG, karena aku sudah sekali jatuh di
+        # lubang sebelahnya dalam sesi yang sama:
+        #   MELONGGARKAN = alat ukurnya TETAP, ambangnya dilebarkan sampai
+        #     hijau. Itu yang kulakukan saat mengganti tinggi kotak baris jadi
+        #     taksiran font_size supaya "Bank BCA" berhenti merah -- dan
+        #     hasilnya gerbang itu buta pada satu-satunya cacat yang nyata.
+        #   MENGGANTI ALAT = alat ukurnya dibuang karena TERBUKTI tak bisa
+        #     menjawab, dan vonisnya dipindah ke alat yang punya angka dan
+        #     bisa merah. Itu yang terjadi di sini: pohon tata letak melaporkan
+        #     border 3.3..176.1mm untuk goresan yang nyatanya 145.0..206.8mm.
+        # Ujinya sederhana: sesudah perubahan, apakah masih ADA alat yang bisa
+        # menyatakan cacat ini merah? Di sini ada (pita tinta raster). Kalau
+        # jawabannya tidak ada, itu pelonggaran, apa pun namanya.
         if tabrak:
             print(f"   CATATAN: {len(tabrak)} laporan tabrakan dari pohon tata letak"
                   " -- TIDAK dipakai sebagai vonis (lihat komentar di atas):")
