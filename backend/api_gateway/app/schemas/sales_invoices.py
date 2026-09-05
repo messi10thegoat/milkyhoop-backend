@@ -219,6 +219,35 @@ class UpdateInvoiceRequest(BaseModel):
     # PATCH tetap satu hal saja: menyunting draft.
     auto_post: Optional[bool] = None
 
+    # Nomor faktur DRAFT boleh diubah pengguna (permintaan pemilik). Sebelum
+    # ini ia dikirim FE, dijawab 200 "Invoice updated successfully", lalu
+    # DIBUANG DIAM-DIAM -- Pydantic mengabaikan kunci tak dikenal, jadi ia tak
+    # pernah sampai ke pembangun UPDATE. Gejalanya di layar: nomor selalu
+    # kembali ke nilai semula. TIDAK ada pemicu yang membangkitkan ulang nomor
+    # (diperiksa: sales_invoices cuma punya trg_..._updated_at dan
+    # trg_log_deletion) -- yang hilang memang di lapis skema ini.
+    #
+    # PATCH sudah menolak faktur non-draft lebih dulu (400 "Cannot edit posted
+    # invoice"), jadi nomor dokumen yang sudah terbit tetap tak bisa berubah
+    # dan jejak auditnya utuh.
+    invoice_number: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("invoice_number")
+    @classmethod
+    def _nomor_tak_boleh_kosong(cls, v):
+        # Kolomnya NOT NULL: "" dan null di sini BUKAN "kosongkan" seperti pada
+        # medan teks lain di kelas ini -- ia akan jadi 500 dari basis data.
+        # Ditolak di gerbang dengan sebab yang terbaca.
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError(
+                "invoice_number tidak boleh kosong -- nomor faktur wajib ada. "
+                "Hilangkan medan ini dari permintaan bila tak ingin mengubahnya."
+            )
+        return v
+
     customer_id: Optional[str] = None
     customer_name: Optional[str] = Field(None, max_length=255)
     invoice_date: Optional[date] = None

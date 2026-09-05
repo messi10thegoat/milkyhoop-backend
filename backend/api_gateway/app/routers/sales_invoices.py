@@ -2626,6 +2626,50 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
 # =============================================================================
 # UPDATE INVOICE (Draft only)
 # =============================================================================
+async def _pagar_ganti_nomor(conn, tenant_id, invoice_id, nomor_baru):
+    """Tolak ganti nomor bila nomornya sudah TERSALIN ke tabel lain.
+
+    `invoice_number` disalin (bukan di-join) ke empat tabel:
+    accounts_receivable, receive_payment_allocations,
+    credit_note_applications, customer_deposit_applications. Kalau salinan
+    sudah ada, mengganti nomor di sales_invoices menghasilkan dua nomor untuk
+    satu faktur -- dan yang salah justru ada di sisi pembukuan.
+
+    Diukur 6 Sep 2026: NOL baris di keempat tabel yang menunjuk faktur draft,
+    dan PATCH memang cuma melayani draft. Jadi pagar ini hari ini tak pernah
+    menyala. Ia tetap ada karena kosong itu PENUNDAAN, bukan perlindungan --
+    pelajaran yang sudah dibayar di `item_batches`.
+    """
+    lama = await conn.fetchval(
+        "SELECT invoice_number FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+        invoice_id, tenant_id,
+    )
+    if lama is None or lama == nomor_baru:
+        return
+    salinan = await conn.fetchval(
+        """
+        SELECT (SELECT count(*) FROM accounts_receivable
+                 WHERE tenant_id = $1 AND invoice_number = $2)
+             + (SELECT count(*) FROM receive_payment_allocations
+                 WHERE invoice_id = $3)
+             + (SELECT count(*) FROM credit_note_applications
+                 WHERE invoice_id = $3)
+             + (SELECT count(*) FROM customer_deposit_applications
+                 WHERE invoice_id = $3)
+        """,
+        tenant_id, lama, invoice_id,
+    )
+    if salinan:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Nomor faktur {lama!r} sudah dipakai di {salinan} catatan "
+                "pembukuan (piutang/pembayaran/nota kredit/uang muka) dan "
+                "tidak bisa diubah."
+            ),
+        )
+
+
 @router.patch("/{invoice_id}", response_model=InvoiceResponse)
 async def update_invoice(
     request: Request, invoice_id: UUID, body: UpdateInvoiceRequest
@@ -2822,6 +2866,14 @@ async def update_invoice(
                 update_data = body.model_dump(
                     exclude_unset=True, exclude={"items", "auto_post"}
                 )
+
+                # Ganti nomor faktur: pagar salinan SEBELUM menulis.
+                if "invoice_number" in update_data:
+                    await _pagar_ganti_nomor(
+                        conn, ctx["tenant_id"], invoice_id,
+                        update_data["invoice_number"],
+                    )
+
                 if update_data:
                     updates = []
                     params = []
@@ -2843,7 +2895,23 @@ async def update_invoice(
                             SET {', '.join(updates)}
                             WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
                         """
-                        await conn.execute(query, *params)
+                        try:
+                            await conn.execute(query, *params)
+                        except asyncpg.UniqueViolationError as e:
+                            # uq_sales_invoices_tenant_number. Tanpa tangkapan
+                            # ini, nomor kembar keluar sebagai 500 -- galat
+                            # basis data mentah untuk kesalahan yang sepenuhnya
+                            # bisa dijelaskan ke pengguna.
+                            if "uq_sales_invoices_tenant_number" not in str(e):
+                                raise
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    "Nomor faktur "
+                                    f"{update_data.get('invoice_number')!r} sudah "
+                                    "dipakai faktur lain di tenant ini."
+                                ),
+                            ) from e
 
                 logger.info(f"Invoice updated: {invoice_id}")
 
