@@ -61,18 +61,17 @@ def kumpul(box, teks, garis, jalur=()):
             else:
                 garis.append((x1 - t, y0, x1, y1, tag, id_diri))
     if type(box).__name__ == "TextBox" and (box.text or "").strip():
-        # Pakai tinggi HURUF, bukan tinggi kotak baris. Kotak baris memuat
-        # spasi antarbaris (line-height 2.1 pada 8pt = 5.9mm untuk huruf
-        # setinggi 2.8mm), jadi mengukur dengannya melaporkan tabrakan yang
-        # tak pernah terlihat. Bukti bahwa itu palsu: pada ACUAN pun "Bank
-        # BCA" (194.0) akan "menimpa" garis 196.71 dengan cara ukur itu.
-        y0 = box.position_y * PX
-        y1 = (box.position_y + box.height) * PX
-        tengah = (y0 + y1) / 2
-        tinggi_huruf = (box.style["font_size"] or 0) * PX
-        teks.append((box.position_x * PX, tengah - tinggi_huruf / 2,
+        # KOTAK BARIS penuh, bukan taksiran tinggi huruf.
+        #
+        # Aku sempat menggantinya dengan font_size karena menyangka laporan
+        # "Bank BCA menimpa garis" itu palsu. Ternyata TIDAK: raster acuan
+        # menunjukkan blok bank MULAI DI BAWAH kotak baris Subtotal,
+        # sedangkan punyaku tercoret garis itu. Taksiran yang lebih longgar
+        # membuat gerbang ini BUTA terhadap satu-satunya cacat yang memang
+        # dikeluhkan pemilik -- gerbang yang dilonggarkan sampai hijau.
+        teks.append((box.position_x * PX, box.position_y * PX,
                      (box.position_x + box.width) * PX,
-                     tengah + tinggi_huruf / 2, box.text.strip()[:28],
+                     (box.position_y + box.height) * PX, box.text.strip()[:28],
                      set(jalur)))
     for c in getattr(box, "children", []):
         kumpul(c, teks, garis, jalur + (id_diri,))
