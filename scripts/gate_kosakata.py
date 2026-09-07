@@ -155,7 +155,9 @@ async def lapis_a(lama, baru):
                     setattr(m, attr, get_pool)
             m.get_user_context = lambda request: {"tenant_id": TENANT, "user_id": USER}
             fn = handler_daftar(m)
-            for st in SAH[nama] + [BAWAAN]:
+            for st in SAH[nama] + [BAWAAN] + ASING:
+                if label == "BARU" and st in ASING:
+                    continue  # tak terjangkau: validasi menolaknya di lapis B
                 try:
                     r = await fn(**kwargs_default(fn, st))
                     out[(nama, label, st)] = jumlah(r)
@@ -166,24 +168,25 @@ async def lapis_a(lama, baru):
 
 
 def lapis_b(lama, baru):
-    class Meledak(Exception):
-        pass
-
-    async def kolam_meledak():
-        raise Meledak("handler TERCAPAI: tak ada validasi di depannya")
-
+    # HANYA BARU. Validasi Literal menolak sebelum handler jalan, jadi lapis ini
+    # tak pernah menyentuh basis data dan tak butuh kolam.
+    #
+    # ⚠️ VERSI SEBELUMNYA MEMASANG LAMA DI SINI DENGAN KOLAM YANG SENGAJA
+    # MELEDAK, dan melaporkan "LAMA 500". 500 itu SENTINEL BUATAN GERBANG INI,
+    # bukan perilaku produksi. Produksi diukur dari tepi (8 Sep 2026, kode lama
+    # yang sedang hidup): `sales-invoices?status=zzz` dan `?status=DRAFT`
+    # dua-duanya 200 dengan {"items":[],"total":0}; proformas sama. Sisi LAMA
+    # yang fiksi lebih berbahaya daripada tak ada gerbang -- ia membuat kontrol
+    # merah tampak membuktikan sesuatu. Perilaku LAMA kini diukur di lapis A
+    # dengan kolam SUNGGUHAN, dan yang dituntut adalah bentuk produksinya:
+    # hasil nyata dengan jumlah 0, BUKAN lemparan.
     api = FastAPI()
     for nama in MODUL:
-        for label, mods in (("lama", lama), ("baru", baru)):
-            m = mods[nama]
-            if hasattr(m, "get_pool"):
-                m.get_pool = kolam_meledak
-            api.include_router(m.router, prefix=f"/{label}/{nama}")
+        api.include_router(baru[nama].router, prefix=f"/baru/{nama}")
     c = TestClient(api, raise_server_exceptions=False)
     return {
-        (nama, label.upper(), v): c.get(f"/{label}/{nama}?status={v}").status_code
+        (nama, "BARU", v): c.get(f"/baru/{nama}?status={v}").status_code
         for nama in MODUL
-        for label in ("lama", "baru")
         for v in ASING
     }
 
@@ -222,24 +225,56 @@ def utama():
             if not ok and terbaca:
                 gagal.append(f"{nama} status={st}: {la} -> {ba}")
 
-    print("\nB. NILAI ASING — kode HTTP (LAMA -> BARU, harap 422 di BARU)")
+    print("\nB. NILAI ASING pada KODE LAMA — bentuk PRODUKSI (kolam sungguhan)")
+    print("   Terukur dari TEPI 8 Sep 2026 pada kode lama yang sedang hidup:")
+    print("   ?status=zzz dan ?status=DRAFT -> 200 {\"items\":[],\"total\":0}")
+    print("   ?status=     (KOSONG)         -> 200 dengan SELURUH baris")
+    print("   String kosong FALSY di Python, jadi `if status:` melewatinya sama")
+    print("   sekali: penyaring kosong diam-diam berarti TANPA PENYARING. Itu")
+    print("   kebohongan KEDUA di endpoint yang sama, dengan arah berlawanan.")
     for nama in MODUL:
-        print(f"  {nama}:")
+        penuh = a[(nama, "LAMA", BAWAAN)]
+        # String kosong TIDAK seragam di antara ketiganya, dan itu temuan
+        # tersendiri -- harapannya dibaca dari KODE tiap handler, bukan dari
+        # aturan keluarga yang ternyata tidak ada:
+        #   proformas / sales_invoices : `if status and ...` -> "" FALSY,
+        #       penyaring dilewati sama sekali -> SELURUH baris.
+        #   quotes                     : `if status != "all"` TANPA penjaga
+        #       falsy -> menyaring `status = ''` -> NOL baris.
+        # Tiga endpoint sekeluarga, dua arti berbeda untuk masukan yang sama.
+        harap_kosong = 0 if nama == "quotes" else penuh
         for v in ASING:
-            lb, bb = b[(nama, "LAMA", v)], b[(nama, "BARU", v)]
-            ok = bb == 422
-            print(f"    {'OK  ' if ok else 'GAGAL'} status={v!r:<10} {lb} -> {bb}")
+            la = a[(nama, "LAMA", v)]
+            harap = harap_kosong if v == "" else 0
+            ok = (la == harap)
+            catat = ("  <- TANPA PENYARING" if (v == "" and harap) else
+                     "  <- DISARING sbg nilai" if v == "" else "")
+            print(f"    {'OK  ' if ok else 'GAGAL'} {nama:<15} status={v!r:<10} -> "
+                  f"{la!r} (harap {harap!r}){catat}")
             if not ok:
-                gagal.append(f"{nama} status={v!r} -> {bb}, harap 422")
+                gagal.append(f"LAMA {nama} status={v!r} -> {la!r}, harap {harap!r} "
+                             "(bentuk produksi)")
+
+    print("\nC. NILAI ASING pada KODE BARU — kode HTTP (harap 422)")
+    for nama in MODUL:
+        for v in ASING:
+            bb = b[(nama, "BARU", v)]
+            ok = bb == 422
+            print(f"    {'OK  ' if ok else 'GAGAL'} {nama:<15} status={v!r:<10} -> {bb}")
+            if not ok:
+                gagal.append(f"BARU {nama} status={v!r} -> {bb}, harap 422")
 
     print("\nKONTROL MERAH DUA SISI:")
     # 1. LAMA WAJIB menerima nilai asing (kalau tidak, gerbang tak membedakan)
     for nama in MODUL:
         for v in ASING:
-            if b[(nama, "LAMA", v)] == 422:
-                gagal.append(f"KONTROL: LAMA {nama} sudah menolak {v!r}")
-    print("   OK  LAMA menerima SELURUH nilai asing (lolos validasi, sampai ke handler)"
-          if not any(g.startswith("KONTROL") for g in gagal) else "   GAGAL di atas")
+            la = a[(nama, "LAMA", v)]
+            if isinstance(la, TakTerhitung) or str(la).startswith("MELEDAK"):
+                gagal.append(f"KONTROL: LAMA {nama} {v!r} tak menghasilkan daftar ({la!r}) "
+                             "-- kalau ia melempar, itu BUKAN perilaku produksi")
+    print("   OK  LAMA mengembalikan DAFTAR KOSONG untuk seluruh nilai asing "
+          "(200 yang berbohong, bentuk produksi)"
+          if not any(g.startswith("KONTROL: LAMA") for g in gagal) else "   GAGAL di atas")
     # 2. cacat `all` NYATA di LAMA
     if a[("sales_invoices", "LAMA", "all")] != 0:
         gagal.append("KONTROL: sales_invoices LAMA status=all bukan 0 -- cacatnya tak ada")
