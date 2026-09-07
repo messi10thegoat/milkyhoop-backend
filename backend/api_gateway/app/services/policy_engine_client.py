@@ -316,7 +316,26 @@ class PolicyEngineClient:
             return False  # Fail-closed
 
     async def _get_role_permissions(self, role_id: str) -> Dict[str, List[str]]:
-        """Get all permissions for a role (with caching)"""
+        """Get all permissions for a role (with caching).
+
+        ⚠️ CACHE INI TIDAK PUNYA PEMBATALAN. `invalidate_user_cache()` hanya
+        membuang kunci `override:{user}:{tenant}`, BUKAN kunci `{role_id}` ini,
+        dan `clear_cache()` tidak dipanggil dari mana pun. Sekali dibaca, izin
+        sebuah PERAN bertahan sampai proses gateway mati.
+
+        Hari ini itu aman, dan alasannya sempit: NOL endpoint menulis tabel
+        `role_permissions`. Yang terdekat, `routers/permissions.py`
+        `update_role_permissions`, menulis tabel LAIN (`granular_permissions`)
+        yang tidak dibaca `can()`. Jadi tabel ini hanya berubah lewat SQL
+        langsung atau migrasi -- keduanya sudah menuntut restart.
+
+        KALAU KAU MENAMBAH ENDPOINT YANG MENULIS `role_permissions`, celah ini
+        berubah jadi cacat pada saat itu juga: mengubah izin sebuah peran tidak
+        akan berlaku bagi siapa pun yang perannya sudah pernah dibaca, tanpa
+        pesan galat apa pun. Panggil `clear_cache()` -- atau tambahkan
+        pembatalan per-role_id -- di dalam transaksi tulis itu, seperti
+        `team_members.py` melakukannya untuk override.
+        """
         if role_id in self._permission_cache:
             return self._permission_cache[role_id]
 

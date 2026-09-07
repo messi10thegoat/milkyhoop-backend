@@ -202,6 +202,13 @@ async def update_role_permissions(request: Request, role_id: str, data: Permissi
     """
     Update permissions for a role. Creates tenant-specific overrides.
     Only OWNER can update permissions.
+
+    ⚠️ Endpoint ini menulis `granular_permissions`, BUKAN `role_permissions`.
+    `PolicyEngineClient.can()` membaca `role_permissions`, jadi perubahan di
+    sini tidak melewati cache peran di `_get_role_permissions` -- dan memang
+    tidak perlu. Kalau suatu saat endpoint ini (atau endpoint baru) mulai
+    menulis `role_permissions`, cache itu WAJIB dibatalkan di transaksi yang
+    sama; alasan lengkapnya ada di docstring `_get_role_permissions`.
     
     role_id can be:
     - A UUID (e.g., "550e8400-e29b-41d4-a716-446655440000")
