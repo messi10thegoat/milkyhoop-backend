@@ -6,7 +6,7 @@ Create still uses POST /api/sales-invoices/{id}/fulfill.
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional
+from typing import Optional, Literal
 import logging
 from io import BytesIO
 from fastapi.responses import StreamingResponse
@@ -63,7 +63,10 @@ async def get_deliveries_summary(request: Request):
 @router.get("")
 async def list_deliveries(
     request: Request,
-    status: Optional[str] = Query(None),
+    # Kosakata DISEBUT, bukan diam. Sebelum ini `status` adalah str polos, jadi
+    # nilai asing dijawab 200 `total:0` -- pemanggil tak punya cara membedakan
+    # "tidak ada data" dari "parameter tidak dimengerti".
+    status: Optional[Literal["posted", "voided"]] = Query(None),
     customer_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("delivery_date"),
@@ -91,7 +94,12 @@ async def list_deliveries(
 
     if status:
         conditions.append(f"f.status = ${idx}")
-        params.append(status.upper())
+        # JANGAN .upper(): penulisnya menulis huruf KECIL -- sales_invoices.py
+        # menulis 'posted' saat fulfill dan 'voided' saat void, dan ringkasan di
+        # atas membacanya huruf kecil juga. .upper() memetakan SETIAP masukan ke
+        # huruf besar, yang tak pernah cocok dengan baris mana pun; penyaring ini
+        # mengembalikan 0 untuk apa pun, termasuk nilai yang sah.
+        params.append(status)
         idx += 1
 
     if customer_id:
