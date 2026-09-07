@@ -21,7 +21,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path as _Path
-from typing import Optional
+from typing import Literal, Optional
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -293,7 +293,17 @@ def serialize_proforma(row, order_number=None, paid_amount=None) -> dict:
 @router.get("")
 async def list_proformas(
     request: Request,
-    status: Optional[str] = Query("all"),
+    # Kosakata = CHECK constraint tabel (hidup di MIGRASI, jadi ia KODE) UNION
+    # nilai khusus yang punya CABANG SENDIRI di handler ini. Mengambilnya dari
+    # `SELECT DISTINCT status` akan MEMBEKUKAN DRIFT jadi spesifikasi: `posted`
+    # ada di constraint sales_invoices tapi nol baris memakainya, dan
+    # `unpaid`/`active`/`overdue`/`all` tak pernah tersimpan sebagai nilai kolom
+    # sama sekali -- mereka dihitung. Sebelum ini `status` adalah str polos,
+    # jadi nilai asing dijawab 200 daftar kosong dan pemanggil tak bisa
+    # membedakan "tidak ada data" dari "parameter tidak dimengerti".
+    status: Optional[
+        Literal["all", "draft", "issued", "cancelled", "expired"]
+    ] = Query("all"),
     customer_id: Optional[str] = Query(None),
     sales_order_id: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
