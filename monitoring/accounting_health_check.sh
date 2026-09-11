@@ -217,7 +217,8 @@ check_4_inventory_qty() {
     # SAMA (11 Sep 2026), diukur SEBELUM satu baris pun diperbaiki:
     #
     #     lengan A (versi lama)   0 baris  di SELURUH tenant   -> hijau sempurna
-    #     lengan B (versi baru)  11 baris  di kaos-biru        -> MERAH
+    #     lengan B (versi baru)   3 produk di kaos-biru        -> MERAH
+    #                            (11 baris; yang dihitung SALDO-nya, bukan barisnya)
     #
     # Itu bukan argumen bahwa guard lama buta; itu pengukurannya. Simpan kedua
     # angka ini di sini -- kalau kelak ada yang memperdebatkan apakah penyaring
@@ -242,10 +243,26 @@ check_4_inventory_qty() {
         WHERE ws.tenant_id = '$tenant'
           AND ws.quantity != COALESCE(lb.computed_qty, 0);
     ")
-    # LENGAN B -- gerakan tanpa lokasi. Stok yang tak bisa dikirim.
+    # LENGAN B -- STOK tanpa lokasi. Stok yang tak bisa dikirim.
+    #
+    # ⚠️ Versi pertama lengan ini MENGHITUNG BARIS ber-`warehouse_id` NULL, dan
+    # itu SALAH UKUR: `inventory_ledger` bersifat hanya-tambah (Rule 8), jadi
+    # koreksi yang sah pun MENAMBAH baris, bukan menghapusnya. Ukuran
+    # berbasis-baris karena itu TAK PERNAH BISA KEMBALI NOL -- ia akan merah
+    # selamanya bahkan sesudah cacatnya benar-benar diperbaiki, dan gerbang
+    # yang merah selamanya adalah gerbang yang orang belajar abaikan.
+    #
+    # Yang benar diukur adalah SALDO BERSIH tak berlokasi per produk. Sesudah
+    # relokasi yang sah (keluar dari NULL, masuk ke gudang nyata) saldo itu
+    # nol, meski barisnya bertambah dua.
     gaps_b=$(psql_cmd "
-        SELECT COUNT(*) FROM inventory_ledger
-        WHERE tenant_id = '$tenant' AND warehouse_id IS NULL;
+        SELECT COUNT(*) FROM (
+            SELECT product_id
+            FROM inventory_ledger
+            WHERE tenant_id = '$tenant' AND warehouse_id IS NULL
+            GROUP BY product_id
+            HAVING COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) <> 0
+        ) x;
     ")
     # LENGAN C -- saldo ledger yang belum punya baris cache sama sekali.
     gaps_c=$(psql_cmd "
@@ -267,7 +284,7 @@ check_4_inventory_qty() {
         CHK_DETAIL=""
     else
         CHK_PASS=0
-        CHK_DETAIL="A=$gaps_a cache!=ledger, B=$gaps_b gerakan tanpa gudang, C=$gaps_c saldo tanpa baris cache"
+        CHK_DETAIL="A=$gaps_a cache!=ledger, B=$gaps_b produk ber-stok tanpa gudang, C=$gaps_c saldo tanpa baris cache"
         if [ "$gaps_b" != "0" ]; then
             CHK_DETAIL="$CHK_DETAIL [lengan B: menunggu tiket 3 koreksi 130 unit lewat penyesuaian stok ber-jurnal -- merah ini DISENGAJA sampai itu selesai]"
         fi
