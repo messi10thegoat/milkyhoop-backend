@@ -140,16 +140,31 @@ class ReceivePaymentListItem(BaseModel):
     id: str
     payment_number: str
     customer_id: Optional[str] = None
-    customer_name: str
+    # NULL kalau tak diketahui -- dulu diisi karangan 'Settlement'.
+    customer_name: Optional[str] = None
     payment_date: str
-    payment_method: str
-    source_type: str
+    # NULL untuk baris yang BUKAN receive_payments. Dulu dikarang lewat
+    # COALESCE(..., 'bank_transfer') / COALESCE(..., 'cash'), sehingga pemakaian
+    # uang muka dan nota kredit tampil sebagai penerimaan transfer bank.
+    payment_method: Optional[str] = None
+    source_type: Optional[str] = None
     total_amount: int
     allocated_amount: int
     unapplied_amount: int
     status: str
     invoice_count: int = 0
     created_at: str
+    # JENIS PELUNASAN yang sahih, dari `journal_entries.source_type`:
+    # RECEIVE_PAYMENT / DEPOSIT_APPLICATION / CREDIT_NOTE hari ini. Law 29
+    # sengaja membuat daftar ini proyeksi SETIAP kredit Piutang; yang salah
+    # dulu bukan isinya, melainkan bahwa semuanya berpura-pura penerimaan kas.
+    settlement_type: str = "RECEIVE_PAYMENT"
+    # Dokumen asal untuk baris non-kas. `payment_number` tetap nomor JURNAL
+    # supaya perutean yang ada tak patah; nomor DOKUMEN ada di sini (jurnal
+    # CN-2609-0001 milik nota kredit CN-2609-0006 -- keduanya berbeda).
+    source_document_type: Optional[str] = None
+    source_document_id: Optional[str] = None
+    source_document_number: Optional[str] = None
 
 
 class ReceivePaymentDetail(BaseModel):
@@ -162,12 +177,14 @@ class ReceivePaymentDetail(BaseModel):
 
     # Payment details
     payment_date: str
-    payment_method: str
-    bank_account_id: str
-    bank_account_name: str
+    # Opsional: jalur cadangan id-jurnal (bukan receive_payments) dulu
+    # MENGARANG "bank_transfer" / "cash" / "" karena medan ini wajib.
+    payment_method: Optional[str] = None
+    bank_account_id: Optional[str] = None
+    bank_account_name: Optional[str] = None
 
     # Source
-    source_type: str
+    source_type: Optional[str] = None
     source_deposit_id: Optional[str] = None
     source_deposit_number: Optional[str] = None
 
@@ -209,6 +226,12 @@ class ReceivePaymentDetail(BaseModel):
 
     # Journal-only flag (Law 29)
     is_journal_only: Optional[bool] = None
+
+    # Sama dengan medan di baris daftar -- lihat ReceivePaymentListItem.
+    settlement_type: Optional[str] = None
+    source_document_type: Optional[str] = None
+    source_document_id: Optional[str] = None
+    source_document_number: Optional[str] = None
 
 
 # =============================================================================

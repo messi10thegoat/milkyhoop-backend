@@ -375,6 +375,13 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      -- PEMBALIK BUKAN PELUNASAN. Membatalkan faktur mengkredit
+                      -- Piutang, tapi itu menghapus kewajiban -- tak ada uang
+                      -- masuk. Sebelum ini REV-2609-0002..0004 (Rp 1.088.000)
+                      -- tampil sebagai penerimaan "bank_transfer". Pola, bukan
+                      -- satu nama: jenis pembalik baru tak boleh bocor masuk.
+                      AND je.source_type <> 'REVERSAL'
+                      AND right(je.source_type, 9) <> '_REVERSAL'
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -382,11 +389,15 @@ async def list_receive_payments(
                     SELECT
                         COALESCE(rp.id, s.journal_id) AS id,
                         COALESCE(rp.payment_number, s.journal_number) AS payment_number,
-                        COALESCE(rp.customer_id::text, '') AS customer_id,
-                        COALESCE(rp.customer_name, 'Settlement') AS customer_name,
+                        COALESCE(rp.customer_id::text, cdep.customer_id, cn.customer_id, '') AS customer_id,
+                        COALESCE(rp.customer_name, cdep.customer_name, cn.customer_name) AS customer_name,
                         COALESCE(rp.payment_date, s.journal_date) AS payment_date,
-                        COALESCE(rp.payment_method, 'bank_transfer') AS payment_method,
-                        COALESCE(rp.source_type, 'cash') AS source_type,
+                        -- TIDAK di-COALESCE lagi: pemakaian uang muka dan nota
+                        -- kredit tak punya metode bayar; mengarang
+                        -- 'bank_transfer'/'cash' membuat mereka menyamar jadi
+                        -- penerimaan kas.
+                        rp.payment_method AS payment_method,
+                        rp.source_type AS source_type,
                         s.settlement_amount AS total_amount,
                         COALESCE(rp.allocated_amount, s.settlement_amount) AS allocated_amount,
                         COALESCE(rp.unapplied_amount, 0) AS unapplied_amount,
@@ -395,11 +406,24 @@ async def list_receive_payments(
                         COALESCE(
                             (SELECT COUNT(*) FROM receive_payment_allocations WHERE payment_id = rp.id),
                             0
-                        ) AS invoice_count
+                        ) AS invoice_count,
+                        CASE WHEN rp.id IS NOT NULL THEN 'RECEIVE_PAYMENT'
+                             ELSE s.je_source_type END AS settlement_type,
+                        CASE WHEN rp.id IS NULL AND s.je_source_type = 'DEPOSIT_APPLICATION' THEN 'customer_deposit'
+                             WHEN rp.id IS NULL AND s.je_source_type = 'CREDIT_NOTE' THEN 'credit_note'
+                        END AS source_document_type,
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.id::text, cn.id::text) END AS source_document_id,
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number
                     FROM settlements s
                     LEFT JOIN receive_payments rp
                         ON (rp.journal_id = s.journal_id OR rp.id = s.source_id)
                         AND rp.tenant_id = $1
+                    LEFT JOIN customer_deposits cdep
+                        ON s.je_source_type = 'DEPOSIT_APPLICATION'
+                        AND cdep.id::text = s.source_id::text AND cdep.tenant_id = $1
+                    LEFT JOIN credit_notes cn
+                        ON s.je_source_type = 'CREDIT_NOTE'
+                        AND cn.id::text = s.source_id::text AND cn.tenant_id = $1
                 ),
                 draft_items AS (
                     SELECT
@@ -415,7 +439,11 @@ async def list_receive_payments(
                         COALESCE(rp.unapplied_amount, 0) AS unapplied_amount,
                         rp.status,
                         rp.created_at,
-                        (SELECT COUNT(*) FROM receive_payment_allocations WHERE payment_id = rp.id) AS invoice_count
+                        (SELECT COUNT(*) FROM receive_payment_allocations WHERE payment_id = rp.id) AS invoice_count,
+                        'RECEIVE_PAYMENT' AS settlement_type,
+                        NULL::text AS source_document_type,
+                        NULL::text AS source_document_id,
+                        NULL::text AS source_document_number
                     FROM receive_payments rp
                     WHERE rp.tenant_id = $1
                       AND rp.status = 'draft'
@@ -445,6 +473,13 @@ async def list_receive_payments(
                       AND je.status = 'POSTED'
                       AND je.tenant_id = $1
                       AND je.reversed_by_id IS NULL
+                      -- PEMBALIK BUKAN PELUNASAN. Membatalkan faktur mengkredit
+                      -- Piutang, tapi itu menghapus kewajiban -- tak ada uang
+                      -- masuk. Sebelum ini REV-2609-0002..0004 (Rp 1.088.000)
+                      -- tampil sebagai penerimaan "bank_transfer". Pola, bukan
+                      -- satu nama: jenis pembalik baru tak boleh bocor masuk.
+                      AND je.source_type <> 'REVERSAL'
+                      AND right(je.source_type, 9) <> '_REVERSAL'
                     GROUP BY je.id, je.journal_number, je.journal_date,
                              je.source_id, je.source_type, je.created_at
                 ),
@@ -452,21 +487,38 @@ async def list_receive_payments(
                     SELECT
                         COALESCE(rp.id, s.journal_id) AS id,
                         COALESCE(rp.payment_number, s.journal_number) AS payment_number,
-                        COALESCE(rp.customer_id::text, '') AS customer_id,
-                        COALESCE(rp.customer_name, 'Settlement') AS customer_name,
+                        COALESCE(rp.customer_id::text, cdep.customer_id, cn.customer_id, '') AS customer_id,
+                        COALESCE(rp.customer_name, cdep.customer_name, cn.customer_name) AS customer_name,
                         COALESCE(rp.payment_date, s.journal_date) AS payment_date,
-                        COALESCE(rp.payment_method, 'bank_transfer') AS payment_method,
-                        COALESCE(rp.source_type, 'cash') AS source_type,
+                        -- TIDAK di-COALESCE lagi: pemakaian uang muka dan nota
+                        -- kredit tak punya metode bayar; mengarang
+                        -- 'bank_transfer'/'cash' membuat mereka menyamar jadi
+                        -- penerimaan kas.
+                        rp.payment_method AS payment_method,
+                        rp.source_type AS source_type,
                         s.settlement_amount AS total_amount,
                         COALESCE(rp.allocated_amount, s.settlement_amount) AS allocated_amount,
                         COALESCE(rp.unapplied_amount, 0) AS unapplied_amount,
                         COALESCE(rp.status, 'posted') AS status,
                         COALESCE(rp.created_at, s.je_created_at) AS created_at,
-                        0 AS invoice_count
+                        0 AS invoice_count,
+                        CASE WHEN rp.id IS NOT NULL THEN 'RECEIVE_PAYMENT'
+                             ELSE s.je_source_type END AS settlement_type,
+                        CASE WHEN rp.id IS NULL AND s.je_source_type = 'DEPOSIT_APPLICATION' THEN 'customer_deposit'
+                             WHEN rp.id IS NULL AND s.je_source_type = 'CREDIT_NOTE' THEN 'credit_note'
+                        END AS source_document_type,
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.id::text, cn.id::text) END AS source_document_id,
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number
                     FROM settlements s
                     LEFT JOIN receive_payments rp
                         ON (rp.journal_id = s.journal_id OR rp.id = s.source_id)
                         AND rp.tenant_id = $1
+                    LEFT JOIN customer_deposits cdep
+                        ON s.je_source_type = 'DEPOSIT_APPLICATION'
+                        AND cdep.id::text = s.source_id::text AND cdep.tenant_id = $1
+                    LEFT JOIN credit_notes cn
+                        ON s.je_source_type = 'CREDIT_NOTE'
+                        AND cn.id::text = s.source_id::text AND cn.tenant_id = $1
                 ),
                 draft_items AS (
                     SELECT
@@ -482,7 +534,11 @@ async def list_receive_payments(
                         COALESCE(rp.unapplied_amount, 0) AS unapplied_amount,
                         rp.status,
                         rp.created_at,
-                        0 AS invoice_count
+                        0 AS invoice_count,
+                        'RECEIVE_PAYMENT' AS settlement_type,
+                        NULL::text AS source_document_type,
+                        NULL::text AS source_document_id,
+                        NULL::text AS source_document_number
                     FROM receive_payments rp
                     WHERE rp.tenant_id = $1
                       AND rp.status = 'draft'
@@ -524,6 +580,10 @@ async def list_receive_payments(
                     "created_at": row["created_at"].isoformat()
                     if hasattr(row["created_at"], "isoformat")
                     else str(row["created_at"]),
+                    "settlement_type": row["settlement_type"],
+                    "source_document_type": row["source_document_type"],
+                    "source_document_id": row["source_document_id"],
+                    "source_document_number": row["source_document_number"],
                 }
                 for row in rows
             ]
@@ -586,9 +646,35 @@ async def get_receive_payments_summary(request: Request):
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
 
+            # PELUNASAN NON-KAS -- supaya ringkasan dan daftar bisa dicocokkan.
+            # Daftar (Law 29) memuat setiap kredit Piutang; `total_received`
+            # sengaja hanya uang masuk. Sebelum ini selisih ~Rp 22,7 jt antara
+            # keduanya tak punya nama. Invarian:
+            #   Σ total_amount baris posted di daftar
+            #     = total_received + total_settled_noncash
+            noncash = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                  AND je.reversed_by_id IS NULL
+                  AND coa.account_type = 'RECEIVABLE' AND jl.credit > 0
+                  AND je.source_type <> 'REVERSAL'
+                  AND right(je.source_type, 9) <> '_REVERSAL'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM receive_payments rp
+                      WHERE (rp.journal_id = je.id OR rp.id = je.source_id)
+                        AND rp.tenant_id = $1)
+                """,
+                ctx["tenant_id"],
+            )
+
             return {
                 "success": True,
                 "data": {
+                    "total_settled_noncash": int(noncash or 0),
                     "total": row["total"] or 0,
                     "draft_count": row["draft_count"] or 0,
                     "posted_count": row["posted_count"] or 0,
@@ -645,7 +731,12 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                            je.created_at, je.created_by
                     FROM journal_entries je
                     WHERE je.id = $1 AND je.tenant_id = $2
-                      AND je.source_type = 'PAYMENT_RECEIVED'
+                      -- Dulu `= 'PAYMENT_RECEIVED'`: nama yang NOL di seluruh
+                      -- tabel (DB memakai RECEIVE_PAYMENT). Cadangan ini tak
+                      -- pernah bisa cocok, jadi setiap baris non-kas di daftar
+                      -- menjawab 404 saat diketuk. Pembalik sengaja TIDAK
+                      -- ikut: ia bukan pelunasan, dan tak ada di daftar.
+                      AND je.source_type IN ('RECEIVE_PAYMENT', 'DEPOSIT_APPLICATION', 'CREDIT_NOTE')
                     """,
                     payment_id,
                     ctx["tenant_id"],
@@ -685,15 +776,49 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         journal_row["id"],
                     )
 
+                    # Dokumen asal (uang muka / nota kredit) -- sumber
+                    # pelanggan dan nomor dokumen yang sahih.
+                    dok_tipe = dok_id = dok_nomor = dok_pelanggan_id = None
+                    dok_pelanggan = None
+                    if journal_row["source_id"] and journal_row["source_type"] in (
+                        "DEPOSIT_APPLICATION",
+                        "CREDIT_NOTE",
+                    ):
+                        if journal_row["source_type"] == "DEPOSIT_APPLICATION":
+                            dok = await conn.fetchrow(
+                                """SELECT id::text AS id, deposit_number AS nomor,
+                                          customer_id, customer_name
+                                   FROM customer_deposits
+                                   WHERE id::text = $1::text AND tenant_id = $2""",
+                                str(journal_row["source_id"]),
+                                ctx["tenant_id"],
+                            )
+                            dok_tipe = "customer_deposit"
+                        else:
+                            dok = await conn.fetchrow(
+                                """SELECT id::text AS id, credit_note_number AS nomor,
+                                          customer_id, customer_name
+                                   FROM credit_notes
+                                   WHERE id::text = $1::text AND tenant_id = $2""",
+                                str(journal_row["source_id"]),
+                                ctx["tenant_id"],
+                            )
+                            dok_tipe = "credit_note"
+                        if dok:
+                            dok_id, dok_nomor = dok["id"], dok["nomor"]
+                            dok_pelanggan_id = dok["customer_id"]
+                            dok_pelanggan = dok["customer_name"]
+
                     # Parse customer name from description
                     desc = journal_row["description"] or ""
-                    customer_name = "Settlement"
-                    for prefix in [
+                    # NULL bila tak diketahui -- dulu karangan 'Settlement'.
+                    customer_name = dok_pelanggan
+                    for prefix in ([] if customer_name else [
                         "Penerimaan dari ",
                         "Payment received from ",
                         "Receive payment from ",
                         "Pembayaran dari ",
-                    ]:
+                    ]):
                         if desc.startswith(prefix):
                             customer_name = desc[len(prefix) :]
                             break
@@ -741,15 +866,16 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         "data": {
                             "id": str(journal_row["id"]),
                             "payment_number": journal_row["journal_number"],
-                            "customer_id": "",
+                            "customer_id": dok_pelanggan_id,
                             "customer_name": customer_name,
                             "payment_date": journal_row["journal_date"].isoformat()
                             if journal_row["journal_date"]
                             else None,
-                            "payment_method": "bank_transfer",
-                            "bank_account_id": "",
-                            "bank_account_name": "",
-                            "source_type": "cash",
+                            # Nol karangan: jalur ini BUKAN receive_payments.
+                            "payment_method": None,
+                            "bank_account_id": None,
+                            "bank_account_name": None,
+                            "source_type": None,
                             "source_deposit_id": "",
                             "source_deposit_number": "",
                             "total_amount": float(settlement_amount),
@@ -785,6 +911,10 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                             if journal_row["created_by"]
                             else None,
                             "is_journal_only": True,
+                            "settlement_type": journal_row["source_type"],
+                            "source_document_type": dok_tipe,
+                            "source_document_id": dok_id,
+                            "source_document_number": dok_nomor,
                             "currency_code": "IDR",
                             "exchange_rate": 1,
                             "amount_in_base_currency": float(settlement_amount),
@@ -851,6 +981,13 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     "bank_account_id": str(payment["bank_account_id"]),
                     "bank_account_name": payment["bank_account_name"],
                     "source_type": payment["source_type"],
+                    # Jalur normal = penerimaan sungguhan. Medan yang sama
+                    # dengan baris daftar, supaya detail dan daftar tak
+                    # berbeda pendapat tentang jenis satu dokumen yang sama.
+                    "settlement_type": "RECEIVE_PAYMENT",
+                    "source_document_type": None,
+                    "source_document_id": None,
+                    "source_document_number": None,
                     "source_deposit_id": str(payment["source_deposit_id"])
                     if payment["source_deposit_id"]
                     else None,
