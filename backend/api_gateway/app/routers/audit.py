@@ -111,49 +111,101 @@ async def list_audit_logs(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Note: audit_logs table uses camelCase columns and no tenant_id
-            conditions = ["1=1"]  # No tenant filter as table doesn't have tenant_id
-            params = []
-            param_idx = 1
+            # PAGAR TENANT. Komentar lama di sini berbunyi "table doesn't have
+            # tenant_id" dan memakai premis itu untuk membenarkan NOL penyaring.
+            # Premisnya SALAH: `audit_logs.tenant_id` ADA (dan terindeks lewat
+            # `idx_audit_tenant_time`). Terukur 10 Sep 2026 dari tepi dengan akun
+            # kaos-biru: sapuan 2.796 baris memuat 7 baris grapmanado, 4 baris
+            # subbidel-kolsani, 2 baris adhita-ariyani -- LENGKAP DENGAN ALAMAT
+            # SUREL MEREKA, sebab respons memetakan `metadata.email` ke
+            # `user_email`. Itu bukan risiko yang akan datang; itu kebocoran yang
+            # sudah berjalan.
+            #
+            # Baris peristiwa SESI (LOGIN/LOGOUT/FAILED_LOGIN) ditulis oleh
+            # `services/audit_logger.py` TANPA tenant_id -- 2.654 dari 2.796
+            # baris ber-tenant_id NULL. Menyaring `tenant_id = $1` saja akan
+            # mengosongkan halaman audit (tersisa 142 baris). Karena itu
+            # kepemilikan dipulihkan lewat pelakunya: `User."tenantId"`.
+            #
+            # Yang HILANG dari daftar, dihitung tepat (2.803 baris hari ini ->
+            # 2.735 terlihat): 17 baris milik tiga tenant lain (yang memang
+            # tujuan pagar ini), 49 FAILED_LOGIN ber-userId NULL atas surel yang
+            # tak pernah jadi akun, dan 2 LOGOUT yang userId-nya menunjuk User
+            # yang sudah DIHAPUS. Ke-51 baris terakhir tak bisa dimiliki tenant
+            # mana pun; menampilkannya ke semua orang adalah kelas kebocoran
+            # yang sama. Itu KEHILANGAN yang disengaja dan dicatat sebagai dua
+            # tiket terpisah -- jejak percobaan login perlu tempatnya sendiri,
+            # dan atribusi yang lenyap saat User dihapus adalah cacat sendiri --
+            # bukan didiamkan.
+            conditions = [
+                '(a.tenant_id = $1 OR (a.tenant_id IS NULL AND u."tenantId" = $1))'
+            ]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
 
             if action:
-                conditions.append(f'"eventType" = ${param_idx}')
+                conditions.append(f'a."eventType" = ${param_idx}')
                 params.append(action)
                 param_idx += 1
 
             if user_id:
-                conditions.append(f'"userId" = ${param_idx}')
+                conditions.append(f'a."userId" = ${param_idx}')
                 params.append(str(user_id))
                 param_idx += 1
 
+            # PENYARING YANG BENAR-BENAR MENYARING. Sebelum ini `entity_type`
+            # dan `entity_id` diterima FastAPI lalu dibuang: tak pernah masuk
+            # WHERE. Terukur dari tepi -- `?entity_type=sales_orders` dan
+            # `?entity_type=quotes` mengembalikan baris pertama dengan id yang
+            # SAMA PERSIS (LOGIN). Parameter yang tak menolak apa pun dan tak
+            # menyaring apa pun adalah ilusi kemampuan, dan ia memakan waktu
+            # pemanggilnya sebelum ketahuan.
+            if entity_type:
+                conditions.append(f"a.entity_type = ${param_idx}")
+                params.append(entity_type)
+                param_idx += 1
+
+            if entity_id:
+                conditions.append(f"a.entity_id = ${param_idx}")
+                params.append(entity_id)
+                param_idx += 1
+
             if from_date:
-                conditions.append(f'"createdAt"::DATE >= ${param_idx}')
+                conditions.append(f'a."createdAt"::DATE >= ${param_idx}')
                 params.append(from_date)
                 param_idx += 1
 
             if to_date:
-                conditions.append(f'"createdAt"::DATE <= ${param_idx}')
+                conditions.append(f'a."createdAt"::DATE <= ${param_idx}')
                 params.append(to_date)
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
+            # `params` TIDAK PERNAH kosong lagi (tenant selalu $1), jadi cabang
+            # "hitung semua tanpa parameter" yang dulu ada di sini dicabut: ia
+            # kini hanya bisa menghitung baris tenant lain.
+            from_clause = 'audit_logs a LEFT JOIN "User" u ON u.id = a."userId"'
 
-            # Count total
-            count_query = f"SELECT COUNT(*) FROM audit_logs WHERE {where_clause}"
-            total = (
-                await conn.fetchval(count_query, *params)
-                if params
-                else await conn.fetchval("SELECT COUNT(*) FROM audit_logs")
-            )
+            count_query = f"SELECT COUNT(*) FROM {from_clause} WHERE {where_clause}"
+            total = await conn.fetchval(count_query, *params)
 
-            # Get items - map camelCase columns to expected format
+            # KOLOM ATRIBUSI DIPILIH, BUKAN DITEBAK DARI metadata. Ini sebab
+            # tab Riwayat melihat null di 1.000 dari 1.000: kolomnya terisi di
+            # DB (142 baris DOCUMENT_DELETED punya entity_type + entity_id +
+            # entity_number + snapshot baris penuh di input_data) tetapi SELECT
+            # di sini tak pernah memilihnya, lalu pemetaan di bawah membaca
+            # `metadata` yang memang tak memuatnya. Datanya utuh; endpoint ini
+            # yang menyembunyikan.
             query = f"""
-                SELECT id, "createdAt" as event_time, "userId" as user_id,
-                       "ipAddress" as ip_address, "eventType" as action,
-                       "userAgent" as user_agent, metadata, success, "errorMessage"
-                FROM audit_logs
+                SELECT a.id, a."createdAt" as event_time, a."userId" as user_id,
+                       a."ipAddress" as ip_address, a."eventType" as action,
+                       a."userAgent" as user_agent, a.metadata, a.success,
+                       a."errorMessage",
+                       a.entity_type, a.entity_id, a.entity_number,
+                       a.input_data, a.source, a.user_role, a.tenant_id
+                FROM {from_clause}
                 WHERE {where_clause}
-                ORDER BY "createdAt" DESC
+                ORDER BY a."createdAt" DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])
@@ -184,9 +236,15 @@ async def list_audit_logs(
                         if row["ip_address"]
                         else None,
                         "action": row["action"],
-                        "entity_type": metadata.get("entity_type"),
-                        "entity_id": metadata.get("entity_id"),
-                        "entity_number": metadata.get("entity_number"),
+                        # Kolom sungguhan lebih dulu; `metadata` hanya cadangan
+                        # untuk penulis lama yang menaruhnya di sana.
+                        "entity_type": row["entity_type"]
+                        or metadata.get("entity_type"),
+                        "entity_id": str(row["entity_id"])
+                        if row["entity_id"]
+                        else metadata.get("entity_id"),
+                        "entity_number": row["entity_number"]
+                        or metadata.get("entity_number"),
                         "description": metadata.get("description")
                         or row.get("errorMessage"),
                         "changed_fields": metadata.get("changed_fields"),
@@ -331,26 +389,39 @@ async def get_entity_history(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Get entity info
+            # KOLOM HANTU. Sebelum ini kueri di sini menyebut `event_time`,
+            # `user_email`, `description`, `changed_fields`, `old_values`, dan
+            # `new_values` -- ENAM nama yang tak satu pun ada di `audit_logs`
+            # (tabelnya memakai `createdAt`, dan surel pelaku hanya tersedia
+            # lewat JOIN ke `User`). Akibatnya endpoint ini SELALU 500, untuk
+            # entitas apa pun, sejak ditulis. Terukur dari tepi 10 Sep 2026:
+            # `/api/audit-logs/entity/sales_orders/b84d94cd-...` -> 500 pada
+            # dokumen yang barisnya ADA di `audit_logs`. Kelas yang sama dengan
+            # `bank_accounts.deleted_at`: kode merujuk kolom yang tak pernah
+            # ada, jadi yang dibetulkan KODENYA, bukan ditambah kolomnya.
+            sql_dasar = """
+                FROM audit_logs a
+                LEFT JOIN "User" u ON u.id = a."userId"
+                WHERE a.entity_type = $1 AND a.entity_id = $2
+                  AND (a.tenant_id = $3
+                       OR (a.tenant_id IS NULL AND u."tenantId" = $3))
+            """
+
             first_row = await conn.fetchrow(
-                """
-                SELECT entity_number FROM audit_logs
-                WHERE entity_type = $1 AND entity_id = $2 AND tenant_id = $3
-                ORDER BY event_time DESC LIMIT 1
-            """,
+                f"""SELECT a.entity_number {sql_dasar}
+                    ORDER BY a."createdAt" DESC LIMIT 1""",
                 entity_type,
                 entity_id,
                 ctx["tenant_id"],
             )
 
-            # Get history
             rows = await conn.fetch(
-                """
-                SELECT id, event_time, action, user_email, description,
-                       changed_fields, old_values, new_values
-                FROM audit_logs
-                WHERE entity_type = $1 AND entity_id = $2 AND tenant_id = $3
-                ORDER BY event_time DESC
+                f"""
+                SELECT a.id, a."createdAt" AS event_time,
+                       a."eventType" AS action, u.email AS user_email,
+                       a."errorMessage", a.metadata, a.input_data
+                {sql_dasar}
+                ORDER BY a."createdAt" DESC
                 LIMIT $4
             """,
                 entity_type,
@@ -361,23 +432,32 @@ async def get_entity_history(
 
             history = []
             for row in rows:
-                changes = None
-                if row["changed_fields"] and row["old_values"] and row["new_values"]:
-                    changes = {}
-                    for field in row["changed_fields"]:
-                        changes[field] = {
-                            "old": row["old_values"].get(field),
-                            "new": row["new_values"].get(field),
-                        }
+                raw_metadata = row["metadata"]
+                if isinstance(raw_metadata, str):
+                    import json
 
+                    try:
+                        metadata = json.loads(raw_metadata)
+                    except Exception:
+                        metadata = {}
+                else:
+                    metadata = raw_metadata or {}
+
+                # `changed_fields`/`old_values`/`new_values` BELUM ADA sebagai
+                # data -- tak ada satu pun penulis yang mengisinya hari ini.
+                # Dibiarkan None dengan sengaja, BUKAN diturunkan dari
+                # `input_data`: menurunkan "perubahan" dari snapshot satu-titik
+                # akan mengarang riwayat yang tak pernah diukur, persis bentuk
+                # yang membuat tiket ini ada.
                 history.append(
                     {
                         "event_time": row["event_time"],
                         "action": row["action"],
                         "user_email": row["user_email"],
-                        "description": row["description"],
-                        "changed_fields": row["changed_fields"],
-                        "changes": changes,
+                        "description": metadata.get("description")
+                        or row["errorMessage"],
+                        "changed_fields": None,
+                        "changes": None,
                     }
                 )
 
