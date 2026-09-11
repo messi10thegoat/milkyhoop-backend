@@ -192,9 +192,29 @@ check_3_bank_sync() {
 }
 
 check_4_inventory_qty() {
+    # TIGA LENGAN, dan lengan B/C ADA KARENA LENGAN A BUTA.
+    #
+    # Versi lama HANYA punya lengan A, dan ia menyaring
+    # `WHERE warehouse_id IS NOT NULL`. Penyaring itu membuang PERSIS baris
+    # yang menyebabkan cacat P1 tanggal 11 Sep 2026: 11 baris
+    # `inventory_ledger` ber-`warehouse_id` NULL (10 PRODUCTION_OUTPUT + 1
+    # OPENING_BALANCE) membawa 130 unit di 3 item. Trigger
+    # `trg_update_warehouse_stock` mencocokkan `WHERE warehouse_id =
+    # NEW.warehouse_id`; NULL tak pernah cocok, jadi barang hasil produksi tak
+    # pernah masuk cache gudang. Layar (yang menjumlahkan ledger tanpa peduli
+    # gudang) menjanjikan 126 unit; `/fulfill` (yang membaca cache) menolak 409.
+    #
+    # Dan Check 4 lama HIJAU SEMPURNA lintas SELURUH tenant sepanjang itu.
+    # Bukan karena datanya bersih -- karena penyaringnya membuang buktinya.
+    # Sebuah penyaring di dalam invariant adalah ASUMSI yang tak pernah diuji;
+    # di sini asumsinya ("setiap gerakan punya gudang") justru yang gagal.
+    #
+    # Lengan A juga berangkat DARI `warehouse_stock`, jadi pasangan
+    # (produk, gudang) yang ada di ledger tapi belum punya baris cache sama
+    # sekali tak pernah diperiksa. Itu lengan C.
     local tenant="$1"
-    local gaps
-    gaps=$(psql_cmd "
+    local gaps_a gaps_b gaps_c
+    gaps_a=$(psql_cmd "
         WITH ledger_balance AS (
             SELECT product_id, warehouse_id,
                 COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS computed_qty
@@ -208,12 +228,32 @@ check_4_inventory_qty() {
         WHERE ws.tenant_id = '$tenant'
           AND ws.quantity != COALESCE(lb.computed_qty, 0);
     ")
-    if [ "$gaps" = "0" ]; then
+    # LENGAN B -- gerakan tanpa lokasi. Stok yang tak bisa dikirim.
+    gaps_b=$(psql_cmd "
+        SELECT COUNT(*) FROM inventory_ledger
+        WHERE tenant_id = '$tenant' AND warehouse_id IS NULL;
+    ")
+    # LENGAN C -- saldo ledger yang belum punya baris cache sama sekali.
+    gaps_c=$(psql_cmd "
+        WITH lb AS (
+            SELECT product_id, warehouse_id,
+                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS computed_qty
+            FROM inventory_ledger
+            WHERE warehouse_id IS NOT NULL AND tenant_id = '$tenant'
+            GROUP BY product_id, warehouse_id
+        )
+        SELECT COUNT(*) FROM lb
+        LEFT JOIN warehouse_stock ws
+            ON ws.item_id = lb.product_id AND ws.warehouse_id = lb.warehouse_id
+           AND ws.tenant_id = '$tenant'
+        WHERE ws.id IS NULL AND lb.computed_qty <> 0;
+    ")
+    if [ "$gaps_a" = "0" ] && [ "$gaps_b" = "0" ] && [ "$gaps_c" = "0" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
         CHK_PASS=0
-        CHK_DETAIL="$gaps items with stock != ledger"
+        CHK_DETAIL="A=$gaps_a cache!=ledger, B=$gaps_b gerakan tanpa gudang, C=$gaps_c saldo tanpa baris cache"
         detail "[CHECK 4] $tenant: $CHK_DETAIL"
     fi
 }
