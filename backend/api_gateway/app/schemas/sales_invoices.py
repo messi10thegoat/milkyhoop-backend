@@ -329,6 +329,21 @@ class InvoiceListItem(BaseModel):
     total_amount: float
     amount_paid: float
     status: str
+    # DIDIAMKAN OLEH response_model. Handler daftar sudah MENARUH
+    # `operational_status` dan `accounting_status` di dict-nya sejak lama, tapi
+    # keduanya tak pernah dideklarasikan di sini -- Pydantic membuangnya tanpa
+    # suara, jadi penulis handler mengira ia mengirimnya dan pemanggil tak
+    # pernah menerimanya. Terukur dari tepi 11 Sep 2026: kunci respons daftar
+    # persis sepuluh, tanpa keduanya.
+    operational_status: Optional[str] = None
+    accounting_status: Optional[str] = None
+    # Dua medan ini HIDUP di tabel dan dipelihara `_update_invoice_fulfillment_status`,
+    # dikembalikan oleh POST /post dan GET /fulfillments, tapi tak pernah ikut di
+    # jalur BACA dokumen. Akibatnya empat kendali di detail Faktur mobile tak bisa
+    # muncul pada pembukaan segar tanpa memanggil endpoint kedua -- dan konsumen
+    # yang tak tahu harus memanggilnya akan menyembunyikan kendali tanpa suara.
+    fulfillment_status: Optional[str] = None
+    revenue_status: Optional[str] = None
     created_at: str
 
 

@@ -784,7 +784,8 @@ async def list_invoices(
                        CASE WHEN si.status IN ('draft','void') THEN 0
                             ELSE si.total_amount - COALESCE(ar_fn.outstanding, 0)
                        END as journal_paid,
-                       si.status, si.operational_status, si.accounting_status, si.created_at
+                       si.status, si.operational_status, si.accounting_status,
+                       si.fulfillment_status, si.revenue_status, si.created_at
                 FROM sales_invoices si
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
                 WHERE {where_clause}
@@ -811,6 +812,12 @@ async def list_invoices(
                     "status": row["status"],
                     "operational_status": row.get("operational_status") or "DRAFT",
                     "accounting_status": row.get("accounting_status") or "UNPOSTED",
+                    # TIDAK di-COALESCE ke nilai tebakan: kalau NULL, katakan
+                    # NULL. `not_applicable` dan "belum dihitung" adalah dua
+                    # keadaan berbeda, dan menyamakannya di sini akan membuat
+                    # pemanggil menyembunyikan kendali dengan yakin.
+                    "fulfillment_status": row.get("fulfillment_status"),
+                    "revenue_status": row.get("revenue_status"),
                     "created_at": row["created_at"].isoformat(),
                 }
                 for row in rows
@@ -998,6 +1005,12 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "status": invoice["status"],  # noqa: F601  # pre-existing duplicate key
                     "operational_status": invoice.get("operational_status") or "DRAFT",
                     "accounting_status": invoice.get("accounting_status") or "UNPOSTED",
+                    # Lihat catatan di schemas/sales_invoices.py: kedua medan ini
+                    # dipelihara di tabel tapi tak pernah ikut di jalur baca.
+                    # Detail tak memakai response_model, jadi di sini cukup
+                    # menyebutkannya. NULL dibiarkan NULL.
+                    "fulfillment_status": invoice.get("fulfillment_status"),
+                    "revenue_status": invoice.get("revenue_status"),
                     "items": [
                         {
                             "id": str(item["id"]),
