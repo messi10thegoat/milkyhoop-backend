@@ -953,6 +953,30 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                     detail=f"Cannot send quote with status '{quote['status']}'",
                 )
 
+            # SUREL PENAWARAN BELUM ADA -- DAN JALUR INI DULU BERPURA-PURA.
+            # Sampai 12 Sep 2026, `send_email=true` mengubah status jadi
+            # 'sent', mencatat log "Quote email notification queued", lalu
+            # menjawab "Quote sent successfully" -- tanpa satu surel pun keluar
+            # (panggilan pengirimnya dikomentari; `email_service` tak punya
+            # pengirim penawaran). Pemilik bisa mengira pelanggannya sudah
+            # menerima penawaran. Kepura-puraan lebih buruk daripada fitur yang
+            # tak ada.
+            #
+            # Penolakan diletakkan SEBELUM `UPDATE status`: permintaan yang
+            # ditolak tak boleh diam-diam menandai penawaran "terkirim".
+            # Fitur surel sungguhan = tiket terpisah (kunci Resend terpasang di
+            # produksi; yang belum ada templat, lampiran PDF, domain pengirim).
+            if body and body.send_email:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Pengiriman penawaran lewat surel belum tersedia. "
+                        "Penawaran TIDAK ditandai terkirim. Kirim tanpa surel "
+                        "(send_email=false) untuk menandainya terkirim, lalu "
+                        "bagikan PDF-nya lewat saluran lain."
+                    ),
+                )
+
             # Update status
             await conn.execute(
                 """
@@ -962,36 +986,6 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
             )
-
-            # Send email notification if requested
-            if body and body.send_email:
-                try:
-                    customer_email = await conn.fetchval(
-                        "SELECT customer_email FROM quotes WHERE id = $1",
-                        uuid_module.UUID(quote_id),
-                    )
-                    if customer_email:
-                        email_subject = (
-                            body.email_subject or f"Penawaran {quote['quote_number']}"
-                        )
-                        logger.info(
-                            f"Quote email notification queued: "
-                            f"quote={quote['quote_number']}, "
-                            f"to={customer_email}, "
-                            f"subject={email_subject}"
-                        )
-                        # NOTE: Full SMTP integration pending.
-                        # When email service is available, replace with:
-                        # await email_service.send_quote(customer_email, quote['quote_number'], email_subject, body.email_message)
-                    else:
-                        logger.warning(
-                            f"Quote {quote['quote_number']}: send_email requested but no customer_email on record"
-                        )
-                except Exception as email_err:
-                    # Email failure should NOT fail the send operation
-                    logger.error(
-                        f"Failed to process email for quote {quote['quote_number']}: {email_err}"
-                    )
 
             return QuoteResponse(
                 success=True,
