@@ -212,6 +212,20 @@ check_4_inventory_qty() {
     # Lengan A juga berangkat DARI `warehouse_stock`, jadi pasangan
     # (produk, gudang) yang ada di ledger tapi belum punya baris cache sama
     # sekali tak pernah diperiksa. Itu lengan C.
+    #
+    # BUKTI IA BISA MERAH -- dua angka berdampingan, data yang SAMA, hari yang
+    # SAMA (11 Sep 2026), diukur SEBELUM satu baris pun diperbaiki:
+    #
+    #     lengan A (versi lama)   0 baris  di SELURUH tenant   -> hijau sempurna
+    #     lengan B (versi baru)  11 baris  di kaos-biru        -> MERAH
+    #
+    # Itu bukan argumen bahwa guard lama buta; itu pengukurannya. Simpan kedua
+    # angka ini di sini -- kalau kelak ada yang memperdebatkan apakah penyaring
+    # `IS NOT NULL` itu berbahaya, jawabannya tertulis di baris atas.
+    #
+    # LENGAN B AKAN TETAP MERAH sampai tiket koreksi 130 unit selesai. Merah
+    # yang DISENGAJA dengan sebab tertulis berbeda dari merah yang diabaikan;
+    # pesan detailnya menyebutkannya supaya tak ada yang membungkamnya.
     local tenant="$1"
     local gaps_a gaps_b gaps_c
     gaps_a=$(psql_cmd "
@@ -254,6 +268,9 @@ check_4_inventory_qty() {
     else
         CHK_PASS=0
         CHK_DETAIL="A=$gaps_a cache!=ledger, B=$gaps_b gerakan tanpa gudang, C=$gaps_c saldo tanpa baris cache"
+        if [ "$gaps_b" != "0" ]; then
+            CHK_DETAIL="$CHK_DETAIL [lengan B: menunggu tiket 3 koreksi 130 unit lewat penyesuaian stok ber-jurnal -- merah ini DISENGAJA sampai itu selesai]"
+        fi
         detail "[CHECK 4] $tenant: $CHK_DETAIL"
     fi
 }
