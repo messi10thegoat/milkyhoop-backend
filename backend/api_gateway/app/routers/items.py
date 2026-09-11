@@ -682,6 +682,34 @@ async def create_item(request: Request, body: CreateItemRequest):
                     else:
                         ob_date = dateclass_today.today()
 
+                    # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026).
+                    # Titik ini tak pernah menyebut `warehouse_id` sama sekali,
+                    # jadi ia menulis NULL SECARA STRUKTURAL -- bukan lewat
+                    # rantai cadangan yang kebetulan kosong. Barisnya masuk
+                    # buku, lalu trigger `trg_update_warehouse_stock` (yang
+                    # mencocokkan `warehouse_id = NEW.warehouse_id`) tak pernah
+                    # cocok: stok awal terlihat di layar dan ditolak saat
+                    # dikirim. Baris saldo awal yang SUDAH tercatat tidak
+                    # disentuh di sini -- itu koreksi data, tiket tersendiri,
+                    # dan `inventory_ledger` bersifat hanya-tambah (Rule 8).
+                    ob_warehouse = await conn.fetchval(
+                        """
+                        SELECT id FROM warehouses
+                        WHERE tenant_id = $1 AND is_active = true
+                        ORDER BY is_default DESC, created_at ASC
+                        LIMIT 1
+                        """,
+                        ctx["tenant_id"],
+                    )
+                    if ob_warehouse is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Saldo awal persediaan butuh gudang, dan tenant "
+                                "ini belum punya gudang aktif. Buat gudang dulu, "
+                                "atau simpan barang tanpa saldo awal."
+                            ),
+                        )
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
@@ -690,14 +718,14 @@ async def create_item(request: Request, body: CreateItemRequest):
                             source_type, source_id, source_number,
                             quantity_in, quantity_out, quantity_balance,
                             unit_cost, total_cost, average_cost,
-                            notes, created_at
+                            warehouse_id, notes, created_at
                         ) VALUES (
                             gen_random_uuid(), $1, $2, $3, $4,
                             'OPENING_BALANCE', $5,
                             'OPENING_BALANCE', gen_random_uuid(), $6,
                             $7, 0, $7,
                             $8, $9, $8,
-                            'Saldo awal inventaris', NOW()
+                            $10, 'Saldo awal inventaris', NOW()
                         )
                         """,
                         ctx["tenant_id"],
@@ -709,6 +737,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                         initial_qty,
                         initial_rate,
                         initial_value,
+                        ob_warehouse,
                     )
 
             # Log activity

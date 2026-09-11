@@ -199,18 +199,46 @@ async def _create_pos_inventory_and_journals(
                     # Law 25: no float()
                     new_balance = current_balance - qty
 
+                    # GUDANG WAJIB (11 Sep 2026). Titik ini tak pernah menyebut
+                    # `warehouse_id`, jadi ia menulis NULL secara struktural.
+                    # Pada gerakan KELUAR akibatnya terbalik dari kasus produksi
+                    # tapi sama buruknya: trigger `trg_update_warehouse_stock`
+                    # tak pernah cocok, jadi stok gudang TIDAK PERNAH BERKURANG
+                    # meski barang sudah dijual -- stok yang terlalu besar,
+                    # diam-diam. Nol baris `POS_SALE` pernah tertulis di basis
+                    # data ini, jadi ini menutup jalur sebelum ada yang jatuh,
+                    # bukan memperbaiki kerusakan yang sudah ada.
+                    pos_warehouse = await conn.fetchval(
+                        """
+                        SELECT id FROM warehouses
+                        WHERE tenant_id = $1 AND is_active = true
+                        ORDER BY is_default DESC, created_at ASC
+                        LIMIT 1
+                        """,
+                        tenant_id,
+                    )
+                    if pos_warehouse is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Penjualan kasir butuh gudang asal, dan tenant "
+                                "ini belum punya gudang aktif."
+                            ),
+                        )
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
                             tenant_id, product_id, product_code, product_name,
                             movement_type, movement_date, source_type, source_id,
                             quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost, created_by, notes
+                            unit_cost, total_cost, average_cost, created_by, notes,
+                            warehouse_id
                         ) VALUES (
                             $1, $2, $3, $4,
                             'SALE', $5, 'POS_SALE', $6,
                             0, $7, $8,
-                            $9, $10, $9, $11, $12
+                            $9, $10, $9, $11, $12,
+                            $13
                         )
                     """,
                         tenant_id,
@@ -225,6 +253,7 @@ async def _create_pos_inventory_and_journals(
                         item_total_cost,
                         uuid.UUID(user_id) if user_id else None,
                         f"POS Sale: {txn['receipt_number']}",
+                        pos_warehouse,
                     )
 
                     total_cogs += item_total_cost

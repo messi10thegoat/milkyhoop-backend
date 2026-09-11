@@ -2702,11 +2702,52 @@ async def report_output(
                     # deplete on outbound) and inserts the ledger row, linking
                     # journal_id for dual-ledger sync. FG inbound unit cost =
                     # (material+labor+OH+subcontract)/qty computed above.
+                    # RANTAI GUDANG FG -- dan tingkat terakhir MENOLAK.
+                    #
+                    # Sebelum 11 Sep 2026 rantainya berhenti di tiga tingkat dan
+                    # ketiganya boleh kosong; kalau kosong, None diteruskan ke
+                    # helper, masuk `inventory_ledger` sebagai NULL, dan trigger
+                    # `trg_update_warehouse_stock` (yang mencocokkan
+                    # `warehouse_id = NEW.warehouse_id`) tak pernah cocok. Barang
+                    # jadi masuk BUKU tapi tak pernah masuk STOK GUDANG: layar
+                    # menjanjikan 126 unit, `/fulfill` menolak 409 "stok tidak
+                    # cukup". Sebelas baris, 130 unit, 3 item.
+                    #
+                    # Dan ini bukan nasib sial: **26 dari 34** work order tak
+                    # punya `warehouse_id`, **73 dari 74** produk tak punya
+                    # gudang bawaan. Rantai cadangannya kosong hampir selalu.
+                    #
+                    # Tingkat keempat (gudang bawaan tenant) menutup mayoritas
+                    # kasus itu. Tapi menambah tingkat SAJA cuma memindahkan
+                    # keheningan satu langkah -- cacat ini lahir karena
+                    # ketiadaan diterima tanpa keberatan. Jadi kalau keempatnya
+                    # kosong, jawabannya 409, BUKAN NULL yang tenang.
                     fg_warehouse = (
                         body.warehouse_id
                         or order["warehouse_id"]
                         or fg_product["default_warehouse_id"]
+                        or await conn.fetchval(
+                            """
+                            SELECT id FROM warehouses
+                            WHERE tenant_id = $1 AND is_active = true
+                            ORDER BY is_default DESC, created_at ASC
+                            LIMIT 1
+                            """,
+                            ctx["tenant_id"],
+                        )
                     )
+                    if fg_warehouse is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Gudang tujuan tidak bisa ditentukan untuk "
+                                f"{order['order_number']}. Isi gudang di form "
+                                "penerimaan, di work order, atau tetapkan gudang "
+                                "bawaan pada barang/tenant. Tanpa gudang, barang "
+                                "jadi akan tercatat di buku tapi tak pernah masuk "
+                                "stok yang dipakai saat pengiriman."
+                            ),
+                        )
                     from ..services.inventory_helpers import (
                         record_inventory_inbound,
                     )

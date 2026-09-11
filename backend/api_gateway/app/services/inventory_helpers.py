@@ -126,6 +126,28 @@ async def record_inventory_outbound(
         "cost_source": str,
     }
     """
+    # PAGAR GUDANG (11 Sep 2026). `warehouse_id` sudah BERTIPE `UUID` di tanda
+    # tangan ini -- bukan `Optional` -- tapi Python tak menegakkannya, dan
+    # selama berbulan-bulan pemanggil mengirim None tanpa satu pun keberatan.
+    # Akibatnya: trigger `trg_update_warehouse_stock` mencocokkan
+    # `warehouse_id = NEW.warehouse_id`, NULL tak pernah cocok, baris masuk ke
+    # `inventory_ledger` tapi TIDAK PERNAH ke cache gudang. Layar menjumlahkan
+    # ledger dan menjanjikan stok; `/fulfill` membaca cache dan menolak 409.
+    # Terukur: 11 baris, 130 unit, 3 item, dan ia akan terulang -- 26 dari 34
+    # work order dan 73 dari 74 produk tak punya gudang untuk dijadikan
+    # cadangan.
+    #
+    # Ini SATU tempat yang menutup jalur tulis BERIKUTNYA. Pemanggil yang tak
+    # tahu harus mengisi gudang kini MENDENGARNYA, bukan menulis kekosongan
+    # dengan tenang.
+    if warehouse_id is None:
+        raise ValueError(
+            f"warehouse_id wajib untuk gerakan persediaan "
+            f"({source_type} {source_number}, produk {product_id}). "
+            "Menulis NULL akan membuat barang masuk buku tapi tak pernah "
+            "masuk stok gudang -- terlihat ada di layar, ditolak saat dikirim."
+        )
+
     from datetime import date as date_type
 
     movement_date = receipt_date or date_type.today()
@@ -315,6 +337,28 @@ async def record_inventory_inbound(
 
     Returns {"ledger_id": uuid, "new_average_cost": Decimal}.
     """
+    # PAGAR GUDANG (11 Sep 2026). `warehouse_id` sudah BERTIPE `UUID` di tanda
+    # tangan ini -- bukan `Optional` -- tapi Python tak menegakkannya, dan
+    # selama berbulan-bulan pemanggil mengirim None tanpa satu pun keberatan.
+    # Akibatnya: trigger `trg_update_warehouse_stock` mencocokkan
+    # `warehouse_id = NEW.warehouse_id`, NULL tak pernah cocok, baris masuk ke
+    # `inventory_ledger` tapi TIDAK PERNAH ke cache gudang. Layar menjumlahkan
+    # ledger dan menjanjikan stok; `/fulfill` membaca cache dan menolak 409.
+    # Terukur: 11 baris, 130 unit, 3 item, dan ia akan terulang -- 26 dari 34
+    # work order dan 73 dari 74 produk tak punya gudang untuk dijadikan
+    # cadangan.
+    #
+    # Ini SATU tempat yang menutup jalur tulis BERIKUTNYA. Pemanggil yang tak
+    # tahu harus mengisi gudang kini MENDENGARNYA, bukan menulis kekosongan
+    # dengan tenang.
+    if warehouse_id is None:
+        raise ValueError(
+            f"warehouse_id wajib untuk gerakan persediaan "
+            f"({source_type} {source_number}, produk {product_id}). "
+            "Menulis NULL akan membuat barang masuk buku tapi tak pernah "
+            "masuk stok gudang -- terlihat ada di layar, ditolak saat dikirim."
+        )
+
     from datetime import date as date_type
 
     if movement_date is None:

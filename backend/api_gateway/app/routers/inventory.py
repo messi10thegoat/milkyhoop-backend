@@ -487,6 +487,32 @@ async def add_product(request: Request, body: AddProductRequest):
                         detail=f"Barcode '{body.barcode}' sudah terdaftar untuk produk '{barcode_dup['nama_produk']}'",
                     )
 
+            # Gudang diperiksa SEBELUM produk dibuat. Kalau 409-nya
+            # dilempar sesudahnya, produk terlanjur berdiri tanpa saldo awal
+            # sementara pemanggil menerima galat -- dan handler ini TIDAK
+            # dibungkus `conn.transaction()` (celah Law 23 yang sudah ada dan
+            # tidak kuperbaiki di tiket ini), jadi tak ada yang menggulungnya.
+            ob_warehouse = None
+            if body.stok_awal and body.stok_awal > 0:
+                ob_warehouse = await conn.fetchval(
+                    """
+                    SELECT id FROM warehouses
+                    WHERE tenant_id = $1 AND is_active = true
+                    ORDER BY is_default DESC, created_at ASC
+                    LIMIT 1
+                    """,
+                    tenant_id,
+                )
+                if ob_warehouse is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Saldo awal persediaan butuh gudang, dan tenant ini "
+                            "belum punya gudang aktif. Buat gudang dulu, atau "
+                            "simpan produk tanpa saldo awal."
+                        ),
+                    )
+
             # Insert product
             insert_query = """
                 INSERT INTO public.products (
@@ -509,15 +535,25 @@ async def add_product(request: Request, body: AddProductRequest):
 
             # If initial stock provided, create inventory_ledger opening balance entry
             if body.stok_awal and body.stok_awal > 0:
+                # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026). Titik ini
+                # tak pernah menyebut `warehouse_id` sama sekali, jadi ia
+                # menulis NULL SECARA STRUKTURAL -- bukan lewat rantai cadangan
+                # yang kebetulan kosong. Barisnya masuk buku, lalu trigger
+                # `trg_update_warehouse_stock` (yang mencocokkan
+                # `warehouse_id = NEW.warehouse_id`) tak pernah cocok: stok awal
+                # terlihat di layar dan ditolak saat dikirim. Baris saldo awal
+                # yang SUDAH tercatat tidak disentuh di sini -- itu koreksi
+                # data, tiket tersendiri, dan `inventory_ledger` bersifat
+                # hanya-tambah (Rule 8).
                 opening_balance_query = """
                     INSERT INTO inventory_ledger (
                         tenant_id, product_id, product_name, movement_type, movement_date,
                         source_type, quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost, notes
+                        unit_cost, total_cost, average_cost, warehouse_id, notes
                     ) VALUES (
                         $1, $2::uuid, $3, 'IN', CURRENT_DATE,
                         'OPENING_BALANCE', $4, 0, $4,
-                        $5, $4 * $5, $5, 'Initial stock from product creation'
+                        $5, $4 * $5, $5, $6, 'Initial stock from product creation'
                     )
                 """
                 await conn.execute(
@@ -527,6 +563,7 @@ async def add_product(request: Request, body: AddProductRequest):
                     body.nama_produk.strip(),
                     body.stok_awal,
                     body.nilai_per_unit or 0,
+                    ob_warehouse,
                 )
 
             logger.info(
