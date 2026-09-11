@@ -672,7 +672,18 @@ async def list_invoices(
     search: Optional[str] = Query(
         None, description="Search invoice number or customer"
     ),
-    status: Optional[str] = Query(None, description="Filter by status"),
+    # Kosakata = CHECK constraint tabel (hidup di MIGRASI, jadi ia KODE) UNION
+    # nilai khusus yang punya CABANG SENDIRI di handler ini. Mengambilnya dari
+    # `SELECT DISTINCT status` akan MEMBEKUKAN DRIFT jadi spesifikasi: `posted`
+    # ada di constraint sales_invoices tapi nol baris memakainya, dan
+    # `unpaid`/`active`/`overdue`/`all` tak pernah tersimpan sebagai nilai kolom
+    # sama sekali -- mereka dihitung. Sebelum ini `status` adalah str polos,
+    # jadi nilai asing dijawab 200 daftar kosong dan pemanggil tak bisa
+    # membedakan "tidak ada data" dari "parameter tidak dimengerti".
+    status: Optional[
+        Literal["all", "draft", "posted", "partial", "paid", "overdue",
+                "void", "unpaid", "active"]
+    ] = Query(None, description="Filter by status"),
     customer_id: Optional[str] = Query(None, description="Filter by customer"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
@@ -712,7 +723,22 @@ async def list_invoices(
                     conditions.append(f"({' AND '.join(word_conds)})")
 
             # Status filter (with dynamic overdue calculation like bills)
-            if status:
+            #
+            # `all` = tanpa penyaring. DITAMBAHKAN untuk menyeragamkan dengan
+            # quotes dan proformas, yang sudah memahaminya. Sebelum ini
+            # `?status=all` jatuh ke `else` dan dicocokkan HARFIAH dengan kolom
+            # -> total=0 (terukur), padahal dua endpoint sekeluarga menjawab
+            # seluruh baris. Tiga endpoint, dua bahasa, dan yang ini berbohong.
+            #
+            # ⚠️ JANGAN SALIN `all` KE ENDPOINT KEEMPAT. Ia REDUNDAN:
+            # menghilangkan parameternya sudah berarti "tanpa penyaring", dan
+            # log nginx 14 hari (7 Sep 2026) mencatat NOL permintaan nyata
+            # mengirim `all` ke endpoint mana pun. Ia dipertahankan di sini
+            # HANYA karena mencabut kosakata yang sudah terlanjur ada menuntut
+            # pengukurannya sendiri -- nol dalam 14 hari bukan nol selamanya.
+            # Arah yang benar untuk ketiganya adalah MENCABUT `all`, bukan
+            # menyebarkannya.
+            if status and status != "all":
                 if status == "unpaid":
                     # Exclude draft, void, AND paid — for piutang queries (outstanding > 0 only)
                     conditions.append("si.status IN ('posted', 'partial')")

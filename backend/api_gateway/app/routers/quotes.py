@@ -153,7 +153,18 @@ def resolve_dp(
 @router.get("", response_model=QuoteListResponse)
 async def list_quotes(
     request: Request,
-    status: Optional[str] = Query("all"),
+    # Kosakata = CHECK constraint tabel (hidup di MIGRASI, jadi ia KODE) UNION
+    # nilai khusus yang punya CABANG SENDIRI di handler ini. Mengambilnya dari
+    # `SELECT DISTINCT status` akan MEMBEKUKAN DRIFT jadi spesifikasi: `posted`
+    # ada di constraint sales_invoices tapi nol baris memakainya, dan
+    # `unpaid`/`active`/`overdue`/`all` tak pernah tersimpan sebagai nilai kolom
+    # sama sekali -- mereka dihitung. Sebelum ini `status` adalah str polos,
+    # jadi nilai asing dijawab 200 daftar kosong dan pemanggil tak bisa
+    # membedakan "tidak ada data" dari "parameter tidak dimengerti".
+    status: Optional[
+        Literal["all", "draft", "sent", "viewed", "accepted", "declined",
+                "expired", "converted", "void", "invoiced"]
+    ] = Query("all"),
     customer_id: Optional[str] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
