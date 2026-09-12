@@ -35,6 +35,9 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
+import uuid as _uuid_post  # noqa: E402  (dipakai post_expense)
+from types import SimpleNamespace  # noqa: E402
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -1230,7 +1233,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     pph_amount,
                     total_amount,
                     body.is_itemized,
-                    "posted",
+                    body.status,
                     body.is_billable,
                     str(body.billed_to_customer_id)
                     if body.billed_to_customer_id
@@ -1260,61 +1263,65 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                             idx,
                         )
 
-                # Create journal entry
-                journal_id = await create_expense_journal(
-                    conn,
-                    ctx["tenant_id"],
-                    expense_id,
-                    expense_number,
-                    body.expense_date,
-                    body.is_itemized,
-                    body.account_id,
-                    body.line_items,
-                    subtotal,
-                    tax_amount,
-                    pph_amount,
-                    paid_through["coa_id"],
-                    body.tax_id,
-                    pph_type=body.pph_type,
-                    pph_rate=body.pph_rate,
-                    vendor_id=body.vendor_id,
-                )
+                # Draf: TIDAK menjurnal dan TIDAK menyentuh saldo bank.
+                # Jurnal + transaksi bank lahir belakangan di /post.
+                if body.status == "posted":
+                    # Create journal entry
+                    journal_id = await create_expense_journal(
+                        conn,
+                        ctx["tenant_id"],
+                        expense_id,
+                        expense_number,
+                        body.expense_date,
+                        body.is_itemized,
+                        body.account_id,
+                        body.line_items,
+                        subtotal,
+                        tax_amount,
+                        pph_amount,
+                        paid_through["coa_id"],
+                        body.tax_id,
+                        pph_type=body.pph_type,
+                        pph_rate=body.pph_rate,
+                        vendor_id=body.vendor_id,
+                    )
 
-                # Update expense with journal_id + mark accounting_status POSTED
-                await conn.execute(
-                    """
-                    UPDATE expenses
-                    SET journal_id = $1, accounting_status = 'POSTED'
-                    WHERE id = $2
-                    """,
-                    str(journal_id),
-                    str(expense_id),
-                )
+                    # Update expense with journal_id + mark accounting_status POSTED
+                    await conn.execute(
+                        """
+                        UPDATE expenses
+                        SET journal_id = $1, accounting_status = 'POSTED',
+                            operational_status = 'PAID'
+                        WHERE id = $2
+                        """,
+                        str(journal_id),
+                        str(expense_id),
+                    )
 
-                # Create bank transaction to update bank balance
-                import uuid as uuid_module
+                    # Create bank transaction to update bank balance
+                    import uuid as uuid_module
 
-                bank_tx_id = uuid_module.uuid4()
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date,
-                        transaction_type, amount, running_balance,
-                        reference_type, reference_id, description,
-                        payee_payer, created_by, journal_id
-                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE', $6, $7, $8, $9, $10)
-                    """,
-                    bank_tx_id,
-                    ctx["tenant_id"],
-                    body.paid_through_id,
-                    body.expense_date,
-                    -total_amount,  # Negative = outflow
-                    expense_id,
-                    f"Expense: {expense_number}",
-                    body.vendor_name or "Expense",
-                    ctx["user_id"],
-                    str(journal_id),
-                )
+                    bank_tx_id = uuid_module.uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO bank_transactions (
+                            id, tenant_id, bank_account_id, transaction_date,
+                            transaction_type, amount, running_balance,
+                            reference_type, reference_id, description,
+                            payee_payer, created_by, journal_id
+                        ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE', $6, $7, $8, $9, $10)
+                        """,
+                        bank_tx_id,
+                        ctx["tenant_id"],
+                        body.paid_through_id,
+                        body.expense_date,
+                        -total_amount,  # Negative = outflow
+                        expense_id,
+                        f"Expense: {expense_number}",
+                        body.vendor_name or "Expense",
+                        ctx["user_id"],
+                        str(journal_id),
+                    )
 
                 # Link attachments via document_attachments
                 if body.attachment_ids:
@@ -1784,6 +1791,156 @@ async def delete_expense(request: Request, expense_id: UUID):
 # =============================================================================
 # VOID EXPENSE
 # =============================================================================
+@router.post("/{expense_id}/post")
+async def post_expense(request: Request, expense_id: UUID):
+    """Terbitkan beban draf: jurnal + transaksi bank, sekali dan hanya sekali.
+
+    Cermin dari cabang `posted` di create_expense, tapi seluruh masukannya
+    direkonstruksi DARI BARIS DB (+ expense_items), bukan dari body.
+    """
+    try:
+        ctx = get_user_context(request)
+
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+
+        pool = await get_pool()
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])
+
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+            async with conn.transaction():
+                # Law 13
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"EXPENSE_POST:{str(expense_id)}",
+                )
+
+                exp = await conn.fetchrow(
+                    """
+                    SELECT * FROM expenses
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                    """,
+                    str(expense_id),
+                    ctx["tenant_id"],
+                )
+
+                if not exp:
+                    raise HTTPException(status_code=404, detail="Expense not found")
+
+                if exp["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Only draft expenses can be posted "
+                            f"(status: {exp['status']})."
+                        ),
+                    )
+
+                # Sabuk kedua: tautan jurnal yang sudah ada = jangan pernah
+                # menjurnal dua kali, meski status-nya entah bagaimana 'draft'.
+                if exp["journal_id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Expense already has a journal",
+                    )
+
+                # Law 5
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], exp["expense_date"]
+                )
+
+                rows = await conn.fetch(
+                    """
+                    SELECT account_id, account_name, amount, notes
+                    FROM expense_items
+                    WHERE expense_id = $1
+                    ORDER BY line_number
+                    """,
+                    str(expense_id),
+                )
+                line_items = [
+                    SimpleNamespace(
+                        account_id=r["account_id"],
+                        account_name=r["account_name"],
+                        amount=r["amount"],
+                        notes=r["notes"],
+                    )
+                    for r in rows
+                ]
+
+                journal_id = await create_expense_journal(
+                    conn,
+                    ctx["tenant_id"],
+                    expense_id,
+                    exp["expense_number"],
+                    exp["expense_date"],
+                    exp["is_itemized"],
+                    exp["account_id"],
+                    line_items,
+                    exp["subtotal"],
+                    exp["tax_amount"],
+                    exp["pph_amount"],
+                    exp["paid_through_coa_id"],
+                    exp["tax_id"],
+                    pph_type=exp["pph_type"],
+                    pph_rate=exp["pph_rate"],
+                    vendor_id=exp["vendor_id"],
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE expenses
+                    SET journal_id = $1, status = 'posted',
+                        accounting_status = 'POSTED', operational_status = 'PAID',
+                        updated_at = NOW()
+                    WHERE id = $2
+                    """,
+                    str(journal_id),
+                    str(expense_id),
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date,
+                        transaction_type, amount, running_balance,
+                        reference_type, reference_id, description,
+                        payee_payer, created_by, journal_id
+                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE',
+                              $6, $7, $8, $9, $10)
+                    """,
+                    _uuid_post.uuid4(),
+                    ctx["tenant_id"],
+                    exp["paid_through_id"],
+                    exp["expense_date"],
+                    -exp["total_amount"],
+                    str(expense_id),
+                    f"Expense: {exp['expense_number']}",
+                    exp["vendor_name"] or "Expense",
+                    ctx["user_id"],
+                    str(journal_id),
+                )
+
+                hasil = await conn.fetchrow(
+                    "SELECT * FROM expenses WHERE id = $1", str(expense_id)
+                )
+
+                return {
+                    "success": True,
+                    "message": f"Expense {exp['expense_number']} posted",
+                    "data": dict(hasil),
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error posting expense {expense_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to post expense")
+
+
 @router.post("/{expense_id}/void", response_model=VoidExpenseResponse)
 async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequest):
     """
@@ -1827,6 +1984,18 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                 if expense["status"] == "void":
                     raise HTTPException(
                         status_code=400, detail="Expense already voided"
+                    )
+
+                # Draf tak punya jurnal untuk dibalik; draf DIHAPUS, bukan
+                # di-void. Tanpa penjaga ini, void draf akan mencoba
+                # membalik jurnal yang tak pernah ada.
+                if expense["status"] != "posted":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Only posted expenses can be voided "
+                            "(draft: gunakan DELETE)."
+                        ),
                     )
 
                 # Law 5: Check accounting period is open
@@ -1953,7 +2122,9 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                 await conn.execute(
                     """
                     UPDATE expenses
-                    SET status = 'void', updated_at = NOW(), notes = COALESCE(notes, '') || ' [VOID: ' || $3 || ']'
+                    SET status = 'void', operational_status = 'VOID',
+                        accounting_status = 'REVERSED', updated_at = NOW(),
+                        notes = COALESCE(notes, '') || ' [VOID: ' || $3 || ']'
                     WHERE id = $1 AND tenant_id = $2
                 """,
                     str(expense_id),
