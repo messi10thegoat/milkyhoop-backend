@@ -92,12 +92,12 @@ def get_qr_service(request: Request) -> QRTokenService:
 
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address"""
-    # Check X-Forwarded-For header (behind proxy)
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """IP klien tepercaya -- lihat utils/client_ip."""
+    # SATU SUMBER. Dulu `XFF.split(",")[0]` -- elemen pertama XFF, dikirim
+    # klien, bisa dipalsukan.
+    from ..utils.client_ip import get_client_ip as _tepercaya
+
+    return _tepercaya(request)
 
 
 # ================================

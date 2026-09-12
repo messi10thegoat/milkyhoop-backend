@@ -36,11 +36,14 @@ class AccountLockoutMiddleware(BaseHTTPMiddleware):
         self._auth_paths = {"/api/auth/login", "/api/auth/register"}
 
     def _get_client_ip(self, request: Request) -> str:
-        """Get client IP from headers or connection"""
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
+        """IP klien tepercaya -- kunci lockout dibentuk dari ini."""
+        # SATU SUMBER: utils/client_ip. Dulu di sini `XFF.split(",")[0]`
+        # -- elemen PERTAMA XFF, yang DIKIRIM KLIEN dan bisa dipalsukan.
+        # Akibatnya: 5 login gagal ber-XFF `<IP korban>` MENGUNCI korban,
+        # dan penyerang bisa memutar XFF palsu untuk lolos dari lockout.
+        from ..utils.client_ip import get_client_ip
+
+        return get_client_ip(request)
 
     def _get_lockout_duration(self, lockout_count: int) -> int:
         """Get lockout duration in seconds based on lockout count"""

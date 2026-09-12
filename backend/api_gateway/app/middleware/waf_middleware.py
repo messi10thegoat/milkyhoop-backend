@@ -20,6 +20,7 @@ from typing import Set, List, Pattern, Optional
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from ..utils.client_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -187,14 +188,14 @@ class WAFMiddleware(BaseHTTPMiddleware):
 
         # Check URL length
         if len(str(request.url)) > self.MAX_URL_LENGTH:
-            logger.warning(f"WAF: URL too long from {request.client.host}")
+            logger.warning(f"WAF: URL too long from {get_client_ip(request)}")
             return self._block_request("URL too long", 414)
 
         # Check user agent
         user_agent = request.headers.get("user-agent", "").lower()
         if self._is_blocked_user_agent(user_agent):
             logger.warning(
-                f"WAF: Blocked user agent from {request.client.host}: {user_agent[:50]}"
+                f"WAF: Blocked user agent from {get_client_ip(request)}: {user_agent[:50]}"
             )
             return self._block_request("Forbidden", 403)
 
@@ -202,14 +203,14 @@ class WAFMiddleware(BaseHTTPMiddleware):
         url_path = request.url.path + "?" + str(request.query_params)
         threat = self._detect_threat(url_path, "URL")
         if threat:
-            logger.warning(f"WAF: {threat} in URL from {request.client.host}")
+            logger.warning(f"WAF: {threat} in URL from {get_client_ip(request)}")
             return self._block_request(f"Blocked: {threat}", 403)
 
         # Check headers (skip for relaxed paths like auth)
         if not is_relaxed_path:
             for header_name, header_value in request.headers.items():
                 if len(header_value) > self.MAX_HEADER_SIZE:
-                    logger.warning(f"WAF: Header too large from {request.client.host}")
+                    logger.warning(f"WAF: Header too large from {get_client_ip(request)}")
                     return self._block_request("Header too large", 431)
 
                 # Skip checking certain headers
@@ -226,7 +227,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
                 threat = self._detect_threat(header_value, f"Header:{header_name}")
                 if threat:
                     logger.warning(
-                        f"WAF: {threat} in header from {request.client.host}"
+                        f"WAF: {threat} in header from {get_client_ip(request)}"
                     )
                     return self._block_request(f"Blocked: {threat}", 403)
 
@@ -235,7 +236,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
             content_length = request.headers.get("content-length", "0")
             try:
                 if int(content_length) > self.MAX_BODY_SIZE:
-                    logger.warning(f"WAF: Body too large from {request.client.host}")
+                    logger.warning(f"WAF: Body too large from {get_client_ip(request)}")
                     return self._block_request("Request body too large", 413)
             except ValueError:
                 pass
@@ -265,7 +266,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
                         )
                         if threat:
                             logger.warning(
-                                f"WAF: {threat} in body from {request.client.host}"
+                                f"WAF: {threat} in body from {get_client_ip(request)}"
                             )
                             return self._block_request(f"Blocked: {threat}", 403)
                 except Exception as e:
@@ -363,7 +364,12 @@ class IPReputationMiddleware(BaseHTTPMiddleware):
         if not self.enabled:
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        # SITUS KEPUTUSAN, bukan catatan: nilai ini masuk _is_ip_blocked()
+        # yang menjawab 403. Dengan `get_client_ip(request)`, SELURUH lalu lintas
+        # lewat nginx bernilai 172.18.0.1 (jembatan Docker), sehingga daftar
+        # blokir TAK PERNAH BISA mencocokkan IP pengunjung mana pun -- dan bila
+        # 172.18.0.1 sampai masuk daftar, ia memblokir SEMUA ORANG sekaligus.
+        client_ip = get_client_ip(request)
 
         # Check if IP is blocked
         if self._is_ip_blocked(client_ip):

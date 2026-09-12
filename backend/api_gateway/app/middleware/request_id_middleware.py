@@ -69,11 +69,9 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
     def _get_client_ip(self, request: Request) -> str:
-        """Get client IP from headers or connection"""
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-        return request.client.host if request.client else "unknown"
+        """IP klien tepercaya -- lihat utils/client_ip."""
+        # SATU SUMBER: utils/client_ip. Dulu di sini `XFF.split(",")[0]`
+        # -- elemen PERTAMA XFF, yang DIKIRIM KLIEN dan bisa dipalsukan.
+        from ..utils.client_ip import get_client_ip
+
+        return get_client_ip(request)

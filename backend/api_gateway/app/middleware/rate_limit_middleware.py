@@ -236,16 +236,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _get_client_key(self, request: Request) -> str:
         """Get unique identifier for client (IP + optional user ID)"""
-        # Get real IP from proxy headers
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            client_ip = forwarded_for.split(",")[0].strip()
-        else:
-            real_ip = request.headers.get("X-Real-IP")
-            if real_ip:
-                client_ip = real_ip
-            else:
-                client_ip = request.client.host if request.client else "unknown"
+        # SATU SUMBER: utils/client_ip. Dulu di sini `XFF.split(",")[0]`
+        # -- elemen PERTAMA XFF, yang DIKIRIM KLIEN dan bisa dipalsukan.
+        # Akibatnya kuota rate-limit bisa dielakkan dengan memutar XFF palsu.
+        from ..utils.client_ip import get_client_ip
+
+        client_ip = get_client_ip(request)
 
         # If authenticated, include user_id for per-user limiting
         user = getattr(request.state, "user", None)

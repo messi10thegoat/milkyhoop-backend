@@ -28,11 +28,12 @@ prisma = Prisma()
 
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address from request"""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """IP klien tepercaya -- lihat utils/client_ip."""
+    # SATU SUMBER. Dulu `XFF.split(",")[0]` -- elemen pertama XFF, dikirim
+    # klien, bisa dipalsukan; nilai ini masuk audit_logs sebagai jejak.
+    from ..utils.client_ip import get_client_ip as _tepercaya
+
+    return _tepercaya(request)
 
 
 # Initialize auth client
@@ -108,7 +109,7 @@ async def register_user(request: RegisterRequest, http_request: Request):
             await log_auth_event(
                 event_type=AuditEventType.REGISTER,
                 user_id=result["user_id"],
-                ip_address=http_request.client.host if http_request.client else None,
+                ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
                 success=True,
                 metadata={"email": request.email},
@@ -209,7 +210,7 @@ async def login_user(request: LoginRequest, http_request: Request):
             await log_auth_event(
                 event_type=AuditEventType.LOGIN,
                 user_id=result["user_id"],
-                ip_address=http_request.client.host if http_request.client else None,
+                ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
                 success=True,
                 metadata={
@@ -359,7 +360,7 @@ async def login_user(request: LoginRequest, http_request: Request):
         # Log failed login (HTTP exceptions like 401)
         await log_auth_event(
             event_type=AuditEventType.FAILED_LOGIN,
-            ip_address=http_request.client.host if http_request.client else None,
+            ip_address=get_client_ip(http_request),
             user_agent=http_request.headers.get("user-agent"),
             success=False,
             error_message=str(http_exc.detail),
@@ -371,7 +372,7 @@ async def login_user(request: LoginRequest, http_request: Request):
         logger.error(f"Login error: {e}")
         await log_auth_event(
             event_type=AuditEventType.FAILED_LOGIN,
-            ip_address=http_request.client.host if http_request.client else None,
+            ip_address=get_client_ip(http_request),
             user_agent=http_request.headers.get("user-agent"),
             success=False,
             error_message=str(e),
@@ -700,7 +701,7 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
             await log_auth_event(
                 event_type=AuditEventType.TOKEN_REFRESH,
                 user_id=result.get("user_id"),
-                ip_address=http_request.client.host if http_request.client else None,
+                ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
                 success=True,
             )
@@ -801,7 +802,7 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
             await log_auth_event(
                 event_type=AuditEventType.SESSION_REVOKED,
                 user_id=user_id,
-                ip_address=http_request.client.host if http_request.client else None,
+                ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
                 success=True,
                 metadata={"session_id": session_id},
@@ -875,7 +876,7 @@ async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
             await log_auth_event(
                 event_type=AuditEventType.LOGOUT,
                 user_id=user_id,
-                ip_address=http_request.client.host if http_request.client else None,
+                ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
                 success=True,
                 metadata={

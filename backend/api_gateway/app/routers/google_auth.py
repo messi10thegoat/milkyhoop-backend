@@ -51,11 +51,12 @@ class AuthResponse(BaseModel):
 # =====================================================
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address from request."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """IP klien tepercaya -- lihat utils/client_ip."""
+    # SATU SUMBER. Dulu `XFF.split(",")[0]` -- elemen pertama XFF, dikirim
+    # klien, bisa dipalsukan; nilai ini masuk audit_logs sebagai jejak.
+    from ..utils.client_ip import get_client_ip as _tepercaya
+
+    return _tepercaya(request)
 
 
 def generate_secure_password(length: int = 32) -> str:
@@ -203,7 +204,7 @@ async def _login_existing_user(user_row, http_request: Request) -> AuthResponse:
     await log_auth_event(
         event_type=AuditEventType.LOGIN,
         user_id=user_id,
-        ip_address=http_request.client.host if http_request.client else None,
+        ip_address=get_client_ip(http_request),
         user_agent=http_request.headers.get("user-agent"),
         success=True,
         metadata={
@@ -263,7 +264,7 @@ async def _signup_new_user(email: str, name: str, http_request: Request) -> Auth
     await log_auth_event(
         event_type=AuditEventType.REGISTER,
         user_id=result["user_id"],
-        ip_address=http_request.client.host if http_request.client else None,
+        ip_address=get_client_ip(http_request),
         user_agent=http_request.headers.get("user-agent"),
         success=True,
         metadata={

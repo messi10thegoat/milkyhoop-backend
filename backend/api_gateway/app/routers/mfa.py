@@ -28,6 +28,7 @@ import base64
 import io
 import secrets
 import hashlib
+from ..utils.client_ip import get_client_ip_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ async def log_mfa_action(user_id: str, action: str, success: bool, request: Requ
                 "userId": user_id,
                 "action": action,
                 "success": success,
-                "ipAddress": request.client.host if request.client else None,
+                "ipAddress": get_client_ip_or_none(request),
                 "userAgent": request.headers.get("user-agent", "")[:500],
             }
         )
