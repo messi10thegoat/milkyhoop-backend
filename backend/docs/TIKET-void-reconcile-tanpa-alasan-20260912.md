@@ -166,3 +166,31 @@ tak bisa membuktikan jalur void — tapi ia membuktikan bahwa subjeknya nyata.
 
 Kode + skema + **kueri baca** ke DB produksi. Tak ada reconcile yang dijalankan,
 tak ada `dry_run` yang dipanggil, tak ada jurnal yang ditulis atau di-void.
+
+---
+
+# KOPLING FE — jangan tinggalkan janji lama di layar
+
+Dilaporkan sesi FRONTEND, 12 Sep 2026.
+
+Dialog konfirmasi void reconcile kini berbunyi:
+
+> "Sebabnya tercatat otomatis pada jurnal pembaliknya"
+
+Kalimat itu **benar hari ini** dan sengaja dipilih: ia menjanjikan persis yang
+sistem lakukan (konstanta ke `reversal_reason` + `description`), tanpa mengaku
+ada orang yang memutuskan.
+
+**Begitu BE menerima `body.reason`, kalimat itu BERHENTI benar** — sebabnya tak
+lagi otomatis, melainkan dari pengguna.
+
+Jadi perubahan BE di tiket ini **tidak berdiri sendiri**. Yang menutup tiket:
+
+1. BE: model body + `body.reason` menggantikan konstanta di `production.py:3658`.
+2. FE: hidupkan kotak alasan (`{}` → `{ reason }`) **DAN** ganti kalimat dialog
+   itu, supaya layar tak menjanjikan "otomatis" untuk sebab yang kini diketik
+   pengguna.
+
+Mengerjakan (1) tanpa (2) meninggalkan janji lama di layar — kelas yang sama
+dengan label yang lebih akurat daripada perilakunya, hanya terbalik arah.
+Kirim satu pesan ke sesi FRONTEND saat (1) mendarat; FE-nya kecil.
