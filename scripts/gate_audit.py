@@ -36,7 +36,9 @@ SUREL_ASING = {
 DOK_TIPE = "sales_orders"
 DOK_ID = "b84d94cd-9399-4f87-81a6-d68c0400586f"
 DOK_NOMOR = "SO-2609-0213"
-# Jumlah baris DOCUMENT_DELETED per entity_type di DB (kaos-biru).
+# Jumlah baris DOCUMENT_DELETED per entity_type saat gerbang ini ditulis
+# (11 Sep 2026). INFORMATIF SAJA -- sengaja TIDAK di-assert; lihat catatan di
+# lengan [F]. Disimpan supaya pergeserannya bisa dibaca, bukan dipatok.
 HARAP_SO, HARAP_QUOTE = 79, 47
 
 
@@ -101,17 +103,30 @@ def main():
     id1 = {i["id"] for i in d1.get("items", [])}
     id2 = {i["id"] for i in d2.get("items", [])}
     tipe1 = {i.get("entity_type") for i in d1.get("items", [])}
+    tipe2 = {i.get("entity_type") for i in d2.get("items", [])}
+    # JUMLAH BARIS TIDAK DI-ASSERT LAGI. Versi pertama menuntut
+    # `len(id1) == 79 and len(id2) == 47` -- jumlah yang diukur 11 Sep 2026.
+    # Penghapusan dokumen terus berjalan (12 Sep: 83 dan 51, dari penghapusan
+    # biasa oleh pemilik), jadi patokan itu MEMERAH ATAS PERILAKU YANG BENAR
+    # dan akan memerah lagi tiap kali satu dokumen dihapus. Gerbang yang merah
+    # atas keadaan benar adalah gerbang yang orang belajar abaikan.
+    #
+    # Yang sebenarnya dijaga lengan ini: PENYAIRNG BENAR-BENAR MENYARING.
+    # Itu sifat, bukan bilangan -- dan sifatnya tetap merah di kode lama, yang
+    # mengabaikan penyaring sehingga kedua permintaan mengembalikan baris LOGIN
+    # yang sama (himpunan identik, entity_type terbaca None).
     lulus_f = (
         st1 == st2 == 200
-        and id1 and id2
+        and id1 and id2                           # dua-duanya berisi
         and not (id1 & id2)                       # himpunan BERBEDA
-        and tipe1 == {DOK_TIPE}                   # dan benar-benar yang diminta
-        and len(id1) == HARAP_SO and len(id2) == HARAP_QUOTE
+        and tipe1 == {DOK_TIPE}                   # yang diminta, yang datang
+        and tipe2 == {"quotes"}                   # dua arah, bukan satu
     )
     hasil.append(
         ("F", lulus_f,
-         f"{DOK_TIPE}={len(id1)}(harap {HARAP_SO}) quotes={len(id2)}"
-         f"(harap {HARAP_QUOTE}) irisan={len(id1 & id2)} tipe_terbaca={tipe1 or 'kosong'}")
+         f"{DOK_TIPE}={len(id1)} quotes={len(id2)} (jumlah INFORMATIF, tak "
+         f"di-assert) irisan={len(id1 & id2)} tipe_terbaca={tipe1 or 'kosong'}/"
+         f"{tipe2 or 'kosong'}")
     )
 
     # --- C: atribusi penghapusan sampai ke RESPONS --------------------------
