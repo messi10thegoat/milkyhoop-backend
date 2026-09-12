@@ -194,3 +194,87 @@ Jadi perubahan BE di tiket ini **tidak berdiri sendiri**. Yang menutup tiket:
 Mengerjakan (1) tanpa (2) meninggalkan janji lama di layar — kelas yang sama
 dengan label yang lebih akurat daripada perilakunya, hanya terbalik arah.
 Kirim satu pesan ke sesi FRONTEND saat (1) mendarat; FE-nya kecil.
+
+---
+
+# KOREKSI KERAS 12 Sep 2026 — bagian "TAMBAHAN" di atas SALAH
+
+**Dua klaimku di bagian TAMBAHAN gugur. Bagian itu jangan dipakai.** Dibiarkan
+berdiri (bukan dihapus) supaya jejak kekeliruannya terbaca.
+
+## Yang SALAH
+
+1. **"Subjek uji tersedia — 31 LABOR + 30 OVERHEAD POSTED"** → SALAH.
+2. **"POST reconcile akan benar-benar menerbitkan jurnal"** → SALAH.
+3. **"`ACTUAL_OVERHEAD` tak terpetakan di tenant mana pun"** → SALAH.
+
+## Yang benar, terukur
+
+Sesi FRONTEND memanggil `dry_run` (dengan izin pemilik) dan mendapat **semua
+nol**. Itu membantah prediksiku, dan **`dry_run` yang benar.**
+
+```sql
+SELECT source_type, count(*) AS total,
+       count(*) FILTER (WHERE is_effective_journal(id)) AS efektif,
+       count(*) FILTER (WHERE reversed_by_id IS NOT NULL) AS sudah_dibalik,
+       count(*) FILTER (WHERE reversal_of_id  IS NOT NULL) AS dia_pembalik
+FROM journal_entries
+WHERE source_type IN ('PRODUCTION_LABOR','PRODUCTION_OVERHEAD')
+  AND tenant_id = 'kaos-biru-konveksi' GROUP BY 1;
+
+PRODUCTION_LABOR     31 total |  0 efektif | 27 dibalik | 4 pembalik
+PRODUCTION_OVERHEAD  30 total |  0 efektif | 27 dibalik | 3 pembalik
+```
+
+**Nol dari 61 efektif.** Setiap jurnal labor/OH sudah dibalik, atau ia sendiri
+pembalik. Mereka saling meniadakan.
+
+`_signed_sum` menyaring dengan `is_effective_journal(je.id)` (`production.py`
+~3219) — jadi ia benar mengabaikan semuanya. Pendukung lain:
+
+- `PAYROLL` di `2026-09` (sumber `actual_labor`): **0 baris**, 0 efektif.
+- Saldo EFEKTIF pada keempat akun reconcile di `2026-09`: **0 baris**.
+- Pemetaan akun BENAR: `MFG_LABOR_APPLIED` = akun yang memang disentuh jurnal
+  labor. Periode, tanggal, dan akunnya semua tepat.
+
+**Sebab pembalikannya tercatat jelas dan masuk akal** (54 jurnal dibalik pada
+2026-09-03 06:00 UTC):
+
+| sebab | jml |
+|---|---|
+| pembersihan data uji T215/T216 — WIP tertahan akibat cancel tidak membalik labor/OH | 26 |
+| pembersihan data uji T219/T220 | 13 |
+| pembersihan data uji T219 — WIP tertahan sebelum fix cancel 946f1523 | 8 |
+| Production order cancelled | 7 |
+
+## Akar kekeliruanku
+
+Aku menghitung **baris POSTED** lalu menyebutnya aktivitas, tanpa memeriksa
+**efektivitas**. Jurnal POSTED yang sudah dibalik tetap berstatus POSTED. Ini
+kelas yang sama dengan "hitung baris di tabel hanya-tambah" — jawabannya selalu
+**saldo BERSIH**, bukan cacah baris.
+
+Kekeliruan ke-3 beda akar: aku menyaring `account_roles` dengan nama tebakan
+`ACTUAL_OVERHEAD`. Kosakata sebenarnya **`MFG_ACTUAL_OVERHEAD`**, dan ia
+TERPETAKAN — `overhead.mapped: true` benar. Menyaring dengan nama karangan lalu
+melaporkan ketiadaannya sebagai fakta = kelas penjaga-kosakata-mati.
+
+## Akibatnya untuk gerbang FE
+
+`labor_active` dan `oh_active` dua-duanya **false**, jadi jalur tulis mengambil
+cabang pulang-awal (`production.py` ~3318) dan **TIDAK menulis apa pun**
+(`journal_number: None`). Menekan LANJUT tak akan menghasilkan jurnal, sehingga
+assertion "eksekusi terbukti" akan **hampa** — bukan hijau palsu, tapi juga bukan
+bukti.
+
+**Klaim ASLI FE ("tak ada subjek rekonsiliasi buatan tes yang murah") BENAR;
+koreksiku atasnya SALAH.** Subjek itu memang tak ada — bukan karena mahal
+dibuat, melainkan karena aktivitas yang ada sudah dibalik habis saat pembersihan
+data uji.
+
+## Dan yang TIDAK terjadi: tak ada cacat
+
+Ini **bukan** "rekonsiliasi tak bisa memungut data yang ada". Datanya memang
+tidak ada lagi. Pertanyaan hulu (kenapa `cancel` dulu tak membalik labor/OH —
+lihat sebab T215/T216) sudah diperbaiki di `946f1523` menurut sebab yang
+tertulis, dan itu terpisah dari tiket ini.
