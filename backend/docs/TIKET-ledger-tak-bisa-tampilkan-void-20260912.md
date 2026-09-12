@@ -71,6 +71,36 @@ Rekomendasi (berubah sesudah pengukuran ini): **pindah**, atau tampilkan
 keduanya. Rekomendasi sebelumnya — "jangan sentuh `ledger`" — bersandar pada
 anggapan bahwa `ledger` lebih lengkap. **Ia tidak.**
 
+## KONFIRMASI EMPIRIS (12 Sep, sesi FRONTEND)
+
+Bagian di atas semula **diturunkan dari kode + sifat struktural**. Kini
+**teramati**, dan pembedaan itu layak tercatat:
+
+```
+POST /api/expenses {status:"draft"}  -> 201  EXP-2609-0033  status=draft
+ledger?status=all                    -> total 9   memuat draf? TIDAK
+GET /api/expenses?limit=100          -> 23 baris  memuat draf? YA (draft 1 · void 16 · posted 6)
+DELETE /api/expenses/{id}            -> 200, jurnal 415 -> 415, NOL jejak
+```
+
+**Dan lingkupnya lebih luas dari dugaan awal: KEDUA permukaan membaca `ledger`**,
+bukan hanya desktop —
+`ExpenseDesktop.tsx:192`, `Expenses/index.tsx:220` (ponsel), `useExpenseList.ts:389`.
+Jadi kelima cabang logika-draf di FE mustahil menyala di dua-duanya.
+
+### Akibat hidup sejak rilis FE 44
+
+Sebelum rilis 44 form Beban tak mengirim `status`, jadi server **selalu
+menerbitkan**: pengguna mendapat **jenis dokumen yang salah, tapi TERLIHAT**
+(punya jurnal → muncul di `ledger`). Sesudah 44 ia mendapat **jenis yang benar,
+tapi TIDAK TERLIHAT**.
+
+Itu **bukan kemunduran**: jalur draf (BE) dan penyambungan layar (FE)
+masing-masing benar sendiri-sendiri. Yang salah adalah daftar yang menampilkannya
+membaca sumber yang secara struktur tak bisa melihatnya — cacat yang sudah ada
+sejak `ledger` dipakai sebagai sumber daftar KERJA, dan baru tampak ketika ada
+dokumen tak-berjurnal untuk ditampilkan.
+
 ## Tiga arah perbaikan, kalau pemilik memilih menyentuh BE
 
 1. **Jangan apa-apakan.** `ledger` tetap "buku besar yang terbukukan"; cabang
