@@ -4642,35 +4642,17 @@ async def send_message_with_files(
                     _ocr_client = _OCR_OpenAI(
                         api_key=os.environ.get("OPENAI_API_KEY", "")
                     )
-                    _ocr_prompt = f"""Ekstrak data dari dokumen finansial Indonesia ini. User caption: "{text}"
+                    # fix/ocr-nota-tulisan-tangan: prompt + post-processing dipindah ke
+                    # services/unified_agent/ocr_extract.py supaya bisa diuji tanpa LLM.
+                    from ..services.unified_agent.ocr_extract import (
+                        build_ocr_prompt as _build_ocr_prompt,
+                        display_party as _ocr_display_party,
+                        extraction_notes_text as _ocr_notes_text,
+                        parse_ocr_json as _parse_ocr_json,
+                        postprocess_ocr as _postprocess_ocr,
+                    )
 
-Return JSON ONLY:
-{{
-  "is_financial_document": true,
-  "extracted_text": "teks utama yang terbaca dari gambar, apa adanya",
-  "doc_type": "expense|bank_transfer|qris|merchant_payment|purchase_invoice|sales_invoice|receipt|unknown",
-  "transfer_direction": "masuk|keluar|null",
-  "vendor_name": "nama vendor (untuk struk PLN: 'PLN', untuk transfer keluar: nama penerima)",
-  "customer_name": "nama customer atau null",
-  "document_number": "no faktur/no ref",
-  "document_date": "YYYY-MM-DD atau null",
-  "total_amount": 0,
-  "tax_amount": 0,
-  "source_account_number": "nomor rek pengirim atau null",
-  "destination_account_number": "nomor rek penerima atau null",
-  "reference_note": "berita/keterangan",
-  "confidence": 0.9
-}}
-
-Aturan:
-- Struk PLN: doc_type="expense", total_amount=field "RP BAYAR" (BUKAN RP STROOM/TOKEN, BUKAN total dengan ADMIN BANK), tax_amount=PBJT-TL, vendor_name="PLN"
-- QRIS/merchant payment ("Pembayaran QRIS Berhasil", Merchant PAN, Terminal ID): doc_type="qris", NOT bank_transfer. Ini pembayaran ke merchant, bukan transfer antar bank.
-- transfer_direction: "masuk" jika uang MASUK ke rekening kita (kita yang menerima, nama penerima = nama bisnis/toko kita, atau caption bilang "dari pelanggan"/"pembayaran masuk"). "keluar" jika uang KELUAR dari rekening kita. null jika tidak bisa ditentukan.
-- Bukti transfer: total_amount=Nominal Transfer (BUKAN Total Transaksi yang sudah +biaya admin)
-- Semua angka Rupiah tanpa desimal
-- is_financial_document: true jika gambar berisi dokumen keuangan (struk, invoice, bukti transfer, kwitansi, nota, faktur, slip gaji). false jika gambar berisi tabel data, screenshot aplikasi, foto produk, chat/pesan, atau konten non-keuangan.
-- extracted_text: teks utama yang terbaca dari gambar, apa adanya. WAJIB diisi meskipun is_financial_document=false.
-- Jika is_financial_document=false, isi semua field KECUALI extracted_text dan confidence dengan null/0/"unknown"."""
+                    _ocr_prompt = _build_ocr_prompt(text)
 
                     # Use Gemini 2.5 Flash for vision OCR (~700ms vs gpt-4o ~2-3s)
                     import httpx as _ocr_httpx
@@ -4750,14 +4732,22 @@ Aturan:
                                     ],
                                 }
                             ],
-                            max_tokens=1000,
+                            max_tokens=1200,  # fix/ocr-nota-tulisan-tangan: +line_items
                             temperature=0.1,
                         )
                         _ocr_text = _ocr_response.choices[0].message.content or "{}"
-                    # Strip markdown code blocks if present
-                    if _ocr_text.startswith("```"):
-                        _ocr_text = _ocr_text.split("\n", 1)[-1].rsplit("```", 1)[0]
-                    _ocr_data = _ocr_json.loads(_ocr_text)
+                    # fix/ocr-nota-tulisan-tangan: parse toleran (pagar ```/terpotong) +
+                    # koreksi deterministik total/tanggal/nama SEBELUM dipakai siapa pun.
+                    _ocr_data = _parse_ocr_json(_ocr_text)
+                    _ocr_data = _postprocess_ocr(_ocr_data, caption=text or "")
+                    if _ocr_data.get("extraction_notes"):
+                        logger.info(
+                            "[DocSimple][OCR_POST] total_source=%s total_flag=%s date_flag=%s notes=%s",
+                            _ocr_data.get("total_source"),
+                            _ocr_data.get("total_flag"),
+                            _ocr_data.get("date_flag"),
+                            _ocr_data.get("extraction_notes"),
+                        )
                     # FIX_TRANSFER_NOMINAL (2026-06-18): a bukti transfer shows BOTH
                     # the nominal sent to the destination ("Kirim Uang"/"Nominal" =
                     # the amount WE receive / the obligation settled) AND a larger
@@ -5296,10 +5286,9 @@ Aturan:
                             _counterparty_cl = (
                                 _intake_result.best_match.counterparty
                                 if _intake_result.best_match
-                                else (
+                                else _ocr_display_party(  # fix/ocr-nota-tulisan-tangan: "—" bukan "Unknown"
                                     _ocr_data.get("vendor_name")
                                     or _ocr_data.get("customer_name")
-                                    or "Unknown"
                                 )
                             )
                             _total_cl = float(_ocr_data.get("total_amount", 0))
@@ -5329,6 +5318,10 @@ Aturan:
                                     else "dari"
                                 )
                                 _cl_narration = f"Dokumen {_dir_word_cl} **{_counterparty_cl}**. Total {_total_cl_fmt}."
+                            # fix/ocr-nota-tulisan-tangan: koreksi total/tanggal tampil, bukan diam
+                            _notes_cl = _ocr_notes_text(_ocr_data)
+                            if _notes_cl:
+                                _cl_narration += f" _{_notes_cl}_"
 
                             _doc_pipeline_result = ChatMessageResponse(
                                 message_type="CLARIFICATION",
@@ -5388,10 +5381,9 @@ Aturan:
                                     _counterparty = (
                                         _intake_result.best_match.counterparty
                                         if _intake_result.best_match
-                                        else (
+                                        else _ocr_display_party(  # fix/ocr-nota-tulisan-tangan
                                             _ocr_data.get("vendor_name")
                                             or _ocr_data.get("customer_name")
-                                            or "Unknown"
                                         )
                                     )
                                     _total = float(_ocr_data.get("total_amount", 0))
@@ -5425,6 +5417,10 @@ Aturan:
                                     # Append bank info if auto-resolved
                                     if _intake_result.bank_display_name:
                                         _narration += f" Rekening: **{_intake_result.bank_display_name}**."
+                                    # fix/ocr-nota-tulisan-tangan: koreksi total/tanggal tampil
+                                    _notes_pd = _ocr_notes_text(_ocr_data)
+                                    if _notes_pd:
+                                        _narration += f" _{_notes_pd}_"
 
                                     _doc_pipeline_result = ChatMessageResponse(
                                         message_type="DIRECT_ACTION_PREVIEW",
@@ -5561,16 +5557,15 @@ Aturan:
                     else:
                         _pending_id = str(_ocr_uuid.uuid4())
                         _doc_type = _ocr_data.get("doc_type", "unknown")
-                        _vendor = (
+                        _vendor = _ocr_display_party(  # fix/ocr-nota-tulisan-tangan: "—"
                             _ocr_data.get("vendor_name")
                             or _ocr_data.get("customer_name")
-                            or "Unknown"
                         )
-                        _total = float(_ocr_data.get("total_amount", 0))
-                        _tax = float(_ocr_data.get("tax_amount", 0))
+                        _total = float(_ocr_data.get("total_amount") or 0)
+                        _tax = float(_ocr_data.get("tax_amount") or 0)
                         _items = _ocr_data.get("items", [])
-                        _doc_number = _ocr_data.get("document_number", "-")
-                        _doc_date = _ocr_data.get("document_date", "-")
+                        _doc_number = _ocr_data.get("document_number") or "-"
+                        _doc_date = _ocr_data.get("document_date") or "-"
                         _confidence = float(_ocr_data.get("confidence", 0))
 
                         _type_labels = {
@@ -5617,6 +5612,10 @@ Aturan:
                         _table_lines.append(
                             f"| Confidence | {_confidence * 100:.0f}% |"
                         )
+                        # fix/ocr-nota-tulisan-tangan: koreksi total/tanggal tampil
+                        _notes_fb = _ocr_notes_text(_ocr_data)
+                        if _notes_fb:
+                            _table_lines.append(f"| Catatan | {_notes_fb} |")
 
                         _preview = {
                             "pending_action_id": _pending_id,
@@ -5648,7 +5647,7 @@ Aturan:
                         _rc_header = [
                             {"label": "Tipe", "value": _type_display},
                         ]
-                        if _vendor != "Unknown":
+                        if _vendor not in ("Unknown", "—"):
                             _rc_header.append(
                                 {"label": _party_label, "value": _vendor}
                             )
@@ -5658,6 +5657,8 @@ Aturan:
                             )
                         if _doc_date != "-":
                             _rc_header.append({"label": "Tanggal", "value": _doc_date})
+                        if _notes_fb:
+                            _rc_header.append({"label": "Catatan", "value": _notes_fb})
                         _rc_header.append(
                             {
                                 "label": "Total",
