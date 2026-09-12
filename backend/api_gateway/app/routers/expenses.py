@@ -2063,7 +2063,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                         await conn.execute(
                             """
                             UPDATE journal_entries
-                            SET reversed_by_id = $2, status = 'VOID'
+                            SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: status asli TETAP POSTED (lihat backend/docs/TEMUAN-rantai-nomor-ganda-20260912.md)
                             WHERE id = $1
                             """,
                             expense["journal_id"],

@@ -127,3 +127,77 @@ bagian dari hukumnya. Hukum boleh dipatuhi tanpa percaya alasannya; **obat tidak
 boleh dipilih dari alasan yang belum diukur.** Dan klaim yang terdengar spesifik
 (`"unique index"`, `"status-filtered"`) justru **menghentikan pemeriksaan** —
 kekhususan terbaca seperti bukti.
+
+---
+
+# KOREKSI & PENUTUPAN SEBAGIAN (12 Sep 2026, sore)
+
+## Status berubah: arah 1 SUDAH DIKERJAKAN
+
+Pemilik memilih arah 1. Terkirim sebagai `feb326b5` di `fix/law2-lima-jalur`:
+kelima jalur berhenti membalik jurnal asli ke VOID.
+
+**Yang TIDAK berubah:** trigger tetap `DEFERRABLE INITIALLY DEFERRED`, dan
+**9 pasang nomor ganda + 2 hash pecah yang sudah ada tetap utuh** — menyembuhkannya
+berarti menyunting jurnal POSTED (Law 2/3), dan itu masih putusan pemilik.
+Arah 2 dan 3 masih terbuka; arah 3 masih akan GAGAL selama 9 pasang lama ada.
+
+## Akar TERUJI — bukan lagi cuma dibaca dari definisi trigger
+
+Gerbang dua sisi `scripts/gerbang_law2_dua_sisi.sql`, semuanya `ROLLBACK`,
+nol baris menetap:
+
+```
+MERAH  (perilaku lama)  asli VOID 407 · pembalik 407  -> TABRAKAN
+HIJAU  (perilaku baru)  asli POSTED 407 · pembalik 408 -> nol tabrakan
+                        asli: POSTED + tertandai + reversed_at TERISI
+sabotase reversed_at=NULL -> HANYA assertion baru yang memerah
+kontrol: 0 sentinel menetap · max 406 · 9 pasang · 2 hash — tak bergerak
+```
+
+**BATAS yang harus ikut dikutip kalau angka ini dikutip:** ini membuktikan
+**mekanisme basis data**, BUKAN jalur HTTP ujung-ke-ujung. Tak ada hibah izin
+yang diambil untuk mendapatkannya.
+
+## Prior art yang kutemukan TERLAMBAT
+
+`stock_adjustments.py:1360` **sudah memperbaiki cacat yang sama lebih dulu**, dengan
+catatan yang menamai mekanisme identik. `sales_invoices.py` menulis pasangan
+`reversed_by_id + reversed_at` di **enam** tempat.
+
+Akibatnya sunting pertamaku — `reversed_by_id` saja — akan menjadikan kelima
+situs ini **varian ketujuh** dari perbaikan yang sama. Terukur saat itu:
+158 jurnal ber-`reversed_by_id`, hanya 142 ber-`reversed_at`; **16 null itu
+persis void beban**, yaitu jalur-jalur ini. `reversed_at` ikut bukan sebagai
+tambahan, melainkan supaya bentuknya sama dengan rumah.
+
+**Pelajarannya:** aku menulis lingkup "LIMA jalur" dari grep, lalu membangun
+gerbang di atasnya, sebelum mencari apakah ada yang pernah menambalnya. Yang
+seharusnya lebih dulu: cari tambalan yang SUDAH ADA untuk cacat yang sama.
+
+## Dua jebakan yang memakan waktuku — ditulis supaya tak memakan waktu berikutnya
+
+**1. `SET CONSTRAINTS ALL IMMEDIATE` BUKAN sekali-pakai.** Ia mengubah MODE
+untuk sisa transaksi. Gerbang yang memakainya untuk memaksa penomoran jurnal
+asli, lalu tidak mengembalikan `DEFERRED`, membuat trigger pembalik menyala di
+**waktu-pernyataan** — sebelum flip VOID — dan membaca **408, bukan 407**.
+Itu tampak seperti "akarnya salah". Bukan: **gerbangnya yang tak setia.**
+Dua gerbangku memerah/tak-memerah ke arah berlawanan karena ini, dan sempat
+membuatku hendak mencabut akar yang ternyata benar.
+
+**2. Nihil dari saringan buruk bukan temuan.** `grep ... | grep -i journal`
+untuk mencari jalur yang membalik ke VOID **melewatkan kelima situs** — barisnya
+tidak memuat kata "journal". Kalau sebuah pencarian mengembalikan nol, periksa
+saringannya sebelum menyimpulkan ketiadaan.
+
+⚠️ Kalimat di bagian atas dokumen ini — *"menukar urutan pernyataan TIDAK
+memperbaiki apa pun"* — **tetap benar untuk produksi** (trigger tertunda melihat
+keadaan akhir transaksi). Tapi ia TIDAK berlaku di dalam transaksi yang sudah
+di-`IMMEDIATE`-kan, dan di situlah gerbang mudah menipu dirinya sendiri.
+
+## Akibat yang terlihat sesudah deploy
+
+`void_count` di ringkasan jurnal akan **TURUN**: jurnal asli yang dibalik kini
+terhitung POSTED, bukan VOID. Itu **bukan** kehilangan data dan bukan regresi —
+`is_effective_journal()` menyaring lewat `reversed_by_id`, jadi **angka efektif
+tidak bergeser**. Yang berubah hanya ember tempat mereka dihitung.
