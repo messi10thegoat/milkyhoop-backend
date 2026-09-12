@@ -1,0 +1,7 @@
+# Pemeriksaan akuntansi harian MilkyHoop.
+# Dipasang 12 Sep 2026: alatnya sudah benar dan sudah meng-assert (exit 2),
+# tapi TAK ADA yang menjalankannya -- penjaga yang bekerja tanpa penjadwal.
+# Resep ini disalin apa adanya dari header skripnya (baris 15).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+0 6 * * * root /root/milkyhoop-dev/monitoring/accounting_health_check.sh >> /var/log/milkyhoop/accounting_health.log 2>&1
