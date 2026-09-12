@@ -219,6 +219,41 @@ TIDAK dicabut** (lebih aman dibiarkan daripada dicabut tergesa).
 | rute tulis terjaga | 160 | **193** |
 | rute tulis TANPA pola | 329 | **296** |
 
+### ⚠️ KOREKSI KETIGA — "193 terjaga" TERLALU MURAH
+
+Angka itu benar bentuknya dan berlebihan maknanya. Diukur sesudahnya:
+**78 dari 242 pola tidak berjangkar `$`**, sehingga mereka adalah pola
+**AWALAN** yang mencocokkan sub-jalur pada kedalaman berapa pun.
+
+**51 rute tulis "terjaga" hanya lewat penyerapan itu**, dengan kata kerja yang
+keliru secara makna:
+
+| pola awalan | menelan | akibat |
+|---|---|---|
+| `^/api/credit-notes` POST → `credit_note/C` | `/void` `/post` `/refund` `/apply` | **mem-void diperiksa sebagai "membuat"** |
+| `^/api/quotes` POST → `quote/C` | `/accept` `/decline` `/send` `/to-invoice` `/to-order` | mengirim penawaran = membuat |
+| `^/api/vendor-credits` POST → `debit_note/C` | `/void` `/post` `/refund` `/apply` | sama dengan credit-notes |
+| `^/api/sales-orders` POST → `sales_order/C` | `/cancel` `/close` `/confirm` `/ship` | mengapalkan = membuat |
+| `^/api/stock-adjustments` POST → `stock_adjust/C` | `/post` `/void` | |
+| `^/api/periods` POST → `period/C` | `/close` `/reopen` | menutup periode = membuat |
+| `^/api/bank-accounts` POST → `kas_bank/C` | `/adjust` `/{id}/transactions` | |
+| `^/api/bom` POST → `bom/C` | `/activate` `/obsolete` `/recalculate` +3 | |
+| `^/api/tax` POST → `tax/C` | `/cancel` `/replace` `/bulk-assign-nsfp` +3 | |
+
+**Ini BUKAN ketiadaan penjaga — ini granularitas yang salah.** Rute-rute itu
+memang ditolak untuk non-owner yang tak punya modulnya. Tapi siapa pun yang
+diberi hak **membuat** otomatis mendapat hak **membatalkan**, **mengirim**, dan
+**menutup periode**. Penyatuan hak, bukan lubang.
+
+Kelasnya sama dengan sisa laporan ini: sesuatu yang **terlihat** tertutup dan
+menenangkan pembaca. Bedanya, di sini ia benar-benar menolak — hanya saja
+menolak/mengizinkan atas dasar kata kerja yang salah.
+
+**Tidak diperbaiki dalam unit ini** (di luar lingkup yang pemilik setujui).
+Memperbaikinya berarti memecah 78 pola awalan jadi pola berjangkar per-aksi —
+unit tersendiri, dan setiap pemecahan berpotensi MENOLAK pengguna yang selama
+ini lolos. Jadi ia butuh putusan pemilik, bukan kerapian.
+
 **30/30 pola baru terbukti mencocokkan rute yang dituju** — diuji lewat
 pencocok, bukan panggilan hidup, karena menambah pola yang tak pernah menyala
 adalah persis cacat yang sedang diperbaiki.
