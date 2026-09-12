@@ -78,7 +78,20 @@ DIURAIKAN, bukti terkuat bahwa lapis izin dilewati sepenuhnya**.
 ⚠️ **329 adalah ENUMERASI; 14 adalah yang DIVERIFIKASI.** Sisanya belum diuji
 satu per satu — jangan dibaca sebagai 329 terbukti.
 
-### [A] Taruhan tertinggi — diduga/terbukti menulis jurnal (`file:baris`)
+### [A] Taruhan tertinggi (`file:baris`)
+
+**KOREKSI 12 Sep:** [A] bukan 30 penulis jurnal. Diklasifikasi ulang dari
+**sumber handler utuh** (via `inspect`, bukan jendela baris tetap):
+**25 penulis + 5 `preview-journal` yang BACA-SAJA** (nol
+`INSERT`/`UPDATE`/`DELETE`; dua di antaranya mendokumentasikan
+"READ-ONLY, nol tulis"). Kelimanya masuk [A] karena kata "journal" ada di
+jalurnya — **inferensi dari nama**, persis cacat yang laporan ini bahas.
+Mereka diberi aksi `R`, bukan `P`.
+
+Juga terkoreksi: lima handler **mendelegasikan** ke service
+(`bills/{id}/payments`, `payment-requests/cancel`+`mark-paid`,
+`bank-transfers/{id}/post`, `sales-invoices/{id}/fulfill`) — cacah SQL di
+handler buta terhadapnya, jadi "nol tulis" di situ **bukan** baca-saja.
 
 ```
 DELETE /api/journals/{journal_id}                          routers/journals.py:763
@@ -127,8 +140,15 @@ hilang**: ia menenangkan pembaca tabel.
 ### 2a. Mati tak berbahaya — rutenya memang tak ada
 `production/work-orders`, `work-centers`, `/api/ar`, `/api/aging/ar`,
 `/api/aging/ap`, `customers/summary`, `vendors/summary`, `payroll/summary`,
-`bill-payments/{id}` PATCH/PUT, `reports/.*/export`, `payroll/{id}` DELETE.
+`bill-payments/{id}` PATCH/PUT, `reports/.*/export`, `payroll/{id}` DELETE,
+`production/material-issues` POST, `production/fg-receipts` POST.
 → sampah tabel; menggelembungkan **kesan** cakupan.
+
+**KOREKSI 12 Sep (sesudah commit pertama):** dua yang terakhir semula
+kutempatkan di 2b ("menipu"). Salah — diukur ulang, **tak ada rute POST**
+untuk keduanya, hanya `GET`. Akarnya: aku memakai satu grep bercabang dua
+dan tak pernah memverifikasi tiap cabangnya terpisah. Kelompok 2b menyusut
+dari 6 jadi **4**.
 
 ### 2b. Mati karena SALAH BENTUK padahal rutenya ADA — ini yang menipu
 
@@ -138,8 +158,6 @@ hilang**: ia menenangkan pembaca tabel.
 | `^/api/team-members$` POST | **`POST /api/team-members/invite`** |
 | `^/api/approval-inbox`, `^/api/approvals` | keluarga `/api/approval-*` (19 rute) |
 | `^/api/payment-requests/[^/]+$` PATCH/DELETE | 7 rute di prefiks itu |
-| `^/api/production/material-issues` POST | hanya `GET` yang ada |
-| `^/api/production/fg-receipts` POST | hanya `GET` yang ada |
 
 ⚠️ **`POST /api/team-members/invite` adalah yang paling berkonsekuensi**: ia
 mekanisme menambah anggota. **BELUM DIPASTIKAN** — probe yang berhasil akan
@@ -186,3 +204,37 @@ itu. Selisih antara ramalan dan hasil adalah tempat temuan berada.
 4. [B] (299 rute) — sapuan tersendiri, bukan satu unit.
 5. **Penjaga struktural**: uji yang gagal kalau ada rute tulis tanpa pola. Tanpa
    ini, celahnya tumbuh lagi diam-diam pada endpoint berikutnya.
+
+---
+
+## 6. TINDAK LANJUT — ditutup 12 Sep 2026 (unit terpisah)
+
+Atas putusan pemilik: [A] + 3 pola salah bentuk + penjaga struktural.
+**299 rute [B] TIDAK dikerjakan** (sapuan tersendiri), dan **11 pola sampah 2a
+TIDAK dicabut** (lebih aman dibiarkan daripada dicabut tergesa).
+
+| | sebelum | sesudah |
+|---|---|---|
+| pola di `ROUTE_PERMISSIONS` | 211 | **242** |
+| rute tulis terjaga | 160 | **193** |
+| rute tulis TANPA pola | 329 | **296** |
+
+**30/30 pola baru terbukti mencocokkan rute yang dituju** — diuji lewat
+pencocok, bukan panggilan hidup, karena menambah pola yang tak pernah menyala
+adalah persis cacat yang sedang diperbaiki.
+
+**Penjaga struktural** `tests/unit/test_pagar_rute_izin.py` + inventaris +
+garis dasar (296 baris, wajib MENYUSUT), dengan pasangan gerbang kesegaran
+`scripts/gate_izin_rute.py`.
+
+**Rancangan yang DITOLAK**: parse statis berkas router — diukur buta terhadap
+**14 rute hidup** (termasuk seluruh keluarga `/api/payroll/{run_id}/post|void`)
+dan mengarang **45** yang tak ada. Penjaga buta gagal DIAM-DIAM; inventaris basi
+gagal BERISIK. Itu sebabnya inventaris dihasilkan dari `app.routes`.
+
+**Dibuktikan BISA MERAH** (3 sabotase, masing-masing dipulihkan):
+rute baru tanpa pola → assertion utama merah · entri garis dasar basi →
+assertion anti-beku merah · inventaris dikosongkan → kontrol positif merah.
+⚠️ Sabotase ketiga **tidak terisolasi**: inventaris kosong juga memerahkan
+assertion anti-beku (akibat wajar). ⚠️ `test_pola_terbaca_dalam_jumlah_wajar`
+**belum** dibuktikan merah.

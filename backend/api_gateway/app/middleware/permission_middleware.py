@@ -106,6 +106,52 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/expenses/[^/]+/post$", ["POST"], "expense", "P"),
     (r"^/api/expenses/[^/]+/void$", ["POST"], "expense", "V"),
     (r"^/api/expenses/[^/]+/attachments$", ["POST"], "expense", "U"),
+    # ================================================================
+    # Sub-jalur & rute tulis yang TAK PERNAH terjaga — DITAMBAHKAN 12 Sep 2026.
+    # Sumber: backend/docs/TEMUAN-sapuan-izin-20260912.md (sapuan dua arah).
+    # Huruf aksi diturunkan dari PERILAKU handler (sumber utuh via inspect),
+    # bukan dari ejaan jalur -- `preview-journal` terbukti BACA-SAJA meski
+    # namanya mengandung "journal".
+    # ⚠️ Modul bertanda (baru) belum punya baris role_permissions, jadi ia
+    #    GAGAL-TERTUTUP: non-owner ditolak sampai pemilik memberi hibah.
+    # ----------------------------------------------------------------
+    # pratinjau = BACA (nol INSERT/UPDATE/DELETE; 2 dari 5 mendokumentasikannya)
+    (r"^/api/bills/preview-journal$", ["POST"], "purchase_invoice", "R"),
+    (r"^/api/bill-payments/preview-journal$", ["POST"], "send_payment", "R"),
+    (r"^/api/expenses/preview-journal$", ["POST"], "expense", "R"),
+    (r"^/api/sales-invoices/preview-journal$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/receive-payments/preview-journal$", ["POST"], "receive_payment", "R"),
+    # penulis jurnal terkonfirmasi
+    (r"^/api/journals/[^/]+$", ["DELETE"], "journal", "D"),
+    (r"^/api/bank-transfers/[^/]+/post$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-transfers/[^/]+/void$", ["POST"], "kas_bank", "V"),
+    (r"^/api/sales-receipts/[^/]+/void$", ["POST"], "receive_payment", "V"),
+    (r"^/api/customers/[^/]+/opening-balance/reverse$", ["POST"], "customer", "V"),
+    (r"^/api/payroll-payments$", ["POST"], "payroll", "C"),
+    (r"^/api/payroll-payments/[^/]+/post$", ["POST"], "payroll", "P"),
+    (r"^/api/payroll-payments/[^/]+/void$", ["POST"], "payroll", "V"),
+    (r"^/api/production/month-end-reconcile$", ["POST"], "journal", "P"),
+    (r"^/api/production/month-end-reconcile/[^/]+/void$", ["POST"], "journal", "V"),
+    (r"^/api/fixed-assets/post-depreciation$", ["POST"], "fixed_asset", "P"),  # (baru)
+    # menulis lewat DELEGASI ke service (tulis=0 di handler, tapi bukan baca)
+    (r"^/api/bills/[^/]+/payments$", ["POST"], "send_payment", "C"),
+    (r"^/api/sales-invoices/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),
+    (r"^/api/payment-requests/[^/]+/cancel$", ["POST"], "payment_request", "U"),
+    # menulis data, tanpa jurnal
+    (r"^/api/fiscal-years/[^/]+/close$", ["POST"], "period", "P"),
+    (r"^/api/purchase-orders/[^/]+/close$", ["POST"], "purchase_order", "U"),
+    (r"^/api/approval-requests/[^/]+/approve$", ["POST"], "approval_inbox", "A"),
+    (r"^/api/expense-claims/[^/]+/approve$", ["POST"], "expense", "A"),
+    (r"^/api/budgets/[^/]+/approve$", ["POST"], "budget", "A"),  # (baru)
+    (r"^/api/budgets/[^/]+/close$", ["POST"], "budget", "U"),  # (baru)
+    (r"^/api/intercompany/reconcile$", ["POST"], "intercompany", "U"),  # (baru)
+    (r"^/api/branches/transfers/[^/]+/settle$", ["POST"], "warehouse", "U"),
+    (r"^/api/tables/sessions/[^/]+/close$", ["POST"], "tables", "U"),  # (baru)
+    # ⚠️ BELUM DIPASTIKAN: 0 tulis, 0 delegasi terdeteksi dari 72 baris sumber.
+    #    Diberi R (paling tak membatasi). Kalau ternyata ia menulis, naikkan.
+    (r"^/api/bank-reconciliation/sessions/[^/]+/agentic-reconcile$", ["POST"], "kas_bank", "R"),
+    # ================================================================
     # Payroll
     (r"^/api/payroll/summary$", ["GET"], "payroll", "R"),
     (r"^/api/payroll$", ["GET"], "payroll", "R"),
@@ -192,7 +238,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bank-accounts/[^/]+", ["DELETE"], "kas_bank", "D"),
     # Team Management
     (r"^/api/team-members$", ["GET"], "team_management", "R"),
-    (r"^/api/team-members$", ["POST"], "team_management", "C"),
+    # DIPERBAIKI 12 Sep: tak ada POST /api/team-members. Rute nyatanya
+    # /invite -- pintu masuk SETIAP anggota berikutnya, jadi celah di sini
+    # mengalikan celah lainnya.
+    (r"^/api/team-members/invite$", ["POST"], "team_management", "C"),
+    (r"^/api/team-members/invitations/[^/]+/resend$", ["POST"], "team_management", "C"),
     (r"^/api/team-members/[^/]+$", ["GET"], "team_management", "R"),
     (r"^/api/team-members/[^/]+$", ["PATCH", "PUT"], "team_management", "U"),
     (r"^/api/team-members/[^/]+$", ["DELETE"], "team_management", "D"),
@@ -217,8 +267,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/salary-components/[^/]+", ["PATCH", "PUT"], "salary_component", "U"),
     (r"^/api/salary-components/[^/]+", ["DELETE"], "salary_component", "D"),
     # BPJS
-    (r"^/api/bpjs", ["GET"], "bpjs", "R"),
-    (r"^/api/bpjs", ["POST", "PATCH", "PUT"], "bpjs", "U"),
+    # DIPERBAIKI 12 Sep: rute nyata /api/payroll-config/bpjs, bukan /api/bpjs.
+    (r"^/api/payroll-config/bpjs$", ["GET"], "bpjs", "R"),
+    (r"^/api/payroll-config/bpjs$", ["POST", "PATCH", "PUT"], "bpjs", "U"),
     # Pay Groups
     (r"^/api/pay-groups", ["GET"], "pay_group", "R"),
     (r"^/api/pay-groups", ["POST"], "pay_group", "C"),
