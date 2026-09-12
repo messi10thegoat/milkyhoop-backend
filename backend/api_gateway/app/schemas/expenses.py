@@ -97,6 +97,14 @@ class CreateExpenseRequest(BaseModel):
             raise ValueError("Amount is required for non-itemized expense")
         return v
 
+    status: Literal["draft", "posted"] = Field(
+        "posted",
+        description=(
+            "draft: disimpan TANPA jurnal dan TANPA efek saldo bank; "
+            "posted: langsung terbit (bawaan, menjaga kompatibilitas)."
+        ),
+    )
+
 
 class UpdateExpenseRequest(BaseModel):
     """Request body for updating an expense (only draft status)."""
