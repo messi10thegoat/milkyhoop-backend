@@ -39,6 +39,21 @@ import sys
 import urllib.error
 import urllib.request
 
+# USER-AGENT WAJIB. Tanpa ini, Cloudflare menolak UA bawaan urllib
+# ("Python-urllib/3.x") dengan 403 SEBELUM permintaan sampai ke aplikasi --
+# sehingga gerbang ini melaporkan "login GAGAL 403" dan siapa pun yang
+# menjalankannya dari TEPI akan mengira produksi mati. Terukur 12 Sep 2026:
+# lewat https://milkyhoop.com -> 403 di login; lewat http://127.0.0.1:8001
+# (melewati Cloudflare) -> 9/9 HIJAU pada kode yang SAMA. Kegagalannya milik
+# ALAT, bukan produk.
+#
+# `addheaders` pada opener hanya dipakai bila Request belum menyetel header
+# itu sendiri, jadi ini tak menimpa apa pun yang sudah ada.
+_pembuka = urllib.request.build_opener()
+_pembuka.addheaders = [("User-Agent", "mh-gate-asap/1.0")]
+urllib.request.install_opener(_pembuka)
+
+
 BASIS = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8001"
 gagal = []
 
