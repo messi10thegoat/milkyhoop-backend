@@ -1652,6 +1652,37 @@ async def _execute_fulfillment(
             cogs_journal_id,
         )
 
+        # TAUTKAN LEDGER -> JURNAL HPP. Sampai 12 Sep 2026 daftar kolom INSERT
+        # `inventory_ledger` di atas (baris ~1437) tak menyebut `journal_id`
+        # sama sekali, sehingga SETIAP baris pengiriman lahir tanpa tautan --
+        # 6 baris di 2 tenant, terukur. Akibatnya jalur pembalikan berbasis
+        # jurnal tak bisa menemukan gerakan yang harus dibalik.
+        #
+        # MENGAPA DI SINI, BUKAN DI INSERT-nya: `cogs_journal_id` baru lahir
+        # SETELAH loop, karena keberadaannya bergantung pada `total_cogs > 0`
+        # yang menumpuk DI DALAM loop. Menaikkan `uuid4()` ke atas akan
+        # menulis tautan ke jurnal yang mungkin TAK PERNAH DIBUAT -- dan
+        # `journal_id` TIDAK punya FK (klaim skill v1.5 salah, diukur 12 Sep),
+        # jadi tautan menggantung akan MENGENDAP DIAM, bukan gagal bersuara.
+        #
+        # `WHERE journal_id IS NULL` BUKAN sekadar pagar Rule 8 -- ia yang
+        # membuat CAKUPANNYA benar. Satu faktur bisa dikirim beberapa kali
+        # (INV-2608-0001 dua kali); tanpa syarat itu, pengiriman kedua akan
+        # menaut ulang baris pengiriman PERTAMA ke jurnal yang salah.
+        await conn.execute(
+            """
+            UPDATE inventory_ledger
+               SET journal_id = $1
+             WHERE tenant_id = $2
+               AND source_type = 'INVOICE_FULFILLMENT'
+               AND source_id = $3
+               AND journal_id IS NULL
+            """,
+            cogs_journal_id,
+            tenant_id,
+            invoice_id,
+        )
+
     # 4. Revenue journal (if recognize_revenue and total_revenue > 0)
     revenue_journal_id = None
     if recognize_revenue and total_revenue > Decimal("0"):
