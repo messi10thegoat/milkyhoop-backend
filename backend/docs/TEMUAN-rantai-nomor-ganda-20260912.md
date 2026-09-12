@@ -94,3 +94,36 @@ klaim yang terdengar spesifik justru menghentikan pemeriksaan.
 
 **Memperbaiki 9 pasang lama = menyunting jurnal POSTED** (Law 2/3) — putusan
 pemilik, bukan kerapian.
+
+---
+
+## BENTUK LAW 34 YANG BERBEDA: hukumnya BENAR, alasannya KELIRU
+
+Law 2 melarang membalik jurnal POSTED ke VOID. **Larangannya benar dan wajib
+dipatuhi.** Tapi alasan yang tertulis di dokumen —
+
+> *"the unique index is NOT status-filtered"*
+
+— **salah**: indeks uniknya tak pernah ada (`idx_je_chain_seq` btree biasa).
+Sebab sesungguhnya **trigger yang TERTUNDA sampai COMMIT**.
+
+**Kenapa ini kelas tersendiri, bukan sekadar Law 34 biasa:**
+
+Law 34 yang biasa kita catat = dokumen **menjanjikan pagar yang tak terpasang**.
+Akibatnya orang merasa aman padahal tidak. Yang ini **kebalikan arah**: pagarnya
+memang harus ada, aturannya benar, tapi **alasan yang tertulis mengirim orang
+mencari obat di tempat yang salah.**
+
+Terbukti pada kami sendiri, 12 Sep: dua sesi menghabiskan sekitar satu jam
+berdebat **urutan pernyataan** (`balik-dulu` vs `posting-dulu`) karena alasan di
+dokumen menunjuk ke indeks. Obat yang hampir diusulkan ke pemilik — *"tukar
+urutan pernyataan"* — **tidak memperbaiki apa pun**: trigger tertunda tak pernah
+melihat urutan. Kalau itu disetujui, ia akan ditandai selesai sementara cacatnya
+utuh. **Lebih buruk daripada tak berbuat.**
+
+**How to apply:** saat sebuah hukum menyebutkan SEBAB teknisnya, perlakukan
+sebabnya sebagai **klaim terpisah** yang butuh bukti sendiri — bukan sebagai
+bagian dari hukumnya. Hukum boleh dipatuhi tanpa percaya alasannya; **obat tidak
+boleh dipilih dari alasan yang belum diukur.** Dan klaim yang terdengar spesifik
+(`"unique index"`, `"status-filtered"`) justru **menghentikan pemeriksaan** —
+kekhususan terbaca seperti bukti.
