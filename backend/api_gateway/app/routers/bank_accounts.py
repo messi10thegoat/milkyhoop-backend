@@ -1217,7 +1217,7 @@ async def get_bank_transactions(
                                ELSE bt.amount
                            END as amount,
                            bt.description, bt.payee_payer, bt.reference_type, bt.reference_number,
-                           bt.is_reconciled, bt.created_at, bt.source_module,
+                           bt.is_reconciled, bt.created_at, bt.source_module, bt.status,
                            -- Enrich: customer name from sales_invoices via reference_id
                            si.invoice_number AS related_invoice_number,
                            c.nama AS customer_name,
@@ -1258,6 +1258,7 @@ async def get_bank_transactions(
                     "is_reconciled": row["is_reconciled"],
                     "created_at": row["created_at"].isoformat(),
                     "source_module": row.get("source_module"),
+                    "status": row.get("status"),
                     "customer_name": row.get("customer_name"),
                     "vendor_name": row.get("vendor_name"),
                     "related_invoice_number": row.get("related_invoice_number"),

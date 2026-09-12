@@ -192,6 +192,7 @@ class BankTransactionListItem(BaseModel):
     reference_number: Optional[str] = None
     is_reconciled: bool
     created_at: str
+    status: Optional[str] = None
     source_module: Optional[str] = None
     customer_name: Optional[str] = None
     vendor_name: Optional[str] = None
