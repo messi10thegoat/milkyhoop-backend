@@ -90,6 +90,32 @@ PETA_AKSI: Dict[str, Dict[str, Any]] = {
         "id_baris": "item_id",
         "nama_baris": ("description", "item_name", "name", "product_name"),
     },
+    "create_stock_adjustment": {
+        # T182-D (B). AKSI PERTAMA DI PETA INI YANG TIDAK PUNYA PIHAK.
+        # Penyesuaian stok tak punya vendor maupun pelanggan -- hanya baris
+        # barang. id_pihak/nama_pihak/label_pihak = None SENGAJA.
+        #
+        # Kenapa ini aman TANPA mengubah badan periksa_gerbang_entitas:
+        # fungsi itu membaca `payload.get(peta["nama_pihak"])` = payload.get(None).
+        # None hashable, jadi dict.get(None) mengembalikan None (bukan
+        # TypeError), _teks(None) = "", lalu
+        # `pihak_hilang = bool("") and ...` = False DAN hubung-singkat, jadi
+        # `_id_kosong(payload.get(None))` tak pernah dievaluasi dan
+        # `peta["label_pihak"]` tak pernah dibaca (hanya dipakai di dalam
+        # `if pihak_hilang:`). Cabang pihak MATI TOTAL untuk aksi ini; yang
+        # hidup hanya cabang baris yatim. Dijaga tes eksplisit.
+        #
+        # kata_dokumen None -> display_name registry "Penyesuaian Stok"
+        # -> "penyesuaian stok" (tak ada awalan "Buat " untuk dibuang).
+        "kata_dokumen": None,
+        "id_pihak": None,
+        "nama_pihak": None,
+        "label_pihak": None,
+        # product_id: nama field per-baris menurut StockAdjustmentItemCreate
+        # (app/schemas/stock_adjustments.py). BUKAN item_id (Quote/SO/SI).
+        "id_baris": "product_id",
+        "nama_baris": ("product_name", "name", "item_name", "description"),
+    },
 }
 
 AKSI_DIGERBANG = frozenset(PETA_AKSI)

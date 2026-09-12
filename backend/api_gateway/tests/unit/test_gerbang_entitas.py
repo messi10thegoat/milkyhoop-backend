@@ -237,14 +237,18 @@ def test_aksi_di_luar_radius_tidak_pernah_diblokir(action_key):
     assert periksa_gerbang_entitas(action_key, payload) is None
 
 
-def test_radius_tepat_empat_aksi():
-    """Penjaga radius: menambah anggota = tiket baru, bukan efek samping."""
+def test_radius_tepat_lima_aksi():
+    """Penjaga radius: menambah anggota = tiket baru, bukan efek samping.
+
+    T182-D (B): create_stock_adjustment DITAMBAHKAN -- keputusan sadar.
+    """
     assert AKSI_DIGERBANG == frozenset(
         {
             "create_bill",
             "create_quote",
             "create_sales_invoice",
             "create_sales_order",
+            "create_stock_adjustment",
         }
     )
 
@@ -263,6 +267,135 @@ def test_peta_aksi_tidak_mencampur_penamaan():
         assert PETA_AKSI[ak]["nama_pihak"] == "customer_name"
         assert PETA_AKSI[ak]["id_baris"] == "item_id"
         assert PETA_AKSI[ak]["label_pihak"] == "pelanggan"
+    # T182-D: penyesuaian stok memakai product_id (StockAdjustmentItemCreate),
+    # BUKAN item_id. Menyalin amplop Quote/SO ke sini = pagar membaca kunci
+    # yang selalu kosong -> memblokir SEMUA penyesuaian stok.
+    assert PETA_AKSI["create_stock_adjustment"]["id_baris"] == "product_id"
+
+
+# ══════════════════ T182-D (B) penyesuaian stok: aksi TANPA PIHAK ══════════════════
+
+PESAN_TERPIN_SEBELUM_T182D = {
+    # Ditangkap MENTAH dari commit 50757b21 (sebelum patch B) di worktree ini.
+    "create_bill": (
+        "Knitto Textile belum terdaftar sebagai vendor, dan Benang Jahit "
+        "belum ada di master barang. Daftarkan dulu, lalu kirim ulang "
+        "faktur ini."
+    ),
+    "create_quote": (
+        "Toko Melati belum terdaftar sebagai pelanggan, dan Benang Jahit "
+        "belum ada di master barang. Daftarkan dulu, lalu kirim ulang "
+        "penawaran ini."
+    ),
+    "create_sales_invoice": (
+        "Toko Melati belum terdaftar sebagai pelanggan, dan Benang Jahit "
+        "belum ada di master barang. Daftarkan dulu, lalu kirim ulang "
+        "faktur penjualan ini."
+    ),
+    "create_sales_order": (
+        "Toko Melati belum terdaftar sebagai pelanggan, dan Benang Jahit "
+        "belum ada di master barang. Daftarkan dulu, lalu kirim ulang "
+        "pesanan penjualan ini."
+    ),
+}
+
+
+@pytest.mark.parametrize("action_key", sorted(PESAN_TERPIN_SEBELUM_T182D))
+def test_pesan_empat_aksi_lama_byte_identik(action_key):
+    """Menambah aksi TANPA PIHAK ke peta tidak boleh menggeser satu byte pun
+    dari kalimat keempat aksi yang SUDAH LIVE."""
+    if action_key == "create_bill":
+        payload = {
+            "vendor_id": None,
+            "vendor_name": "Knitto Textile",
+            "items": [{"product_name": "Benang Jahit"}],
+        }
+    else:
+        payload = {
+            "customer_id": None,
+            "customer_name": "Toko Melati",
+            "items": [{"description": "Benang Jahit"}],
+        }
+    h = periksa_gerbang_entitas(action_key, payload)
+    assert h["content"] == PESAN_TERPIN_SEBELUM_T182D[action_key]
+
+
+def _sadj(items=None):
+    """Amplop penyesuaian stok: TIDAK ada pihak sama sekali, hanya baris."""
+    return {
+        "adjustment_date": "2026-08-31",
+        "adjustment_type": "decrease",
+        "items": items
+        if items is not None
+        else [
+            {
+                "product_name": "Kain Katun",
+                "quantity_adjustment": -5,
+                "product_id": "11111111-1111-1111-1111-111111111111",
+            }
+        ],
+    }
+
+
+def test_sadj_baris_tanpa_product_id_diblokir():
+    h = periksa_gerbang_entitas(
+        "create_stock_adjustment",
+        _sadj(items=[{"product_name": "Kain Katun", "quantity_adjustment": -5}]),
+    )
+    assert h is not None, "baris yatim TIDAK diblokir"
+    assert h["message_type"] == "CLARIFICATION"
+    assert "Kain Katun" in h["content"]
+    assert "belum ada di master barang" in h["content"]
+
+
+def test_sadj_semua_ter_resolve_lolos():
+    assert periksa_gerbang_entitas("create_stock_adjustment", _sadj()) is None
+
+
+def test_sadj_kalimat_tidak_pernah_menyebut_pihak():
+    """Aksi ini tak punya vendor/pelanggan. Kalimat yang menyebut pihak =
+    menyuruh user memperbaiki sesuatu yang tidak ada."""
+    h = periksa_gerbang_entitas(
+        "create_stock_adjustment",
+        _sadj(items=[{"product_name": "Kain Katun"}]),
+    )
+    for kata in ("vendor", "pelanggan", "belum terdaftar sebagai"):
+        assert kata not in h["content"], h["content"]
+
+
+def test_sadj_kata_dokumen_penyesuaian_stok():
+    h = periksa_gerbang_entitas(
+        "create_stock_adjustment", _sadj(items=[{"product_name": "Kain Katun"}])
+    )
+    assert "kirim ulang penyesuaian stok ini" in h["content"], h["content"]
+
+
+def test_sadj_peta_pihak_none_dan_cabang_pihak_mati():
+    """Membuktikan entri tanpa pihak aman TANPA mengubah badan fungsi.
+
+    Kunci pihak = None -> payload.get(None) -> None -> cabang pihak mati.
+    Payload di bawah SENGAJA memuat customer_name/vendor_name: kalau peta
+    suatu hari diisi kunci pihak, tes ini menyala.
+    """
+    peta = PETA_AKSI["create_stock_adjustment"]
+    assert peta["id_pihak"] is None
+    assert peta["nama_pihak"] is None
+    assert peta["label_pihak"] is None
+    pl = _sadj()
+    pl["customer_name"] = "Toko Melati"
+    pl["vendor_name"] = "Knitto Textile"
+    pl["customer_id"] = None
+    pl["vendor_id"] = None
+    assert periksa_gerbang_entitas("create_stock_adjustment", pl) is None
+
+
+def test_sadj_nama_hilang_tidak_mencetak_penanda_kosong_makna():
+    h = periksa_gerbang_entitas(
+        "create_stock_adjustment", _sadj(items=[{"quantity_adjustment": -5}])
+    )
+    assert h is not None
+    assert "tidak terbaca" in h["content"], h["content"]
+    assert "(tanpa nama)" not in h["content"]
 
 
 # ══════════════════ penjaga BENTUK amplop ══════════════════
@@ -823,6 +956,45 @@ async def test_e2e_jual_lengkap_lolos_gerbang_dan_meledak(monkeypatch):
     try:
         hasil = await te._execute_propose_direct(
             {"action_key": "create_quote", "payload": _jual()}
+        )
+    except AssertionError as e:
+        assert "DB DISENTUH" in str(e)
+    else:
+        _bukan_gerbang(hasil)
+
+
+@pytest.mark.asyncio
+async def test_e2e_sadj_baris_yatim_diblokir_sebelum_db(monkeypatch):
+    """T182-D (B): penyesuaian stok MENGGERAKKAN PERSEDIAAN dan menerbitkan
+    jurnal. Kartu untuk baris yatim = user menyetujui sesuatu yang tak bisa
+    dieksekusi. Peledak membuktikan blokirnya SEBELUM INSERT pending_actions.
+    """
+    te, peledak = _executor_uji(monkeypatch)
+    hasil = await te._execute_propose_direct(
+        {
+            "action_key": "create_stock_adjustment",
+            "payload": _sadj(
+                items=[{"product_name": "Kain Katun", "quantity_adjustment": -5}]
+            ),
+        }
+    )
+    assert hasil.get("message_type") == "CLARIFICATION", hasil
+    assert hasil.get("content"), "kalimat kosong sampai ke layar"
+    assert "Kain Katun" in hasil["content"]
+    assert peledak.disentuh is False, "INSERT pending_actions tetap dijalankan"
+
+
+@pytest.mark.asyncio
+async def test_e2e_sadj_lengkap_lolos_gerbang_dan_meledak(monkeypatch):
+    """KONTROL POSITIF: semua product_id terisi -> gerbang TIDAK menyala ->
+    eksekusi berlanjut sampai menyentuh DB (peledak MELEDAK).
+
+    Tanpa ini, "tidak diblokir" bisa berarti "kode tak pernah dijalankan".
+    """
+    te, peledak = _executor_uji(monkeypatch)
+    try:
+        hasil = await te._execute_propose_direct(
+            {"action_key": "create_stock_adjustment", "payload": _sadj()}
         )
     except AssertionError as e:
         assert "DB DISENTUH" in str(e)
