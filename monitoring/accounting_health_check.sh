@@ -255,6 +255,19 @@ check_4_inventory_qty() {
     # Yang benar diukur adalah SALDO BERSIH tak berlokasi per produk. Sesudah
     # relokasi yang sah (keluar dari NULL, masuk ke gudang nyata) saldo itu
     # nol, meski barisnya bertambah dua.
+    #
+    # ⚠️ JANGAN BINGUNG ketika `B = 0` sementara `SELECT count(*) FROM
+    # inventory_ledger WHERE warehouse_id IS NULL` mengembalikan angka BESAR.
+    # Kedua angka itu BENAR dan tidak bertentangan. Terukur 12 Sep 2026:
+    #   14 baris ber-warehouse_id NULL ADA, tersebar di 3 produk
+    #   saldo bersih tak-berlokasi tiap produk = 0.0000  -> B = 0, BENAR
+    # Sebabnya tiap kaki MASUK tanpa lokasi punya kaki KELUAR pasangannya
+    # (relokasi/pembalik). Barisnya tinggal selamanya -- tabel ini hanya-tambah.
+    #
+    # DAN LENGAN INI MASIH BERGIGI, dibuktikan dengan kontrafaktual pada data
+    # nyata, bukan dinalar: kalau kaki-keluar RELOKASI_GUDANG dikeluarkan dari
+    # hitungan (= keadaan sebelum koreksi 11 Sep), B kembali menjadi 3. Jadi
+    # kejadian BARU tetap akan menyalakannya.
     gaps_b=$(psql_cmd "
         SELECT COUNT(*) FROM (
             SELECT product_id
