@@ -97,3 +97,72 @@ Kalau dialognya perlu menyebut sesuatu: sebab void ini **tercatat otomatis**
 `openapi.yaml` di repo FE **tidak memuat endpoint ini sama sekali**. Spec itu
 ditulis tangan dan basi; ia pernah membuat `PaymentCreate` bertipe hijau lalu
 ditolak server 422. Jawaban di atas diambil dari KODE, bukan spec.
+
+---
+
+# TAMBAHAN 12 Sep 2026 — koreksi angka + biaya subjek uji
+
+Ditulis sesudah memeriksa klaim batasan FE ("tak ada cara murah membuat subjek
+rekonsiliasi buatan tes"). Hasilnya mengoreksi angka di atas dan mengubah
+sebab kenapa batasan itu tetap berlaku.
+
+## KOREKSI: angkanya lebih besar dari yang kutulis
+
+Di atas kutulis "0 baris PEMBALIK ber-`source_type=PRODUCTION_RECONCILE`".
+Itu benar tapi terlalu sempit. Diukur ulang **tanpa penyaring tenant sama
+sekali**:
+
+```sql
+SELECT tenant_id, count(*) FROM journal_entries
+WHERE source_type = 'PRODUCTION_RECONCILE' GROUP BY 1;
+-- 0 rows
+```
+
+**Jurnal rekonsiliasinya SENDIRI nol, di SELURUH tenant.** Jadi bukan hanya
+jalur `/void` yang belum pernah jalan — **seluruh fitur rekonsiliasi akhir bulan
+belum pernah dijalankan di produksi.** Void hanyalah hilir dari sesuatu yang
+hulunya pun belum pernah dipakai.
+
+## Subjek uji SEBENARNYA tersedia — tapi bukan milikku untuk dijalankan
+
+Klaim "tak ada subjek murah" **tidak benar secara teknis**. Terukur:
+
+- `kaos-biru-konveksi` punya **31 `PRODUCTION_LABOR` + 30 `PRODUCTION_OVERHEAD`**
+  ber-status POSTED, semuanya 2026-09-03.
+- Periode `2026-09` **OPEN** di keempat tenant.
+- Ketiga peran wajib (`WIP_GENERIC`, `COGS_VARIANCE_PRODUCTION`,
+  `INVENTORY_MERCHANDISE`) **sudah terpetakan di keempat tenant**.
+- `ACTUAL_OVERHEAD` **tidak terpetakan di tenant mana pun** → kaki OH dilewati
+  dengan anggun (`production.py` ~3186: `AccountRoleUnmappedError` → skip),
+  tapi kaki labor aktif.
+
+Karena `labor_active` benar, cabang `if not labor_active and not oh_active`
+(`production.py` ~3318) TIDAK diambil, dan sebuah POST reconcile untuk periode
+`2026-09` **akan benar-benar menerbitkan jurnal**. Subjeknya ada, sekarang.
+
+**Tapi `kaos-biru-konveksi` adalah tenant HIDUP milik pemilik** — kredensial uji
+kita = identitas pemilik. Menjalankan reconcile di sana bukan "uji murah": ia
+menulis jurnal akuntansi sungguhan ke pembukuan pemilik, lalu void-nya menulis
+jurnal pembalik sungguhan. Itu putusan pemilik, bukan biaya teknis.
+
+**Kesimpulan: keputusan FE MENAHAN assertion eksekusi tetap BENAR — tapi
+sebabnya bukan "subjeknya mahal dibuat". Sebabnya: subjeknya ada, dan justru
+karena itu menjalankannya berarti menulis ke buku pemilik.**
+
+## Satu-satunya penyelidikan yang benar-benar gratis
+
+`dry_run` adalah **baca murni** — tanpa advisory lock, tanpa INSERT, tanpa 409:
+
+```
+POST /api/production/month-end-reconcile   {"period": "2026-09", "dry_run": true}
+```
+
+Komentarnya menyebut angkanya datang dari komputasi yang IDENTIK dengan jalur
+tulis (anti-drift). Jadi prasyarat, saldo clearing, dan varians bisa
+diverifikasi tanpa menulis apa pun. `dry_run` TIDAK menyentuh `/void`, jadi ia
+tak bisa membuktikan jalur void — tapi ia membuktikan bahwa subjeknya nyata.
+
+## Lingkup verifikasi tambahan ini
+
+Kode + skema + **kueri baca** ke DB produksi. Tak ada reconcile yang dijalankan,
+tak ada `dry_run` yang dipanggil, tak ada jurnal yang ditulis atau di-void.
