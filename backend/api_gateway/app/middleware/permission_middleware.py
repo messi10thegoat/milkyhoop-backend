@@ -95,6 +95,17 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/expenses/[^/]+$", ["GET"], "expense", "R"),
     (r"^/api/expenses/[^/]+$", ["PATCH", "PUT"], "expense", "U"),
     (r"^/api/expenses/[^/]+$", ["DELETE"], "expense", "D"),
+    # --- Sub-jalur beban — DITAMBAHKAN 12 Sep 2026 -------------------
+    # Lima modul lain sudah menutup pasangan {id}/post + {id}/void
+    # (sales-invoices, bills, receive-payments, bill-payments, payroll).
+    # Beban SATU-SATUNYA yang terlewat, sehingga dua endpoint PENULIS
+    # JURNAL bisa dipanggil siapa pun yang terautentikasi di tenant --
+    # termasuk peran Viewer. Terukur sebelum perbaikan: akun tanpa izin
+    # EXPENSE menembus sampai ke handler (404 'Expense not found'),
+    # sementara PATCH/DELETE menolak 403 dengan benar.
+    (r"^/api/expenses/[^/]+/post$", ["POST"], "expense", "P"),
+    (r"^/api/expenses/[^/]+/void$", ["POST"], "expense", "V"),
+    (r"^/api/expenses/[^/]+/attachments$", ["POST"], "expense", "U"),
     # Payroll
     (r"^/api/payroll/summary$", ["GET"], "payroll", "R"),
     (r"^/api/payroll$", ["GET"], "payroll", "R"),
