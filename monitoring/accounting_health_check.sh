@@ -97,6 +97,23 @@ check_1_journal_balance() {
     fi
 }
 
+# V241 2026-09-13 — Check 2 membaca VERDIKT, bukan jumlah mentah.
+# Bentuknya meniru check_14 / check_15: verify_chain_integrity_all() +
+# journal_chain_exemptions, verdikt PASS / PASS_EXEMPT / FAIL_NON_EXEMPT /
+# FAIL_DRIFT_CHANGED.
+#
+# KENAPA: 2 tautan pecah yang SUDAH ADA (seq 109 & 393) membuat pemeriksaan ini
+# CRITICAL tiap pagi. Menyembuhkannya = menyunting jurnal POSTED (Law 2/3) =
+# putusan pemilik. Alarm yang SELALU merah akan diabaikan, dan alarm yang
+# diabaikan lebih buruk daripada alarm yang tak ada karena ia TERLIHAT seperti
+# penjagaan. Garis dasarnya MENGAMPUNI yang lama, TIDAK menghapusnya.
+#
+# Terbukti MERAH SEBELUM dipasang (rollback, nol baris menetap):
+#   pecahan ke-12 simulasi   2 -> 3   FAIL_DRIFT_CHANGED
+#   jumlah sama, sidik jari beda      FAIL_DRIFT_CHANGED
+#   sidik jari dipulihkan             PASS_EXEMPT (merahnya memang dari situ)
+# Sidik jari mengunci IDENTITAS: garis dasar skalar akan MELOLOSKAN penggantian
+# (satu pecahan lama sembuh + satu baru muncul, jumlah tetap 2).
 check_2_hash_chain() {
     local tenant="$1"
     local posted
@@ -106,17 +123,16 @@ check_2_hash_chain() {
         CHK_DETAIL=""
         return
     fi
-    local broken
-    broken=$(psql_cmd "
-        SELECT COUNT(*) FILTER (WHERE NOT v.is_valid)
-        FROM verify_chain_integrity('$tenant') v;
-    ")
-    if [ "$broken" = "0" ] || [ -z "$broken" ]; then
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_chain_integrity_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
+        local broken
+        broken=$(psql_cmd "SELECT broken_count FROM verify_chain_integrity_all() WHERE tenant_id = '$tenant';")
         CHK_PASS=0
-        CHK_DETAIL="$broken broken chain links"
+        CHK_DETAIL="hash chain $verdict ($broken broken chain links)"
         detail "[CHECK 2] $tenant: $CHK_DETAIL"
     fi
 }
