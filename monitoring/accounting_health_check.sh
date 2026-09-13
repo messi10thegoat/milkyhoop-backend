@@ -72,9 +72,8 @@ is_broken() {
 # Ketiganya rusak SEJAK LAHIR -- fungsinya tak pernah ada / SQL-nya cacat.
 broken_since() {
     case "$1" in
-        7)  echo "2026-03-05" ;;
-        9)  echo "2026-03-05" ;;
-        13) echo "2026-04-20" ;;
+        # 7/9/13 dihidupkan V242 (2026-09-13); tanggal lahir-rusak mereka
+        # tak berlaku lagi -- kerusakan baru dilabeli "sejak jalan ini".
         *)  echo "" ;;
     esac
 }
@@ -445,27 +444,24 @@ check_6_sequence() {
 }
 
 check_7_ap_invariant() {
+    # V242 (2026-09-13): dulu memanggil compute_ap_adjustments yang TAK PERNAH ADA
+    # -> mati sejak lahir (5 Mar). Kini GL PAYABLE efektif vs compute_ap_outstanding,
+    # anggota + patok identitas di hc_verdict(). Diampuni hanya bila himpunan
+    # tagihan, cacah, jumlah SAMA dan anggota MENUTUP drift.
     local tenant="$1"
-    local drift
-    drift=$(psql_cmd "
-        SELECT ABS(
-            (SELECT COALESCE(SUM(jl.credit - jl.debit), 0)
-             FROM journal_lines jl
-             JOIN journal_entries je ON je.id = jl.journal_id
-             JOIN chart_of_accounts coa ON coa.id = jl.account_id
-             WHERE coa.account_type = 'PAYABLE'
-               AND is_effective_journal(je.id)  -- Rule 8.1
-               AND je.tenant_id = '$tenant')
-            - COALESCE((SELECT SUM(outstanding) FROM compute_ap_outstanding('$tenant')), 0)
-            - COALESCE((SELECT SUM(net) FROM compute_ap_adjustments('$tenant')), 0)
-        );
-    ")
-    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ]; then
+    local row verdict drift cnt
+    row=$(psql_cmd "SELECT verdict||'|'||COALESCE(drift::text,'')||'|'||member_count FROM hc_verdict('ap_invariant', '$tenant');")
+    verdict="${row%%|*}"
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
-    else
+    elif [ "$row" = "__GAGAL__" ]; then
         CHK_PASS=0
-        CHK_DETAIL="AP drift=$drift"
+        CHK_DETAIL="__GAGAL__"
+    else
+        drift=$(echo "$row" | cut -d'|' -f2); cnt=$(echo "$row" | cut -d'|' -f3)
+        CHK_PASS=0
+        CHK_DETAIL="AP $verdict drift=$drift tagihan=$cnt"
         detail "[CHECK 7] $tenant: $CHK_DETAIL"
     fi
 }
@@ -505,33 +501,51 @@ check_14_ar_reconciliation_enforce() {
 }
 
 check_9_inventory_value() {
+    # V242 (2026-09-13): dulu memanggil compute_inventory_adjustments yang TAK
+    # PERNAH ADA, dan suku GL-nya asimetris (membuang jurnal asli, menyimpan
+    # pembalik -> artefak 3 juta). Kini akun LITERAL 1-10600 + is_effective_journal.
+    # SENGAJA beda mekanisme dari check_15 (berbasis PERAN): bila keduanya TAK
+    # SEPAKAT, itu dilaporkan sebagai temuan tersendiri -- pembeda antara
+    # "persediaan menyimpang" dan "pemeriksaannya rusak".
     local tenant="$1"
-    local drift
-    drift=$(psql_cmd "
-        SELECT ABS(
-            (SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
-             FROM journal_lines jl
-             JOIN journal_entries je ON je.id = jl.journal_id
-             JOIN chart_of_accounts coa ON coa.id = jl.account_id
-             WHERE coa.account_code = '1-10600'
-               AND je.status = 'POSTED'
-               AND je.reversed_by_id IS NULL
-               AND je.tenant_id = '$tenant')
-            - (SELECT COALESCE(
-                SUM(CASE WHEN il.quantity_in > 0 THEN il.quantity_in * il.unit_cost ELSE 0 END)
-                - SUM(CASE WHEN il.quantity_out > 0 THEN il.quantity_out * il.unit_cost ELSE 0 END),
-                0)
-             FROM inventory_ledger il
-             WHERE il.tenant_id = '$tenant')
-            - COALESCE((SELECT SUM(net) FROM compute_inventory_adjustments('$tenant')), 0)
-        );
-    ")
-    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ "$drift" = "0.000000" ]; then
+    local row verdict drift cnt d15 tol15 selisih
+    row=$(psql_cmd "SELECT verdict||'|'||COALESCE(drift::text,'')||'|'||member_count FROM hc_verdict('inventory_value', '$tenant');")
+    if [ "$row" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+        return
+    fi
+    verdict="${row%%|*}"
+    drift=$(echo "$row" | cut -d'|' -f2); cnt=$(echo "$row" | cut -d'|' -f3)
+
+    d15=$(psql_cmd "SELECT COALESCE(drift::text,'')||'|'||COALESCE(tolerance::text,'') FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$d15" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+        return
+    fi
+    if [ -n "$d15" ]; then
+        tol15="${d15#*|}"; d15="${d15%%|*}"
+        # sepakat bila |drift9 - drift15| <= toleransi check_15
+        selisih=$(psql_cmd "SELECT (abs(${drift:-0}::numeric - ${d15:-0}::numeric) > ${tol15:-0}::numeric)::text;")
+        if [ "$selisih" = "true" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="check_9 ($drift) dan check_15 ($d15) TAK SEPAKAT, toleransi $tol15"
+            detail "[CHECK 9] $tenant: $CHK_DETAIL"
+            return
+        elif [ "$selisih" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+            return
+        fi
+    fi
+
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
         CHK_PASS=0
-        CHK_DETAIL="inventory value drift=$drift"
+        CHK_DETAIL="inventory value $verdict drift=$drift anggota=$cnt"
         detail "[CHECK 9] $tenant: $CHK_DETAIL"
     fi
 }
@@ -715,43 +729,23 @@ check_11_opening_balance() {
 
 
 check_13_status_desync() {
+    # V242 (2026-09-13): SQL lama kehilangan SEMUA tanda kutip (mati sejak 20 Apr)
+    # dan hanya menghadap satu arah. Kini DUA arah di hc_status_desync_members():
+    #   jurnal hidup tapi status<>POSTED, DAN status POSTED tapi jurnalnya dibalik.
     local tenant="$1"
-    local count
-    count=$(psql_cmd "
-        SELECT COUNT(*) FROM (
-            -- Bills with journal but wrong accounting_status
-            SELECT b.id FROM bills b
-            WHERE b.tenant_id =
-              AND b.accounting_status != POSTED
-              AND EXISTS (
-                  SELECT 1 FROM journal_entries je
-                  WHERE je.source_id::text = b.id::text
-                    AND je.source_type = BILL
-                    AND je.status = POSTED
-                    AND je.reversed_by_id IS NULL
-                    AND je.tenant_id =
-              )
-            UNION ALL
-            -- Sales invoices with journal but wrong accounting_status
-            SELECT si.id FROM sales_invoices si
-            WHERE si.tenant_id =
-              AND si.accounting_status != POSTED
-              AND EXISTS (
-                  SELECT 1 FROM journal_entries je
-                  WHERE je.source_id::text = si.id::text
-                    AND je.source_type = INVOICE
-                    AND je.status = POSTED
-                    AND je.reversed_by_id IS NULL
-                    AND je.tenant_id =
-              )
-        ) sub;
-    ")
-    if [ "$count" = "0" ]; then
+    local row verdict cnt
+    row=$(psql_cmd "SELECT verdict||'|'||member_count FROM hc_verdict('status_desync', '$tenant');")
+    verdict="${row%%|*}"
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
-    else
+    elif [ "$row" = "__GAGAL__" ]; then
         CHK_PASS=0
-        CHK_DETAIL="$count docs with journal but status!=POSTED"
+        CHK_DETAIL="__GAGAL__"
+    else
+        cnt="${row#*|}"
+        CHK_PASS=0
+        CHK_DETAIL="status desync $verdict dokumen=$cnt"
         detail "[CHECK 13] $tenant: $CHK_DETAIL"
     fi
 }
