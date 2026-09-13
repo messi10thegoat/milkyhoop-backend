@@ -937,14 +937,14 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 JOIN chart_of_accounts coa
                   ON coa.id = jl.account_id AND coa.account_type = 'RECEIVABLE'
-                WHERE cn.tenant_id = $2 AND cn.status = 'posted'
+                WHERE cn.tenant_id = $2 AND cn.status IN ('posted', 'partial', 'applied')
                   AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
                   AND jl.credit > 0
                   AND (
                       cn.original_invoice_id = $1
                       OR cn.id IN (
                           SELECT credit_note_id FROM credit_note_applications
-                          WHERE invoice_id = $1
+                          WHERE invoice_id = $1 AND status = 'active'
                       )
                   )
                 GROUP BY cn.id, cn.credit_note_number, cn.credit_note_date, cn.reason
@@ -3189,7 +3189,7 @@ async def record_payment(
                                 ))
                             OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
                                 SELECT 1 FROM credit_note_applications cna
-                                WHERE cna.invoice_id = $1 AND cna.credit_note_id = je.source_id
+                                WHERE cna.invoice_id = $1 AND cna.credit_note_id = je.source_id AND cna.status = 'active'
                             ))
                             OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
                                 SELECT 1 FROM customer_deposit_applications cda

@@ -42,6 +42,7 @@ from ..schemas.credit_notes import (
     CreateCreditNoteRequest,
     UpdateCreditNoteRequest,
     ApplyCreditNoteRequest,
+    UnapplyCreditNoteRequest,
     RefundCreditNoteRequest,
     VoidCreditNoteRequest,
     CreditNoteResponse,
@@ -193,7 +194,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
                 -- Credit note journals linked via allocations
                 OR (je.source_type = 'CREDIT_NOTE' AND EXISTS (
                     SELECT 1 FROM credit_note_applications cna
-                    WHERE cna.invoice_id = $2 AND cna.credit_note_id = je.source_id
+                    WHERE cna.invoice_id = $2 AND cna.credit_note_id = je.source_id AND cna.status = 'active'
                 ))
                 -- Customer deposit application journals linked via allocations
                 OR (je.source_type = 'DEPOSIT_APPLICATION' AND EXISTS (
@@ -1588,6 +1589,141 @@ async def apply_credit_note(
     except Exception as e:
         logger.error(f"Error applying credit note {credit_note_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to apply credit note")
+
+
+# =============================================================================
+# UNAPPLY CREDIT NOTE (batalkan penerapan ke faktur) — 14 Sep 2026, unit (2)
+# =============================================================================
+
+
+@router.post("/{credit_note_id}/unapply", response_model=CreditNoteResponse)
+async def unapply_credit_note(
+    request: Request, credit_note_id: UUID, body: UnapplyCreditNoteRequest
+):
+    """
+    Batalkan penerapan nota kredit ke faktur (kebalikan unit B).
+
+    TANPA jurnal: apply juga tanpa jurnal (piutang sudah dikredit saat CN dibukukan; apply hanya mengatribusi).
+    original_invoice_id kembali NULL lewat compare-and-set dari faktur yang tepat; baris aplikasi menjadi 'reversed'
+    (riwayat, tak dihapus); cache faktur dihitung ulang dari compute_ar_outstanding; audit tercatat.
+    Putusan pemilik: alasan WAJIB; periode tanggal penerapan TUTUP -> tolak.
+    Sesudahnya void faktur dan void CN terbuka dengan sendirinya (penjaga keduanya membaca kaitan/aplikasi aktif).
+    """
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+        alasan = (body.reason or "").strip()
+        if not alasan:
+            raise HTTPException(status_code=400, detail="Alasan pembatalan penerapan wajib diisi.")
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Kunci SAMA dengan apply: apply dan unapply satu CN ter-serialkan
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CREDIT_NOTE_APPLY:{credit_note_id}",
+                )
+                cn = await conn.fetchrow(
+                    "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
+                if not cn:
+                    raise HTTPException(status_code=404, detail="Credit note not found")
+
+                aktif = await conn.fetch(
+                    """
+                    SELECT id, invoice_id, invoice_number, amount_applied, application_date
+                    FROM credit_note_applications
+                    WHERE credit_note_id = $1 AND tenant_id = $2 AND status = 'active'
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
+                if not aktif or cn["original_invoice_id"] is None:
+                    raise HTTPException(status_code=400, detail="Nota kredit ini belum diterapkan ke faktur mana pun.")
+                if len(aktif) > 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Nota kredit ini punya lebih dari satu penerapan aktif; hubungi dukungan.",
+                    )
+                app = aktif[0]
+
+                # Law 5 (putusan pemilik): tanggal penerapan di periode TUTUP -> tolak (pola void_credit_note)
+                period_row = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"],
+                    app["application_date"],
+                )
+                if period_row and period_row["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {period_row['status']}; penerapan nota kredit tidak bisa dibatalkan.",
+                    )
+
+                lepas = await conn.execute(
+                    """
+                    UPDATE credit_notes
+                    SET original_invoice_id = NULL, original_invoice_number = NULL, updated_at = NOW()
+                    WHERE id = $1 AND tenant_id = $2 AND original_invoice_id = $3
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                    app["invoice_id"],
+                )
+                if lepas != "UPDATE 1":
+                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
+
+                balik = await conn.execute(
+                    """
+                    UPDATE credit_note_applications
+                    SET status = 'reversed', reversed_at = NOW(), reversed_by = $2, reversal_reason = $3
+                    WHERE id = $1 AND status = 'active'
+                """,
+                    app["id"],
+                    ctx["user_id"],
+                    alasan,
+                )
+                if balik != "UPDATE 1":
+                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
+
+                await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], app["invoice_id"])
+
+                await conn.execute(
+                    """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+                       VALUES (gen_random_uuid()::text, 'CREDIT_NOTE_UNAPPLIED', 'credit_note', $1, $2, $3, 'api:credit_notes.unapply',
+                               jsonb_build_object('invoice_id', $4::text, 'invoice_number', $5::text, 'amount', $6::text,
+                                                  'application_id', $7::text, 'reason', $8::text, 'user_id', $9::text), true, now())""",
+                    credit_note_id,
+                    cn["credit_note_number"],
+                    ctx["tenant_id"],
+                    str(app["invoice_id"]),
+                    app["invoice_number"],
+                    str(app["amount_applied"]),
+                    str(app["id"]),
+                    alasan,
+                    str(ctx["user_id"]),
+                )
+
+                logger.info(f"Credit note unapplied: {credit_note_id} from invoice {app['invoice_id']}")
+                return {
+                    "success": True,
+                    "message": "Penerapan nota kredit dibatalkan",
+                    "data": {
+                        "id": str(credit_note_id),
+                        "invoice_id": str(app["invoice_id"]),
+                        "invoice_number": app["invoice_number"],
+                        "amount": float(app["amount_applied"]),
+                    },
+                }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unapplying credit note {credit_note_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to unapply credit note")
 
 
 # =============================================================================

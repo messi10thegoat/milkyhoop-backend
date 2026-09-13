@@ -108,6 +108,12 @@ class ApplyCreditNoteItem(BaseModel):
     amount: int = Field(..., gt=0, description="Amount to apply in IDR")
 
 
+class UnapplyCreditNoteRequest(BaseModel):
+    """Batalkan penerapan nota kredit ke faktur (14 Sep 2026). Alasan wajib (putusan pemilik); kosong ditolak handler
+    dengan pesan yang bisa dibaca, bukan 422."""
+    reason: str = Field("", max_length=500)
+
+
 class ApplyCreditNoteRequest(BaseModel):
     """Request body for applying credit note to invoice(s)."""
     applications: List[ApplyCreditNoteItem] = Field(..., min_length=1)
