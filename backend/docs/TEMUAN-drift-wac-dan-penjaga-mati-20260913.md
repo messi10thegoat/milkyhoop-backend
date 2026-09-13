@@ -267,3 +267,61 @@ harus **MENYATAKAN** nolnya (`0`/`PASS`), bukan bersandar pada keimpitan itu.
 `check_16` mengembalikan **empat** tenant sementara loop punya dua
 (`adhita-ariyani`, `subbidel-kolsani` tak pernah ditanya) — celah cakupan yang
 **hampa hari ini**: keduanya nol jurnal, nol baris ledger, hanya punya CoA.
+
+---
+
+# SUSULAN 2 (13 Sep) — AUDIT KONSTITUSI: klaim perlindungan yang tak ada
+
+Dipicu permintaan pemilik agar BE memuat `/milkyhoop-ironlaws`. Dimuat, lalu
+tiap klaim pagar diverifikasi ke `pg_trigger` / `pg_index` / `pg_constraint` —
+bukan ke changelog. Law 34 menuntut ini; dokumen ini hasilnya.
+
+## Yang TERBUKTI TIDAK ADA
+
+| Hukum | Klaim | Kenyataan |
+|---|---|---|
+| **Law 2** | *"stock-adjustment void path was the **lone offender**"* | **LIMA situs lain** masih membalik status ke VOID sampai 12 Sep: `expenses.py`, `bank_transfers.py`, `credit_notes.py` (×2), `vendor_credits.py`. Ditutup `84af5e59`. |
+| **Law 19** | 5 trigger pembekuan nominal: `trg_invoice_freeze`, `trg_bill_freeze`, `trg_expense_freeze`, `trg_receive_payment_freeze`, `trg_bill_payment_freeze` | **NOL dari lima ADA**, dan **tak ada padanannya di bawah nama lain**. Sembilan trigger di kelima tabel itu: 2 stempel `updated_at`, 2 validator enum status, 2 pencatat penghapusan, 1 pembaru bill, 1 penjaga void jurnal. **Tak satu pun membekukan nominal.** |
+| **Law 22** | `UNIQUE INDEX idx_journal_sequence_uniq (tenant_id, chain_sequence)` | **TIDAK ADA.** Yang ada `idx_je_chain_seq`, **tidak unik**. |
+| **Law 26** | trigger `trg_prevent_reverse_of_reversal` | **TIDAK ADA** di bawah nama apa pun pada `journal_entries` (daftar lengkap 6 trigger diperiksa). Indeksnya (`idx_je_single_reversal`, unik) **BENAR ADA**. |
+| **Law 30** | `chk_rp_obligation` + `chk_bp_obligation` (dicetak sebagai SQL siap pakai) | **TIDAK ADA.** 11 CHECK di ketiga tabel settlement **semuanya enum status/metode**. Tak satu pun menuntut rujukan obligasi. |
+
+## Yang BUKAN klaim palsu — drift NAMA, pagarnya ADA
+
+Dicatat supaya laporan ini adil dan tak memicu perbaikan yang tak perlu:
+
+| Diklaim | Nama sebenarnya | Status |
+|---|---|---|
+| `trg_journal_immutable` (Law 2) | `trg_prevent_posted_journal_update` / `_delete` | **ADA, bekerja** |
+| `trg_check_period` (Law 5) | `trg_prevent_closed_period_journal` | **ADA, bekerja** |
+
+⚠️ Aku nyaris melaporkan keduanya sebagai pagar hilang. Itu akan jadi kesalahan
+dengan bentuk yang sama seperti menyimpulkan perilaku dari komentar kode:
+**menyimpulkan dari NAMA, bukan dari perilaku.**
+
+## Kenapa Law 19 yang paling berat
+
+Law 19 adalah hukum yang menjanjikan **nominal dokumen sumber beku sesudah
+jurnalnya POSTED**. Ia dikutip sebagai alasan "edit = reversal + dokumen baru".
+Kalau penegakannya nol, maka `UPDATE bills SET grand_total = ...` atas tagihan
+yang sudah POSTED **berhasil tanpa perlawanan**, dan jurnalnya tak ikut berubah
+— dokumen dan buku besar berpisah diam-diam.
+
+Ini persis kelas yang **Law 13 catatan arsitektural** sudah namai:
+
+> *"invariant yang bisa dinyatakan sebagai predikat atas baris DB HARUS
+> ditegakkan di DB. Yang ditegakkan konvensi kode akan bocor."*
+
+Law 19, 22, 26, 30 semuanya adalah predikat atas baris DB. Semuanya diklaim
+ditegakkan DB. Tak satu pun benar-benar ditegakkan di sana.
+
+## Instans BARU untuk Law 33 (mekanisme ke-8)
+
+`check_7`, `check_9`, `check_13` **bukan** gate yang memeriksa hal salah, bukan
+gate yang mustahil menyala, bukan prasyarat yang tak dijalankan. Mereka:
+
+> **gate yang GALATNYA DIBACA SEBAGAI LULUS** — `psql_cmd` membuang stderr,
+> lalu `[ -z "$x" ]` memaknai kosong sebagai lulus. Alatnya **tak pernah
+> berjalan sama sekali**, dan diamnya terbaca sebagai sehat.
+
+Instans 1–7 semuanya soal alat yang **berjalan** lalu diam. Ini kebalikannya.
