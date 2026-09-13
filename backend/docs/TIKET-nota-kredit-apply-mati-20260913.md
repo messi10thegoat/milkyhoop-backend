@@ -135,3 +135,22 @@ Gate `scripts/gerbang_unapply_cn.py`:
 - After deploy: unit B 28/28 and V248 14/14 still green.
 
 **Remaining:** fence (e) `original_invoice_id` must allow the non-null→NULL transition only together with an application changing to reversed in the same transaction. FE "Batalkan penerapan" button (FRONTEND).
+
+
+---
+
+## FENCE (e) V250 live (14 Sep 2026, commit 22509138)
+
+For a non-draft CN, `original_invoice_id` can only change together with its application history in the same transaction:
+- NULL->X needs an active application;
+- X->NULL needs a reversal in this transaction;
+- X->Y is always rejected (23514).
+
+The apply/unapply handlers were reordered (application first, link second). Deploy order: code first, then V250.
+
+Gate `scripts/gerbang_pagar_v250.py` 13/13, live 13/13:
+- old version (no fence): 4 RED;
+- fence + old order: apply 500;
+- two sabotages caught. The first release sabotage failed as a tool (AND/OR precedence) and was fixed.
+
+After live: unapply 20/20, unit B 28/28, V244 18/18.
