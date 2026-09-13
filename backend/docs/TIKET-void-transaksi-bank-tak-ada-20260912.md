@@ -1,6 +1,11 @@
 # TIKET — tak ada cara mem-void/menerbitkan SATU transaksi bank (12 Sep 2026)
 
-**Status:** TERBUKA, atas putusan pemilik: **tiketkan dulu, jangan bangun**.
+**Status:** **TERPASANG `a42ff853` (13 Sep 2026) — void SATU transaksi bank MANUAL.**
+Pagar izin terbukti **in-process + tabel rute**; **sisi HTTP BELUM dijalankan** (izin
+sesi ditolak, menunggu pemilik). Bukan "gerbang izin lengkap". `post` dan sepuluh rute
+`kasbank_v2` lainnya **tidak** dipasang. Lihat bagian TERPASANG di akhir.
+
+_Status lama: TERBUKA, atas putusan pemilik: tiketkan dulu, jangan bangun._
 Di dalamnya ada dua putusan akuntansi yang hanya pemilik boleh ambil; membangun
 lebih dulu berarti memutuskannya diam-diam.
 
@@ -117,3 +122,50 @@ hanya MANUAL tanpa referensi (tolak atas ketiadaan asal yang sah, bukan
 daftar-hitam) · izin `kas_bank V` dua sisi · nomor jurnal tanpa
 `transaction_number` · `reversed_at` · docstring · `add_api_route` satu fungsi ·
 gerbang wajib menolak transaksi BERREFERENSI di sisi merah. **Bentuk dulu.**
+
+---
+
+# TERPASANG — 13 Sep 2026 (`a42ff853`)
+
+**Yang hidup:** `POST /api/bank-transactions/{transaction_id}/void`, handler
+`kasbank_v2.void_transaction`, dipasang **satu fungsi** (`add_api_route`). Tabel rute
+hidup 1.081 → 1.082; **tepat satu** rute modul `kasbank_v2`; jalur rawan tabrakan tetap
+milik `bank_accounts` / `bank_transfers`.
+
+**Yang TIDAK hidup:** `POST /api/bank-transactions/{id}/post`, ejaan mobile
+`/api/bank-accounts/transactions/{id}/...`, dan sepuluh rute `kasbank_v2` lainnya.
+Rute transfer `kasbank_v2` menduplikasi `bank_transfers` yang hidup — kemungkinan
+jawabannya *jangan pasang*, tapi itu harus diukur, bukan diasumsikan.
+
+## Kriteria terima vs yang terbukti
+
+| kriteria | bukti | kelas |
+|---|---|---|
+| hanya MANUAL berasal sah (daftar-putih, di dalam lock+FOR UPDATE) | G1: void CUSTOMER_DEPOSIT & EXPENSE nyata → 400, tetap POSTED, nol jurnal baru | eksekusi |
+| pintu lama memang berbahaya | G1: kode LAMA menerima void DP & beban nyata (200, VOIDED) | eksekusi |
+| nomor jurnal tanpa `transaction_number` | G1: kode lama void manual kedua **500** (`RV-None`, `uq_je_tenant_number`); baru 200/200, `RV-MT-…` | eksekusi |
+| `reversed_at` + asli tetap POSTED | G1 | eksekusi |
+| jurnal sudah dibalik lewat pintu lain | G1: 409 | eksekusi |
+| pagar izin `kas_bank V` | G2: `_find_permission` middleware sendiri (lama None, baru `(kas_bank,V)`), 3 kontrol negatif, `can()` tolak/izinkan | **in-process** |
+| middleware hidup di jalur itu lewat HTTP | **BELUM DIJALANKAN** — izin sesi ditolak | — |
+| docstring jujur; cabang DRAFT diakui tak terjangkau | kode | baca |
+| R9 | resmi 0,00 sebelum/sesudah; POSTED-saja tak bergeser (51.848→51.848) | eksekusi — **lihat catatan R9** |
+| sabotase | penyaring dicabut → void DP nyata lolos | eksekusi |
+| nol baris menetap | btx 201→201, jurnal 434→434; transaksi Rp 10 jt tak pernah jadi sasaran | eksekusi |
+
+Gerbang: `scripts/gerbang_void_transaksi_bank.py` (18/18, cacah di-assert) dan
+`scripts/gerbang_izin_void_bank.py`.
+
+## ⚠️ Catatan R9 — kontraknya lebih lemah dari yang tertulis
+
+Syarat "R9 gap 0,00" bersandar pada kueri yang **saringan statusnya dekoratif**
+(lihat `TIKET-r9-saringan-status-dekoratif-20260913.md`). Hijau R9 di unit ini benar
+untuk *"apakah void baru menggeser saldo"* (di-assert lewat versi POSTED-saja), **bukan**
+untuk *"apakah buku besar dan transaksi bank rukun"*.
+
+## Koreksi angka
+Cacah `bank_transactions` yang benar **201**, bukan 206 yang sempat dilaporkan.
+
+## Sisa
+- sisi HTTP G2 (menunggu izin pemilik)
+- FE: tombol desktop memanggil ejaan ini; tombol mobile memanggil ejaan lain yang tetap tak ada
