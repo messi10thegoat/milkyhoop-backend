@@ -1529,20 +1529,6 @@ async def apply_credit_note(
                 invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
                 await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], invoice, total_cn)
 
-                terikat = await conn.execute(
-                    """
-                    UPDATE credit_notes
-                    SET original_invoice_id = $1, original_invoice_number = $2, updated_at = NOW()
-                    WHERE id = $3 AND tenant_id = $4 AND original_invoice_id IS NULL
-                """,
-                    invoice["id"],
-                    invoice["invoice_number"],
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-                if terikat != "UPDATE 1":
-                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
-
                 import uuid as uuid_module
 
                 app_id = uuid_module.uuid4()
@@ -1563,6 +1549,22 @@ async def apply_credit_note(
                     application_date,
                     ctx["user_id"],
                 )
+
+                # V250: aplikasi aktif ditulis DULU — pagar DB hanya mengizinkan kaitan NULL->faktur bila aplikasi
+                # aktifnya sudah ada. Gagal compare-and-set -> HTTPException -> transaksi batal (aplikasi ikut batal).
+                terikat = await conn.execute(
+                    """
+                    UPDATE credit_notes
+                    SET original_invoice_id = $1, original_invoice_number = $2, updated_at = NOW()
+                    WHERE id = $3 AND tenant_id = $4 AND original_invoice_id IS NULL
+                """,
+                    invoice["id"],
+                    invoice["invoice_number"],
+                    credit_note_id,
+                    ctx["tenant_id"],
+                )
+                if terikat != "UPDATE 1":
+                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
 
                 await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], invoice["id"])
 
@@ -1663,19 +1665,6 @@ async def unapply_credit_note(
                         detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {period_row['status']}; penerapan nota kredit tidak bisa dibatalkan.",
                     )
 
-                lepas = await conn.execute(
-                    """
-                    UPDATE credit_notes
-                    SET original_invoice_id = NULL, original_invoice_number = NULL, updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2 AND original_invoice_id = $3
-                """,
-                    credit_note_id,
-                    ctx["tenant_id"],
-                    app["invoice_id"],
-                )
-                if lepas != "UPDATE 1":
-                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
-
                 balik = await conn.execute(
                     """
                     UPDATE credit_note_applications
@@ -1687,6 +1676,21 @@ async def unapply_credit_note(
                     alasan,
                 )
                 if balik != "UPDATE 1":
+                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
+
+                # V250: aplikasi dibatalkan DULU — pagar DB hanya mengizinkan kaitan faktur->NULL bila aplikasinya
+                # dibatalkan di transaksi yang sama.
+                lepas = await conn.execute(
+                    """
+                    UPDATE credit_notes
+                    SET original_invoice_id = NULL, original_invoice_number = NULL, updated_at = NOW()
+                    WHERE id = $1 AND tenant_id = $2 AND original_invoice_id = $3
+                """,
+                    credit_note_id,
+                    ctx["tenant_id"],
+                    app["invoice_id"],
+                )
+                if lepas != "UPDATE 1":
                     raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
 
                 await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], app["invoice_id"])
