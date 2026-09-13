@@ -2114,8 +2114,12 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 ctx.get("user_id"),
                             )
                             await conn.execute(
-                                "UPDATE bank_transactions SET status = 'VOIDED', voided_at = NOW() WHERE id = $1",
+                                "UPDATE bank_transactions SET status = 'VOIDED', "
+                                "voided_by = $2, voided_at = NOW(), void_reason = $3 "
+                                "WHERE id = $1",
                                 original_btxn["id"],
+                                ctx.get("user_id"),
+                                body.reason,
                             )
 
                 # Update expense status
