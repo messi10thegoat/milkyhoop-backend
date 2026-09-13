@@ -46,6 +46,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
+from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -1464,6 +1465,26 @@ async def apply_customer_deposit(
                     raise HTTPException(
                         status_code=400,
                         detail=f"Cannot apply deposit with status '{dep['status']}'",
+                    )
+
+                # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
+                # A terbukti (eksekusi, ROLLBACK) bisa melunasi faktur pelanggan B. Diperiksa
+                # di dalam lock, untuk SEMUA faktur, SEBELUM tulis apa pun. customer_deposits.
+                # customer_id VARCHAR vs sales_invoices.customer_id uuid -> dinormalisasi.
+                pelanggan_dp = normalisasi_pihak(dep["customer_id"], "Pelanggan uang muka")
+                for _app in body.applications:
+                    _inv = await conn.fetchrow(
+                        "SELECT invoice_number, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                        UUID(_app.invoice_id),
+                        ctx["tenant_id"],
+                    )
+                    if not _inv:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invoice {_app.invoice_id} not found",
+                        )
+                    pastikan_pihak_sama(
+                        pelanggan_dp, _inv["customer_id"], f"Faktur {_inv['invoice_number']}"
                     )
 
                 # FIX_P1_DEPOSIT 2026-06-16 (b): authoritative remaining is

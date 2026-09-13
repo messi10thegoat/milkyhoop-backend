@@ -1,0 +1,47 @@
+"""Pemeriksaan PIHAK saat dana satu pihak diterapkan ke dokumen (13 Sep 2026).
+
+Kelas cacat yang ditutup: penerapan dana ke dokumen tanpa memastikan pihaknya sama.
+Terukur di dua jalur dengan dua bentuk berbeda:
+  - DP pelanggan -> faktur: TIDAK membandingkan sama sekali (lintas pelanggan 200, dieksekusi).
+  - nota kredit -> faktur: membandingkan uuid.UUID dengan str -> selalu beda (fitur mati).
+
+Tipe kolom pihak TIDAK seragam: sales_invoices/receive_payments/bills/... = uuid, tetapi
+credit_notes.customer_id dan customer_deposits.customer_id = VARCHAR. Karena itu keduanya
+dinormalisasi ke uuid.UUID dulu (kanonik: huruf besar/kecil & format tak berpengaruh), baru
+dibandingkan. Membandingkan str() telanjang atau objek beda tipe adalah bentuk yang rusak.
+"""
+from typing import Optional, Union
+from uuid import UUID
+
+from fastapi import HTTPException
+
+
+def normalisasi_pihak(nilai: Optional[Union[str, UUID]], label: str) -> UUID:
+    """Ubah id pihak (uuid atau varchar) ke uuid.UUID kanonik.
+
+    NULL / kosong / bukan uuid -> 400. Dana yang tak diketahui pemiliknya tidak boleh
+    diterapkan ke dokumen siapa pun.
+    """
+    if nilai is None or (isinstance(nilai, str) and not nilai.strip()):
+        raise HTTPException(status_code=400, detail=f"{label} tidak diketahui; dana tak bisa diterapkan")
+    if isinstance(nilai, UUID):
+        return nilai
+    try:
+        return UUID(str(nilai).strip())
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"{label} tidak valid; dana tak bisa diterapkan")
+
+
+def pastikan_pihak_sama(
+    pihak_sumber: UUID,
+    pihak_dokumen: Optional[Union[str, UUID]],
+    label_dokumen: str,
+    jenis_pihak: str = "pelanggan",
+) -> None:
+    """400 bila pihak dokumen berbeda (atau tak diketahui) dari pihak pemilik dana."""
+    dok = normalisasi_pihak(pihak_dokumen, f"{jenis_pihak.capitalize()} {label_dokumen}")
+    if dok != pihak_sumber:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label_dokumen} milik {jenis_pihak} lain; dana hanya bisa diterapkan ke dokumen {jenis_pihak} yang sama",
+        )
