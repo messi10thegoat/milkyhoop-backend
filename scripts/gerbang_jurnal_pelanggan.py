@@ -141,7 +141,12 @@ async def main():
         # SABOTASE: cast dicabut HANYA dari cabang nota kredit -> subjek ber-NOTA-KREDIT wajib 500 lagi,
         # dan jenis galatnya harus sama ('character varying = uuid'), bukan sekadar kode status.
         src = open(PATH, encoding="utf-8").read()
+        # Jangkar mengikuti bentuk kode HIDUP: b4e48c96 memakai lower(btrim(cn.customer_id)), deploy 1 V247
+        # (f5cf8bc4) menggantinya jadi cn.customer_id::text. Sabotase mencabut cast teks dari cabang CN -> selama
+        # kolom masih varchar, cn.customer_id = $n::uuid tetap 'character varying = uuid'.
         sab = src.replace("lower(btrim(cn.customer_id)) = (${customer_id_param_idx}::uuid)::text",
+                          "cn.customer_id = ${customer_id_param_idx}::uuid") \
+                 .replace("cn.customer_id::text = (${customer_id_param_idx}::uuid)::text",
                           "cn.customer_id = ${customer_id_param_idx}::uuid")
         if sab.count("cn.customer_id = ${customer_id_param_idx}::uuid") != 2:
             catat("SABOTASE", "jangkar cabang CN ditemukan 2x", False, sab.count("cn.customer_id = ${customer_id_param_idx}::uuid"))
