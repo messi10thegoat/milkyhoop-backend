@@ -412,7 +412,8 @@ async def list_customer_deposits(
                 {
                     "id": str(row["id"]),
                     "deposit_number": row["deposit_number"],
-                    "customer_id": row["customer_id"],
+                    # V247: str() -- kolom menjadi uuid; model respons Optional[str] menolak uuid.UUID
+                    "customer_id": str(row["customer_id"]) if row["customer_id"] is not None else None,
                     "customer_name": row["customer_name"],
                     "deposit_date": row["deposit_date"].isoformat(),
                     "amount": row["amount"],
@@ -583,7 +584,8 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                 "data": {
                     "id": str(dep["id"]),
                     "deposit_number": dep["deposit_number"],
-                    "customer_id": dep["customer_id"],
+                    # V247: str() -- kolom menjadi uuid; model respons Optional[str] menolak uuid.UUID
+                    "customer_id": str(dep["customer_id"]) if dep["customer_id"] is not None else None,
                     "customer_name": dep["customer_name"],
                     "amount": dep["amount"],
                     "amount_applied": dep["amount_applied"] or 0,
@@ -2592,7 +2594,8 @@ async def list_customer_deposits_by_customer(
                 {
                     "id": str(row["id"]),
                     "deposit_number": row["deposit_number"],
-                    "customer_id": row["customer_id"],
+                    # V247: str() -- kolom menjadi uuid; model respons Optional[str] menolak uuid.UUID
+                    "customer_id": str(row["customer_id"]) if row["customer_id"] is not None else None,
                     "customer_name": row["customer_name"],
                     "deposit_date": row["deposit_date"].isoformat(),
                     "amount": row["amount"],

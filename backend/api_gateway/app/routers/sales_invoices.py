@@ -4362,7 +4362,8 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
                         "sales_order_id": (
                             str(r["sales_order_id"]) if r["sales_order_id"] else None
                         ),
-                        "customer_id": r["customer_id"],
+                        # V247: str() -- customer_deposits.customer_id menjadi uuid
+                        "customer_id": str(r["customer_id"]) if r["customer_id"] is not None else None,
                         "deposit_date": (
                             r["deposit_date"].isoformat() if r["deposit_date"] else None
                         ),

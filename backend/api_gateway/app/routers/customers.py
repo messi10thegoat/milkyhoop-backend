@@ -1721,7 +1721,7 @@ async def merge_customers(request: Request):
                     source_ids,
                 )
                 await conn.execute(
-                    "UPDATE customer_deposits SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
+                    "UPDATE customer_deposits SET customer_id = $1 WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
                     str(target_id),
                     ctx["tenant_id"],
                     [str(s) for s in source_ids],
@@ -1733,7 +1733,7 @@ async def merge_customers(request: Request):
                     source_ids,
                 )
                 await conn.execute(
-                    "UPDATE accounts_receivable SET customer_id = $1::text WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
+                    "UPDATE accounts_receivable SET customer_id = $1 WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
                     str(target_id),
                     ctx["tenant_id"],
                     [str(s) for s in source_ids],
@@ -1902,7 +1902,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
-                      AND lower(btrim(cd.customer_id)) = (${customer_id_param_idx}::uuid)::text
+                      AND cd.customer_id::text = (${customer_id_param_idx}::uuid)::text
 
                     UNION
 
@@ -1911,7 +1911,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
-                      AND lower(btrim(cn.customer_id)) = (${customer_id_param_idx}::uuid)::text
+                      AND cn.customer_id::text = (${customer_id_param_idx}::uuid)::text
                     UNION
 
                     -- Inline Payments (sales_invoice_payments)
@@ -2040,7 +2040,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
-                      AND lower(btrim(cd.customer_id)) = (${customer_id_param_idx}::uuid)::text
+                      AND cd.customer_id::text = (${customer_id_param_idx}::uuid)::text
 
                     UNION
 
@@ -2048,7 +2048,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
-                      AND lower(btrim(cn.customer_id)) = (${customer_id_param_idx}::uuid)::text
+                      AND cn.customer_id::text = (${customer_id_param_idx}::uuid)::text
                     UNION
 
                     -- Inline Payments (sales_invoice_payments)

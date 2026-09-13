@@ -1457,6 +1457,16 @@ async def apply_credit_note(
                     f"CREDIT_NOTE_APPLY:{credit_note_id}",
                 )
 
+                # DITUTUP EKSPLISIT (13 Sep 2026) sampai unit B nota kredit selesai -- lihat
+                # backend/docs/TIKET-nota-kredit-apply-mati-20260913.md. Hari ini fitur ini SUDAH selalu 400
+                # (uuid vs varchar), jadi pengguna tak merasakan beda. Tanpa penutupan ini, migrasi V247
+                # (customer_id -> uuid) akan membukanya DIAM-DIAM padahal atribusi piutangnya belum benar
+                # (compute_ar_outstanding membaca original_invoice_id, bukan aplikasi). DICABUT OLEH UNIT B.
+                raise HTTPException(
+                    status_code=400,
+                    detail="Menerapkan nota kredit ke faktur belum tersedia. Hubungi pemilik usaha.",
+                )
+
                 # Get credit note
                 cn = await conn.fetchrow(
                     """

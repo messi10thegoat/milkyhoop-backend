@@ -389,7 +389,7 @@ async def list_receive_payments(
                     SELECT
                         COALESCE(rp.id, s.journal_id) AS id,
                         COALESCE(rp.payment_number, s.journal_number) AS payment_number,
-                        COALESCE(rp.customer_id::text, cdep.customer_id, cn.customer_id, '') AS customer_id,
+                        COALESCE(rp.customer_id::text, cdep.customer_id::text, cn.customer_id::text, '') AS customer_id,  -- V247: ::text dwi-kompatibel
                         COALESCE(rp.customer_name, cdep.customer_name, cn.customer_name) AS customer_name,
                         COALESCE(rp.payment_date, s.journal_date) AS payment_date,
                         -- TIDAK di-COALESCE lagi: pemakaian uang muka dan nota
@@ -487,7 +487,7 @@ async def list_receive_payments(
                     SELECT
                         COALESCE(rp.id, s.journal_id) AS id,
                         COALESCE(rp.payment_number, s.journal_number) AS payment_number,
-                        COALESCE(rp.customer_id::text, cdep.customer_id, cn.customer_id, '') AS customer_id,
+                        COALESCE(rp.customer_id::text, cdep.customer_id::text, cn.customer_id::text, '') AS customer_id,  -- V247: ::text dwi-kompatibel
                         COALESCE(rp.customer_name, cdep.customer_name, cn.customer_name) AS customer_name,
                         COALESCE(rp.payment_date, s.journal_date) AS payment_date,
                         -- TIDAK di-COALESCE lagi: pemakaian uang muka dan nota
