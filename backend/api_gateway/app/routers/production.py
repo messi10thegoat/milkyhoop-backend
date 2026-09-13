@@ -13,6 +13,7 @@ Journal Entries:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal, List
 from uuid import UUID
+from pydantic import BaseModel, Field
 from datetime import date
 from decimal import Decimal
 import logging
@@ -3584,10 +3585,20 @@ async def month_end_reconcile(request: Request, body: dict):
         raise HTTPException(status_code=500, detail="Failed to reconcile month-end")
 
 
+class VoidReconcileRequest(BaseModel):
+    # Alasan dari pengguna -> reversal_reason + description jurnal pembalik.
+    # Body opsional: tanpa body tetap memakai kalimat lama (FE lama tak mengirim).
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
 @router.post(
     "/month-end-reconcile/{journal_id}/void", response_model=ProductionResponse
 )
-async def void_month_end_reconcile(request: Request, journal_id: UUID):
+async def void_month_end_reconcile(
+    request: Request,
+    journal_id: UUID,
+    body: Optional[VoidReconcileRequest] = None,
+):
     """Void (reverse) a month-end reconcile journal (Law 2 + Law 26).
 
     Creates a reversal journal linked via reversal_of_id; the period then reads
@@ -3658,7 +3669,7 @@ async def void_month_end_reconcile(request: Request, journal_id: UUID):
                     tenant_id,
                     user_id,
                     journal_id,
-                    "Void month-end manufacturing reconcile",
+                    body.reason if body else "Void month-end manufacturing reconcile",
                 )
                 if rev_id is None:
                     raise HTTPException(
