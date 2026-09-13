@@ -79,3 +79,12 @@ sekali karena arahnya terbalik.
   Tagihan batal, pembayarannya tidak.
 - Keduanya **dipatok** (V242) atas putusan pemilik membiarkan 9 tagihan itu —
   **bukan karena dianggap wajar**. Anggota ke-10 atau penggantian → merah.
+
+---
+
+# RUJUKAN SILANG 13 Sep 2026
+
+`verify_ar_reconciliation_all()` **terbukti buta** terhadap jurnal piutang ber-`source_type` di luar
+lima yang diatribusi (termasuk MANUAL/REVERSAL) — `TIKET-verify-ar-reconciliation-buta-20260913.md`.
+Pintu pembalikan tak berpagar (tiket ini) + penjaga yang buta pada jenis jurnal itu = **dua cacat saling
+menutupi**. Memperbaiki salah satu tanpa yang lain tetap meninggalkan jalur piutang tak terawasi.

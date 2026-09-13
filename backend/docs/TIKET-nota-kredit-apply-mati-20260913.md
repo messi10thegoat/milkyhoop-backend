@@ -57,3 +57,20 @@ baca definisinya, buktikan buta/tidak lewat eksekusi (seperti R9).
 `apply_customer_deposit` tak memeriksa pelanggan → **DUGAAN**: DP pelanggan A bisa diterapkan ke
 faktur pelanggan B (menulis ke piutang pelanggan yang salah). **Naikkan lewat eksekusi di
 ROLLBACK.** Bila terbukti, prioritasnya di atas nota kredit.
+
+---
+
+# TAMBAHAN 13 Sep 2026 — putusan pemilik + penghalang
+
+- **Putusan pemilik: opsi B — satu nota kredit, satu faktur.** `compute_ar_outstanding` TIDAK diubah.
+  Syarat bentuk (MASTER): isi `original_invoice_id` HANYA dari NULL (`WHERE original_invoice_id IS
+  NULL` di pernyataannya); pertimbangkan pagar DB beku-sekali-terisi (enumerasi penulis sah dulu);
+  pihak kanonik; **AR efektif TIDAK berubah, tanpa jurnal baru**; assert selisih GL vs Σ compute
+  menutup persis sebesar CN; cache sepakat dgn compute (ARAP Rule 12); **2 CN historis JANGAN
+  dikaitkan otomatis**; batas melebihi outstanding / CN sudah terkait → tolak; sesudah hidup **ulang
+  gerbang V244 jalur 6 ujung-ke-ujung**.
+- **Penghalang (terukur):** 1 dari 2 CN posted ber-`customer_id` **bukan UUID** → helper
+  `pihak_helpers` akan menolaknya. Ukur nilai, jalur pembuat, apakah masih hidup, sebelum B.
+- DP lintas pelanggan (butir 6 di atas): **TERBUKTI lalu TUTUP `fe42de6a`** — lihat
+  `TEMUAN-dana-ke-dokumen-pihak-lain-20260913.md`.
+- `verify_ar_reconciliation_all()` (butir 4): **terbukti buta** — `TIKET-verify-ar-reconciliation-buta-20260913.md`.
