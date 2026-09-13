@@ -74,3 +74,38 @@ ROLLBACK.** Bila terbukti, prioritasnya di atas nota kredit.
 - DP lintas pelanggan (butir 6 di atas): **TERBUKTI lalu TUTUP `fe42de6a`** — lihat
   `TEMUAN-dana-ke-dokumen-pihak-lain-20260913.md`.
 - `verify_ar_reconciliation_all()` (butir 4): **terbukti buta** — `TIKET-verify-ar-reconciliation-buta-20260913.md`.
+
+
+---
+
+## RESOLUSI — Unit B live (14 Sep 2026, commit `49d49152`)
+
+**Shape (owner's decision: one credit note, one invoice):** the credit note is applied at its FULL amount to exactly one invoice. Attribution uses compare-and-set on `credit_notes.original_invoice_id` from NULL. No new journal (the receivable was already credited when the CN was posted). The invoice + `accounts_receivable` cache is recomputed from `compute_ar_outstanding`.
+Also included in the unit:
+- (a) draft create/PATCH + post validate the invoice by tenant AND customer;
+- (b) voiding an invoice with a linked CN → 400;
+- (c) posting/voiding a linked CN recomputes the cache.
+
+**Why the closure had to stay until B:** with the closure removed, the OLD apply returned 200 but was silently wrong. It never wrote `original_invoice_id`, and it computed the cache with its own arithmetic (120,000 vs compute 100,000). The CN became 'applied' while its receivable was still unattributed.
+
+**Live gate (after restart; unit B run on a byte-identical copy of the live module, md5 `1c32b4e7…`):**
+- `gerbang_unit_b_cn.py` 28/28:
+  - GL AR unchanged; GL−Σcompute gap closes EXACTLY by the CN total; zero journals;
+  - cache + accounts_receivable == compute, including an apply that settles the invoice (PAID);
+  - 9 owner-readable rejections.
+- Sabotage (original_invoice_id write neutralised, apply still 200): the gap check turns RED.
+- `gerbang_v244_handler.py` 18/18 on the live module: the narrow path-6 exemption is REMOVED. Before deploy, the live module (closure) was RED on path 6; after deploy it is green.
+- **Existence indistinguishability:** another tenant's invoice id vs a made-up id → exception type + status + repr(detail) + headers identical **at the HTTPException level**. It is NOT measured as HTTP bytes: there were no credentials for a real HTTP call.
+
+**Owner decisions:**
+- CN-2608-0001 (grapgrap 200,000) is left AS IS: the only Toko Melati invoice with a remaining balance has 20,000, so it can't be applied. Candidate for a "known" pin together with the `verify_ar_reconciliation_all` decision (not pinned in B).
+- CN-2609-0006 is NOT linked automatically; which invoice is the owner's choice, through the feature.
+
+**OPEN WORK (not a final design):**
+1. **Un-apply doesn't exist.** An applied CN–invoice pair is **locked both ways**: the CN can't be voided (existing guard) and the invoice can't be voided (guard B). This is consistent with Law 2, but the owner will run into it. Zero linked pairs today.
+2. **`ApplyCreditNoteItem.amount` is `int`** → a CN with a fractional total can never be applied. Law 25 requires `Decimal` for DTO inputs; this is a correctness defect, not just tidiness. Measured: all CNs today are whole numbers.
+3. **FE ApplySheet** still sends multi-select + partial amounts → clear 400 until the FRONTEND unit.
+4. DB fence `original_invoice_id` (filled + not draft → frozen): separate migration. 3 legitimate writers measured, all compatible.
+5. Measurement limit for `accounts_receivable`: the comparison against compute only covers rows compute emits (outstanding ≠ 0); PAID/VOID rows aren't compared. A missing row is treated as outstanding 0 (same as the receive-payment helper).
+
+**Note for future gates:** invoice `9eaa85d2` (RAHAYU UMAR) also has a customer deposit APPLIED, so the deposit guard would block its void too. Assert (b) checks the text "nota kredit terkait", so it can't be masked by the other guard; any gate that picks this subject must discriminate by text/type, not just status 400.

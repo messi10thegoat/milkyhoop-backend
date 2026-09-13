@@ -29,7 +29,7 @@ satu `UPDATE` — dibuktikan lewat eksekusi (G1 di bawah).
 | SQL uji kering (`scripts/gerbang_v244_{sql,lama,baru}.sql`) | **85/85**: G1 merah-lama 6 (ubah nominal BERHASIL di skema lama) · daftar kolom = daftar independen dua arah · 37/37 kolom ditolak satu per satu · journal_id→NULL ditolak 5 · T1 skala sama lolos 6 · T2 non-nominal lolos 5 · G3a 19 himpunan SET pasca-posting lolos · draf lolos 2 · G4 sabotase lolos + pulih ditolak · ROLLBACK V244 terbukti |
 | SQL atas trigger HIDUP | **79/79** |
 | Handler (`scripts/gerbang_v244_handler.py`) uji kering DAN hidup | **16/16**: bayar faktur (amount_paid +1000, status) · bayar tagihan draf→post (amount_paid 0→1000, partial; trigger DB lama ikut menyala) · void beban · void faktur · terapkan DP (amount_paid +1000) |
-| jalur 6 terapkan nota kredit | **LABEL: fitur MATI SEBELUM PAGAR — terbukti tingkat SQL (G3a), handler TIDAK diuji.** Gagal identik dengan DAN tanpa pagar. Lihat `TIKET-nota-kredit-apply-mati-20260913.md` |
+| jalur 6 terapkan nota kredit | **HIJAU via handler (14 Sep 2026, unit B 49d49152):** pengecualian label DICABUT; CN sintetis seluruh nilai; T3 cache +1000 dan compute outstanding -1000. Dua sisi: modul tertutup MERAH, modul B 18/18. Lihat TIKET-nota-kredit-apply-mati-20260913.md |
 | terapkan kredit vendor | **TIDAK DIJALANKAN** — `vendor_credits` 0 baris (bukan lulus) |
 | skrip harian | BROKEN 0; check_2 PASS_EXEMPT; hc_verdict 8/8 sesuai patok |
 
