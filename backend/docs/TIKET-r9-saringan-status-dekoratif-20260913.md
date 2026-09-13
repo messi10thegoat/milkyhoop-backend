@@ -104,3 +104,33 @@ Sapuan `pg_proc` (fungsi biasa) atas `LEFT JOIN journal_entries … ON … statu
 
 Masing-masing butuh pengukuran dampak sendiri sebelum diputuskan; **tidak** termasuk
 putusan A (yang hanya untuk check_3).
+
+---
+
+# KOREKSI TANDA + CATATAN compare_cost_centers (13 Sep 2026)
+
+## Tanda gap bank_sync
+
+Patok dan drift tersimpan **+65.218** (BCA Operasional **+51.848**, Bendahara **+13.370**).
+Rumus: gap = saldo buku (hanya jurnal POSTED) − Σ bank_transactions. **Positif = buku besar LEBIH
+TINGGI dari catatan transaksi bank**: 16 jurnal beban asli berstatus VOID tak lagi dihitung di
+buku, sementara mutasi bank keluar-nya (btx) tetap tercatat. Baris jurnal VOID itu sendiri
+bernilai net −51.848 / −13.370 di CoA bank — itulah tanda minus yang sempat ditulis di atas.
+
+## compare_cost_centers — dampak TERUKUR NOL, cacat laten di TIGA lapis
+
+1. **Fungsi dekoratif** (status + rentang tanggal di `ON`) — kontrol positif sintetis di ROLLBACK:
+   fungsi lama 301.234 (memasukkan jurnal DRAFT + jurnal di luar rentang) · saringan diterapkan 0 ·
+   rentang diperlebar 300.000 (hanya yang sah). Stimulus pertama (menandai baris POSTED nyata)
+   ditolak trigger nyata `prevent_posted_journal_line_modification`.
+2. **Tanpa data**: `cost_centers` 0 baris di semua tenant; baris jurnal ber-`cost_center_id` 0.
+3. **Rute tertutup**: `GET /api/cost-centers/{cost_center_id}` (#656) terdaftar sebelum
+   `/comparison` (#662) → pencocokan pertama untuk `/comparison` = rute detail (TERUKUR lewat
+   pencocok starlette + kontrol `/tree` dan `/<uuid>`). Status kode HTTP-nya DUGAAN.
+
+Pemakai: FE 0 berkas (kontrol grep `bank-transfers` 8 berkas); bot memakai `/api/cost-centers`
+dan `/{id}/summary` — `get_cost_center_summary` BENAR (INNER JOIN + WHERE), bukan anggota kelas ini.
+
+⚠️ **Urutan perbaikan yang aman kalau suatu hari dibuka: betulkan fungsi DULU, baru buka rute.
+Sebaliknya membuka angka salah seketika** — dua cacat saling menutupi; memperbaiki yang satu
+menyalakan yang lain.
