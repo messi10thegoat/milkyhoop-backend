@@ -62,9 +62,6 @@ from .routers import proformas
 from .routers import sales_orders
 from .routers import currencies
 from .routers import bank_reconciliation
-from backend.api_gateway.app.routers import ragcrud_test
-from backend.api_gateway.app.routers import ragllm_test
-from backend.api_gateway.app.routers import raginject_test
 from backend.api_gateway.app.routers import flow
 from backend.api_gateway.app.routers import onboarding
 from backend.api_gateway.app.routers import setup_chat
@@ -401,11 +398,7 @@ app.include_router(signup.router, prefix="/api/auth/signup", tags=["signup"])
 app.include_router(google_auth.router, prefix="/api/auth/google", tags=["google-auth"])
 app.include_router(session.router, tags=["authentication"])
 app.include_router(customer.router, prefix="", tags=["customer"])
-app.include_router(ragcrud_test.router, prefix="/api/test/ragcrud", tags=["ragcrud"])
-app.include_router(ragllm_test.router, prefix="/api/test/ragllm", tags=["ragllm"])
-app.include_router(
-    raginject_test.router, prefix="/api/test/raginject", tags=["raginject"]
-)
+# 14 Sep 2026 (sweep izin tahap 1): router uji ragcrud/ragllm/raginject DICABUT dari produksi (4 rute, 0 pemanggil).
 app.include_router(flow.router, prefix="/api/flow", tags=["flow"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboarding"])
 

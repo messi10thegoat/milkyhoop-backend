@@ -363,7 +363,10 @@ SKIP_PATTERNS = [
     r"^/api/docs",
     r"^/api/openapi",
     r"^/api/dashboard",  # Dashboard has own FCL rules
-    r"^/api/permissions",  # /me endpoint - self-service    r'^/api/team-members/roles',  # Role list
+    r"^/api/permissions",  # /me endpoint - self-service
+    # 14 Sep 2026: dulu tertelan di komentar baris di atas (tak pernah aktif). Dipatok ke SATU rute yang ada, bukan
+    # prefiks: prefiks akan diam-diam melewatkan cek untuk rute tulis peran yang kelak ditambahkan di bawahnya.
+    r"^/api/team-members/roles/list$",  # Role list
     r"^/favicon",
     r"^/$",
 ]
@@ -515,9 +518,21 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 request.state.user["approval_limit"] = context.approval_limit
 
             except Exception as e:
-                logger.error(f"Permission check error: {e}")
-                # Fail-open for now (log error but allow request)
-                # In production, you may want to fail-closed
+                # 14 Sep 2026 (sweep izin tahap 1): dulu FAIL-OPEN — galat apa pun di pemeriksa (engine belum siap,
+                # DB putus) MENGIZINKAN permintaan yang seharusnya dicek. Kini ditolak. 72 jam log sebelum perubahan:
+                # 0 kejadian "Permission check error", jadi tak ada alur hidup yang bergantung pada lolos-karena-galat.
+                logger.error(
+                    f"Permission check error -> DITOLAK: path={path} method={method} "
+                    f"module={module} action={action} err={type(e).__name__}: {e}"
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "Permission check failed",
+                        "message": "Pemeriksaan izin gagal; coba lagi sebentar lagi.",
+                        "code": "PERMISSION_CHECK_ERROR",
+                    },
+                )
 
         return await call_next(request)
 
