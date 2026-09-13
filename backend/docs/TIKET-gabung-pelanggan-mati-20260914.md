@@ -32,3 +32,26 @@ Trace all layers with the handler + FakePool in ROLLBACK, run until 200. Then ch
 - one activity row per source;
 - target from another tenant → 400/23503;
 - sabotage on one branch → the gate turns red.
+
+
+---
+
+## RESOLUTION - unit (3) live (14 Sep 2026)
+
+The trace found exactly 1 wall (deleted_by). Past it: 34 sales_orders + 2 proformas were left behind, and there was NO validation (target=source, deleted target, cross-tenant leak: see TEMUAN-gabung-pelanggan-lintas-tenant-20260914.md).
+
+The new merge covers:
+- 16 tables derived from information_schema (+expenses.billed_to_customer_id, chat_session_state.active_customer_id);
+- price lists without conflicts.
+
+Preview == execution (constant MERGE_TABEL). Readable validation. Lock on all ids. Audit CUSTOMER_MERGED.
+
+Owner decisions: documents already issued move too (customer_id only); customer_name snapshot is kept; no un-merge.
+
+Gate scripts/gerbang_merge.py: new 15/15; old 11 RED; lama1 9 RED (+leak 3 invoices); sabotage table/tenant caught.
+
+NOT GATED (0 rows, no fixture):
+- the completed/void sales_receipts blocker (trigger prevent_sr_modification is not weakened -> 400);
+- the price list conflict (uq_customer_price_list).
+
+Side effect measured: trigger check_quote_expiry turns a sent quote past its expiry date into expired whenever that row is UPDATEd (merge touches it). Today there is 1 such quote.

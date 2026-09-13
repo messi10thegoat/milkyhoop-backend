@@ -1629,48 +1629,116 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
 # =============================================================================
 
 
+# 14 Sep 2026 unit (3). Daftar tabel ber-referensi pelanggan diturunkan dari information_schema (kolom *customer*id*),
+# BUKAN daftar tangan. preview dan eksekusi memakai konstanta YANG SAMA -> yang ditampilkan == yang dipindah.
+# Tak dipindah dengan sengaja: customer_activities (riwayat milik pelanggan sumber; aktivitas 'merge' dicatat di sasaran).
+# customer_price_lists: dipindah KECUALI sasaran sudah punya daftar harga yang sama (uq_customer_price_list) -> baris
+# sumber tetap di sumber nonaktif dan dilaporkan sebagai konflik.
+# Putusan pemilik: dokumen terbit ikut pindah (hanya customer_id); snapshot customer_name TETAP; tanpa un-merge.
+MERGE_TABEL = (
+    ("sales_invoices", "customer_id"),
+    ("receive_payments", "customer_id"),
+    ("credit_notes", "customer_id"),
+    ("customer_deposits", "customer_id"),
+    ("accounts_receivable", "customer_id"),
+    ("sales_orders", "customer_id"),
+    ("proformas", "customer_id"),
+    ("quotes", "customer_id"),
+    ("recurring_invoices", "customer_id"),
+    ("sales_receipts", "customer_id"),
+    ("cheques", "customer_id"),
+    ("item_serials", "customer_id"),
+    ("production_orders", "customer_id"),
+    ("table_reservations", "customer_id"),
+    ("expenses", "billed_to_customer_id"),
+    ("chat_session_state", "active_customer_id"),
+)
+
+
+async def _gabung_pihak(conn, tenant_id: str, body: dict):
+    """Validasi penggabungan. Id karangan / bukan uuid / tenant lain -> pesan SAMA."""
+    from uuid import UUID as _U
+
+    sumber_mentah = body.get("source_ids") or []
+    sasaran_mentah = body.get("target_id")
+    if not isinstance(sumber_mentah, list) or not sumber_mentah or not sasaran_mentah:
+        raise HTTPException(status_code=400, detail="Pilih pelanggan tujuan dan pelanggan yang akan digabung.")
+    try:
+        sasaran = _U(str(sasaran_mentah).strip())
+        sumber = [_U(str(s).strip()) for s in sumber_mentah]
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Pelanggan tidak ditemukan")
+    if len(set(sumber)) != len(sumber):
+        raise HTTPException(status_code=400, detail="Pelanggan yang akan digabung tercantum lebih dari sekali.")
+    if sasaran in sumber:
+        raise HTTPException(status_code=400, detail="Pelanggan tujuan tidak boleh termasuk pelanggan yang digabung.")
+    baris = await conn.fetch(
+        "SELECT id, nama, nomor_member, is_active, deleted_at FROM customers WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+        [sasaran, *sumber], tenant_id,
+    )
+    peta = {r["id"]: r for r in baris}
+    if len(peta) != len(sumber) + 1:
+        raise HTTPException(status_code=400, detail="Pelanggan tidak ditemukan")
+    for cid in [sasaran, *sumber]:
+        r = peta[cid]
+        if r["deleted_at"] is not None or r["is_active"] is False:
+            peran = "tujuan" if cid == sasaran else "yang akan digabung"
+            raise HTTPException(status_code=400, detail=f"Pelanggan {peran} ({r['nama']}) sudah nonaktif atau dihapus.")
+    return sasaran, sumber, peta
+
+
+async def _gabung_rincian(conn, tenant_id: str, sasaran, sumber):
+    """Cacah per tabel + konflik. Dipakai preview DAN eksekusi (di dalam kunci)."""
+    cacah = {}
+    for tabel, kolom in MERGE_TABEL:
+        cacah[tabel] = await conn.fetchval(
+            f"SELECT count(*) FROM {tabel} WHERE tenant_id = $1 AND {kolom} = ANY($2::uuid[])", tenant_id, sumber
+        )
+    harga_pindah = await conn.fetchval(
+        """SELECT count(*) FROM customer_price_lists s WHERE s.customer_id = ANY($1::uuid[])
+             AND NOT EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $2 AND t.price_list_id = s.price_list_id)""",
+        sumber, sasaran,
+    )
+    harga_konflik = await conn.fetchval(
+        """SELECT count(*) FROM customer_price_lists s WHERE s.customer_id = ANY($1::uuid[])
+             AND EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $2 AND t.price_list_id = s.price_list_id)""",
+        sumber, sasaran,
+    )
+    cacah["customer_price_lists"] = harga_pindah
+    # Kwitansi penjualan selesai/batal dijaga pemicu prevent_sr_modification (menolak UPDATE apa pun). Pagar itu TIDAK
+    # dilemahkan: penggabungan ditolak dengan pesan terbaca.
+    kwitansi_beku = await conn.fetchval(
+        "SELECT count(*) FROM sales_receipts WHERE tenant_id = $1 AND customer_id = ANY($2::uuid[]) AND status IN ('completed', 'void')",
+        tenant_id, sumber,
+    )
+    konflik = []
+    if harga_konflik:
+        konflik.append({"type": "price_list", "count": harga_konflik,
+                        "message": f"{harga_konflik} daftar harga sudah dimiliki pelanggan tujuan; milik pelanggan yang digabung tidak dipindah."})
+    if kwitansi_beku:
+        konflik.append({"type": "sales_receipt_locked", "count": kwitansi_beku, "blocking": True,
+                        "message": f"{kwitansi_beku} kwitansi penjualan sudah selesai/dibatalkan dan tidak bisa dipindah; penggabungan belum bisa dilakukan."})
+    return cacah, konflik, kwitansi_beku
+
+
 @router.post("/merge/preview")
 async def preview_customer_merge(request: Request):
-    """Preview what will happen when merging customers."""
+    """Pratinjau penggabungan: cacah PER TABEL yang akan dipindah (sama persis dengan eksekusi) + konflik."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         body = await request.json()
-        source_ids = body.get("source_ids", [])
-        target_id = body.get("target_id")
-        if not source_ids or not target_id:
-            raise HTTPException(
-                status_code=400, detail="source_ids and target_id required"
-            )
         async with pool.acquire() as conn:
-            sources = await conn.fetch(
-                "SELECT id, nama, nomor_member, total_transaksi FROM customers WHERE id = ANY($1) AND tenant_id = $2",
-                source_ids,
-                ctx["tenant_id"],
-            )
-            target = await conn.fetchrow(
-                "SELECT id, nama, nomor_member FROM customers WHERE id = $1 AND tenant_id = $2",
-                target_id,
-                ctx["tenant_id"],
-            )
-            if not target:
-                raise HTTPException(status_code=404, detail="Target not found")
-            invoice_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND customer_id = ANY($2)",
-                ctx["tenant_id"],
-                source_ids,
-            )
+            sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)
+            cacah, konflik, _ = await _gabung_rincian(conn, ctx["tenant_id"], sasaran, sumber)
             return {
                 "success": True,
                 "preview": {
-                    "source_customers": [
-                        {"id": str(s["id"]), "name": s["nama"]} for s in sources
-                    ],
-                    "target_customer": {
-                        "id": str(target["id"]),
-                        "name": target["nama"],
-                    },
-                    "records_to_move": {"invoices": invoice_count},
+                    "source_customers": [{"id": str(s), "name": peta[s]["nama"], "code": peta[s]["nomor_member"]} for s in sumber],
+                    "target_customer": {"id": str(sasaran), "name": peta[sasaran]["nama"], "code": peta[sasaran]["nomor_member"]},
+                    "records_to_move": {**cacah, "invoices": cacah["sales_invoices"]},
+                    "conflicts": konflik,
+                    "irreversible": True,
                 },
             }
     except HTTPException:
@@ -1687,78 +1755,65 @@ async def preview_customer_merge(request: Request):
 
 @router.post("/merge")
 async def merge_customers(request: Request):
-    """Merge multiple customers into one target customer."""
+    """Gabungkan pelanggan ke satu pelanggan tujuan. TAK BISA DIBATALKAN (putusan pemilik)."""
     try:
         ctx = get_user_context(request)
+        if not ctx.get("user_id"):
+            raise HTTPException(status_code=401, detail="User ID required")
         pool = await get_pool()
         body = await request.json()
-        source_ids = body.get("source_ids", [])
-        target_id = body.get("target_id")
-        if not source_ids or not target_id:
-            raise HTTPException(
-                status_code=400, detail="source_ids and target_id required"
-            )
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CUSTOMER_MERGE:{str(target_id)}",
+                sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)
+                # Law 13: kunci SEMUA pelanggan terlibat, terurut (anti-deadlock)
+                for cid in sorted([sasaran, *sumber], key=str):
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CUSTOMER_MERGE:{cid}")
+                sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)  # ulang di dalam kunci
+                cacah, konflik, kwitansi_beku = await _gabung_rincian(conn, ctx["tenant_id"], sasaran, sumber)
+                if kwitansi_beku:
+                    raise HTTPException(status_code=400, detail=konflik[-1]["message"])
+
+                pindah = {}
+                for tabel, kolom in MERGE_TABEL:
+                    hasil = await conn.execute(
+                        f"UPDATE {tabel} SET {kolom} = $1 WHERE tenant_id = $2 AND {kolom} = ANY($3::uuid[])",
+                        sasaran, ctx["tenant_id"], sumber,
+                    )
+                    pindah[tabel] = int(hasil.split()[-1])
+                hasil = await conn.execute(
+                    """UPDATE customer_price_lists s SET customer_id = $1 WHERE s.customer_id = ANY($2::uuid[])
+                         AND NOT EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $1 AND t.price_list_id = s.price_list_id)""",
+                    sasaran, sumber,
                 )
+                pindah["customer_price_lists"] = int(hasil.split()[-1])
+                if pindah != cacah:
+                    # tak mungkin di dalam kunci; bila terjadi, jangan setengah jadi
+                    raise HTTPException(status_code=409, detail="Data pelanggan berubah saat digabung; muat ulang pratinjau.")
 
                 await conn.execute(
-                    "UPDATE sales_invoices SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    source_ids,
+                    "UPDATE customers SET is_active = false, deleted_at = NOW(), deleted_by = $3 WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+                    sumber, ctx["tenant_id"], str(ctx["user_id"]),
                 )
-
-                # Update all child tables
-                await conn.execute(
-                    "UPDATE receive_payments SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    source_ids,
-                )
-                await conn.execute(
-                    "UPDATE customer_deposits SET customer_id = $1 WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
-                    str(target_id),
-                    ctx["tenant_id"],
-                    [str(s) for s in source_ids],
-                )
-                await conn.execute(
-                    "UPDATE credit_notes SET customer_id = $1 WHERE tenant_id = $2 AND customer_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    source_ids,
-                )
-                await conn.execute(
-                    "UPDATE accounts_receivable SET customer_id = $1 WHERE tenant_id = $2 AND customer_id::text = ANY($3::text[])",
-                    str(target_id),
-                    ctx["tenant_id"],
-                    [str(s) for s in source_ids],
-                )
-                await conn.execute(
-                    "UPDATE customers SET is_active = false, deleted_at = NOW(), deleted_by = $3 WHERE id = ANY($1) AND tenant_id = $2",
-                    source_ids,
-                    ctx["tenant_id"],
-                    ctx["user_id"],
-                )
-
-                # Log merge activity
-                for source_id in source_ids:
+                for cid in sumber:
                     await conn.execute(
                         """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
                         VALUES ($1, $2, 'merge', $3, $4)""",
-                        ctx["tenant_id"],
-                        target_id,
-                        f"Merged customer {source_id} into this customer",
-                        ctx["user_id"],
+                        ctx["tenant_id"], sasaran, f"Merged customer {peta[cid]['nama']} ({cid}) into this customer", ctx["user_id"],
+                    )
+                    await conn.execute(
+                        """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+                           VALUES (gen_random_uuid()::text, 'CUSTOMER_MERGED', 'customer', $1, $2, $3, 'api:customers.merge',
+                                   jsonb_build_object('target_id', $4::text, 'target_name', $5::text, 'moved', $6::jsonb,
+                                                      'conflicts', $7::jsonb, 'user_id', $8::text), true, now())""",
+                        cid, peta[cid]["nama"], ctx["tenant_id"], str(sasaran), peta[sasaran]["nama"],
+                        __import__("json").dumps(pindah), __import__("json").dumps(konflik), str(ctx["user_id"]),
                     )
             return {
                 "success": True,
-                "message": f"Merged {len(source_ids)} customers",
-                "target_id": target_id,
+                "message": f"Merged {len(sumber)} customers",
+                "target_id": str(sasaran),
+                "moved": pindah,
+                "conflicts": konflik,
             }
     except HTTPException:
         raise
