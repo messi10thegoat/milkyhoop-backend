@@ -45,3 +45,27 @@ def pastikan_pihak_sama(
             status_code=400,
             detail=f"{label_dokumen} milik {jenis_pihak} lain; dana hanya bisa diterapkan ke dokumen {jenis_pihak} yang sama",
         )
+
+
+async def pelanggan_kanonik_tenant(conn, tenant_id: str, nilai: Optional[Union[str, UUID]]) -> Optional[str]:
+    """Pelanggan yang DIISI harus ada di tenant yang sama; kembalikan teks UUID kanonik (huruf kecil).
+
+    Kosong/None -> None (pelanggan opsional di nota kredit & uang muka, perilaku hari ini dipertahankan).
+    Bukan UUID (mis. NAMA "Toko Melati") -> 400. UUID pelanggan tenant lain / tak ada -> 400, dengan
+    pesan YANG SAMA untuk keduanya (tak membocorkan keberadaan lintas tenant).
+    Asal kebutuhan (13 Sep 2026): credit_notes.customer_id & customer_deposits.customer_id VARCHAR,
+    pembuatnya menulis body mentah tanpa validasi -> CN-2608-0001 menyimpan nama sebagai id.
+    """
+    if nilai is None or (isinstance(nilai, str) and not nilai.strip()):
+        return None
+    try:
+        uid = normalisasi_pihak(nilai, "Pelanggan")
+    except HTTPException:
+        # pesan normalisasi_pihak berkonteks "dana diterapkan"; di pembuat/penyunting dokumen salah konteks
+        raise HTTPException(status_code=400, detail="Pelanggan tidak valid; pilih pelanggan dari daftar")
+    ada = await conn.fetchval(
+        "SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", uid, tenant_id
+    )
+    if not ada:
+        raise HTTPException(status_code=400, detail="Pelanggan tidak ditemukan")
+    return str(uid)

@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.pihak_helpers import pelanggan_kanonik_tenant
 import logging
 import asyncpg
 from datetime import date
@@ -847,6 +848,10 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                     conn, ctx["tenant_id"], _guard_order_id, body.amount
                 )
 
+                # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
+                # dulu body mentah tanpa validasi -- sumber data kotor yang sama dgn nota kredit).
+                pelanggan_dp = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+
                 # Generate deposit number
                 dep_number = await conn.fetchval(
                     "SELECT generate_customer_deposit_number($1, 'DEP')",
@@ -870,7 +875,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                     """,
                         ctx["tenant_id"],
                         dep_number,
-                        body.customer_id,
+                        pelanggan_dp,
                         body.customer_name,
                         body.amount,
                         body.deposit_date,

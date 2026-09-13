@@ -26,6 +26,7 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.pihak_helpers import pelanggan_kanonik_tenant
 import logging
 import asyncpg
 from datetime import date
@@ -593,6 +594,10 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
+                # dulu body mentah -> CN-2608-0001 menyimpan NAMA "Toko Melati" sebagai customer_id).
+                pelanggan_cn = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+
                 # Generate credit note number
                 cn_number = await conn.fetchval(
                     "SELECT generate_credit_note_number($1, 'CN')", ctx["tenant_id"]
@@ -650,7 +655,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                 """,
                     ctx["tenant_id"],
                     cn_number,
-                    str(body.customer_id) if body.customer_id else None,
+                    pelanggan_cn,
                     body.customer_name,
                     UUID(body.original_invoice_id)
                     if body.original_invoice_id
@@ -860,7 +865,12 @@ async def update_credit_note(
                         if field in excluded:
                             continue
                         updates.append(f"{field} = ${param_idx}")
-                        if field in ("customer_id", "original_invoice_id") and value:
+                        if field == "customer_id":
+                            # 13 Sep 2026: dulu UUID(value) dikirim ke kolom VARCHAR -> asyncpg
+                            # "expected str, got UUID" (dan nama -> ValueError): mengubah pelanggan
+                            # draf nota kredit selalu 500. Kini divalidasi & kanonik.
+                            params.append(await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value))
+                        elif field == "original_invoice_id" and value:
                             params.append(UUID(value))
                         else:
                             params.append(value)
