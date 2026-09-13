@@ -212,71 +212,29 @@ check_2_hash_chain() {
 }
 
 check_3_bank_sync() {
-    # v3.5: Compare journal_lines vs bank_transactions (not cache)
-    # Per milkyhoop-banksync Rule 9 invariant
+    # V243 (2026-09-13): R9 lama menaruh je.status='POSTED' di dalam ON sebuah
+    # LEFT JOIN -> saringan status DEKORATIF, jurnal berstatus APA PUN ikut
+    # dijumlahkan. Terbukti lewat eksekusi: jurnal DRAFT + btx terikat membuat
+    # gap nyata, R9 lama tetap 0. Kini hanya jurnal POSTED (syarat di WHERE),
+    # anggota + patok identitas di hc_verdict('bank_sync'); 16 jurnal VOID lama
+    # dipatok (TIKET-r9-saringan-status-dekoratif-20260913).
     local tenant="$1"
-    local gaps
-    gaps=$(psql_cmd "
-        WITH bank_coa AS (
-            SELECT ba.id AS bank_account_id, ba.account_name, ba.coa_id
-            FROM bank_accounts ba WHERE ba.is_active = true AND ba.tenant_id = '$tenant'
-        ),
-        journal_balance AS (
-            SELECT bc.bank_account_id,
-                COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
-            FROM bank_coa bc
-            LEFT JOIN journal_lines jl ON jl.account_id = bc.coa_id
-            LEFT JOIN journal_entries je ON je.id = jl.journal_id AND je.status = 'POSTED'
-            GROUP BY bc.bank_account_id
-        ),
-        bank_txn_bal AS (
-            SELECT bank_account_id,
-                COALESCE(SUM(amount), 0) AS txn_balance
-            FROM bank_transactions
-            WHERE tenant_id = '$tenant'
-            GROUP BY bank_account_id
-        )
-        SELECT COUNT(*) FROM bank_coa bc
-        LEFT JOIN journal_balance jb ON jb.bank_account_id = bc.bank_account_id
-        LEFT JOIN bank_txn_bal btb ON btb.bank_account_id = bc.bank_account_id
-        WHERE ABS(COALESCE(jb.ledger_balance, 0) - COALESCE(btb.txn_balance, 0)) > 0.01;
-    ")
-    if [ "$gaps" = "0" ]; then
+    local row verdict drift cnt
+    row=$(psql_cmd "SELECT verdict||'|'||COALESCE(drift::text,'')||'|'||member_count FROM hc_verdict('bank_sync', '$tenant');")
+    verdict="${row%%|*}"
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
-    else
+    elif [ "$row" = "__GAGAL__" ]; then
         CHK_PASS=0
-        CHK_DETAIL="$gaps accounts with gap"
-        # Log details
+        CHK_DETAIL="__GAGAL__"
+    else
+        drift=$(echo "$row" | cut -d'|' -f2); cnt=$(echo "$row" | cut -d'|' -f3)
+        CHK_PASS=0
+        CHK_DETAIL="bank sync $verdict gap=$drift anggota=$cnt"
+        detail "[CHECK 3] $tenant: $CHK_DETAIL"
         local details
-        details=$(psql_lines "
-            WITH bank_coa AS (
-                SELECT ba.id AS bank_account_id, ba.account_name, ba.coa_id
-                FROM bank_accounts ba WHERE ba.is_active = true AND ba.tenant_id = '$tenant'
-            ),
-            journal_balance AS (
-                SELECT bc.bank_account_id,
-                    COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
-                FROM bank_coa bc
-                LEFT JOIN journal_lines jl ON jl.account_id = bc.coa_id
-                LEFT JOIN journal_entries je ON je.id = jl.journal_id AND je.status = 'POSTED'
-                GROUP BY bc.bank_account_id
-            ),
-            bank_txn_bal AS (
-                SELECT bank_account_id,
-                    COALESCE(SUM(amount), 0) AS txn_balance
-                FROM bank_transactions
-                WHERE tenant_id = '$tenant'
-                GROUP BY bank_account_id
-            )
-            SELECT bc.account_name || ': ledger=' || COALESCE(jb.ledger_balance, 0) || ' txn=' || COALESCE(btb.txn_balance, 0)
-            FROM bank_coa bc
-            LEFT JOIN journal_balance jb ON jb.bank_account_id = bc.bank_account_id
-            LEFT JOIN bank_txn_bal btb ON btb.bank_account_id = bc.bank_account_id
-            WHERE ABS(COALESCE(jb.ledger_balance, 0) - COALESCE(btb.txn_balance, 0)) > 0.01
-            LIMIT 10;
-        ")
-        detail "[CHECK 3] $tenant: $gaps accounts with gap"
+        details=$(psql_lines "SELECT member_key || ' ' || amount FROM hc_bank_sync_members('$tenant') ORDER BY member_key LIMIT 20;")
         echo "$details" | while read -r line; do detail "  $line"; done
     fi
 }
