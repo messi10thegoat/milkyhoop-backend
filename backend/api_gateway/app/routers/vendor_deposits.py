@@ -31,6 +31,10 @@ from ..schemas.vendor_deposits import (
     VendorDepositStatus,
 )
 from ..services.resolve_account import resolve_account_id
+from ..services.bank_sync import (
+    create_bank_transaction_for_journal,
+    create_reversal_bank_transaction,
+)
 
 router = APIRouter()
 
@@ -528,6 +532,37 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
                 journal["id"],
             )
 
+            # === bank_transaction mirror (BankSync Rule 1, R9) — 14 Sep 2026 ===
+            # Dulu NOL cermin: setiap uang muka vendor lewat rekening bank = jurnal yatim + celah R9 (banksync
+            # catatan kaki 3). Pola uang muka pelanggan (customer_deposits.py FIX_R9_DEP_MIRROR): cari bank_accounts
+            # dari CoA yang DIKREDIT (bukan dari field bank_account_id), idempoten per jurnal, helper kanonik.
+            bank_acct = await conn.fetchrow(
+                "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+                cash_account,
+                ctx["tenant_id"],
+            )
+            if bank_acct:
+                already = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM bank_transactions WHERE journal_id = $1 AND bank_account_id = $2)",
+                    journal["id"],
+                    bank_acct["id"],
+                )
+                if not already:
+                    await create_bank_transaction_for_journal(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        bank_account_id=bank_acct["id"],
+                        journal_id=journal["id"],
+                        transaction_date=vd["deposit_date"],
+                        transaction_type="withdrawal",
+                        amount=-vd["amount"],
+                        reference_type="VENDOR_DEPOSIT",
+                        reference_id=deposit_id,
+                        reference_number=vd["reference"],
+                        description=f"Vendor Deposit - {vd['deposit_number']}",
+                        created_by=ctx["user_id"],
+                    )
+
             # Update deposit
             await conn.execute(
                 """
@@ -882,6 +917,34 @@ async def refund_vendor_deposit(
                 journal["id"],
             )
 
+            # === bank_transaction mirror (BankSync Rule 1, R9) — 14 Sep 2026: dulu NOL cermin (pola uang muka pelanggan) ===
+            bank_acct = await conn.fetchrow(
+                "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+                bank_account_coa,
+                ctx["tenant_id"],
+            )
+            if bank_acct:
+                already = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM bank_transactions WHERE journal_id = $1 AND bank_account_id = $2)",
+                    journal["id"],
+                    bank_acct["id"],
+                )
+                if not already:
+                    await create_bank_transaction_for_journal(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        bank_account_id=bank_acct["id"],
+                        journal_id=journal["id"],
+                        transaction_date=data.refund_date,
+                        transaction_type="deposit",
+                        amount=data.amount,
+                        reference_type="VENDOR_DEPOSIT_REFUND",
+                        reference_id=deposit_id,
+                        reference_number=data.reference,
+                        description=f"Refund Deposit {vd['deposit_number']}",
+                        created_by=ctx["user_id"],
+                    )
+
             # Create refund record
             refund = await conn.fetchrow(
                 """
@@ -904,7 +967,7 @@ async def refund_vendor_deposit(
             bank_name = None
             if data.bank_account_id:
                 bank_name = await conn.fetchval(
-                    "SELECT name FROM bank_accounts WHERE id = $1", data.bank_account_id
+                    "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2", data.bank_account_id, ctx["tenant_id"]
                 )
 
             return VendorDepositRefundResponse(
@@ -1065,47 +1128,28 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                     original_journal["id"],
                 )
 
-            # C7: Bank mirror reversal (BankSync Rule 3)
-            if vd.get("bank_account_id"):
+            # C7: Bank mirror reversal (BankSync Rule 3) — 14 Sep 2026: dulu digerbang field bank_account_id dan
+            # INSERT mentah (running_balance 0) mencari reference_type; kini pola uang muka pelanggan: cari bank_txn
+            # dari JURNAL asli, helper kanonik menulis cermin penegasi yang terkait jurnal pembalik.
+            if vd.get("journal_id") and reversal_id is not None:
                 original_btxn = await conn.fetchrow(
                     """
-                    SELECT id, bank_account_id, amount, transaction_type
-                    FROM bank_transactions
-                    WHERE (reference_type = 'vendor_deposit' OR reference_type = 'VENDOR_DEPOSIT')
-                      AND reference_id = $1
-                      AND status != 'VOIDED'
+                    SELECT id FROM bank_transactions
+                    WHERE journal_id = $1 AND tenant_id = $2
+                    ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    deposit_id,
+                    vd["journal_id"],
+                    ctx["tenant_id"],
                 )
                 if original_btxn:
-                    mirror_type = (
-                        "deposit"
-                        if original_btxn["transaction_type"] == "withdrawal"
-                        else "withdrawal"
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO bank_transactions (
-                            id, tenant_id, bank_account_id, transaction_date,
-                            transaction_type, amount, running_balance,
-                            reference_type, reference_id, reference_number,
-                            description, journal_id, status, origin_type, source_module,
-                            created_by, posted_by, posted_at
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, 0,
-                            'vendor_deposit_void', $6, $7, $8, $9,
-                            'POSTED', 'SYSTEM', 'vendor_deposit', $10, $10, NOW())
-                        """,
-                        uuid_module.uuid4(),
-                        ctx["tenant_id"],
-                        original_btxn["bank_account_id"],
-                        mirror_type,
-                        -original_btxn["amount"],
-                        deposit_id,
-                        f"VOID-{vd['deposit_number']}",
-                        f"Void deposit - {vd['deposit_number']}",
-                        reversal_id,
-                        ctx.get("user_id"),
+                    await create_reversal_bank_transaction(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        original_bank_transaction_id=original_btxn["id"],
+                        reversal_journal_id=reversal_id,
+                        created_by=ctx["user_id"],
+                        description_prefix="[VOID]",
                     )
 
             # Mark deposit as VOID
