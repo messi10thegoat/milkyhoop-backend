@@ -1861,6 +1861,10 @@ async def get_customer_journal_entries(
             limit_param_idx = param_idx + 1
             offset_param_idx = param_idx + 2
 
+            # 13 Sep 2026: satu $n dipakai utk kolom uuid (si/rp) DAN varchar (cd/cn) -> Postgres
+            # 'operator does not exist: character varying = uuid' -> 500 utk SETIAP pelanggan (tab
+            # transaksi detail pelanggan mati). $n kini dipaksa ::uuid di setiap pemakaian; kolom varchar
+            # dibandingkan sbg lower(btrim(kolom)) = ($n::uuid)::text -- tak bergantung tipe pemanggil.
             params.extend([customer_id, limit, offset])
 
             # Query journal entries linked to this customer through invoices, payments, deposits, credit notes
@@ -1871,7 +1875,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.journal_id = je.id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -1880,7 +1884,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -1889,7 +1893,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN receive_payments rp ON rp.journal_id = je.id
                     WHERE {where_clause}
-                      AND rp.customer_id = ${customer_id_param_idx}
+                      AND rp.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -1898,7 +1902,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
-                      AND cd.customer_id = ${customer_id_param_idx}
+                      AND lower(btrim(cd.customer_id)) = (${customer_id_param_idx}::uuid)::text
 
                     UNION
 
@@ -1907,7 +1911,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
-                      AND cn.customer_id = ${customer_id_param_idx}
+                      AND lower(btrim(cn.customer_id)) = (${customer_id_param_idx}::uuid)::text
                     UNION
 
                     -- Inline Payments (sales_invoice_payments)
@@ -1916,7 +1920,7 @@ async def get_customer_journal_entries(
                     INNER JOIN sales_invoice_payments sip ON sip.journal_id = je.id
                     INNER JOIN sales_invoices si ON si.id = sip.invoice_id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
                     UNION
                     -- PAYMENT_RECEIVED orphan journals (description-based fallback)
                     SELECT DISTINCT je.id as journal_id
@@ -1925,7 +1929,7 @@ async def get_customer_journal_entries(
                       AND je.source_type = 'PAYMENT_RECEIVED'
                       AND EXISTS(
                           SELECT 1 FROM sales_invoices si2
-                          WHERE si2.customer_id = ${customer_id_param_idx}
+                          WHERE si2.customer_id = ${customer_id_param_idx}::uuid
                             AND si2.tenant_id = je.tenant_id
                             AND je.description LIKE '%%' || si2.invoice_number || '%%'
                       )
@@ -2012,7 +2016,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.journal_id = je.id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -2020,7 +2024,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN sales_invoices si ON si.cogs_journal_id = je.id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -2028,7 +2032,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN receive_payments rp ON rp.journal_id = je.id
                     WHERE {where_clause}
-                      AND rp.customer_id = ${customer_id_param_idx}
+                      AND rp.customer_id = ${customer_id_param_idx}::uuid
 
                     UNION
 
@@ -2036,7 +2040,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN customer_deposits cd ON cd.journal_id = je.id
                     WHERE {where_clause}
-                      AND cd.customer_id = ${customer_id_param_idx}
+                      AND lower(btrim(cd.customer_id)) = (${customer_id_param_idx}::uuid)::text
 
                     UNION
 
@@ -2044,7 +2048,7 @@ async def get_customer_journal_entries(
                     FROM journal_entries je
                     INNER JOIN credit_notes cn ON cn.journal_id = je.id
                     WHERE {where_clause}
-                      AND cn.customer_id = ${customer_id_param_idx}
+                      AND lower(btrim(cn.customer_id)) = (${customer_id_param_idx}::uuid)::text
                     UNION
 
                     -- Inline Payments (sales_invoice_payments)
@@ -2053,7 +2057,7 @@ async def get_customer_journal_entries(
                     INNER JOIN sales_invoice_payments sip ON sip.journal_id = je.id
                     INNER JOIN sales_invoices si ON si.id = sip.invoice_id
                     WHERE {where_clause}
-                      AND si.customer_id = ${customer_id_param_idx}
+                      AND si.customer_id = ${customer_id_param_idx}::uuid
                 )
                 SELECT COUNT(*) FROM customer_journals
             """
