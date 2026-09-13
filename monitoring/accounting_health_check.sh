@@ -55,8 +55,30 @@ detail() {
     echo "  $1" >> "$LOG_FILE"
 }
 
+# Law 33 (2026-09-13): stderr TIDAK LAGI dibuang.
+# Sebelumnya `2>/dev/null` + tujuh situs `|| [ -z "$x" ]` berarti SETIAP
+# kegagalan kueri menjadi PASS. Terbukti: check_7/check_9 memanggil fungsi yang
+# TIDAK ADA (compute_ap_adjustments, compute_inventory_adjustments) dan
+# check_13 ber-SQL cacat sejak lahir -- ketiganya dihitung "Passed" berbulan.
+# Sekarang galat memancarkan __GAGAL__ (penanda eksplisit, bisa dibedakan dari
+# "kosong yang sah") dan pesan galatnya ikut tercatat di log.
 psql_cmd() {
-    docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -c "$1" 2>/dev/null | tr -d ' '
+    local __out __rc __err
+    # stderr ke berkas TERPISAH, bukan 2>&1: kalau digabung, satu NOTICE pada
+    # kueri yang SUKSES akan mencemari nilai kembaliannya -- menukar cacat
+    # "diam-lulus" dengan cacat "nilai salah diam-diam". Verdikt dari rc saja.
+    __err=$(mktemp)
+    __out=$(docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" \
+                   -v ON_ERROR_STOP=1 -t -c "$1" 2>"$__err")
+    __rc=$?
+    if [ "$__rc" -ne 0 ]; then
+        echo "[SQL GAGAL rc=$__rc] $(head -2 "$__err" | tr '\n' ' ')" >> "$LOG_FILE" 2>/dev/null || true
+        rm -f "$__err"
+        echo "__GAGAL__"
+        return 0
+    fi
+    rm -f "$__err"
+    echo "$__out" | tr -d ' '
 }
 
 psql_lines() {
@@ -125,7 +147,7 @@ check_2_hash_chain() {
     fi
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_chain_integrity_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -385,7 +407,7 @@ check_7_ap_invariant() {
             - COALESCE((SELECT SUM(net) FROM compute_ap_adjustments('$tenant')), 0)
         );
     ")
-    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ -z "$drift" ]; then
+    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -417,7 +439,7 @@ check_14_ar_reconciliation_enforce() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_ar_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -451,7 +473,7 @@ check_9_inventory_value() {
             - COALESCE((SELECT SUM(net) FROM compute_inventory_adjustments('$tenant')), 0)
         );
     ")
-    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ "$drift" = "0.000000" ] || [ -z "$drift" ]; then
+    if [ "$drift" = "0" ] || [ "$drift" = "0.00" ] || [ "$drift" = "0.000000" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -476,7 +498,7 @@ check_15_inventory_wac_reconciliation() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -503,7 +525,7 @@ check_16_deferred_revenue_reconciliation() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_deferred_revenue_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ] || [ -z "$verdict" ]; then
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
@@ -671,7 +693,7 @@ check_13_status_desync() {
               )
         ) sub;
     ")
-    if [ "$count" = "0" ] || [ -z "$count" ]; then
+    if [ "$count" = "0" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
     else
