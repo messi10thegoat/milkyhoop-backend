@@ -1,7 +1,10 @@
 # TIKET — saringan status di R9 DEKORATIF (13 Sep 2026)
 
-**Status:** TERBUKA. **Tidak diperbaiki** — membetulkannya langsung memerahkan dua
-rekening atas data lama. **Putusan pemilik** (bentuknya sama dengan patok V241/V242).
+**Status:** **check_3 DIBETULKAN + DIPATOK (V243, `fe8b1935`, 13 Sep 2026)** atas putusan
+pemilik **pilihan A**. **Masih terbuka:** fungsi DB/kode lain berbentuk sama (lihat
+bagian SAPUAN) dan **skill banksync Rule 9** (suntingan skill menunggu izin pemilik).
+
+_Status lama: TERBUKA. Tidak diperbaiki — putusan pemilik._
 
 **Lingkup verifikasi:** kueri baca-saja ke `milkydb` + pembacaan kode. Nol perubahan.
 
@@ -59,3 +62,45 @@ adalah jurnal asli beban yang dulu dibalik ke `status='VOID'` sebelum perbaikan 
 
 Apa pun pilihannya, **Rule 9 di skill banksync ikut dikoreksi** supaya kueri yang
 disalin orang berikutnya tidak membawa saringan dekoratif yang sama.
+
+---
+
+# DIBETULKAN — V243 (`fe8b1935`, 13 Sep 2026), putusan pemilik A
+
+- **Saldo buku = hanya jurnal POSTED**, syarat di `WHERE` (bukan `ON`).
+- **Anggota per rekening aktif:** jurnal non-POSTED yang punya btx terikat ke rekening
+  itu + baris **sisa** bila anggota tak menutup gap → setiap gap punya identitas.
+- **Patok identitas** (`health_check_exemptions`, `check_name='bank_sync'`): 16 jurnal
+  VOID lama, total **65.218** (BCA Operasional 6 / 51.848; Bendahara 10 / 13.370),
+  diambil dari keadaan hidup. Jurnal non-POSTED baru, penggantian walau nominal sama,
+  atau sisa baru → `FAIL_DRIFT_CHANGED`.
+- `check_3` membaca `hc_verdict('bank_sync')`. Rollback: `V243__…_ROLLBACK.sql`
+  **+ revert skrip** (tanpa revert, check_3 jadi BROKEN, bukan lulus).
+
+## Bukti — `scripts/gerbang_v243_badan.sql`, 15/15, uji kering DAN atas fungsi hidup
+
+| sisi | hasil |
+|---|---|
+| **kebutaan lama lewat EKSEKUSI**: suntik jurnal DRAFT + btx terikat | R9 **lama tetap 0** di kedua tenant; R9 **baru merah** |
+| hijau berpatok / tenant sehat | PASS_EXEMPT / PASS |
+| tanpa patok | FAIL_NON_EXEMPT |
+| tambah: btx tanpa jurnal | FAIL_DRIFT_CHANGED (sisa) |
+| ganti murni (drift+cacah+jumlah sama, identitas beda) | FAIL_DRIFT_CHANGED |
+| tenant kosong | galat |
+| V242 | tetap 3× PASS_EXEMPT |
+
+Skrip harian ujung-ke-ujung: BROKEN 0; alarm tunggal tetap check_15 HIGH (tak terkait).
+
+## SAPUAN — bentuk yang sama di tempat lain (TERUKUR, TIDAK disentuh)
+
+Sapuan `pg_proc` (fungsi biasa) atas `LEFT JOIN journal_entries … ON … status = 'POSTED'`:
+
+| tempat | saringan dekoratif | pemakai terukur | taruhan |
+|---|---|---|---|
+| `check_bank_sync_health()` | status | dipanggil sebagai guard R9 (skill banksync Rule 11) | penjaga — sama kelasnya dgn check_3 |
+| `get_trial_balance()` | **tenant, status, tanggal as-of, periode** — semuanya di `ON` | **0 pemanggil SQL** ditemukan (nama `get_trial_balance` di kode bot = nama *tool* ke `/api/reports/trial-balance`, bukan fungsi ini) | kalau kelak dipakai: neraca saldo per tanggal menjumlahkan SEMUA jurnal |
+| `compare_cost_centers()` | status + rentang tanggal | **dipanggil** `cost_centers.py:517` | laporan pusat biaya menjumlahkan jurnal non-POSTED & di luar rentang |
+| `bank_accounts.py:1230` | join `je` ke `bt.journal_id` | jalur baca | **semantik beda** — dicatat, jangan disamakan hanya karena bentuk SQL mirip |
+
+Masing-masing butuh pengukuran dampak sendiri sebelum diputuskan; **tidak** termasuk
+putusan A (yang hanya untuk check_3).
