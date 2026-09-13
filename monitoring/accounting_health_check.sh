@@ -39,6 +39,15 @@ HIGH_COUNT=0
 WARNING_COUNT=0
 TOTAL_CHECKS=0
 PASS_COUNT=0
+# Law 33 (2026-09-13): BROKEN = perkakasnya tak bisa jalan.
+# BUKAN lulus, BUKAN kegagalan data. SASARANNYA NOL -- kategori ini SEMENTARA.
+# Ketiga penghuni awalnya ada di sini karena fungsi DB yang dirujuk TIDAK ADA
+# (compute_ap_adjustments, compute_inventory_adjustments) atau SQL-nya cacat
+# sejak lahir (check_13). Kalau kelak ada BROKEN keempat yang bertahan
+# berbulan-bulan, UMUR di laporan harian yang akan menelanjanginya.
+BROKEN_COUNT=0
+BROKEN_EVENTS=0
+BROKEN_NAMES=""
 
 # Per-tenant Discord message accumulator
 DISCORD_BODY=""
@@ -48,6 +57,50 @@ DISCORD_BODY=""
 log() {
     echo "$DATE | $1"
     echo "$DATE | $1" >> "$LOG_FILE"
+}
+
+# --- Law 33: perkakas rusak vs data rusak ---
+is_broken() {
+    case "$1" in
+        *__GAGAL__*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Tanggal "rusak sejak" DIUKUR dari git (commit yang memperkenalkannya),
+# bukan dikarang: check_7 & check_9 lahir 4c7cafb3, check_13 lahir 0bdebe86.
+# Ketiganya rusak SEJAK LAHIR -- fungsinya tak pernah ada / SQL-nya cacat.
+broken_since() {
+    case "$1" in
+        7)  echo "2026-03-05" ;;
+        9)  echo "2026-03-05" ;;
+        13) echo "2026-04-20" ;;
+        *)  echo "" ;;
+    esac
+}
+
+note_broken() {
+    local num="$1" name="$2" detail="$3"
+    local since age label
+    since=$(broken_since "$num")
+    if [ -n "$since" ]; then
+        age=$(( ( $(date -u +%s) - $(date -u -d "$since" +%s 2>/dev/null || echo 0) ) / 86400 ))
+        label="[$num] $name (rusak sejak $since, $age hari)"
+    else
+        label="[$num] $name (rusak sejak jalan ini)"
+    fi
+    # Cacah DIPISAH dgn sengaja: BROKEN_COUNT = pemeriksaan BERBEDA,
+    # BROKEN_EVENTS = kejadian (satu pemeriksaan rusak muncul sekali per tenant).
+    # Versi pertama memakai satu cacah untuk keduanya, sehingga Discord berbunyi
+    # "6 pemeriksaan RUSAK" sambil menyebut TIGA nama -- cacah yang sah dipasang
+    # ke pertanyaan yang lain, persis kelas yang berulang kali menggigit kami.
+    BROKEN_EVENTS=$((BROKEN_EVENTS + 1))
+    case "$BROKEN_NAMES" in
+        *"$label"*) : ;;
+        *) BROKEN_COUNT=$((BROKEN_COUNT + 1))
+           BROKEN_NAMES="${BROKEN_NAMES}${BROKEN_NAMES:+, }${label}" ;;
+    esac
+    log "  BROKEN $label: perkakas tak bisa dijalankan — $detail"
 }
 
 detail() {
@@ -817,6 +870,8 @@ for TENANT in $TENANTS; do
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         LEDGER_PASS=$((LEDGER_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 2 "Hash Chain" "$CHK_DETAIL"
     else
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
         LEDGER_FAILS="${LEDGER_FAILS}hash: $CHK_DETAIL; "
@@ -873,6 +928,8 @@ for TENANT in $TENANTS; do
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 7 "AP Invariant" "$CHK_DETAIL"
     else
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
         SYNC_FAILS="${SYNC_FAILS}AP: $CHK_DETAIL; "
@@ -907,6 +964,8 @@ for TENANT in $TENANTS; do
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 9 "Inventory Value" "$CHK_DETAIL"
     else
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}inv value: $CHK_DETAIL; "
@@ -963,6 +1022,8 @@ for TENANT in $TENANTS; do
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 13 "Status Desync" "$CHK_DETAIL"
     else
         WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
         log "  WARNING [13] Status Desync: $CHK_DETAIL"
@@ -1013,6 +1074,7 @@ log "=========================================="
 log "  Checks run:    $TOTAL_CHECKS"
 log "  Passed:        $PASS_COUNT"
 log "  Critical:      $CRITICAL_COUNT"
+log "  BROKEN:        $BROKEN_COUNT pemeriksaan ($BROKEN_EVENTS kejadian)${BROKEN_NAMES:+  -> $BROKEN_NAMES}"
 log "  High:          $HIGH_COUNT"
 log "  Warnings:      $WARNING_COUNT"
 log "  Posted jrnls:  $TOTAL_POSTED"
@@ -1028,6 +1090,9 @@ NEXT_RUN=$(date -u -d "+1 day" +"%Y-%m-%d 06:00 UTC" 2>/dev/null || date -u -v+1
 if [ "$CRITICAL_COUNT" -gt 0 ]; then
     STATUS_ICON="🔴"
     STATUS_TEXT="CRITICAL"
+elif [ "$BROKEN_COUNT" -gt 0 ]; then
+    STATUS_ICON="🔧"
+    STATUS_TEXT="TOOLS BROKEN"
 elif [ "$HIGH_COUNT" -gt 0 ]; then
     STATUS_ICON="🟡"
     STATUS_TEXT="HIGH ALERTS"
@@ -1044,6 +1109,8 @@ DISCORD_MSG="${DISCORD_MSG}${DISCORD_BODY}"
 DISCORD_MSG="${DISCORD_MSG}━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 DISCORD_MSG="${DISCORD_MSG}Summary: ${PASS_COUNT}/${TOTAL_CHECKS} ✅"
 [ "$CRITICAL_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${CRITICAL_COUNT} ❌ CRITICAL"
+# Syarat 2: sebut JUMLAH dan NAMA + UMUR. Angka telanjang tak bisa ditindak.
+[ "$BROKEN_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG}\n🔧 ${BROKEN_COUNT} pemeriksaan RUSAK (perkakas, bukan data): ${BROKEN_NAMES}"
 [ "$HIGH_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${HIGH_COUNT} ⚠️ HIGH"
 [ "$WARNING_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${WARNING_COUNT} 💡 WARNING"
 DISCORD_MSG="${DISCORD_MSG}\nNext run: ${NEXT_RUN}"
@@ -1058,6 +1125,10 @@ log "Discord message sent: $STATUS_TEXT"
 if [ "$CRITICAL_COUNT" -gt 0 ]; then
     log "EXIT 2: CRITICAL failures detected"
     exit 2
+elif [ "$BROKEN_COUNT" -gt 0 ]; then
+    # Syarat 1: jalan yang memuat BROKEN TAK BISA berakhir 0.
+    log "EXIT 3: $BROKEN_COUNT pemeriksaan RUSAK — $BROKEN_NAMES"
+    exit 3
 elif [ "$HIGH_COUNT" -gt 0 ]; then
     log "EXIT 1: HIGH alerts detected"
     exit 1
