@@ -10,6 +10,7 @@ credit_notes.customer_id dan customer_deposits.customer_id = VARCHAR. Karena itu
 dinormalisasi ke uuid.UUID dulu (kanonik: huruf besar/kecil & format tak berpengaruh), baru
 dibandingkan. Membandingkan str() telanjang atau objek beda tipe adalah bentuk yang rusak.
 """
+from decimal import Decimal
 from typing import Optional, Union
 from uuid import UUID
 
@@ -69,3 +70,81 @@ async def pelanggan_kanonik_tenant(conn, tenant_id: str, nilai: Optional[Union[s
     if not ada:
         raise HTTPException(status_code=400, detail="Pelanggan tidak ditemukan")
     return str(uid)
+
+
+def rupiah(nilai) -> str:
+    return "Rp " + f"{Decimal(str(nilai)):,.0f}".replace(",", ".")
+
+
+async def faktur_tenant_untuk_pelanggan(conn, tenant_id: str, invoice_id, pelanggan):
+    """Faktur yang akan menerima atribusi nota kredit: harus ada di tenant ini DAN milik pelanggan nota kredit.
+
+    Id karangan, id bukan uuid, dan id faktur tenant lain -> pesan YANG SAMA (tak membocorkan keberadaan).
+    Unit B (14 Sep 2026): dulu pembuat/penyunting draf mencari faktur tanpa tenant & tanpa pelanggan ->
+    atribusi piutang lintas pelanggan/tenant saat posting.
+    """
+    try:
+        uid = invoice_id if isinstance(invoice_id, UUID) else UUID(str(invoice_id).strip())
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Faktur tidak ditemukan")
+    row = await conn.fetchrow(
+        "SELECT id, invoice_number, customer_id, status, journal_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+        uid, tenant_id,
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Faktur tidak ditemukan")
+    if pelanggan is None or (isinstance(pelanggan, str) and not pelanggan.strip()):
+        raise HTTPException(status_code=400, detail="Pilih pelanggan nota kredit sebelum mengaitkannya ke faktur.")
+    if row["customer_id"] is None or str(row["customer_id"]) != str(pelanggan).strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Faktur ini milik pelanggan lain; nota kredit hanya bisa dikaitkan ke faktur pelanggan yang sama.",
+        )
+    return row
+
+
+async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn) -> None:
+    """Faktur harus sudah dibukukan & belum batal, dan nilai nota kredit <= sisa tagihan (compute_ar_outstanding)."""
+    if faktur["status"] in ("draft", "void") or faktur["journal_id"] is None:
+        raise HTTPException(status_code=400, detail="Faktur belum dibukukan atau sudah dibatalkan.")
+    sisa = await conn.fetchval(
+        "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+        tenant_id, faktur["id"],
+    )
+    if Decimal(str(total_cn)) > Decimal(str(sisa)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nilai nota kredit ({rupiah(total_cn)}) melebihi sisa tagihan faktur ({rupiah(sisa)}).",
+        )
+
+
+async def segarkan_cache_piutang_faktur(conn, tenant_id: str, invoice_id) -> None:
+    """Cache amount_paid/status faktur + accounts_receivable dihitung ULANG dari compute_ar_outstanding (Rule 12).
+
+    Bukan aritmetika sendiri: apply lama menambah nominal ke cache sementara fungsi inti tak bergerak
+    (cache 120.000 vs compute 100.000). Baris hilang dari fungsi = outstanding 0.
+    """
+    f = await conn.fetchrow(
+        "SELECT total_amount, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2", invoice_id, tenant_id
+    )
+    if not f or f["status"] in ("draft", "void"):
+        return
+    out = await conn.fetchval(
+        "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+        tenant_id, invoice_id,
+    )
+    out = max(Decimal("0"), Decimal(str(out)))
+    dibayar = Decimal(str(f["total_amount"])) - out
+    status = "paid" if out < Decimal("0.01") else ("partial" if dibayar > Decimal("0.005") else "posted")
+    await conn.execute(
+        "UPDATE sales_invoices SET amount_paid = $1, status = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4",
+        dibayar, status, invoice_id, tenant_id,
+    )
+    await conn.execute(
+        """UPDATE accounts_receivable
+           SET amount_paid = $1,
+               status = CASE WHEN $2::numeric < 0.01 THEN 'PAID' WHEN $1::numeric > 0.005 THEN 'PARTIAL' ELSE 'OPEN' END,
+               updated_at = NOW()
+           WHERE source_id = $3 AND source_type = 'INVOICE' AND tenant_id = $4 AND status <> 'VOID'""",
+        dibayar, out, invoice_id, tenant_id,
+    )

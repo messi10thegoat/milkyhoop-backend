@@ -26,7 +26,13 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
-from ..services.pihak_helpers import pelanggan_kanonik_tenant
+from ..services.pihak_helpers import (
+    pelanggan_kanonik_tenant,
+    faktur_tenant_untuk_pelanggan,
+    pastikan_cn_muat_faktur,
+    segarkan_cache_piutang_faktur,
+    rupiah,
+)
 import logging
 import asyncpg
 from datetime import date
@@ -631,13 +637,13 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
 
                 # Get original invoice number if provided
                 original_invoice_number = None
+                faktur_asal = None
                 if body.original_invoice_id:
-                    inv = await conn.fetchrow(
-                        "SELECT invoice_number FROM sales_invoices WHERE id = $1",
-                        UUID(body.original_invoice_id),
+                    # Unit B (a): dulu tanpa tenant & tanpa pelanggan -> atribusi lintas pihak saat posting.
+                    faktur_asal = await faktur_tenant_untuk_pelanggan(
+                        conn, ctx["tenant_id"], body.original_invoice_id, pelanggan_cn
                     )
-                    if inv:
-                        original_invoice_number = inv["invoice_number"]
+                    original_invoice_number = faktur_asal["invoice_number"]
 
                 # Insert credit note
                 cn_id = await conn.fetchval(
@@ -657,9 +663,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                     cn_number,
                     pelanggan_cn,
                     body.customer_name,
-                    UUID(body.original_invoice_id)
-                    if body.original_invoice_id
-                    else None,
+                    faktur_asal["id"] if faktur_asal else None,
                     original_invoice_number,
                     subtotal,
                     body.discount_percent,
@@ -858,6 +862,24 @@ async def update_credit_note(
                 if update_data:
                     excluded = {"items"}
                     updates = []
+                    # Unit B (a): kaitan faktur divalidasi terhadap pelanggan EFEKTIF sesudah suntingan.
+                    faktur_patch = None
+                    if "original_invoice_id" in update_data or "customer_id" in update_data:
+                        lama = await conn.fetchrow(
+                            "SELECT customer_id::text AS c, original_invoice_id AS f FROM credit_notes WHERE id = $1",
+                            credit_note_id,
+                        )
+                        pel_efektif = (
+                            await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
+                            if "customer_id" in update_data else lama["c"]
+                        )
+                        f_efektif = update_data["original_invoice_id"] if "original_invoice_id" in update_data else lama["f"]
+                        if f_efektif:
+                            faktur_patch = await faktur_tenant_untuk_pelanggan(
+                                conn, ctx["tenant_id"], f_efektif, pel_efektif
+                            )
+                        if "original_invoice_id" in update_data:
+                            update_data["original_invoice_number"] = faktur_patch["invoice_number"] if faktur_patch else None
                     params = []
                     param_idx = 1
 
@@ -870,8 +892,8 @@ async def update_credit_note(
                             # "expected str, got UUID" (dan nama -> ValueError): mengubah pelanggan
                             # draf nota kredit selalu 500. Kini divalidasi & kanonik.
                             params.append(await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value))
-                        elif field == "original_invoice_id" and value:
-                            params.append(UUID(value))
+                        elif field == "original_invoice_id":
+                            params.append(faktur_patch["id"] if faktur_patch else None)
                         else:
                             params.append(value)
                         param_idx += 1
@@ -1008,6 +1030,14 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         status_code=400,
                         detail=f"Cannot post credit note with status '{cn['status']}'",
                     )
+
+                # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
+                faktur_asal = None
+                if cn["original_invoice_id"]:
+                    faktur_asal = await faktur_tenant_untuk_pelanggan(
+                        conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
+                    )
+                    await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"])
 
                 # Law 5: Period lock check
                 period_row = await conn.fetchrow(
@@ -1405,6 +1435,9 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     ctx["user_id"],
                 )
 
+                if faktur_asal:
+                    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], faktur_asal["id"])
+
                 logger.info(
                     f"Credit note posted: {credit_note_id}, journal={journal_id}"
                 )
@@ -1457,171 +1490,84 @@ async def apply_credit_note(
                     f"CREDIT_NOTE_APPLY:{credit_note_id}",
                 )
 
-                # DITUTUP EKSPLISIT (13 Sep 2026) sampai unit B nota kredit selesai -- lihat
-                # backend/docs/TIKET-nota-kredit-apply-mati-20260913.md. Hari ini fitur ini SUDAH selalu 400
-                # (uuid vs varchar), jadi pengguna tak merasakan beda. Tanpa penutupan ini, migrasi V247
-                # (customer_id -> uuid) akan membukanya DIAM-DIAM padahal atribusi piutangnya belum benar
-                # (compute_ar_outstanding membaca original_invoice_id, bukan aplikasi). DICABUT OLEH UNIT B.
-                raise HTTPException(
-                    status_code=400,
-                    detail="Menerapkan nota kredit ke faktur belum tersedia. Hubungi pemilik usaha.",
-                )
+                # UNIT B (14 Sep 2026) — satu nota kredit, satu faktur, SELURUH nilainya.
+                # Atribusi piutang = credit_notes.original_invoice_id (cabang 2 compute_ar_outstanding membaca
+                # SELURUH kredit jurnal CN), maka penerapan sebagian tak bisa direpresentasikan. Nol jurnal baru:
+                # piutang sudah dikredit saat CN dibukukan; apply hanya MENGATRIBUSI. Cache dihitung ulang dari
+                # compute_ar_outstanding. Lihat backend/docs/TIKET-nota-kredit-apply-mati-20260913.md.
+                if len(body.applications) != 1:
+                    raise HTTPException(status_code=400, detail="Nota kredit hanya bisa diterapkan ke satu faktur.")
+                app = body.applications[0]
 
-                # Get credit note
                 cn = await conn.fetchrow(
-                    """
-                    SELECT * FROM credit_notes
-                    WHERE id = $1 AND tenant_id = $2
-                """,
+                    "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
                     credit_note_id,
                     ctx["tenant_id"],
                 )
-
                 if not cn:
                     raise HTTPException(status_code=404, detail="Credit note not found")
-
-                if cn["status"] not in ("posted", "partial"):
+                if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
+                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
+                if cn["status"] != "posted" or cn["journal_id"] is None:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot apply credit note with status '{cn['status']}'",
+                        detail="Hanya nota kredit yang sudah dibukukan yang bisa diterapkan ke faktur.",
+                    )
+                if (cn["amount_refunded"] or 0) > 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Nota kredit yang dananya sudah dikembalikan tidak bisa diterapkan ke faktur.",
+                    )
+                total_cn = Decimal(str(cn["total_amount"]))
+                if Decimal(str(app.amount)) != total_cn:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur.",
                     )
 
-                # Calculate remaining
-                remaining = (
-                    cn["total_amount"]
-                    - (cn["amount_applied"] or 0)
-                    - (cn["amount_refunded"] or 0)
+                invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
+                await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], invoice, total_cn)
+
+                terikat = await conn.execute(
+                    """
+                    UPDATE credit_notes
+                    SET original_invoice_id = $1, original_invoice_number = $2, updated_at = NOW()
+                    WHERE id = $3 AND tenant_id = $4 AND original_invoice_id IS NULL
+                """,
+                    invoice["id"],
+                    invoice["invoice_number"],
+                    credit_note_id,
+                    ctx["tenant_id"],
                 )
-                total_to_apply = sum(app.amount for app in body.applications)
+                if terikat != "UPDATE 1":
+                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
 
-                if total_to_apply > remaining:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
-                    )
+                import uuid as uuid_module
 
+                app_id = uuid_module.uuid4()
                 application_date = body.application_date or date.today()
-                applications_created = []
+                await conn.execute(
+                    """
+                    INSERT INTO credit_note_applications (
+                        id, tenant_id, credit_note_id, invoice_id, invoice_number,
+                        amount_applied, application_date, created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                    app_id,
+                    ctx["tenant_id"],
+                    credit_note_id,
+                    invoice["id"],
+                    invoice["invoice_number"],
+                    total_cn,
+                    application_date,
+                    ctx["user_id"],
+                )
 
-                for app in body.applications:
-                    # Validate invoice
-                    invoice = await conn.fetchrow(
-                        """
-                        SELECT id, customer_id, total_amount, status
-                        FROM sales_invoices
-                        WHERE id = $1 AND tenant_id = $2
-                    """,
-                        UUID(app.invoice_id),
-                        ctx["tenant_id"],
-                    )
+                await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], invoice["id"])
 
-                    if not invoice:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {app.invoice_id} not found",
-                        )
-
-                    # Verify same customer
-                    if (
-                        cn["customer_id"]
-                        and invoice["customer_id"] != cn["customer_id"]
-                    ):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {app.invoice_id} belongs to different customer",
-                        )
-
-                    # Check invoice has balance (Law 16: journal-based)
-                    invoice_remaining = await get_invoice_remaining_from_journal(
-                        conn, ctx["tenant_id"], UUID(app.invoice_id)
-                    )
-                    if app.amount > invoice_remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Application amount exceeds invoice remaining balance",
-                        )
-
-                    # Check for existing application
-                    existing = await conn.fetchval(
-                        """
-                        SELECT id FROM credit_note_applications
-                        WHERE credit_note_id = $1 AND invoice_id = $2
-                    """,
-                        credit_note_id,
-                        UUID(app.invoice_id),
-                    )
-
-                    if existing:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Credit note already applied to invoice {app.invoice_id}",
-                        )
-
-                    # Create application
-                    import uuid as uuid_module
-
-                    app_id = uuid_module.uuid4()
-
-                    await conn.execute(
-                        """
-                        INSERT INTO credit_note_applications (
-                            id, tenant_id, credit_note_id, invoice_id,
-                            amount_applied, application_date, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                        app_id,
-                        ctx["tenant_id"],
-                        credit_note_id,
-                        UUID(app.invoice_id),
-                        app.amount,
-                        application_date,
-                        ctx["user_id"],
-                    )
-
-                    # Update invoice (derive amount_paid from journal-based remaining)
-                    new_amount_paid = (
-                        invoice["total_amount"] - int(invoice_remaining) + app.amount
-                    )
-                    new_status = (
-                        "paid"
-                        if new_amount_paid >= invoice["total_amount"]
-                        else "partial"
-                    )
-
-                    await conn.execute(
-                        """
-                        UPDATE sales_invoices
-                        SET amount_paid = $2, status = $3, updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        UUID(app.invoice_id),
-                        new_amount_paid,
-                        new_status,
-                    )
-
-                    # Update AR if exists
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET amount_paid = amount_paid + $2,
-                            status = CASE
-                                WHEN amount_paid + $2 >= amount THEN 'PAID'
-                                ELSE 'PARTIAL'
-                            END,
-                            updated_at = NOW()
-                        WHERE source_id = $1 AND source_type = 'INVOICE'
-                    """,
-                        UUID(app.invoice_id),
-                        app.amount,
-                    )
-
-                    applications_created.append(
-                        {
-                            "application_id": str(app_id),
-                            "invoice_id": app.invoice_id,
-                            "amount": app.amount,
-                        }
-                    )
+                applications_created = [
+                    {"application_id": str(app_id), "invoice_id": str(invoice["id"]), "amount": float(total_cn)}
+                ]
 
                 # Credit note status will be updated by trigger
                 logger.info(
@@ -2033,6 +1979,10 @@ async def void_credit_note(
                         cn["journal_id"],
                         reversal_journal_id,
                     )
+
+                # Unit B: jurnal CN dibalik -> cabang 2 compute_ar_outstanding melepasnya; cache faktur ikut dihitung ulang.
+                if cn["original_invoice_id"]:
+                    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], cn["original_invoice_id"])
 
                 # ── Fase 4 (V164): Reverse COGS companion journal + inventory_ledger ──
                 companion = await conn.fetchrow(

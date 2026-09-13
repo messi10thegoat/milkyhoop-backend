@@ -3586,6 +3586,23 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     detail="Cannot void invoice with payments. Refund first.",
                 )
 
+            # Unit B (14 Sep 2026): nota kredit yang terkait (original_invoice_id) mengkredit piutang faktur ini.
+            # Membatalkan faktur akan membuat kredit itu tak teratribusi lagi tanpa suara -> tolak.
+            cn_terkait = await conn.fetch(
+                """SELECT credit_note_number FROM credit_notes
+                   WHERE tenant_id = $1 AND original_invoice_id = $2 AND status NOT IN ('draft', 'void')
+                   ORDER BY credit_note_number""",
+                ctx["tenant_id"],
+                invoice_id,
+            )
+            if cn_terkait:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Faktur ini punya nota kredit terkait ("
+                    + ", ".join(r["credit_note_number"] for r in cn_terkait)
+                    + "). Faktur tidak bisa dibatalkan selama nota kredit itu terkait.",
+                )
+
             # ============================================================
             # FIX_P3_BRIDGE 2026-06-16: void-cascade guard for applied deposits
             # ------------------------------------------------------------

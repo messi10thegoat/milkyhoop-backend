@@ -24,7 +24,8 @@ from starlette.requests import Request  # noqa: E402
 T = "kaos-biru-konveksi"
 BADAN = "/tmp/V244_badan.sql"
 hasil = []  # (jalur, uji, ok, ket)
-HARAP_CACAH = 16  # prasyarat 1 + j1 3 + j2 3 + j3 2 + j4 2 + j5 2 + j6 label 1 + vendor 1 + kontrol 1
+HARAP_CACAH = 18  # prasyarat 1 + j1 3 + j2 3 + j3 2 + j4 2 + j5 2 + j6 3 (handler + T3 cache + T3 outstanding) + vendor 1 + kontrol 1
+# 14 Sep 2026 unit B: label pengecualian jalur 6 DICABUT -> jalur 6 diuji lewat handler seperti jalur lain.
 
 
 def catat(jalur, uji, ok, ket=""):
@@ -75,12 +76,27 @@ async def main():
     dbp.get_db_pool = fake_get_db_pool
 
     from app.routers import sales_invoices as si, expenses as ex, bill_payments as bp
-    from app.routers import customer_deposits as cd, credit_notes as cn
+    from app.routers import customer_deposits as cd
+    if len(sys.argv) > 1:
+        # uji sebelum deploy: modul unit B dari dir salinan (helper dimuat dulu karena rute mengimpornya relatif)
+        import importlib.util
+
+        def _muat(nama, path):
+            spec = importlib.util.spec_from_file_location(nama, path)
+            m = importlib.util.module_from_spec(spec)
+            sys.modules[nama] = m
+            spec.loader.exec_module(m)
+            return m
+        import app.routers  # noqa: F401
+        _muat("app.services.pihak_helpers", f"{sys.argv[1]}/pihak_helpers.py")
+        cn = _muat("app.routers.credit_notes_b", f"{sys.argv[1]}/credit_notes.py")
+    else:
+        from app.routers import credit_notes as cn
     from app.schemas.sales_invoices import InvoicePaymentCreate, VoidInvoiceRequest
     from app.schemas.expenses import VoidExpenseRequest
     from app.schemas.bill_payments import CreateBillPaymentRequest, BillAllocationInput
     from app.schemas.customer_deposits import ApplyCustomerDepositRequest, ApplyDepositItem
-    from app.schemas.credit_notes import ApplyCreditNoteRequest, ApplyCreditNoteItem
+    from app.schemas.credit_notes import ApplyCreditNoteRequest, ApplyCreditNoteItem, CreateCreditNoteRequest
 
     user_id = await conn.fetchval(
         "SELECT created_by FROM bank_transactions WHERE tenant_id=$1 AND created_by IS NOT NULL LIMIT 1", T)
@@ -120,17 +136,8 @@ async def main():
                 except Exception as e:  # noqa: BLE001
                     ok2, ket2 = False, f"{type(e).__name__}: {getattr(e, 'detail', e)}"
                 await sp2.rollback()
-                # Pengecualian SEMPIT, hanya jalur 6 (putusan MASTER/pemilik 13 Sep, opsi C):
-                # apply nota kredit MATI SEBELUM PAGAR (uuid vs varchar -> selalu 400,
-                # credit_note_applications = 0). Diakui HANYA bila gagal DENGAN dan TANPA pagar.
-                # Jalur lain yang mati dua arah tetap MERAH. Saat nota kredit dihidupkan,
-                # pengecualian ini WAJIB dicabut dan gerbang diulang.
-                mati_diakui = (nama == "6 terapkan nota kredit" and not ok2 and "different customer" in str(ket2))
-                if mati_diakui:
-                    hasil.pop()  # baris "handler berhasil" diganti label jujur, bukan lulus
-                    catat(nama, "LABEL: fitur MATI SEBELUM PAGAR - terbukti tingkat SQL (G3a), handler TIDAK diuji",
-                          True, f"dengan pagar: {ket} | tanpa pagar: {ket2}")
-                else:
+                # (pengecualian sempit jalur 6 DICABUT 14 Sep 2026, unit B: semua jalur yang mati dua arah MERAH)
+                if True:
                     catat(nama, "KLASIFIKASI: tanpa pagar berhasil? (True = DIMATIKAN PAGAR)", False,
                           f"tanpa_pagar_ok={ok2} {ket2}")
 
@@ -248,33 +255,38 @@ async def main():
         else:
             catat("5 terapkan DP", "subjek ada", False, "tak ada pasangan DP posted + faktur outstanding pelanggan sama")
 
-        # ---------- 6. terapkan nota kredit ke faktur ----------
+        # ---------- 6. terapkan nota kredit ke faktur (unit B: CN SINTETIS, seluruh nilai, satu faktur) ----------
+        # CN historis tak dipakai sebagai subjek (putusan pemilik: tak dikaitkan otomatis).
         pcn = await conn.fetchrow(
-            """SELECT c.id AS cn, a.invoice_id
-               FROM credit_notes c
-               -- pelanggan dicocokkan PERSIS seperti handler (sales_invoices.customer_id), bukan
-               -- lewat compute_ar_outstanding.customer_id (text) yang membuat run pertama salah subjek
-               JOIN sales_invoices s ON s.customer_id::text = c.customer_id::text AND s.journal_id IS NOT NULL
-               JOIN compute_ar_outstanding($1) a ON a.invoice_id = s.id
-               WHERE c.tenant_id=$1 AND c.status IN ('posted','partial')
-                 AND c.total_amount - COALESCE(c.amount_applied,0) - COALESCE(c.amount_refunded,0) >= 1000
-                 AND a.outstanding >= 1000
-               ORDER BY c.id, a.invoice_id LIMIT 1""", T)
+            """SELECT a.invoice_id, s.customer_id, a.outstanding FROM compute_ar_outstanding($1) a
+               JOIN sales_invoices s ON s.id = a.invoice_id
+               WHERE a.outstanding >= 1000 AND s.journal_id IS NOT NULL AND s.customer_id IS NOT NULL
+               ORDER BY a.invoice_id LIMIT 1""", T)
         if pcn:
             s0 = await conn.fetchrow("SELECT amount_paid, status FROM sales_invoices WHERE id=$1", pcn["invoice_id"])
+            o0 = pcn["outstanding"]
 
             async def p6():
+                CItem = CreateCreditNoteRequest.model_fields["items"].annotation.__args__[0]
+                r = await cn.create_credit_note(req(user_id), CreateCreditNoteRequest(
+                    customer_id=str(pcn["customer_id"]), customer_name="gerbang V244 j6", credit_note_date=date.today(),
+                    reason="other", items=[CItem(description="gerbang V244 j6", quantity=1, unit_price=1000)]))
+                cid = (r.get("data") or r)["id"]
+                await cn.post_credit_note(req(user_id), cid)
                 body = ApplyCreditNoteRequest(applications=[ApplyCreditNoteItem(invoice_id=str(pcn["invoice_id"]), amount=1000)])
-                await cn.apply_credit_note(req(user_id), pcn["cn"], body)
+                await cn.apply_credit_note(req(user_id), cid, body)
                 return True, "200"
 
             async def c6():
                 s1 = await conn.fetchrow("SELECT amount_paid, status FROM sales_invoices WHERE id=$1", pcn["invoice_id"])
+                o1 = await conn.fetchval("SELECT COALESCE(SUM(outstanding),0) FROM compute_ar_outstanding($1) WHERE invoice_id=$2", T, pcn["invoice_id"])
                 return [("T3 amount_paid faktur BERUBAH lewat nota kredit (+1000)",
-                         (s1["amount_paid"] or 0) - (s0["amount_paid"] or 0) == 1000, f"{s0['amount_paid']}->{s1['amount_paid']}")]
+                         (s1["amount_paid"] or 0) - (s0["amount_paid"] or 0) == 1000, f"{s0['amount_paid']}->{s1['amount_paid']}"),
+                        ("T3 outstanding compute_ar_outstanding TURUN 1000 (atribusi, bukan cuma cache)",
+                         o0 - o1 == 1000, f"{o0}->{o1}")]
             await jalankan("6 terapkan nota kredit", p6, c6)
         else:
-            catat("6 terapkan nota kredit", "subjek ada", False, "tak ada pasangan nota kredit posted + faktur outstanding pelanggan sama")
+            catat("6 terapkan nota kredit", "subjek ada", False, "TAK SAH: tak ada faktur ber-outstanding >= 1000 dengan pelanggan")
 
         # ---------- tambahan: kredit vendor ----------
         nvc = await conn.fetchval("SELECT count(*) FROM vendor_credits WHERE tenant_id=$1", T)
