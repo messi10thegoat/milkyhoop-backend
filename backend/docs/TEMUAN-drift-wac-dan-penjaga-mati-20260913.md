@@ -325,3 +325,34 @@ gate yang mustahil menyala, bukan prasyarat yang tak dijalankan. Mereka:
 > berjalan sama sekali**, dan diamnya terbaca sebagai sehat.
 
 Instans 1–7 semuanya soal alat yang **berjalan** lalu diam. Ini kebalikannya.
+
+---
+
+# PEMBARUAN — penjaga dihidupkan (V242, `b7581dac`, 13 Sep 2026)
+
+**check_7, check_9, check_13 hidup; data TIDAK disentuh; drift TIDAK diperbaiki.**
+
+| pemeriksaan | sebab mati | sekarang |
+|---|---|---|
+| check_7 AP | `compute_ap_adjustments` tak ada | GL PAYABLE efektif − `compute_ap_outstanding` |
+| check_9 persediaan | `compute_inventory_adjustments` tak ada + suku GL asimetris | akun literal 1-10600 + `is_effective_journal` |
+| check_13 status | SQL tanpa kutip, satu arah | dua arah |
+
+- **Kedua fungsi tak dibuat** — rumus tanpa fungsi menutup sampai rupiah.
+- **Selisih 3 juta check_9 vs check_15 = ARTEFAK, kini TERUKUR:** suku lama
+  `reversed_by_id IS NULL` membuang jurnal asli tapi menyimpan pembaliknya
+  (5.174.576 vs efektif 8.249.545). Sesudah diperbaiki check_9 = −47.994,00,
+  sebab sama dengan check_15 (−47.994,31; sisa 0,31 pembulatan WAC).
+- **check_9 SENGAJA dipertahankan** walau sepakat dengan check_15 hari ini:
+  mekanismenya beda (akun literal vs PERAN). Ketidaksepakatan keduanya
+  dilaporkan sebagai temuan sendiri.
+- **Patok identitas** (`health_check_exemptions`, tabel sendiri): drift ini
+  dipatok sebagai 5 anggota (4 jurnal BILL tanpa ledger + 1 saldo awal tanpa
+  jurnal). Anggota diganti walau jumlah sama → merah.
+- **check_15 TIDAK dipatok** dan tetap HIGH setiap pagi — tak diminta.
+- Gerbang `scripts/gerbang_v242_badan.sql` 20/20 (hijau, merah, tambah,
+  ganti-murni, kueri rusak). **Versi pertamanya menipu:** `ROLLBACK TO SAVEPOINT`
+  membatalkan catatan sisi merah → "0 gagal dari 8". Kelas Law 33; kini
+  cacah hasil di-assert = 20.
+- Skrip ujung-ke-ujung: BROKEN 3 → 0. "Passed: 27" sama dengan jalan 06:00,
+  **artinya berbeda**: pagi itu tiga di antaranya mati.

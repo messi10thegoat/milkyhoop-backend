@@ -65,3 +65,17 @@ sekali karena arahnya terbalik.
   (Law 2/3) = putusan pemilik, dengan rencananya sendiri.
 - Endpoint pembalikan TIDAK diubah. Ia menyentuh Law 31 dan menuntut 7/7 gate
   serta pembacaan companion skill lebih dulu.
+
+---
+
+# TAMBAHAN 13 Sep 2026 — dua pemeriksaan harian kini melihatnya
+
+- **check_13 (arah baru)** menemukan persis 9 tagihan `accounting_status=POSTED`
+  yang jurnal BILL-nya sudah dibalik tanpa jurnal hidup: BILL-2609-0002,
+  0028..0035, **Rp 6.680.000**. Himpunan yang sama dengan jalur lain.
+- **check_7 menemukan TEMUAN AKUNTANSI NYATA:** BILL-2609-0002 (`status_v2=void`)
+  — jurnal BILL-nya dibalik, tapi **jurnal pembayaran 100.000-nya masih efektif**.
+  GL PAYABLE memuat debit pembayaran atas tagihan yang tak lagi ada di sub-ledger.
+  Tagihan batal, pembayarannya tidak.
+- Keduanya **dipatok** (V242) atas putusan pemilik membiarkan 9 tagihan itu —
+  **bukan karena dianggap wajar**. Anggota ke-10 atau penggantian → merah.

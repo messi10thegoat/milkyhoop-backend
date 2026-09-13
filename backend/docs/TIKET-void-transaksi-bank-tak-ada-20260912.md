@@ -85,3 +85,35 @@ Ukur lebih dulu apa yang sudah dilakukan tetangganya: apakah
 `POST /api/bank-accounts/{id}/transactions` dan `/adjust` menulis jurnal —
 supaya void-nya cermin dari pembuatannya, bukan karangan baru. Lalu satukan
 ejaan kedua permukaan FE; dua ejaan untuk satu aksi adalah cacat tersendiri.
+
+---
+
+# PENGUKURAN 13 Sep 2026 — "pasang yang sudah ada" TIDAK AMAN
+
+Premis sebelumnya: handler `kasbank_v2.py:1220` sudah patuh, tinggal dipasang.
+**Terukur salah dalam arti yang menentukan:**
+
+1. **`kasbank_v2` tak pernah dipasang** (`git log -S` di `main.py` kosong). Satu
+   `APIRouter()` tanpa prefix, 11 rute. `include_router` di `/api` menabrak rute
+   hidup (`GET /api/bank-accounts`, `GET /api/bank-accounts/{id}`,
+   `POST /api/bank-accounts/{id}/transactions`, `POST /api/bank-transfers` +
+   `/post` + `/void`) — FastAPI diam-diam memakai yang terdaftar duluan.
+2. **Handler mem-void transaksi bank APA PUN milik tenant.** Dari 206 baris,
+   `origin_type=MANUAL` tanpa referensi = **1** (Rp 10 jt, 5 Sep). Sisanya milik
+   modul lain (DP 77, beban 38, faktur 6, tagihan 6, penerimaan 6, transfer 4,
+   pembayaran tagihan 3, …). Void lewat pintu ini membalik jurnal tapi dokumen
+   asal tetap. **R9 tetap 0 dan tak akan menangkapnya.**
+3. **Tanpa pagar izin:** tak ada pola `^/api/bank-transactions` di
+   `permission_middleware`; path tanpa pola diteruskan. (Juga masuk sapuan izin.)
+4. **DUGAAN, belum diukur:** transaksi manual ber-`transaction_number` NULL →
+   `RV-None`. Keunikan `journal_number` per tenant harus diukur sebelum bentuk.
+5. `reversed_at` tak diisi; docstring berbohong ("marks the original journal as VOID").
+
+Frekuensi: 1 transaksi manual tanpa referensi dalam ±5 minggu data (9 Agu–12 Sep),
+tenant pemilik/uji — mengukur pemakaian saat menguji, bukan pasar.
+
+**Putusan pemilik (13 Sep): A — pasang, dibatasi.** Kriteria terima: penyaring
+hanya MANUAL tanpa referensi (tolak atas ketiadaan asal yang sah, bukan
+daftar-hitam) · izin `kas_bank V` dua sisi · nomor jurnal tanpa
+`transaction_number` · `reversed_at` · docstring · `add_api_route` satu fungsi ·
+gerbang wajib menolak transaksi BERREFERENSI di sisi merah. **Bentuk dulu.**

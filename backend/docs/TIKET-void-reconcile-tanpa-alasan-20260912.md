@@ -1,7 +1,12 @@
 # TIKET — void rekonsiliasi akhir bulan tak bisa beralasan (12 Sep 2026)
 
-**Status:** TERBUKA. Bukan unit hari ini; ditulis supaya temuannya tidak hanya
-hidup di pesan lintas-sesi.
+**Status:** **SIAP DI BE (`34f7f0c2`, 13 Sep) — BELUM BERDAMPAK.** Endpoint kini
+menerima body opsional `{reason}`, tapi FE (`useMonthEndReconcile.ts:244`) belum
+mengirimnya, jadi **setiap void di produksi masih mencatat kalimat konstan**.
+Tertutup hanya bila FE mengirim `reason`. Lihat bagian PERUBAHAN BE di akhir.
+
+_Status lama: TERBUKA. Bukan unit hari ini; ditulis supaya temuannya tidak hanya
+hidup di pesan lintas-sesi._
 
 **Lingkup verifikasi:** yang diperiksa **kode + skema**, BUKAN eksekusi. Tak ada
 jurnal sungguhan yang di-void untuk mengujinya.
@@ -278,3 +283,19 @@ Ini **bukan** "rekonsiliasi tak bisa memungut data yang ada". Datanya memang
 tidak ada lagi. Pertanyaan hulu (kenapa `cancel` dulu tak membalik labor/OH —
 lihat sebab T215/T216) sudah diperbaiki di `946f1523` menurut sebab yang
 tertulis, dan itu terpisah dari tiket ini.
+
+---
+
+# PERUBAHAN BE — 13 Sep 2026 (`34f7f0c2`)
+
+- `VoidReconcileRequest { reason: str, min 1, maks 500 }`, body **OPSIONAL**.
+  Dengan body → `reason` pengguna ke `reversal_reason` + `description`.
+  Tanpa body → kalimat lama `Void month-end manufacturing reconcile`.
+- **Kenapa opsional:** FE hari ini tak mengirim body; body wajib = tombol 422.
+  **Konsekuensinya ditulis sebagai konsekuensi:** sampai FE mengirim `reason`,
+  dampak di data = **nol**.
+- Gerbang `scripts/gerbang_reconcile_reason.py` (FastAPI kontainer): merah (kode
+  lama membuang alasan), hijau 4/4, sabotase (body wajib) memerah.
+- **Batas:** membuktikan PARSING, bukan jurnal pembalik ujung-ke-ujung. Jalur ini
+  belum pernah jalan di produksi (0 jurnal `PRODUCTION_RECONCILE`).
+- **Sisa pekerjaan FE:** kirim `{reason}` dari dialog konfirmasi.
