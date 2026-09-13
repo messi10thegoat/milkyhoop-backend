@@ -589,9 +589,10 @@ async def apply_vendor_deposit(
             )
 
         bill = await conn.fetchrow(
-            "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2",
+            "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3",
             data.bill_id,
             vd["vendor_id"],
+            ctx["tenant_id"],
         )
         if not bill:
             raise HTTPException(
@@ -660,7 +661,7 @@ async def apply_vendor_deposit(
                 ctx["tenant_id"],
                 journal_number,
                 applied_date,
-                f"Apply Deposit {vd['deposit_number']} to Bill {bill['bill_number']}",
+                f"Apply Deposit {vd['deposit_number']} to Bill {bill['invoice_number']}",
                 deposit_id,
                 data.amount,
                 ctx.get("user_id"),
@@ -675,7 +676,7 @@ async def apply_vendor_deposit(
                 journal["id"],
                 ap_account,
                 data.amount,
-                f"Apply Deposit to Bill {bill['bill_number']}",
+                f"Apply Deposit to Bill {bill['invoice_number']}",
             )
 
             # Cr. Uang Muka Vendor
@@ -712,13 +713,14 @@ async def apply_vendor_deposit(
                 ctx.get("user_id"),
             )
 
-            # Update bill paid_amount
+            # Update bill amount_paid (14 Sep 2026: dulu kolom hantu paid_amount/total_amount -> jalur ini tak pernah
+            # jalan; bentuk sama dengan bill_payments.py)
             await conn.execute(
                 """
                 UPDATE bills SET
-                    paid_amount = COALESCE(paid_amount, 0) + $2,
+                    amount_paid = COALESCE(amount_paid, 0) + $2,
                     status = CASE
-                        WHEN COALESCE(paid_amount, 0) + $2 >= total_amount THEN 'paid'
+                        WHEN COALESCE(amount_paid, 0) + $2 >= amount THEN 'paid'
                         ELSE 'partial'
                     END,
                     updated_at = NOW()
@@ -733,7 +735,7 @@ async def apply_vendor_deposit(
                 "SELECT remaining_amount FROM vendor_deposits WHERE id = $1", deposit_id
             )
             updated_bill = await conn.fetchrow(
-                "SELECT total_amount - COALESCE(paid_amount, 0) as remaining FROM bills WHERE id = $1",
+                "SELECT amount - COALESCE(amount_paid, 0) as remaining FROM bills WHERE id = $1",
                 data.bill_id,
             )
 
@@ -742,7 +744,7 @@ async def apply_vendor_deposit(
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
                 bill_id=data.bill_id,
-                bill_number=bill["bill_number"],
+                bill_number=bill["invoice_number"],
                 applied_amount=data.amount,
                 deposit_remaining=updated_vd["remaining_amount"],
                 bill_remaining=updated_bill["remaining"],
