@@ -188,3 +188,82 @@ terus sama-sama tak dibaca.
   sekarang** (5.174.576 vs 8.249.545): `check_9` tak pernah berjalan, jadi
   angkanya **artefak kueri yang mati di tengah**, bukan hasil pemeriksaan.
   Bandingkan ulang **sesudah** ia hidup.
+
+---
+
+# SUSULAN (13 Sep, sore) — TIGA penjaga mati, dan log yang berbohong
+
+## Penjaga ketiga: `check_13_status_desync` — SQL cacat sejak lahir
+
+Bukan fungsi hilang; **kuerinya sendiri tak bisa di-parse**:
+
+```sql
+WHERE b.tenant_id =            -- tak ada nilai
+  AND b.accounting_status != POSTED    -- literal tanpa kutip
+  AND je.source_type = BILL            -- literal tanpa kutip
+```
+
+Dijalankan apa adanya: `ERROR: syntax error at or near "AND"`.
+Identik di disk DAN di blob git (`git diff` kosong). Lahir cacat di
+`0bdebe86 "feat(health): add Check 13 — status desync detection"`.
+Ia salah satu dari tujuh situs `-z` (baris 674), jadi galatnya jadi **LULUS**.
+
+**Jadi tiga, bukan dua:** `check_7` (AP), `check_9` (nilai persediaan),
+`check_13` (status desync). Ketiganya dihitung di **"Passed: 27"**.
+
+## KONTROL POSITIF — sisi merah TERBUKTI di kode hari ini
+
+Fungsi DB TIDAK disentuh. Yang dimutasi **salinan skripnya**, satu nama fungsi
+disalah-ketik — stimulus yang sama (kueri gagal → kosong), nol risiko ke DB:
+
+```
+verify_chain_integrity_all -> verify_chain_integrity_allX   (3 rujukan)
+hasil: Passed 27 · Critical 0 · baris "Hash Chain" muncul 0 kali
+```
+
+**Identik dengan jalan yang sehat.** Pemeriksaan yang fungsinya tak ada sama
+sekali melaporkan LULUS, diam-diam. Inilah sisi merah yang wajib dibalik oleh
+perbaikan: sesudah diperbaiki, mutasi yang sama HARUS memerahkan check 2.
+
+## Log yang mengklaim kiriman yang mungkin tak pernah terjadi
+
+```
+1029  send_discord "$DISCORD_MSG"      -> curl HANYA jika WEBHOOK_URL tak kosong
+1032  log "Discord message sent: ..."  -> DI LUAR penjaga, SELALU tercetak
+```
+
+Baris log itu **bukan bukti kiriman**. Siapa pun yang membaca log ini tak bisa
+membedakan "alarm terkirim" dari "alarm tak pernah keluar" — termasuk saat
+webhook mati. Aku sendiri sempat menuduh diriku mengirimi pemilik alarm uji
+berdasarkan baris ini; **tidak ada yang terkirim**. Gejala ujung rantai,
+sekali lagi.
+
+## EMPAT idiom penanganan-kosong di SATU berkas
+
+```
+[ "$x" = "0" ]                      -> kosong jatuh ke ELSE = GAGAL (benar)  check_1, check_3
+[ "$x" = "0" ] || [ -z "$x" ]       -> kosong = LULUS (cacat)                7 situs
+${vendor_drift:-0} lalu -gt 0       -> kosong dianggap 0 = LULUS, numerik     check_11
+verdict = PASS/PASS_EXEMPT || -z    -> kosong = LULUS (cacat)                 4 situs
+```
+
+`check_1`/`check_3` **sudah benar**. Jadi perbaikannya bukan mengarang
+konvensi baru: **samakan tujuh situs itu dengan yang sudah benar di berkas yang
+sama.**
+
+## Yang SAH-kosong — terukur, bukan diandaikan
+
+Loop tenant = tenant ber-jurnal POSTED: hari ini **dua**
+(`grapgrap-manado`, `kaos-biru-konveksi`). Keempat `verify_*_all` mengembalikan
+baris untuk keduanya. **Jadi hari ini TAK ADA pemeriksaan yang sah-kosong** —
+setiap kosong yang bisa muncul sekarang adalah kegagalan.
+
+⚠️ Tapi "hari ini" menanggung beban: tenant yang semua jurnalnya DRAFT tak
+masuk loop, dan `verify_chain_integrity_all()` juga hanya memancarkan baris
+untuk tenant ber-POSTED. **Kedua syarat itu kebetulan berimpit**, jadi
+keamanan hari ini adalah kebetulan, bukan jaminan. Karena itu tiap pemeriksaan
+harus **MENYATAKAN** nolnya (`0`/`PASS`), bukan bersandar pada keimpitan itu.
+
+`check_16` mengembalikan **empat** tenant sementara loop punya dua
+(`adhita-ariyani`, `subbidel-kolsani` tak pernah ditanya) — celah cakupan yang
+**hampa hari ini**: keduanya nol jurnal, nol baris ledger, hanya punya CoA.
