@@ -735,6 +735,19 @@ app.include_router(tenant_profile.router, prefix="/api/tenant", tags=["tenant-pr
 # Expenses router (Biaya & Pengeluaran)
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
+
+# Void SATU transaksi bank manual (13 Sep 2026). SATU fungsi, BUKAN
+# include_router: router kasbank_v2 memuat 11 rute tanpa prefix, dan lima di
+# antaranya menabrak rute hidup (bank_accounts, bank_transfers) -- FastAPI
+# diam-diam memakai yang terdaftar duluan. Sepuluh rute lainnya TIDAK dipasang.
+from .routers import kasbank_v2 as _kasbank_v2  # noqa: E402
+
+app.add_api_route(
+    "/api/bank-transactions/{transaction_id}/void",
+    _kasbank_v2.void_transaction,
+    methods=["POST"],
+    tags=["kas-bank"],
+)
 app.include_router(expense_extended.router, prefix="/api", tags=["expense-extended"])
 # Payroll router (Penggajian)
 app.include_router(payroll.router, prefix="/api/payroll", tags=["payroll"])

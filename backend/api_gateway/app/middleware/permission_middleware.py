@@ -125,6 +125,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/journals/[^/]+$", ["DELETE"], "journal", "D"),
     (r"^/api/bank-transfers/[^/]+/post$", ["POST"], "kas_bank", "P"),
     (r"^/api/bank-transfers/[^/]+/void$", ["POST"], "kas_bank", "V"),
+    (r"^/api/bank-transactions/[^/]+/void$", ["POST"], "kas_bank", "V"),
     (r"^/api/sales-receipts/[^/]+/void$", ["POST"], "receive_payment", "V"),
     (r"^/api/customers/[^/]+/opening-balance/reverse$", ["POST"], "customer", "V"),
     (r"^/api/payroll-payments$", ["POST"], "payroll", "C"),

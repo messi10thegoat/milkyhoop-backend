@@ -1224,10 +1224,22 @@ async def void_transaction(
     body: VoidTransactionRequest,
 ):
     """
-    Void a posted manual bank transaction.
+    Void SATU transaksi bank MANUAL ("Uang Masuk/Keluar").
 
-    Creates a reversal journal entry (swap debit/credit) and marks
-    the original journal as VOID.
+    Hanya transaksi yang asalnya sah sebagai transaksi manual yang boleh
+    di-void di sini (daftar-PUTIH, diperiksa di dalam lock + FOR UPDATE):
+      origin_type = 'MANUAL', reference_type/reference_id NULL, dan jurnalnya
+      milik transaksi ini sendiri (source_type='BANK_TRANSACTION', source_id=id).
+    Transaksi milik modul lain (DP, beban, faktur, tagihan, transfer, ...) DITOLAK
+    400: membatalkannya di sini membalik jurnal tapi meninggalkan dokumen asalnya.
+
+    Membuat jurnal pembalik RV-<nomor jurnal asli> (DRAFT -> baris -> POSTED).
+    Jurnal ASLI TETAP POSTED (Law 2), ditandai reversed_by_id + reversed_at.
+    Mirror bank_transaction (Rule 3), lalu transaksi ditandai VOIDED + pelaku + alasan.
+
+    Cabang DRAFT di bawah TIDAK TERJANGKAU: penyaring asal mewajibkan jurnal
+    milik transaksi ini, dan draf tak punya jurnal -> selalu ditolak lebih dulu.
+    Dibiarkan (di luar lingkup unit 13 Sep 2026), diakui sebagai kode mati.
     """
     try:
         ctx = get_user_context(request)
@@ -1257,6 +1269,34 @@ async def void_transaction(
                 )
                 if not tx:
                     raise HTTPException(status_code=404, detail="Transaction not found")
+
+                # Penyaring ASAL (daftar-putih), di dalam lock + FOR UPDATE, sebelum
+                # cabang apa pun. Terukur 13 Sep 2026: memisahkan 1 dari 201 baris.
+                orig_je = None
+                if tx["journal_id"]:
+                    orig_je = await conn.fetchrow(
+                        """
+                        SELECT id, journal_number, source_type, source_id, reversed_by_id
+                        FROM journal_entries
+                        WHERE id = $1 AND tenant_id = $2
+                        FOR UPDATE
+                        """,
+                        tx["journal_id"],
+                        ctx["tenant_id"],
+                    )
+                asal_sah = (
+                    tx["origin_type"] == "MANUAL"
+                    and tx["reference_type"] is None
+                    and tx["reference_id"] is None
+                    and orig_je is not None
+                    and orig_je["source_type"] == "BANK_TRANSACTION"
+                    and str(orig_je["source_id"]) == str(tx["id"])
+                )
+                if not asal_sah:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Transaksi ini dibuat oleh modul lain. Batalkan dari dokumen asalnya.",
+                    )
 
                 if tx["status"] == "VOIDED":
                     raise HTTPException(
@@ -1295,6 +1335,20 @@ async def void_transaction(
                     conn, ctx["tenant_id"], tx["transaction_date"]
                 )
 
+                # Jurnal pembalik bertanggal CURRENT_DATE: periodenya juga harus
+                # terbuka -> galat rapi, bukan 500 dari trigger periode.
+                await check_period_is_open(
+                    conn, ctx["tenant_id"], await conn.fetchval("SELECT CURRENT_DATE")
+                )
+
+                # Sudah dibalik lewat pintu lain (mis. pembalikan generik) -> 409,
+                # bukan 500 dari indeks satu-pembalikan (Law 26).
+                if orig_je["reversed_by_id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Jurnal transaksi ini sudah dibalik",
+                    )
+
                 # Get original journal lines
                 original_lines = await conn.fetch(
                     "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
@@ -1310,7 +1364,10 @@ async def void_transaction(
 
                 # Create reversal journal
                 reversal_journal_id = uuid_module.uuid4()
-                reversal_number = f"RV-{tx['transaction_number']}"
+                # BUKAN transaction_number: NULL untuk transaksi manual -> "RV-None",
+                # dan void manual kedua melanggar uq_je_tenant_number (500).
+                # Nomor jurnal asli unik + maks satu pembalikan (Law 26) -> unik.
+                reversal_number = f"RV-{orig_je['journal_number']}"
 
                 await conn.execute(
                     """
@@ -1323,7 +1380,7 @@ async def void_transaction(
                     reversal_journal_id,
                     ctx["tenant_id"],
                     reversal_number,
-                    f"Void {tx['transaction_number']} - {body.reason}",
+                    f"Void {orig_je['journal_number']} - {body.reason}",
                     transaction_id,
                     tx["journal_id"],
                     abs_amount,
@@ -1357,7 +1414,7 @@ async def void_transaction(
                 await conn.execute(
                     """
                     UPDATE journal_entries
-                    SET reversed_by_id = $2
+                    SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: asli TETAP POSTED
                     WHERE id = $1
                     """,
                     tx["journal_id"],
@@ -1388,7 +1445,7 @@ async def void_transaction(
                         tx["amount"]
                     ),  # Negate: deposit becomes negative, withdrawal becomes positive
                     transaction_id,
-                    f"VOID-{tx['transaction_number']}",
+                    f"VOID-{orig_je['journal_number']}",
                     f"Void - {body.reason}",
                     reversal_journal_id,
                     ctx["user_id"],
