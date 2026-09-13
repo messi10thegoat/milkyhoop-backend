@@ -109,3 +109,29 @@ Also included in the unit:
 5. Measurement limit for `accounts_receivable`: the comparison against compute only covers rows compute emits (outstanding ≠ 0); PAID/VOID rows aren't compared. A missing row is treated as outstanding 0 (same as the receive-payment helper).
 
 **Note for future gates:** invoice `9eaa85d2` (RAHAYU UMAR) also has a customer deposit APPLIED, so the deposit guard would block its void too. Assert (b) checks the text "nota kredit terkait", so it can't be masked by the other guard; any gate that picks this subject must discriminate by text/type, not just status 400.
+
+
+---
+
+## UNIT (2) — un-apply live (14 Sep 2026, commit `a6cd0194`, migration V249)
+
+Closes OPEN WORK item 1 ("Un-apply doesn't exist; the pair is locked both ways").
+
+- `POST /api/credit-notes/{id}/unapply {reason}`: **no journal** (apply has none).
+  - `original_invoice_id` → NULL via compare-and-set from the exact invoice.
+  - The application row → `reversed` (+reversed_at/by/reason, **not deleted**).
+  - The cache is recomputed from compute.
+  - Audit `CREDIT_NOTE_UNAPPLIED`.
+- Owner decisions: **reason required**; application date in a **CLOSED** period → 400.
+- V249: `credit_note_applications.status` + CHECK. Trigger `update_credit_note_status` sums **active** rows only.
+- Attributing readers filter `status='active'`. **A B-era display bug is fixed:** invoice detail `applied_credits` listed only `cn.status='posted'`, so an applied CN (status `applied`) vanished from its invoice's detail.
+- Void locks open by themselves after un-apply; proven through the handlers.
+- AR checker V248: after un-apply, residual −amount appears (true red) until it is applied again. No checker change.
+
+Gate `scripts/gerbang_unapply_cn.py`:
+- 20/20 new and after install;
+- old: 16 RED;
+- sabotage — trigger sums all rows / link kept / period guard dropped — each caught with un-apply still 200.
+- After deploy: unit B 28/28 and V248 14/14 still green.
+
+**Remaining:** fence (e) `original_invoice_id` must allow the non-null→NULL transition only together with an application changing to reversed in the same transaction. FE "Batalkan penerapan" button (FRONTEND).
