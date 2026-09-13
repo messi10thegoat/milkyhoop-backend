@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 import uuid as uuid_module
 import logging
 import asyncpg
@@ -1232,6 +1233,27 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     else:
                         bank_account_name = payload.bank_account_name
 
+                    # PIHAK + TENANT (13 Sep 2026): dulu alokasi TIDAK memeriksa vendor maupun
+                    # tenant -- terbukti (eksekusi, ROLLBACK) pembayaran vendor X di-POST ke tagihan
+                    # vendor Y: outstanding Y turun, amount_paid Y naik. Lintas tenant hanya ditolak
+                    # KEBETULAN oleh pemeriksaan sisa. Semua alokasi diperiksa di sini, di dalam
+                    # lock, SEBELUM tulis apa pun (termasuk nomor pembayaran). Tagihan tenant lain
+                    # dijawab persis seperti id karangan ("not found") -- tak membocorkan keberadaan.
+                    vendor_bayar = normalisasi_pihak(payload.vendor_id, "Vendor pembayaran")
+                    for _alloc in payload.allocations:
+                        _bill = await conn.fetchrow(
+                            "SELECT invoice_number, vendor_id FROM bills WHERE id = $1::uuid AND tenant_id = $2",
+                            _alloc.bill_id,
+                            ctx["tenant_id"],
+                        )
+                        if not _bill:
+                            raise HTTPException(
+                                status_code=400, detail=f"Bill {_alloc.bill_id} not found"
+                            )
+                        pastikan_pihak_sama(
+                            vendor_bayar, _bill["vendor_id"], f"Tagihan {_bill['invoice_number']}", "vendor"
+                        )
+
                     payment_number = await generate_payment_number(conn, ctx["tenant_id"])
                     allocated_amount = sum(a.amount_applied for a in payload.allocations)
                     # Law 4 fix: unapplied = total_amount + discount - allocated
@@ -1307,8 +1329,9 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                     for alloc in payload.allocations:
                         bill = await conn.fetchrow(
-                            "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid FOR UPDATE",
+                            "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid AND tenant_id = $2 FOR UPDATE",
                             alloc.bill_id,
+                            ctx["tenant_id"],
                         )
                         if not bill:
                             raise HTTPException(
@@ -1594,9 +1617,11 @@ async def post_bill_payment(request: Request, payment_id: str):
 
                 for alloc in allocations:
                     # Law 13: Lock bill row before update to prevent concurrent modification
+                    # (tenant_id: jangan pernah mengunci baris tenant lain)
                     await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 FOR UPDATE",
+                        "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                         alloc["bill_id"],
+                        ctx["tenant_id"],
                     )
                     await conn.execute(
                         """
@@ -1871,9 +1896,11 @@ async def void_bill_payment(
 
                 for alloc in allocations:
                     # Law 13: Lock bill row before update
+                    # (tenant_id: jangan pernah mengunci baris tenant lain)
                     await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 FOR UPDATE",
+                        "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                         alloc["bill_id"],
+                        ctx["tenant_id"],
                     )
                     await conn.execute(
                         """
