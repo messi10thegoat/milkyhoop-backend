@@ -1683,6 +1683,16 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             detail=f"Cannot post payment with status '{payment['status']}'",
         )
 
+    # PAGAR SEMENTARA (2026-09-14): kelebihan bayar (unapplied>0) membuat customer_deposit yang
+    # liabilitasnya dibukukan di jurnal RP (source_id=RP) -> TAK ter-atribusi ke deposit -> saldo
+    # journal-derived 0 -> deposit TAK bisa di-apply. Tolak SEBELUM menulis apa pun sampai atribusi
+    # (option B) live; nol deposit-overpay baru lahir. Dicabut setelah fix atribusi.
+    if payment["unapplied_amount"] and payment["unapplied_amount"] > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Kelebihan bayar belum dapat diproses; catat pembayaran sebesar sisa tagihan",
+        )
+
     # Get account IDs
     # Law 27: resolve accounts via resolve_account_id
     deposit_account_id = await resolve_account_id_by_role(
