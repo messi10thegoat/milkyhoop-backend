@@ -29,7 +29,7 @@ class CreditNoteItemCreate(BaseModel):
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: Decimal = Field(..., ge=0, description="Price per unit in IDR")
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: Decimal = Field(0, ge=0)
+    discount_amount: Decimal = Field(Decimal("0"), ge=0)
     tax_code: Optional[str] = Field(None, max_length=20)
     tax_rate: float = Field(0, ge=0, le=100)
     original_invoice_item_id: Optional[str] = Field(None, description="Original invoice item UUID")
@@ -72,7 +72,7 @@ class CreateCreditNoteRequest(BaseModel):
     notes: Optional[str] = None
     items: List[CreditNoteItemCreate] = Field(..., min_length=1)
     discount_percent: float = Field(0, ge=0, le=100, description="Overall discount percent")
-    discount_amount: Decimal = Field(0, ge=0, description="Overall discount amount")
+    discount_amount: Decimal = Field(Decimal("0"), ge=0, description="Overall discount amount")
     tax_rate: float = Field(0, ge=0, le=100, description="Overall tax rate")
 
     @field_validator('customer_name')
