@@ -55,3 +55,33 @@ Gate `scripts/gerbang_izin_tahap2.py`:
    - `^/api/approvals` (FE 1×)
    - material-issues / fg-receipts detail: the FE calls the list 4× each; only the list route exists.
 4. Stage 3: flip the default (unmapped write → 403) + a gate "every WRITE has a pattern OR is in a declared exemption set".
+
+
+---
+
+## STAGE (c) — X-Source bypass RETIRED (14 Sep 2026, commit a9b779e4)
+
+**Reason for retirement:** the `X-Source=action_executor` bypass in AuthMiddleware set `role=ADMIN` and skipped auth for any request carrying `X-Source` + `X-Tenant-ID`. With `X-User-ID` it acted as any user — a header-trust hole. The gRPC `action_executor` service that used it is dead: no container, host unresolved from the gateway, 0 "Internal service auth bypass" events in 30 days. Chat executes financial actions through the user's own JWT (the `is_direct` REST path), which is untouched.
+
+**Owner decision (via MASTER):** (A) retire — one coherent change, not a shared secret.
+
+**Removed:**
+- the AuthMiddleware bypass block;
+- the gRPC-client calls in unified_chat.py (confirm non-direct → readable `ACTION_EXECUTOR_RETIRED` error; `get_action_status` now reads `pending_actions.status` from the DB);
+- the deprecated, unmounted `action_chat.py` (6 dead references + import) — nothing imports it (main.py include commented since the v3 migration);
+- a stray tracked backup `unified_chat.py.before_manual_fix`;
+- the `action_executor` service + its two gateway env lines in docker-compose.yml.
+
+The service code dir under `backend/services/action_executor/` stays (git history), now with no auth contract into the gateway.
+
+**Baseline before change:** the 4 non-direct `pending_actions` ever created (2–3 Sep) are all expired/cancelled, none executed; the gRPC host has been unresolved, so non-direct confirms already failed. Removal is behavior-preserving.
+
+**Gate `scripts/gerbang_xsource.py` (two-sided, real AuthMiddleware):**
+- new: X-Source+X-Tenant+X-User-ID(owner) with no Bearer → 401; baseline no-auth → 401; unified_chat 0 references; is_direct JWT path intact.
+- old: the same X-Source request → 200 (bypass proven live).
+- LIVE after deploy: X-Source gate 5/5, stage 1 gate 10/10, stage 2 gate 7/7, 0 references in routers, action_chat absent, healthz 200 (app.main imports).
+- compose config rc=0, action_executor gone, all other services intact.
+
+**Post-fix public probe:** `POST https://milkyhoop.com/api/expenses` with X-Source + a FAKE X-User-ID → **401**; same via :8001 → 401.
+
+**nginx (for a follow-up ticket, NOT urgent now the bypass is gone):** `/etc/nginx/sites-available/milkyhoop.conf`, `location /api → proxy_pass http://127.0.0.1:8001`. It does NOT strip client-supplied `X-Source` / `X-User-ID` / `X-Tenant-ID` (no proxy_set_header removes them). Before this fix that made the hole externally reachable. Now that the bypass is removed the app rejects it regardless, but stripping those headers at nginx is worth adding as defense-in-depth.
