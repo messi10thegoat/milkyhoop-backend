@@ -173,7 +173,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         tenant_id,
         invoice_id,
     )
-    return int(result or 0)
+    return float(result or 0)
 
 
 # =============================================================================
@@ -674,14 +674,14 @@ async def get_receive_payments_summary(request: Request):
             return {
                 "success": True,
                 "data": {
-                    "total_settled_noncash": int(noncash or 0),
+                    "total_settled_noncash": float(noncash or 0),
                     "total": row["total"] or 0,
                     "draft_count": row["draft_count"] or 0,
                     "posted_count": row["posted_count"] or 0,
                     "voided_count": row["voided_count"] or 0,
-                    "total_received": int(row["total_received"] or 0),
-                    "total_allocated": int(row["total_allocated"] or 0),
-                    "total_unapplied": int(row["total_unapplied"] or 0),
+                    "total_received": float(row["total_received"] or 0),
+                    "total_allocated": float(row["total_allocated"] or 0),
+                    "total_unapplied": float(row["total_unapplied"] or 0),
                 },
             }
 
@@ -2500,15 +2500,15 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": int(line["debit"] or 0),
-                        "credit": int(line["credit"] or 0),
+                        "debit": float(line["debit"] or 0),
+                        "credit": float(line["credit"] or 0),
                         "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
 
-                journal_debit = int(journal["total_debit"] or 0)
-                journal_credit = int(journal["total_credit"] or 0)
+                journal_debit = float(journal["total_debit"] or 0)
+                journal_credit = float(journal["total_credit"] or 0)
                 total_debit += journal_debit
                 total_credit += journal_credit
 
@@ -2696,9 +2696,9 @@ async def get_receive_payment_pdf(
                 if _nums:
                     invoice_number = ", ".join(_nums)
                 if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
-                    remaining = int(allocs[0]["remaining_after"])
+                    remaining = float(allocs[0]["remaining_after"])
 
-            _amt = int(pay["total_amount"] or 0)
+            _amt = float(pay["total_amount"] or 0)
             method_label = (
                 "Tunai" if (pay["payment_method"] or "").lower() == "cash"
                 else "Transfer Bank"

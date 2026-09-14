@@ -19,6 +19,7 @@ Journal Entry on POST (From Deposit):
         Cr. Piutang Usaha                   allocated_amount
 """
 
+from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Literal
 from datetime import date
@@ -33,7 +34,7 @@ class AllocationInput(BaseModel):
     """Single invoice allocation in create/update request."""
 
     invoice_id: str = Field(..., description="Invoice UUID to allocate payment to")
-    amount_applied: int = Field(..., gt=0, description="Amount to apply in IDR")
+    amount_applied: Decimal = Field(..., gt=0, description="Amount to apply in IDR")
 
 
 # =============================================================================
@@ -50,8 +51,8 @@ class CreateReceivePaymentRequest(BaseModel):
     payment_method: Literal["cash", "bank_transfer"]
     bank_account_id: str = Field(..., description="Kas/Bank account UUID (CoA)")
     bank_account_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up if not provided")
-    total_amount: int = Field(..., gt=0, description="Total payment amount in IDR")
-    discount_amount: int = Field(0, ge=0, description="Early payment discount in IDR")
+    total_amount: Decimal = Field(..., gt=0, description="Total payment amount in IDR")
+    discount_amount: Decimal = Field(Decimal("0"), ge=0, description="Early payment discount in IDR")
     discount_account_id: Optional[str] = Field(
         None, description="Discount account UUID (CoA)"
     )
@@ -96,8 +97,8 @@ class UpdateReceivePaymentRequest(BaseModel):
     payment_method: Optional[Literal["cash", "bank_transfer"]] = None
     bank_account_id: Optional[str] = None
     bank_account_name: Optional[str] = None
-    total_amount: Optional[int] = Field(None, gt=0)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    total_amount: Optional[Decimal] = Field(None, gt=0)
+    discount_amount: Optional[Decimal] = Field(None, ge=0)
     discount_account_id: Optional[str] = None
     source_type: Optional[Literal["cash", "deposit"]] = None
     source_deposit_id: Optional[str] = None
@@ -123,10 +124,10 @@ class AllocationResponse(BaseModel):
     id: str
     invoice_id: str
     invoice_number: str
-    invoice_amount: int
-    remaining_before: int
-    amount_applied: int
-    remaining_after: int
+    invoice_amount: float
+    remaining_before: float
+    amount_applied: float
+    remaining_after: float
 
 
 # =============================================================================
@@ -148,9 +149,9 @@ class ReceivePaymentListItem(BaseModel):
     # uang muka dan nota kredit tampil sebagai penerimaan transfer bank.
     payment_method: Optional[str] = None
     source_type: Optional[str] = None
-    total_amount: int
-    allocated_amount: int
-    unapplied_amount: int
+    total_amount: float
+    allocated_amount: float
+    unapplied_amount: float
     status: str
     invoice_count: int = 0
     created_at: str
@@ -189,10 +190,10 @@ class ReceivePaymentDetail(BaseModel):
     source_deposit_number: Optional[str] = None
 
     # Amounts
-    total_amount: int
-    allocated_amount: int
-    unapplied_amount: int
-    discount_amount: int
+    total_amount: float
+    allocated_amount: float
+    unapplied_amount: float
+    discount_amount: float
     discount_account_id: Optional[str] = None
 
     # Status
@@ -286,9 +287,9 @@ class OpenInvoiceItem(BaseModel):
     invoice_number: str
     invoice_date: str
     due_date: str
-    total_amount: int
-    paid_amount: int
-    remaining_amount: int
+    total_amount: float
+    paid_amount: float
+    remaining_amount: float
     is_overdue: bool = False
     overdue_days: int = 0
 
@@ -306,10 +307,10 @@ class AvailableDepositItem(BaseModel):
     id: str
     deposit_number: str
     deposit_date: str
-    amount: int
-    amount_applied: int
-    amount_refunded: int
-    remaining_amount: int
+    amount: float
+    amount_applied: float
+    amount_refunded: float
+    remaining_amount: float
 
 
 class AvailableDepositsResponse(BaseModel):
