@@ -1,0 +1,15 @@
+BEGIN;
+ALTER TABLE sales_invoices     DROP CONSTRAINT fk_sales_invoices_customer_tenant;
+ALTER TABLE sales_invoices     ADD CONSTRAINT sales_invoices_customer_id_fkey     FOREIGN KEY (customer_id) REFERENCES customers (id);
+ALTER TABLE receive_payments   DROP CONSTRAINT fk_receive_payments_customer_tenant;
+ALTER TABLE receive_payments   ADD CONSTRAINT receive_payments_customer_id_fkey   FOREIGN KEY (customer_id) REFERENCES customers (id);
+ALTER TABLE recurring_invoices DROP CONSTRAINT fk_recurring_invoices_customer_tenant;
+ALTER TABLE recurring_invoices ADD CONSTRAINT recurring_invoices_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES customers (id);
+ALTER TABLE sales_receipts     DROP CONSTRAINT fk_sales_receipts_customer_tenant;
+ALTER TABLE sales_receipts     ADD CONSTRAINT sales_receipts_customer_id_fkey     FOREIGN KEY (customer_id) REFERENCES customers (id);
+ALTER TABLE accounts_receivable DROP CONSTRAINT fk_accounts_receivable_customer_tenant;
+ALTER TABLE proformas    DROP CONSTRAINT fk_proformas_customer_tenant;
+ALTER TABLE quotes       DROP CONSTRAINT fk_quotes_customer_tenant;
+ALTER TABLE sales_orders DROP CONSTRAINT fk_sales_orders_customer_tenant;
+DELETE FROM schema_migrations WHERE version = 'V252__fk_komposit_pelanggan.sql';
+COMMIT;
