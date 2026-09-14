@@ -133,6 +133,50 @@ def _doc_detail(row: dict) -> DocumentIntakeDetail:
 # ======================================================================
 
 
+# ── [B] Izin intake per-aksi (semangat chat: cek modul TUJUAN dari doc_type TERSIMPAN) ──
+_DOCTYPE_MODULE = {
+    "sales_invoice": "invoice", "invoice": "invoice", "tax_invoice": "invoice", "faktur_pajak": "invoice",
+    "receipt": "receipt", "sales_receipt": "receipt", "nota": "receipt", "kwitansi": "receipt",
+    "payment_receipt": "receipt",
+    "bill": "bill", "purchase_invoice": "bill", "purchase": "bill", "vendor_invoice": "bill",
+    "expense": "expense",
+    "bank_transfer": "bank",
+}
+
+
+async def _intake_ctx(request):
+    """(engine, UserContext) dari request. Identitas dari user_tenant_roles (bukan body)."""
+    from ..services.policy_engine_client import get_policy_engine
+    u = getattr(request.state, "user", {}) or {}
+    eng = get_policy_engine()
+    ctx = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
+    return eng, ctx
+
+
+async def _require_active_member(request):
+    _eng, ctx = await _intake_ctx(request)
+    if not ctx.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    return ctx
+
+
+async def _require_doc_create_perm(request, tenant_id, doc_id):
+    """Izin membuat dokumen dari doc_type TERSIMPAN (server), BUKAN body klien. Unknown -> 403 fail-closed."""
+    _did = doc_id if isinstance(doc_id, UUID) else UUID(str(doc_id))
+    _pool = await get_pool()
+    async with _pool.acquire() as _c:
+        dt = await _c.fetchval("SELECT doc_type FROM uploaded_documents WHERE id = $1 AND tenant_id = $2", _did, tenant_id)
+    eng, ctx = await _intake_ctx(request)
+    if not ctx.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    modul = _DOCTYPE_MODULE.get((dt or "").strip().lower())
+    if not modul:
+        logger.warning(f"[intake-izin] doc_type tak dikenal '{dt}' doc={_did} tenant={tenant_id} -> 403 fail-closed")
+        raise HTTPException(status_code=403, detail="Jenis dokumen tak dikenal — tidak dapat dieksekusi")
+    if not await eng.can(ctx, "C", modul):
+        raise HTTPException(status_code=403, detail="Anda tidak punya izin membuat dokumen jenis ini")
+
+
 @router.post("/upload", response_model=UploadDocumentIntakeResponse)
 async def upload_documents(
     request: Request,
@@ -149,6 +193,7 @@ async def upload_documents(
     Returns batch ID for tracking processing status.
     """
     ctx = get_user_context(request)
+    await _require_active_member(request)
     svc = await _get_service()
 
     try:
@@ -248,6 +293,7 @@ async def confirm_document(
     Phase 8: Immediately executes (creates journal + bank + inventory).
     """
     ctx = get_user_context(request)
+    await _require_doc_create_perm(request, ctx["tenant_id"], doc_id)
     svc = await _get_service()
 
     try:
@@ -322,6 +368,7 @@ async def reject_document(
 ):
     """Reject a document with optional reason."""
     ctx = get_user_context(request)
+    await _require_active_member(request)
     svc = await _get_service()
 
     success = await svc.reject_document(
@@ -396,6 +443,7 @@ async def execute_document(
 ):
     """Execute a confirmed document — create journal + bank + inventory atomically."""
     ctx = get_user_context(request)
+    await _require_doc_create_perm(request, ctx["tenant_id"], doc_id)
     pool = await get_pool()
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
@@ -430,6 +478,24 @@ async def execute_batch(
     if len(document_ids) > 50:
         raise HTTPException(status_code=400, detail="Max 50 documents per batch")
 
+    # kondisi 3: izin PER ITEM dari doc_type tersimpan. Item tanpa izin -> 403 item, bukan batch diam-diam.
+    _eng, _uctx = await _intake_ctx(request)
+    if not _uctx.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    _permitted, _denied = [], []
+    async with pool.acquire() as _c:
+        for _did in document_ids:
+            _dt = await _c.fetchval("SELECT doc_type FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
+                                    UUID(str(_did)), ctx["tenant_id"])
+            _modul = _DOCTYPE_MODULE.get((_dt or "").strip().lower())
+            if not _modul:
+                logger.warning(f"[intake-izin] batch doc_type tak dikenal '{_dt}' doc={_did} -> 403 fail-closed")
+                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Jenis dokumen tak dikenal"})
+            elif not await _eng.can(_uctx, "C", _modul):
+                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": f"Tak punya izin membuat {_modul}"})
+            else:
+                _permitted.append(_did)
+
     from ..services.kernel_document_executor import KernelDocumentExecutor
 
     auth_token = (
@@ -437,12 +503,13 @@ async def execute_batch(
     )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
     result = await executor.execute_batch(
-        document_ids, ctx["tenant_id"], str(ctx["user_id"])
-    )
+        _permitted, ctx["tenant_id"], str(ctx["user_id"])
+    ) if _permitted else {"results": [], "executed": 0}
 
     return {
         "success": True,
         "data": result,
+        "denied": _denied,
     }
 
 
@@ -544,6 +611,7 @@ async def retry_document(
 ):
     """Retry a posting_failed document. Resets to confirmed and re-executes."""
     ctx = get_user_context(request)
+    await _require_active_member(request)
     pool = await get_pool()
 
     doc_uuid = UUID(doc_id)

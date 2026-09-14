@@ -327,6 +327,16 @@ async def get_document(request: Request, document_id: UUID):
         return DocumentDetailResponse(data=data)
 
 
+async def _require_active_member_docs(request):
+    """Anggota AKTIF tenant (bukan sekadar token valid)."""
+    from ..services.policy_engine_client import get_policy_engine
+    u = getattr(request.state, "user", {}) or {}
+    eng = get_policy_engine()
+    c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
+    if not c.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+
+
 @router.post("/upload", response_model=UploadDocumentResponse)
 async def upload_document(
     request: Request,
@@ -338,6 +348,7 @@ async def upload_document(
 ):
     """Upload a new document"""
     ctx = get_user_context(request)
+    await _require_active_member_docs(request)
     pool = await get_pool()
 
     # Validate file
@@ -518,6 +529,7 @@ async def attach_document(
 ):
     """Attach document to an entity"""
     ctx = get_user_context(request)
+    await _require_active_member_docs(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:

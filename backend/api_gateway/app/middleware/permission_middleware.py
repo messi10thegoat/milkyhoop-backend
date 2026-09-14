@@ -618,6 +618,12 @@ WRITE_EXEMPT = [
     (r"^/api/setup/chat", "chat penyiapan (ber-JWT)"),
     (r"^/api/tenant/[^/]+/chat", "chat per-tenant (ber-JWT)"),
     (r"^/[^/]+/chat$", "chat per-tenant publik (ber-JWT)"),
+    # [B] intake/dokumen: gate lolos, izin ditegakkan di handler (anggota aktif + modul-tujuan per doc_type tersimpan)
+    (r"^/api/document-intake/upload$", "intake: anggota aktif dicek di handler"),
+    (r"^/api/document-intake/execute-batch$", "intake: izin per-item dicek di handler"),
+    (r"^/api/document-intake/document/[^/]+/(confirm|execute|reject|retry)$", "intake: izin modul-tujuan/anggota dicek di handler"),
+    (r"^/api/documents/upload$", "unggah dokumen: anggota aktif dicek di handler"),
+    (r"^/api/documents/[^/]+/attach$", "lampir dokumen: anggota aktif dicek di handler"),
 ]
 
 
