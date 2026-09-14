@@ -155,3 +155,7 @@ Observed (pre-existing, not from this change): nginx warns `protocol options red
 - flipping the READ default (reads stay open for now).
 
 **Owed:** the 24h owner-PERMISSION_UNMAPPED check — report tomorrow (0 so far).
+
+
+---
+(lihat TIKET-fk-komposit-pelanggan-20260914.md: cek 24j owner DIBATALKAN karena owner-aware = tak bisa merah)
