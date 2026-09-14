@@ -88,3 +88,25 @@ sekali karena arahnya terbalik.
 lima yang diatribusi (termasuk MANUAL/REVERSAL) — `TIKET-verify-ar-reconciliation-buta-20260913.md`.
 Pintu pembalikan tak berpagar (tiket ini) + penjaga yang buta pada jenis jurnal itu = **dua cacat saling
 menutupi**. Memperbaiki salah satu tanpa yang lain tetap meninggalkan jalur piutang tak terawasi.
+
+
+---
+
+## RESOLVED — Gate 5 generic-reversal guard, 14 Sep 2026, commits 833ebfb1 (code) + V254
+
+**Clean measurement first (MASTER's stop-condition):** production reverses through its OWN helper `production.py:_reverse_journal`, which INHERITS the original's `source_type` (PRODUCTION_*), and is called internally by `cancel_order` / month-end-reconcile void — it NEVER calls `POST /api/journals/{id}/reverse`. So the endpoint's allowlist does not break any production flow. The 65 MANUAL reversals (source_type=MANUAL) were manual/bot clicks through the generic endpoint, not production's doing. → proceeded.
+
+**Endpoint `POST /api/journals/{id}/reverse`:**
+- ALLOWLIST (fail-closed): MANUAL, ADJUSTMENT, RECONCILIATION_ADJUSTMENT, RECLASSIFY_CN_COGS_GAP, RECLASSIFY_TAX_D1_DRIFT. REVERSAL excluded (Law 26). A new source_type is rejected by default.
+- A document-owned journal → 400 with per-type guidance pointing at the REAL void (bill/invoice/expense/payment; production → "batalkan work order POST /api/production/{id}/cancel atau void rekonsiliasi"; etc — endpoints verified to exist).
+- reverse-of-reversal → 400 (target `reversal_of_id IS NOT NULL`).
+- `validate_no_derived_layer_accounts()` now runs on the reverse path too (was create-only) — a manual reversal can't newly touch AR/PAYABLE/inventory/COGS.
+- kept: already-reversed → 409, closed period → 403.
+
+**V254 `trg_prevent_reverse_of_reversal`** (BEFORE INSERT ON journal_entries, Law 13/26): a reversal whose target is itself a reversal → check_violation. Historical reverse-of-reversal = 0 (measured all tenants). Corrects the ironlaws skill's false claim that this trigger already existed.
+
+**Gate `scripts/gerbang_reverse_guard.py`:** baru+v254 10/10 — MANUAL 200; BILL/INVOICE/PRODUCTION 400 with correct void guidance; reverse-of-reversal 400; double 409; PAYABLE-touching reversal 400; trigger direct-INSERT 23514. Old: BILL/INVOICE/PRODUCTION reverse LOLOS (gap proven). Sabotage disable allowlist → RED (the specific "void X" message gone; the derived-layer guard still catches doc journals that touch derived accounts, but that's the second layer, not the primary). Live: 8/8. Lossless ROLLBACKs.
+
+**65 historical MANUAL reversals + the 9 pinned bills: untouched.**
+
+**Follow-up (FRONTEND/bot, MASTER forwards):** the FE Journal Entry detail "void" button (useJournalDetail.ts) now gets a 400 for document-owned journals → hide it there or surface the message; the bot `reverse_journal` direct action now returns a readable 400 for document journals (not silent) → ideally route document reversals to the `void_*` actions.
