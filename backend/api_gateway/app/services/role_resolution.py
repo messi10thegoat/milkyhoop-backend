@@ -43,7 +43,7 @@ MSG_NOT_PROVISIONED = (
     "untuk diberikan akses, atau hubungi dukungan MilkyHoop bila Anda pemiliknya."
 )
 MSG_INACTIVE = (
-    "Akses Anda ke bisnis ini sedang dinonaktifkan. Hubungi pemilik bisnis."
+    "Akses Anda ke bisnis ini telah dinonaktifkan."
 )
 
 _ROLE_SQL = """
@@ -77,19 +77,18 @@ async def resolve_business_role(conn, user_id: str, tenant_id: str) -> str:
     """Kode peran bisnis, atau HTTPException. TIDAK PERNAH menebak.
 
     Raises:
-        409 ROLE_NOT_PROVISIONED — tak ada baris peran
-        403 ROLE_INACTIVE        — ada baris tapi tidak aktif
+        403 MEMBERSHIP_INACTIVE — tak ada baris peran ATAU baris tidak aktif
     """
     row = await fetch_role_row(conn, user_id, tenant_id)
     if row is None:
         raise HTTPException(
-            status_code=409,
-            detail={"error_code": "ROLE_NOT_PROVISIONED", "message": MSG_NOT_PROVISIONED},
+            status_code=403,
+            detail={"error_code": "MEMBERSHIP_INACTIVE", "message": MSG_NOT_PROVISIONED},
         )
     if not is_active_status(row["status"]):
         raise HTTPException(
             status_code=403,
-            detail={"error_code": "ROLE_INACTIVE", "message": MSG_INACTIVE},
+            detail={"error_code": "MEMBERSHIP_INACTIVE", "message": MSG_INACTIVE},
         )
     return row["role_code"]
 

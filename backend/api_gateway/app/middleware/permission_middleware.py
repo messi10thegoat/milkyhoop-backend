@@ -704,7 +704,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                         status_code=403,
                         content={
                             "detail": {
-                                "error_code": "ROLE_INACTIVE",
+                                "error_code": "MEMBERSHIP_INACTIVE",
                                 "message": MSG_INACTIVE,
                             }
                         },
@@ -726,10 +726,10 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                         f"user={user['user_id']} tenant={user['tenant_id']} path={path}"
                     )
                     return JSONResponse(
-                        status_code=409,
+                        status_code=403,
                         content={
                             "detail": {
-                                "error_code": "ROLE_NOT_PROVISIONED",
+                                "error_code": "MEMBERSHIP_INACTIVE",
                                 "message": MSG_NOT_PROVISIONED,
                             }
                         },
@@ -806,7 +806,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                     request.state.user["business_role_id"] = context.business_role_id
                     return await call_next(request)
                 if not context.membership_active:
-                    return JSONResponse(status_code=403, content={"detail": {"error_code": "ROLE_INACTIVE", "message": MSG_INACTIVE}})
+                    return JSONResponse(status_code=403, content={"detail": {"error_code": "MEMBERSHIP_INACTIVE", "message": MSG_INACTIVE}})
                 logger.warning(
                     f"WRITE tak terpetakan ditolak (default tertutup): user={user['user_id']} "
                     f"path={path} method={method} role={context.business_role_code}"

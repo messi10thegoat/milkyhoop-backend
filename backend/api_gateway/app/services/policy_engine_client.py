@@ -409,16 +409,16 @@ class PolicyEngineClient:
                 # Bukti lapangan: localStorage owner berisi
                 # {success:true, role_code:"VIEWER", effective_permissions:{}}.
                 raise HTTPException(
-                    status_code=409,
+                    status_code=403,
                     detail={
-                        "error_code": "ROLE_NOT_PROVISIONED",
+                        "error_code": "MEMBERSHIP_INACTIVE",
                         "message": MSG_NOT_PROVISIONED,
                     },
                 )
             if not is_active_status(role_row["status"]):
                 raise HTTPException(
                     status_code=403,
-                    detail={"error_code": "ROLE_INACTIVE", "message": MSG_INACTIVE},
+                    detail={"error_code": "MEMBERSHIP_INACTIVE", "message": MSG_INACTIVE},
                 )
 
             role_code = role_row["code"]
