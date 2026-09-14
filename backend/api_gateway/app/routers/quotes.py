@@ -171,8 +171,13 @@ async def list_quotes(
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    offset: int = Query(0, ge=0),
 ):
     """List quotes with filters."""
+    # Terima 3 konvensi paginasi: skip (warisan) + page/offset (dulu DIABAIKAN diam —
+    # hanya skip bekerja). Prioritas: offset > page > skip -> satu OFFSET efektif.
+    eff_offset = offset if offset > 0 else ((page - 1) * limit if page > 1 else skip)
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -242,7 +247,7 @@ async def list_quotes(
                 ORDER BY created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
-            params.extend([limit, skip])
+            params.extend([limit, eff_offset])
             rows = await conn.fetch(list_query, *params)
 
             items = []
@@ -280,13 +285,13 @@ async def list_quotes(
                     )
                 )
 
-            page = (skip // limit) + 1 if limit > 0 else 1
+            page = (eff_offset // limit) + 1 if limit > 0 else 1
             total_pages = (total + limit - 1) // limit if limit > 0 else 1
 
             return QuoteListResponse(
                 items=items,
                 total=total,
-                has_more=(skip + limit) < total,
+                has_more=(eff_offset + limit) < total,
                 page=page,
                 limit=limit,
                 total_pages=total_pages,

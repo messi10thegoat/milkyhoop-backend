@@ -539,7 +539,7 @@ async def _load_invitable_role(conn, role_id: str, tenant_id: str, current_user_
         # OWNER = satu per tenant, NON_ASSIGNABLE. Gunakan Transfer Kepemilikan.
         raise HTTPException(
             status_code=403,
-            detail="Peran Pemilik tidak dapat diundang. Gunakan Transfer Kepemilikan.",
+            detail="Peran Pemilik tidak dapat diberikan lewat undangan atau ubah peran. Gunakan Transfer Kepemilikan.",
         )
     user_hierarchy = await _get_user_role_hierarchy(conn, tenant_id, current_user_id)
     if row["hierarchy_level"] < user_hierarchy:
