@@ -24,7 +24,10 @@ from starlette.requests import Request  # noqa: E402
 T = "kaos-biru-konveksi"
 BADAN = "/tmp/V244_badan.sql"
 hasil = []  # (jalur, uji, ok, ket)
-HARAP_CACAH = 18  # prasyarat 1 + j1 3 + j2 3 + j3 2 + j4 2 + j5 2 + j6 3 (handler + T3 cache + T3 outstanding) + vendor 1 + kontrol 1
+# cacah diturunkan dari rincian per-jalur (handler + cek T3), bukan angka ketik-tangan.
+# tiap jalur = 1 (handler berhasil) + jumlah cek fn_cek; prasyarat/vendor/kontrol = 1.
+_CEK_PER_JALUR = {"prasyarat": 1, "j1": 3, "j2": 3, "j3": 2, "j4": 2, "j5": 2, "j6": 3, "vendor": 1, "kontrol": 1}
+HARAP_CACAH = sum(_CEK_PER_JALUR.values())
 # 14 Sep 2026 unit B: label pengecualian jalur 6 DICABUT -> jalur 6 diuji lewat handler seperti jalur lain.
 
 

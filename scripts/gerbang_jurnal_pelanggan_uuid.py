@@ -150,8 +150,10 @@ async def main():
         catat("SABOTASE", "cabang CN dirusak -> jurnal CN hilang dari entries (gerbang bisa merah)",
               bool(cn_j) and not (cn_j & ids), f"CN={len(cn_j)} tersisa={len(cn_j & ids)}")
     await conn.close()
-    # prasyarat 1 + ber-DP 4 + tanpa-DP 3 + ber-CN 4 + sabotase 1
-    harap = 13
+    # cacah diturunkan dari STRUKTUR: prasyarat 1 + per-subjek (3 dasar: 200/entries/total; +1 bila
+    # subjek bercabang DP/CN) + sabotase 1. (bukan angka ketik-tangan.)
+    _CABANG = {"ber-DP", "ber-NOTA-KREDIT"}
+    harap = 1 + sum(3 + (1 if lbl in _CABANG else 0) for lbl, _ in subjek) + 1
     for s, u, ok, k in hasil:
         print(("[H] " if ok else "[X] ") + f"{s:10} {u}  | {k}")
     g = sum(1 for h in hasil if not h[2])
