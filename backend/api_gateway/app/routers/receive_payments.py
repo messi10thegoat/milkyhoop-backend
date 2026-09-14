@@ -1645,6 +1645,22 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
 # =============================================================================
 
 
+# L2: kosakata metode receive_payments ({cash, bank_transfer}) != customer_deposits
+# ({cash, transfer, check, other}). Terjemahkan di batas saat overpayment membuat uang muka;
+# metode tak dikenal -> 400 terbaca, JANGAN lolos ke CHECK (yang jadi 500 + rollback post).
+_RP_TO_DEPOSIT_METHOD = {"cash": "cash", "bank_transfer": "transfer"}
+
+
+def _deposit_payment_method(rp_method: str) -> str:
+    m = _RP_TO_DEPOSIT_METHOD.get((rp_method or "").strip().lower())
+    if m is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Metode bayar '{rp_method}' tak didukung untuk uang muka dari kelebihan bayar",
+        )
+    return m
+
+
 async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     """Internal function to post a payment to accounting."""
 
@@ -1820,9 +1836,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             INSERT INTO customer_deposits (
                 tenant_id, deposit_number, customer_id, customer_name,
                 amount, deposit_date, payment_method,
-                account_id, reference, notes,
+                account_id, journal_id, reference, notes,
                 status, posted_at, posted_by, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'posted', NOW(), $11, $11)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'posted', NOW(), $12, $12)
             RETURNING id
         """,
             ctx["tenant_id"],
@@ -1831,8 +1847,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             payment["customer_name"],
             payment["unapplied_amount"],
             payment["payment_date"],
-            payment["payment_method"],
-            payment["bank_account_id"],
+            _deposit_payment_method(payment["payment_method"]),  # L2: kosakata deposit
+            payment["bank_account_id"],  # account_id: CoA Kas/Bank (FK-terjamin sah via baris Dr RP)
+            journal_id,  # L3: telusur ke jurnal RP yang memuat baris Cr Uang Muka
             f"Overpayment from {payment['payment_number']}",
             f"Auto-created from overpayment on {payment['payment_number']}",
             ctx["user_id"],
