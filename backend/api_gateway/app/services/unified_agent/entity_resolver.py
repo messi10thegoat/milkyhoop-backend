@@ -178,6 +178,72 @@ class EntityResolver:
         if _aksi_dok is not None:
             return await self._resolve_aksi_dokumen(_aksi_dok, entities)
 
+        # ── Gate 5 (14 Sep 2026): reverse_journal atas jurnal MILIK DOKUMEN -> arahkan ke void dokumennya. ──
+        # Endpoint sudah menolak (400), tapi di sini kita GUIDE lebih awal dengan nomor dokumen dari DATA (source_id),
+        # tanpa menukar aksi. Jurnal manual/penyesuaian (allowlist) tetap jatuh ke jalur reverse_journal normal.
+        if intent == "reverse_journal":
+            _rj_nomor = (entities or {}).get("journal_number") or (entities or {}).get("name")
+            _rj_nomor = str(_rj_nomor).strip() if _rj_nomor else ""
+            if _rj_nomor:
+                try:
+                    from ...routers.journals import REVERSAL_ALLOWLIST as _RJ_ALLOW
+                except Exception:  # noqa: BLE001
+                    _RJ_ALLOW = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT"}
+                _rj = await self.db.fetchrow(
+                    """SELECT id, source_type, source_id FROM journal_entries
+                       WHERE tenant_id = $1 AND journal_number ILIKE $2 ORDER BY created_at DESC LIMIT 1""",
+                    self.tenant_id, f"%{_rj_nomor}%",
+                )
+                if _rj is not None and _rj["source_type"] not in _RJ_ALLOW:
+                    # source_type -> (tabel dokumen, kolom nomor, sebutan, frasa void). Nomor diambil dari DATA.
+                    _RJ_DOK = {
+                        "BILL": ("bills", "invoice_number", "tagihan", "void tagihan"),
+                        "PURCHASE_INVOICE": ("bills", "invoice_number", "tagihan", "void tagihan"),
+                        "INVOICE": ("sales_invoices", "invoice_number", "faktur", "void faktur"),
+                        "SALES_INVOICE": ("sales_invoices", "invoice_number", "faktur", "void faktur"),
+                        "EXPENSE": ("expenses", "expense_number", "beban", "void beban"),
+                        "RECEIVE_PAYMENT": ("receive_payments", "payment_number", "pembayaran diterima", "void pembayaran"),
+                        "PAYMENT_RECEIVED": ("receive_payments", "payment_number", "pembayaran diterima", "void pembayaran"),
+                        "BILL_PAYMENT": ("bill_payments_v2", "payment_number", "pembayaran tagihan", "void pembayaran tagihan"),
+                        "CREDIT_NOTE": ("credit_notes", "credit_note_number", "nota kredit", "void nota kredit"),
+                        "CUSTOMER_DEPOSIT": ("customer_deposits", "deposit_number", "uang muka pelanggan", "void uang muka"),
+                        "VENDOR_DEPOSIT": ("vendor_deposits", "deposit_number", "uang muka vendor", "void uang muka vendor"),
+                        "CREDIT_NOTE_COGS": ("credit_notes", "credit_note_number", "nota kredit", "void nota kredit"),
+                        "SALES_RECEIPT": ("sales_receipts", "receipt_number", "kwitansi penjualan", "void kwitansi"),
+                        "BANK_TRANSACTION": ("bank_transactions", "transaction_number", "transaksi bank", "void transaksi bank"),
+                        "BANK_TRANSFER": ("bank_transfers", "transfer_number", "transfer bank", "void transfer bank"),
+                        "PRODUCTION_OUTPUT": ("production_orders", "order_number", "work order", "batalkan work order"),
+                        "PRODUCTION_LABOR": ("production_orders", "order_number", "work order", "batalkan work order"),
+                        "PRODUCTION_OVERHEAD": ("production_orders", "order_number", "work order", "batalkan work order"),
+                        "PRODUCTION_VARIANCE": ("production_orders", "order_number", "work order", "batalkan work order"),
+                        "MATERIAL_ISSUE": ("production_orders", "order_number", "work order", "batalkan work order"),
+                        "FG_RECEIPT": ("production_orders", "order_number", "work order", "batalkan work order"),
+                    }
+                    _hasil = ResolutionResult()
+                    _hasil.needs_clarification = True
+                    _peta = _RJ_DOK.get(_rj["source_type"])
+                    _docnum = None
+                    if _peta and _rj["source_id"]:
+                        try:
+                            _docnum = await self.db.fetchval(
+                                f'SELECT {_peta[1]} FROM {_peta[0]} WHERE id = $1 AND tenant_id = $2',
+                                _rj["source_id"], self.tenant_id,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _docnum = None
+                    if _peta and _docnum:
+                        _hasil.clarifications.append(
+                            f"Jurnal {_rj_nomor} milik {_peta[2]} {_docnum} dan tak bisa dibalik lewat pembalikan jurnal umum. "
+                            f"Untuk membatalkannya, minta '{_peta[3]} {_docnum}'."
+                        )
+                    else:
+                        # dokumen tak ditemukan / tipe tak dipetakan -> sebut source_type saja, JANGAN tebak nomor.
+                        _hasil.clarifications.append(
+                            f"Jurnal {_rj_nomor} milik dokumen ({_rj['source_type']}) dan tak bisa dibalik lewat pembalikan "
+                            f"jurnal umum; batalkan lewat modul/dokumen sumbernya."
+                        )
+                    return _hasil
+
         # Step A: Resolve extracted entities (parallel DB queries)
         # Skip entity resolution for create intents where fields are TEXT, not references.
         # e.g. create_vendor: vendor_name/bank_name are the new vendor info, not lookups.
