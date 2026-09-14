@@ -114,6 +114,7 @@ class CreateQuoteRequest(BaseModel):
 
 class UpdateQuoteRequest(BaseModel):
     """Schema for updating an existing quote (draft only)."""
+    quote_number: Optional[str] = None  # edit nomor hanya saat draft (unik/tenant)
     quote_date: Optional[date] = None
     expiry_date: Optional[date] = None
     customer_id: Optional[str] = None

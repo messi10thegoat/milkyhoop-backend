@@ -205,6 +205,8 @@ class CreateInvoiceRequest(BaseModel):
 class UpdateInvoiceRequest(BaseModel):
     """Request body for updating a draft invoice."""
 
+    invoice_number: Optional[str] = None  # edit nomor hanya saat draft (unik/tenant)
+
     # DIKENALI TAPI TIDAK DIDUKUNG — sengaja. Pydantic default MENGABAIKAN kunci
     # tak dikenal, jadi `auto_post` yang dikirim tombol "Simpan Perubahan" FE
     # dibuang DIAM-DIAM: pengguna menekan tombol yang menjanjikan posting, server

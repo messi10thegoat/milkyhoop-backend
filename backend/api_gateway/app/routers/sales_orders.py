@@ -695,6 +695,19 @@ async def update_sales_order(
                 if not order:
                     raise HTTPException(status_code=404, detail="Sales order not found")
 
+                from ..services.document_number import bersihkan_nomor_dokumen_opsional
+                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
+                if _new_num is None:
+                    body.__pydantic_fields_set__.discard("order_number")
+                else:
+                    if order["status"] != "draft":
+                        raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
+                    if await conn.fetchval(
+                        "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
+                        ctx["tenant_id"], _new_num, uuid_module.UUID(order_id)):
+                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    body.order_number = _new_num
+
                 if order["status"] != "draft":
                     raise HTTPException(
                         status_code=400, detail="Only draft orders can be updated"

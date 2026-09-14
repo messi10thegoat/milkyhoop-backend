@@ -186,6 +186,7 @@ class CreateSalesOrderRequest(BaseModel):
 
 class UpdateSalesOrderRequest(BaseModel):
     """Schema for updating an existing sales order (draft only)."""
+    order_number: Optional[str] = None  # edit nomor hanya saat draft (unik/tenant)
     order_date: Optional[date] = None
     expected_ship_date: Optional[date] = None
     customer_id: Optional[str] = None

@@ -2788,6 +2788,19 @@ async def update_invoice(
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
+            from ..services.document_number import bersihkan_nomor_dokumen_opsional
+            _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
+            if _new_num is None:
+                body.__pydantic_fields_set__.discard("invoice_number")
+            else:
+                if invoice["status"] != "draft":
+                    raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
+                if await conn.fetchval(
+                    "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2 AND id <> $3",
+                    ctx["tenant_id"], _new_num, invoice_id):
+                    raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                body.invoice_number = _new_num
+
             # Guard: Cannot update voided invoices
             if invoice["status"] == "void":
                 raise HTTPException(
