@@ -669,16 +669,12 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
             if not member_row:
                 raise HTTPException(status_code=404, detail="Team member not found")
 
-            new_role = await conn.fetchrow(
-                "SELECT id, code, name, hierarchy_level, is_active FROM roles WHERE id = $1 AND tenant_id = $2",
-                data.role_id,
-                tenant_id,
-            )
-
-            if not new_role:
-                raise HTTPException(status_code=400, detail="Invalid role_id")
-            if not new_role["is_active"]:
-                raise HTTPException(status_code=400, detail="Target role is not active")
+            # DIPERBAIKI: dulu cari peran `WHERE id=$1 AND tenant_id=$2` (tenant pemanggil) —
+            # tapi ke-14 peran hidup di '__SYSTEM__', jadi TAK PERNAH cocok -> endpoint mati
+            # sejak lahir (selalu 400 "Invalid role_id"), dan role_id "" -> 500 asyncpg. Kini
+            # lewat helper yg SAMA dgn invite: uuid guard, IN('__SYSTEM__',$2), is_active,
+            # OWNER 403, hierarki peran-baru — invite & ubah-peran tak bisa beda.
+            new_role = await _load_invitable_role(conn, data.role_id, tenant_id, current_user_id)
 
             user_hierarchy = await _get_user_role_hierarchy(
                 conn, tenant_id, current_user_id
@@ -688,10 +684,6 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
                 raise HTTPException(
                     status_code=403,
                     detail="Cannot modify a member with higher role than yours",
-                )
-            if new_role["hierarchy_level"] < user_hierarchy:
-                raise HTTPException(
-                    status_code=403, detail="Cannot assign role higher than your own"
                 )
 
             if member_row["current_code"] == "OWNER" and new_role["code"] != "OWNER":
@@ -707,7 +699,7 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
 
             await conn.execute(
                 "UPDATE user_tenant_roles SET role_id = $1, assigned_at = NOW(), assigned_by = $2::uuid WHERE id = $3",
-                data.role_id,
+                new_role["id"],
                 current_user_id,
                 member_id,
             )
