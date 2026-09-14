@@ -739,6 +739,27 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
                 member_id,
             )
 
+            # Audit: catat perubahan peran (from/to/aktor). Handler ini dulu TAK menulis audit —
+            # perubahan lolos tanpa jejak. Audit tak boleh mematahkan alur utama (try/except).
+            try:
+                _actor_role = await conn.fetchval(
+                    "SELECT r.code FROM user_tenant_roles utr JOIN roles r ON r.id=utr.role_id "
+                    "WHERE utr.user_id=$1::uuid AND utr.tenant_id=$2 LIMIT 1",
+                    current_user_id, tenant_id)
+                await conn.execute(
+                    '''INSERT INTO audit_logs (id, "userId", "eventType", success, tenant_id,
+                           entity_type, entity_id, user_role, source, metadata, "createdAt")
+                       VALUES (gen_random_uuid()::text, $1, 'ROLE_CHANGED', true, $2,
+                           'team_member', $3, $4, 'team_members.update_member_role', $5::jsonb, NOW())''',
+                    current_user_id, tenant_id, uuid.UUID(member_id), _actor_role,
+                    json.dumps({
+                        "from": member_row["current_code"], "to": new_role["code"],
+                        "target_user_id": str(member_row["user_id"]),
+                        "actor_user_id": str(current_user_id),
+                    }))
+            except Exception as _ae:  # noqa: BLE001
+                logger.warning(f"audit ROLE_CHANGED gagal ditulis: {_ae}")
+
             return {
                 "success": True,
                 "message": f"Successfully updated role to {new_role['name']}",
