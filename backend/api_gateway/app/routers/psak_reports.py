@@ -111,14 +111,15 @@ async def get_financial_statements_pdf(
     if not period_start:
         period_start = as_of[:4] + "-01-01"
 
-    # Use provided company_name or fallback to tenant_id
-    if not company_name:
-        company_name = tenant_id.replace("-", " ").title()
-
     conn = None
     try:
         conn = await get_db_connection()
         await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+
+        # Nama perusahaan di laporan resmi SELALU dari Tenant.display_name saat render;
+        # param query `company_name` DIABAIKAN — nama resmi tak boleh diubah lewat URL.
+        _dn = await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', tenant_id)
+        company_name = _dn or tenant_id.replace("-", " ").title()
 
         pdf_service = get_pdf_service()
 
