@@ -1,10 +1,9 @@
 """
 WebSocket Hub Service
-Manages WebSocket connections for QR Login, device communication, and Remote Scanner
+Manages WebSocket connections for device communication and Remote Scanner
 
-Connections are managed in two pools:
-1. qr_connections: token -> WebSocket (for QR login flow)
-2. device_connections: device_id -> tab_id -> WebSocket (for force logout + remote scan)
+Connections are managed in one pool:
+1. device_connections: device_id -> tab_id -> WebSocket (for force logout + remote scan)
    - Multiple tabs can be connected per device_id
    - Force logout broadcasts to ALL tabs of a device
    - Remote scan: desktop triggers → mobile receives → mobile sends result
@@ -44,8 +43,6 @@ class WebSocketHub:
     """
 
     def __init__(self):
-        # QR token -> WebSocket (desktop waiting for approval)
-        self.qr_connections: Dict[str, WebSocket] = {}
         # Device ID -> Tab ID -> WebSocket (multi-tab support)
         self.device_connections: Dict[str, Dict[str, WebSocket]] = {}
         # Remote scan sessions: scan_id -> {device_id, tab_id, requested_at}
@@ -54,69 +51,6 @@ class WebSocketHub:
         self.device_last_seen: Dict[str, float] = {}
         # Lock for thread safety
         self._lock = asyncio.Lock()
-
-    # ================================
-    # QR LOGIN WEBSOCKET METHODS
-    # ================================
-
-    async def register_qr(self, token: str, websocket: WebSocket) -> None:
-        """
-        Register a WebSocket for QR login status updates
-        Desktop browser connects to wait for mobile approval
-        """
-        async with self._lock:
-            # Close any existing connection for this token
-            if token in self.qr_connections:
-                try:
-                    await self.qr_connections[token].close(
-                        code=1000, reason="New connection"
-                    )
-                except Exception:
-                    pass
-            self.qr_connections[token] = websocket
-            logger.info(f"QR WebSocket registered for token: {token[:8]}...")
-
-    async def unregister_qr(self, token: str) -> None:
-        """
-        Remove QR WebSocket connection
-        Called when token expires, is approved, or connection closes
-        """
-        async with self._lock:
-            if token in self.qr_connections:
-                del self.qr_connections[token]
-                logger.info(f"QR WebSocket unregistered for token: {token[:8]}...")
-
-    async def send_to_qr(self, token: str, data: dict) -> bool:
-        """
-        Send status update to desktop browser waiting for QR approval
-
-        Events:
-        - {"event": "scanned", "message": "QR code scanned by mobile"}
-        - {"event": "approved", "access_token": "...", "refresh_token": "..."}
-        - {"event": "rejected", "message": "Login was rejected"}
-        - {"event": "expired", "message": "QR code expired"}
-        """
-        async with self._lock:
-            if token not in self.qr_connections:
-                logger.warning(f"No QR WebSocket for token: {token[:8]}...")
-                return False
-
-            websocket = self.qr_connections[token]
-
-        try:
-            await websocket.send_json(data)
-            logger.info(
-                f"QR WebSocket message sent for token {token[:8]}...: {data.get('event')}"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send QR WebSocket message: {e}")
-            await self.unregister_qr(token)
-            return False
-
-    def is_qr_connected(self, token: str) -> bool:
-        """Check if there's an active WebSocket for this QR token"""
-        return token in self.qr_connections
 
     # ================================
     # DEVICE WEBSOCKET METHODS
@@ -260,7 +194,6 @@ class WebSocketHub:
         """Get connection statistics for monitoring"""
         total_tabs = sum(len(tabs) for tabs in self.device_connections.values())
         return {
-            "qr_connections": len(self.qr_connections),
             "device_connections": len(
                 self.device_connections
             ),  # Number of unique devices
@@ -275,20 +208,7 @@ class WebSocketHub:
         """
         cleaned = 0
 
-        # Check QR connections
         async with self._lock:
-            stale_qr = []
-            for token, ws in self.qr_connections.items():
-                try:
-                    # Try to ping - if fails, connection is dead
-                    await ws.send_json({"event": "ping"})
-                except Exception:
-                    stale_qr.append(token)
-
-            for token in stale_qr:
-                del self.qr_connections[token]
-                cleaned += 1
-
             # Check device connections (multi-tab structure)
             stale_tabs = []  # List of (device_id, tab_id) tuples
             for device_id, tabs in self.device_connections.items():

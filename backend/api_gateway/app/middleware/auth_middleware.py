@@ -93,19 +93,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         info_pattern = r"^/api/tenant/[^/]+/info/?$"
         return bool(re.match(info_pattern, path))
 
-    def _is_qr_public_endpoint(self, path: str) -> bool:
-        """Check if path matches QR login public endpoints"""
-        # /api/auth/qr/generate - POST
-        # /api/auth/qr/status/{token} - GET
-        # /api/auth/qr/ws/{token} - WebSocket
-        if path == "/api/auth/qr/generate":
-            return True
-        if re.match(r"^/api/auth/qr/status/[^/]+/?$", path):
-            return True
-        if re.match(r"^/api/auth/qr/ws/[^/]+/?$", path):
-            return True
-        return False
-
     def _is_device_ws_endpoint(self, path: str) -> bool:
         """Check if path matches Device WebSocket endpoint"""
         # /api/devices/ws/{device_id} - WebSocket for remote scan & force logout
@@ -155,11 +142,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Allow tenant info endpoint (GET only, no auth)
             if self._is_tenant_info_endpoint(path) and request.method == "GET":
                 logger.info(f"Bypassing auth for tenant info endpoint: {path}")
-                return await call_next(request)
-
-            # Allow QR login public endpoints (no auth for desktop)
-            if self._is_qr_public_endpoint(path):
-                logger.info(f"Bypassing auth for QR login endpoint: {path}")
                 return await call_next(request)
 
             # Allow Device WebSocket endpoint (auth via device_id in path)

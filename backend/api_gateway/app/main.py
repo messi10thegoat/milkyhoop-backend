@@ -72,7 +72,6 @@ from .routers import accounting_settings
 from .routers import financial_reports_journal
 from .routers import psak_reports
 from .routers import dashboard
-from .routers import qr_auth
 from .routers import device
 from .routers import mfa
 from .routers import opening_balance
@@ -509,8 +508,6 @@ app.include_router(
 # Dashboard Summary router (aggregated KPIs)
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 
-# QR Login System (Phase: QR Auth)
-app.include_router(qr_auth.router, tags=["qr-auth"])
 app.include_router(device.router, tags=["devices"])
 
 # MFA (Multi-Factor Authentication) - ISO 27001:2022 A.8.5
