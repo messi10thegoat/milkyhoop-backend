@@ -616,6 +616,36 @@ async def post_journal(request: Request, journal_id: UUID):
 # =============================================================================
 # REVERSE JOURNAL
 # =============================================================================
+# 14 Sep 2026 Gate 5 (TIKET-pembalikan-generik): pembalikan jurnal UMUM hanya untuk jurnal manual/penyesuaian yang
+# TAK punya dokumen/lapisan pemilik. Jurnal milik dokumen dibalik lewat VOID dokumennya supaya dokumen + lapisan
+# turunannya ikut dibalik. Allowlist = fail-closed (source_type baru otomatis ditolak). REVERSAL dikeluarkan (Law 26).
+REVERSAL_ALLOWLIST = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT"}
+_VOID_PANDUAN = [
+    (("BILL", "PURCHASE_INVOICE", "PAYMENT_BILL", "BILL_PAYMENT", "BILL_PAYMENT_VOID"), "batalkan tagihan/pembayarannya (void bill)"),
+    (("INVOICE", "SALES_INVOICE", "SALES_INVOICE_COGS", "INVOICE_FULFILLMENT", "INVOICE_REVENUE", "CASH_SALE", "POS_SALE", "POS_COGS", "SALES_RECEIPT", "SALES_RECEIPT_COGS"), "batalkan fakturnya (void invoice)"),
+    (("RECEIVE_PAYMENT", "PAYMENT_RECEIVED", "PAYMENT_MADE"), "batalkan pembayarannya (void payment)"),
+    (("EXPENSE", "EXPENSE_REVERSAL"), "batalkan bebannya (void expense)"),
+    (("CUSTOMER_DEPOSIT", "VENDOR_DEPOSIT", "DEPOSIT_APPLICATION", "DEPOSIT_REFUND"), "batalkan/kembalikan uang mukanya lewat modulnya"),
+    (("CREDIT_NOTE", "CREDIT_NOTE_COGS", "CREDIT_NOTE_REFUND", "VENDOR_CREDIT", "VENDOR_CREDIT_COGS", "VENDOR_CREDIT_REFUND"), "batalkan nota kredit/kredit vendornya lewat modulnya"),
+    (("PRODUCTION_OUTPUT", "PRODUCTION_LABOR", "PRODUCTION_OVERHEAD", "PRODUCTION_VARIANCE", "PRODUCTION_OUTPUT_VOID", "PRODUCTION_RECONCILE", "MATERIAL_ISSUE", "FG_RECEIPT"), "batalkan lewat modul produksi (batalkan work order: POST /api/production/{id}/cancel, atau void rekonsiliasi bulanan)"),
+    (("BANK_TRANSACTION", "BANK_TRANSFER", "BRANCH_TRANSFER"), "batalkan lewat modul kas & bank (void transaksi/transfer)"),
+    (("CHEQUE_RECEIVED", "CHEQUE_ISSUED", "CHEQUE_DEPOSIT", "CHEQUE_BOUNCE_AR", "CHEQUE_BOUNCE_CHARGES", "CHEQUE_BOUNCE_REVERSAL", "CHEQUE_CANCEL", "CHEQUE_DELETE"), "batalkan lewat modul cek"),
+    (("PAYROLL", "PAYROLL_PAYMENT", "PAYROLL_BPJS_PAYMENT", "PAYROLL_TAX_PAYMENT"), "batalkan lewat modul penggajian"),
+    (("FIXED_ASSET", "ASSET_DISPOSAL", "ASSET_SALE", "DEPRECATION"), "batalkan lewat modul aset tetap"),
+    (("STOCK_ADJUSTMENT", "STOCK_TRANSFER"), "batalkan lewat modul stok"),
+    (("OPENING", "OPENING_BALANCE", "VENDOR_OPENING_BALANCE"), "perbaiki lewat modul saldo awal"),
+    (("INTERCOMPANY",), "batalkan lewat modul antar-perusahaan"),
+    (("CLOSING",), "buka kembali lewat proses tutup buku"),
+]
+
+
+def _panduan_void(source_type: str) -> str:
+    for tipe, pesan in _VOID_PANDUAN:
+        if source_type in tipe:
+            return pesan
+    return "batalkan lewat dokumen/modul sumbernya, bukan pembalikan jurnal umum"
+
+
 @router.post("/{journal_id}/reverse", response_model=dict)
 async def reverse_journal(
     request: Request, journal_id: UUID, body: ReverseJournalRequest
@@ -631,7 +661,7 @@ async def reverse_journal(
             # Check journal exists and is posted
             journal = await conn.fetchrow(
                 """
-                SELECT id, status, reversed_by_id, journal_number, description
+                SELECT id, status, reversed_by_id, journal_number, description, source_type, reversal_of_id
                 FROM journal_entries
                 WHERE id = $1 AND tenant_id = $2
             """,
@@ -650,6 +680,24 @@ async def reverse_journal(
             if journal["reversed_by_id"]:
                 raise HTTPException(
                     status_code=409, detail="Journal is already reversed"
+                )
+
+            # Gate 5: pembalik-atas-pembalik ditolak (Law 26; juga dijaga trigger DB trg_prevent_reverse_of_reversal).
+            if journal["reversal_of_id"] is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Jurnal ini sendiri adalah pembalikan; pembalikan atas pembalikan tidak diizinkan (Law 26).",
+                )
+
+            # Gate 5: hanya jurnal manual/penyesuaian yang boleh dibalik lewat pintu umum ini. Jurnal milik dokumen
+            # HARUS dibalik lewat void dokumennya agar dokumen + lapisan turunannya ikut dibalik.
+            if journal["source_type"] not in REVERSAL_ALLOWLIST:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Jurnal {journal['source_type']} milik dokumen/modul dan tak bisa dibalik lewat pembalikan "
+                        f"jurnal umum; {_panduan_void(journal['source_type'])}."
+                    ),
                 )
 
             # Get original lines
@@ -676,6 +724,13 @@ async def reverse_journal(
                     status_code=403,
                     detail=f"Cannot post reversal to {period['status'].lower()} period",
                 )
+
+            # Gate 5: pagar lapisan-turunan yang ada di jalur PEMBUATAN (baris ~483) kini juga di jalur PEMBALIKAN —
+            # sebuah pembalikan manual pun tak boleh baru menyentuh AR/PAYABLE/Persediaan/HPP.
+            class _L:  # validate_no_derived_layer_accounts mengakses .account_id (str)
+                def __init__(self, aid):
+                    self.account_id = str(aid)
+            await validate_no_derived_layer_accounts(conn, ctx["tenant_id"], [_L(ln["account_id"]) for ln in lines])
 
             total_debit = sum(line["credit"] for line in lines)  # Swap debit/credit
             total_credit = sum(line["debit"] for line in lines)
