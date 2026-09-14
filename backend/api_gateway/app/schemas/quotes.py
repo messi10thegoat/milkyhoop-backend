@@ -318,7 +318,9 @@ class QuoteSummary(BaseModel):
     # seperti bug. Kini kedelapan status tercakup dan Sum(count) == total_quotes.
     viewed_count: int
     void_count: int
-    total_value: int  # Sum of all quote totals
+    total_value: int  # Sum of all quote totals (termasuk void)
+    active_value: int  # Sum tanpa void (nilai pipeline sebenarnya); active+void == total
+    void_value: int  # Sum quote void
     accepted_value: int  # Sum of accepted quotes
     pending_value: int  # Sum of sent quotes
 

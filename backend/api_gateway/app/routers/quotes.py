@@ -370,7 +370,9 @@ async def get_quote_summary(request: Request):
                     COUNT(*) FILTER (WHERE status = 'void') as void_count,
                     COALESCE(SUM(total_amount), 0) as total_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status = 'accepted'), 0) as accepted_value,
-                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'sent'), 0) as pending_value
+                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'sent'), 0) as pending_value,
+                    COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) as active_value,
+                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'void'), 0) as void_value
                 FROM quotes
                 WHERE tenant_id = $1
             """
@@ -391,6 +393,8 @@ async def get_quote_summary(request: Request):
                     "total_value": row["total_value"],
                     "accepted_value": row["accepted_value"],
                     "pending_value": row["pending_value"],
+                    "active_value": row["active_value"],
+                    "void_value": row["void_value"],
                 },
             )
 
