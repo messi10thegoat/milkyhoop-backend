@@ -2385,9 +2385,18 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Generate invoice number
-                invoice_number = await conn.fetchval(
-                    "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
-                )
+                from ..services.document_number import bersihkan_nomor_dokumen_opsional
+                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
+                if _nomor_manual:
+                    if await conn.fetchval(
+                        "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2",
+                        ctx["tenant_id"], _nomor_manual):
+                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    invoice_number = _nomor_manual
+                else:
+                    invoice_number = await conn.fetchval(
+                        "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
+                    )
 
                 # Calculate totals
                 subtotal = 0

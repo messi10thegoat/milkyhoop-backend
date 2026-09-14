@@ -551,9 +551,18 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                order_number = await conn.fetchval(
-                    "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
-                )
+                from ..services.document_number import bersihkan_nomor_dokumen_opsional
+                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
+                if _nomor_manual:
+                    if await conn.fetchval(
+                        "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2",
+                        ctx["tenant_id"], _nomor_manual):
+                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    order_number = _nomor_manual
+                else:
+                    order_number = await conn.fetchval(
+                        "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
+                    )
 
                 calculated_items = [
                     calculate_item_totals(item.model_dump()) for item in body.items

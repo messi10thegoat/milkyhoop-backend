@@ -116,6 +116,7 @@ class ShipmentDetail(BaseModel):
 
 class CreateSalesOrderRequest(BaseModel):
     """Schema for creating a new sales order."""
+    order_number: Optional[str] = None  # opsional; kosong -> auto-generate (unik/tenant)
     order_date: date = Field(..., description="Order date")
     expected_ship_date: Optional[date] = Field(None, description="Expected shipping date")
     customer_id: str = Field(..., description="Customer UUID")

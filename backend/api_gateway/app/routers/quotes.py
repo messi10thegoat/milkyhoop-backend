@@ -539,9 +539,18 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Generate quote number
-                quote_number = await conn.fetchval(
-                    "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
-                )
+                from ..services.document_number import bersihkan_nomor_dokumen_opsional
+                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
+                if _nomor_manual:
+                    if await conn.fetchval(
+                        "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2",
+                        ctx["tenant_id"], _nomor_manual):
+                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    quote_number = _nomor_manual
+                else:
+                    quote_number = await conn.fetchval(
+                        "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
+                    )
 
                 # Calculate item totals
                 calculated_items = [

@@ -73,6 +73,7 @@ class QuoteItemResponse(BaseModel):
 
 class CreateQuoteRequest(BaseModel):
     """Schema for creating a new quote."""
+    quote_number: Optional[str] = None  # opsional; kosong -> auto-generate (unik/tenant)
     quote_date: date = Field(..., description="Quote date")
     expiry_date: Optional[date] = Field(None, description="Quote expiry date")
     customer_id: str = Field(..., description="Customer UUID")

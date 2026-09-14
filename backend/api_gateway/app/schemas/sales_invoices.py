@@ -111,6 +111,7 @@ class InvoicePaymentResponse(BaseModel):
 class CreateInvoiceRequest(BaseModel):
     """Request body for creating a sales invoice (draft)."""
 
+    invoice_number: Optional[str] = None  # opsional; kosong -> auto-generate (unik/tenant)
     customer_id: Optional[str] = None
     customer_name: str = Field(..., min_length=1, max_length=255)
     invoice_date: date
