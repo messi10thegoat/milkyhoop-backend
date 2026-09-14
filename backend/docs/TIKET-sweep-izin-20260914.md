@@ -109,3 +109,33 @@ Before: 26 modules used by the middleware had NO role_permissions rows → every
 **Live after apply + restart (`scripts/ukur_can_hidup.py`, real policy engine):** 15/15 `can()` checks — e.g. CASHIER can create but not void an expense; ACCOUNTANT can't create a period but can read it; VIEWER reads but can't create a fixed asset; COLLABORATOR can't read an employee; SALES can't post a credit note; FINANCE_MGR can approve a budget; OWNER can do everything (bypass). Stage 1 gate 10/10, stage 2 gate 7/7 still green.
 
 **Row count:** 57 rows across the 6 spot-checked modules; migration registered in schema_migrations.
+
+
+---
+
+## STAGE 3 — default-closed for unmapped WRITE (14 Sep 2026, commit ba89af36)
+
+The permission default is now CLOSED for writes. In PermissionMiddleware, a WRITE (POST/PUT/PATCH/DELETE) with no matching pattern and not in the declared WRITE_EXEMPT set:
+- OWNER → passes (bypass, consistent with `can()`);
+- any other role → **403 PERMISSION_UNMAPPED** + a warning log.
+READ with no pattern stays OPEN (recorded here as remaining work; reads don't mutate).
+
+**WRITE_EXEMPT (declared in code with a per-line reason):** session logout · self user profile/favorites · onboarding (pre-provision) · invite accept/decline (user has no role yet) · device self-management · raw uploads · chat entry (`/api/v3/chat/`, legacy `/chat/`, setup/tenant/public chat) — the chat endpoint writes nothing privileged; a financial action it triggers is executed by re-calling the kernel with the user's JWT, where THAT route's permission is enforced (see stage (c)).
+
+**Coverage baseline `scripts/izin_write_baseline.json` (121 writes):** the business writes that are currently unmapped. After the flip they are OWNER-ONLY (fail-closed). They are recorded so the coverage gate reds only on a NEW write that is neither mapped, nor exempt, nor in this baseline. Mapping these to modules for non-owner roles is incremental follow-up per module (owner-only until then).
+
+**Gate `scripts/gerbang_tahap3.py` (from the live route table + real middleware/engine):**
+- coverage: every live WRITE = pattern OR write_exempt OR baseline;
+- owner: 5 daily flows + an unmapped write → 200;
+- non-owner test account: unmapped write → 403 PERMISSION_UNMAPPED; exempt write + chat → pass; READ unmapped → 200 (open);
+- old middleware: default-open (non-owner unmapped → 200);
+- sabotage (remove one pattern): coverage RED (the route leaves `mapped`, isn't in baseline).
+Live after deploy: gate 7/7, stage 1 10/10, stage 2 7/7.
+
+**Owner PERMISSION_UNMAPPED in logs:** 0 in the window since deploy. **24h check owed** (MASTER condition 5): confirm 0 owner-triggered PERMISSION_UNMAPPED after a full day; if any appears, that owner path needs a pattern.
+
+**Remaining after stage 3:**
+- READ default still open (log-only for now).
+- The 121 baseline writes are owner-only; map per module for non-owner roles as prioritised.
+- nginx: strip client X-Source / X-User-ID, but NOT X-Tenant-ID (FE uses it — measure first).
+- FE-calls-no-BE-route → separate ticket for FRONTEND (MASTER forwards).
