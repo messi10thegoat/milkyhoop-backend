@@ -4867,14 +4867,15 @@ async def get_invoice_pdf(
 
         # Generate filename
         invoice_num = invoice["invoice_number"] or str(invoice_id)[:8]
-        filename = f"Faktur-{invoice_num}.pdf"
+        from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
+        filename = sanitize_filename(invoice_num) + ".pdf"
 
         if format == "inline":
             return StreamingResponse(
                 BytesIO(pdf_bytes),
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Content-Disposition": pdf_content_disposition(invoice_num),
                     "Cache-Control": "no-store",  # FIX_LOGO_CACHEBUST 2026-06-16
                 },
             )

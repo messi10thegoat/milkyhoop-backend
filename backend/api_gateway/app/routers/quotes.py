@@ -1905,14 +1905,15 @@ async def get_quote_pdf(
 
         # Generate filename
         quote_num = quote["quote_number"] or str(quote_id)[:8]
-        filename = f"Penawaran-{quote_num}.pdf"
+        from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
+        filename = sanitize_filename(quote_num) + ".pdf"
 
         if format == "inline":
             return StreamingResponse(
                 BytesIO(pdf_bytes),
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Content-Disposition": pdf_content_disposition(quote_num),
                     "Cache-Control": "no-store",  # FIX_LOGO_CACHEBUST 2026-06-16
                 },
             )

@@ -120,6 +120,7 @@ async def get_financial_statements_pdf(
         # param query `company_name` DIABAIKAN — nama resmi tak boleh diubah lewat URL.
         _dn = await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', tenant_id)
         company_name = _dn or tenant_id.replace("-", " ").title()
+        from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
 
         pdf_service = get_pdf_service()
 
@@ -127,23 +128,23 @@ async def get_financial_statements_pdf(
             data = await generate_income_statement(conn, tenant_id, period_start, as_of, basis=basis)
             basis_label = "Akrual" if basis == "accrual" else "Kas"
             pdf_bytes = pdf_service.generate_income_statement_pdf(data, company_name, basis=basis_label)
-            filename = f"Laporan-Laba-Rugi-{period_start}-{as_of}.pdf"
+            report_base = sanitize_filename(f"Laba-Rugi_{company_name}_{period_start}-{as_of}")
         elif report == "neraca":
             data = await generate_balance_sheet(conn, tenant_id, as_of, period_start, basis=basis)
             basis_label = "Akrual" if basis == "accrual" else "Kas"
             pdf_bytes = pdf_service.generate_balance_sheet_pdf(data, company_name, basis=basis_label)
-            filename = f"Laporan-Posisi-Keuangan-{as_of}.pdf"
+            report_base = sanitize_filename(f"Posisi-Keuangan_{company_name}_{as_of}")
         elif report == "arus_kas":
             data = await generate_cash_flow(conn, tenant_id, period_start, as_of)
             pdf_bytes = pdf_service.generate_cash_flow_pdf(data, company_name, basis="Kas")
-            filename = f"Laporan-Arus-Kas-{period_start}-{as_of}.pdf"
+            report_base = sanitize_filename(f"Arus-Kas_{company_name}_{period_start}-{as_of}")
         else:
             raise HTTPException(status_code=400, detail=f"Unknown report type: {report}")
 
         return StreamingResponse(
             BytesIO(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": pdf_content_disposition(report_base)},
         )
     except HTTPException:
         raise

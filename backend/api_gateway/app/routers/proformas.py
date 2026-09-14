@@ -961,12 +961,14 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
 
         pdf_bytes = get_pdf_service().generate_proforma_pdf(proforma_data, tenant_info)
 
-        filename = f"Proforma-{row['proforma_number'] or str(proforma_id)[:8]}.pdf"
+        proforma_num = row['proforma_number'] or str(proforma_id)[:8]
+        from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
+        filename = sanitize_filename(proforma_num) + ".pdf"
         return StreamingResponse(
             BytesIO(pdf_bytes),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Disposition": pdf_content_disposition(proforma_num),
                 "Cache-Control": "no-store",
             },
         )

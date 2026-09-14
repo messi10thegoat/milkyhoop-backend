@@ -489,13 +489,14 @@ async def get_delivery_pdf(
     pdf_bytes = pdf_service.generate_delivery_note_pdf(delivery_data)
 
     delivery_num = row["delivery_number"] or delivery_id[:8]
-    filename = f"SuratJalan-{delivery_num}.pdf"
+    from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
+    filename = sanitize_filename(delivery_num) + ".pdf"
 
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Disposition": pdf_content_disposition(delivery_num),
             "Cache-Control": "private, max-age=300",
         },
     )

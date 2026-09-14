@@ -2719,13 +2719,14 @@ async def get_receive_payment_pdf(
         pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)
 
         num = receipt_number or str(payment_id)[:8]
-        filename = f"Kwitansi-{num}.pdf"
+        from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
+        filename = sanitize_filename(num) + ".pdf"
 
         return _StreamingResponse(
             _BytesIO(pdf_bytes),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Disposition": pdf_content_disposition(num),
                 "Cache-Control": "no-store",
             },
         )
