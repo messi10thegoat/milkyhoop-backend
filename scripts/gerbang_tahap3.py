@@ -52,6 +52,8 @@ async def main():
     wex = [re.compile(p) for p, _ in getattr(pm, "WRITE_EXEMPT", [])]
     contoh = lambda p: re.sub(r"\{[^}]+\}", U0, p)  # noqa: E731
     base = set(json.load(open(BASELINE)))
+    if MODE == "sabotase_baseline":
+        base.add("POST /api/palsu/entri-baseline-baru")   # baseline BERTAMBAH -> ratchet wajib merah
     tak_tercakup = []
     for r in app.routes:
         if not isinstance(r, APIRoute):
@@ -65,6 +67,24 @@ async def main():
             if f"{m} {r.path}" not in base:
                 tak_tercakup.append(f"{m} {r.path}")
     catat("CAKUPAN", "tiap WRITE hidup = pola OR write_exempt OR baseline (tak ada yang baru tak tercakup)", not tak_tercakup, tak_tercakup[:8])
+
+    # RATCHET (syarat MASTER): baseline hanya boleh MENYUSUT. Hitung himpunan unmapped-non-exempt HIDUP sekarang;
+    # entri baseline yang BUKAN lagi unmapped (sudah dipola/dihapus) = penyusutan (OK). Entri unmapped hidup yang TAK
+    # ada di baseline = pertumbuhan (MERAH — sudah ketangkap 'tak tercakup' di atas). Cacah baseline tak boleh > 121.
+    hidup_unmapped = set()
+    for r in app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        for m in sorted(r.methods & TULIS):
+            p = contoh(r.path)
+            if any(s.match(p) for s in skip) or any(x.match(p) for x in wex):
+                continue
+            if any(m in ms and c.match(p) for c, ms in pola):
+                continue
+            hidup_unmapped.add(f"{m} {r.path}")
+    tumbuh = hidup_unmapped - base           # write baru tak tercakup (== tak_tercakup)
+    catat("RATCHET", "baseline TIDAK bertambah: nol entri unmapped hidup di luar baseline, cacah baseline <= 121",
+          not tumbuh and len(base) <= 121, (len(base), sorted(tumbuh)[:5]))
 
     # ---- PERILAKU
     pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=3)
@@ -119,6 +139,9 @@ async def main():
     if MODE == "sabotase_hapus_pola":
         ok = any(x.startswith("tiap WRITE") for x in g)   # cheques/issue jatuh dari mapped, bukan di baseline -> cakupan MERAH
         print("[sabotase] ->", "TERTANGKAP (cakupan merah)" if ok else "LOLOS", g); sys.exit(0 if ok else 1)
+    if MODE == "sabotase_baseline":
+        ok = any(x.startswith("baseline TIDAK bertambah") for x in g)   # cacah 122 > 121 -> ratchet MERAH
+        print("[sabotase_baseline] ->", "TERTANGKAP (ratchet merah)" if ok else "LOLOS", g); sys.exit(0 if ok else 1)
     # lama: default terbuka -> non-owner unmapped 200 (bukan 403)
     ok = any(x.startswith("non-owner: WRITE tak terpetakan") for x in g)
     print("[lama] ->", "DEFAULT TERBUKA TERBUKTI" if ok else "TAK SESUAI", g); sys.exit(0 if ok else 1)
