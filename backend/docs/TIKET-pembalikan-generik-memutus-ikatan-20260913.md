@@ -110,3 +110,7 @@ menutupi**. Memperbaiki salah satu tanpa yang lain tetap meninggalkan jalur piut
 **65 historical MANUAL reversals + the 9 pinned bills: untouched.**
 
 **Follow-up (FRONTEND/bot, MASTER forwards):** the FE Journal Entry detail "void" button (useJournalDetail.ts) now gets a 400 for document-owned journals → hide it there or surface the message; the bot `reverse_journal` direct action now returns a readable 400 for document journals (not silent) → ideally route document reversals to the `void_*` actions.
+
+
+## Bot resolver (Option A) LIVE 884ece56
+reverse_journal atas jurnal milik dokumen -> klarifikasi terbaca menunjuk void dokumennya (nomor dari DATA via source_id; dokumen tak ada -> source_type saja); jurnal manual tetap lanjut ke reverse. 0 pending untuk dokumen. Gate scripts/gerbang_reverse_resolver.py 6/6 (BILL-2609-0008/INV-2608-0001/WO-2026-000003), lama = celah. (B) auto-swap ke void_* TIDAK dikerjakan (putusan MASTER) — jalur void_* di registry tetap dipanggil manual oleh user.
