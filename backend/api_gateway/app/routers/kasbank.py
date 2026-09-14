@@ -399,39 +399,43 @@ async def get_kasbank_stats(request: Request):
             # Iron Law 1: Derive inflows/outflows from journal_lines
             today_in = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(jl.debit), 0)
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                    AND je.reversed_by_id IS NULL
-                    AND je.reversal_of_id IS NULL
-                    AND je.source_type <> 'BANK_TRANSFER'
-                    AND je.journal_date = (now() AT TIME ZONE COALESCE(
-                        (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
-                    AND jl.account_id IN (
-                        SELECT coa_id FROM bank_accounts
-                        WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
-                    )
-                    AND jl.debit > 0
+                SELECT COALESCE(SUM(CASE WHEN j.net > 0 THEN j.net ELSE 0 END), 0)
+                FROM (
+                    SELECT SUM(jl.debit) - SUM(jl.credit) AS net
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                        AND je.reversed_by_id IS NULL
+                        AND je.reversal_of_id IS NULL
+                        AND je.journal_date = (now() AT TIME ZONE COALESCE(
+                            (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
+                        AND jl.account_id IN (
+                            SELECT coa_id FROM bank_accounts
+                            WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
+                        )
+                    GROUP BY je.id
+                ) j
                 """,
                 ctx["tenant_id"],
             )
             today_out = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(jl.credit), 0)
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                    AND je.reversed_by_id IS NULL
-                    AND je.reversal_of_id IS NULL
-                    AND je.source_type <> 'BANK_TRANSFER'
-                    AND je.journal_date = (now() AT TIME ZONE COALESCE(
-                        (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
-                    AND jl.account_id IN (
-                        SELECT coa_id FROM bank_accounts
-                        WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
-                    )
-                    AND jl.credit > 0
+                SELECT COALESCE(SUM(CASE WHEN j.net < 0 THEN -j.net ELSE 0 END), 0)
+                FROM (
+                    SELECT SUM(jl.debit) - SUM(jl.credit) AS net
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+                        AND je.reversed_by_id IS NULL
+                        AND je.reversal_of_id IS NULL
+                        AND je.journal_date = (now() AT TIME ZONE COALESCE(
+                            (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
+                        AND jl.account_id IN (
+                            SELECT coa_id FROM bank_accounts
+                            WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
+                        )
+                    GROUP BY je.id
+                ) j
                 """,
                 ctx["tenant_id"],
             )
