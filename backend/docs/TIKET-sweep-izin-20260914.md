@@ -85,3 +85,27 @@ The service code dir under `backend/services/action_executor/` stays (git histor
 **Post-fix public probe:** `POST https://milkyhoop.com/api/expenses` with X-Source + a FAKE X-User-ID → **401**; same via :8001 → 401.
 
 **nginx (for a follow-up ticket, NOT urgent now the bypass is gone):** `/etc/nginx/sites-available/milkyhoop.conf`, `location /api → proxy_pass http://127.0.0.1:8001`. It does NOT strip client-supplied `X-Source` / `X-User-ID` / `X-Tenant-ID` (no proxy_set_header removes them). Before this fix that made the hole externally reachable. Now that the bypass is removed the app rejects it regardless, but stripping those headers at nginx is worth adding as defense-in-depth.
+
+
+---
+
+## STAGE 2 (b) — role_permissions for the 26 row-less modules (14 Sep 2026, migration V251, commit eec1eacc)
+
+Before: 26 modules used by the middleware had NO role_permissions rows → every non-owner role was refused on their mapped routes. Owner decision (via MASTER): each module COPIES its analog module's per-role actions, then 6 corrections.
+
+**Analog map:** EXPENSE/DEBIT_NOTE←BILL · QUOTE/SALES_ORDER/CREDIT_NOTE/TABLES←INVOICE · CUSTOMER_DEPOSIT←RECEIPT · VENDOR_DEPOSIT←PAYMENT · STOCK_ADJUST/WAREHOUSE/UNIT/BOM/WORK_ORDER/WORK_CENTER/MATERIAL_ISSUE/FG_RECEIPT←PRODUCT · FIXED_ASSET/INTERCOMPANY/LEDGER/PERIOD←JOURNAL · BUDGET/AR_AGING←REPORT · EMPLOYEE/BPJS/PAY_GROUP/SALARY_COMPONENT←PAYROLL.
+
+**6 corrections (separation of duties / accounting):**
+1. CASHIER & STORE_STAFF on EXPENSE = C,R only (petty cash).
+2. PERIOD: C/U/P/V only ADMIN & FINANCE_MGR; every other role R.
+3. VIEWER: R on FIXED_ASSET, LEDGER, PERIOD, INTERCOMPANY.
+4. BUDGET: ACCOUNTANT C,R,U; FINANCE_MGR C,R,U,A.
+5. EMPLOYEE/BPJS/PAY_GROUP/SALARY_COMPONENT: only HR_PAYROLL & ADMIN (salary confidentiality — COLLABORATOR removed).
+6. CREDIT_NOTE: SALES & STORE_STAFF no P and no V (a credit note reduces receivables → posted by ACCOUNTANT/FINANCE_MGR/BENDAHARA/ADMIN).
+
+**Cache:** role_permissions has no cache invalidation → the gateway was restarted after applying V251.
+
+**Gate `scripts/gerbang_matriks.py` (dry-run, ROLLBACK):** 11/11 — the diff of every (module, role) against its analog == exactly the 6 declared corrections; nothing undeclared; every correction actually occurred; 26 modules row-less again after rollback.
+**Live after apply + restart (`scripts/ukur_can_hidup.py`, real policy engine):** 15/15 `can()` checks — e.g. CASHIER can create but not void an expense; ACCOUNTANT can't create a period but can read it; VIEWER reads but can't create a fixed asset; COLLABORATOR can't read an employee; SALES can't post a credit note; FINANCE_MGR can approve a budget; OWNER can do everything (bypass). Stage 1 gate 10/10, stage 2 gate 7/7 still green.
+
+**Row count:** 57 rows across the 6 spot-checked modules; migration registered in schema_migrations.
