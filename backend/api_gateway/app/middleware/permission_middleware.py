@@ -352,6 +352,183 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/aging/ap", ["GET"], "send_payment", "R"),
     (r"^/api/approval-inbox", ["GET"], "approval_inbox", "R"),
     (r"^/api/approvals", ["GET"], "approval_inbox", "R"),
+    # === 14 Sep 2026 sweep izin TAHAP 2: tulis modul pemindah uang yang dulu TANPA pola (lolos tanpa cek). ===
+    # Dibangkitkan dari aturan tertulis (putusan pemilik: pakai 15 modul DB yang ada) oleh scripts/bangkit_pola_tahap2.py;
+    # aksi: POST->C PUT/PATCH->U DELETE->D, verba jalur void|cancel|reject|bounce->V approve|confirm->A post|complete|...->P
+    # export->E calculate|validate|preview->R. chat & document_intake SENGAJA belum dipola (otorisasi modul tujuan, terbuka).
+    # bank_reconciliation
+    (r"^/api/bank-reconciliation/sessions$", ["POST"], "kas_bank", "C"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/auto-match$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/cancel$", ["POST"], "kas_bank", "V"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/categorize$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/complete$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/import$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/match$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/match/[^/]+$", ["DELETE"], "kas_bank", "D"),
+    (r"^/api/bank-reconciliation/sessions/[^/]+/transactions$", ["POST"], "kas_bank", "C"),
+    # bank_transfers
+    (r"^/api/bank-transfers$", ["POST"], "kas_bank", "C"),
+    (r"^/api/bank-transfers/[^/]+$", ["DELETE"], "kas_bank", "D"),
+    (r"^/api/bank-transfers/[^/]+$", ["PATCH"], "kas_bank", "U"),
+    # bills
+    (r"^/api/bills/[^/]+/attachments$", ["POST"], "purchase_invoice", "C"),
+    (r"^/api/bills/[^/]+/attachments/[^/]+$", ["DELETE"], "purchase_invoice", "D"),
+    (r"^/api/bills/[^/]+/mark-paid$", ["PATCH"], "purchase_invoice", "P"),
+    (r"^/api/bills/calculate$", ["POST"], "purchase_invoice", "R"),
+    (r"^/api/bills/v2$", ["POST"], "purchase_invoice", "C"),
+    (r"^/api/bills/v2/[^/]+$", ["PATCH"], "purchase_invoice", "U"),
+    # budgets
+    (r"^/api/budgets$", ["POST"], "reports", "C"),
+    (r"^/api/budgets/[^/]+$", ["DELETE"], "reports", "D"),
+    (r"^/api/budgets/[^/]+$", ["PATCH"], "reports", "U"),
+    (r"^/api/budgets/[^/]+/activate$", ["POST"], "reports", "P"),
+    (r"^/api/budgets/[^/]+/duplicate$", ["POST"], "reports", "P"),
+    (r"^/api/budgets/[^/]+/items$", ["POST"], "reports", "C"),
+    (r"^/api/budgets/[^/]+/items/[^/]+$", ["DELETE"], "reports", "D"),
+    # cheques
+    (r"^/api/cheques/[^/]+$", ["DELETE"], "kas_bank", "D"),
+    (r"^/api/cheques/[^/]+$", ["PATCH"], "kas_bank", "U"),
+    (r"^/api/cheques/[^/]+/bounce$", ["POST"], "kas_bank", "V"),
+    (r"^/api/cheques/[^/]+/cancel$", ["POST"], "kas_bank", "V"),
+    (r"^/api/cheques/[^/]+/clear$", ["POST"], "kas_bank", "P"),
+    (r"^/api/cheques/[^/]+/deposit$", ["POST"], "kas_bank", "P"),
+    (r"^/api/cheques/issue$", ["POST"], "kas_bank", "C"),
+    (r"^/api/cheques/receive$", ["POST"], "kas_bank", "P"),
+    # consolidation
+    (r"^/api/consolidation/entities/[^/]+$", ["DELETE"], "journal", "D"),
+    (r"^/api/consolidation/entities/[^/]+$", ["PATCH"], "journal", "U"),
+    (r"^/api/consolidation/groups$", ["POST"], "journal", "C"),
+    (r"^/api/consolidation/groups/[^/]+$", ["DELETE"], "journal", "D"),
+    (r"^/api/consolidation/groups/[^/]+$", ["PATCH"], "journal", "U"),
+    (r"^/api/consolidation/groups/[^/]+/auto-map$", ["POST"], "journal", "P"),
+    (r"^/api/consolidation/groups/[^/]+/entities$", ["POST"], "journal", "C"),
+    (r"^/api/consolidation/groups/[^/]+/intercompany$", ["POST"], "journal", "P"),
+    (r"^/api/consolidation/groups/[^/]+/mappings$", ["POST"], "journal", "C"),
+    (r"^/api/consolidation/runs$", ["POST"], "journal", "C"),
+    (r"^/api/consolidation/runs/[^/]+/process$", ["POST"], "journal", "P"),
+    # customer_deposits
+    (r"^/api/customer-deposits/[^/]+/attachments$", ["POST"], "customer", "C"),
+    (r"^/api/customer-deposits/[^/]+/attachments/[^/]+$", ["DELETE"], "customer", "D"),
+    # customers
+    (r"^/api/customers/[^/]+/opening-balance$", ["POST"], "customer", "C"),
+    (r"^/api/customers/[^/]+/reactivate$", ["PATCH"], "customer", "P"),
+    (r"^/api/customers/merge$", ["POST"], "customer", "C"),
+    (r"^/api/customers/merge/preview$", ["POST"], "customer", "R"),
+    # efaktur
+    (r"^/api/efaktur/export$", ["POST"], "tax", "E"),
+    (r"^/api/efaktur/validate$", ["POST"], "tax", "R"),
+    # expense_extended
+    (r"^/api/expense-claims$", ["POST"], "expense", "C"),
+    (r"^/api/expense-claims/[^/]+$", ["DELETE"], "expense", "D"),
+    (r"^/api/expense-claims/[^/]+/reimburse$", ["POST"], "expense", "P"),
+    (r"^/api/expense-claims/[^/]+/reject$", ["POST"], "expense", "V"),
+    (r"^/api/expense-claims/[^/]+/submit$", ["POST"], "expense", "P"),
+    (r"^/api/expense-policy$", ["POST"], "expense", "C"),
+    (r"^/api/expense-policy$", ["PUT"], "expense", "U"),
+    (r"^/api/recurring-expenses$", ["POST"], "expense", "C"),
+    (r"^/api/recurring-expenses/[^/]+$", ["DELETE"], "expense", "D"),
+    (r"^/api/recurring-expenses/[^/]+$", ["PUT"], "expense", "U"),
+    (r"^/api/recurring-expenses/[^/]+/toggle$", ["POST"], "expense", "P"),
+    # expenses
+    (r"^/api/expenses/[^/]+/attachments/[^/]+$", ["DELETE"], "expense", "D"),
+    (r"^/api/expenses/calculate$", ["POST"], "expense", "R"),
+    # fiscal_years
+    (r"^/api/fiscal-years$", ["POST"], "journal", "C"),
+    # fixed_assets
+    (r"^/api/fixed-assets$", ["POST"], "journal", "C"),
+    (r"^/api/fixed-assets/[^/]+$", ["DELETE"], "journal", "D"),
+    (r"^/api/fixed-assets/[^/]+$", ["PATCH"], "journal", "U"),
+    (r"^/api/fixed-assets/[^/]+/activate$", ["POST"], "journal", "P"),
+    (r"^/api/fixed-assets/[^/]+/dispose$", ["POST"], "journal", "P"),
+    (r"^/api/fixed-assets/[^/]+/maintenance$", ["POST"], "journal", "P"),
+    (r"^/api/fixed-assets/[^/]+/sell$", ["POST"], "journal", "P"),
+    (r"^/api/fixed-assets/categories$", ["POST"], "journal", "C"),
+    (r"^/api/fixed-assets/categories/[^/]+$", ["DELETE"], "journal", "D"),
+    (r"^/api/fixed-assets/categories/[^/]+$", ["PATCH"], "journal", "U"),
+    # intercompany
+    (r"^/api/intercompany/transactions$", ["POST"], "journal", "C"),
+    (r"^/api/intercompany/transactions/[^/]+$", ["PATCH"], "journal", "U"),
+    (r"^/api/intercompany/transactions/[^/]+/confirm$", ["POST"], "journal", "A"),
+    (r"^/api/intercompany/transactions/[^/]+/reject$", ["POST"], "journal", "V"),
+    # items
+    (r"^/api/items/[^/]+/duplicate$", ["POST"], "item", "P"),
+    (r"^/api/items/[^/]+/status$", ["PATCH"], "item", "U"),
+    (r"^/api/items/[^/]+/stock-adjustment$", ["POST"], "item", "P"),
+    (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
+    (r"^/api/items/bulk-import$", ["POST"], "item", "C"),
+    (r"^/api/items/categories$", ["POST"], "item", "C"),
+    (r"^/api/items/units$", ["POST"], "item", "C"),
+    # nsfp
+    (r"^/api/nsfp-ranges$", ["POST"], "tax", "C"),
+    (r"^/api/nsfp-ranges/[^/]+$", ["PATCH"], "tax", "U"),
+    # opening_balance
+    (r"^/api/opening-balance$", ["POST"], "journal", "C"),
+    (r"^/api/opening-balance$", ["PUT"], "journal", "U"),
+    (r"^/api/opening-balance/validate$", ["POST"], "journal", "R"),
+    # payroll_runs
+    (r"^/api/payroll/[^/]+/calculate$", ["POST"], "payroll", "R"),
+    # periods
+    (r"^/api/periods/[^/]+$", ["PUT"], "journal", "U"),
+    # production
+    (r"^/api/production$", ["POST"], "item", "C"),
+    (r"^/api/production/[^/]+$", ["DELETE"], "item", "D"),
+    (r"^/api/production/[^/]+$", ["PATCH"], "item", "U"),
+    (r"^/api/production/[^/]+/cancel$", ["POST"], "item", "V"),
+    (r"^/api/production/[^/]+/complete$", ["POST"], "item", "P"),
+    (r"^/api/production/[^/]+/issue-materials$", ["POST"], "item", "P"),
+    (r"^/api/production/[^/]+/labor$", ["POST"], "item", "P"),
+    (r"^/api/production/[^/]+/release$", ["POST"], "item", "P"),
+    (r"^/api/production/[^/]+/report-output$", ["POST"], "item", "P"),
+    (r"^/api/production/[^/]+/start$", ["POST"], "item", "P"),
+    # production_costing
+    (r"^/api/production-costing/allocate-overhead$", ["POST"], "journal", "P"),
+    (r"^/api/production-costing/cost-pools$", ["POST"], "journal", "C"),
+    (r"^/api/production-costing/cost-pools/[^/]+/record-actual$", ["POST"], "journal", "P"),
+    (r"^/api/production-costing/standard-costs$", ["POST"], "journal", "C"),
+    (r"^/api/production-costing/standard-costs/calculate-from-bom/[^/]+$", ["POST"], "journal", "P"),
+    # purchase_orders
+    (r"^/api/purchase-orders$", ["POST"], "purchase_order", "C"),
+    (r"^/api/purchase-orders/[^/]+$", ["DELETE"], "purchase_order", "D"),
+    (r"^/api/purchase-orders/[^/]+$", ["PATCH"], "purchase_order", "U"),
+    (r"^/api/purchase-orders/[^/]+/cancel$", ["POST"], "purchase_order", "V"),
+    (r"^/api/purchase-orders/[^/]+/receive$", ["POST"], "purchase_order", "P"),
+    (r"^/api/purchase-orders/[^/]+/send$", ["POST"], "purchase_order", "P"),
+    (r"^/api/purchase-orders/[^/]+/to-bill$", ["POST"], "purchase_order", "P"),
+    # recurring_bills
+    (r"^/api/recurring-bills$", ["POST"], "purchase_invoice", "C"),
+    (r"^/api/recurring-bills/[^/]+$", ["DELETE"], "purchase_invoice", "D"),
+    (r"^/api/recurring-bills/[^/]+$", ["PATCH"], "purchase_invoice", "U"),
+    (r"^/api/recurring-bills/[^/]+/generate$", ["POST"], "purchase_invoice", "P"),
+    (r"^/api/recurring-bills/[^/]+/pause$", ["POST"], "purchase_invoice", "P"),
+    (r"^/api/recurring-bills/[^/]+/resume$", ["POST"], "purchase_invoice", "P"),
+    (r"^/api/recurring-bills/process-due$", ["POST"], "purchase_invoice", "P"),
+    # recurring_invoices
+    (r"^/api/recurring-invoices$", ["POST"], "sales_invoice", "C"),
+    (r"^/api/recurring-invoices/[^/]+/generate$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/recurring-invoices/[^/]+/pause$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/recurring-invoices/[^/]+/resume$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/recurring-invoices/process-due$", ["POST"], "sales_invoice", "P"),
+    # sales_invoices
+    (r"^/api/sales-invoices/[^/]+/attachments$", ["POST"], "sales_invoice", "C"),
+    (r"^/api/sales-invoices/[^/]+/attachments/[^/]+$", ["DELETE"], "sales_invoice", "D"),
+    # sales_receipts
+    (r"^/api/sales-receipts$", ["POST"], "sales_invoice", "C"),
+    # stock_adjustments
+    (r"^/api/stock-adjustments/[^/]+$", ["DELETE"], "item", "D"),
+    (r"^/api/stock-adjustments/[^/]+$", ["PATCH"], "item", "U"),
+    # stock_transfers
+    (r"^/api/stock-transfers$", ["POST"], "item", "C"),
+    (r"^/api/stock-transfers/[^/]+$", ["DELETE"], "item", "D"),
+    (r"^/api/stock-transfers/[^/]+$", ["PATCH"], "item", "U"),
+    (r"^/api/stock-transfers/[^/]+/cancel$", ["POST"], "item", "V"),
+    (r"^/api/stock-transfers/[^/]+/receive$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/ship$", ["POST"], "item", "P"),
+    # tax_invoices
+    (r"^/api/tax-invoices/[^/]+/status$", ["PATCH"], "tax", "U"),
+    # vendors
+    (r"^/api/vendors/[^/]+/opening-balance$", ["POST"], "supplier", "C"),
+    (r"^/api/vendors/[^/]+/status$", ["PATCH"], "supplier", "U"),
+    (r"^/api/vendors/merge$", ["POST"], "supplier", "C"),
 ]
 
 # Routes that don't require permission checks
