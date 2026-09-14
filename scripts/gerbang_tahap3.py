@@ -112,7 +112,7 @@ async def main():
             r = await c.request(method, path, json={})
             return r.status_code, r.text[:400]
 
-    UNMAP = "/api/recipes/recipes"       # write tak terpetakan, tak exempt (baseline owner-only)
+    UNMAP = "/api/financial-ratios/snapshot"  # write tak terpetakan, tak exempt (baseline owner-only; recipes kini dipetakan V258)
     catat("OWNER", "owner: WRITE tak terpetakan -> 200 (bypass)", (await minta("POST", UNMAP, owner))[0] == 200)
     HARIAN = ["/api/sales-invoices", "/api/receive-payments", "/api/bills", "/api/expenses"]
     go_codes = []
