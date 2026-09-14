@@ -513,11 +513,22 @@ async def _load_invitable_role(conn, role_id: str, tenant_id: str, current_user_
     ke-14 peran sistem hidup di '__SYSTEM__', tak satu pun di bawah tenant.
     Query itu TAK PERNAH BISA COCOK — untuk siapa pun, selamanya. Undangan tak
     pernah sekali pun berhasil.
+
+    role_id "" / non-uuid = KARANGAN (bukan "tak dikenal yang kebetulan uuid"):
+    validasi SEBELUM query supaya asyncpg tak 500 (invalid UUID). Dipakai invite;
+    resend membaca role tersimpan, tak lewat sini.
     """
+    _rid = (role_id or "").strip()
+    if not _rid:
+        raise HTTPException(status_code=400, detail="Pilih peran terlebih dahulu.")
+    try:
+        uuid.UUID(_rid)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Peran tidak dikenal")
     row = await conn.fetchrow(
         """SELECT id, hierarchy_level, code, name, is_active FROM roles
            WHERE id = $1 AND tenant_id IN ('__SYSTEM__', $2)""",
-        role_id,
+        _rid,
         tenant_id,
     )
     if not row:
