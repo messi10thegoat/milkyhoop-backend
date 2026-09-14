@@ -134,3 +134,37 @@ dan `/{id}/summary` — `get_cost_center_summary` BENAR (INNER JOIN + WHERE), bu
 ⚠️ **Urutan perbaikan yang aman kalau suatu hari dibuka: betulkan fungsi DULU, baru buka rute.
 Sebaliknya membuka angka salah seketika** — dua cacat saling menutupi; memperbaiki yang satu
 menyalakan yang lain.
+
+
+---
+
+## V256 — check_bank_sync_health DE-BLINDED (14 Sep 2026, commit 4801a88a)
+
+`check_bank_sync_health` (guard R9 lama) ternyata BUTA — kelas yang SAMA dgn tiket ini:
+`je.status='POSTED'` diletakkan di **ON-clause LEFT JOIN** → **DEKORATIF**. Baris `journal_lines`
+milik jurnal VOID tetap terjumlah di `journal_balance`, saling hapus dengan `bank_transactions`
+VOID-nya di `txn_balance` → **gap = 0 (false-GREEN)**. Pemanggil hidup **NOL** (hanya dirujuk
+migrasi V188-nya sendiri; verdict harian memakai `hc_bank_sync_drift`/`hc_bank_sync_members` yang
+tajam) — tapi ranjau false-GREEN bagi pemanggil ad-hoc.
+
+**Bukti (coa BCA Operasional):** all-status ledger 49.834.000 = POSTED-only 49.885.848 + VOID-lines
+−51.848; all bank_txn 49.834.000 → lama: journal_balance 49.834.000 (memuat VOID) − txn 49.834.000
+(memuat btx VOID) = **0**. hc_bank_sync_drift: POSTED-only 49.885.848 − 49.834.000 = **51.848**.
+
+**Perbaikan (putusan MASTER B'):** badan `check_bank_sync_health` → **PEMBUNGKUS TIPIS** atas
+`hc_bank_sync_members`/`hc_bank_sync_drift` — **satu sumber rumus**. gap per bank = Σ anggota per akun;
+`txn_balance` = Σ `bank_transactions` (mentah); `journal_balance` = txn + gap (= ledger POSTED, lewat
+identitas `POSTED_ledger − Σtxn == Σ anggota`). Signature 7 kolom dipertahankan; lingkup diselaraskan
+ke `is_active`; guard fail-closed V188 tetap. Tak ada rumus kembar → tak bisa menyimpang lagi.
+
+**Sekarang jujur:** BCA Operasional gap **51.848**, Bendahara **13.370**, Σ **65.218** ==
+`hc_bank_sync_drift`. Gerbang `gerbang_bank_sync_sabot.py` **7/7**: gap per-akun == hc members;
+Σ == drift; SABOTASE (suntik jurnal VOID + bank_txn) → check-gap & drift naik **+1000 BERSAMA**
+(satu sumber), ROLLBACK bersih. Lama (pra-V256): semua gap **0** (buta). Migrasi fungsi DB → tanpa
+restart gateway.
+
+### Catatan untuk skill `milkyhoop-banksync` (edit menunggu izin pemilik)
+Baris R9 yang menyebut `check_bank_sync_health` sebagai alat R9 harus menambahkan: **saringan status
+versi LAMA DEKORATIF (di ON-clause) → false-GREEN**; sejak **V256** fungsi itu **pembungkus tipis**
+atas `hc_bank_sync_members`/`hc_bank_sync_drift` (satu sumber rumus), **bukan** rumus mandiri. Guard
+harian yang tajam tetap `hc_bank_sync_drift`/`hc_bank_sync_members` + pin sidik `health_check_exemptions`.
