@@ -139,3 +139,19 @@ Live after deploy: gate 7/7, stage 1 10/10, stage 2 7/7.
 - The 121 baseline writes are owner-only; map per module for non-owner roles as prioritised.
 - nginx: strip client X-Source / X-User-ID, but NOT X-Tenant-ID (FE uses it — measure first).
 - FE-calls-no-BE-route → separate ticket for FRONTEND (MASTER forwards).
+
+
+---
+
+## STAGE 3 ratchet + nginx header strip (14 Sep 2026)
+
+**Coverage ratchet (commit b5e792b7):** the stage-3 coverage gate is now a RATCHET. The baseline (`scripts/izin_write_baseline.json`, 121) may only SHRINK: the gate reds if any live unmapped-non-exempt write is outside the baseline OR the baseline count exceeds 121. A write that gains a pattern or an exemption (baseline shrinks) stays green. Sabotage "add one baseline entry" → RATCHET red; "remove one pattern" → coverage + ratchet red. Gate 8/8.
+
+**nginx header strip (config, backup `.bak-20260914`):** measured senders first — the web FE sends NONE of X-Source / X-User-ID / X-Tenant-ID; only backend-to-backend internal calls set X-Tenant-ID and they go direct to :8000, NOT through nginx (which fronts external :443 → :8001). So `location /api` now strips **X-Source** and **X-User-ID** from proxied requests (`proxy_set_header … "";`). **X-Tenant-ID is NOT stripped** (not proven unused by an external client). `nginx -t` ok, `nginx -s reload` (not restart). Post-reload: gateway healthz 200, FE root 200, a real API 401 (proxy fine), public X-Source+fake-user probe → 401. Defense-in-depth on top of the app-layer bypass removal (stage c).
+Observed (pre-existing, not from this change): nginx warns `protocol options redefined for [::]:443` at milkyhoop.conf:53 — a duplicate http2/ssl option, worth a separate tidy.
+
+**Deferred to team-invite time (owner decision, recorded):**
+- mapping the 121 baseline writes to modules for non-owner roles (owner-only until then);
+- flipping the READ default (reads stay open for now).
+
+**Owed:** the 24h owner-PERMISSION_UNMAPPED check — report tomorrow (0 so far).
