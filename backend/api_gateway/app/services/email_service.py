@@ -186,3 +186,65 @@ async def send_login_suggestion_email(email: str) -> bool:
     except Exception as e:
         logger.error(f"Gagal mengirim email saran-masuk ke {email}: {e}")
         raise EmailDeliveryUnavailable(f"Layanan email menolak permintaan: {e}") from e
+
+
+async def send_invitation_email(email: str, invite_link: str, role_name: str = None,
+                                tenant_name: str = None) -> str:
+    """Kirim email undangan tim via Resend. KEMBALIKAN message id Resend.
+
+    Melempar EmailDeliveryUnavailable bila kunci tak ada / Resend menolak — pemanggil
+    WAJIB memeriksa dan melaporkan JUJUR (invite_link tetap dikembalikan, jangan
+    laporkan 'terkirim' ke ruang hampa). Sama seperti send_verification_email.
+    """
+    try:
+        import resend
+        resend.api_key = RESEND_API_KEY
+
+        if not RESEND_API_KEY:
+            raise EmailDeliveryUnavailable(
+                "RESEND_API_KEY tidak terpasang — email undangan tidak dapat dikirim."
+            )
+
+        _peran = f" sebagai <strong>{role_name}</strong>" if role_name else ""
+        _tim = tenant_name or "tim di MilkyHoop"
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #1A1A1A;">
+  <div style="text-align: center; margin-bottom: 32px;">
+    <h1 style="font-size: 24px; font-weight: 700; margin: 0;">MilkyHoop</h1>
+    <p style="font-size: 14px; color: #6B6B6B; margin: 4px 0 0;">Financial Automation Tools</p>
+  </div>
+  <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Undangan Bergabung</h2>
+  <p style="font-size: 15px; color: #4A4A4A; line-height: 1.5;">
+    Anda diundang bergabung ke <strong>{_tim}</strong>{_peran}. Klik tombol di bawah untuk menerima undangan.
+  </p>
+  <div style="text-align: center; margin: 24px 0;">
+    <a href="{invite_link}" style="display: inline-block; background: #1A1A1A; color: #FFFFFF; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-size: 15px; font-weight: 600;">
+      Terima Undangan
+    </a>
+  </div>
+  <p style="font-size: 13px; color: #9A9A9A; line-height: 1.5;">
+    Atau salin tautan ini: {invite_link}<br>Undangan berlaku selama 7 hari.
+  </p>
+  <hr style="border: none; border-top: 1px solid #E8E6E1; margin: 32px 0;">
+  <p style="font-size: 12px; color: #9A9A9A; text-align: center;">&copy; 2026 MilkyHoop. Financial Automation Tools.</p>
+</body>
+</html>
+"""
+        r = resend.Emails.send({
+            "from": FROM_EMAIL,
+            "to": email,
+            "subject": "Undangan Bergabung — MilkyHoop",
+            "html": html_content,
+        })
+        mid = r.get("id") if isinstance(r, dict) else getattr(r, "id", None)
+        logger.info(f"Invitation email sent to {email} (id={mid})")
+        return mid
+
+    except EmailDeliveryUnavailable:
+        raise
+    except Exception as e:
+        logger.error(f"Gagal mengirim email undangan ke {email}: {e}")
+        raise EmailDeliveryUnavailable(f"Layanan email menolak permintaan: {e}")

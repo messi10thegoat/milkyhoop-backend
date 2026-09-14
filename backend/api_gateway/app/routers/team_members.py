@@ -18,6 +18,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Request, Query, HTTPException
 from pydantic import BaseModel
 import asyncpg
+from ..services.email_service import send_invitation_email, EmailDeliveryUnavailable
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/team-members", tags=["team-members"])
@@ -426,15 +427,31 @@ async def resend_invitation(request: Request, invitation_id: str):
         token = await conn.fetchval(
             "SELECT invite_token FROM team_invitations WHERE id = $1", row["id"]
         )
+    _email_sent = False
+    _email_message_id = None
+    _email_error = None
+    try:
+        _email_message_id = await send_invitation_email(row["email"], _invite_link(token))
+        _email_sent = True
+    except EmailDeliveryUnavailable as _e:
+        _email_error = str(_e)
+        logger.warning(f"Resend undangan {row['email']} dibuat tetapi email GAGAL: {_e}")
+
     return {
         "success": True,
-        "message": "Link undangan baru dibuat. Link yang lama sudah tidak berlaku.",
+        "message": (
+            f"Link undangan baru dikirim ke {row['email']}. Link lama tak berlaku."
+            if _email_sent
+            else "Link undangan baru dibuat (email gagal terkirim; salin link). Link lama tak berlaku."
+        ),
         "data": {
             "id": str(row["id"]),
             "email": row["email"],
             "invite_link": _invite_link(token),
             "expires_at": row["expires_at"].isoformat(),
-            "email_sent": False,
+            "email_sent": _email_sent,
+            "email_message_id": _email_message_id,
+            "email_error": _email_error,
         },
     }
 
@@ -624,9 +641,25 @@ async def invite_team_member(request: Request, data: InviteMemberRequest):
                 detail="Sudah ada undangan aktif untuk email ini. Batalkan dulu bila ingin mengganti perannya.",
             )
 
+    # Kirim email undangan lewat email_service yang sama (JUJUR: gagal -> email_sent False,
+    # invite_link tetap dikembalikan; jangan laporkan "terkirim" ke ruang hampa).
+    _email_sent = False
+    _email_message_id = None
+    _email_error = None
+    try:
+        _email_message_id = await send_invitation_email(email, _invite_link(token), role_row["name"])
+        _email_sent = True
+    except EmailDeliveryUnavailable as _e:
+        _email_error = str(_e)
+        logger.warning(f"Undangan {email} dibuat tetapi email GAGAL terkirim: {_e}")
+
     return {
         "success": True,
-        "message": f"Undangan untuk {email} dibuat. Salin dan kirimkan link di bawah.",
+        "message": (
+            f"Undangan dikirim ke {email}."
+            if _email_sent
+            else "Undangan dibuat, tetapi email GAGAL terkirim. Salin dan kirimkan link di bawah."
+        ),
         "data": {
             "invitation_id": str(inv["id"]),
             "email": email,
@@ -634,7 +667,9 @@ async def invite_team_member(request: Request, data: InviteMemberRequest):
             "role_name": role_row["name"],
             "invite_link": _invite_link(token),
             "expires_at": inv["expires_at"].isoformat(),
-            "email_sent": False,
+            "email_sent": _email_sent,
+            "email_message_id": _email_message_id,
+            "email_error": _email_error,
         },
     }
 
