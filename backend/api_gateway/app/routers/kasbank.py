@@ -402,11 +402,16 @@ async def get_kasbank_stats(request: Request):
                 SELECT COALESCE(SUM(jl.debit), 0)
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                    AND je.journal_date = CURRENT_DATE
                     AND je.reversed_by_id IS NULL
-                    AND coa.account_type IN ('BANK', 'CASH')
+                    AND je.reversal_of_id IS NULL
+                    AND je.source_type <> 'BANK_TRANSFER'
+                    AND je.journal_date = (now() AT TIME ZONE COALESCE(
+                        (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
+                    AND jl.account_id IN (
+                        SELECT coa_id FROM bank_accounts
+                        WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
+                    )
                     AND jl.debit > 0
                 """,
                 ctx["tenant_id"],
@@ -416,11 +421,16 @@ async def get_kasbank_stats(request: Request):
                 SELECT COALESCE(SUM(jl.credit), 0)
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
                 WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                    AND je.journal_date = CURRENT_DATE
                     AND je.reversed_by_id IS NULL
-                    AND coa.account_type IN ('BANK', 'CASH')
+                    AND je.reversal_of_id IS NULL
+                    AND je.source_type <> 'BANK_TRANSFER'
+                    AND je.journal_date = (now() AT TIME ZONE COALESCE(
+                        (SELECT timezone FROM "Tenant" WHERE id = $1), 'Asia/Jakarta'))::date
+                    AND jl.account_id IN (
+                        SELECT coa_id FROM bank_accounts
+                        WHERE tenant_id = $1 AND is_active = true AND coa_id IS NOT NULL
+                    )
                     AND jl.credit > 0
                 """,
                 ctx["tenant_id"],
