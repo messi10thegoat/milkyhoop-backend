@@ -130,21 +130,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if self._is_signup_public_endpoint(path):
                 return await call_next(request)
 
-            # Allow internal service requests (action_executor calling kernel endpoints)
-            x_source = request.headers.get("X-Source", "")
-            x_tenant = request.headers.get("X-Tenant-ID", "")
-            x_user = request.headers.get("X-User-ID", "")
-            if x_source == "action_executor" and x_tenant:
-                request.state.user = {
-                    "tenant_id": x_tenant,
-                    "user_id": x_user or "",
-                    "role": "ADMIN",
-                    "source": "action_executor",
-                }
-                logger.info(
-                    f"Internal service auth bypass: {x_source} tenant={x_tenant}"
-                )
-                return await call_next(request)
+            # 14 Sep 2026: bypass internal X-Source=action_executor DIHAPUS (pensiun layanan action_executor).
+            # Dulu: X-Source + X-Tenant-ID -> role ADMIN tanpa auth -> lubang kepercayaan-header (siapa pun yang bisa
+            # menyetel header itu + X-User-ID bertindak sebagai siapa saja). Layanan gRPC-nya mati (host tak resolve,
+            # 0 kejadian 30 hari, tak ada container); chat mengeksekusi lewat penerusan JWT pengguna (jalur is_direct).
 
             # Require authentication for all other paths
             auth_header = request.headers.get("Authorization")

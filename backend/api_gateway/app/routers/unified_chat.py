@@ -37,7 +37,6 @@ from ..services.unified_agent.orchestrator import (
     _strip_draft_void_rows,
     LABEL_OPSI_KELUAR,
 )
-from ..services.action_executor_client import get_action_executor_client
 from ..services.action_service import (
     ActionService,
     CONFIRM_KEYWORDS,
@@ -7649,13 +7648,14 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
         except Exception as fsm_err:
             logger.warning(f"[Confirm] FSM transition failed (non-fatal): {fsm_err}")
 
-        executor = get_action_executor_client()
-        result = await executor.execute_action(
-            pending_action_id=body.pending_action_id,
-            doc_status=body.doc_status,
-            tenant_id=ctx["tenant_id"],
-            user_id=ctx["user_id"],
-        )
+        # 14 Sep 2026: jalur eksekusi gRPC action_executor PENSIUN. Aksi non-direct (is_direct=false) tak lagi
+        # dieksekusi lewat sini; semua pending_actions hidup sejak 3 Sep berstatus is_direct=true (jalur REST + JWT
+        # di atas). 4 baris non-direct terakhir (2-3 Sep) semuanya kedaluwarsa/dibatalkan. Kembalikan gagal terbaca.
+        result = {
+            "success": False,
+            "error_message": "Aksi ini tidak bisa diproses lewat jalur lama. Muat ulang dan coba lagi dari chat.",
+            "error_code": "ACTION_EXECUTOR_RETIRED",
+        }
 
         success = result.get("success", False)
 
@@ -8164,23 +8164,26 @@ async def get_action_status(request: Request, pending_action_id: str):
     """Poll the status of a pending action."""
     ctx = _get_user_context(request)
 
+    # 14 Sep 2026: status dibaca dari DB (pending_actions) — jalur gRPC action_executor pensiun.
     try:
-        executor = get_action_executor_client()
-        result = await executor.get_action_status(
-            action_id=pending_action_id,
-            tenant_id=ctx["tenant_id"],
+        pool = await get_session_db_pool()
+        row = await pool.fetchrow(
+            "SELECT status FROM pending_actions WHERE id = $1 AND tenant_id = $2",
+            uuid_mod.UUID(pending_action_id),
+            ctx["tenant_id"],
         )
-
+        if not row:
+            return ActionStatusResponse(
+                pending_action_id=pending_action_id, status="NOT_FOUND", message="Aksi tidak ditemukan", data=None
+            )
         return ActionStatusResponse(
-            pending_action_id=pending_action_id,
-            status=result.get("status", "UNKNOWN"),
-            message=result.get("message"),
-            data=result.get("data"),
+            pending_action_id=pending_action_id, status=str(row["status"]).upper(), message=None, data=None
         )
-
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception(f"[Status] Failed for {pending_action_id}")
-        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Status check failed")
 
 
 # =============================================================================
