@@ -880,6 +880,32 @@ async def update_bank_account(
                     params.append(_bersih("swift_code"))
                     param_idx += 1
 
+                # account_type: LABEL-only (tak sentuh jurnal/CoA). Larang transisi ke/dari
+                # credit_card -> butuh ganti tipe CoA LIABILITY<->ASSET yang Law 18 blokir bila
+                # sudah ada jurnal. Selain itu (cash/petty_cash/bank/e_wallet) semuanya ASSET.
+                if "account_type" in _dikirim and body.account_type is not None:
+                    _new_t = body.account_type
+                    _old_t = ba["account_type"]
+                    if (_new_t == "credit_card") != (_old_t == "credit_card"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Ubah tipe ke/dari kartu kredit tidak didukung — buat akun baru",
+                        )
+                    _coa = await conn.fetchrow(
+                        "SELECT account_type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                        ba["coa_id"],
+                        ctx["tenant_id"],
+                    )
+                    _need = "LIABILITY" if _new_t == "credit_card" else "ASSET"
+                    if not _coa or _coa["account_type"] != _need:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Tipe akun tidak konsisten dengan CoA tertaut (butuh {_need})",
+                        )
+                    updates.append(f"account_type = ${param_idx}")
+                    params.append(_new_t)
+                    param_idx += 1
+
                 if body.is_active is not None:
                     updates.append(f"is_active = ${param_idx}")
                     params.append(body.is_active)

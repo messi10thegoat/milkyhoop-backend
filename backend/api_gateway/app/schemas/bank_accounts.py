@@ -69,6 +69,9 @@ class UpdateBankAccountRequest(BaseModel):
     """Request body for updating a bank account."""
 
     account_name: Optional[str] = Field(None, max_length=100)
+    account_type: Optional[
+        Literal["bank", "cash", "petty_cash", "e_wallet", "credit_card"]
+    ] = None
     account_number: Optional[str] = Field(None, max_length=50)
     bank_name: Optional[str] = Field(None, max_length=100)
     bank_branch: Optional[str] = Field(None, max_length=100)

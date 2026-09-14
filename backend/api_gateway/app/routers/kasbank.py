@@ -16,6 +16,12 @@ import asyncpg
 
 
 logger = logging.getLogger(__name__)
+# Pemetaan tipe akun -> kartu ringkasan Kas&Bank. Dulu hanya "cash"/"bank" yang dihitung,
+# sehingga saldo "petty_cash"/"e_wallet" JATUH ke NOL kartu (hilang dari ringkasan).
+# credit_card SENGAJA dikecualikan dari kedua kartu (liabilitas, bukan kas/bank).
+KARTU_KAS_TYPES = ("cash", "petty_cash")
+KARTU_BANK_TYPES = ("bank", "e_wallet")
+
 router = APIRouter()
 
 
@@ -111,8 +117,8 @@ async def list_kasbank_accounts(request: Request):
                 for row in rows
             ]
 
-            cash_total = sum(a["balance"] or 0 for a in accounts if a["type"] == "cash")
-            bank_total = sum(a["balance"] or 0 for a in accounts if a["type"] == "bank")
+            cash_total = sum(a["balance"] or 0 for a in accounts if a["type"] in KARTU_KAS_TYPES)
+            bank_total = sum(a["balance"] or 0 for a in accounts if a["type"] in KARTU_BANK_TYPES)
 
             return {
                 "success": True,
@@ -375,8 +381,8 @@ async def get_kasbank_stats(request: Request):
             totals = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN ba.account_type = 'cash' THEN jb.balance ELSE 0 END), 0) as cash_total,
-                    COALESCE(SUM(CASE WHEN ba.account_type = 'bank' THEN jb.balance ELSE 0 END), 0) as bank_total,
+                    COALESCE(SUM(CASE WHEN ba.account_type IN ('cash', 'petty_cash') THEN jb.balance ELSE 0 END), 0) as cash_total,
+                    COALESCE(SUM(CASE WHEN ba.account_type IN ('bank', 'e_wallet') THEN jb.balance ELSE 0 END), 0) as bank_total,
                     COUNT(*) as account_count
                 FROM bank_accounts ba
                 LEFT JOIN LATERAL (
