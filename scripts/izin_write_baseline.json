@@ -15,7 +15,6 @@
  "DELETE /api/tax-codes/{tax_code_id}",
  "DELETE /api/tax-groups/{group_id}",
  "DELETE /api/team-members/invitations/{invitation_id}",
- "DELETE /api/tenant/profile/logo",
  "PATCH /api/approval-workflows/{workflow_id}",
  "PATCH /api/audit/retention-policies/{policy_id}",
  "PATCH /api/branches/{branch_id}",
@@ -33,7 +32,6 @@
  "PATCH /api/team-members/{member_id}/overrides",
  "PATCH /api/team-members/{member_id}/reactivate",
  "PATCH /api/team-members/{member_id}/role",
- "PATCH /api/tenant/profile",
  "POST /api/approval-delegates",
  "POST /api/approval-requests/{request_id}/cancel",
  "POST /api/approval-requests/{request_id}/reject",
@@ -107,7 +105,6 @@
  "POST /api/tables/tables",
  "POST /api/tables/waitlist",
  "POST /api/tables/waitlist/{entry_id}/seat",
- "POST /api/tenant/profile/logo",
  "POST /api/transactions/parse-guided",
  "POST /api/transactions/purchase",
  "POST /api/transactions/sales",
@@ -118,6 +115,5 @@
  "PUT /api/recipes/recipes/{recipe_id}",
  "PUT /api/tables/areas/{area_id}",
  "PUT /api/tables/reservations/{reservation_id}",
- "PUT /api/tables/tables/{table_id}",
- "PUT /api/tenant/profile"
+ "PUT /api/tables/tables/{table_id}"
 ]

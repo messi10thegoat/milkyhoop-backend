@@ -1687,8 +1687,8 @@ async def create_category(request: Request, body: CreateCategoryRequest):
             await conn.close()
 
 
-@router.delete("/items/categories/{name}")
-async def delete_category(request: Request, name: str):
+@router.delete("/items/categories")
+async def delete_category(request: Request, name: str = Query(..., min_length=1, max_length=100, description="Nama kategori (boleh mengandung / dsb)")):
     """Hapus kategori dari registry. HANYA bila 0 item AKTIF memakainya (selain itu 409).
 
     products.kategori (string bebas) TAK disentuh — item lama tetap membawa labelnya; yang

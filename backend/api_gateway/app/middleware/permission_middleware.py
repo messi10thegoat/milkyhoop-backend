@@ -346,6 +346,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Settings
     (r"^/api/settings", ["GET"], "tenant_settings", "R"),
     (r"^/api/settings", ["PATCH", "PUT"], "tenant_settings", "U"),
+    (r"^/api/tenant/profile$", ["PUT", "PATCH"], "tenant_settings", "U"),
+    (r"^/api/tenant/profile/logo$", ["POST", "DELETE"], "tenant_settings", "U"),
     # AR/AP Aging
     (r"^/api/ar", ["GET"], "ar_aging", "R"),
     (r"^/api/aging/ar", ["GET"], "ar_aging", "R"),
@@ -457,6 +459,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
     (r"^/api/items/bulk-import$", ["POST"], "item", "C"),
     (r"^/api/items/categories$", ["POST"], "item", "C"),
+    (r"^/api/items/categories$", ["DELETE"], "item", "D"),
     (r"^/api/items/units$", ["POST"], "item", "C"),
     # nsfp
     (r"^/api/nsfp-ranges$", ["POST"], "tax", "C"),
