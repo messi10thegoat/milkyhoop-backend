@@ -211,12 +211,21 @@ async def compute_customer_deposit_balance(conn, tenant_id: str, customer_id) ->
         SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN customer_deposits cd ON cd.id = je.source_id
         WHERE je.tenant_id = $1
-          AND cd.tenant_id = $1
-          AND cd.customer_id = $2
           AND jl.account_id = $3
           AND is_effective_journal(je.id)
+          AND (
+              je.source_id IN (
+                  SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2
+              )
+              OR je.id IN (
+                  SELECT journal_id FROM receive_payments
+                  WHERE tenant_id = $1 AND journal_id IS NOT NULL
+                    AND created_deposit_id IN (
+                        SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2
+                    )
+              )
+          )
         """,
         tenant_id,
         customer_id,
@@ -242,9 +251,15 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> int:
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
         WHERE je.tenant_id = $1
-          AND je.source_id = $2
           AND jl.account_id = $3
           AND is_effective_journal(je.id)
+          AND (
+              je.source_id = $2
+              OR je.id IN (
+                  SELECT journal_id FROM receive_payments
+                  WHERE tenant_id = $1 AND created_deposit_id = $2 AND journal_id IS NOT NULL
+              )
+          )
         """,
         tenant_id,
         deposit_id,
@@ -481,11 +496,17 @@ async def get_customer_deposits_summary(request: Request):
                 SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN customer_deposits cd ON cd.id = je.source_id
                 WHERE je.tenant_id = $1
-                  AND cd.tenant_id = $1
                   AND jl.account_id = $2
                   AND is_effective_journal(je.id)
+                  AND (
+                      je.source_id IN (SELECT id FROM customer_deposits WHERE tenant_id = $1)
+                      OR je.id IN (
+                          SELECT journal_id FROM receive_payments
+                          WHERE tenant_id = $1 AND journal_id IS NOT NULL
+                            AND created_deposit_id IS NOT NULL
+                      )
+                  )
                 """,
                 ctx["tenant_id"],
                 deposit_account_id,
@@ -2124,11 +2145,9 @@ async def refund_customer_deposit(
                         detail=f"Cannot refund deposit with status '{dep['status']}'",
                     )
 
-                # Check remaining
-                remaining = (
-                    dep["amount"]
-                    - (dep["amount_applied"] or 0)
-                    - (dep["amount_refunded"] or 0)
+                # Check remaining (Option B: journal-derived, SATU SUMBER dgn apply; bukan cache)
+                remaining = await compute_deposit_remaining(
+                    conn, ctx["tenant_id"], deposit_id
                 )
 
                 if body.amount > remaining:
@@ -2401,6 +2420,24 @@ async def void_customer_deposit(
                     raise HTTPException(
                         status_code=400,
                         detail="Cannot void deposit with refunds. Reverse refunds first.",
+                    )
+
+                # Option B: uang muka dari kelebihan bayar (created via RP) -> liabilitasnya di jurnal
+                # RP; void deposit tak boleh membalik jurnal RP. Larang; arahkan ke refund / batalkan RP.
+                _rp_ovp = await conn.fetchrow(
+                    "SELECT payment_number FROM receive_payments "
+                    "WHERE tenant_id = $1 AND created_deposit_id = $2",
+                    ctx["tenant_id"],
+                    deposit_id,
+                )
+                if _rp_ovp:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Uang muka ini berasal dari kelebihan bayar pembayaran "
+                            f"{_rp_ovp['payment_number']}. Gunakan pengembalian dana, atau batalkan "
+                            "pembayarannya."
+                        ),
                     )
 
                     # Law 5: Period lock check

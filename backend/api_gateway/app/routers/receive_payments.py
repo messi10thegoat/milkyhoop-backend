@@ -1683,16 +1683,6 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             detail=f"Cannot post payment with status '{payment['status']}'",
         )
 
-    # PAGAR SEMENTARA (2026-09-14): kelebihan bayar (unapplied>0) membuat customer_deposit yang
-    # liabilitasnya dibukukan di jurnal RP (source_id=RP) -> TAK ter-atribusi ke deposit -> saldo
-    # journal-derived 0 -> deposit TAK bisa di-apply. Tolak SEBELUM menulis apa pun sampai atribusi
-    # (option B) live; nol deposit-overpay baru lahir. Dicabut setelah fix atribusi.
-    if payment["unapplied_amount"] and payment["unapplied_amount"] > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Kelebihan bayar belum dapat diproses; catat pembayaran sebesar sisa tagihan",
-        )
-
     # Get account IDs
     # Law 27: resolve accounts via resolve_account_id
     deposit_account_id = await resolve_account_id_by_role(
@@ -1846,9 +1836,9 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             INSERT INTO customer_deposits (
                 tenant_id, deposit_number, customer_id, customer_name,
                 amount, deposit_date, payment_method,
-                account_id, journal_id, reference, notes,
+                account_id, reference, notes,
                 status, posted_at, posted_by, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'posted', NOW(), $12, $12)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'posted', NOW(), $11, $11)
             RETURNING id
         """,
             ctx["tenant_id"],
@@ -1858,8 +1848,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
             payment["unapplied_amount"],
             payment["payment_date"],
             _deposit_payment_method(payment["payment_method"]),  # L2: kosakata deposit
-            payment["bank_account_id"],  # account_id: CoA Kas/Bank (FK-terjamin sah via baris Dr RP)
-            journal_id,  # L3: telusur ke jurnal RP yang memuat baris Cr Uang Muka
+            payment["bank_account_id"],  # account_id: CoA Kas/Bank (FK-terjamin sah via baris Dr RP; atribusi & telusur via receive_payments.created_deposit_id)
             f"Overpayment from {payment['payment_number']}",
             f"Auto-created from overpayment on {payment['payment_number']}",
             ctx["user_id"],
@@ -2167,6 +2156,27 @@ async def void_receive_payment(
                         status_code=400,
                         detail="Cannot void draft payment. Delete it instead.",
                     )
+
+                # Option B: uang muka overpay yang SUDAH dipakai/dikembalikan tak boleh divoid lewat
+                # void RP (pemakaian/refund uang muka = jurnal terpisah). Tolak; batalkan pemakaian dulu.
+                if payment["created_deposit_id"]:
+                    _dep_used = await conn.fetchrow(
+                        "SELECT deposit_number, amount_applied, amount_refunded "
+                        "FROM customer_deposits WHERE id = $1",
+                        payment["created_deposit_id"],
+                    )
+                    if _dep_used and (
+                        (_dep_used["amount_applied"] or 0) > 0
+                        or (_dep_used["amount_refunded"] or 0) > 0
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Uang muka {_dep_used['deposit_number']} dari kelebihan bayar ini "
+                                "sudah dipakai/dikembalikan. Batalkan pemakaian/pengembalian uang muka "
+                                "itu dulu sebelum membatalkan pembayaran."
+                            ),
+                        )
 
                 # Create reversal journal
                 void_journal_id = uuid_module.uuid4()
