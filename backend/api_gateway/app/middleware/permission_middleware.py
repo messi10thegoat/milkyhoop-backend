@@ -548,6 +548,25 @@ SKIP_PATTERNS = [
     r"^/$",
 ]
 
+# 14 Sep 2026 TAHAP 3: WRITE tak terpetakan -> 403 (default tertutup). Himpunan ini adalah WRITE yang SENGAJA tak
+# butuh izin modul, dengan alasan per baris. READ tak terpetakan TETAP terbuka (dicatat di tiket). Bukan SKIP:
+# permintaan tetap butuh autentikasi; hanya cek IZIN MODUL yang dilewati untuk jalur-jalur ini.
+WRITE_EXEMPT = [
+    (r"^/api/session/logout", "sesi: pengguna mana pun boleh keluar (bukan tulis bisnis)"),
+    (r"^/api/user/", "layanan-diri atas akun sendiri (profil, favorit)"),
+    (r"^/api/onboarding/", "penyiapan tenant SEBELUM peran diprovisikan"),
+    (r"^/api/invite/[^/]+/(accept|decline)$", "pengguna yang diundang bertindak sebelum punya peran"),
+    (r"^/api/devices?($|/)", "manajemen perangkat/sesi milik sendiri"),
+    (r"^/api/uploads/", "unggah berkas mentah; aksi bisnis hasilnya dicek di rute-nya sendiri"),
+    # Chat: endpoint chat TIDAK menulis data istimewa sendiri. Aksi keuangan dieksekusi dengan MENERUSKAN JWT
+    # pengguna ke endpoint kernel (is_direct), tempat izin modul TUJUAN ditegakkan. Lihat TIKET-sweep-izin (c).
+    (r"^/api/v3/chat/", "chat v3: aksi diteruskan ber-JWT ke modul tujuan (dicek di sana)"),
+    (r"^/chat/", "chat (jalur lama, ber-JWT ke modul tujuan)"),
+    (r"^/api/setup/chat", "chat penyiapan (ber-JWT)"),
+    (r"^/api/tenant/[^/]+/chat", "chat per-tenant (ber-JWT)"),
+    (r"^/[^/]+/chat$", "chat per-tenant publik (ber-JWT)"),
+]
+
 
 from ..services.role_resolution import MSG_INACTIVE, MSG_NOT_PROVISIONED
 
@@ -565,6 +584,8 @@ class PermissionMiddleware(BaseHTTPMiddleware):
             for pattern, methods, module, action in ROUTE_PERMISSIONS
         ]
         self._compiled_skip = [re.compile(p) for p in SKIP_PATTERNS]
+        self._compiled_write_exempt = [re.compile(p) for p, _ in WRITE_EXEMPT]
+        self._write_methods = {"POST", "PUT", "PATCH", "DELETE"}
 
     async def dispatch(self, request: Request, call_next):
         # Skip OPTIONS requests (CORS preflight)
@@ -710,6 +731,38 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                         "code": "PERMISSION_CHECK_ERROR",
                     },
                 )
+
+        # 14 Sep 2026 TAHAP 3: default TERTUTUP untuk WRITE. Rute tulis TANPA pola & TIDAK di WRITE_EXEMPT:
+        # OWNER tetap lolos (konsisten dgn bypass can()), non-owner -> 403 PERMISSION_UNMAPPED. READ tetap terbuka.
+        elif method in self._write_methods and not any(p.match(path) for p in self._compiled_write_exempt):
+            if not hasattr(request.state, "user") or not request.state.user:
+                return JSONResponse(status_code=401, content={"error": "Authentication required", "code": "UNAUTHENTICATED"})
+            user = request.state.user
+            try:
+                context = await get_policy_engine().get_user_context(
+                    user_id=user["user_id"], tenant_id=user["tenant_id"], subscription_role=user.get("role", "USER"),
+                )
+                if context.business_role_code == "OWNER":
+                    request.state.user["business_role_code"] = context.business_role_code
+                    request.state.user["business_role_id"] = context.business_role_id
+                    return await call_next(request)
+                if not context.membership_active:
+                    return JSONResponse(status_code=403, content={"detail": {"error_code": "ROLE_INACTIVE", "message": MSG_INACTIVE}})
+                logger.warning(
+                    f"WRITE tak terpetakan ditolak (default tertutup): user={user['user_id']} "
+                    f"path={path} method={method} role={context.business_role_code}"
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "Permission denied",
+                        "message": "Aksi ini belum diberi izin untuk peran Anda. Hubungi pemilik usaha.",
+                        "code": "PERMISSION_UNMAPPED",
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"PERMISSION_UNMAPPED check error -> DITOLAK: path={path} method={method} err={type(e).__name__}: {e}")
+                return JSONResponse(status_code=403, content={"error": "Permission check failed", "code": "PERMISSION_CHECK_ERROR"})
 
         return await call_next(request)
 
