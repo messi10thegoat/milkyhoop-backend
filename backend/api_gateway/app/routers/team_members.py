@@ -378,13 +378,18 @@ async def revoke_invitation(request: Request, invitation_id: str):
     async with pool.acquire() as conn:
         if not await _check_owner_or_manager(conn, user["tenant_id"], user["user_id"]):
             raise HTTPException(status_code=403, detail="Hanya Pemilik atau Manajer")
-        row = await conn.fetchrow(
-            """UPDATE team_invitations SET status = 'revoked', revoked_at = NOW()
-               WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
-               RETURNING id, email""",
-            invitation_id,
-            user["tenant_id"],
-        )
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """UPDATE team_invitations SET status = 'revoked', revoked_at = NOW()
+                   WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
+                   RETURNING id, email""",
+                invitation_id,
+                user["tenant_id"],
+            )
+            if row:
+                await _tulis_audit(conn, event="INVITE_REVOKED", actor_id=user["user_id"],
+                    tenant_id=user["tenant_id"], entity_type="team_invitation", entity_id=row["id"],
+                    metadata={"email": row["email"], "actor_user_id": str(user["user_id"])})
     if not row:
         raise HTTPException(
             status_code=404, detail="Undangan tidak ditemukan atau sudah tidak menunggu"
@@ -436,6 +441,17 @@ async def resend_invitation(request: Request, invitation_id: str):
     except EmailDeliveryUnavailable as _e:
         _email_error = str(_e)
         logger.warning(f"Resend undangan {row['email']} dibuat tetapi email GAGAL: {_e}")
+
+    # INVITE_RESENT: notifikasi (bukan perubahan akses) -> audit POST-HOC dgn email_sent.
+    try:
+        _p = await get_pool()
+        async with _p.acquire() as _c:
+            await _tulis_audit(_c, event="INVITE_RESENT", actor_id=user["user_id"],
+                tenant_id=user["tenant_id"], entity_type="team_invitation", entity_id=row["id"],
+                metadata={"email": row["email"], "email_sent": _email_sent,
+                          "email_message_id": _email_message_id, "actor_user_id": str(user["user_id"])})
+    except Exception as _ae:  # noqa: BLE001
+        logger.warning(f"audit INVITE_RESENT gagal ditulis: {_ae}")
 
     return {
         "success": True,
@@ -519,6 +535,18 @@ async def get_team_member(request: Request, member_id: str):
 def _invite_link(token: str) -> str:
     base = os.getenv("APP_BASE_URL", "https://milkyhoop.com").rstrip("/")
     return f"{base}/invite/{token}"
+
+
+async def _tulis_audit(conn, *, event, actor_id, tenant_id, entity_type=None,
+                       entity_id=None, actor_role=None, metadata=None):
+    """Tulis satu baris audit_logs. DIPANGGIL DI DALAM transaksi perubahan akses:
+    kalau INSERT ini gagal, transaksi (termasuk perubahannya) ikut batal — jejak
+    dan perubahan hidup/mati bersama. checksum NULL (konvensi app: log_auth_event)."""
+    await conn.execute(
+        '''INSERT INTO audit_logs (id, "userId", "eventType", success, tenant_id,
+               entity_type, entity_id, user_role, source, metadata, "createdAt")
+           VALUES (gen_random_uuid()::text, $1, $2, true, $3, $4, $5, $6, 'team_members', $7::jsonb, NOW())''',
+        actor_id, event, tenant_id, entity_type, entity_id, actor_role, json.dumps(metadata or {}))
 
 
 async def _load_invitable_role(conn, role_id: str, tenant_id: str, current_user_id: str):
@@ -619,21 +647,21 @@ async def invite_team_member(request: Request, data: InviteMemberRequest):
 
         token = secrets.token_urlsafe(32)[:64]
         try:
-            inv = await conn.fetchrow(
-                """INSERT INTO team_invitations
-                       (tenant_id, email, name, role_id, module_overrides,
-                        invite_token, expires_at, status, invited_by)
-                   VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW() + INTERVAL '7 days',
-                           'pending', $7)
-                   RETURNING id, expires_at""",
-                tenant_id,
-                email,
-                data.name,
-                role_row["id"],
-                json.dumps(getattr(data, "module_overrides", None) or {}),
-                token,
-                current_user_id,
-            )
+            async with conn.transaction():
+                inv = await conn.fetchrow(
+                    """INSERT INTO team_invitations
+                           (tenant_id, email, name, role_id, module_overrides,
+                            invite_token, expires_at, status, invited_by)
+                       VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW() + INTERVAL '7 days',
+                               'pending', $7)
+                       RETURNING id, expires_at""",
+                    tenant_id, email, data.name, role_row["id"],
+                    json.dumps(getattr(data, "module_overrides", None) or {}),
+                    token, current_user_id,
+                )
+                await _tulis_audit(conn, event="INVITE_CREATED", actor_id=current_user_id,
+                    tenant_id=tenant_id, entity_type="team_invitation", entity_id=inv["id"],
+                    metadata={"email": email, "role_code": role_row["code"], "actor_user_id": str(current_user_id)})
         except UniqueViolationError:
             # Indeks parsial (tenant_id, email) WHERE status='pending'.
             raise HTTPException(
@@ -732,33 +760,21 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
                         detail="Cannot demote the last owner. Transfer ownership first.",
                     )
 
-            await conn.execute(
-                "UPDATE user_tenant_roles SET role_id = $1, assigned_at = NOW(), assigned_by = $2::uuid WHERE id = $3",
-                new_role["id"],
-                current_user_id,
-                member_id,
-            )
-
-            # Audit: catat perubahan peran (from/to/aktor). Handler ini dulu TAK menulis audit —
-            # perubahan lolos tanpa jejak. Audit tak boleh mematahkan alur utama (try/except).
-            try:
+            # ATOMIK: perubahan peran + audit dalam SATU transaksi (gagal audit -> role batal).
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE user_tenant_roles SET role_id = $1, assigned_at = NOW(), assigned_by = $2::uuid WHERE id = $3",
+                    new_role["id"], current_user_id, member_id,
+                )
                 _actor_role = await conn.fetchval(
                     "SELECT r.code FROM user_tenant_roles utr JOIN roles r ON r.id=utr.role_id "
                     "WHERE utr.user_id=$1::uuid AND utr.tenant_id=$2 LIMIT 1",
                     current_user_id, tenant_id)
-                await conn.execute(
-                    '''INSERT INTO audit_logs (id, "userId", "eventType", success, tenant_id,
-                           entity_type, entity_id, user_role, source, metadata, "createdAt")
-                       VALUES (gen_random_uuid()::text, $1, 'ROLE_CHANGED', true, $2,
-                           'team_member', $3, $4, 'team_members.update_member_role', $5::jsonb, NOW())''',
-                    current_user_id, tenant_id, uuid.UUID(member_id), _actor_role,
-                    json.dumps({
+                await _tulis_audit(conn, event="ROLE_CHANGED", actor_id=current_user_id,
+                    tenant_id=tenant_id, entity_type="team_member", entity_id=uuid.UUID(member_id),
+                    actor_role=_actor_role, metadata={
                         "from": member_row["current_code"], "to": new_role["code"],
-                        "target_user_id": str(member_row["user_id"]),
-                        "actor_user_id": str(current_user_id),
-                    }))
-            except Exception as _ae:  # noqa: BLE001
-                logger.warning(f"audit ROLE_CHANGED gagal ditulis: {_ae}")
+                        "target_user_id": str(member_row["user_id"]), "actor_user_id": str(current_user_id)})
 
             return {
                 "success": True,
@@ -842,7 +858,12 @@ async def remove_team_member(request: Request, member_id: str):
                         detail="Cannot remove the last owner. Transfer ownership first.",
                     )
 
-            await conn.execute("DELETE FROM user_tenant_roles WHERE id = $1", member_id)
+            async with conn.transaction():
+                await conn.execute("DELETE FROM user_tenant_roles WHERE id = $1", member_id)
+                await _tulis_audit(conn, event="MEMBER_REMOVED", actor_id=current_user_id,
+                    tenant_id=tenant_id, entity_type="team_member", entity_id=uuid.UUID(member_id),
+                    metadata={"target_user_id": str(member_row["user_id"]), "email": member_row["email"],
+                              "role_code": member_row["role_code"], "actor_user_id": str(current_user_id)})
 
             return {
                 "success": True,
@@ -935,12 +956,17 @@ async def _set_member_status(request: Request, member_id: str, new_status: str, 
                 detail=f"Tidak dapat {verb} anggota dengan peran lebih tinggi dari Anda",
             )
 
-        await conn.execute(
-            "UPDATE user_tenant_roles SET status = $1 WHERE id = $2 AND tenant_id = $3",
-            new_status,
-            member_id,
-            tenant_id,
-        )
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE user_tenant_roles SET status = $1 WHERE id = $2 AND tenant_id = $3",
+                new_status, member_id, tenant_id,
+            )
+            await _tulis_audit(conn,
+                event=("MEMBER_DEACTIVATED" if new_status != "ACTIVE" else "MEMBER_REACTIVATED"),
+                actor_id=current_user_id, tenant_id=tenant_id, entity_type="team_member",
+                entity_id=uuid.UUID(member_id),
+                metadata={"from": member_row["status"], "to": new_status,
+                          "target_user_id": str(member_row["user_id"]), "actor_user_id": str(current_user_id)})
 
     return {
         "success": True,
@@ -1009,6 +1035,12 @@ async def update_member_overrides(
                 status_code=400, detail="Tidak bisa mengubah akses Owner"
             )
 
+        # before/after untuk audit
+        _ovr_before_rows = await conn.fetch(
+            "SELECT module, actions FROM user_permission_overrides WHERE user_id = $1 AND tenant_id = $2",
+            target_user_id, tenant_id)
+        _ovr_before = {r["module"]: list(r["actions"] or []) for r in _ovr_before_rows}
+
         # Atomic write
         async with conn.transaction():
             await conn.execute(
@@ -1032,6 +1064,12 @@ async def update_member_overrides(
                     module_key,
                     actions,
                 )
+
+            await _tulis_audit(conn, event="PERMISSION_OVERRIDE_CHANGED", actor_id=current_user_id,
+                tenant_id=tenant_id, entity_type="team_member", entity_id=uuid.UUID(member_id),
+                actor_role="OWNER", metadata={"before": _ovr_before,
+                    "after": {k: v for k, v in body.module_overrides.items() if v and v != "default"},
+                    "target_user_id": target_user_id, "actor_user_id": str(current_user_id)})
 
         # Invalidate permission cache
         try:
