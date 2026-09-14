@@ -1629,13 +1629,13 @@ async def list_categories(request: Request):
         conn = await get_db_connection()
 
         query = """
-            SELECT DISTINCT kategori
-            FROM products
-            WHERE tenant_id = $1 AND kategori IS NOT NULL AND kategori != ''
-            ORDER BY kategori ASC
+            SELECT name
+            FROM item_categories
+            WHERE tenant_id = $1
+            ORDER BY name ASC
         """
         rows = await conn.fetch(query, tenant_id)
-        categories = [row["kategori"] for row in rows]
+        categories = [row["name"] for row in rows]
 
         return CategoryListResponse(success=True, categories=categories)
 
@@ -1659,25 +1659,65 @@ async def create_category(request: Request, body: CreateCategoryRequest):
     try:
         conn = await get_db_connection()
 
-        # Check if category already exists
-        existing = await conn.fetchval(
-            "SELECT kategori FROM products WHERE tenant_id = $1 AND kategori = $2 LIMIT 1",
+        # Simpan ke registry item_categories. Unik case-insensitive; casing input pertama menang.
+        inserted = await conn.fetchval(
+            """INSERT INTO item_categories (tenant_id, name)
+               VALUES ($1, $2)
+               ON CONFLICT (tenant_id, lower(name)) DO NOTHING
+               RETURNING name""",
             tenant_id,
-            body.name,
+            body.name.strip(),
         )
-        if existing:
+        if inserted is None:
             raise HTTPException(status_code=409, detail="Kategori sudah ada")
 
         return CreateCategoryResponse(
             success=True,
-            message=f"Kategori '{body.name}' siap digunakan",
-            category=body.name,
+            message=f"Kategori '{inserted}' dibuat",
+            category=inserted,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.delete("/items/categories/{name}")
+async def delete_category(request: Request, name: str):
+    """Hapus kategori dari registry. HANYA bila 0 item AKTIF memakainya (selain itu 409).
+
+    products.kategori (string bebas) TAK disentuh — item lama tetap membawa labelnya; yang
+    dihapus hanya baris registry. Pencocokan case-insensitive.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        n = await conn.fetchval(
+            "SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2) AND status = 'active'",
+            tenant_id,
+            name,
+        )
+        if n and n > 0:
+            raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
+        deleted = await conn.fetchval(
+            "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
+            tenant_id,
+            name,
+        )
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+        return {"success": True, "message": f"Kategori '{name}' dihapus"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting category: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:
