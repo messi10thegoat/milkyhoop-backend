@@ -56,3 +56,29 @@ dipatok ke fase uji kering lalu memerah atas trigger hidup (dibuat sadar-fase).
 - `vendor_deposits.py:718` (terapkan DP vendor ke tagihan) menulis `bills.paid_amount` dan
   membaca `bills.total_amount` — **kedua kolom TIDAK ADA** di `bills`. **DUGAAN** endpoint selalu
   500 di UPDATE ini; eksekusi belum diukur. Kalau benar: fitur mati, bukan kerapian.
+
+
+---
+
+## RESOLVED (open item 1) — Law 19 LINE freeze, V253, 14 Sep 2026, commit 3878479e
+
+V244 froze document HEADERS; lines were still mutable, so a posted document's header could diverge from the sum of its lines silently. V253 closes it for the document-line tables.
+
+**Function `law19_bekukan_baris()` + 3 triggers `trg_law19_baris_beku`** (BEFORE UPDATE) on `sales_invoice_items`, `bill_items`, `expense_items`. The trigger looks up the PARENT document's `journal_id` (sales_invoices/bills/expenses); if set, a change to any NOMINAL line column → `check_violation`. Numeric comparison (100000 == 100000.00). Predicate = parent `journal_id IS NOT NULL` (same as V244).
+
+**Frozen (nominal):**
+- sales_invoice_items & bill_items: quantity, unit_price, discount_percent, discount_amount, tax_rate, tax_amount, subtotal, total, dpp;
+- expense_items: amount.
+
+**Intentionally free (measured — the only post-posting writers touch these):**
+- PROGRESS: `fulfilled_qty`, `recognized_amount`, `allocated_amount` (fulfillment/revenue recognition after posting);
+- IDENTITY: `batch_id`, `line_number`, description, unit, codes, cost_center_id, tax_code_id;
+- COST: `unit_cost`, `total_cost` (matches V244 leaving header `total_cogs` free).
+
+**No legitimate writer changes a line nominal after posting** (measured 14 Sep): the post-posting UPDATEs are `SET fulfilled_qty/recognized_amount` (fulfill), `allocated_amount` (allocate), `fulfilled_qty=0,recognized_amount=0` (void reset), `batch_id` (batch assign) — all free columns. So the fulfill / void / receive-goods owner flows are unaffected by construction.
+
+**Out of scope (recorded):** `receive_payment_allocations` / `bill_payment_allocations` — `amount_applied` is a settlement PROGRESS value (changes as payments apply/void), not a document nominal, and it has no per-row posting predicate; V244 already left allocation amounts free deliberately. Not frozen.
+
+**Gate `scripts/gerbang_v253.py`:** new/live — nominal line UPDATE on a posted parent → 23514 on every nominal column; progress + identity + draft → allowed; old — nominal UPDATE LOLOS (gap proven); sabotage (drop `unit_price` from the freeze list) → RED. 29/29 dry-run, 28/28 live. Lossless ROLLBACK.
+
+**Law 19 status now:** headers (V244) + document lines (V253) frozen. The constitution still says "5 triggers" and must be corrected to "V244 header + V253 line" when skill-edit permission is granted (open item 3).
