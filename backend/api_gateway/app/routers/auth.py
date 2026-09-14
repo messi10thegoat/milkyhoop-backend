@@ -687,6 +687,39 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Session telah digantikan di perangkat lain",
                     )
+            # poin (d): refresh token milik user TERHAPUS tak boleh diperbarui.
+            if user_id:
+                _uid_valid = True
+                try:
+                    import uuid as _uuid_r
+
+                    _uuid_r.UUID(str(user_id))
+                except Exception:
+                    _uid_valid = False
+                if not _uid_valid:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User tidak ditemukan",
+                    )
+                try:
+                    from backend.api_gateway.app.services.db_pool import get_db_pool
+
+                    _pool = await get_db_pool()
+                    async with _pool.acquire() as _c:
+                        _ex = await _c.fetchval(
+                            'SELECT 1 FROM "User" WHERE id = $1', user_id
+                        )
+                except Exception as _dbe:
+                    logger.warning(f"[refresh] cek eksistensi gagal (503): {_dbe}")
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Layanan autentikasi sementara tidak tersedia",
+                    )
+                if _ex is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User tidak ditemukan",
+                    )
         except jwt.DecodeError:
             logger.warning("Could not decode refresh token for session check")
             # Continue - let auth_service validate the token

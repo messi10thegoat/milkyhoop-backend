@@ -13,8 +13,49 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.session_manager import session_manager
+from backend.api_gateway.app.services.db_pool import get_db_pool
+import time
+import uuid as _uuid
 
 logger = logging.getLogger(__name__)
+
+# Cek eksistensi User (JWT valid tapi user DIHAPUS -> 401, jangan lolos sampai token kedaluwarsa).
+# Cache in-proc pendek: positif 60s, negatif 5s (user dibuat-ulang tak keblok lama).
+# Galat DB/pool -> ANGKAT _UserCheckError -> pemanggil balas 503 (retry), cache TIDAK diisi:
+# gangguan DB sesaat TAK BOLEH me-logout semua pengguna (JWT sig tetap primer).
+_USER_EXIST_TTL_POS = 60.0
+_USER_EXIST_TTL_NEG = 5.0
+_user_exist_cache: dict = {}
+
+
+class _UserCheckError(Exception):
+    """Cek eksistensi gagal karena DB/pool (transien) -> 503, bukan 401."""
+
+
+async def _user_exists(user_id) -> bool:
+    if not user_id:
+        return False
+    try:
+        _uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError):
+        return False  # id tak valid -> anggap tak ada -> 401 (bukan 503)
+    now = time.monotonic()
+    hit = _user_exist_cache.get(user_id)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval('SELECT 1 FROM "User" WHERE id = $1', user_id)
+    except Exception as e:
+        logger.warning(f"[auth] cek eksistensi user gagal (503, cache tak diisi): {e}")
+        raise _UserCheckError() from e
+    exists = val is not None
+    _user_exist_cache[user_id] = (
+        exists,
+        now + (_USER_EXIST_TTL_POS if exists else _USER_EXIST_TTL_NEG),
+    )
+    return exists
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -186,6 +227,27 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                 "force_logout": True,
                             },
                         )
+
+                # Eksistensi User: JWT valid tapi user sudah DIHAPUS -> 401. Galat DB -> 503.
+                try:
+                    _user_ada = await _user_exists(user_id)
+                except _UserCheckError:
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "Layanan autentikasi sementara tidak tersedia",
+                            "code": "AUTH_DB_UNAVAILABLE",
+                        },
+                    )
+                if not _user_ada:
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": "User tidak ditemukan",
+                            "code": "USER_NOT_FOUND",
+                            "force_logout": True,
+                        },
+                    )
 
                 request.state.user = {
                     "user_id": user_id,
