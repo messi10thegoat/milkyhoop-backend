@@ -10,6 +10,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 """
 
 from pydantic import BaseModel, Field, field_validator
+from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date, datetime
 from uuid import UUID
@@ -26,9 +27,9 @@ class CreditNoteItemCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
     quantity: float = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
-    unit_price: int = Field(..., ge=0, description="Price per unit in IDR")
+    unit_price: Decimal = Field(..., ge=0, description="Price per unit in IDR")
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: Decimal = Field(0, ge=0)
     tax_code: Optional[str] = Field(None, max_length=20)
     tax_rate: float = Field(0, ge=0, le=100)
     original_invoice_item_id: Optional[str] = Field(None, description="Original invoice item UUID")
@@ -48,9 +49,9 @@ class CreditNoteItemUpdate(BaseModel):
     description: Optional[str] = None
     quantity: Optional[float] = Field(None, gt=0)
     unit: Optional[str] = None
-    unit_price: Optional[int] = Field(None, ge=0)
+    unit_price: Optional[Decimal] = Field(None, ge=0)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    discount_amount: Optional[Decimal] = Field(None, ge=0)
     tax_code: Optional[str] = None
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
 
@@ -71,7 +72,7 @@ class CreateCreditNoteRequest(BaseModel):
     notes: Optional[str] = None
     items: List[CreditNoteItemCreate] = Field(..., min_length=1)
     discount_percent: float = Field(0, ge=0, le=100, description="Overall discount percent")
-    discount_amount: int = Field(0, ge=0, description="Overall discount amount")
+    discount_amount: Decimal = Field(0, ge=0, description="Overall discount amount")
     tax_rate: float = Field(0, ge=0, le=100, description="Overall tax rate")
 
     @field_validator('customer_name')
@@ -94,7 +95,7 @@ class UpdateCreditNoteRequest(BaseModel):
     notes: Optional[str] = None
     items: Optional[List[CreditNoteItemCreate]] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    discount_amount: Optional[Decimal] = Field(None, ge=0)
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
 
 
@@ -105,7 +106,7 @@ class UpdateCreditNoteRequest(BaseModel):
 class ApplyCreditNoteItem(BaseModel):
     """Single application to an invoice."""
     invoice_id: str = Field(..., description="Invoice UUID to apply credit to")
-    amount: int = Field(..., gt=0, description="Amount to apply in IDR")
+    amount: Decimal = Field(..., gt=0, description="Amount to apply in IDR")
 
 
 class UnapplyCreditNoteRequest(BaseModel):
@@ -122,7 +123,7 @@ class ApplyCreditNoteRequest(BaseModel):
 
 class RefundCreditNoteRequest(BaseModel):
     """Request body for issuing a cash refund from credit note."""
-    amount: int = Field(..., gt=0, description="Refund amount in IDR")
+    amount: Decimal = Field(..., gt=0, description="Refund amount in IDR")
     refund_date: date
     payment_method: Literal["cash", "transfer", "check"]
     account_id: Optional[str] = Field(None, description="CoA account UUID (legacy)")
@@ -148,14 +149,14 @@ class CreditNoteItemResponse(BaseModel):
     description: str
     quantity: float
     unit: Optional[str] = None
-    unit_price: int
+    unit_price: float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_code: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: int = 0
-    subtotal: int
-    total: int
+    tax_amount: float = 0
+    subtotal: float
+    total: float
     line_number: int = 1
 
 
@@ -164,7 +165,7 @@ class CreditNoteApplicationResponse(BaseModel):
     id: str
     invoice_id: str
     invoice_number: Optional[str] = None
-    amount_applied: int
+    amount_applied: float
     application_date: str
     created_at: str
 
@@ -172,7 +173,7 @@ class CreditNoteApplicationResponse(BaseModel):
 class CreditNoteRefundResponse(BaseModel):
     """Credit note refund in response."""
     id: str
-    amount: int
+    amount: float
     refund_date: str
     payment_method: str
     account_id: str
@@ -191,10 +192,10 @@ class CreditNoteListItem(BaseModel):
     customer_id: Optional[str] = None
     customer_name: str
     credit_note_date: str
-    total_amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    total_amount: float
+    amount_applied: float = 0
+    amount_refunded: float = 0
+    remaining_amount: float = 0
     status: str
     reason: str
     created_at: str
@@ -210,15 +211,15 @@ class CreditNoteDetail(BaseModel):
     original_invoice_number: Optional[str] = None
 
     # Amounts
-    subtotal: int
+    subtotal: float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_rate: float = 0
-    tax_amount: int = 0
-    total_amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    tax_amount: float = 0
+    total_amount: float
+    amount_applied: float = 0
+    amount_refunded: float = 0
+    remaining_amount: float = 0
 
     # Status & dates
     status: str

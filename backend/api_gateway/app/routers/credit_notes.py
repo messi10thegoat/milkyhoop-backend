@@ -36,7 +36,7 @@ from ..services.pihak_helpers import (
 import logging
 import asyncpg
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from ..schemas.credit_notes import (
     CreateCreditNoteRequest,
@@ -124,6 +124,11 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
+def _q2(v) -> Decimal:
+    """Bulatkan nominal ke 2 desimal (Decimal) untuk DB numeric(18,2); presisi dijaga sepanjang pipa."""
+    return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
     quantity = Decimal(str(item.get("quantity", 0)))
@@ -149,14 +154,14 @@ def calculate_item_totals(item: dict) -> dict:
 
     return {
         **item,
-        "subtotal": int(subtotal),
-        "discount_amount": int(discount),
-        "tax_amount": int(tax_amount),
-        "total": int(total),
+        "subtotal": _q2(subtotal),
+        "discount_amount": _q2(discount),
+        "tax_amount": _q2(tax_amount),
+        "total": _q2(total),
     }
 
 
-async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> Decimal:
     """Compute invoice remaining from journal lines on AR account (Law 16).
 
     For sales invoices:
@@ -216,7 +221,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         tenant_id,
         invoice_id,
     )
-    return int(result or 0)
+    return result if result is not None else Decimal(0)
 
 
 # =============================================================================
@@ -405,10 +410,10 @@ async def get_credit_notes_summary(request: Request):
                     "posted_count": row["posted_count"] or 0,
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
-                    "total_value": int(row["total_value"] or 0),
-                    "total_applied": int(row["total_applied"] or 0),
-                    "total_refunded": int(row["total_refunded"] or 0),
-                    "available_balance": int(row["available_balance"] or 0),
+                    "total_value": float(row["total_value"] or 0),
+                    "total_applied": float(row["total_applied"] or 0),
+                    "total_refunded": float(row["total_refunded"] or 0),
+                    "available_balance": float(row["available_balance"] or 0),
                 },
             }
 
@@ -619,7 +624,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
 
                 # Apply overall discount
                 if body.discount_percent > 0:
-                    overall_discount = int(
+                    overall_discount = _q2(
                         subtotal * Decimal(str(body.discount_percent)) / 100
                     )
                 else:
@@ -628,7 +633,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                 # Apply overall tax if specified
                 after_discount = subtotal - overall_discount
                 if body.tax_rate > 0:
-                    overall_tax = int(
+                    overall_tax = _q2(
                         after_discount * Decimal(str(body.tax_rate)) / 100
                     )
                 else:
@@ -799,7 +804,7 @@ async def update_credit_note(
                     tax_rate = update_data.get("tax_rate", 0)
 
                     if discount_percent > 0:
-                        overall_discount = int(
+                        overall_discount = _q2(
                             subtotal * Decimal(str(discount_percent)) / 100
                         )
                     else:
@@ -808,7 +813,7 @@ async def update_credit_note(
                     after_discount = subtotal - overall_discount
 
                     if tax_rate > 0:
-                        overall_tax = int(after_discount * Decimal(str(tax_rate)) / 100)
+                        overall_tax = _q2(after_discount * Decimal(str(tax_rate)) / 100)
                     else:
                         overall_tax = total_tax
 
