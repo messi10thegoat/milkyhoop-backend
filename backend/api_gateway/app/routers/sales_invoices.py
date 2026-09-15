@@ -26,6 +26,7 @@ from ..schemas.sales_invoices import (
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
+    resolve_line_revenue_account,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
@@ -610,7 +611,15 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         defer_name, defer_code = await _acct(
             AccountRole.REVENUE_DEFERRED, "Pendapatan Diterima Dimuka"
         )
-        rev_name, rev_code = await _acct(AccountRole.REVENUE_SALES_GOODS, "Penjualan")
+        # Pratinjau cermin posting: faktur murni-jasa (tanpa inventory) -> Pendapatan Jasa.
+        _rev_role = (
+            AccountRole.REVENUE_SALES_GOODS
+            if has_inventory_items
+            else AccountRole.REVENUE_SALES_SERVICE
+        )
+        rev_name, rev_code = await _acct(
+            _rev_role, "Penjualan" if has_inventory_items else "Pendapatan Jasa"
+        )
 
         # Cermin _post_invoice:1729-1778 —
         #   Dr Piutang        = total TERMASUK pajak  (:1745)
@@ -2269,8 +2278,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         total_service_revenue = sum(_d(itm["_allocated"]) for itm in items)
         if total_service_revenue > 0:
             unearned_id2 = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
-            revenue_id2 = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_GOODS
+            # Unit pendapatan jasa: cabang ini HANYA jalan utk faktur MURNI-JASA
+            # (tanpa item inventory; faktur campur ditolak T206). Semua -> 4-10150.
+            revenue_id2 = await resolve_line_revenue_account(
+                conn, ctx["tenant_id"], is_service=True
             )
             rev_j_id = uuid.uuid4()
             rev_trace = str(uuid.uuid4())

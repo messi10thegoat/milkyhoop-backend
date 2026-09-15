@@ -29,6 +29,7 @@ from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
     resolve_account_id_by_role,
+    resolve_line_revenue_account,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -330,21 +331,52 @@ async def _create_pos_inventory_and_journals(
                         "Kas masuk POS",
                     )
 
-                    # Cr. Penjualan — REVENUE_SALES_GOODS (required, gated).
-                    penjualan_acct_id = await resolve_account_id_by_role(
-                        conn, tenant_id, AccountRole.REVENUE_SALES_GOODS
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
-                        VALUES ($1, $2, $3, 2, 0, $4, $5)
-                    """,
-                        str(uuid.uuid4()),
-                        sales_journal_id,
-                        str(penjualan_acct_id),
-                        total_amount,
-                        "Penjualan POS",
-                    )
+                    # Cr. Penjualan — SPLIT per-baris barang/jasa (unit pendapatan jasa).
+                    # total_amount dialokasikan proporsional bobot line_total; sisa ke baris terakhir.
+                    # Sigma kredit == total_amount (hanya distribusi akun berubah).
+                    _Q2 = Decimal("0.01")
+                    _sum_lt = sum(Decimal(str(it.get("line_total") or 0)) for it in items)
+                    _goods_r = Decimal("0")
+                    _service_r = Decimal("0")
+                    _alloc_r = Decimal("0")
+                    _last_r = len(items) - 1
+                    for _i, it in enumerate(items):
+                        _lt = Decimal(str(it.get("line_total") or 0))
+                        if _i == _last_r:
+                            _lrev = total_amount - _alloc_r
+                        else:
+                            _lrev = (
+                                (total_amount * _lt / _sum_lt).quantize(_Q2)
+                                if _sum_lt > 0 else Decimal("0")
+                            )
+                            _alloc_r += _lrev
+                        # barang = punya item_id DAN track_inventory; selain itu jasa.
+                        if it.get("item_id") and it.get("track_inventory", True):
+                            _goods_r += _lrev
+                        else:
+                            _service_r += _lrev
+                    _pos_buckets = {}
+                    if _goods_r != 0:
+                        _pg = await resolve_line_revenue_account(conn, tenant_id, is_service=False)
+                        _pos_buckets[_pg] = _pos_buckets.get(_pg, Decimal("0")) + _goods_r
+                    if _service_r != 0:
+                        _ps = await resolve_line_revenue_account(conn, tenant_id, is_service=True)
+                        _pos_buckets[_ps] = _pos_buckets.get(_ps, Decimal("0")) + _service_r
+                    _ln_no = 2
+                    for _acct_id, _amt in _pos_buckets.items():
+                        await conn.execute(
+                            """
+                            INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
+                            VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        """,
+                            str(uuid.uuid4()),
+                            sales_journal_id,
+                            str(_acct_id),
+                            _ln_no,
+                            _amt,
+                            "Penjualan POS",
+                        )
+                        _ln_no += 1
 
                     # Law 20: Promote to POSTED
                     await conn.execute(

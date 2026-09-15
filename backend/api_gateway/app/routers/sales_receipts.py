@@ -28,6 +28,7 @@ from ..schemas.sales_receipts import (
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
+    resolve_line_revenue_account,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -594,11 +595,38 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
             )
             line_num += 1
 
-            # CR Sales (Fase C1.2: role resolver)
-            sales_acct = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_GOODS
-            )
-            if sales_acct:
+            # CR Sales -- SPLIT per-baris barang/jasa (unit pendapatan jasa). Diskon
+            # header dialokasikan proporsional; sisa pembulatan ke baris terakhir.
+            # Sigma kredit = subtotal - discount_amount (== OLD, hanya distribusi akun berubah).
+            _Q2 = Decimal("0.01")
+            _goods_rev = Decimal("0")
+            _service_rev = Decimal("0")
+            _alloc = Decimal("0")
+            _last_idx = len(processed_items) - 1
+            for _i, _it in enumerate(processed_items):
+                _lsub = Decimal(str(_it.get("subtotal") or 0))
+                if _i == _last_idx:
+                    _ldisc = discount_amount - _alloc
+                else:
+                    _ldisc = (
+                        (discount_amount * _lsub / subtotal).quantize(_Q2)
+                        if subtotal > 0 else Decimal("0")
+                    )
+                    _alloc += _ldisc
+                _lnet = _lsub - _ldisc
+                # jasa = baris non-inventory (track_inventory False / tanpa produk); barang = track_inventory True
+                if _it.get("track_inventory", True):
+                    _goods_rev += _lnet
+                else:
+                    _service_rev += _lnet
+            _rev_buckets = {}
+            if _goods_rev != 0:
+                _g_acct = await resolve_line_revenue_account(conn, ctx["tenant_id"], is_service=False)
+                _rev_buckets[_g_acct] = _rev_buckets.get(_g_acct, Decimal("0")) + _goods_rev
+            if _service_rev != 0:
+                _s_acct = await resolve_line_revenue_account(conn, ctx["tenant_id"], is_service=True)
+                _rev_buckets[_s_acct] = _rev_buckets.get(_s_acct, Decimal("0")) + _service_rev
+            for _acct_id, _amt in _rev_buckets.items():
                 await conn.execute(
                     """
                     INSERT INTO journal_lines (id, journal_id, account_id, line_number, debit, credit, memo)
@@ -606,9 +634,9 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     """,
                     uuid4(),
                     journal_id,
-                    sales_acct,
+                    _acct_id,
                     line_num,
-                    subtotal - discount_amount,
+                    _amt,
                     "Sales",
                 )
                 line_num += 1

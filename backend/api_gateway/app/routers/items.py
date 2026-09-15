@@ -2183,7 +2183,7 @@ async def get_default_accounts(request: Request):
             return None
 
         sales = await resolve("REVENUE", "4-10100", "penjualan")
-        service_sales = await resolve("REVENUE", "4-10100", "jasa")
+        service_sales = await resolve("REVENUE", "4-10150", "jasa")
         if not service_sales:
             service_sales = sales  # fallback to main sales
         purchase = await resolve("EXPENSE", "5-20900", "lain")

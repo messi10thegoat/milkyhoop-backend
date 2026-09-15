@@ -27,6 +27,9 @@ from __future__ import annotations
 
 from typing import Final
 from uuid import UUID
+import logging
+
+_log = logging.getLogger(__name__)
 
 
 class AccountRoleUnmappedError(Exception):
@@ -320,6 +323,28 @@ async def resolve_account_id_by_role(conn, tenant_id: str, role_key: str) -> UUI
             f"(see seed_default_account_roles or Fase D plan)."
         )
     return row["account_id"]
+
+
+async def resolve_line_revenue_account(conn, tenant_id: str, is_service: bool) -> UUID:
+    """Akun pendapatan per klasifikasi baris (unit pendapatan jasa).
+
+    Jasa -> REVENUE_SALES_SERVICE; kalau belum dipetakan -> fallback
+    REVENUE_SALES_GOODS + WARNING (BUKAN 422; tenant yang tak memisahkan tak buntu).
+    """
+    if is_service:
+        try:
+            return await resolve_account_id_by_role(
+                conn, tenant_id, AccountRole.REVENUE_SALES_SERVICE
+            )
+        except AccountRoleUnmappedError:
+            _log.warning(
+                "REVENUE_SALES_SERVICE belum dipetakan utk tenant %s -> fallback "
+                "REVENUE_SALES_GOODS (pendapatan jasa masuk akun barang).",
+                tenant_id,
+            )
+    return await resolve_account_id_by_role(
+        conn, tenant_id, AccountRole.REVENUE_SALES_GOODS
+    )
 
 
 # -----------------------------------------------------------------------------

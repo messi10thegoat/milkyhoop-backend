@@ -225,7 +225,7 @@ def transform_to_sales_invoice_payload(draft_plan: dict, document: dict) -> dict
 
     # Fallback: revenue credit lines
     if not items:
-        revenue_codes = {"4-10100"}
+        revenue_codes = {"4-10100", "4-10150"}
         for line in (journal_draft.get("lines") or []):
             code = line.get("account_code") or ""
             credit = Decimal(str(line.get("credit", "0")))

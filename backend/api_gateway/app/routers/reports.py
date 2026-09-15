@@ -3137,6 +3137,8 @@ async def get_pendapatan_report(
 
             # Law 27: resolve 4-10100 (Penjualan) at runtime — never hardcode UUID
             rev_acct_id = await resolve_account_id_or_none(conn, tenant_id, "4-10100")
+            svc_acct_id = await resolve_account_id_or_none(conn, tenant_id, "4-10150")
+            _rev_ids = [a for a in (rev_acct_id, svc_acct_id) if a]
             if not rev_acct_id:
                 logger.warning(
                     f"[PENDAPATAN_RECON] CoA 4-10100 not found, returning zeros "
@@ -3159,11 +3161,11 @@ async def get_pendapatan_report(
                 WHERE je.tenant_id = $1
                   AND je.source_type = 'INVOICE_REVENUE' AND je.status = 'POSTED'
                   AND is_effective_journal(je.id)  -- #17 Track α residue pendapatan recon
-                  AND jl.account_id = $2
+                  AND jl.account_id = ANY($2::uuid[])
                   AND je.journal_date BETWEEN $3 AND $4
                 """,
                 tenant_id,
-                rev_acct_id,
+                _rev_ids,
                 start_date,
                 end_date,
             )
@@ -3174,7 +3176,7 @@ async def get_pendapatan_report(
                 """
                 SELECT c.nama AS name, COALESCE(SUM(jl.credit - jl.debit), 0) AS total
                 FROM journal_entries je
-                JOIN journal_lines jl ON jl.journal_id = je.id AND jl.account_id = $2
+                JOIN journal_lines jl ON jl.journal_id = je.id AND jl.account_id = ANY($2::uuid[])
                 JOIN sales_invoices si ON si.id::text = je.source_id::text
                 JOIN customers c ON c.id::text = si.customer_id::text
                 WHERE je.tenant_id = $1
@@ -3187,7 +3189,7 @@ async def get_pendapatan_report(
                 LIMIT $5
                 """,
                 tenant_id,
-                rev_acct_id,
+                _rev_ids,
                 start_date,
                 end_date,
                 limit,
@@ -3201,7 +3203,7 @@ async def get_pendapatan_report(
                            SUM(jl.credit - jl.debit) AS r_inv
                     FROM journal_entries je
                     JOIN journal_lines jl ON jl.journal_id = je.id
-                        AND jl.account_id = $2
+                        AND jl.account_id = ANY($2::uuid[])
                     WHERE je.tenant_id = $1
                       AND je.source_type = 'INVOICE_REVENUE'
                       AND je.status = 'POSTED'
@@ -3239,7 +3241,7 @@ async def get_pendapatan_report(
                 ORDER BY total DESC
                 """,
                 tenant_id,
-                rev_acct_id,
+                _rev_ids,
                 start_date,
                 end_date,
             )
