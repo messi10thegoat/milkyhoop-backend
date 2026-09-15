@@ -38,7 +38,7 @@ from uuid import UUID
 import logging
 import asyncpg
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from ..schemas.purchase_orders import (
     CreatePurchaseOrderRequest,
@@ -1258,43 +1258,75 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     # Fallback if function doesn't exist
                     bill_number = f"BILL-{po['po_number']}"
 
-                # Calculate bill totals
-                bill_subtotal = 0
-                bill_tax = 0
+                # D: satu rumus dgn bill manual (create_bill_v2). BillCalculator
+                # per-baris HALF_UP + pajak per-item 2dp HALF_UP (simetris penjualan).
+                # Nol int() -> sen harga terjaga; PO == bill manual by construction.
+                from ..services.bills_service import BillCalculator
 
+                def _po_disc_pct(po_item, qty, unit_price):
+                    if po_item["discount_percent"] and po_item["discount_percent"] > 0:
+                        return Decimal(str(po_item["discount_percent"]))
+                    amt = po_item["discount_amount"] or 0
+                    gross = qty * unit_price
+                    if amt and gross and po_item["quantity"]:
+                        prorated = (
+                            Decimal(str(amt)) * qty / Decimal(str(po_item["quantity"]))
+                        )
+                        return prorated / gross * Decimal("100")
+                    return Decimal("0")
+
+                _po_lines = []
                 for item in items_to_bill:
                     po_item = item["po_item"]
-                    qty = item["quantity"]
-                    unit_price = po_item["unit_price"]
-
-                    item_subtotal = int(qty * unit_price)
-
-                    # Apply discount
-                    if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(
-                            item_subtotal * Decimal(po_item["discount_percent"]) / 100
+                    qty = Decimal(str(item["quantity"]))
+                    unit_price = Decimal(str(po_item["unit_price"]))
+                    disc_pct = _po_disc_pct(po_item, qty, unit_price)
+                    ic = BillCalculator.calculate_item_total(qty, unit_price, disc_pct)
+                    tax_rate = Decimal(str(po_item["tax_rate"] or 0))
+                    # DPP = subtotal (cermin create_bill_v2), pajak 2dp HALF_UP
+                    item_tax = (
+                        float(
+                            (
+                                Decimal(str(ic["subtotal"])) * tax_rate / Decimal("100")
+                            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                         )
-                    else:
-                        discount = int(
-                            (po_item["discount_amount"] or 0)
-                            * qty
-                            / Decimal(po_item["quantity"])
-                        )
+                        if tax_rate > 0
+                        else 0
+                    )
+                    _po_lines.append(
+                        {
+                            "po_item": po_item,
+                            "qty": qty,
+                            "unit_price": unit_price,
+                            "disc_pct": disc_pct,
+                            "ic": ic,
+                            "tax_rate": float(po_item["tax_rate"] or 0),
+                            "tax": item_tax,
+                        }
+                    )
 
-                    after_discount = item_subtotal - discount
-
-                    # Apply tax
-                    if po_item["tax_rate"] and po_item["tax_rate"] > 0:
-                        tax = int(after_discount * Decimal(po_item["tax_rate"]) / 100)
-                    else:
-                        tax = 0
-
-                    bill_subtotal += item_subtotal
-                    bill_tax += tax
-
-                bill_total = (
-                    bill_subtotal - 0 + bill_tax
-                )  # No overall discount for bill from PO
+                _calc = BillCalculator.calculate(
+                    items=[
+                        {
+                            "qty": l["qty"],
+                            "price": l["unit_price"],
+                            "discount_percent": l["disc_pct"],
+                        }
+                        for l in _po_lines
+                    ],
+                    invoice_discount_percent=Decimal("0"),
+                    invoice_discount_amount=0.0,
+                    cash_discount_percent=Decimal("0"),
+                    cash_discount_amount=0.0,
+                    tax_rate=0,
+                )
+                bill_subtotal = _calc["subtotal"]
+                bill_tax = float(sum(Decimal(str(l["tax"])) for l in _po_lines))
+                bill_total = float(
+                    (
+                        Decimal(str(_calc["grand_total"])) + Decimal(str(bill_tax))
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                )
 
                 # Create Bill
                 bill_id = await conn.fetchval(
@@ -1313,7 +1345,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     po["vendor_name"],
                     body.bill_date,
                     body.due_date or body.bill_date,
-                    bill_subtotal,
+                    bill_total,
                     bill_total,
                     bill_subtotal,
                     bill_tax,
@@ -1322,36 +1354,11 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     ctx["user_id"],
                 )
 
-                # Create bill items and update PO items
-                for idx, item in enumerate(items_to_bill, 1):
-                    po_item = item["po_item"]
-                    qty = item["quantity"]
+                # Create bill items (D: pakai _po_lines pra-hitung; nilai == bill manual)
+                for idx, l in enumerate(_po_lines, 1):
+                    po_item = l["po_item"]
+                    ic = l["ic"]
 
-                    # Calculate item totals for bill
-                    unit_price = po_item["unit_price"]
-                    item_subtotal = int(qty * unit_price)
-
-                    if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        discount = int(
-                            item_subtotal * Decimal(po_item["discount_percent"]) / 100
-                        )
-                    else:
-                        discount = int(
-                            (po_item["discount_amount"] or 0)
-                            * qty
-                            / Decimal(po_item["quantity"])
-                        )
-
-                    after_discount = item_subtotal - discount
-
-                    if po_item["tax_rate"] and po_item["tax_rate"] > 0:
-                        tax = int(after_discount * Decimal(po_item["tax_rate"]) / 100)
-                    else:
-                        tax = 0
-
-                    item_total = after_discount + tax
-
-                    # Insert bill item
                     await conn.execute(
                         """
                         INSERT INTO bill_items (
@@ -1366,20 +1373,20 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         po_item["item_id"],
                         po_item["item_code"],
                         po_item["description"],
-                        qty,
+                        l["qty"],
                         po_item["unit"],
-                        unit_price,
-                        po_item["discount_percent"] or 0,
-                        int(discount),
-                        po_item["tax_rate"] or 0,
-                        tax,
-                        item_subtotal,
-                        item_total,
+                        l["unit_price"],
+                        float(l["disc_pct"]),
+                        ic["discount_amount"],
+                        l["tax_rate"],
+                        l["tax"],
+                        ic["subtotal"],
+                        ic["total"],
                         idx,
                     )
 
                     # Update PO item quantity_billed
-                    new_qty_billed = Decimal(po_item["quantity_billed"] or 0) + qty
+                    new_qty_billed = Decimal(str(po_item["quantity_billed"] or 0)) + l["qty"]
                     await conn.execute(
                         """
                         UPDATE purchase_order_items

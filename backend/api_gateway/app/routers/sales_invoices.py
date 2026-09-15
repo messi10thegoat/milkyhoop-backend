@@ -617,8 +617,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         #   Cr Ditangguhkan   = total - pajak         (:1730)
         #   Cr PPN Keluaran   = pajak, hanya bila > 0 (:1767)
         # Pengakuan pendapatan (RECOG) memakai nilai TANPA pajak (:1862-1863).
-        amt = int(subtotal)
-        tax_amt = int(tax_total)
+        amt = round(float(subtotal), 2)
+        tax_amt = round(float(tax_total), 2)
         lines = [
             {"account_name": ar_name, "account_code": ar_code,
              "debit": amt + tax_amt, "credit": 0, "event": "JV"},
@@ -646,7 +646,7 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             inv_name, inv_code = await _acct(
                 AccountRole.INVENTORY_MERCHANDISE, "Persediaan"
             )
-            c = int(total_cogs)
+            c = round(float(total_cogs), 2)
             lines.append({"account_name": cogs_name, "account_code": cogs_code,
                           "debit": c, "credit": 0, "event": "COGS"})
             lines.append({"account_name": inv_name, "account_code": inv_code,
@@ -655,12 +655,12 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         return {
             "journal_lines": lines,
             "warnings": warnings,
-            "total_cogs": int(total_cogs) if cogs_will_post else 0,
+            "total_cogs": round(float(total_cogs), 2) if cogs_will_post else 0,
             "revenue_policy": effective_policy,
             "cogs_recognized_at_invoice": cogs_will_post,
-            "subtotal": int(subtotal),
-            "tax_amount": int(tax_total),
-            "total_amount": int(subtotal + tax_total),
+            "subtotal": round(float(subtotal), 2),
+            "tax_amount": round(float(tax_total), 2),
+            "total_amount": round(float(subtotal + tax_total), 2),
         }
 
 

@@ -2740,7 +2740,7 @@ class BillsService:
 
                     try:
                         qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
-                        price = int(item["price"])
+                        price = Decimal(str(item["price"]))
                     except (ValueError, TypeError):
                         return {
                             "success": False,
@@ -2760,7 +2760,7 @@ class BillsService:
                         item_calc["subtotal"]
                     )  # DPP = subtotal after discount
                     item_tax_amount = (
-                        round(item_dpp * item_tax_rate / 100)
+                        float((Decimal(str(item_dpp)) * Decimal(str(item_tax_rate)) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                         if item_tax_rate > 0
                         else 0
                     )
@@ -3922,7 +3922,7 @@ class BillsService:
 
                     for idx, item in enumerate(items, start=1):
                         qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
-                        price = int(item["price"])
+                        price = Decimal(str(item["price"]))
                         discount_pct = Decimal(str(item.get("discount_percent", 0)))
                         item_calc = BillCalculator.calculate_item_total(
                             qty, price, discount_pct
@@ -3944,7 +3944,7 @@ class BillsService:
                             item_calc["subtotal"]
                         )  # DPP = subtotal after discount
                         item_tax_amount = (
-                            round(item_dpp * item_tax_rate / 100)
+                            float((Decimal(str(item_dpp)) * Decimal(str(item_tax_rate)) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                             if item_tax_rate > 0
                             else 0
                         )
