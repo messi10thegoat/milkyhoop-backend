@@ -374,10 +374,53 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             )
 
         # --- akun (Law 27) ---
-        inv_name, inv_code, _ = await _acct(
-            AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
-        )
         ap_name, ap_code, _ = await _acct(AccountRole.AP_TRADE, "Hutang Usaha")
+
+        # Cermin post_bill per-baris (helper _emit_bill_debit_lines): akun debit per
+        # klasifikasi item. goods+track->Persediaan; service->COGS_SERVICE; lainnya->
+        # products.purchase_account_id override / COGS_SALES. Bill SERAGAM -> satu akun;
+        # campur -> Persediaan (sink), sesuai residual posting.
+        async def _prev_line_acct(_iid):
+            if not _iid:
+                _n, _c, _ = await _acct(AccountRole.COGS_SALES, "HPP - Pembelian Barang")
+                return _c or "", _n
+            _pr = await conn.fetchrow(
+                "SELECT item_type, track_inventory, purchase_account_id "
+                "FROM products WHERE id=($1)::uuid AND tenant_id=$2",
+                _iid, ctx["tenant_id"],
+            )
+            if _pr and _pr["item_type"] == "goods" and _pr["track_inventory"]:
+                _n, _c, _ = await _acct(
+                    AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
+                )
+                return _c or "", _n
+            if _pr and _pr["purchase_account_id"]:
+                _r = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts WHERE id=$1",
+                    _pr["purchase_account_id"],
+                )
+                return (_r["account_code"], _r["name"]) if _r else ("", "")
+            _role = (
+                AccountRole.COGS_SERVICE
+                if (_pr and _pr["item_type"] == "service")
+                else AccountRole.COGS_SALES
+            )
+            _n, _c, _ = await _acct(_role, "HPP - Pembelian Barang")
+            return _c or "", _n
+
+        _prev_codes = set()
+        _prev_first = None
+        for _it in items_in:
+            _c, _n = await _prev_line_acct(_it.get("item_id") or _it.get("product_id"))
+            _prev_codes.add(_c)
+            if _prev_first is None:
+                _prev_first = (_n, _c)
+        if len(_prev_codes) == 1 and _prev_first:
+            inv_name, inv_code = _prev_first
+        else:
+            inv_name, inv_code, _ = await _acct(
+                AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
+            )
 
         lines = [
             {"account_name": inv_name, "account_code": inv_code,
