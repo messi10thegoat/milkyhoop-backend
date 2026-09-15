@@ -18,7 +18,7 @@ from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 _Dec = Decimal
 
@@ -219,6 +219,7 @@ class BillCalculator:
         # All intermediate calculations use Decimal for precision.
         # Rounding to int only at final return (PSAK/IFRS compliant).
 
+        TWO = Decimal("0.01")
         # Step 1 & 2: Calculate subtotal and item discounts
         subtotal = Decimal("0")
         item_discount_total = Decimal("0")
@@ -228,8 +229,13 @@ class BillCalculator:
             price = Decimal(str(item.get("price", 0)))
             discount_pct = Decimal(str(item.get("discount_percent", 0)))
 
-            line_subtotal = qty * price
-            line_discount = line_subtotal * discount_pct / Decimal("100")
+            # Pembulatan PER-BARIS HALF_UP -- satu aturan dgn faktur penjualan
+            # (sales_invoices.calculate_item_totals._r2). Dulu baris tak dibulatkan
+            # lalu total di-quantize HALF_EVEN; kini per-baris HALF_UP.
+            line_subtotal = (qty * price).quantize(TWO, rounding=ROUND_HALF_UP)
+            line_discount = (
+                line_subtotal * discount_pct / Decimal("100")
+            ).quantize(TWO, rounding=ROUND_HALF_UP)
 
             subtotal += line_subtotal
             item_discount_total += line_discount
@@ -279,18 +285,18 @@ class BillCalculator:
         # 2-decimal precision throughout (PSAK/IFRS compliant)
         TWO = Decimal("0.01")
         return {
-            "subtotal": float(subtotal.quantize(TWO)),
-            "item_discount_total": float(item_discount_total.quantize(TWO)),
-            "invoice_discount_total": float(invoice_discount_total.quantize(TWO)),
-            "cash_discount_total": float(cash_discount_total.quantize(TWO)),
-            "dpp": float(dpp.quantize(TWO)),
-            "tax_amount": float(tax_amount.quantize(TWO)),
-            "grand_total": float(grand_total.quantize(TWO)),
+            "subtotal": float(subtotal.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "item_discount_total": float(item_discount_total.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "invoice_discount_total": float(invoice_discount_total.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "cash_discount_total": float(cash_discount_total.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "dpp": float(dpp.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "tax_amount": float(tax_amount.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "grand_total": float(grand_total.quantize(TWO, rounding=ROUND_HALF_UP)),
         }
 
     @staticmethod
     def calculate_item_total(
-        qty: int, price: int, discount_percent: Decimal
+        qty, price, discount_percent: Decimal
     ) -> Dict[str, float]:
         """
         Calculate single item totals.
@@ -304,9 +310,9 @@ class BillCalculator:
 
         TWO = Decimal("0.01")
         return {
-            "subtotal": float(subtotal.quantize(TWO)),
-            "discount_amount": float(discount_amount.quantize(TWO)),
-            "total": float(total.quantize(TWO)),
+            "subtotal": float(subtotal.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "discount_amount": float(discount_amount.quantize(TWO, rounding=ROUND_HALF_UP)),
+            "total": float(total.quantize(TWO, rounding=ROUND_HALF_UP)),
         }
 
 
@@ -768,7 +774,7 @@ class BillsService:
                         or item.get("description")
                         or "-",
                         "description": item.get("description"),
-                        "qty": int(item["quantity"]),
+                        "qty": float(item["quantity"]),
                         "quantity": float(item["quantity"]),
                         "unit": item["unit"],
                         "price": self._money_str(item["unit_price"]),
@@ -4251,7 +4257,7 @@ class BillsService:
                     "product_code": item["product_code"],
                     "product_name": item["product_name"]
                     or item.get("linked_product_name"),
-                    "qty": int(item["quantity"]),
+                    "qty": float(item["quantity"]),
                     "unit": item["unit"],
                     "price": self._money_str(item["unit_price"]),
                     "discount_percent": float(item["discount_percent"] or 0),

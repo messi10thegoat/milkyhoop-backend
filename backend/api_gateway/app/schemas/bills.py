@@ -484,7 +484,7 @@ class BillItemResponseV2(BaseModel):
     product_id: Optional[UUID] = None
     product_code: Optional[str] = None
     product_name: Optional[str] = None
-    qty: int
+    qty: float
     unit: Optional[str] = None
     price: float
     discount_percent: float

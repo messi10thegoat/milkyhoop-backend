@@ -265,9 +265,10 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         cash_discount_amount=_num(body.get("cash_discount_amount"), 0.0),
         tax_rate=int(_num(body.get("tax_rate"), 11)),
     )
-    grand_total = int(totals.get("grand_total") or 0)
-    bill_tax = int(totals.get("tax_amount") or 0)
-    subtotal = grand_total - bill_tax
+    # Item4: pratinjau HARUS sama dgn posting -- jangan int() (memangkas sen).
+    grand_total = round(float(totals.get("grand_total") or 0), 2)
+    bill_tax = round(float(totals.get("tax_amount") or 0), 2)
+    subtotal = round(grand_total - bill_tax, 2)
 
     async with pool.acquire() as conn:
         async def _acct(role: str, fallback: str, pkp_gated: bool = False):

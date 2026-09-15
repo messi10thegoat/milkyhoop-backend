@@ -417,23 +417,17 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             "product_id": str(item["product_id"]),
                             "product_code": item["product_code"],
                             "product_name": item["product_name"],
-                            "quantity_before": int(
-                                item["quantity_before"]
-                            ),  # Law 25: read path
-                            "quantity_adjustment": int(
-                                item["quantity_adjustment"]
-                            ),  # Law 25: read path
-                            "quantity_after": int(
-                                item["quantity_after"]
-                            ),  # Law 25: read path
+                            "quantity_before": float(item["quantity_before"]),  # Law 25: read path
+                            "quantity_adjustment": float(item["quantity_adjustment"]),  # Law 25: read path
+                            "quantity_after": float(item["quantity_after"]),  # Law 25: read path
                             "unit": item["unit"],
                             "unit_cost": item["unit_cost"],
                             "total_value": item["total_value"],
                             "reason_detail": item["reason_detail"],
-                            "system_quantity": int(item["system_quantity"])
+                            "system_quantity": float(item["system_quantity"])
                             if item["system_quantity"]
                             else None,  # Law 25: read path
-                            "physical_quantity": int(item["physical_quantity"])
+                            "physical_quantity": float(item["physical_quantity"])
                             if item["physical_quantity"]
                             else None,  # Law 25: read path
                             "line_number": item["line_number"],
