@@ -149,7 +149,7 @@ async def _create_pos_inventory_and_journals(
                 receipt_date = txn["receipt_date"]
 
                 items = await conn.fetch(
-                    "SELECT sri.*, p.purchase_price, p.item_code, p.nama_produk, p.track_inventory "
+                    "SELECT sri.*, p.purchase_price, p.item_code, p.nama_produk, p.track_inventory, p.item_type "
                     "FROM sales_receipt_items sri "
                     "LEFT JOIN products p ON p.id = sri.item_id "
                     "WHERE sri.sales_receipt_id = $1",
@@ -351,10 +351,10 @@ async def _create_pos_inventory_and_journals(
                             )
                             _alloc_r += _lrev
                         # barang = punya item_id DAN track_inventory; selain itu jasa.
-                        if it.get("item_id") and it.get("track_inventory", True):
-                            _goods_r += _lrev
-                        else:
+                        if it.get("item_type") == "service":
                             _service_r += _lrev
+                        else:
+                            _goods_r += _lrev
                     _pos_buckets = {}
                     if _goods_r != 0:
                         _pg = await resolve_line_revenue_account(conn, tenant_id, is_service=False)

@@ -352,6 +352,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         "item_code_from_db": item_code_from_db,
                         "item_name_from_db": item_name_from_db,
                         "track_inventory": track_inventory,
+                        "item_type": (prod_row["item_type"] if prod_row else None),
                     }
                 )
 
@@ -615,10 +616,10 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     _alloc += _ldisc
                 _lnet = _lsub - _ldisc
                 # jasa = baris non-inventory (track_inventory False / tanpa produk); barang = track_inventory True
-                if _it.get("track_inventory", True):
-                    _goods_rev += _lnet
-                else:
+                if _it.get("item_type") == "service":
                     _service_rev += _lnet
+                else:
+                    _goods_rev += _lnet
             _rev_buckets = {}
             if _goods_rev != 0:
                 _g_acct = await resolve_line_revenue_account(conn, ctx["tenant_id"], is_service=False)

@@ -612,13 +612,28 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             AccountRole.REVENUE_DEFERRED, "Pendapatan Diterima Dimuka"
         )
         # Pratinjau cermin posting: faktur murni-jasa (tanpa inventory) -> Pendapatan Jasa.
+        # KOREKSI item_type: SERVICE hanya bila SEMUA baris item_type='service'; selain itu
+        # Penjualan barang (4-10100). Baris manual (tanpa produk) -> barang.
+        _pv_all_service = bool(items)
+        for _pit in items:
+            _ppid = _pit.get("item_id") or _pit.get("product_id")
+            if not _ppid:
+                _pv_all_service = False
+                break
+            _pitype = await conn.fetchval(
+                "SELECT item_type FROM products WHERE id=($1)::uuid AND tenant_id=$2",
+                _ppid, ctx["tenant_id"],
+            )
+            if _pitype != "service":
+                _pv_all_service = False
+                break
         _rev_role = (
-            AccountRole.REVENUE_SALES_GOODS
-            if has_inventory_items
-            else AccountRole.REVENUE_SALES_SERVICE
+            AccountRole.REVENUE_SALES_SERVICE
+            if _pv_all_service
+            else AccountRole.REVENUE_SALES_GOODS
         )
         rev_name, rev_code = await _acct(
-            _rev_role, "Penjualan" if has_inventory_items else "Pendapatan Jasa"
+            _rev_role, "Pendapatan Jasa" if _pv_all_service else "Penjualan"
         )
 
         # Cermin _post_invoice:1729-1778 —
@@ -2280,9 +2295,26 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             unearned_id2 = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
             # Unit pendapatan jasa: cabang ini HANYA jalan utk faktur MURNI-JASA
             # (tanpa item inventory; faktur campur ditolak T206). Semua -> 4-10150.
-            revenue_id2 = await resolve_line_revenue_account(
-                conn, ctx["tenant_id"], is_service=True
-            )
+            # KOREKSI item_type: non_inventory = BARANG non-stok (bukan jasa).
+            # service -> 4-10150; goods/non_inventory/manual -> 4-10100.
+            _svc_rev = Decimal("0")
+            _goods_rev = Decimal("0")
+            for _itm in items:
+                _a = _d(_itm["_allocated"])
+                if _a <= 0:
+                    continue
+                _pid = _itm.get("item_id") or _itm.get("product_id")
+                _itype = (
+                    await conn.fetchval(
+                        "SELECT item_type FROM products WHERE id=($1)::uuid AND tenant_id=$2",
+                        _pid, ctx["tenant_id"],
+                    )
+                    if _pid else None
+                )
+                if _itype == "service":
+                    _svc_rev += _a
+                else:
+                    _goods_rev += _a
             rev_j_id = uuid.uuid4()
             rev_trace = str(uuid.uuid4())
             # Service revenue-recognition journal number via self-healing
@@ -2322,17 +2354,26 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 float(total_service_revenue),
                 f"Dimuka \u2192 Penjualan {invoice_number}",
             )
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                VALUES ($1,$2,2,$3,0,$4,$5)
-                """,
-                uuid.uuid4(),
-                rev_j_id,
-                revenue_id2,
-                float(total_service_revenue),
-                f"Penjualan {invoice_number}",
-            )
+            _ln_rev = 2
+            for _isvc, _amt in ((False, _goods_rev), (True, _svc_rev)):
+                if _amt <= 0:
+                    continue
+                _racct = await resolve_line_revenue_account(
+                    conn, ctx["tenant_id"], is_service=_isvc
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1,$2,$3,$4,0,$5,$6)
+                    """,
+                    uuid.uuid4(),
+                    rev_j_id,
+                    _ln_rev,
+                    _racct,
+                    float(_amt),
+                    f"Penjualan {invoice_number}",
+                )
+                _ln_rev += 1
             await conn.execute(
                 "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
                 rev_j_id,
