@@ -1424,6 +1424,18 @@ async def adjust_bank_balance(
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
+        # (ii, 15 Sep 2026) Penyesuaian saldo langsung DINONAKTIFKAN sementara: jalur
+        # lama mendebit DAN mengkredit akun bank yang SAMA (jurnal ekonomis nol -> drift
+        # bank sync, kelas sama MT-C4057F2C). Akun penyesuaian berbasis role menyusul
+        # (Sabtu). Sampai itu, 400 lebih baik daripada memposting jurnal nol.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Penyesuaian saldo sementara tidak tersedia. Catat selisih lewat "
+                "Uang Masuk/Keluar dengan akun lawan yang sesuai."
+            ),
+        )
+
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1816,6 +1828,19 @@ async def create_manual_transaction(
                         detail=(
                             "Gunakan modul Terima Pembayaran untuk piutang, "
                             "atau Bayar Tagihan untuk hutang. (Law 29)"
+                        ),
+                    )
+
+                # Guard akun-lawan == akun bank ini sendiri. Jurnal Dr X / Cr X pada
+                # akun yang sama seimbang (Law 4 header) TAPI ekonomis NOL: bank_transaction
+                # tercatat sementara jurnal tak menggerakkan saldo mana pun -> drift bank
+                # sync (kasus MT-C4057F2C grapgrap). Tolak sebelum posting.
+                if str(body.contra_account_id) == str(bank_coa_id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Akun lawan tidak boleh sama dengan rekening ini. "
+                            "Pilih akun lawan, misalnya Modal Pemilik."
                         ),
                     )
 
