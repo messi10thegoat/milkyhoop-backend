@@ -285,6 +285,28 @@ app = FastAPI(
     openapi_url=None if _is_production else "/openapi.json",
 )
 
+
+# Unit 3: default akun tak terpetakan (account_roles) -> 422 bisa-ditindak, BUKAN 500.
+# Jalur sisi-jual TAK menangkap AccountRoleUnmappedError -> dulu jatuh ke 500. Handler
+# global menjadikannya 422 utk SEMUA jalur yg belum menangkapnya (yg sudah nangkap lokal
+# tak terpengaruh: except lokal jalan lebih dulu). Transaksi posting ter-rollback penuh
+# oleh `async with conn.transaction()` sebelum exception mencapai handler.
+from .services.role_resolver import AccountRoleUnmappedError as _AccountRoleUnmapped  # noqa: E402
+from fastapi.responses import JSONResponse as _JSONResp  # noqa: E402
+
+
+@app.exception_handler(_AccountRoleUnmapped)
+async def _account_role_unmapped_handler(request, exc):  # noqa: ANN001
+    return _JSONResp(
+        status_code=422,
+        content={"detail": {
+            "error_code": "ACCOUNT_DEFAULT_UNMAPPED",
+            "message": "Akun default untuk posting ini belum diatur. "
+                       "Atur di Pengaturan \u2192 Akun Default.",
+        }},
+    )
+
+
 # Validate configuration on startup
 config_errors = settings.validate()
 if config_errors and settings.ENVIRONMENT == "production":
