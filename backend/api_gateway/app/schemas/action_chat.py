@@ -49,11 +49,11 @@ class CancelActionRequest(BaseModel):
 
 class ItemPreview(BaseModel):
     name: str
-    qty: int
+    qty: float
     unit: str
-    price: int
+    price: float
     discount_percent: float = 0
-    subtotal: int
+    subtotal: float
 
 
 class CalculationPreview(BaseModel):

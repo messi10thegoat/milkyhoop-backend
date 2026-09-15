@@ -11,6 +11,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
+from decimal import Decimal
 from datetime import date, datetime
 from uuid import UUID
 
@@ -24,7 +25,7 @@ class VendorCreditItemCreate(BaseModel):
     item_id: Optional[str] = Field(None, description="Product UUID")
     item_code: Optional[str] = Field(None, max_length=50)
     description: str = Field(..., min_length=1, max_length=500)
-    quantity: float = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: int = Field(..., ge=0, description="Price per unit in IDR")
     discount_percent: float = Field(0, ge=0, le=100)

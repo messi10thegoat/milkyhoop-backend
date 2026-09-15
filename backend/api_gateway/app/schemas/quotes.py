@@ -18,7 +18,7 @@ class QuoteItemCreate(BaseModel):
     """Schema for creating a quote line item."""
     item_id: Optional[str] = Field(None, description="Reference to items table (optional)")
     description: str = Field(..., min_length=1, max_length=500, description="Item description")
-    quantity: float = Field(1, gt=0, description="Quantity")
+    quantity: Decimal = Field(1, gt=0, description="Quantity")
     unit: Optional[str] = Field(None, max_length=50, description="Unit of measure")
     unit_price: int = Field(..., ge=0, description="Unit price in smallest currency unit")
     discount_percent: float = Field(0, ge=0, le=100, description="Line discount percentage")
@@ -40,7 +40,7 @@ class QuoteItemUpdate(BaseModel):
     id: Optional[str] = Field(None, description="Item ID for existing items")
     item_id: Optional[str] = None
     description: Optional[str] = Field(None, max_length=500)
-    quantity: Optional[float] = Field(None, gt=0)
+    quantity: Optional[Decimal] = Field(None, gt=0)
     unit: Optional[str] = Field(None, max_length=50)
     unit_price: Optional[int] = Field(None, ge=0)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)

@@ -25,7 +25,7 @@ class CreditNoteItemCreate(BaseModel):
     item_id: Optional[str] = Field(None, description="Product UUID")
     item_code: Optional[str] = Field(None, max_length=50)
     description: str = Field(..., min_length=1, max_length=500)
-    quantity: float = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: Decimal = Field(..., ge=0, description="Price per unit in IDR")
     discount_percent: float = Field(0, ge=0, le=100)
@@ -47,7 +47,7 @@ class CreditNoteItemUpdate(BaseModel):
     item_id: Optional[str] = None
     item_code: Optional[str] = None
     description: Optional[str] = None
-    quantity: Optional[float] = Field(None, gt=0)
+    quantity: Optional[Decimal] = Field(None, gt=0)
     unit: Optional[str] = None
     unit_price: Optional[Decimal] = Field(None, ge=0)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)

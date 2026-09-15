@@ -4207,7 +4207,8 @@ class ToolExecutor:
             if _p > 0 and not _qty_kurang:
                 continue
             try:
-                _q = int(float(item.get(qty_field) or 1))
+                _qf = float(item.get(qty_field) or 1)
+                _q = int(_qf) if _qf == int(_qf) else _qf
             except (TypeError, ValueError):
                 _q = 1
             _fc_list = item.get("_fuzzy_candidates") if isinstance(item, dict) else None

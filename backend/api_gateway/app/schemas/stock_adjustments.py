@@ -11,6 +11,7 @@ Flow: draft -> posted -> void (optional)
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
+from decimal import Decimal
 from datetime import date
 
 
@@ -21,9 +22,9 @@ from datetime import date
 class StockAdjustmentItemCreate(BaseModel):
     """Item for creating a stock adjustment."""
     product_id: str = Field(..., description="Product UUID")
-    quantity_adjustment: float = Field(..., description="Adjustment quantity (positive=increase, negative=decrease)")
+    quantity_adjustment: Decimal = Field(..., description="Adjustment quantity (positive=increase, negative=decrease)")
     reason_detail: Optional[str] = Field(None, max_length=500)
-    physical_quantity: Optional[float] = Field(None, description="Actual counted quantity for recount")
+    physical_quantity: Optional[Decimal] = Field(None, description="Actual counted quantity for recount")
 
     @field_validator('product_id')
     @classmethod
@@ -36,9 +37,9 @@ class StockAdjustmentItemCreate(BaseModel):
 class StockAdjustmentItemUpdate(BaseModel):
     """Item for updating a stock adjustment."""
     product_id: str
-    quantity_adjustment: float
+    quantity_adjustment: Decimal
     reason_detail: Optional[str] = None
-    physical_quantity: Optional[float] = None
+    physical_quantity: Optional[Decimal] = None
 
 
 # =============================================================================
