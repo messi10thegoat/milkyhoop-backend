@@ -129,9 +129,15 @@ async def stream(request: Request):
                 if conn.exp and time.time() >= conn.exp:
                     yield _sse({"type": "revoked", "code": "TOKEN_EXPIRED"})
                     return
+                # bangun dekat exp supaya tutup TEPAT saat kedaluwarsa (bukan tunggu heartbeat)
+                timeout = HEARTBEAT_S
+                if conn.exp:
+                    timeout = max(0.5, min(HEARTBEAT_S, conn.exp - time.time()))
                 try:
-                    msg = await asyncio.wait_for(conn.queue.get(), timeout=HEARTBEAT_S)
+                    msg = await asyncio.wait_for(conn.queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    if conn.exp and time.time() >= conn.exp:
+                        continue  # kembali ke atas -> TOKEN_EXPIRED
                     yield ": keepalive\n\n"  # heartbeat komentar SSE (< CF 100s, nginx 300s)
                     msg = None
 

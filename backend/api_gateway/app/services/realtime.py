@@ -102,7 +102,9 @@ class RealtimeHub:
         backoff = 1
         while self._running:
             try:
-                self._listen_conn = await asyncpg.connect(**_DB)
+                self._listen_conn = await asyncpg.connect(
+                    **_DB, server_settings={"application_name": "mh_realtime_listen"}
+                )
                 await self._listen_conn.add_listener("doc_changed", self._on_doc)
                 await self._listen_conn.add_listener("membership_changed", self._on_membership)
                 logger.info("RealtimeHub: LISTEN established")
