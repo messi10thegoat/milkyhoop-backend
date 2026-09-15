@@ -1,9 +1,10 @@
 """SSE realtime — GET /api/events/stream. Tahap 1.
 
 Auth: middleware biasa memvalidasi Bearer di request.state.user (fetch-stream + header,
-token 7-hari TAK masuk URL/log). Per-event autz: tenant sama + modul READ (D). Pencabutan:
-recheck user+membership tiap 60s & saat membership_changed NOTIFY & saat token exp (E).
-Payload minimal {tbl,id,op}; klien ambil ulang lewat API biasa.
+token 7-hari TAK masuk URL/log). Per-event autz: tenant sama + modul READ lewat policy
+engine `can()` YANG SAMA dgn middleware (normalize_module_name: sales_invoice->INVOICE) —
+satu sumber, tak ada drift (C4). Pencabutan (E): recheck user+membership tiap 60s & saat
+membership_changed NOTIFY & saat token exp. Payload minimal {tbl,id,op}.
 """
 import asyncio
 import base64
@@ -15,7 +16,7 @@ from typing import Optional, Set
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from ..services.realtime import hub, ClientConn
+from ..services.realtime import hub, ClientConn, TBL_MODULE
 from ..services.policy_engine_client import get_policy_engine
 
 router = APIRouter()
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_S = 20
 RECHECK_S = 60
+MODULES = list(set(TBL_MODULE.values()))  # nama MIDDLEWARE (mis. 'sales_invoice')
 
 
 def _decode_exp(request: Request) -> Optional[float]:
@@ -40,38 +42,44 @@ def _decode_exp(request: Request) -> Optional[float]:
         return None
 
 
-async def _allowed_modules(user_id: str, tenant_id: str) -> Set[str]:
-    pe = get_policy_engine()
-    try:
-        eff = await pe.get_effective_permissions(user_id, tenant_id)
-        perms = eff.get("effective_permissions", {}) or {}
-        return {m for m, v in perms.items() if "R" in ((v or {}).get("actions") or [])}
-    except Exception as e:
-        logger.error(f"realtime _allowed_modules error: {e}")
-        return set()  # fail-closed: tak ada modul → tak ada event
+async def _build_ctx(user_id: str, tenant_id: str, role: str):
+    return await get_policy_engine().get_user_context(user_id, tenant_id, role)
 
 
-async def _revocation_code(user_id: str, tenant_id: str, role: str) -> Optional[str]:
-    """None = masih sah; else kode pencabutan (USER_NOT_FOUND / MEMBERSHIP_INACTIVE)."""
+async def _allowed_from_ctx(ctx) -> Set[str]:
+    """Modul (nama middleware) yg boleh READ — via can() yg SAMA dgn middleware. Fail-closed."""
     pe = get_policy_engine()
+    allowed: Set[str] = set()
+    for m in MODULES:
+        try:
+            if await pe.can(ctx, "R", m):
+                allowed.add(m)
+        except Exception as e:
+            logger.error(f"realtime can({m}) error: {e}")
+    return allowed
+
+
+def _revocation_from_ctx(ctx, role: str) -> Optional[str]:
+    if getattr(ctx, "membership_active", True) is False:
+        return "MEMBERSHIP_INACTIVE"
+    if (
+        not getattr(ctx, "business_role_id", None)
+        and getattr(ctx, "business_role_code", None) != "OWNER"
+        and role not in ("OWNER", "ADMIN")
+    ):
+        return "MEMBERSHIP_INACTIVE"
+    return None
+
+
+async def _user_deleted(user_id: str) -> bool:
+    """True bila baris "User" hilang (akun dihapus) — USER_NOT_FOUND. Fail-open saat gangguan DB."""
     try:
-        async with pe.pool.acquire() as conn:
+        async with get_policy_engine().pool.acquire() as conn:
             exists = await conn.fetchval('SELECT 1 FROM "User" WHERE id = $1', str(user_id))
-        if not exists:
-            return "USER_NOT_FOUND"
+        return not exists
     except Exception as e:
         logger.warning(f"realtime user-exist check error (fail-open): {e}")
-        # gangguan DB sesaat TAK BOLEH memutus semua; biarkan lewat (sama filosofi auth_mw)
-    try:
-        ctx = await pe.get_user_context(user_id, tenant_id, role)
-        if getattr(ctx, "membership_active", True) is False:
-            return "MEMBERSHIP_INACTIVE"
-        has_role = bool(getattr(ctx, "business_role_id", None))
-        if not has_role and role not in ("OWNER", "ADMIN"):
-            return "MEMBERSHIP_INACTIVE"
-    except Exception as e:
-        logger.warning(f"realtime membership check error (fail-open): {e}")
-    return None
+        return False
 
 
 def _sse(obj: dict) -> str:
@@ -92,16 +100,32 @@ async def stream(request: Request):
     role = user.get("role", "USER")
     exp = _decode_exp(request)
 
-    allowed = await _allowed_modules(user_id, tenant_id)
+    ctx = await _build_ctx(user_id, tenant_id, role)
+    allowed = await _allowed_from_ctx(ctx)
     conn = ClientConn(tenant_id, user_id, allowed, exp)
     hub.register(conn)
+
+    async def _recheck():
+        """None kalau masih sah (dan refresh allowed_modules); else kode revoked."""
+        if await _user_deleted(user_id):
+            return "USER_NOT_FOUND"
+        c2 = await _build_ctx(user_id, tenant_id, role)
+        code = _revocation_from_ctx(c2, role)
+        if code:
+            return code
+        conn.allowed_modules = await _allowed_from_ctx(c2)
+        return None
 
     async def gen():
         last_recheck = time.time()
         try:
+            # revocation-at-connect
+            code0 = _revocation_from_ctx(ctx, role)
+            if code0 or await _user_deleted(user_id):
+                yield _sse({"type": "revoked", "code": code0 or "USER_NOT_FOUND"})
+                return
             yield _sse({"type": "hello"})  # klien memicu resync awal
             while True:
-                # tutup saat token kedaluwarsa (E / gerbang 8)
                 if conn.exp and time.time() >= conn.exp:
                     yield _sse({"type": "revoked", "code": "TOKEN_EXPIRED"})
                     return
@@ -113,21 +137,19 @@ async def stream(request: Request):
 
                 if msg is not None:
                     if msg.get("type") == "recheck":
-                        code = await _revocation_code(user_id, tenant_id, role)
+                        code = await _recheck()
                         if code:
                             yield _sse({"type": "revoked", "code": code})
                             return
-                        conn.allowed_modules = await _allowed_modules(user_id, tenant_id)
                         last_recheck = time.time()
                     else:
                         yield _sse(msg)
 
                 if time.time() - last_recheck >= RECHECK_S:
-                    code = await _revocation_code(user_id, tenant_id, role)
+                    code = await _recheck()
                     if code:
                         yield _sse({"type": "revoked", "code": code})
                         return
-                    conn.allowed_modules = await _allowed_modules(user_id, tenant_id)
                     last_recheck = time.time()
         except asyncio.CancelledError:
             pass

@@ -29,6 +29,7 @@ _DB = dict(
 
 COALESCE_S = 0.15
 KEEPALIVE_S = 25
+BULK_THRESHOLD = 20  # >threshold event utk 1 (tenant,tbl) dlm satu flush -> 1 bulk_changed
 
 
 class ClientConn:
@@ -134,24 +135,40 @@ class RealtimeHub:
                     continue
                 batch = list(self._pending.values())
                 self._pending.clear()
+                # kelompokkan per (tenant,tbl): burst besar (mis. import/posting massal)
+                # -> 1 bulk_changed, bukan ratusan event (gerbang 7). Kecil -> per-dokumen.
+                groups: Dict[tuple, list] = {}
                 for ev in batch:
-                    self._route(ev)
+                    groups.setdefault((ev.get("tenant_id"), ev.get("tbl")), []).append(ev)
+                for (tenant, tbl), evs in groups.items():
+                    if len(evs) > BULK_THRESHOLD:
+                        self._route_bulk(tenant, tbl)
+                    else:
+                        for ev in evs:
+                            self._route(ev)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.warning(f"RealtimeHub flush error: {e}")
 
-    def _route(self, ev: dict):
-        tenant = ev.get("tenant_id")
-        tbl = ev.get("tbl")
+    def _emit(self, tenant: str, tbl: str, out: dict):
         module = TBL_MODULE.get(tbl)
-        out = {"type": "doc_changed", "tbl": tbl, "id": ev.get("id"), "op": ev.get("op")}
         for c in list(self.connections.values()):
             if c.tenant_id != tenant:
                 continue
             if module and module not in c.allowed_modules:
                 continue
             self._safe_put(c, out)
+
+    def _route(self, ev: dict):
+        self._emit(
+            ev.get("tenant_id"),
+            ev.get("tbl"),
+            {"type": "doc_changed", "tbl": ev.get("tbl"), "id": ev.get("id"), "op": ev.get("op")},
+        )
+
+    def _route_bulk(self, tenant: str, tbl: str):
+        self._emit(tenant, tbl, {"type": "bulk_changed", "tbl": tbl})
 
     def _safe_put(self, c: ClientConn, msg: dict):
         try:
