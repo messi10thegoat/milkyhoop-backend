@@ -3384,6 +3384,96 @@ class BillsService:
                     },
                 }
 
+    async def _emit_bill_debit_lines(
+        self, conn, tenant_id, bill_id, journal_id,
+        subtotal_dec, default_inv_acct_id, vendor_name, start_line,
+    ):
+        """Baris debit bill PER-BARIS by track_inventory. goods+track -> Persediaan;
+        service -> COGS_SERVICE; lainnya (non_inventory / goods-non-track / manual) ->
+        products.purchase_account_id override kalau ada, else COGS_SALES. Role unmapped -> 422
+        (BUKAN fallback Persediaan). Residu -> sink default (Law 4). Return nomor baris berikut."""
+        from fastapi import HTTPException
+        from .inventory_helpers import resolve_inventory_accounts
+
+        rows = await conn.fetch(
+            "SELECT bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, "
+            "p.track_inventory, p.purchase_account_id "
+            "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id "
+            "WHERE bi.bill_id = $1 ORDER BY bi.line_number",
+            bill_id,
+        )
+        acct_totals: dict = {}
+        acct_is_inv: dict = {}
+        order: list = []
+
+        def _acc(aid, amt, is_inv):
+            if aid not in acct_totals:
+                acct_totals[aid] = Decimal("0")
+                acct_is_inv[aid] = is_inv
+                order.append(aid)
+            acct_totals[aid] += amt
+
+        for dr in rows:
+            net = Decimal(str(dr["net"] or 0))
+            pid = dr["product_id"]
+            is_goods = dr["item_type"] == "goods" and dr["track_inventory"]
+            if is_goods:
+                accts = await resolve_inventory_accounts(conn, tenant_id, pid)
+                _acc(accts["inventory_account_id"], net, True)
+                continue
+            ov = dr["purchase_account_id"] if pid is not None else None
+            if ov:
+                _acc(ov, net, False)
+                continue
+            role = (
+                AccountRole.COGS_SERVICE
+                if dr["item_type"] == "service"
+                else AccountRole.COGS_SALES
+            )
+            acct = await conn.fetchval(
+                "SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = $2",
+                tenant_id, role,
+            )
+            if not acct:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ACCOUNT_DEFAULT_UNMAPPED",
+                        "message": "Akun default pembelian belum diatur. Atur di Pengaturan -> Akun Default.",
+                    },
+                )
+            _acc(acct, net, False)
+
+        summed = sum(acct_totals.values(), Decimal("0"))
+        residual = subtotal_dec - summed
+        if residual != Decimal("0"):
+            sink = (
+                default_inv_acct_id
+                if default_inv_acct_id in acct_totals
+                else (order[0] if order else default_inv_acct_id)
+            )
+            _acc(sink, residual, True)
+
+        ln = start_line
+        for aid in order:
+            amt = acct_totals[aid]
+            if amt == Decimal("0"):
+                continue
+            memo = (
+                f"Pembelian - {vendor_name}"
+                if acct_is_inv.get(aid)
+                else f"Pembelian jasa/beban - {vendor_name}"
+            )
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, 0, $6)
+                """,
+                uuid_module.uuid4(), journal_id, ln, aid, amt, memo,
+            )
+            ln += 1
+        return ln
+
     async def post_bill(
         self, tenant_id: str, bill_id: UUID, user_id: UUID
     ) -> Dict[str, Any]:
@@ -3526,20 +3616,12 @@ class BillsService:
                 # 6. Journal lines
                 line_number = 1
 
-                # Dr. Inventory/Expense (subtotal)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, $3, $4, $5, 0, $6)
-                    """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    inventory_account_id,
-                    subtotal,
-                    f"Pembelian dari {bill['vendor_name']}",
+                # Dr. Inventory/Expense PER-BARIS (track_inventory) — helper bersama.
+                line_number = await self._emit_bill_debit_lines(
+                    conn, tenant_id, bill_id, journal_id,
+                    Decimal(str(subtotal)), inventory_account_id,
+                    bill["vendor_name"], line_number,
                 )
-                line_number += 1
 
                 # Dr. PPN Masukan (if tax > 0)
                 if bill_tax > 0 and vat_input_account_id:
