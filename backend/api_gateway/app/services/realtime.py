@@ -101,10 +101,13 @@ class RealtimeHub:
     async def _listen_loop(self):
         backoff = 1
         while self._running:
+            dead = asyncio.Event()
             try:
                 self._listen_conn = await asyncpg.connect(
                     **_DB, server_settings={"application_name": "mh_realtime_listen"}
                 )
+                # deteksi SEGERA koneksi mati (kill/putus), tak menunggu keepalive
+                self._listen_conn.add_termination_listener(lambda con: dead.set())
                 await self._listen_conn.add_listener("doc_changed", self._on_doc)
                 await self._listen_conn.add_listener("membership_changed", self._on_membership)
                 logger.info("RealtimeHub: LISTEN established")
@@ -112,10 +115,14 @@ class RealtimeHub:
                 for c in list(self.connections.values()):
                     self._safe_put(c, {"type": "resync"})
                 backoff = 1
-                while self._running:
-                    await asyncio.sleep(KEEPALIVE_S)
-                    # keepalive aktif: deteksi TCP half-open (reconnect kalau gagal)
-                    await self._listen_conn.execute("SELECT 1")
+                while self._running and not dead.is_set():
+                    try:
+                        await asyncio.wait_for(dead.wait(), timeout=KEEPALIVE_S)
+                    except asyncio.TimeoutError:
+                        # keepalive aktif: deteksi TCP half-open (reconnect kalau gagal)
+                        await self._listen_conn.execute("SELECT 1")
+                if dead.is_set():
+                    raise ConnectionError("listen connection terminated")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
