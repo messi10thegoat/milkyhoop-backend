@@ -15,6 +15,7 @@ from prometheus_client import (
 
 # Import routers
 from .routers import health
+from .routers import events
 from .routers import chat
 from .routers import session
 from .routers import auth
@@ -246,8 +247,23 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as _idem_err:
         print(f"Idempotency cleanup poller failed to start (non-fatal): {_idem_err}")
 
+    # Realtime hub — LISTEN pg_notify utk pembaruan-instan (Tahap 1)
+    try:
+        from .services.realtime import hub as _rt_hub
+
+        await _rt_hub.start()
+        print("RealtimeHub started")
+    except Exception as _rt_err:
+        print(f"RealtimeHub failed to start (non-fatal): {_rt_err}")
+
     yield
     try:
+        try:
+            from .services.realtime import hub as _rt_hub
+
+            await _rt_hub.stop()
+        except Exception:
+            pass
         await prisma.disconnect()
         print("Prisma disconnected.")
     except Exception as e:
@@ -391,6 +407,7 @@ def _prometheus_metrics():
 
 # Include routers - Industry Standard Route Structure
 app.include_router(health.router, prefix="/health", tags=["health"])
+app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(signup.router, prefix="/api/auth/signup", tags=["signup"])
