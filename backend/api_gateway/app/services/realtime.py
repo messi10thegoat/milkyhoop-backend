@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # tbl -> modul autz. SATU SUMBER; harus cocok PROTECTED_ROUTES (permission_middleware).
 # Tahap 1: sales_invoices saja.
-TBL_MODULE: Dict[str, str] = {"sales_invoices": "sales_invoice"}
+TBL_MODULE: Dict[str, str] = {
+    "sales_invoices": "sales_invoice",
+    "bills": "bill",                    # G1 (Tahap 2) -> normalize BILL
+    "bill_payments_v2": "send_payment",  # G1 (Tahap 2) -> normalize PAYMENT
+}
 
 _DB = dict(
     host="postgres",

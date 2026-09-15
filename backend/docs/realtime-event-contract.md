@@ -72,10 +72,10 @@ lewat API biasa (izin ditegakkan ulang saat refetch). Ini pertahanan: kebocoran 
 INSERT/UPDATE/DELETE sales_invoices  (COMMIT)
       │  trigger trg_notify_doc_changed (AFTER, migrasi V259)
       ▼  pg_notify('doc_changed', {tenant_id,tbl,id,op})   ← transaksional: rollback = nol event
-RealtimeHub (services/realtime.py): 1 koneksi asyncpg khusus LISTEN (application_name=mh_realtime_listen)
+RealtimeHub (services/realtime.py): 1 koneksi asyncpg khusus LISTEN PER WORKER (application_name=mh_realtime_listen; 2 worker -> 2 koneksi)
       │  coalesce per (tenant,tbl,id) ~150ms; burst >20/(tenant,tbl) → 1 bulk_changed
       │  termination-listener → reconnect SEGERA saat koneksi mati; keepalive 25s utk half-open; resync pasca-reconnect
-      ▼  fan-out per-worker (tiap worker LISTEN sendiri; Redis TIDAK diperlukan di 1 worker)
+      ▼  fan-out per-worker (tiap worker LISTEN sendiri; pg_notify BROADCAST ke semua worker; Redis TIDAK diperlukan selama 1 replika)
 GET /api/events/stream (routers/events.py): filter tenant+modul, heartbeat 20s, recheck 60s, tutup saat exp
 ```
 
@@ -91,8 +91,11 @@ GET /api/events/stream (routers/events.py): filter tenant+modul, heartbeat 20s, 
 
 ## 8. Batas yang diketahui
 
-- **1 worker uvicorn, 1 replika.** Hub in-memory memadai. Skala horizontal (multi-worker/replika) TETAP jalan
-  (tiap worker LISTEN), tapi recheck-stampede & fan-out di skala besar sebaiknya pindah ke Redis pub/sub.
+- **uvicorn `--workers 2`, 1 replika** (KOREKSI 15 Sep — bukan 1 worker; `docker top` konfirmasi). Hub in-memory
+  memadai BUKAN karena worker tunggal, melainkan karena **pg_notify broadcast ke SEMUA koneksi LISTEN** (tiap
+  worker start hub+LISTEN sendiri via lifespan per-proses) -> tiap doc_changed tiba di kedua worker, fan-out ke
+  subscriber worker itu. N worker = N koneksi LISTEN. Skala HORIZONTAL (multi-REPLIKA/mesin) TETAP wajib Redis
+  pub/sub: pg_notify lintas-worker OK, tak lintas-DB. (recheck-stampede & fan-out skala besar juga -> Redis.)
 - **Token 7 hari (HS256).** Severance nyata via NOTIFY + recheck 60s (exp jarang kena di tengah sesi).
 - **Deteksi konflik edit (Tahap 3):** `updated_at` ada di 10/10 tabel dokumen inti sebagai token If-Match; belum dibangun.
 
