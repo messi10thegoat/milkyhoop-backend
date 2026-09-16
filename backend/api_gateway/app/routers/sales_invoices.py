@@ -5263,16 +5263,11 @@ async def upload_invoice_attachment(
             raise HTTPException(status_code=401, detail="User ID required")
 
         content = await file.read()
-        if len(content) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
-        await file.seek(0)
+        from ..attachment_limits import enforce_attachment_limits
 
-        allowed_types = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
-        if file.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File type {file.content_type} not allowed. Use JPEG, PNG, WebP, or PDF.",
-            )
+        # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
+        enforce_attachment_limits(len(content), file.content_type)
+        await file.seek(0)
 
         tenant_id = ctx["tenant_id"]
         user_id = ctx["user_id"]

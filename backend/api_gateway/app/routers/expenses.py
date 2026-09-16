@@ -1651,76 +1651,231 @@ async def update_expense(
     request: Request, expense_id: UUID, body: UpdateExpenseRequest
 ):
     """
-    Update an expense.
+    Update a DRAFT expense (Unit A, 16 Sep 2026).
 
-    **Restrictions:**
-    - Only draft expenses can be updated
-    - Posted/void expenses cannot be modified
+    - HANYA draf yang boleh diubah (POSTED/void -> 400). Draf TANPA jurnal, jadi
+      tidak ada jurnal/saldo yang disentuh.
+    - Medan keuangan boleh diubah: amount, account, paid_through (metode bayar),
+      line_items (expense_items). subtotal/tax/pph/total dihitung ULANG spt create.
+    - Validasi spt create: paid_through & akun beban WAJIB ada, subtotal > 0, Decimal.
+    - Posting berikutnya (/post) memakai nilai BARU dari baris DB.
     """
     try:
         ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
-
-            # Check exists and status
-            existing = await conn.fetchrow(
-                """
-                SELECT status FROM expenses
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                str(expense_id),
-                ctx["tenant_id"],
-            )
-
-            if not existing:
-                raise HTTPException(status_code=404, detail="Expense not found")
-
-            if existing["status"] != "draft":
-                raise HTTPException(
-                    status_code=400, detail="Only draft expenses can be updated"
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"EXPENSE_UPDATE:{expense_id}",
                 )
 
-            # Build update query dynamically
-            updates = []
-            params = []
-            param_idx = 1
+                existing = await conn.fetchrow(
+                    "SELECT * FROM expenses WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                    str(expense_id),
+                    ctx["tenant_id"],
+                )
+                if not existing:
+                    raise HTTPException(status_code=404, detail="Expense not found")
+                if existing["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400, detail="Only draft expenses can be updated"
+                    )
 
-            update_data = body.model_dump(exclude_unset=True)
-            for field, value in update_data.items():
-                if value is not None:
-                    updates.append(f"{field} = ${param_idx}")
-                    if isinstance(value, UUID):
-                        params.append(str(value))
+                data = body.model_dump(exclude_unset=True)
+
+                def _eff(key):
+                    return data[key] if key in data else existing[key]
+
+                eff_date = _eff("expense_date")
+                eff_is_itemized = _eff("is_itemized")
+                eff_paid_through = _eff("paid_through_id")
+                eff_tax_rate = _eff("tax_rate")
+                eff_pph_rate = _eff("pph_rate")
+
+                # Law 5: periode tanggal efektif harus terbuka
+                await check_period_is_open(conn, ctx["tenant_id"], eff_date)
+
+                # Baris efektif: bila line_items dikirim -> ganti; else pakai yang ada
+                new_items = data["line_items"] if "line_items" in data else None
+                if new_items is not None and len(new_items) > 0:
+                    eff_is_itemized = True
+                if eff_is_itemized:
+                    if new_items is not None:
+                        items_for_sum = new_items
                     else:
-                        params.append(value)
-                    param_idx += 1
+                        rows = await conn.fetch(
+                            "SELECT account_id, account_name, amount, notes, line_number "
+                            "FROM expense_items WHERE expense_id = $1 ORDER BY line_number",
+                            str(expense_id),
+                        )
+                        items_for_sum = [dict(r) for r in rows]
+                    if not items_for_sum:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="At least one line item is required for itemized expense",
+                        )
+                    subtotal = sum(int(it["amount"]) for it in items_for_sum)
+                else:
+                    subtotal = data["amount"] if "amount" in data else existing["subtotal"]
 
-            if updates:
-                updates.append("updated_at = NOW()")
-                params.extend([str(expense_id), ctx["tenant_id"]])
+                if subtotal is None or subtotal <= 0:
+                    raise HTTPException(
+                        status_code=400, detail="Expense amount must be greater than 0"
+                    )
 
-                query = f"""
-                    UPDATE expenses
-                    SET {', '.join(updates)}
-                    WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                """
-                await conn.execute(query, *params)
+                # paid_through WAJIB ada
+                paid_through = await conn.fetchrow(
+                    "SELECT id, account_name, coa_id FROM bank_accounts "
+                    "WHERE id = $1 AND tenant_id = $2",
+                    str(eff_paid_through),
+                    ctx["tenant_id"],
+                )
+                if not paid_through:
+                    raise HTTPException(
+                        status_code=400, detail="Invalid paid_through account"
+                    )
 
-            # Fetch updated expense
-            expense = await conn.fetchrow(
-                """
-                SELECT * FROM expenses WHERE id = $1
-            """,
-                str(expense_id),
-            )
+                async def _acct(aid):
+                    if not aid:
+                        return None
+                    return await conn.fetchrow(
+                        "SELECT id, name FROM chart_of_accounts "
+                        "WHERE id = $1 AND tenant_id = $2",
+                        str(aid),
+                        ctx["tenant_id"],
+                    )
 
-            return {
-                "success": True,
-                "message": "Expense updated successfully",
-                "data": dict(expense),
-            }
+                # Akun beban WAJIB ada (per baris bila itemized, atau header bila tidak)
+                if eff_is_itemized:
+                    for it in items_for_sum:
+                        if not await _acct(it["account_id"]):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Invalid expense account in line item",
+                            )
+                    eff_account_id = None
+                    eff_account_name = None
+                else:
+                    eff_account_id = _eff("account_id")
+                    if not eff_account_id:
+                        raise HTTPException(
+                            status_code=400, detail="Expense account required"
+                        )
+                    acct = await _acct(eff_account_id)
+                    if not acct:
+                        raise HTTPException(
+                            status_code=400, detail="Invalid expense account"
+                        )
+                    eff_account_name = (
+                        data.get("account_name")
+                        or (existing["account_name"] if "account_id" not in data else None)
+                        or acct["name"]
+                    )
+
+                # Recompute derived (Decimal) — cermin create_expense
+                tax_amount = (
+                    Decimal(str(subtotal))
+                    * Decimal(str(eff_tax_rate or 0))
+                    / Decimal("100")
+                ).quantize(Decimal("1"))
+                pph_amount = (
+                    Decimal(str(subtotal))
+                    * Decimal(str(eff_pph_rate or 0))
+                    / Decimal("100")
+                ).quantize(Decimal("1"))
+                total_amount = Decimal(str(subtotal)) + tax_amount - pph_amount
+
+                eff_vendor_id = _eff("vendor_id")
+                eff_billed_to = _eff("billed_to_customer_id")
+                eff_tax_id = _eff("tax_id")
+
+                await conn.execute(
+                    """
+                    UPDATE expenses SET
+                        expense_date = $1,
+                        paid_through_id = $2, paid_through_name = $3, paid_through_coa_id = $4,
+                        account_id = $5, account_name = $6,
+                        vendor_id = $7, vendor_name = $8,
+                        tax_id = $9, tax_name = $10, tax_rate = $11, tax_amount = $12,
+                        pph_type = $13, pph_rate = $14, pph_amount = $15,
+                        subtotal = $16, total_amount = $17, is_itemized = $18,
+                        currency = $19, is_billable = $20, billed_to_customer_id = $21,
+                        reference = $22, notes = $23, has_receipt = $24,
+                        updated_at = NOW()
+                    WHERE id = $25 AND tenant_id = $26 AND status = 'draft'
+                    """,
+                    eff_date,
+                    str(eff_paid_through),
+                    paid_through["account_name"],
+                    paid_through["coa_id"],
+                    str(eff_account_id) if eff_account_id else None,
+                    eff_account_name,
+                    str(eff_vendor_id) if eff_vendor_id else None,
+                    _eff("vendor_name"),
+                    str(eff_tax_id) if eff_tax_id else None,
+                    _eff("tax_name"),
+                    Decimal(str(eff_tax_rate or 0)),
+                    tax_amount,
+                    _eff("pph_type"),
+                    Decimal(str(eff_pph_rate or 0)),
+                    pph_amount,
+                    subtotal,
+                    total_amount,
+                    eff_is_itemized,
+                    _eff("currency") or "IDR",
+                    _eff("is_billable"),
+                    str(eff_billed_to) if eff_billed_to else None,
+                    _eff("reference"),
+                    _eff("notes"),
+                    _eff("has_receipt"),
+                    str(expense_id),
+                    ctx["tenant_id"],
+                )
+
+                # Ganti baris bila line_items dikirim; bersihkan bila beralih ke non-itemized
+                if new_items is not None:
+                    await conn.execute(
+                        "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
+                        str(expense_id),
+                        ctx["tenant_id"],
+                    )
+                    if eff_is_itemized:
+                        for idx, it in enumerate(new_items, 1):
+                            await conn.execute(
+                                """
+                                INSERT INTO expense_items (
+                                    tenant_id, expense_id, account_id, account_name,
+                                    amount, notes, line_number
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                """,
+                                ctx["tenant_id"],
+                                str(expense_id),
+                                str(it["account_id"]),
+                                it.get("account_name"),
+                                it["amount"],
+                                it.get("notes"),
+                                idx,
+                            )
+                elif "is_itemized" in data and not eff_is_itemized:
+                    await conn.execute(
+                        "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
+                        str(expense_id),
+                        ctx["tenant_id"],
+                    )
+
+                expense = await conn.fetchrow(
+                    "SELECT * FROM expenses WHERE id = $1", str(expense_id)
+                )
+                return {
+                    "success": True,
+                    "message": "Expense updated successfully",
+                    "data": dict(expense),
+                }
 
     except HTTPException:
         raise

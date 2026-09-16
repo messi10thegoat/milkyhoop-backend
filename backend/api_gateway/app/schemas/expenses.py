@@ -107,14 +107,32 @@ class CreateExpenseRequest(BaseModel):
 
 
 class UpdateExpenseRequest(BaseModel):
-    """Request body for updating an expense (only draft status)."""
+    """Request body for updating a DRAFT expense.
+
+    Medan keuangan (amount/account/paid_through/line_items) boleh diubah SELAMA draf;
+    subtotal/tax/pph/total dihitung ulang di server spt create. Semua Optional (PATCH
+    parsial: yang tak dikirim memakai nilai lama).
+    """
 
     expense_date: Optional[date] = None
+    paid_through_id: Optional[UUID] = None
+    account_id: Optional[UUID] = None
+    account_name: Optional[str] = None
+    amount: Optional[int] = Field(None, ge=0)
+    is_itemized: Optional[bool] = None
+    line_items: Optional[List[ExpenseItemRequest]] = None
     vendor_id: Optional[UUID] = None
     vendor_name: Optional[str] = None
+    tax_id: Optional[UUID] = None
+    tax_name: Optional[str] = None
+    tax_rate: Optional[Decimal] = Field(None, ge=0, le=100)
+    pph_type: Optional[Literal["PPH_21", "PPH_23", "PPH_4_2"]] = None
+    pph_rate: Optional[Decimal] = Field(None, ge=0, le=100)
+    currency: Optional[str] = Field(None, max_length=3)
+    is_billable: Optional[bool] = None
+    billed_to_customer_id: Optional[UUID] = None
     reference: Optional[str] = None
     notes: Optional[str] = None
-    is_billable: Optional[bool] = None
     has_receipt: Optional[bool] = None
 
 

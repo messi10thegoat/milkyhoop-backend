@@ -2925,13 +2925,15 @@ async def get_customer_deposit_pdf(
 # masih memakai bentuk lepas yang cacat itu; rute baru ini tidak menirunya.
 # =============================================================================
 
-_DEP_ATT_MAX_BYTES = 5 * 1024 * 1024
-_DEP_ATT_ALLOWED_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "application/pdf",
-}
+from ..attachment_limits import (  # noqa: E402
+    ATTACHMENT_ALLOWED_TYPES,
+    ATTACHMENT_MAX_BYTES,
+    enforce_attachment_limits,
+)
+
+# SATU SUMBER: app/attachment_limits.py (10 MB + 14 tipe).
+_DEP_ATT_MAX_BYTES = ATTACHMENT_MAX_BYTES
+_DEP_ATT_ALLOWED_TYPES = ATTACHMENT_ALLOWED_TYPES
 _DEP_ATT_ENTITY = "customer_deposit"
 
 
@@ -2965,18 +2967,9 @@ async def upload_deposit_attachment(
             raise HTTPException(status_code=401, detail="User ID required")
 
         content = await file.read()
-        if len(content) > _DEP_ATT_MAX_BYTES:
-            raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+        # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
+        enforce_attachment_limits(len(content), file.content_type)
         await file.seek(0)
-
-        if file.content_type not in _DEP_ATT_ALLOWED_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"File type {file.content_type} not allowed. "
-                    "Use JPEG, PNG, WebP, or PDF."
-                ),
-            )
 
         tenant_id = ctx["tenant_id"]
         user_id = ctx["user_id"]

@@ -38,24 +38,15 @@ router = APIRouter()
 from ..services.storage_service import get_storage_service  # noqa: E402
 
 
-# File size limits
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_CONTENT_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp",
-    "image/svg+xml",
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "text/plain",
-    "text/csv",
-    "application/zip",
-    "application/x-rar-compressed",
-}
+# File size limits — SATU SUMBER: app/attachment_limits.py (10 MB + 14 tipe).
+from ..attachment_limits import (  # noqa: E402
+    ATTACHMENT_ALLOWED_TYPES,
+    ATTACHMENT_MAX_BYTES,
+    enforce_attachment_limits,
+)
+
+MAX_FILE_SIZE = ATTACHMENT_MAX_BYTES  # alias untuk referensi lain (storage-usage dsb.)
+ALLOWED_CONTENT_TYPES = ATTACHMENT_ALLOWED_TYPES
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -351,21 +342,12 @@ async def upload_document(
     await _require_active_member_docs(request)
     pool = await get_pool()
 
-    # Validate file
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=400, detail=f"File type {file.content_type} not allowed"
-        )
-
     # Read file content
     content = await file.read()
     file_size = len(content)
 
-    if file_size > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB",
-        )
+    # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
+    enforce_attachment_limits(file_size, file.content_type)
 
     # Parse tags
     tag_list = None
