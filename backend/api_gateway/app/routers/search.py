@@ -41,7 +41,7 @@ GROUPS = {
           CASE WHEN lower(unaccent(coalesce(name,'')||' '||coalesce(nama,''))) LIKE {PAT}
                THEN 'name' ELSE 'attribute' END AS matched_field
         FROM customers
-        WHERE tenant_id=$1 AND coalesce(deleted_at::text,'')='' AND search_text LIKE {PAT}
+        WHERE tenant_id=$1 AND coalesce(deleted_at::text,'')='' AND search_text LIKE {PAT} AND cardinality($3::text[]) >= 0
         ORDER BY {SIM} DESC, updated_at DESC NULLS LAST
         LIMIT $4"""),
     "vendors": ("supplier", "/kontak/vendor/", f"""
@@ -51,7 +51,7 @@ GROUPS = {
           code AS number, NULL::numeric AS amount, NULL::text AS status, NULL::date AS due_date,
           CASE WHEN lower(unaccent(coalesce(name,''))) LIKE {PAT} THEN 'name' ELSE 'attribute' END AS matched_field
         FROM vendors
-        WHERE tenant_id=$1 AND search_text LIKE {PAT}
+        WHERE tenant_id=$1 AND search_text LIKE {PAT} AND cardinality($3::text[]) >= 0
         ORDER BY {SIM} DESC, updated_at DESC NULLS LAST
         LIMIT $4"""),
     "sales_invoices": ("sales_invoice", "/penjualan/faktur/", f"""
@@ -209,7 +209,8 @@ async def search(
             for g in allowed:
                 module, url_prefix, sql = GROUPS[g]
                 try:
-                    rows = await conn.fetch(sql, tenant_id, query, cust_ids, limit)
+                    async with conn.transaction():  # savepoint: isolate per-group errors
+                        rows = await conn.fetch(sql, tenant_id, query, cust_ids, limit)
                 except Exception as e:
                     logger.error(f"search group {g} failed: {e}")
                     continue
