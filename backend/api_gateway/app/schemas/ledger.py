@@ -88,6 +88,7 @@ class LedgerAccountSummary(BaseModel):
     debit_balance: Decimal
     credit_balance: Decimal
     net_balance: Decimal
+    transaction_count: int = 0
 
 
 class LedgerListResponse(BaseModel):

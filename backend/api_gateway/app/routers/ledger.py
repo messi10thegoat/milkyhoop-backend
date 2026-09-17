@@ -107,12 +107,14 @@ async def list_ledger_accounts(
                         WHEN coa.normal_balance = 'DEBIT'
                         THEN COALESCE(bal.total_debit, 0) - COALESCE(bal.total_credit, 0)
                         ELSE COALESCE(bal.total_credit, 0) - COALESCE(bal.total_debit, 0)
-                    END as net_balance
+                    END as net_balance,
+                    COALESCE(bal.tx_count, 0) as transaction_count
                 FROM chart_of_accounts coa
                 LEFT JOIN (
                     SELECT jl.account_id,
                            SUM(jl.debit) as total_debit,
-                           SUM(jl.credit) as total_credit
+                           SUM(jl.credit) as total_credit,
+                           COUNT(*) as tx_count
                     FROM journal_lines jl
                     INNER JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE je.status = 'POSTED'
@@ -137,6 +139,7 @@ async def list_ledger_accounts(
                     debit_balance=row["debit_balance"],
                     credit_balance=row["credit_balance"],
                     net_balance=row["net_balance"],
+                    transaction_count=row["transaction_count"],
                 )
                 for row in rows
             ]
