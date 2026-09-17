@@ -732,7 +732,7 @@ async def list_invoices(
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx})"
+                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}))"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -740,7 +740,7 @@ async def list_invoices(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx})"
+                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}))"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1

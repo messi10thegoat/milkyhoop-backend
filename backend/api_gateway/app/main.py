@@ -127,6 +127,7 @@ from .routers import payroll_config
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
 from .routers import ledger
+from .routers import search as search_router
 from .routers import fiscal_years
 from .routers import periods
 from .routers import user
@@ -750,6 +751,7 @@ app.include_router(journals.router, prefix="/api/journals", tags=["journals"])
 
 # Ledger router (Buku Besar - Read-only Ledger Views)
 app.include_router(ledger.router, prefix="/api/ledger", tags=["ledger"])
+app.include_router(search_router.router, prefix="/api/search", tags=["search"])
 
 # Fiscal Years router (Tahun Fiskal)
 app.include_router(

@@ -221,7 +221,7 @@ async def list_customers(
                     conditions.append(
                         f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
                         f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                        f"OR telepon ILIKE ${param_idx})"
+                        f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -231,7 +231,7 @@ async def list_customers(
                         word_conds.append(
                             f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
                             f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                            f"OR telepon ILIKE ${param_idx})"
+                            f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1

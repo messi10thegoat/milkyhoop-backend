@@ -1,144 +1,225 @@
-from fastapi import APIRouter, Query, Request
-from ..services.db_pool import get_db_pool
+"""
+Powerful Search — one engine (pg_trgm + unaccent, GIN on search_text) for the
+global ⌘K palette (scope=all) and the per-module pills (scope=<type>).
 
+Contract: backend/docs/search-contract.md. All amounts as float; dates ISO.
+Tenant from JWT; per-group READ authz via policy_engine.can(); groups omitted
+if not permitted. q min 2 chars; statement_timeout 500ms; one request.
+"""
+import logging
+from typing import Optional
+
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from backend.api_gateway.app.dependencies.auth import get_current_user
+from backend.api_gateway.app.services.policy_engine_client import get_policy_engine
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def get_pool() -> asyncpg.Pool:
+    from backend.api_gateway.app.services.db_pool import get_db_pool
+
+    return await get_db_pool()
+
+
+PAT = "'%' || lower(unaccent($2)) || '%'"
+SIM = "similarity(coalesce(search_text,''), lower(unaccent($2)))"
+
+# type -> (authz module, url prefix, SQL). All queries take $1 tenant, $2 q,
+# $3 customer ids (text[]), $4 limit — uniform param list.
+GROUPS = {
+    "customers": ("customer", "/kontak/pelanggan/", f"""
+        SELECT id::text AS id,
+          COALESCE(NULLIF(name,''), nama, display_name, company_name, '(tanpa nama)') AS title,
+          NULLIF(concat_ws(', ',
+            NULLIF(COALESCE(NULLIF(address,''), alamat), ''),
+            NULLIF(COALESCE(NULLIF(phone,''), telepon, mobile_phone), '')), '') AS subtitle,
+          code AS number, NULL::numeric AS amount, NULL::text AS status, NULL::date AS due_date,
+          CASE WHEN lower(unaccent(coalesce(name,'')||' '||coalesce(nama,''))) LIKE {PAT}
+               THEN 'name' ELSE 'attribute' END AS matched_field
+        FROM customers
+        WHERE tenant_id=$1 AND coalesce(deleted_at::text,'')='' AND search_text LIKE {PAT}
+        ORDER BY {SIM} DESC, updated_at DESC NULLS LAST
+        LIMIT $4"""),
+    "vendors": ("supplier", "/kontak/vendor/", f"""
+        SELECT id::text AS id,
+          COALESCE(NULLIF(name,''), display_name, company_name, '(tanpa nama)') AS title,
+          NULLIF(concat_ws(', ', NULLIF(address,''), NULLIF(COALESCE(NULLIF(phone,''), mobile_phone),'')), '') AS subtitle,
+          code AS number, NULL::numeric AS amount, NULL::text AS status, NULL::date AS due_date,
+          CASE WHEN lower(unaccent(coalesce(name,''))) LIKE {PAT} THEN 'name' ELSE 'attribute' END AS matched_field
+        FROM vendors
+        WHERE tenant_id=$1 AND search_text LIKE {PAT}
+        ORDER BY {SIM} DESC, updated_at DESC NULLS LAST
+        LIMIT $4"""),
+    "sales_invoices": ("sales_invoice", "/penjualan/faktur/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          invoice_number AS subtitle, invoice_number AS number, total_amount AS amount,
+          status, due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(invoice_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM sales_invoices
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, invoice_date DESC NULLS LAST
+        LIMIT $4"""),
+    "sales_orders": ("sales_order", "/penjualan/pesanan/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          NULLIF(reference,'') AS subtitle, order_number AS number, total_amount AS amount,
+          status, expected_ship_date AS due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(order_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM sales_orders
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, order_date DESC NULLS LAST
+        LIMIT $4"""),
+    "quotes": ("sales_order", "/penjualan/penawaran/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          NULLIF(subject,'') AS subtitle, quote_number AS number, total_amount AS amount,
+          status, expiry_date AS due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(quote_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM quotes
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, quote_date DESC NULLS LAST
+        LIMIT $4"""),
+    "deliveries": ("sales_order", "/penjualan/pengiriman/", f"""
+        SELECT id::text AS id, shipment_number AS title,
+          NULLIF(concat_ws(' · ', NULLIF(carrier,''), NULLIF(tracking_number,'')),'') AS subtitle,
+          shipment_number AS number, NULL::numeric AS amount, status, shipment_date AS due_date,
+          CASE WHEN search_text LIKE {PAT} THEN 'text' ELSE 'customer' END AS matched_field
+        FROM sales_order_shipments
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT}
+          OR sales_order_id IN (SELECT id FROM sales_orders WHERE tenant_id=$1 AND customer_id::text = ANY($3::text[])))
+        ORDER BY {SIM} DESC, shipment_date DESC NULLS LAST
+        LIMIT $4"""),
+    "receive_payments": ("receive_payment", "/penjualan/pembayaran/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          payment_number AS subtitle, payment_number AS number, total_amount AS amount,
+          status, payment_date AS due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(payment_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM receive_payments
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, payment_date DESC NULLS LAST
+        LIMIT $4"""),
+    "customer_deposits": ("receive_payment", "/penjualan/uang-muka/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          deposit_number AS subtitle, deposit_number AS number, amount AS amount,
+          status, deposit_date AS due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(deposit_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM customer_deposits
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, deposit_date DESC NULLS LAST
+        LIMIT $4"""),
+    "credit_notes": ("sales_invoice", "/penjualan/nota-kredit/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          credit_note_number AS subtitle, credit_note_number AS number, total_amount AS amount,
+          status, credit_note_date AS due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(credit_note_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM credit_notes
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, credit_note_date DESC NULLS LAST
+        LIMIT $4"""),
+}
+
+GROUP_ORDER = ["customers", "vendors", "sales_invoices", "sales_orders", "quotes",
+               "deliveries", "receive_payments", "customer_deposits", "credit_notes"]
+
+
+def _item(row, url_prefix):
+    amount = row["amount"]
+    due = row["due_date"]
+    return {
+        "id": row["id"],
+        "type": row["_type"],
+        "title": row["title"],
+        "subtitle": row["subtitle"],
+        "number": row["number"],
+        "amount": float(amount) if amount is not None else None,
+        "status": row["status"],
+        "due_date": due.isoformat() if due is not None else None,
+        "url_hint": f"{url_prefix}{row['id']}",
+        "matched_field": row["matched_field"],
+    }
 
 
 @router.get("")
 async def search(
     request: Request,
-    q: str = Query(..., min_length=1),
-    limit: int = Query(20, le=50),
+    q: str = Query("", description="Kata kunci, min 2 karakter"),
+    scope: Optional[str] = Query(None, description="all | <type>"),
+    limit: int = Query(8, ge=1, le=20),
+    user: dict = Depends(get_current_user),
 ):
-    tenant_id = request.state.user.get("tenant_id")
-    pool = await get_db_pool()
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"query": query, "groups": []}
+
+    scope = (scope or "all").strip().lower()
+    if scope in ("all", ""):
+        wanted = list(GROUP_ORDER)
+    elif scope in GROUPS:
+        wanted = [scope]
+    else:
+        raise HTTPException(status_code=400, detail=f"scope tidak dikenal: {scope}")
+
+    tenant_id = user["tenant_id"]
+
+    # Per-group READ authz (OWNER bypasses). Groups without access are omitted.
+    policy = get_policy_engine()
+    ctx = await policy.get_user_context(
+        user_id=user["user_id"], tenant_id=tenant_id,
+        subscription_role=user.get("role", "USER"),
+    )
+    allowed = []
+    for g in wanted:
+        module = GROUPS[g][0]
+        try:
+            if await policy.can(ctx, "R", module):
+                allowed.append(g)
+        except Exception as e:  # fail-closed on authz error
+            logger.warning(f"search authz {g}: {e}")
+    if not allowed:
+        return {"query": query, "groups": []}
+
+    pool = await get_pool()
+    groups = []
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
-
-        results = []
-        per_cat = min(limit // 4, 5)
-        pattern = f"%{q}%"
-
-        # Customers
-        rows = await conn.fetch(
-            """
-            SELECT id, nama, display_name, telepon FROM customers
-            WHERE tenant_id = $1 AND deleted_at IS NULL
-              AND (nama ILIKE $2 OR display_name ILIKE $2 OR email ILIKE $2 OR telepon ILIKE $2)
-            LIMIT $3
-        """,
-            tenant_id,
-            pattern,
-            per_cat,
-        )
-        for r in rows:
-            results.append(
-                {
-                    "type": "customer",
-                    "id": str(r["id"]),
-                    "title": r["display_name"] or r["nama"],
-                    "subtitle": r["telepon"] or "",
-                    "panel": "customer",
-                }
+        async with conn.transaction():
+            await conn.execute("SET LOCAL statement_timeout = '500ms'")
+            # customer cross-match ids (bounded)
+            cust_rows = await conn.fetch(
+                "SELECT id::text FROM customers WHERE tenant_id=$1 "
+                "AND coalesce(deleted_at::text,'')='' "
+                "AND search_text LIKE '%' || lower(unaccent($2)) || '%' LIMIT 500",
+                tenant_id, query,
             )
+            cust_ids = [r["id"] for r in cust_rows]
 
-        # Vendors
-        rows = await conn.fetch(
-            """
-            SELECT id, name, phone FROM vendors
-            WHERE tenant_id = $1 AND deleted_at IS NULL
-              AND (name ILIKE $2 OR email ILIKE $2 OR phone ILIKE $2)
-            LIMIT $3
-        """,
-            tenant_id,
-            pattern,
-            per_cat,
-        )
-        for r in rows:
-            results.append(
-                {
-                    "type": "vendor",
-                    "id": str(r["id"]),
-                    "title": r["name"],
-                    "subtitle": r["phone"] or "",
-                    "panel": "vendor",
-                }
-            )
+            for g in allowed:
+                module, url_prefix, sql = GROUPS[g]
+                try:
+                    rows = await conn.fetch(sql, tenant_id, query, cust_ids, limit)
+                except Exception as e:
+                    logger.error(f"search group {g} failed: {e}")
+                    continue
+                if not rows:
+                    continue
+                items = []
+                for r in rows:
+                    d = dict(r)
+                    d["_type"] = g
+                    items.append(_item(d, url_prefix))
+                groups.append({"type": g, "count": len(items), "items": items})
 
-        # Items (products)
-        rows = await conn.fetch(
-            """
-            SELECT id, nama_produk, sku, item_type FROM products
-            WHERE tenant_id = $1 AND deleted_at IS NULL
-              AND (nama_produk ILIKE $2 OR sku ILIKE $2)
-            LIMIT $3
-        """,
-            tenant_id,
-            pattern,
-            per_cat,
-        )
-        for r in rows:
-            subtitle_parts = [r["sku"] or "", r["item_type"] or ""]
-            results.append(
-                {
-                    "type": "item",
-                    "id": str(r["id"]),
-                    "title": r["nama_produk"],
-                    "subtitle": " · ".join(p for p in subtitle_parts if p),
-                    "panel": "items",
-                }
-            )
-
-        # Sales Invoices
-        rows = await conn.fetch(
-            """
-            SELECT id, invoice_number, customer_name, status, total_amount
-            FROM sales_invoices
-            WHERE tenant_id = $1
-              AND (invoice_number ILIKE $2 OR customer_name ILIKE $2)
-            ORDER BY created_at DESC
-            LIMIT $3
-        """,
-            tenant_id,
-            pattern,
-            per_cat,
-        )
-        for r in rows:
-            amt = f"Rp {int(r['total_amount'] or 0):,}".replace(",", ".")
-            results.append(
-                {
-                    "type": "invoice",
-                    "id": str(r["id"]),
-                    "title": r["invoice_number"],
-                    "subtitle": f"{r['customer_name'] or ''} · {amt}",
-                    "panel": "faktur-penjualan",
-                }
-            )
-
-        # Bills
-        rows = await conn.fetch(
-            """
-            SELECT id, invoice_number, vendor_name, status_v2, amount
-            FROM bills
-            WHERE tenant_id = $1
-              AND (invoice_number ILIKE $2 OR vendor_name ILIKE $2)
-            ORDER BY created_at DESC
-            LIMIT $3
-        """,
-            tenant_id,
-            pattern,
-            per_cat,
-        )
-        for r in rows:
-            amt = f"Rp {int(r['amount'] or 0):,}".replace(",", ".")
-            results.append(
-                {
-                    "type": "bill",
-                    "id": str(r["id"]),
-                    "title": r["invoice_number"],
-                    "subtitle": f"{r['vendor_name'] or ''} · {amt}",
-                    "panel": "pembelian",
-                }
-            )
-
-        return {"results": results[:limit], "query": q, "total": len(results)}
+    return {"query": query, "groups": groups}

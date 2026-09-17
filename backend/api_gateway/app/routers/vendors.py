@@ -361,7 +361,7 @@ async def list_vendors(
                     conditions.append(
                         f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
                         f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                        f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
+                        f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -371,7 +371,7 @@ async def list_vendors(
                         word_conds.append(
                             f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
                             f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                            f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx})"
+                            f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1
