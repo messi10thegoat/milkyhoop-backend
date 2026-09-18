@@ -2332,6 +2332,19 @@ class BillsService:
 
             row = await conn.fetchrow(query, tenant_id, start_date, end_date)
 
+            # Hutang jatuh tempo (ALL-TIME, journal-derived) -- sejajar dgn
+            # /api/sales-invoices/summary. compute_ap_outstanding = sumber tunggal
+            # (Law 16). TIDAK dibatasi periode: FE butuh total tunggakan kini.
+            overdue_row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS overdue_count,
+                       COALESCE(SUM(outstanding), 0) AS total_overdue
+                FROM compute_ap_outstanding($1)
+                WHERE due_date < CURRENT_DATE AND outstanding > 0
+                """,
+                tenant_id,
+            )
+
             total_amount = int(row["total_amount"])
             total_remaining = int(row["total_remaining"])
 
@@ -2349,6 +2362,8 @@ class BillsService:
                     "total_remaining": total_remaining,
                     "total_count": row["total_count"],
                     "vendor_count": row["vendor_count"],
+                    "overdue_count": overdue_row["overdue_count"],
+                    "total_overdue": int(overdue_row["total_overdue"]),
                     "breakdown": {
                         "paid": {
                             "count": row["paid_count"],
