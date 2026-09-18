@@ -319,7 +319,7 @@ async def list_receive_payments(
 
             if search:
                 outer_conditions.append(
-                    f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx} OR q.search_text ILIKE ${param_idx} OR q.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = q.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                    f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx} OR q.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = $1 AND c.search_text ILIKE ${param_idx}))"
                 )
                 params.append(f"%{search}%")
                 param_idx += 1
