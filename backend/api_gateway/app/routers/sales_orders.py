@@ -1402,8 +1402,9 @@ async def convert_to_invoice(
                         INSERT INTO sales_invoice_items (
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
-                            tax_code_id, tax_rate, tax_amount, subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            tax_code_id, tax_rate, tax_amount, subtotal, total, line_number,
+                            sales_order_item_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         uuid_module.uuid4(),
                         invoice_id,
@@ -1419,6 +1420,7 @@ async def convert_to_invoice(
                         item_subtotal,
                         item_total,
                         line_idx,
+                        item["id"],  # V271: link invoice line -> SO line (void decrement)
                     )
 
                     await conn.execute(

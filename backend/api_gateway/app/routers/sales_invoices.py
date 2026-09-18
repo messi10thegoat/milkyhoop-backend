@@ -4308,6 +4308,26 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     body.reason,
                 )
 
+                # V271 (item 7): reverse the create-invoice increment of
+                # sales_order_items.quantity_invoiced (sales_orders.py). Without this,
+                # voiding an invoice created from a SO leaves the SO line stuck
+                # 'invoiced'. Linked per-line via sales_invoice_items.sales_order_item_id;
+                # GREATEST(0, ...) never goes negative.
+                await conn.execute(
+                    """
+                    UPDATE sales_order_items soi
+                    SET quantity_invoiced = GREATEST(0, soi.quantity_invoiced - v.qty)
+                    FROM (
+                        SELECT sii.sales_order_item_id AS soi_id, SUM(sii.quantity) AS qty
+                        FROM sales_invoice_items sii
+                        WHERE sii.invoice_id = $1 AND sii.sales_order_item_id IS NOT NULL
+                        GROUP BY sii.sales_order_item_id
+                    ) v
+                    WHERE soi.id = v.soi_id
+                    """,
+                    invoice_id,
+                )
+
                 # Clean up document_tax_lines on void
                 await conn.execute(
                     "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
