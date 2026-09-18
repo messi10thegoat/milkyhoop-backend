@@ -638,7 +638,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         )
 
                     # Create journal entry
-                    journal_number = f"OB-BA-{body.account_name[:10]}"
+                    journal_number = f"OB-BA-{str(bank_account_id)[:8]}"
 
                     await conn.execute(
                         """
@@ -646,7 +646,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, trace_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, 'DRAFT', $8, $8, $9)
+                        ) VALUES ($1, $2, $3, $4, $5, 'BANK_OPENING_BALANCE', $6, $7, 'DRAFT', $8, $8, $9)
                     """,
                         journal_id,
                         ctx["tenant_id"],
@@ -765,7 +765,10 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
         raise
     except Exception as e:
         logger.error(f"Error creating bank account: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create bank account")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gagal membuat akun kas/bank: {str(e)[:300]}",
+        )
 
 
 # =============================================================================
