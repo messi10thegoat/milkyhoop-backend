@@ -182,6 +182,80 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 # LIST BILLS
 # =============================================================================
+async def _bill_preview_debit_lines(conn, tenant_id, items_in, subtotal, acct_fn, num_fn):
+    """Cermin PENUH _emit_bill_debit_lines (bills_service): agregasi baris debit PER-AKUN
+    dari tiap baris item, bukan sink Persediaan tunggal utk tagihan CAMPUR. Nominal per
+    baris = BillCalculator.calculate_item_total(qty, price, discount).total (== bill_items
+    .total yang dibaca posting sbg `net`). Residu (subtotal - sum(net), dari diskon nota/
+    tunai) -> sink Persediaan default (else akun pertama), persis seperti posting. Return
+    daftar baris debit [{account_name, account_code, debit, credit, event}]. Item6 Sabtu."""
+    from decimal import Decimal as _D
+    def_name, def_code, _ = await acct_fn(
+        AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
+    )
+
+    async def _line_acct(_iid):
+        if not _iid:
+            _n, _c, _ = await acct_fn(AccountRole.COGS_SALES, "HPP - Pembelian Barang")
+            return _c or "", _n
+        _pr = await conn.fetchrow(
+            "SELECT item_type, track_inventory, purchase_account_id "
+            "FROM products WHERE id=($1)::uuid AND tenant_id=$2",
+            _iid, tenant_id,
+        )
+        if _pr and _pr["item_type"] == "goods" and _pr["track_inventory"]:
+            _n, _c, _ = await acct_fn(
+                AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
+            )
+            return _c or "", _n
+        if _pr and _pr["purchase_account_id"]:
+            _r = await conn.fetchrow(
+                "SELECT name, account_code FROM chart_of_accounts WHERE id=$1",
+                _pr["purchase_account_id"],
+            )
+            return (_r["account_code"], _r["name"]) if _r else ("", "")
+        _role = (
+            AccountRole.COGS_SERVICE
+            if (_pr and _pr["item_type"] == "service")
+            else AccountRole.COGS_SALES
+        )
+        _n, _c, _ = await acct_fn(_role, "HPP - Pembelian Barang")
+        return _c or "", _n
+
+    amt: dict = {}
+    meta: dict = {}
+    order: list = []
+    sum_net = _D("0")
+    for _it in items_in:
+        _c, _n = await _line_acct(_it.get("item_id") or _it.get("product_id"))
+        _qty = num_fn(_it.get("qty", _it.get("quantity", 0)), 0.0)
+        _price = num_fn(_it.get("price", _it.get("unit_price", 0)), 0.0)
+        _dpct = _D(str(num_fn(_it.get("discount_percent", 0), 0)))
+        _net = _D(str(BillCalculator.calculate_item_total(_qty, _price, _dpct)["total"]))
+        if _c not in amt:
+            amt[_c] = _D("0"); meta[_c] = _n; order.append(_c)
+        amt[_c] += _net
+        sum_net += _net
+
+    residual = (_D(str(subtotal)) - sum_net).quantize(_D("0.01"))
+    if residual != _D("0") and order:
+        sink = def_code if def_code in amt else order[0]
+        if sink not in amt:
+            amt[sink] = _D("0"); meta[sink] = def_name; order.append(sink)
+        amt[sink] += residual
+
+    out = []
+    for _c in order:
+        if amt[_c] == _D("0"):
+            continue
+        out.append({"account_name": meta[_c], "account_code": _c,
+                    "debit": float(amt[_c]), "credit": 0, "event": "BILL"})
+    if not out:
+        out = [{"account_name": def_name, "account_code": def_code,
+                "debit": subtotal, "credit": 0, "event": "BILL"}]
+    return out
+
+
 @router.post("/preview-journal")
 async def preview_journal(request: Request, body: dict = Body(...)):
     """Pratinjau jurnal FAKTUR PEMBELIAN — READ-ONLY, nol tulis.
@@ -376,56 +450,12 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         # --- akun (Law 27) ---
         ap_name, ap_code, _ = await _acct(AccountRole.AP_TRADE, "Hutang Usaha")
 
-        # Cermin post_bill per-baris (helper _emit_bill_debit_lines): akun debit per
-        # klasifikasi item. goods+track->Persediaan; service->COGS_SERVICE; lainnya->
-        # products.purchase_account_id override / COGS_SALES. Bill SERAGAM -> satu akun;
-        # campur -> Persediaan (sink), sesuai residual posting.
-        async def _prev_line_acct(_iid):
-            if not _iid:
-                _n, _c, _ = await _acct(AccountRole.COGS_SALES, "HPP - Pembelian Barang")
-                return _c or "", _n
-            _pr = await conn.fetchrow(
-                "SELECT item_type, track_inventory, purchase_account_id "
-                "FROM products WHERE id=($1)::uuid AND tenant_id=$2",
-                _iid, ctx["tenant_id"],
-            )
-            if _pr and _pr["item_type"] == "goods" and _pr["track_inventory"]:
-                _n, _c, _ = await _acct(
-                    AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
-                )
-                return _c or "", _n
-            if _pr and _pr["purchase_account_id"]:
-                _r = await conn.fetchrow(
-                    "SELECT name, account_code FROM chart_of_accounts WHERE id=$1",
-                    _pr["purchase_account_id"],
-                )
-                return (_r["account_code"], _r["name"]) if _r else ("", "")
-            _role = (
-                AccountRole.COGS_SERVICE
-                if (_pr and _pr["item_type"] == "service")
-                else AccountRole.COGS_SALES
-            )
-            _n, _c, _ = await _acct(_role, "HPP - Pembelian Barang")
-            return _c or "", _n
-
-        _prev_codes = set()
-        _prev_first = None
-        for _it in items_in:
-            _c, _n = await _prev_line_acct(_it.get("item_id") or _it.get("product_id"))
-            _prev_codes.add(_c)
-            if _prev_first is None:
-                _prev_first = (_n, _c)
-        if len(_prev_codes) == 1 and _prev_first:
-            inv_name, inv_code = _prev_first
-        else:
-            inv_name, inv_code, _ = await _acct(
-                AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
-            )
-
-        lines = [
-            {"account_name": inv_name, "account_code": inv_code,
-             "debit": subtotal, "credit": 0, "event": "BILL"},
-        ]
+        # Item6 Sabtu: pratinjau CAMPUR kini cermin PENUH posting (_emit_bill_debit_lines):
+        # agregasi debit PER-AKUN + residu ke sink Persediaan, bukan sink tunggal utk
+        # subtotal. Bill SERAGAM -> tetap satu baris (identik hasil lama).
+        lines = list(await _bill_preview_debit_lines(
+            conn, ctx["tenant_id"], items_in, subtotal, _acct, _num
+        ))
         if bill_tax > 0:
             vat_name, vat_code, vat_ok = await _acct(
                 AccountRole.VAT_INPUT, "PPN Masukan", pkp_gated=True
