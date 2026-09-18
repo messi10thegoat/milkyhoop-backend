@@ -619,7 +619,7 @@ async def post_journal(request: Request, journal_id: UUID):
 # 14 Sep 2026 Gate 5 (TIKET-pembalikan-generik): pembalikan jurnal UMUM hanya untuk jurnal manual/penyesuaian yang
 # TAK punya dokumen/lapisan pemilik. Jurnal milik dokumen dibalik lewat VOID dokumennya supaya dokumen + lapisan
 # turunannya ikut dibalik. Allowlist = fail-closed (source_type baru otomatis ditolak). REVERSAL dikeluarkan (Law 26).
-REVERSAL_ALLOWLIST = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT"}
+REVERSAL_ALLOWLIST = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT", "RECLASSIFY_BILL_INVENTORY"}
 _VOID_PANDUAN = [
     (("BILL", "PURCHASE_INVOICE", "PAYMENT_BILL", "BILL_PAYMENT", "BILL_PAYMENT_VOID"), "batalkan tagihan/pembayarannya (void bill)"),
     (("INVOICE", "SALES_INVOICE", "SALES_INVOICE_COGS", "INVOICE_FULFILLMENT", "INVOICE_REVENUE", "CASH_SALE", "POS_SALE", "POS_COGS", "SALES_RECEIPT", "SALES_RECEIPT_COGS"), "batalkan fakturnya (void invoice)"),
@@ -927,3 +927,148 @@ async def get_journal_by_source(
     except Exception as e:
         logger.error(f"Get journal by source error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal")
+
+
+# =============================================================================
+# RECLASSIFY_BILL_INVENTORY (S14/S1) — reklas debit Persediaan (1-10600) yang
+# SALAH dari BILL non-inventori (dual-ledger putus: tak ada inventory_ledger) ke
+# HPP. JALUR TERPISAH dari Jurnal Manual: Law 31 Gate 4
+# (validate_no_derived_layer_accounts) SENGAJA tidak berlaku di sini karena
+# server sendiri yang menghitung nominal dari jurnal BILL (bukan input klien),
+# hanya membalik debit Persediaan yang mispost, dan idempoten. Law 20 DRAFT->
+# POSTED, Law 13 advisory lock, Law 2 (jurnal baru, nol edit). Audited.
+# =============================================================================
+from pydantic import BaseModel as _RBIBaseModel
+
+RECLASSIFY_BILL_INVENTORY_SOURCE = "RECLASSIFY_BILL_INVENTORY"
+
+
+class ReclassifyBillInventoryRequest(_RBIBaseModel):
+    target_account_code: str = "5-10100"
+    reason: str = ""
+    ticket: str = ""
+    bill_ids: Optional[list] = None
+    dry_run: bool = False
+
+
+async def reclassify_bill_inventory(
+    conn, tenant_id: str, user_id, target_account_code: str = "5-10100",
+    reason: str = "", ticket: str = "", bill_ids=None, dry_run: bool = False,
+    entry_date=None,
+):
+    """Server-computed, idempotent reclass of mis-posted Persediaan bill debits."""
+    entry_date = entry_date or date.today()
+    async with conn.transaction():
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            f"{RECLASSIFY_BILL_INVENTORY_SOURCE}:{tenant_id}",
+        )
+        already = await conn.fetchval(
+            "SELECT COUNT(*) FROM journal_entries WHERE tenant_id=$1 "
+            "AND source_type=$2 AND status='POSTED' AND reversed_by_id IS NULL",
+            tenant_id, RECLASSIFY_BILL_INVENTORY_SOURCE,
+        )
+        if already and already > 0 and not dry_run:
+            return {"status": "already_reclassified", "posted": 0, "amount": 0}
+        src = await conn.fetchrow(
+            "SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND account_code='1-10600'",
+            tenant_id)
+        tgt = await conn.fetchrow(
+            "SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND account_code=$2",
+            tenant_id, target_account_code)
+        if not src or not tgt:
+            raise ValueError(f"Akun tak ditemukan (1-10600 / {target_account_code})")
+        params = [tenant_id, src["id"]]
+        bill_filter = ""
+        if bill_ids:
+            params.append(bill_ids)
+            bill_filter = f" AND je.source_id::uuid = ANY(${len(params)}::uuid[])"
+        rows = await conn.fetch(
+            f"""
+            SELECT je.source_id::uuid AS bill_id, b.invoice_number, SUM(jl.debit) AS amt
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id = jl.journal_id
+            JOIN bills b ON b.id = je.source_id::uuid
+            WHERE je.tenant_id = $1 AND je.status='POSTED' AND je.reversed_by_id IS NULL
+              AND je.source_type='BILL' AND jl.account_id = $2 AND jl.debit > 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM inventory_ledger il
+                  WHERE il.tenant_id = je.tenant_id AND il.source_id = je.source_id
+              ){bill_filter}
+            GROUP BY je.source_id, b.invoice_number
+            ORDER BY b.invoice_number
+            """,
+            *params,
+        )
+        total = sum((r["amt"] for r in rows), Decimal("0"))
+        bills = [{"bill_id": str(r["bill_id"]), "invoice_number": r["invoice_number"],
+                  "amount": float(r["amt"])} for r in rows]
+        if total <= 0:
+            return {"status": "nothing_to_reclassify", "posted": 0, "amount": 0, "bills": []}
+        if dry_run:
+            return {"status": "dry_run", "amount": float(total), "bill_count": len(bills),
+                    "bills": bills, "already_reclassified": bool(already)}
+        period = await conn.fetchrow(
+            "SELECT id, status FROM fiscal_periods WHERE tenant_id=$1 "
+            "AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+            tenant_id, entry_date)
+        if period and period["status"] in ("CLOSED", "LOCKED"):
+            raise ValueError(f"Periode {period['status']} untuk {entry_date}")
+        jnum = await get_next_journal_number(conn, tenant_id, "JV", entry_date)
+        desc = (f"Reklasifikasi Persediaan 1-10600 -> {target_account_code} untuk "
+                f"{len(bills)} bill non-inventori (dual-ledger putus). {ticket}. {reason}").strip()
+        journal_id = await conn.fetchval(
+            """
+            INSERT INTO journal_entries (
+                tenant_id, journal_number, journal_date, description,
+                source_type, total_debit, total_credit, status, period_id, created_by
+            ) VALUES ($1,$2,$3,$4,$5,$6,$6,'DRAFT',$7,$8) RETURNING id
+            """,
+            tenant_id, jnum, entry_date, desc, RECLASSIFY_BILL_INVENTORY_SOURCE,
+            total, period["id"] if period else None, str(user_id) if user_id else None,
+        )
+        ln = 0
+        for r in rows:
+            ln += 1
+            await conn.execute(
+                "INSERT INTO journal_lines (journal_id,line_number,account_id,memo,debit,credit)"
+                " VALUES ($1,$2,$3,$4,$5,0)",
+                journal_id, ln, tgt["id"],
+                f"Reklas {r['invoice_number']} Persediaan->{target_account_code}", r["amt"])
+            ln += 1
+            await conn.execute(
+                "INSERT INTO journal_lines (journal_id,line_number,account_id,memo,debit,credit)"
+                " VALUES ($1,$2,$3,$4,0,$5)",
+                journal_id, ln, src["id"],
+                f"Reklas {r['invoice_number']} keluar Persediaan", r["amt"])
+        await conn.execute("UPDATE journal_entries SET status='POSTED' WHERE id=$1", journal_id)
+        return {"status": "posted", "posted": float(total), "amount": float(total),
+                "journal_number": jnum, "journal_id": str(journal_id),
+                "bill_count": len(bills), "bills": bills}
+
+
+@router.post("/reclassify-bill-inventory", response_model=dict)
+async def reclassify_bill_inventory_endpoint(
+    request: Request, body: ReclassifyBillInventoryRequest
+):
+    """OWNER-only. Reklas debit Persediaan salah (BILL non-inventori) -> HPP."""
+    ctx = get_user_context(request)
+    user = request.state.user
+    from ..services.policy_engine_client import get_policy_engine
+    pol = get_policy_engine()
+    uctx = await pol.get_user_context(
+        user_id=str(ctx["user_id"]), tenant_id=ctx["tenant_id"],
+        subscription_role=user.get("role", "USER"),
+    )
+    if getattr(uctx, "business_role_code", None) != "OWNER":
+        raise HTTPException(status_code=403, detail="Hanya OWNER yang boleh reklasifikasi.")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+        try:
+            res = await reclassify_bill_inventory(
+                conn, ctx["tenant_id"], ctx["user_id"], body.target_account_code,
+                body.reason, body.ticket, body.bill_ids, body.dry_run)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "data": res}
