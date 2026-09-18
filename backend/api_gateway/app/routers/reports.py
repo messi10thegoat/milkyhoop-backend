@@ -277,6 +277,51 @@ class LabaRugiResponse(BaseModel):
 # ========================================
 
 
+# item9 (18 Sep 2026): get_neraca buckets on coa.category, but the audit found
+# coa.category (and psak_sub_category) is NULL for EVERY seeded tenant. Derive the
+# bucket from account_code (canonical CoA) + account_type + is_cash when category is
+# blank, so /neraca is correct for all tenants with no data backfill. The code map
+# mirrors the validated grapgrap data mapping so data and code agree.
+_NERACA_CAT_BY_CODE = {
+    "1-10100": "kas", "1-10200": "bank", "1-10201": "bank", "1-10202": "bank",
+    "1-10203": "kas", "1-10300": "kas", "1-10400": "piutang", "1-10500": "piutang",
+    "1-10550": "beban_dibayar_dimuka", "1-10600": "persediaan", "1-10650": "persediaan",
+    "1-10700": "beban_dibayar_dimuka", "1-10800": "ppn_masukan",
+    "1-10820": "beban_dibayar_dimuka", "1-20100": "aset_tetap", "1-20200": "aset_tetap",
+    "1-20300": "aset_tetap", "1-20400": "aset_tetap", "1-20900": "akumulasi_penyusutan",
+    "2-10100": "hutang_usaha", "2-10200": "hutang_usaha", "2-10300": "hutang_pajak",
+    "2-10310": "hutang_pajak", "2-10320": "hutang_pajak", "2-10400": "hutang_gaji",
+    "2-10410": "hutang_gaji", "2-10420": "hutang_gaji", "2-10430": "hutang_gaji",
+    "2-10440": "hutang_usaha", "2-10500": "uang_muka_pelanggan", "2-10600": "ppn_keluaran",
+    "2-10750": "unearned_revenue", "2-20100": "hutang_bank", "3-10100": "ekuitas",
+    "3-20000": "ekuitas", "3-40000": "ekuitas", "3-50000": "ekuitas",
+    # 3-30000 Laba Tahun Berjalan intentionally omitted -> derived (avoid double-count).
+}
+
+
+def _derive_neraca_category(code, atype, is_cash):
+    """Fallback bucket when coa.category is blank. Canonical-code map first; then a
+    cash asset -> kas/bank; then a coarse account_type bucket so NOTHING is
+    unclassified. 3-30000 stays uncategorized (derived laba). Kas-vs-bank split is
+    immaterial to every total (both are current assets)."""
+    c = _NERACA_CAT_BY_CODE.get(code)
+    if c:
+        return c
+    if atype == "ASSET" and is_cash:
+        return "bank" if str(code).startswith("1-102") else "kas"
+    if atype == "RECEIVABLE":
+        return "piutang"
+    if atype == "PAYABLE":
+        return "hutang_usaha"
+    if atype == "EQUITY":
+        return "ekuitas" if code != "3-30000" else ""
+    if atype == "LIABILITY":
+        return "hutang_usaha"
+    if atype == "ASSET":
+        return "aset_tetap" if str(code).startswith("1-2") else "kas"
+    return ""
+
+
 @router.get(
     "/neraca/{periode}",
     response_model=NeracaResponse,
@@ -305,7 +350,7 @@ async def get_neraca(request: Request, periode: str):
                 -- LEFT JOIN preserves jl rows with NULL je. INNER JOIN excludes
                 -- them properly. Accounts with zero activity excluded by HAVING.
                 SELECT coa.account_code, coa.name as account_name, coa.account_type,
-                    coa.category, coa.normal_balance,
+                    coa.category, coa.normal_balance, coa.is_cash,
                     COALESCE(SUM(jl.debit), 0) as total_debit,
                     COALESCE(SUM(jl.credit), 0) as total_credit
                 FROM chart_of_accounts coa
@@ -314,7 +359,7 @@ async def get_neraca(request: Request, periode: str):
                 WHERE coa.tenant_id = $1 AND coa.is_active = true AND coa.is_header = false
                     AND je.status = 'POSTED' AND je.journal_date <= $2
                     AND is_effective_journal(je.id)  -- T2.5 + Track α
-                GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.normal_balance
+                GROUP BY coa.id, coa.account_code, coa.name, coa.account_type, coa.category, coa.normal_balance, coa.is_cash
                 HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
                 ORDER BY coa.account_code
             """,
@@ -356,6 +401,9 @@ async def get_neraca(request: Request, periode: str):
                 code = row["account_code"]
                 atype = row["account_type"]
                 cat = (row["category"] or "").strip().lower()
+                if not cat:
+                    # item9: category is NULL for all seeded tenants -> derive bucket
+                    cat = _derive_neraca_category(code, atype, row["is_cash"])
                 bal = net_bal(row)
                 # Raw Cr-Dr arithmetic for revenue/cogs/expense net (handles
                 # contra accounts correctly without double-counting):
