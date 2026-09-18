@@ -22,7 +22,8 @@ EntityType = Literal[
     "sales_invoice", "bill", "expense", "customer", "vendor", "item",
     "journal", "quote", "purchase_order", "sales_order", "sales_receipt",
     "payment", "credit_note", "vendor_credit", "stock_adjustment", "stock_transfer",
-    "employee", "asset", "project", "contract", "other"
+    "employee", "asset", "project", "contract", "other",
+    "proforma", "delivery"
 ]
 
 

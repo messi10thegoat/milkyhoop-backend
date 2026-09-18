@@ -89,8 +89,11 @@ async def list_documents(
     limit: int = Query(50, ge=1, le=100),
     category: Optional[str] = None,
     search: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[UUID] = None,
 ):
-    """List all documents"""
+    """List all documents. entity_type/entity_id filter to docs attached to that entity
+    (via document_attachments); dulu diam-diam diabaikan -> hasil salah."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -114,6 +117,21 @@ async def list_documents(
             )
             params.append(f"%{search}%")
             param_idx += 1
+
+        if entity_type or entity_id:
+            _att = ["da.document_id = d.id"]
+            if entity_type:
+                _att.append(f"da.entity_type = ${param_idx}")
+                params.append(entity_type)
+                param_idx += 1
+            if entity_id:
+                _att.append(f"da.entity_id = ${param_idx}")
+                params.append(entity_id)
+                param_idx += 1
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM document_attachments da WHERE "
+                + " AND ".join(_att) + ")"
+            )
 
         where_sql = " AND ".join(where_clauses)
 
