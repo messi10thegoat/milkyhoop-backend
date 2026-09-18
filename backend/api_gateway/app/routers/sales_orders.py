@@ -152,7 +152,7 @@ async def list_sales_orders(
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx})"
+                        f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = sales_orders.tenant_id AND c.search_text ILIKE ${param_idx}))"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -160,12 +160,11 @@ async def list_sales_orders(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx})"
+                            f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = sales_orders.tenant_id AND c.search_text ILIKE ${param_idx}))"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1
                     conditions.append(f"({' AND '.join(word_conds)})")
-                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 

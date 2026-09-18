@@ -306,6 +306,7 @@ async def list_proformas(
     ] = Query("all"),
     customer_id: Optional[str] = Query(None),
     sales_order_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
 ):
@@ -331,6 +332,15 @@ async def list_proformas(
             if sales_order_id:
                 extras.append(f"p.sales_order_id = ${idx}::uuid")
                 params.append(_uuid_or_404(sales_order_id, "Sales Order"))
+                idx += 1
+            if search:
+                extras.append(
+                    f"(p.proforma_number ILIKE ${idx} OR p.customer_name ILIKE ${idx} "
+                    f"OR p.search_text ILIKE ${idx} OR p.customer_id::text IN "
+                    f"(SELECT c.id::text FROM customers c WHERE c.tenant_id = p.tenant_id "
+                    f"AND c.search_text ILIKE ${idx}))"
+                )
+                params.append(f"%{search}%")
                 idx += 1
 
             extra = ("".join(f" AND {c}" for c in extras)) if extras else ""

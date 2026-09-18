@@ -87,6 +87,17 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, quote_date DESC NULLS LAST
         LIMIT $4"""),
+    "proformas": ("sales_order", "/penjualan/proforma/", f"""
+        SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
+          NULLIF(purpose,'') AS subtitle, proforma_number AS number, amount AS amount,
+          status, due_date,
+          CASE WHEN search_text LIKE {PAT}
+               THEN CASE WHEN lower(coalesce(proforma_number,'')) LIKE {PAT} THEN 'number' ELSE 'text' END
+               ELSE 'customer' END AS matched_field
+        FROM proformas
+        WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
+        ORDER BY {SIM} DESC, proforma_date DESC NULLS LAST
+        LIMIT $4"""),
     "deliveries": ("sales_order", "/penjualan/pengiriman/", f"""
         SELECT id::text AS id, shipment_number AS title,
           NULLIF(concat_ws(' · ', NULLIF(carrier,''), NULLIF(tracking_number,'')),'') AS subtitle,
@@ -132,7 +143,7 @@ GROUPS = {
         LIMIT $4"""),
 }
 
-GROUP_ORDER = ["customers", "vendors", "sales_invoices", "sales_orders", "quotes",
+GROUP_ORDER = ["customers", "vendors", "sales_invoices", "sales_orders", "quotes", "proformas",
                "deliveries", "receive_payments", "customer_deposits", "credit_notes"]
 
 
@@ -208,12 +219,8 @@ async def search(
 
             for g in allowed:
                 module, url_prefix, sql = GROUPS[g]
-                try:
-                    async with conn.transaction():  # savepoint: isolate per-group errors
-                        rows = await conn.fetch(sql, tenant_id, query, cust_ids, limit)
-                except Exception as e:
-                    logger.error(f"search group {g} failed: {e}")
-                    continue
+                # Errors propagate (clear 500), never swallowed into a 200-empty result.
+                rows = await conn.fetch(sql, tenant_id, query, cust_ids, limit)
                 if not rows:
                     continue
                 items = []

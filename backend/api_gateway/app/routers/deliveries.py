@@ -109,7 +109,7 @@ async def list_deliveries(
 
     if search:
         conditions.append(
-            f"(f.fulfillment_number ILIKE ${idx} OR c.nama ILIKE ${idx} OR si.invoice_number ILIKE ${idx})"
+            f"(f.fulfillment_number ILIKE ${idx} OR c.nama ILIKE ${idx} OR si.invoice_number ILIKE ${idx} OR c.search_text ILIKE ${idx})"
         )
         params.append(f"%{search}%")
         idx += 1
