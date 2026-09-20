@@ -410,6 +410,7 @@ class ItemsStatsResponse(BaseModel):
     totalItems: int = 0
     totalGoods: int = 0
     totalServices: int = 0
+    totalNonInventory: int = 0
     stock: ItemsStatsStockResponse = Field(default_factory=ItemsStatsStockResponse)
 
 

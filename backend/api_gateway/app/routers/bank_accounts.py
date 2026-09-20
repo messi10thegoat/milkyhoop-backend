@@ -1247,6 +1247,8 @@ async def get_bank_transactions(
                            END as amount,
                            bt.description, bt.payee_payer, bt.reference_type, bt.reference_number,
                            bt.is_reconciled, bt.created_at, bt.source_module, bt.status,
+                           je.journal_number AS journal_number,
+                           je.source_type AS origin_type,
                            -- Enrich: customer name from sales_invoices via reference_id
                            si.invoice_number AS related_invoice_number,
                            c.nama AS customer_name,
@@ -1292,6 +1294,8 @@ async def get_bank_transactions(
                     "vendor_name": row.get("vendor_name"),
                     "related_invoice_number": row.get("related_invoice_number"),
                     "related_bill_number": row.get("related_bill_number"),
+                    "journal_number": row.get("journal_number"),
+                    "origin_type": row.get("origin_type"),
                 }
                 for row in rows
             ]

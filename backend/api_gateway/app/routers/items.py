@@ -1609,6 +1609,7 @@ async def get_items_stats(request: Request):
                 COUNT(*) as total_items,
                 COUNT(*) FILTER (WHERE p.item_type = 'goods') as total_goods,
                 COUNT(*) FILTER (WHERE p.item_type = 'service') as total_services,
+                COUNT(*) FILTER (WHERE p.item_type = 'non_inventory') as total_non_inventory,
                 COUNT(*) FILTER (
                     WHERE p.item_type = 'goods'
                       AND p.track_inventory = true
@@ -1641,6 +1642,7 @@ async def get_items_stats(request: Request):
             totalItems=row["total_items"] or 0,
             totalGoods=row["total_goods"] or 0,
             totalServices=row["total_services"] or 0,
+            totalNonInventory=row["total_non_inventory"] or 0,
             stock=ItemsStatsStockResponse(
                 inStock=row["in_stock"] or 0,
                 lowStock=row["low_stock"] or 0,
