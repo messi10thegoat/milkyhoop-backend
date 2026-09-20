@@ -784,6 +784,27 @@ async def create_item(request: Request, body: CreateItemRequest):
 # =============================================================================
 
 
+async def _item_has_transactions(conn, tenant_id, item_id):
+    """True bila barang sudah dipakai di ledger stok / faktur / tagihan non-draft.
+    Dipakai untuk memblok perubahan item_type / track_inventory yang merusak valuasi
+    persediaan & HPP (E2b). item_id = UUID."""
+    return bool(await conn.fetchval(
+        """
+        SELECT EXISTS(SELECT 1 FROM inventory_ledger
+                      WHERE product_id = $1 AND tenant_id = $2)
+            OR EXISTS(SELECT 1 FROM sales_invoice_items sii
+                      JOIN sales_invoices si ON si.id = sii.invoice_id
+                      WHERE sii.item_id = $1 AND si.tenant_id = $2
+                        AND si.status NOT IN ('draft', 'void'))
+            OR EXISTS(SELECT 1 FROM bill_items bi
+                      JOIN bills b ON b.id = bi.bill_id
+                      WHERE bi.product_id = $1 AND b.tenant_id = $2
+                        AND b.status_v2 NOT IN ('draft', 'void'))
+        """,
+        item_id, tenant_id,
+    ))
+
+
 @router.put("/items/{item_id}", response_model=UpdateItemResponse)
 async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     """Update an existing item."""
@@ -839,6 +860,27 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             str(item_id),
             tenant_id,
         )
+
+        # E2b: blokir perubahan item_type / track_inventory bila barang SUDAH
+        # bertransaksi (ledger stok / faktur / tagihan non-draft) -- mengubahnya
+        # merusak valuasi persediaan & HPP. Field lain tetap boleh diperbarui.
+        _type_change = body.item_type is not None and body.item_type != old_item["item_type"]
+        _track_change = (
+            body.track_inventory is not None
+            and body.track_inventory != old_item["track_inventory"]
+        )
+        if (_type_change or _track_change) and await _item_has_transactions(
+            conn, tenant_id, item_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Tipe barang/jasa atau pelacakan stok tidak bisa diubah karena "
+                    "barang ini sudah punya transaksi (ledger stok / faktur / tagihan). "
+                    "Mengubahnya akan merusak valuasi persediaan & HPP. Buat barang "
+                    "baru bila jenisnya memang berbeda."
+                ),
+            )
 
         async with conn.transaction():
             # Build update query dynamically
