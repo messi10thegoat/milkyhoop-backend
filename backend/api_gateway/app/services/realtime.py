@@ -26,6 +26,7 @@ TBL_MODULE: Dict[str, str] = {
     "customer_deposits": "customer_deposit",  # G3 -> normalize CUSTOMER_DEPOSIT
     "bank_transactions": "kas_bank",         # G4 -> normalize KAS_BANK
     "bank_transfers": "kas_bank",            # G4 -> normalize KAS_BANK
+    "credit_notes": "credit_note",           # G5 -> normalize CREDIT_NOTE
 }
 
 _DB = dict(
