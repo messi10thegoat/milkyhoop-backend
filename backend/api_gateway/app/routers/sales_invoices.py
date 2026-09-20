@@ -3379,7 +3379,7 @@ async def record_payment(
                 if body.amount > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}",
+                        detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}".replace(",", "."),
                     )
 
                 # --- Resolve bank account ---

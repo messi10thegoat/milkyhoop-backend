@@ -30,6 +30,12 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+
+def _rp2(x) -> str:
+    """Rupiah Indonesia: titik ribuan, koma desimal (mis. 1.000.000,00)."""
+    return f"{float(x):,.2f}".translate(str.maketrans({",": ".", ".": ","}))
+
+
 router = APIRouter()
 so_router = APIRouter()  # dipasang di /api/sales-orders
 
@@ -228,9 +234,9 @@ async def assert_within_order_total(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Nilai proforma {amount:,.2f} melebihi sisa yang bisa ditagih. "
-                f"Nilai Sales Order {order_total:,.2f}, sudah ditagih (issued) "
-                f"{already:,.2f}, sisa yang bisa ditagih {sisa:,.2f}."
+                f"Nilai proforma {_rp2(amount)} melebihi sisa yang bisa ditagih. "
+                f"Nilai Sales Order {_rp2(order_total)}, sudah ditagih (issued) "
+                f"{_rp2(already)}, sisa yang bisa ditagih {_rp2(sisa)}."
             ),
         )
 

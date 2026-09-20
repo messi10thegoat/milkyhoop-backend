@@ -79,6 +79,12 @@ from ..services.bank_sync import (
 from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
+
+def _rp2(x) -> str:
+    """Rupiah Indonesia: titik ribuan, koma desimal (mis. 1.000.000,00)."""
+    return f"{float(x):,.2f}".translate(str.maketrans({",": ".", ".": ","}))
+
+
 router = APIRouter()
 
 # Connection pool
@@ -767,9 +773,9 @@ async def assert_deposit_within_order_total(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Uang muka {float(amount):,.2f} melebihi sisa yang masih dapat "
-                f"diterima. Nilai Sales Order {order_total:,.2f}, sudah diterima "
-                f"{already:,.2f}, sisa yang masih dapat diterima {sisa:,.2f}."
+                f"Uang muka {_rp2(float(amount))} melebihi sisa yang masih dapat "
+                f"diterima. Nilai Sales Order {_rp2(order_total)}, sudah diterima "
+                f"{_rp2(already)}, sisa yang masih dapat diterima {_rp2(sisa)}."
             ),
         )
 

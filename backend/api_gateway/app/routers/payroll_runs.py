@@ -822,7 +822,10 @@ async def post_payroll(request: Request, run_id: UUID):
                         raise HTTPException(
                             status_code=422,
                             detail={"code": "KASBON_OVER_DEDUCTION",
-                                    "message": f"Potongan kasbon {left:,.0f} melebihi sisa kasbon {total_remaining:,.0f} untuk {emp_name}."},
+                                    "message": (
+                                        f"Potongan kasbon {left:,.0f} melebihi sisa kasbon "
+                                        f"{total_remaining:,.0f} untuk {emp_name}."
+                                    ).replace(",", ".")},
                         )
                     for a in advs:
                         if left <= 0.005:
