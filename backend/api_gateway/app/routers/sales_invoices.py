@@ -2918,7 +2918,7 @@ async def update_invoice(
             # Check invoice exists and is draft
             invoice = await conn.fetchrow(
                 """
-                SELECT id, status FROM sales_invoices
+                SELECT id, status, updated_at FROM sales_invoices
                 WHERE id = $1 AND tenant_id = $2
             """,
                 invoice_id,
@@ -2927,6 +2927,10 @@ async def update_invoice(
 
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
+
+            # Optimistic concurrency (opt-in): reject a stale write (lost-update guard).
+            from ..services.optimistic_concurrency import assert_if_match
+            assert_if_match(request, invoice["updated_at"])
 
             from ..services.document_number import bersihkan_nomor_dokumen_opsional
             _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
