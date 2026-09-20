@@ -449,6 +449,22 @@ check_14_ar_reconciliation_enforce() {
     if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        # verify_ar_reconciliation_all() tak mengembalikan baris utk tenant ini.
+        # KOSONG + NOL dokumen AR = tak ada yang direkonsiliasi -> PASS (bukan
+        # CRITICAL palsu; dulu adhita/subbidel tanpa AR jatuh ke else = CRITICAL).
+        # KOSONG + ADA dokumen AR = alatnya (tenants-CTE) tak mencakup tenant ini
+        # -> BROKEN (Law 33), bukan CRITICAL.
+        local ar_docs
+        ar_docs=$(psql_cmd "SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = '$tenant' AND status NOT IN ('draft','void');")
+        if [ "${ar_docs:-0}" = "0" ]; then
+            CHK_PASS=1
+            CHK_DETAIL=""
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ AR reconciliation verdict KOSONG padahal ada $ar_docs dokumen AR (tenants-CTE tak mencakup tenant ini)"
+            detail "[CHECK 14] $tenant: $CHK_DETAIL"
+        fi
     else
         local drift
         drift=$(psql_cmd "SELECT total_drift FROM verify_ar_reconciliation_all() WHERE tenant_id = '$tenant';")
@@ -916,6 +932,8 @@ for TENANT in $TENANTS; do
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     if [ "$CHK_PASS" = "1" ]; then
         SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 14 "AR Reconciliation" "$CHK_DETAIL"
     else
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
         SYNC_FAILS="${SYNC_FAILS}AR-recon: $CHK_DETAIL; "
