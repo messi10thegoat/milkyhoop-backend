@@ -21,6 +21,7 @@ from ..services.payroll_calc import (
     calculate_employee_slip,
     get_bpjs_config,
     get_ytd_data,
+    PayrollInputError,
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code
@@ -297,24 +298,44 @@ async def update_payroll_run(
                 *params,
             )
 
-        # Per-run variable inputs (jam lembur / override nominal) are NOT implemented as
-        # quantity x rate yet. The prior code wrote RAW HOURS AS RUPIAH into the GL
-        # (10 jam -> a Rp10 "Lembur (input)" line, posted silently) and ignored amount
-        # overrides entirely. A placeholder that silently writes a wrong number to the
-        # books is worse than an unimplemented field, so REFUSE rather than post it.
-        # Proper support lands with the quantity x rate payroll feature.
+        # Per-run variable inputs (V282 quantity x rate): store days_worked /
+        # overtime_hours / amount-override per (run, employee, component). These are
+        # NOT written to the GL here -- calculate_payroll multiplies them by the
+        # employee's configured rate and rebuilds the slip lines. UPSERT so editing an
+        # input replaces it (idempotent per component), never appends a duplicate.
         if body.variable_inputs:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "PER_RUN_INPUT_UNSUPPORTED",
-                    "message": (
-                        "Input per-run (jam lembur / override nominal) belum didukung dan "
-                        "tidak akan diproses. Akan hadir di fitur kuantitas x tarif. Untuk "
-                        "sekarang, atur nominal komponen di Konfigurasi Gaji karyawan."
-                    ),
-                },
-            )
+            for vi in body.variable_inputs:
+                comp = await conn.fetchrow(
+                    "SELECT id FROM salary_components WHERE tenant_id = $1 AND code = $2 AND is_active = true",
+                    ctx["tenant_id"],
+                    vi.component_code,
+                )
+                if not comp:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "UNKNOWN_COMPONENT",
+                            "message": f"Komponen gaji '{vi.component_code}' tidak ditemukan.",
+                        },
+                    )
+                await conn.execute(
+                    """INSERT INTO payroll_run_inputs
+                         (tenant_id, payroll_id, employee_id, component_id,
+                          days_worked, overtime_hours, amount)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       ON CONFLICT (payroll_id, employee_id, component_id)
+                       DO UPDATE SET days_worked = EXCLUDED.days_worked,
+                                     overtime_hours = EXCLUDED.overtime_hours,
+                                     amount = EXCLUDED.amount,
+                                     updated_at = now()""",
+                    ctx["tenant_id"],
+                    run_id,
+                    vi.employee_id,
+                    comp["id"],
+                    vi.days_worked,
+                    vi.overtime_hours,
+                    vi.amount,
+                )
 
         return {"success": True, "message": "Updated"}
 
@@ -400,8 +421,23 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     period_start,
                 )
 
-                # Build variable inputs (for now empty, TODO: store in metadata)
-                variable_inputs = {}
+                # Build per-run variable inputs (V282): days_worked / overtime_hours /
+                # amount-override per component, keyed by component_id for the calc engine.
+                run_inputs = await conn.fetch(
+                    """SELECT component_id, days_worked, overtime_hours, amount
+                       FROM payroll_run_inputs
+                       WHERE payroll_id = $1 AND employee_id = $2""",
+                    run_id,
+                    emp_id,
+                )
+                variable_inputs = {
+                    str(ri["component_id"]): {
+                        "days_worked": ri["days_worked"],
+                        "overtime_hours": ri["overtime_hours"],
+                        "amount": ri["amount"],
+                    }
+                    for ri in run_inputs
+                }
 
                 # Get YTD data for December true-up
                 ytd = None
@@ -414,19 +450,29 @@ async def calculate_payroll(request: Request, run_id: UUID):
                         period_month,
                     )
 
-                slip = await calculate_employee_slip(
-                    conn,
-                    ctx["tenant_id"],
-                    dict(employee),
-                    [dict(c) for c in salary_config],
-                    components_map,
-                    bpjs_cfg,
-                    period_start,
-                    period_end,
-                    period_month,
-                    variable_inputs,
-                    ytd,
-                )
+                try:
+                    slip = await calculate_employee_slip(
+                        conn,
+                        ctx["tenant_id"],
+                        dict(employee),
+                        [dict(c) for c in salary_config],
+                        components_map,
+                        bpjs_cfg,
+                        period_start,
+                        period_end,
+                        period_month,
+                        variable_inputs,
+                        ytd,
+                    )
+                except PayrollInputError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "PAYROLL_INPUT_MISSING",
+                            "message": str(e),
+                            "employee_id": str(emp_id),
+                        },
+                    )
 
                 # Insert slip lines
                 all_lines = (
@@ -436,8 +482,9 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     await conn.execute(
                         """INSERT INTO payroll_slip_lines
                            (tenant_id, payroll_id, employee_id, component_id, component_name,
-                            component_type, component_category, amount, is_taxable, sort_order)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
+                            component_type, component_category, amount, quantity, rate,
+                            is_taxable, sort_order)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
                         ctx["tenant_id"],
                         run_id,
                         emp_id,
@@ -448,6 +495,8 @@ async def calculate_payroll(request: Request, run_id: UUID):
                         line["component_type"],
                         line.get("component_category", ""),
                         line["amount"],
+                        line.get("quantity"),
+                        line.get("rate"),
                         line.get("is_taxable", False),
                         line.get("sort_order", 0),
                     )

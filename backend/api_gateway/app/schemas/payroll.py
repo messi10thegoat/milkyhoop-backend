@@ -21,6 +21,7 @@ class VariableInput(BaseModel):
     component_code: str
     amount: Optional[float] = None
     overtime_hours: Optional[float] = None
+    days_worked: Optional[float] = None
 
 
 class UpdatePayrollRequest(BaseModel):
@@ -56,7 +57,7 @@ class CreateSalaryComponentRequest(BaseModel):
     is_taxable: bool = True
     is_fixed: bool = True
     default_amount: float = 0
-    calculation_method: str = Field("fixed", pattern=r"^(fixed|percentage)$")
+    calculation_method: str = Field("fixed", pattern=r"^(fixed|percentage|daily|hourly|overtime)$")
     percentage_base: Optional[str] = None
     sort_order: int = 0
 

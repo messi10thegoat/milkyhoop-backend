@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 
+
+class PayrollInputError(ValueError):
+    """A quantity-based earning component (daily/hourly/overtime) is missing its
+    required per-run quantity for an employee. Raised by calculate_employee_slip and
+    surfaced by the router as HTTP 400 -- never silently defaulted to 0 (fail loud)."""
+
 # TER category mapping (PTKP status -> TER category)
 TER_CATEGORY_MAP = {
     "TK0": "A",
@@ -208,32 +214,52 @@ async def calculate_employee_slip(
         comp = components_map.get(str(cfg["component_id"]))
         if not comp or comp["type"] != "earning":
             continue
-        amount = d(cfg["amount"])
         category = comp["category"]
+        # calculation_method is THE switch (V282): daily = rate x days_worked,
+        # hourly/overtime = rate x overtime_hours, fixed/percentage = flat amount.
+        # rate = the employee's configured per-unit amount (esc.amount). A daily or
+        # hourly line whose quantity is missing FAILS LOUD (PayrollInputError -> 400),
+        # never a silent 0. A fixed-category lembur stays possible (flat overtime sum).
+        method = (comp.get("calculation_method") or "fixed").lower()
+        rate = d(cfg["amount"])
+        vi = variable_inputs.get(str(comp["id"]), {}) if isinstance(variable_inputs, dict) else {}
+        qty = None
+        line_rate = None
 
-        if comp["is_fixed"]:
-            amount = round2(amount * proration)
-
-        if category == "lembur":
-            ot_hours = d(variable_inputs.get("overtime_hours", 0))
-            if ot_hours > 0 and basic_salary > 0:
-                amount = calc_overtime(basic_salary, ot_hours)
-            elif "LEMBUR" in variable_inputs:
-                amount = d(variable_inputs["LEMBUR"])
-            else:
-                continue  # skip lembur if no input
-
-        if category in ("bonus", "thr"):
-            var_amount = variable_inputs.get(comp["code"])
-            if var_amount is not None:
-                amount = d(var_amount)
-            elif amount == 0:
-                continue  # skip zero variable components
+        if method == "daily":
+            days = vi.get("days_worked")
+            if days is None:
+                raise PayrollInputError(
+                    f"Komponen harian '{comp['name']}' butuh jumlah hari kerja "
+                    f"(days_worked) untuk karyawan ini. Isi di editor payroll run."
+                )
+            qty = d(days)
+            line_rate = rate
+            # Decimal x Decimal, HALF_UP to 2 dp (rupiah-cent, matches numeric(18,2)).
+            amount = round2(line_rate * qty)
+        elif method in ("hourly", "overtime"):
+            hours = vi.get("overtime_hours")
+            if hours is None:
+                raise PayrollInputError(
+                    f"Komponen '{comp['name']}' (per jam) butuh jumlah jam "
+                    f"(overtime_hours) untuk karyawan ini. Isi di editor payroll run."
+                )
+            qty = d(hours)
+            line_rate = rate
+            amount = round2(line_rate * qty)
+        else:  # fixed / percentage -> flat amount, with optional per-run override
+            amount = d(cfg["amount"])
+            override = vi.get("amount")
+            if override is not None:
+                amount = d(override)
+            amount = round2(amount * proration) if comp["is_fixed"] else round2(amount)
 
         if category == "gaji_pokok":
             basic_salary = amount
 
-        if amount > 0:
+        # daily/hourly lines are always emitted (missing qty already failed loud above);
+        # a flat line is emitted only when non-zero (skip empty optional components).
+        if amount > 0 or method in ("daily", "hourly", "overtime"):
             earnings.append(
                 {
                     "component_id": str(comp["id"]),
@@ -241,6 +267,8 @@ async def calculate_employee_slip(
                     "component_type": "earning",
                     "component_category": category,
                     "amount": float(round2(amount)),
+                    "quantity": float(qty) if qty is not None else None,
+                    "rate": float(line_rate) if line_rate is not None else None,
                     "is_taxable": comp["is_taxable"],
                     "sort_order": comp["sort_order"],
                 }
