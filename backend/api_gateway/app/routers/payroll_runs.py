@@ -297,22 +297,24 @@ async def update_payroll_run(
                 *params,
             )
 
-        # Store variable inputs as metadata (used during calculate)
+        # Per-run variable inputs (jam lembur / override nominal) are NOT implemented as
+        # quantity x rate yet. The prior code wrote RAW HOURS AS RUPIAH into the GL
+        # (10 jam -> a Rp10 "Lembur (input)" line, posted silently) and ignored amount
+        # overrides entirely. A placeholder that silently writes a wrong number to the
+        # books is worse than an unimplemented field, so REFUSE rather than post it.
+        # Proper support lands with the quantity x rate payroll feature.
         if body.variable_inputs:
-            for vi in body.variable_inputs:
-                if vi.overtime_hours is not None:
-                    # Store lembur hours as slip line placeholder
-                    await conn.execute(
-                        """INSERT INTO payroll_slip_lines
-                           (tenant_id, payroll_id, employee_id, component_name,
-                            component_type, component_category, amount, is_taxable, sort_order)
-                           VALUES ($1, $2, $3, 'Lembur (input)', 'earning', 'lembur', $4, true, 20)
-                           ON CONFLICT DO NOTHING""",
-                        ctx["tenant_id"],
-                        run_id,
-                        vi.employee_id,
-                        vi.overtime_hours or 0,
-                    )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "PER_RUN_INPUT_UNSUPPORTED",
+                    "message": (
+                        "Input per-run (jam lembur / override nominal) belum didukung dan "
+                        "tidak akan diproses. Akan hadir di fitur kuantitas x tarif. Untuk "
+                        "sekarang, atur nominal komponen di Konfigurasi Gaji karyawan."
+                    ),
+                },
+            )
 
         return {"success": True, "message": "Updated"}
 
