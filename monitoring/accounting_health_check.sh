@@ -39,6 +39,12 @@ HIGH_COUNT=0
 WARNING_COUNT=0
 TOTAL_CHECKS=0
 PASS_COUNT=0
+# NO-DATA (2026-09-20): pemeriksaan yang jalan tapi tenant tak punya data
+# untuk diperiksa. DIBEDAKAN dari PASS penuh supaya kita tetap melihat sinyal
+# "tenant berhenti memproduksi data" (bukan disembunyikan jadi hijau).
+NODATA_COUNT=0
+NODATA_EVENTS=0
+NODATA_NAMES=""
 # Law 33 (2026-09-13): BROKEN = perkakasnya tak bisa jalan.
 # BUKAN lulus, BUKAN kegagalan data. SASARANNYA NOL -- kategori ini SEMENTARA.
 # Ketiga penghuni awalnya ada di sini karena fungsi DB yang dirujuk TIDAK ADA
@@ -65,6 +71,27 @@ is_broken() {
         *__GAGAL__*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# NO-DATA: verdikt KOSONG yang SAH (tenant di luar cakupan tenants-CTE fungsi
+# karena tak punya data domain itu). Bukan PASS penuh, bukan pula BROKEN.
+is_nodata() {
+    case "$1" in
+        *__NODATA__*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+note_nodata() {
+    local num="$1" name="$2" tenant="$3" label
+    label="[$num] $name"
+    NODATA_EVENTS=$((NODATA_EVENTS + 1))
+    case "$NODATA_NAMES" in
+        *"$label"*) : ;;
+        *) NODATA_COUNT=$((NODATA_COUNT + 1))
+           NODATA_NAMES="${NODATA_NAMES}${NODATA_NAMES:+, }${label}" ;;
+    esac
+    log "  NO-DATA $label: $tenant tak punya data untuk diperiksa — dilewati (BUKAN PASS penuh)"
 }
 
 # Tanggal "rusak sejak" DIUKUR dari git (commit yang memperkenalkannya),
@@ -539,9 +566,31 @@ check_15_inventory_wac_reconciliation() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
+    if [ "$verdict" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        # KOSONG: bedakan "tak ada persediaan utk direkonsiliasi" (no-data, SAH)
+        # dari "alat tak mencakup tenant yg PUNYA data persediaan" (BROKEN, Law 33).
+        # Probe = predikat tenants-CTE fungsi: ada baris inventory_ledger ATAU jurnal
+        # menyentuh CoA 1-10600. Fungsi memulangkan verdikt utk SETIAP tenant in-scope
+        # (tanpa filter drift), jadi KOSONG+ada-data = baris hilang = BROKEN, bukan PASS.
+        local has_data
+        has_data=$(psql_cmd "SELECT (EXISTS(SELECT 1 FROM inventory_ledger WHERE tenant_id = '$tenant') OR EXISTS(SELECT 1 FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts coa ON coa.id = jl.account_id WHERE je.tenant_id = '$tenant' AND coa.account_code = '1-10600'))::text;")
+        if [ "$has_data" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+        elif [ "$has_data" = "false" ]; then
+            CHK_PASS=1
+            CHK_DETAIL="__NODATA__ tak ada persediaan/ledger utk direkonsiliasi"
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ inventory WAC verdikt KOSONG padahal tenant punya data persediaan (tenants-CTE tak mencakup tenant ini)"
+            detail "[CHECK 15] $tenant: $CHK_DETAIL"
+        fi
     else
         local drift
         drift=$(psql_cmd "SELECT drift FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = '$tenant';")
@@ -566,9 +615,31 @@ check_16_deferred_revenue_reconciliation() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_deferred_revenue_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
+    if [ "$verdict" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        # KOSONG: bedakan "tak ada faktur/akun tangguhan" (no-data, SAH) dari "alat
+        # tak mencakup tenant yg PUNYA data tangguhan" (BROKEN, Law 33). Probe =
+        # predikat tenants-CTE fungsi: ada akun ber-peran REVENUE_DEFERRED ATAU faktur
+        # posted/paid/partial. In-scope selalu memulangkan verdikt -> KOSONG+ada-data
+        # = BROKEN.
+        local has_data
+        has_data=$(psql_cmd "SELECT (EXISTS(SELECT 1 FROM account_roles WHERE tenant_id = '$tenant' AND role_key = 'REVENUE_DEFERRED') OR EXISTS(SELECT 1 FROM sales_invoices WHERE tenant_id = '$tenant' AND status IN ('posted','paid','partial')))::text;")
+        if [ "$has_data" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+        elif [ "$has_data" = "false" ]; then
+            CHK_PASS=1
+            CHK_DETAIL="__NODATA__ tak ada faktur/akun pendapatan tangguhan utk direkonsiliasi"
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ deferred-revenue verdikt KOSONG padahal tenant punya akun REVENUE_DEFERRED/faktur posted (tenants-CTE tak mencakup tenant ini)"
+            detail "[CHECK 16] $tenant: $CHK_DETAIL"
+        fi
     else
         local drift
         drift=$(psql_cmd "SELECT drift FROM verify_deferred_revenue_reconciliation_all() WHERE tenant_id = '$tenant';")
@@ -589,9 +660,31 @@ check_17_bill_inventory_reconciliation() {
     local tenant="$1"
     local verdict
     verdict=$(psql_cmd "SELECT verdict FROM verify_bill_inventory_reconciliation_all() WHERE tenant_id = '$tenant';")
-    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
+    if [ "$verdict" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        # KOSONG: bedakan "tak ada tagihan menyentuh persediaan" (no-data, SAH) dari
+        # "alat tak mencakup tenant yg PUNYA data" (BROKEN, Law 33). Probe = predikat
+        # tenants-CTE fungsi: baris inventory_ledger source_type='BILL' ATAU jurnal
+        # source_type BILL/RECLASSIFY_BILL_INVENTORY menyentuh 1-10600. In-scope selalu
+        # memulangkan verdikt -> KOSONG+ada-data = BROKEN.
+        local has_data
+        has_data=$(psql_cmd "SELECT (EXISTS(SELECT 1 FROM inventory_ledger WHERE tenant_id = '$tenant' AND source_type = 'BILL') OR EXISTS(SELECT 1 FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts coa ON coa.id = jl.account_id WHERE je.tenant_id = '$tenant' AND je.source_type IN ('BILL','RECLASSIFY_BILL_INVENTORY') AND coa.account_code = '1-10600'))::text;")
+        if [ "$has_data" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+        elif [ "$has_data" = "false" ]; then
+            CHK_PASS=1
+            CHK_DETAIL="__NODATA__ tak ada tagihan menyentuh persediaan utk direkonsiliasi"
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ bill inventory verdikt KOSONG padahal tenant punya tagihan-persediaan (tenants-CTE tak mencakup tenant ini)"
+            detail "[CHECK 17] $tenant: $CHK_DETAIL"
+        fi
     else
         local drift
         drift=$(psql_cmd "SELECT drift FROM verify_bill_inventory_reconciliation_all() WHERE tenant_id = '$tenant';")
@@ -943,8 +1036,13 @@ for TENANT in $TENANTS; do
     # Check 16: Deferred-revenue Reconciliation (PSAK-72 P4, grandfathered) — CRITICAL
     check_16_deferred_revenue_reconciliation "$TENANT"
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-    if [ "$CHK_PASS" = "1" ]; then
+    if [ "$CHK_PASS" = "1" ] && is_nodata "$CHK_DETAIL"; then
         SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+        note_nodata 16 "Deferred-Revenue Reconciliation" "$TENANT"
+    elif [ "$CHK_PASS" = "1" ]; then
+        SYNC_PASS=$((SYNC_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 16 "Deferred-Revenue Reconciliation" "$CHK_DETAIL"
     else
         CRITICAL_COUNT=$((CRITICAL_COUNT + 1)); T_CRITICAL=$((T_CRITICAL + 1))
         SYNC_FAILS="${SYNC_FAILS}deferred-rev: $CHK_DETAIL; "
@@ -968,8 +1066,13 @@ for TENANT in $TENANTS; do
     # Check 15: Inventory WAC Reconciliation (GL vs on_hand x WAC, grandfathered)
     check_15_inventory_wac_reconciliation "$TENANT"
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-    if [ "$CHK_PASS" = "1" ]; then
+    if [ "$CHK_PASS" = "1" ] && is_nodata "$CHK_DETAIL"; then
         VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+        note_nodata 15 "Inventory WAC Reconciliation" "$TENANT"
+    elif [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 15 "Inventory WAC Reconciliation" "$CHK_DETAIL"
     else
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}inv WAC recon: $CHK_DETAIL; "
@@ -979,8 +1082,13 @@ for TENANT in $TENANTS; do
     # Check 17: Bill Inventory Reconciliation (GL Persediaan-from-bill vs inventory_ledger)
     check_17_bill_inventory_reconciliation "$TENANT"
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-    if [ "$CHK_PASS" = "1" ]; then
+    if [ "$CHK_PASS" = "1" ] && is_nodata "$CHK_DETAIL"; then
         VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+        note_nodata 17 "Bill Inventory Reconciliation" "$TENANT"
+    elif [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 17 "Bill Inventory Reconciliation" "$CHK_DETAIL"
     else
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}bill inv recon: $CHK_DETAIL; "
@@ -1079,6 +1187,7 @@ log "  Checks run:    $TOTAL_CHECKS"
 log "  Passed:        $PASS_COUNT"
 log "  Critical:      $CRITICAL_COUNT"
 log "  BROKEN:        $BROKEN_COUNT pemeriksaan ($BROKEN_EVENTS kejadian)${BROKEN_NAMES:+  -> $BROKEN_NAMES}"
+log "  NO-DATA:       $NODATA_COUNT pemeriksaan ($NODATA_EVENTS kejadian)${NODATA_NAMES:+  -> $NODATA_NAMES}"
 log "  High:          $HIGH_COUNT"
 log "  Warnings:      $WARNING_COUNT"
 log "  Posted jrnls:  $TOTAL_POSTED"
@@ -1115,6 +1224,7 @@ DISCORD_MSG="${DISCORD_MSG}Summary: ${PASS_COUNT}/${TOTAL_CHECKS} ✅"
 [ "$CRITICAL_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${CRITICAL_COUNT} ❌ CRITICAL"
 # Syarat 2: sebut JUMLAH dan NAMA + UMUR. Angka telanjang tak bisa ditindak.
 [ "$BROKEN_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG}\n🔧 ${BROKEN_COUNT} pemeriksaan RUSAK (perkakas, bukan data): ${BROKEN_NAMES}"
+[ "$NODATA_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG}\n🔵 ${NODATA_COUNT} pemeriksaan TANPA DATA (dilewati, bukan PASS penuh): ${NODATA_NAMES}"
 [ "$HIGH_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${HIGH_COUNT} ⚠️ HIGH"
 [ "$WARNING_COUNT" -gt 0 ] && DISCORD_MSG="${DISCORD_MSG} │ ${WARNING_COUNT} 💡 WARNING"
 DISCORD_MSG="${DISCORD_MSG}\nNext run: ${NEXT_RUN}"
