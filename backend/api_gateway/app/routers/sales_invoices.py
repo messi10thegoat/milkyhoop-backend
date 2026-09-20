@@ -1897,10 +1897,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         "SELECT pg_advisory_xact_lock(hashtext($1))", f"INVOICE:{invoice_id}"
     )
 
-    # T206: pagar faktur campuran - tolak SEBELUM jurnal apa pun dibuat.
-    await _t206_reject_mixed_invoice(
-        conn, ctx["tenant_id"], invoice_id, invoice_number
-    )
+    # T206 RETIRED (tiket-3, 20 Sep): mixed stock+service invoices are now legal.
+    # Non-track lines recognize revenue at posting (per-line block below), so their
+    # billing credit to 2-10750 no longer leaks. _t206_reject_mixed_invoice kept for
+    # reference; only the guard call is removed.
 
     # Get invoice data
     invoice = await conn.fetchrow(
@@ -2386,6 +2386,94 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 )
         fulfillment_status = "not_applicable"
         revenue_status = "recognized"
+
+    # tiket-3: per-line revenue recognition for NON-TRACK lines inside an inventory
+    # branch. Track lines recognize via fulfillment (now, or later at /fulfill);
+    # non-track lines (service / non_inventory / manual) have no fulfillment event,
+    # so their billing credit to 2-10750 would otherwise never clear (the leak T206
+    # used to block). Recognize them immediately at posting: Dr 2-10750 / Cr revenue
+    # (no COGS). Runs only when the invoice took an inventory branch AND has non-track
+    # lines -> pure-track and pure-service invoices are unchanged.
+    if has_inventory_items:
+        _nt_items = []
+        for _itm in items:
+            _pid = _itm.get("item_id") or _itm.get("product_id")
+            _is_track = False
+            if _pid:
+                _tp = await conn.fetchrow(
+                    "SELECT track_inventory FROM products WHERE tenant_id=$1 AND id=$2",
+                    ctx["tenant_id"], _pid,
+                )
+                _is_track = bool(_tp and _tp["track_inventory"])
+            if not _is_track and _d(_itm.get("_allocated") or 0) > 0:
+                _nt_items.append(_itm)
+        _nt_total = sum((_d(i["_allocated"]) for i in _nt_items), Decimal("0"))
+        if _nt_total > 0:
+            _un_id = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
+            _svc_r = Decimal("0")
+            _goods_r = Decimal("0")
+            for _itm in _nt_items:
+                _pid = _itm.get("item_id") or _itm.get("product_id")
+                _it = (
+                    await conn.fetchval(
+                        "SELECT item_type FROM products WHERE id=($1)::uuid AND tenant_id=$2",
+                        _pid, ctx["tenant_id"],
+                    ) if _pid else None
+                )
+                if _it == "service":
+                    _svc_r += _d(_itm["_allocated"])
+                else:
+                    _goods_r += _d(_itm["_allocated"])
+            _rj = uuid.uuid4()
+            _rt = str(uuid.uuid4())
+            _rjn = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
+                ctx["tenant_id"], "RECOG", invoice["invoice_date"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO journal_entries (
+                    id, tenant_id, journal_number, journal_date,
+                    description, source_type, source_id, trace_id,
+                    total_debit, total_credit, status, created_by
+                ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE',$6,$7,$8,$8,'DRAFT',$9)
+                """,
+                _rj, ctx["tenant_id"], _rjn, invoice["invoice_date"],
+                f"Revenue Recognition {invoice_number} (baris non-persediaan)",
+                invoice_id, _rt, float(_nt_total), ctx["user_id"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1,$2,1,$3,$4,0,$5)
+                """,
+                uuid.uuid4(), _rj, _un_id, float(_nt_total),
+                f"Dimuka → Penjualan {invoice_number} (non-persediaan)",
+            )
+            _lnr = 2
+            for _isvc, _amt in ((False, _goods_r), (True, _svc_r)):
+                if _amt <= 0:
+                    continue
+                _ra = await resolve_line_revenue_account(
+                    conn, ctx["tenant_id"], is_service=_isvc
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1,$2,$3,$4,0,$5,$6)
+                    """,
+                    uuid.uuid4(), _rj, _lnr, _ra, float(_amt),
+                    f"Penjualan {invoice_number}",
+                )
+                _lnr += 1
+            await conn.execute(
+                "UPDATE journal_entries SET status='POSTED' WHERE id=$1", _rj
+            )
+            for _itm in _nt_items:
+                await conn.execute(
+                    "UPDATE sales_invoice_items SET recognized_amount = allocated_amount WHERE id = $1",
+                    _itm["id"],
+                )
 
     # Query totals from items
     totals = await conn.fetchrow(
