@@ -25,7 +25,9 @@
 | `resync` | `{"type":"resync"}` | server reconnect ke DB (LISTEN putus→pulih) | refetch tampilan aktif (event saat putus tak terulang) |
 | `revoked` | `{"type":"revoked","code"}` | server menutup koneksi (akses/token) | lihat tabel kode di bawah, lalu koneksi ditutup |
 
-`tbl` Tahap 1 hanya `"sales_invoices"`.
+**Cakupan `tbl` saat ini** (bertambah per slice): `sales_invoices`, `sales_orders`, `bills`, `bill_payments_v2`, `receive_payments`, `customer_deposits`, `bank_transactions`, `bank_transfers`. Menyusul: `credit_notes` (G5), `quotes` (G6), lalu master/inventory/mfg/payroll.
+
+**Event aplikasi (alokasi/penerapan).** Perubahan pada `receive_payment_allocations`, `customer_deposit_applications`, `credit_note_applications` memancarkan DUA event: parent (`receive_payments`/`customer_deposits`/`credit_notes`) DAN `sales_invoices` (id = faktur terdampak, `op:"UPDATE"`) — penerapan mengubah sisa tagihan faktur. Penerapan nota-kredit TAK menyentuh `sales_invoices`, jadi event faktur ini WAJIB agar tampilan faktur/AR ikut segar. Event parent yang `tbl`-nya belum dipetakan (mis. `credit_notes` sebelum G5) DIBUANG fail-closed.
 
 **Payload MINIMAL by design:** hanya `{tbl,id,op}` — TANPA nomor/nama/nominal. Klien SELALU ambil ulang
 lewat API biasa (izin ditegakkan ulang saat refetch). Ini pertahanan: kebocoran otz tak membocorkan data.
@@ -56,6 +58,7 @@ lewat API biasa (izin ditegakkan ulang saat refetch). Ini pertahanan: kebocoran 
   (termasuk `normalize_module_name`: `sales_invoice → INVOICE`, bypass OWNER, cek membership). **Satu sumber**,
   hindari drift dengan `permission_middleware` PROTECTED_ROUTES.
 - `resync`/`revoked`/`hello` = pesan kontrol, TIDAK difilter per-modul.
+- **Fail-closed:** `tbl` yang TAK ada di `TBL_MODULE` DIBUANG — tak lagi disiarkan tanpa filter. Tabel baru tetap gelap sampai `TBL_MODULE` memetakannya.
 
 ## 5. Pencabutan (severance)
 
