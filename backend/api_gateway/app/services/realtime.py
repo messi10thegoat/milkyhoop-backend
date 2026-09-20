@@ -170,7 +170,11 @@ class RealtimeHub:
         for c in list(self.connections.values()):
             if c.tenant_id != tenant:
                 continue
-            if module and module not in c.allowed_modules:
+            # FAIL-CLOSED authz: an UNMAPPED tbl (module is None) must NOT broadcast
+            # unfiltered -- that leaked a doc-changed metadata event to users without
+            # READ on that module. Drop unmapped, and drop when the module is not in
+            # the connection allowed set. A new tbl stays dark until TBL_MODULE maps it.
+            if module is None or module not in c.allowed_modules:
                 continue
             self._safe_put(c, out)
 
