@@ -444,6 +444,15 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     period_start,
                 )
 
+                # V283: an employee with ZERO assigned salary components must be NAMED, not
+                # silently dropped and not given a synthetic 0/employer-only line. (The engine
+                # can emit employer BPJS lines even with no earnings, so "produced no lines" is
+                # not the right test -- emptiness of the assigned config is.) This is the state
+                # all grapgrap employees are in today.
+                if not salary_config:
+                    empty_employees.append((str(emp_id), employee["name"]))
+                    continue
+
                 # Build per-run variable inputs (V282): days_worked / overtime_hours /
                 # amount-override per component, keyed by component_id for the calc engine.
                 run_inputs = await conn.fetch(
