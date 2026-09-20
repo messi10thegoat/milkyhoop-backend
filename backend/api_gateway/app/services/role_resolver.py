@@ -167,6 +167,10 @@ class AccountRole:
     COGS_VARIANCE_OVERHEAD: Final[str] = "COGS_VARIANCE_OVERHEAD"
     CURRENCY_GAIN: Final[str] = "CURRENCY_GAIN"
     CURRENCY_LOSS: Final[str] = "CURRENCY_LOSS"
+    # Bank balance adjustment (E-tiket 20 Sep): surplus -> Pendapatan Lain-lain,
+    # shortfall -> Beban Lain-lain (per-tenant mapped).
+    BANK_ADJUSTMENT_GAIN: Final[str] = "BANK_ADJUSTMENT_GAIN"
+    BANK_ADJUSTMENT_LOSS: Final[str] = "BANK_ADJUSTMENT_LOSS"
     CURRENCY_UNREALIZED_FX: Final[str] = "CURRENCY_UNREALIZED_FX"
 
     # ---- V158 D3.1 RESERVED (forward-compat, NOT TIER 1, NOT seeded) --------
@@ -268,6 +272,8 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "COGS_VARIANCE_OVERHEAD",
         "CURRENCY_GAIN",
         "CURRENCY_LOSS",
+        "BANK_ADJUSTMENT_GAIN",
+        "BANK_ADJUSTMENT_LOSS",
         "CURRENCY_UNREALIZED_FX",
         # V158 D3.1 reserved (forward-compat, NOT seeded)
         "WIP_RAW",

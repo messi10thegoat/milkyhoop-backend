@@ -35,6 +35,11 @@ from ..schemas.bank_accounts import (
     BankAccountBalanceResponse,
 )
 from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import (
+    AccountRole,
+    AccountRoleUnmappedError,
+    resolve_account_id_by_role,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1431,18 +1436,8 @@ async def adjust_bank_balance(
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
-        # (ii, 15 Sep 2026) Penyesuaian saldo langsung DINONAKTIFKAN sementara: jalur
-        # lama mendebit DAN mengkredit akun bank yang SAMA (jurnal ekonomis nol -> drift
-        # bank sync, kelas sama MT-C4057F2C). Akun penyesuaian berbasis role menyusul
-        # (Sabtu). Sampai itu, 400 lebih baik daripada memposting jurnal nol.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Penyesuaian saldo sementara tidak tersedia. Catat selisih lewat "
-                "Uang Masuk/Keluar dengan akun lawan yang sesuai."
-            ),
-        )
-
+        # E-tiket 20 Sep: RE-ENABLED with role-based P&L contra (was 400 since 15 Sep,
+        # when the old net-zero same-account path was disabled).
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1501,6 +1496,28 @@ async def adjust_bank_balance(
                         detail=f"Adjustment would result in negative balance ({new_balance})",
                     )
 
+                # Contra = per-tenant bank-adjustment gain/loss role (surplus ->
+                # Pendapatan Lain-lain, shortfall -> Beban Lain-lain). Replaces the
+                # retired EQUITY_OPENING_BALANCE path; trigger V273 also blocks a
+                # same-account (net-zero) adjustment.
+                _adj_role = (
+                    AccountRole.BANK_ADJUSTMENT_GAIN
+                    if adjustment > 0
+                    else AccountRole.BANK_ADJUSTMENT_LOSS
+                )
+                try:
+                    adj_acct_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], _adj_role
+                    )
+                except AccountRoleUnmappedError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Akun penyesuaian saldo (selisih lebih/kurang) belum diatur "
+                            "untuk usaha ini. Atur akun Pendapatan/Beban Lain-lain dulu."
+                        ),
+                    )
+
                 # Create journal entry
                 journal_id = uuid_module.uuid4()
                 trace_id = uuid_module.uuid4()
@@ -1541,11 +1558,7 @@ async def adjust_bank_balance(
                         int(adjustment),
                         f"Penyesuaian Saldo - {body.reason}",
                     )
-                    # Cr. Opening Balance Equity (as adjustment source)
-                    # Law 27: Use resolve_account_id helper
-                    equity_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
-                    )
+                    # Cr. Bank Adjustment Gain (surplus -> Pendapatan Lain-lain)
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (
@@ -1554,16 +1567,12 @@ async def adjust_bank_balance(
                     """,
                         uuid_module.uuid4(),
                         journal_id,
-                        equity_id,
+                        adj_acct_id,
                         int(adjustment),
-                        f"Koreksi Saldo - {body.reason}",
+                        f"Koreksi Saldo (selisih lebih) - {body.reason}",
                     )
                 else:
-                    # Dr. Opening Balance Equity
-                    # Law 27: Use resolve_account_id helper
-                    equity_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
-                    )
+                    # Dr. Bank Adjustment Loss (shortfall -> Beban Lain-lain)
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (
@@ -1572,9 +1581,9 @@ async def adjust_bank_balance(
                     """,
                         uuid_module.uuid4(),
                         journal_id,
-                        equity_id,
+                        adj_acct_id,
                         int(abs(adjustment)),
-                        f"Koreksi Saldo - {body.reason}",
+                        f"Koreksi Saldo (selisih kurang) - {body.reason}",
                     )
                     # Cr. Bank Account
                     await conn.execute(
