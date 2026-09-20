@@ -34,3 +34,25 @@ def assert_if_match(request: Request, current_updated_at) -> None:
                 "current_updated_at": _norm(current_updated_at),
             },
         )
+
+
+async def assert_if_match_row(request, table, row_id) -> None:
+    """Opt-in optimistic guard for a PATCH/PUT handler: when the client sends If-Match,
+    fetch the row's current updated_at and compare. Self-contained (resolves tenant +
+    pool itself) so a handler adds exactly one call. Row missing / no tenant -> no-op
+    (the handler own 404/401 still applies). `table` is a hardcoded literal per call."""
+    if not request.headers.get("if-match"):
+        return
+    user = getattr(request.state, "user", None)
+    tenant_id = user.get("tenant_id") if user else None
+    if not tenant_id:
+        return
+    from .db_pool import get_db_pool
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        cur = await conn.fetchval(
+            f"SELECT updated_at FROM {table} WHERE id = $1::uuid AND tenant_id = $2",
+            str(row_id), tenant_id,
+        )
+    if cur is not None:
+        assert_if_match(request, cur)

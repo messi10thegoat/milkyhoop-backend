@@ -680,6 +680,9 @@ async def update_sales_order(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        # Optimistic concurrency (opt-in If-Match): reject a stale write.
+        from ..services.optimistic_concurrency import assert_if_match_row
+        await assert_if_match_row(request, "sales_orders", order_id)
 
         async with pool.acquire() as conn:
             async with conn.transaction():

@@ -1093,6 +1093,9 @@ async def update_bill(request: Request, bill_id: UUID, body: UpdateBillRequest):
     """
     try:
         ctx = get_user_context(request)
+        # Optimistic concurrency (opt-in If-Match): reject a stale write.
+        from ..services.optimistic_concurrency import assert_if_match_row
+        await assert_if_match_row(request, "bills", bill_id)
         service = await get_bills_service()
 
         result = await service.update_bill(

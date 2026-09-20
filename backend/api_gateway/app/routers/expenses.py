@@ -1665,6 +1665,9 @@ async def update_expense(
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
         pool = await get_pool()
+        # Optimistic concurrency (opt-in If-Match): reject a stale write.
+        from ..services.optimistic_concurrency import assert_if_match_row
+        await assert_if_match_row(request, "expenses", expense_id)
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")

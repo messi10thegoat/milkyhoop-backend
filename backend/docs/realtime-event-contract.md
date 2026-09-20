@@ -101,10 +101,42 @@ GET /api/events/stream (routers/events.py): filter tenant+modul, heartbeat 20s, 
   subscriber worker itu. N worker = N koneksi LISTEN. Skala HORIZONTAL (multi-REPLIKA/mesin) TETAP wajib Redis
   pub/sub: pg_notify lintas-worker OK, tak lintas-DB. (recheck-stampede & fan-out skala besar juga -> Redis.)
 - **Token 7 hari (HS256).** Severance nyata via NOTIFY + recheck 60s (exp jarang kena di tengah sesi).
-- **Deteksi konflik edit (Tahap 3):** `updated_at` ada di 10/10 tabel dokumen inti sebagai token If-Match; belum dibangun.
+- **Deteksi konflik edit (Tahap 3): TERPASANG** — guard `If-Match` opt-in per request. Lihat §10.
 
 ## 9. Verifikasi (Tahap 1, semua GREEN)
 
 commit→event 0.068s (edge 0.16s) · rollback→0 · lintas-tenant→0 · filter modul → 0/1 · nonaktif→revoked 8ms ·
 LISTEN mati→reconnect+resync 1.09s · 100/1tx→1 bulk (edge juga) · token exp→TOKEN_EXPIRED 5.6s · tanpa READ→0 ·
 edge ≥5min (315s, heartbeat 20.0s) · 20 stream: latensi tak naik (p95 10.5→10.3ms), koneksi +7 bukan +20.
+
+
+## 10. Deteksi konflik edit (If-Match / optimistic concurrency) — TERPASANG
+
+**Kontrak.** Opt-in per request. Klien BOLEH mengirim header `If-Match: <updated_at ISO-8601>`
+(nilai `updated_at` baris yang sedang disunting). Jika berbeda dari `updated_at` baris SAAT INI
+→ **412 Precondition Failed**; jika cocok atau **header tak dikirim** → jalan seperti biasa
+(mundur-kompatibel; realtime `doc_changed` tetap memicu refetch). Token = kolom `updated_at`
+(bukan versi buatan). Helper: `services/optimistic_concurrency.py`
+(`assert_if_match` + `assert_if_match_row(request, table, id)` self-contained: resolve tenant dari
+`request.state.user`, ambil `updated_at`, delegasi ke `assert_if_match`).
+
+Badan 412 (agar FE bisa bilang "diubah pihak lain" + tawarkan muat ulang):
+```json
+{ "code": "STALE_WRITE",
+  "message": "Data ini sudah diubah pihak lain. Muat ulang lalu coba lagi.",
+  "current_updated_at": "2026-09-20T07:12:33.481+00:00" }
+```
+
+**Tercakup (15 endpoint PATCH/PUT draf-editable), semua dgn `updated_at` + `id` uuid + `tenant_id`:**
+sales_invoices, quotes, sales_orders, credit_notes, customer_deposits, expenses, vendor_credits,
+vendor_deposits, customers, vendors, warehouses, stock_adjustments, production_orders, bills,
+bank_accounts.
+
+**Sengaja TIDAK dicakup (bukan kelalaian):**
+- `bank_transactions` — tak punya `updated_at`, dan bernilai rendah selama modelnya **append-only**
+  (koreksi = transaksi lawan, bukan sunting di tempat). **Tidak** ditambahi kolom hanya untuk ini.
+- `user_tenant_roles` — tak punya `updated_at`. Dibiarkan; mutasi peran jarang & bukan alur sunting-draf
+  yang rawan lost-update. Jangan mengarang kolom versi.
+
+Keduanya bisa diangkat nanti bila benar-benar butuh, dengan menambah `updated_at` lebih dulu.
+

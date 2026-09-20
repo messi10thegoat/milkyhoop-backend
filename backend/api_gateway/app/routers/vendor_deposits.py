@@ -301,6 +301,9 @@ async def update_vendor_deposit(
     """Update vendor deposit (draft only)"""
     ctx = get_user_context(request)
     pool = await get_pool()
+    # Optimistic concurrency (opt-in If-Match): reject a stale write.
+    from ..services.optimistic_concurrency import assert_if_match_row
+    await assert_if_match_row(request, "vendor_deposits", deposit_id)
 
     async with pool.acquire() as conn:
         await conn.execute(
