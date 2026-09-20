@@ -58,6 +58,7 @@ lewat API biasa (izin ditegakkan ulang saat refetch). Ini pertahanan: kebocoran 
   (termasuk `normalize_module_name`: `sales_invoice → INVOICE`, bypass OWNER, cek membership). **Satu sumber**,
   hindari drift dengan `permission_middleware` PROTECTED_ROUTES.
 - `resync`/`revoked`/`hello` = pesan kontrol, TIDAK difilter per-modul.
+- **AR/AP caches DIKECUALIKAN sengaja:** `accounts_receivable`/`accounts_payable` = cache turunan (Law 16), bukan sumber; tampilan piutang/hutang segar lewat event `sales_invoices`/`bills`, bukan tabel cache. Ledger (`journal_lines`, `inventory_ledger`) & log juga dikecualikan.
 - **Fail-closed:** `tbl` yang TAK ada di `TBL_MODULE` DIBUANG — tak lagi disiarkan tanpa filter. Tabel baru tetap gelap sampai `TBL_MODULE` memetakannya.
 
 ## 5. Pencabutan (severance)

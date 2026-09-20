@@ -28,6 +28,31 @@ TBL_MODULE: Dict[str, str] = {
     "bank_transfers": "kas_bank",            # G4 -> normalize KAS_BANK
     "credit_notes": "credit_note",           # G5 -> normalize CREDIT_NOTE
     "quotes": "quote",                       # G6 -> normalize QUOTE
+    # G7 whole-app remainder (24)
+    "products": "item",
+    "customers": "customer",
+    "vendors": "supplier",
+    "chart_of_accounts": "chart_of_accounts",
+    "bank_accounts": "kas_bank",
+    "warehouses": "warehouse",
+    "product_units": "unit",
+    "tax_codes": "tax",
+    "fiscal_periods": "period",
+    "journal_entries": "journal",
+    "expenses": "expense",
+    "vendor_credits": "debit_note",
+    "vendor_deposits": "vendor_deposit",
+    "stock_adjustments": "stock_adjust",
+    "employees": "employee",
+    "salary_components": "salary_component",
+    "pay_groups": "pay_group",
+    "payroll_runs": "payroll",
+    "production_orders": "work_order",
+    "work_centers": "work_center",
+    "bill_of_materials": "bom",
+    "user_tenant_roles": "team_management",
+    "tenant_config": "tenant_settings",
+    "payment_requests": "payment_request",
 }
 
 _DB = dict(
