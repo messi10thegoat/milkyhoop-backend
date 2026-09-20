@@ -19,6 +19,22 @@ def _to_date(s: str) -> date_type:
     return date_type(int(parts[0]), int(parts[1]), int(parts[2]))
 
 
+# D5: derived PSAK sub-category when coa.psak_sub_category is NULL (all seeded
+# tenants). Account_type + canonical account_code -> PSAK sub-bucket. Unmapped -> NULL
+# (stays in the "lainnya" bucket, journal-derived correct for totals).
+_PSAK_SUBCAT_DERIVE = """CASE
+    WHEN coa.account_type = 'RECEIVABLE' THEN 'TRADE_RECEIVABLE'
+    WHEN coa.account_code IN ('1-10600','1-10650') THEN 'INVENTORY'
+    WHEN coa.account_code IN ('1-20100','1-20200','1-20300','1-20400') THEN 'FIXED_ASSET'
+    WHEN coa.account_code = '1-20900' THEN 'ACCUM_DEPRECIATION'
+    WHEN coa.account_type = 'PAYABLE' THEN 'TRADE_PAYABLE'
+    WHEN coa.account_code = '2-20100' THEN 'NON_CURRENT_LIABILITY'
+    WHEN coa.account_type = 'LIABILITY' THEN 'CURRENT_LIABILITY'
+    WHEN coa.account_code IN ('3-10100','3-50000') THEN 'PAID_IN_CAPITAL'
+    WHEN coa.account_code IN ('3-20000','3-30000') THEN 'RETAINED_EARNINGS'
+    ELSE NULL END"""
+
+
 def _build_where(tenant_id, account_filter, start_date, end_date):
     """Shared WHERE builder for compute_balance and compute_balance_detail."""
     conditions = ["je.status = 'POSTED'", "je.tenant_id = $1"]
@@ -49,13 +65,16 @@ def _build_where(tenant_id, account_filter, start_date, end_date):
             params.append(val)
             idx += 1
         elif key == "psak_sub_category":
-            conditions.append(f"coa.psak_sub_category = ${idx}")
+            conditions.append(
+                f"COALESCE(coa.psak_sub_category, {_PSAK_SUBCAT_DERIVE}) = ${idx}"
+            )
             params.append(val)
             idx += 1
         elif key == "psak_sub_category_not_in":
             placeholders = ", ".join(f"${idx + i}" for i in range(len(val)))
             conditions.append(
-                f"(coa.psak_sub_category IS NULL OR coa.psak_sub_category NOT IN ({placeholders}))"
+                f"(COALESCE(coa.psak_sub_category, {_PSAK_SUBCAT_DERIVE}) IS NULL "
+                f"OR COALESCE(coa.psak_sub_category, {_PSAK_SUBCAT_DERIVE}) NOT IN ({placeholders}))"
             )
             for v in val:
                 params.append(v)
