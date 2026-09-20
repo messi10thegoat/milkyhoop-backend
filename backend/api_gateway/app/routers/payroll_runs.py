@@ -633,7 +633,10 @@ async def post_payroll(request: Request, run_id: UUID):
                 if r["component_type"] == "deduction"
                 and r["component_category"].startswith("bpjs_")
             )
-            total_net = total_earnings - total_pph21_ee - total_bpjs_ee
+            total_kasbon = sum(
+                r["total"] for r in slip_agg if r["component_category"] == "kasbon"
+            )
+            total_net = total_earnings - total_pph21_ee - total_bpjs_ee - total_kasbon
 
             # Resolve CoA accounts via role catalog (Law 27, Fase D4.3).
             # PPH21_PAYABLE -> 2-10310 (payroll-exclusive boundary), NOT
@@ -770,6 +773,76 @@ async def post_payroll(request: Request, run_id: UUID):
                     float(total_bpjs_er),
                 )
                 line_num += 1
+
+            # ---- KASBON: route kasbon deductions (component_category='kasbon') to the
+            # employee-advance ledger. Cr EMPLOYEE_ADVANCE (reduces Piutang Karyawan); net
+            # was already reduced by total_kasbon above. Per employee, FIFO across active
+            # advances (oldest granted_date first, cascade); an advance hitting 0 -> settled.
+            # Over-deduction (kasbon > total remaining) -> 422 and the WHOLE run rolls back
+            # (single transaction), so no employee is half-applied.
+            if total_kasbon > 0:
+                try:
+                    coa_emp_adv = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.EMPLOYEE_ADVANCE
+                    )
+                except AccountRoleUnmappedError:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "ACCOUNT_DEFAULT_UNMAPPED",
+                                "message": "Akun Piutang Karyawan (kasbon) belum diatur untuk usaha ini."},
+                    )
+                await conn.execute(
+                    """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+                       VALUES ($1, $2, $3, 0, $4, 'Potongan Kasbon (Piutang Karyawan)')""",
+                    str(journal_id), line_num, coa_emp_adv, float(total_kasbon),
+                )
+                line_num += 1
+                kasbon_rows = await conn.fetch(
+                    """SELECT employee_id, SUM(amount) AS kasbon
+                       FROM payroll_slip_lines
+                       WHERE payroll_id = $1 AND component_category = 'kasbon' AND amount > 0
+                       GROUP BY employee_id""",
+                    run_id,
+                )
+                for kr in kasbon_rows:
+                    emp_id = kr["employee_id"]
+                    left = float(kr["kasbon"])
+                    advs = await conn.fetch(
+                        """SELECT id, employee_advance_balance(id) AS remaining
+                           FROM employee_advances
+                           WHERE tenant_id = $1 AND employee_id = $2 AND status = 'active'
+                           ORDER BY granted_date, created_at""",
+                        ctx["tenant_id"], emp_id,
+                    )
+                    total_remaining = sum(float(a["remaining"]) for a in advs)
+                    if left > total_remaining + 0.005:
+                        emp_name = await conn.fetchval(
+                            "SELECT name FROM employees WHERE id = $1", emp_id
+                        ) or str(emp_id)
+                        raise HTTPException(
+                            status_code=422,
+                            detail={"code": "KASBON_OVER_DEDUCTION",
+                                    "message": f"Potongan kasbon {left:,.0f} melebihi sisa kasbon {total_remaining:,.0f} untuk {emp_name}."},
+                        )
+                    for a in advs:
+                        if left <= 0.005:
+                            break
+                        cut = min(float(a["remaining"]), left)
+                        if cut <= 0:
+                            continue
+                        await conn.execute(
+                            """INSERT INTO employee_advance_movements
+                                   (tenant_id, advance_id, employee_id, movement_type, amount, payroll_id, journal_id, created_by)
+                               VALUES ($1, $2, $3, 'deduction', $4, $5, $6, $7)""",
+                            ctx["tenant_id"], a["id"], emp_id, -cut, run_id, journal_id,
+                            (UUID(ctx["user_id"]) if ctx.get("user_id") else None),
+                        )
+                        left -= cut
+                        newbal = float(await conn.fetchval("SELECT employee_advance_balance($1)", a["id"]))
+                        if abs(newbal) < 0.005:
+                            await conn.execute(
+                                "UPDATE employee_advances SET status = 'settled' WHERE id = $1", a["id"]
+                            )
 
             # Law 20: DRAFT -> POSTED
             await conn.execute(
@@ -923,6 +996,30 @@ async def void_payroll(request: Request, run_id: UUID, body: VoidPayrollRequest)
                         rev_id,
                         orig["id"],
                     )
+
+                    # Kasbon: reverse this run's deduction movements (+amount restores the
+                    # derived balance) and un-settle any advance the run had auto-settled.
+                    _dmovs = await conn.fetch(
+                        """SELECT id, advance_id, employee_id, amount
+                           FROM employee_advance_movements
+                           WHERE payroll_id = $1 AND movement_type = 'deduction'""",
+                        run_id,
+                    )
+                    _ruid = UUID(ctx["user_id"]) if ctx.get("user_id") else None
+                    for _dm in _dmovs:
+                        await conn.execute(
+                            """INSERT INTO employee_advance_movements
+                                   (tenant_id, advance_id, employee_id, movement_type, amount, payroll_id, journal_id, reverses_movement_id, created_by)
+                               VALUES ($1, $2, $3, 'reversal', $4, $5, $6, $7, $8)""",
+                            ctx["tenant_id"], _dm["advance_id"], _dm["employee_id"],
+                            -float(_dm["amount"]), run_id, rev_id, _dm["id"], _ruid,
+                        )
+                    for _aid in {_dm["advance_id"] for _dm in _dmovs}:
+                        _bal = float(await conn.fetchval("SELECT employee_advance_balance($1)", _aid))
+                        if abs(_bal) > 0.005:
+                            await conn.execute(
+                                "UPDATE employee_advances SET status = 'active' WHERE id = $1 AND status = 'settled'", _aid
+                            )
 
             uid = UUID(ctx["user_id"]) if ctx.get("user_id") else None
             await conn.execute(
