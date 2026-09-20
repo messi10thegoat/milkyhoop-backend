@@ -123,6 +123,7 @@ from .routers import payroll_runs as payroll
 from .routers import payroll_payments
 from .routers import salary_components
 from .routers import payroll_config
+from .routers import employee_advances
 
 # Accounting Kernel (Layer 0) - 4 Core Modules
 from .routers import journals
@@ -792,6 +793,9 @@ app.include_router(
 )
 app.include_router(
     payroll_config.router, prefix="/api/payroll-config", tags=["payroll-config"]
+)
+app.include_router(
+    employee_advances.router, prefix="/api/employee-advances", tags=["employee-advances"]
 )
 
 

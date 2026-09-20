@@ -871,6 +871,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/[^/]+/journal\-entries$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+/open\-bills$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+/transactions$", ["GET"], "supplier", "R"),
+    # Kasbon (employee advances) — module payroll (V281)
+    (r"^/api/employee-advances$", ["POST"], "payroll", "C"),
+    (r"^/api/employee-advances$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/balances$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/[^/]+/void$", ["POST"], "payroll", "V"),
 ]
 
 # READ default-open allowlist — for the STEP 2 default-closed flip (not yet built).

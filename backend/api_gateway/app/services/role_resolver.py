@@ -171,6 +171,7 @@ class AccountRole:
     # shortfall -> Beban Lain-lain (per-tenant mapped).
     BANK_ADJUSTMENT_GAIN: Final[str] = "BANK_ADJUSTMENT_GAIN"
     BANK_ADJUSTMENT_LOSS: Final[str] = "BANK_ADJUSTMENT_LOSS"
+    EMPLOYEE_ADVANCE: Final[str] = "EMPLOYEE_ADVANCE"  # V281 kasbon (Piutang Karyawan, asset)
     CURRENCY_UNREALIZED_FX: Final[str] = "CURRENCY_UNREALIZED_FX"
 
     # ---- V158 D3.1 RESERVED (forward-compat, NOT TIER 1, NOT seeded) --------
@@ -274,6 +275,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "CURRENCY_LOSS",
         "BANK_ADJUSTMENT_GAIN",
         "BANK_ADJUSTMENT_LOSS",
+        "EMPLOYEE_ADVANCE",
         "CURRENCY_UNREALIZED_FX",
         # V158 D3.1 reserved (forward-compat, NOT seeded)
         "WIP_RAW",
