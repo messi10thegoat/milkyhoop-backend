@@ -694,6 +694,44 @@ check_17_bill_inventory_reconciliation() {
     fi
 }
 
+# EMP_ADV_RECON_V281 -- Check 18: employee-advance (kasbon) reconciliation.
+# verify_employee_advance_reconciliation_all(): per tenant, SUM(employee_advance_movements.amount)
+# == GL net (Dr-Cr) of the EMPLOYEE_ADVANCE role account (POSTED, is_effective). Balance is
+# DERIVED from movements, so this GL-vs-ledger check is the invariant that can drift (a movement
+# without its journal leg, or vice versa). HIGH severity (value integrity).
+check_18_employee_advance_reconciliation() {
+    local tenant="$1"
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_employee_advance_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        local has_data
+        has_data=$(psql_cmd "SELECT (EXISTS(SELECT 1 FROM employee_advance_movements WHERE tenant_id = '$tenant') OR EXISTS(SELECT 1 FROM account_roles WHERE tenant_id = '$tenant' AND role_key = 'EMPLOYEE_ADVANCE'))::text;")
+        if [ "$has_data" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+        elif [ "$has_data" = "false" ]; then
+            CHK_PASS=1
+            CHK_DETAIL="__NODATA__ tak ada kasbon/uang muka karyawan"
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ employee-advance verdikt KOSONG padahal tenant punya data kasbon (tenants-CTE tak mencakup tenant ini)"
+            detail "[CHECK 18] $tenant: $CHK_DETAIL"
+        fi
+    else
+        local drift
+        drift=$(psql_cmd "SELECT drift FROM verify_employee_advance_reconciliation_all() WHERE tenant_id = '$tenant';")
+        CHK_PASS=0
+        CHK_DETAIL="employee advance reconciliation $verdict (drift=$drift)"
+        detail "[CHECK 18] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_10_cogs_orphans() {
     local tenant="$1"
     local count
@@ -1093,6 +1131,22 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}bill inv recon: $CHK_DETAIL; "
         log "  HIGH [17] Bill Inventory Reconciliation: $CHK_DETAIL"
+    fi
+
+    # Check 18: Employee Advance (Kasbon) Reconciliation
+    check_18_employee_advance_reconciliation "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ] && is_nodata "$CHK_DETAIL"; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+        note_nodata 18 "Employee Advance Reconciliation" "$TENANT"
+    elif [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 18 "Employee Advance Reconciliation" "$CHK_DETAIL"
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}emp advance recon: $CHK_DETAIL; "
+        log "  HIGH [18] Employee Advance Reconciliation: $CHK_DETAIL"
     fi
 
     # Check 10: COGS Orphans
