@@ -375,6 +375,36 @@ async def calculate_employee_slip(
             }
         )
 
+    # Salary-config DEDUCTION components (e.g. kasbon / uang muka installment). The amount is
+    # per-run via variable_inputs -- the owner types how much to deduct THIS run in the same
+    # per-employee structure as days_worked/overtime_hours -- falling back to the configured
+    # esc.amount for a standing installment. amount <= 0 -> not deducted this run (optional,
+    # not fail-loud like a daily earning). The component KEEPS its own category (e.g. 'kasbon')
+    # so post_payroll routes it to the employee-advance ledger (Cr EMPLOYEE_ADVANCE, FIFO).
+    # calculate DELETE-rebuilds the slip lines, so recompute REPLACES this line, never doubles.
+    for cfg in salary_config:
+        comp = components_map.get(str(cfg["component_id"]))
+        if not comp or comp["type"] != "deduction":
+            continue
+        vi = variable_inputs.get(str(comp["id"]), {}) if isinstance(variable_inputs, dict) else {}
+        amount = d(vi["amount"]) if vi.get("amount") is not None else d(cfg["amount"])
+        amount = round2(amount)
+        if amount <= 0:
+            continue
+        deductions.append(
+            {
+                "component_id": str(comp["id"]),
+                "component_name": comp["name"],
+                "component_type": "deduction",
+                "component_category": comp["category"],
+                "amount": float(amount),
+                "quantity": None,
+                "rate": None,
+                "is_taxable": comp["is_taxable"],
+                "sort_order": comp["sort_order"],
+            }
+        )
+
     total_deductions = round2(sum(d(dd["amount"]) for dd in deductions))
     net = round2(gross - total_deductions)
 
