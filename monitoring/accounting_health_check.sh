@@ -562,6 +562,29 @@ check_16_deferred_revenue_reconciliation() {
     fi
 }
 
+# BILL_INV_RECON_V272 -- Check 17: bill Persediaan == inventory_ledger (dual-ledger).
+# verify_bill_inventory_reconciliation_all(): per tenant, NET Persediaan from BILL +
+# RECLASSIFY_BILL_INVENTORY (Cr nets reclassified debits back out) vs SUM(inventory_ledger
+# .total_cost) WHERE source_type='BILL'. A non-inventory bill debiting Persediaan without
+# an inventory_ledger inbound -> GL>ledger -> RED (proven 2-sided V272). Exemption store
+# bill_inventory_reconciliation_exemptions grandfathers frozen kaos drift; a drift CHANGE
+# still fails loud (FAIL_DRIFT_CHANGED). HIGH severity (value integrity).
+check_17_bill_inventory_reconciliation() {
+    local tenant="$1"
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_bill_inventory_reconciliation_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "PASS" ] || [ "$verdict" = "PASS_EXEMPT" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    else
+        local drift
+        drift=$(psql_cmd "SELECT drift FROM verify_bill_inventory_reconciliation_all() WHERE tenant_id = '$tenant';")
+        CHK_PASS=0
+        CHK_DETAIL="bill inventory reconciliation $verdict (drift=$drift)"
+        detail "[CHECK 17] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_10_cogs_orphans() {
     local tenant="$1"
     local count
@@ -933,6 +956,17 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}inv WAC recon: $CHK_DETAIL; "
         log "  HIGH [15] Inventory WAC Reconciliation: $CHK_DETAIL"
+    fi
+
+    # Check 17: Bill Inventory Reconciliation (GL Persediaan-from-bill vs inventory_ledger)
+    check_17_bill_inventory_reconciliation "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}bill inv recon: $CHK_DETAIL; "
+        log "  HIGH [17] Bill Inventory Reconciliation: $CHK_DETAIL"
     fi
 
     # Check 10: COGS Orphans
