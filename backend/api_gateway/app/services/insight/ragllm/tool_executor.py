@@ -7,6 +7,7 @@ Uses httpx to call internal API endpoints (localhost:8000 inside container).
 
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 
 import httpx
@@ -74,11 +75,18 @@ class ToolExecutor:
             }
 
         path = endpoint_info["path"]
+        # Substitute {param} path segments from arguments (e.g. /neraca/{periode}).
+        # Substituted keys are dropped from the query params below (E4).
+        _path_keys = set(re.findall(r"\{(\w+)\}", path))
+        for _k in _path_keys:
+            path = path.replace("{" + _k + "}", str(arguments.get(_k, "")))
         url = f"{INTERNAL_API_BASE}{path}"
 
-        # Build query params from arguments (skip None/empty)
+        # Build query params from arguments (skip None/empty and path-substituted keys)
         params = {}
         for k, v in arguments.items():
+            if k in _path_keys:
+                continue
             if v is not None and v != "":
                 params[k] = v
 

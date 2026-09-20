@@ -31,6 +31,20 @@ API_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_balance_sheet",
+            "description": "Dapatkan neraca (balance sheet / laporan posisi keuangan): aset, kewajiban, dan ekuitas pada akhir sebuah periode akuntansi.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "periode": {"type": "string", "description": "Periode akuntansi format YYYY-MM, mis. 2026-09 (neraca per AKHIR periode itu)."},
+                },
+                "required": ["periode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_cash_flow",
             "description": "Dapatkan laporan arus kas (cash flow statement). Menunjukkan arus kas masuk dan keluar dari operasi, investasi, dan pendanaan.",
             "parameters": {
@@ -528,6 +542,7 @@ API_TOOLS: List[Dict[str, Any]] = [
 TOOL_ENDPOINTS = {
     # Reports
     "get_profit_loss":      {"method": "GET", "path": "/api/reports/profit-loss"},
+    "get_balance_sheet":    {"method": "GET", "path": "/api/reports/neraca/{periode}"},
     "get_cash_flow":        {"method": "GET", "path": "/api/reports/cash-flow"},
     "get_trial_balance":    {"method": "GET", "path": "/api/reports/trial-balance"},
     "get_ar_aging":         {"method": "GET", "path": "/api/reports/ar-aging"},
