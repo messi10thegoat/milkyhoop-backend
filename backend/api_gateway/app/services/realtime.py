@@ -22,6 +22,8 @@ TBL_MODULE: Dict[str, str] = {
     "bills": "bill",                    # G1 (Tahap 2) -> normalize BILL
     "bill_payments_v2": "send_payment",  # G1 (Tahap 2) -> normalize PAYMENT
     "sales_orders": "sales_order",       # G2 (Tahap 2) -> normalize SALES_ORDER
+    "receive_payments": "receive_payment",   # G3 -> normalize RECEIPT
+    "customer_deposits": "customer_deposit",  # G3 -> normalize CUSTOMER_DEPOSIT
 }
 
 _DB = dict(
