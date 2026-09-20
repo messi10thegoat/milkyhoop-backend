@@ -67,6 +67,9 @@ class UpdateEmployeeRequest(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     is_active: Optional[bool] = None
+    # TF/CASH (V284): owner override of how this employee is paid. NULL -> the payroll
+    # payment split defaults from bank presence (bank_account_number on file -> transfer).
+    payment_method: Optional[str] = Field(default=None, pattern=r"^(transfer|cash)$")
 
 
 class SalaryConfigItem(BaseModel):

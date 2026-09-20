@@ -36,7 +36,12 @@ class CreatePayrollPaymentRequest(BaseModel):
     payroll_id: UUID
     payment_type: str = Field(..., pattern=r"^(salary|pph21|bpjs)$")
     payment_date: date
-    bank_account_id: UUID
+    # bank_account_id = the TRANSFER account. Optional: a cash-only salary run needs no
+    # transfer account (and non-salary payments always use it). cash_account_id = the Kas
+    # bank_accounts row for cash-paid staff. The handler requires each only when the run's
+    # split actually uses that method (TF/CASH, V284).
+    bank_account_id: Optional[UUID] = None
+    cash_account_id: Optional[UUID] = None
     reference_number: Optional[str] = None
     notes: Optional[str] = None
 

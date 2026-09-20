@@ -53,14 +53,41 @@ async def create_payment(request: Request, body: CreatePayrollPaymentRequest):
         if not run:
             raise HTTPException(400, detail="Payroll run must be posted before payment")
 
-        # Calculate amount based on payment type
+        # Calculate amount based on payment type. For salary, split the net by per-employee
+        # method (TF/CASH, V284): employees.payment_method with a bank-presence default. The
+        # two amounts are SNAPSHOTTED on the payment row -> a later method change never
+        # retro-touches a posted payment.
+        transfer_amount = None
+        cash_amount = None
+        cash_account_id = None
         if body.payment_type == "salary":
-            amount = await conn.fetchval(
-                """SELECT SUM(CASE WHEN component_type = 'earning' THEN amount ELSE 0 END) -
-                          SUM(CASE WHEN component_type = 'deduction' THEN amount ELSE 0 END)
-                   FROM payroll_slip_lines WHERE payroll_id = $1""",
+            method_rows = await conn.fetch(
+                """WITH emp_net AS (
+                       SELECT employee_id,
+                              SUM(CASE WHEN component_type='earning' THEN amount ELSE 0 END)
+                            - SUM(CASE WHEN component_type='deduction' THEN amount ELSE 0 END) AS net
+                       FROM payroll_slip_lines WHERE payroll_id = $1 GROUP BY employee_id
+                   )
+                   SELECT COALESCE(e.payment_method,
+                            CASE WHEN NULLIF(btrim(e.bank_account_number), '') IS NOT NULL
+                                 THEN 'transfer' ELSE 'cash' END) AS method,
+                          COALESCE(SUM(en.net), 0) AS total
+                   FROM emp_net en JOIN employees e ON e.id = en.employee_id
+                   GROUP BY 1""",
                 body.payroll_id,
             )
+            by = {r["method"]: float(r["total"]) for r in method_rows}
+            transfer_amount = round(by.get("transfer", 0.0), 2)
+            cash_amount = round(by.get("cash", 0.0), 2)
+            amount = round(transfer_amount + cash_amount, 2)
+            # Require an account only for a method the run actually uses.
+            if transfer_amount > 0 and not body.bank_account_id:
+                raise HTTPException(400, detail={"code": "TRANSFER_ACCOUNT_REQUIRED",
+                    "message": "Rekening transfer wajib karena ada karyawan yang dibayar transfer."})
+            if cash_amount > 0 and not body.cash_account_id:
+                raise HTTPException(400, detail={"code": "CASH_ACCOUNT_REQUIRED",
+                    "message": "Akun kas wajib karena ada karyawan yang dibayar tunai."})
+            cash_account_id = body.cash_account_id if cash_amount > 0 else None
         elif body.payment_type == "pph21":
             amount = await conn.fetchval(
                 """SELECT SUM(amount) FROM payroll_slip_lines
@@ -83,8 +110,9 @@ async def create_payment(request: Request, body: CreatePayrollPaymentRequest):
         row = await conn.fetchrow(
             """INSERT INTO payroll_payments
                (tenant_id, payroll_id, payment_type, payment_date, amount,
-                bank_account_id, reference_number, notes, status, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9)
+                bank_account_id, cash_account_id, transfer_amount, cash_amount,
+                reference_number, notes, status, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12)
                RETURNING *""",
             ctx["tenant_id"],
             body.payroll_id,
@@ -92,11 +120,15 @@ async def create_payment(request: Request, body: CreatePayrollPaymentRequest):
             body.payment_date,
             amount,
             body.bank_account_id,
+            cash_account_id,
+            transfer_amount,
+            cash_amount,
             body.reference_number,
             body.notes,
             uid,
         )
-        return {"success": True, "data": dict(row)}
+        return {"success": True, "data": dict(row),
+                "totals": {"transfer": transfer_amount, "cash": cash_amount}}
 
 
 @router.post("/{payment_id}/post")
@@ -122,26 +154,43 @@ async def post_payment(request: Request, payment_id: UUID):
             if payment["status"] != "draft":
                 raise HTTPException(400, detail="Can only post draft payments")
 
-            # Get bank account CoA
-            bank = await conn.fetchrow(
-                "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                payment["bank_account_id"],
-                ctx["tenant_id"],
-            )
-            if not bank or not bank["coa_id"]:
-                raise HTTPException(400, detail="Bank account has no linked CoA")
-
             ptype = payment["payment_type"]
             source_type = SOURCE_TYPE_MAP[ptype]
             amount = float(payment["amount"])
 
-            # Build journal lines
+            async def _bank_coa(bank_account_id):
+                r = await conn.fetchrow(
+                    "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                    bank_account_id,
+                    ctx["tenant_id"],
+                )
+                if not r or not r["coa_id"]:
+                    raise HTTPException(400, detail="Bank account has no linked CoA")
+                return r["coa_id"]
+
+            # Build journal lines: debit the payable(s), credit the settlement account(s).
             debit_accounts = []
+            credit_accounts = []
             if ptype == "salary":
                 coa = await resolve_account_id_by_role(
                     conn, ctx["tenant_id"], AccountRole.SALARY_PAYABLE
                 )
                 debit_accounts.append((coa, amount, "Bayar Gaji"))
+                # TF/CASH (V284): credit the transfer bank + the cash account by the amounts
+                # SNAPSHOTTED at create -- never recomputed here, so a later payment_method
+                # change cannot retro-touch this posted payment.
+                transfer_amt = float(payment["transfer_amount"] or 0)
+                cash_amt = float(payment["cash_amount"] or 0)
+                if transfer_amt <= 0 and cash_amt <= 0:
+                    transfer_amt = amount  # legacy payment (pre-V284): whole amount via bank
+                if transfer_amt > 0:
+                    t_coa = await _bank_coa(payment["bank_account_id"])
+                    credit_accounts.append((t_coa, transfer_amt, "Pembayaran gaji (transfer)"))
+                if cash_amt > 0:
+                    if not payment["cash_account_id"]:
+                        raise HTTPException(400, detail="Akun kas wajib untuk karyawan dibayar tunai")
+                    c_coa = await _bank_coa(payment["cash_account_id"])
+                    credit_accounts.append((c_coa, cash_amt, "Pembayaran gaji (tunai)"))
             elif ptype == "pph21":
                 # Fase D4.3: payroll-exclusive PPH21_PAYABLE -> 2-10310. The
                 # legacy COA_HUTANG_PPH21 literal pointed to 2-10300 (generic
@@ -182,6 +231,11 @@ async def post_payment(request: Request, payment_id: UUID):
 
             total_debit = sum(a[1] for a in debit_accounts)
 
+            # Non-salary payments credit a single bank account (unchanged).
+            if ptype != "salary":
+                bank_coa = await _bank_coa(payment["bank_account_id"])
+                credit_accounts.append((bank_coa, total_debit, f"Pembayaran {ptype}"))
+
             # Create journal (DRAFT -> lines -> POSTED)
             journal_number = f"JV-PP-{ptype.upper()}-{payment_id.hex[:8]}"
             journal_id = await conn.fetchval(
@@ -213,16 +267,19 @@ async def post_payment(request: Request, payment_id: UUID):
                 )
                 line_num += 1
 
-            # Cr Bank
-            await conn.execute(
-                """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
-                   VALUES ($1, $2, $3, 0, $4, $5)""",
-                str(journal_id),
-                line_num,
-                str(bank["coa_id"]),
-                total_debit,
-                f"Pembayaran {ptype}",
-            )
+            # Credit the settlement account(s): one bank for non-salary; transfer + cash legs
+            # for a split salary payment.
+            for coa_id, amt, memo in credit_accounts:
+                await conn.execute(
+                    """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+                       VALUES ($1, $2, $3, 0, $4, $5)""",
+                    str(journal_id),
+                    line_num,
+                    coa_id,
+                    amt,
+                    memo,
+                )
+                line_num += 1
 
             await conn.execute(
                 "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
