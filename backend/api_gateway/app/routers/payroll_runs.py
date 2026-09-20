@@ -171,6 +171,18 @@ async def create_payroll_run(request: Request, body: CreatePayrollRequest):
                 uid,
             )
 
+            # Persist the run roster (V283): calculate sources employees from who was
+            # REQUESTED here, not from the fixed-earning slip lines seeded below (which
+            # silently drop a worker paid purely by daily/hourly rate). Idempotent.
+            for emp_id in body.employee_ids:
+                await conn.execute(
+                    "INSERT INTO payroll_run_employees (tenant_id, payroll_id, employee_id) "
+                    "VALUES ($1, $2, $3) ON CONFLICT (payroll_id, employee_id) DO NOTHING",
+                    ctx["tenant_id"],
+                    run_id,
+                    emp_id,
+                )
+
             # Create initial slip lines from employee salary configs
             for emp_id in body.employee_ids:
                 emp = await conn.fetchrow(
@@ -368,10 +380,19 @@ async def calculate_payroll(request: Request, run_id: UUID):
         bpjs_cfg = await get_bpjs_config(conn, ctx["tenant_id"])
 
         # Get all employees in this run (from existing slip lines)
+        # V283: source the roster from payroll_run_employees (who was requested), NOT
+        # from the seeded slip lines -- otherwise a daily/hourly-only worker with no fixed
+        # earning is dropped. Fall back to slip lines for legacy runs not covered by the
+        # V283 backfill.
         emp_ids = await conn.fetch(
-            "SELECT DISTINCT employee_id FROM payroll_slip_lines WHERE payroll_id = $1",
+            "SELECT employee_id FROM payroll_run_employees WHERE payroll_id = $1 ORDER BY created_at",
             run_id,
         )
+        if not emp_ids:
+            emp_ids = await conn.fetch(
+                "SELECT DISTINCT employee_id FROM payroll_slip_lines WHERE payroll_id = $1",
+                run_id,
+            )
         if not emp_ids:
             raise HTTPException(400, detail="No employees in this payroll run")
 
@@ -396,6 +417,7 @@ async def calculate_payroll(request: Request, run_id: UUID):
             emp_count = 0
 
             results = []
+            empty_employees = []  # roster members that produced no slip lines (fail loud)
 
             for emp_row in emp_ids:
                 emp_id = emp_row["employee_id"]
@@ -406,6 +428,7 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     ctx["tenant_id"],
                 )
                 if not employee:
+                    empty_employees.append((str(emp_id), "(karyawan tidak ditemukan)"))
                     continue
 
                 salary_config = await conn.fetch(
@@ -478,6 +501,11 @@ async def calculate_payroll(request: Request, run_id: UUID):
                 all_lines = (
                     slip["earnings"] + slip["deductions"] + slip["employer_costs"]
                 )
+                if not all_lines:
+                    # No component produced a line (no assigned salary components, or the
+                    # employee is entirely outside the period). Name them rather than drop.
+                    empty_employees.append((str(emp_id), employee["name"]))
+                    continue
                 for line in all_lines:
                     await conn.execute(
                         """INSERT INTO payroll_slip_lines
@@ -506,6 +534,24 @@ async def calculate_payroll(request: Request, run_id: UUID):
                 total_net += Decimal(str(slip["net"]))
                 emp_count += 1
                 results.append(slip)
+
+            if empty_employees:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "PAYROLL_EMPTY_EMPLOYEES",
+                        "message": (
+                            "Karyawan berikut belum menghasilkan baris gaji (belum ada "
+                            "komponen gaji yang ditetapkan, atau di luar periode). Tetapkan "
+                            "komponen gaji atau keluarkan dari payroll ini: "
+                            + ", ".join(n for _, n in empty_employees)
+                            + "."
+                        ),
+                        "employees": [
+                            {"employee_id": i, "name": n} for i, n in empty_employees
+                        ],
+                    },
+                )
 
             # Update run totals
             await conn.execute(
