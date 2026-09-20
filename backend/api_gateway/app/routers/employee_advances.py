@@ -102,6 +102,9 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
             )
             if not emp:
                 raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan")
+            from ..services.pay_group_access import employee_in_scope
+            if not await employee_in_scope(conn, tenant_id, ctx["user_id"], body.employee_id):
+                raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan")
 
             advance_id = uuid_module.uuid4()
             journal_id = uuid_module.uuid4()
@@ -172,6 +175,13 @@ async def list_advances(
         if status:
             params.append(status)
             where.append(f"a.status = ${len(params)}")
+        from ..services.pay_group_access import accessible_pay_group_filter
+        _isall, _acc = await accessible_pay_group_filter(conn, ctx["tenant_id"], ctx["user_id"])
+        if not _isall:
+            if not _acc:
+                return {"success": True, "data": []}
+            params.append(_acc)
+            where.append(f"a.employee_id IN (SELECT e.id FROM employees e WHERE e.tenant_id = $1 AND e.pay_group_id = ANY(${len(params)}::uuid[]))")
         rows = await conn.fetch(
             f"""SELECT a.id, a.employee_id, a.principal, a.granted_date, a.status,
                        a.notes, a.grant_journal_id,
@@ -190,15 +200,21 @@ async def employee_balances(request: Request):
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
+        from ..services.pay_group_access import accessible_pay_group_filter
+        _isall, _acc = await accessible_pay_group_filter(conn, ctx["tenant_id"], ctx["user_id"])
+        if not _isall and not _acc:
+            return {"success": True, "data": []}
+        _pgclause = "" if _isall else " AND m.employee_id IN (SELECT e.id FROM employees e WHERE e.tenant_id = $1 AND e.pay_group_id = ANY($2::uuid[]))"
+        _pgparams = [ctx["tenant_id"]] if _isall else [ctx["tenant_id"], _acc]
         rows = await conn.fetch(
-            """SELECT m.employee_id,
+            f"""SELECT m.employee_id,
                       COALESCE(SUM(m.amount), 0)::numeric(18,2) AS remaining_balance
                FROM employee_advance_movements m
-               WHERE m.tenant_id = $1
+               WHERE m.tenant_id = $1{_pgclause}
                GROUP BY m.employee_id
                HAVING COALESCE(SUM(m.amount), 0) <> 0
                ORDER BY 2 DESC""",
-            ctx["tenant_id"],
+            *_pgparams,
         )
     return {"success": True, "data": [dict(r) for r in rows]}
 
@@ -221,6 +237,9 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
                 advance_id, tenant_id,
             )
             if not adv:
+                raise HTTPException(status_code=404, detail="Kasbon tidak ditemukan")
+            from ..services.pay_group_access import employee_in_scope
+            if not await employee_in_scope(conn, tenant_id, ctx["user_id"], adv["employee_id"]):
                 raise HTTPException(status_code=404, detail="Kasbon tidak ditemukan")
             if adv["status"] == "void":
                 raise HTTPException(status_code=400, detail="Kasbon sudah dibatalkan")

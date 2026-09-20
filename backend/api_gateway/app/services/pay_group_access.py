@@ -47,3 +47,29 @@ async def get_user_role_code(user_id: str, tenant_id: str, conn) -> str:
     from .role_resolution import try_resolve_business_role
 
     return await try_resolve_business_role(conn, user_id, tenant_id) or "VIEWER"
+
+
+async def employee_in_scope(conn, tenant_id: str, user_id, employee_id) -> bool:
+    """True if the caller may see/act on this employee: their pay-group is accessible
+    (OWNER/ADMIN always). Unassigned employees (NULL pay_group) are OWNER/ADMIN-only.
+    RULE (privacy): EVERY endpoint taking an employee_id — by-id or nested, READ OR WRITE —
+    must gate on this. The list views filtering is NOT the guarantee (see payroll/team-access doc)."""
+    role = await get_user_role_code(str(user_id), tenant_id, conn)
+    if role in ("OWNER", "ADMIN"):
+        return True
+    accessible = set(await get_accessible_pay_group_ids(str(user_id), tenant_id, role, conn))
+    if not accessible:
+        return False
+    pg = await conn.fetchval(
+        "SELECT pay_group_id FROM employees WHERE id = $1 AND tenant_id = $2", employee_id, tenant_id
+    )
+    return pg is not None and str(pg) in accessible
+
+
+async def accessible_pay_group_filter(conn, tenant_id: str, user_id):
+    """For LIST endpoints. Returns (is_all, ids): OWNER/ADMIN -> (True, None) no filter;
+    limited -> (False, [pay_group_ids]) (possibly empty = sees none)."""
+    role = await get_user_role_code(str(user_id), tenant_id, conn)
+    if role in ("OWNER", "ADMIN"):
+        return True, None
+    return False, await get_accessible_pay_group_ids(str(user_id), tenant_id, role, conn)

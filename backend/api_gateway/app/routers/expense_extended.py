@@ -914,6 +914,11 @@ async def list_employees(
                 filter_clause = " AND is_active = $3"
                 params.append(is_active)
 
+            from ..services.pay_group_access import accessible_pay_group_filter
+            _isall, _acc = await accessible_pay_group_filter(conn, ctx["tenant_id"], ctx["user_id"])
+            if not _isall:
+                params.append(_acc or [])
+                filter_clause += f" AND pay_group_id = ANY(${len(params)}::uuid[])"
             rows = await conn.fetch(
                 f"""
                 SELECT id, employee_code, name, email, department, position, is_active

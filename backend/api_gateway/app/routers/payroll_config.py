@@ -117,19 +117,24 @@ async def monthly_recap(
                 "message": "No posted payroll for this period",
             }
 
+        from ..services.pay_group_access import accessible_pay_group_filter
+        _isall, _acc = await accessible_pay_group_filter(conn, ctx["tenant_id"], ctx["user_id"])
+        _acc = _acc or []
+        _pgf = "" if _isall else " AND e.pay_group_id = ANY($2::uuid[])"
+        _pgp = [run["id"]] if _isall else [run["id"], _acc]
         # Per-employee breakdown
         employees = await conn.fetch(
-            """SELECT e.name, e.employee_code, e.position, e.department,
+            f"""SELECT e.name, e.employee_code, e.position, e.department,
                       SUM(CASE WHEN psl.component_type = 'earning' THEN psl.amount ELSE 0 END) as gross,
                       SUM(CASE WHEN psl.component_type = 'deduction' THEN psl.amount ELSE 0 END) as deductions,
                       SUM(CASE WHEN psl.component_category = 'pph21' THEN psl.amount ELSE 0 END) as pph21,
                       SUM(CASE WHEN psl.component_type = 'employer_cost' THEN psl.amount ELSE 0 END) as employer_cost
                FROM payroll_slip_lines psl
                JOIN employees e ON e.id = psl.employee_id
-               WHERE psl.payroll_id = $1
+               WHERE psl.payroll_id = $1""" + _pgf + """
                GROUP BY e.id, e.name, e.employee_code, e.position, e.department
                ORDER BY e.name""",
-            run["id"],
+            *_pgp,
         )
 
         # Totals
@@ -139,8 +144,8 @@ async def monthly_recap(
                   SUM(CASE WHEN component_type = 'deduction' THEN amount ELSE 0 END) as total_deductions,
                   SUM(CASE WHEN component_category = 'pph21' THEN amount ELSE 0 END) as total_pph21,
                   SUM(CASE WHEN component_type = 'employer_cost' THEN amount ELSE 0 END) as total_employer_cost
-               FROM payroll_slip_lines WHERE payroll_id = $1""",
-            run["id"],
+               FROM payroll_slip_lines WHERE payroll_id = $1""" + ("" if _isall else " AND employee_id IN (SELECT id FROM employees WHERE tenant_id = '' AND pay_group_id = ANY($2::uuid[]))").replace("tenant_id = \'\'", "tenant_id = $3") ,
+            *( [run["id"]] if _isall else [run["id"], _acc, ctx["tenant_id"]] ),
         )
 
         return {

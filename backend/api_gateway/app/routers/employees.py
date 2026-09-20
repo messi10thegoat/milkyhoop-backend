@@ -251,6 +251,9 @@ async def get_employee(request: Request, employee_id: UUID):
         )
         if not row:
             raise HTTPException(404, detail="Employee not found")
+        from ..services.pay_group_access import employee_in_scope
+        if not await employee_in_scope(conn, ctx["tenant_id"], ctx["user_id"], employee_id):
+            raise HTTPException(404, detail="Employee not found")
         return {"success": True, "data": dict(row)}
 
 
@@ -272,6 +275,9 @@ async def update_employee(
             ctx["tenant_id"],
         )
         if not existing:
+            raise HTTPException(404, detail="Employee not found")
+        from ..services.pay_group_access import employee_in_scope
+        if not await employee_in_scope(conn, ctx["tenant_id"], ctx["user_id"], employee_id):
             raise HTTPException(404, detail="Employee not found")
 
         updates = {}
@@ -310,6 +316,9 @@ async def delete_employee(request: Request, employee_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        from ..services.pay_group_access import employee_in_scope
+        if not await employee_in_scope(conn, ctx["tenant_id"], ctx["user_id"], employee_id):
+            raise HTTPException(404, detail="Employee not found")
         row = await conn.fetchrow(
             """UPDATE employees SET is_active = false, updated_at = now()
                WHERE id = $1 AND tenant_id = $2 RETURNING id, name""",
@@ -330,6 +339,9 @@ async def get_salary_config(request: Request, employee_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        from ..services.pay_group_access import employee_in_scope
+        if not await employee_in_scope(conn, ctx["tenant_id"], ctx["user_id"], employee_id):
+            raise HTTPException(404, detail="Employee not found")
         rows = await conn.fetch(
             """SELECT esc.id, esc.component_id, sc.code as component_code,
                       sc.name as component_name, sc.type, sc.category,
@@ -361,6 +373,9 @@ async def set_salary_config(
             ctx["tenant_id"],
         )
         if not emp:
+            raise HTTPException(404, detail="Employee not found")
+        from ..services.pay_group_access import employee_in_scope
+        if not await employee_in_scope(conn, ctx["tenant_id"], ctx["user_id"], employee_id):
             raise HTTPException(404, detail="Employee not found")
 
         async with conn.transaction():
