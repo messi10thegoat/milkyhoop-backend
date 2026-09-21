@@ -214,6 +214,13 @@ CALCULATION_TEMPLATES: dict[str, CalculationTemplate] = {
         label="Total Dibayar Bulan Ini",
         format_as_currency=True,
     ),
+    "calc_sum_salary_this_month": CalculationTemplate(
+        calc_type="SUMMARY_FIELD",
+        source_endpoint="/api/payroll/summary",
+        source_field="totalAmount",  # flat camelCase shape, journal-derived net salary
+        label="Total Gaji Bersih (Penggajian)",
+        format_as_currency=True,
+    ),
     "calc_count_sales_invoices_active": CalculationTemplate(
         calc_type="COUNT",
         source_endpoint="/api/sales-invoices",
