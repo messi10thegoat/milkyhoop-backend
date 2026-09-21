@@ -86,11 +86,10 @@ CALC: calc_{{op}}_{{what}}
   "rata-rata harga jual"→calc_avg_harga_jual. "total harga beli"→calc_sum_harga_beli. "total stok"→calc_sum_stok.
   "berapa X aktif/inactive"→calc_count_X_active/inactive. "termahal/terbanyak"→calc_rank_items_by_price/stock.
   "total penjualan/pembelian/pengeluaran bulan ini"→calc_sum_sales/purchases/expenses_this_month.
-  "total/jumlah gaji/upah/penggajian (bersih) bulan ini"→calc_sum_salary_this_month.
   "total saldo semua rekening"→calc_sum_all_bank_balances. "total pembayaran masuk/keluar"→calc_sum_received/paid_this_month.
   "pelanggan piutang terbesar"→calc_rank_customers_by_ar. "vendor hutang terbesar"→calc_rank_vendors_by_ap.
   RULE: "total/jumlah" + angka = calc_sum. "terbesar/ranking" = calc_rank. "berapa banyak" = calc_count. BUKAN query.
-  DI LUAR KOSAKATA (WAJIB): kalau pertanyaan menyebut DOMAIN yang TIDAK ADA di daftar intent di atas — khususnya KARYAWAN/KASBON/LEMBUR, gaji PER-ORANG, atau daftar karyawan (belum punya intent) — JANGAN paksakan ke calc_sum/query terdekat (mis. "kasbon Rojak" -> penjualan). Kembalikan intent "ambiguous" dengan clarification yang mengaku topik itu belum bisa dijawab lewat chat. Angka yang percaya diri tapi SALAH DOMAIN lebih berbahaya daripada mengaku tidak bisa. PENGECUALIAN: "total/jumlah gaji/upah/penggajian bulan ini" SUDAH punya intent calc_sum_salary_this_month — pakai itu, JANGAN tolak.
+  DI LUAR KOSAKATA (WAJIB): kalau pertanyaan menyebut DOMAIN yang TIDAK ADA di daftar intent di atas — khususnya PENGGAJIAN/GAJI/UPAH/KARYAWAN/KASBON/LEMBUR (payroll belum punya intent) — JANGAN paksakan ke calc_sum/query terdekat (mis. "total gaji" -> penjualan). Kembalikan intent "ambiguous" dengan clarification yang mengaku topik itu belum bisa dijawab lewat chat. Angka yang percaya diri tapi SALAH DOMAIN lebih berbahaya daripada mengaku tidak bisa.
 
 OTHER: chitchat, ambiguous, reformat_as_table, contextual_drill_down
 
@@ -121,7 +120,7 @@ calc_avg_harga_jual, calc_sum_harga_beli, calc_sum_stok, calc_sum_all_bank_balan
 calc_count_items_active, calc_count_customers_active, calc_count_vendors_active
 calc_rank_items_by_price, calc_rank_items_by_stock, calc_rank_customers_by_ar, calc_rank_vendors_by_ap, calc_rank_expense_accounts, calc_top_selling_items
 calc_sum_sales_this_month, calc_sum_purchases_this_month, calc_sum_expenses_this_month
-calc_sum_received_this_month, calc_sum_paid_this_month, calc_sum_salary_this_month
+calc_sum_received_this_month, calc_sum_paid_this_month
 
 MANUFACTURING INTENTS:
 create_work_order, create_bom, create_work_center
