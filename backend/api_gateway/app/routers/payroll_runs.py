@@ -245,6 +245,48 @@ async def create_payroll_run(request: Request, body: CreatePayrollRequest):
 # ========== GET ==========
 
 
+@router.get("/summary")
+async def payroll_summary(request: Request):
+    """Dashboard payroll stats. MUST be declared BEFORE /{run_id} or the literal
+    'summary' is parsed as a run_id UUID (422). Shape is the FE PayrollSummary
+    (camelCase, no wrapper): {totalAmount, totalCount, breakdown:{status:{count,amount}}}.
+    Same pay-group visibility as the list endpoint (runs touching accessible groups)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        role_code, accessible_ids = await _pg_filter(conn, ctx)
+        conditions = ["tenant_id = $1"]
+        params = [ctx["tenant_id"]]
+        idx = 2
+        if role_code not in ("OWNER", "ADMIN"):
+            if not accessible_ids:
+                return {"totalAmount": 0, "totalCount": 0, "breakdown": {}}
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM payroll_slip_lines psl JOIN employees e ON e.id = psl.employee_id WHERE psl.payroll_id = payroll_runs.id AND e.pay_group_id = ANY(${idx}::uuid[]))"
+            )
+            params.append(accessible_ids)
+            idx += 1
+        where = " AND ".join(conditions)
+        rows = await conn.fetch(
+            f"""SELECT status, COUNT(*) AS cnt, COALESCE(SUM(total_net_salary), 0) AS amt
+                FROM payroll_runs WHERE {where} GROUP BY status""",
+            *params,
+        )
+        breakdown = {}
+        total_count = 0
+        total_amount = 0.0
+        for r in rows:
+            breakdown[r["status"]] = {"count": r["cnt"], "amount": float(r["amt"])}
+            total_count += r["cnt"]
+            total_amount += float(r["amt"])
+        return {
+            "totalAmount": total_amount,
+            "totalCount": total_count,
+            "breakdown": breakdown,
+        }
+
+
 @router.get("/{run_id}")
 async def get_payroll_run(request: Request, run_id: UUID):
     ctx = get_user_context(request)
