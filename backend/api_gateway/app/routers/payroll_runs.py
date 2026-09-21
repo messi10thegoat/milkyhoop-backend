@@ -1253,9 +1253,11 @@ async def get_slips(request: Request, run_id: UUID):
         if role_code not in ("OWNER", "ADMIN") and accessible_ids:
             lines = await conn.fetch(
                 """SELECT psl.*, e.name as employee_name, e.employee_code,
-                          e.position, e.department, e.npwp, e.nik
+                          e.position, e.department, e.npwp, e.nik,
+                          sc.calculation_method
                    FROM payroll_slip_lines psl
                    JOIN employees e ON e.id = psl.employee_id
+                   LEFT JOIN salary_components sc ON sc.id = psl.component_id
                    WHERE psl.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])
                    ORDER BY e.name, psl.sort_order""",
                 run_id,
@@ -1266,9 +1268,11 @@ async def get_slips(request: Request, run_id: UUID):
         else:
             lines = await conn.fetch(
                 """SELECT psl.*, e.name as employee_name, e.employee_code,
-                          e.position, e.department, e.npwp, e.nik
+                          e.position, e.department, e.npwp, e.nik,
+                          sc.calculation_method
                    FROM payroll_slip_lines psl
                    JOIN employees e ON e.id = psl.employee_id
+                   LEFT JOIN salary_components sc ON sc.id = psl.component_id
                    WHERE psl.payroll_id = $1
                    ORDER BY e.name, psl.sort_order""",
                 run_id,
@@ -1304,6 +1308,8 @@ async def get_slips(request: Request, run_id: UUID):
                 "rate": float(line["rate"]) if line["rate"] is not None else None,
                 "job_reference": line["job_reference"],
                 "work_order_id": str(line["work_order_id"]) if line["work_order_id"] is not None else None,
+                # unit hint: 'daily'->hari, 'hourly'/'overtime'->jam, else/NULL (borongan/flat)->bare x
+                "calculation_method": line["calculation_method"],
             }
             if line["component_type"] == "earning":
                 slips[eid]["earnings"].append(entry)
