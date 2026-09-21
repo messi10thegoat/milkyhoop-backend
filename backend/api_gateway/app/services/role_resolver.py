@@ -113,6 +113,8 @@ class AccountRole:
     BPJS_ER_PAYABLE: Final[str] = "BPJS_ER_PAYABLE"
     BPJS_ER_EXPENSE: Final[str] = "BPJS_ER_EXPENSE"
     PPH21_ER_EXPENSE: Final[str] = "PPH21_ER_EXPENSE"
+    # V286: direct sewing labour -> COGS/HPP (per-component payroll expense mapping).
+    PRODUCTION_WAGE_EXPENSE: Final[str] = "PRODUCTION_WAGE_EXPENSE"
 
     # ---- V165 Pre-Fase 6 Kas & Bank — BANK_FEE (MAPPED via V165) -------------
     # BANK_FEE -> 5-20850 Biaya Administrasi Bank (EXPENSE). Replaces
@@ -228,6 +230,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "BPJS_ER_PAYABLE",
         "BPJS_ER_EXPENSE",
         "PPH21_ER_EXPENSE",
+        "PRODUCTION_WAGE_EXPENSE",
         # TIER 1 promoted (V165 — Pre-Fase 6 Kas & Bank)
         "BANK_FEE",
         # TIER 2

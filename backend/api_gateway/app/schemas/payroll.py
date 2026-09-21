@@ -76,6 +76,7 @@ class CreateSalaryComponentRequest(BaseModel):
     calculation_method: str = Field("fixed", pattern=r"^(fixed|percentage|daily|hourly|overtime)$")
     percentage_base: Optional[str] = None
     sort_order: int = 0
+    expense_role: Optional[str] = None  # V286: CoA role for this component's earning; NULL = Beban Gaji default
 
 
 class UpdateSalaryComponentRequest(BaseModel):
@@ -89,6 +90,7 @@ class UpdateSalaryComponentRequest(BaseModel):
     percentage_base: Optional[str] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
+    expense_role: Optional[str] = None  # V286
 
 
 class UpdateBpjsConfigRequest(BaseModel):

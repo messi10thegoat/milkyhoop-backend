@@ -70,8 +70,8 @@ async def create_component(request: Request, body: CreateSalaryComponentRequest)
             row = await conn.fetchrow(
                 """INSERT INTO salary_components
                    (tenant_id, code, name, type, category, is_taxable, is_fixed,
-                    default_amount, calculation_method, percentage_base, sort_order, is_system)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false)
+                    default_amount, calculation_method, percentage_base, sort_order, is_system, expense_role)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, $12)
                    RETURNING *""",
                 ctx["tenant_id"],
                 body.code,
@@ -84,6 +84,7 @@ async def create_component(request: Request, body: CreateSalaryComponentRequest)
                 body.calculation_method,
                 body.percentage_base,
                 body.sort_order,
+                body.expense_role,
             )
             return {"success": True, "data": dict(row)}
         except asyncpg.UniqueViolationError:

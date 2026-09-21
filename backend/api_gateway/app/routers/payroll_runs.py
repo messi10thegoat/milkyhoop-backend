@@ -23,7 +23,7 @@ from ..services.payroll_calc import (
     get_ytd_data,
     PayrollInputError,
 )
-from ..services.role_resolver import AccountRole, resolve_account_id_by_role
+from ..services.role_resolver import AccountRole, resolve_account_id_by_role, AccountRoleUnmappedError
 from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,16 @@ async def get_pool() -> asyncpg.Pool:
     from ..services.db_pool import get_db_pool
 
     return await get_db_pool()
+
+
+async def _resolve_wage_account(conn, tenant_id, role_key, default_role="SALARY_EXPENSE"):
+    """Resolve a component's earning destination CoA by ROLE (Law 27, V286). NULL/unknown/unmapped
+    role -> the SALARY_EXPENSE default -- NEVER raise, so an unconfigured tenant's run is never blocked."""
+    rk = role_key or default_role
+    try:
+        return await resolve_account_id_by_role(conn, tenant_id, rk)
+    except Exception:
+        return await resolve_account_id_by_role(conn, tenant_id, default_role)
 
 
 def get_user_context(request: Request) -> dict:
@@ -801,6 +811,60 @@ async def post_payroll(request: Request, run_id: UUID):
                 conn, ctx["tenant_id"], AccountRole.BPJS_ER_PAYABLE
             )
 
+            # V286: group EARNINGS by destination account (per-component expense_role;
+            # borongan -> PRODUCTION_WAGE_EXPENSE; NULL -> SALARY_EXPENSE default).
+            _earn_rows = await conn.fetch(
+                """SELECT COALESCE(sc.expense_role,
+                            CASE WHEN psl.component_category='borongan'
+                                 THEN 'PRODUCTION_WAGE_EXPENSE' ELSE NULL END) AS role,
+                          SUM(psl.amount) AS total
+                   FROM payroll_slip_lines psl
+                   LEFT JOIN salary_components sc ON sc.id = psl.component_id
+                   WHERE psl.payroll_id = $1 AND psl.component_type = 'earning'
+                   GROUP BY 1""",
+                run_id,
+            )
+            earnings_by_account = {}
+            for _r in _earn_rows:
+                _acct = await _resolve_wage_account(conn, ctx["tenant_id"], _r["role"])
+                earnings_by_account[_acct] = earnings_by_account.get(_acct, Decimal("0")) + _r["total"]
+
+            # V286: employer costs (BPJS employer etc.) INHERIT the employee's PRIMARY earning
+            # destination when that is a configured production role; otherwise stay on
+            # BPJS_ER_EXPENSE (so an unconfigured tenant is unchanged). Rule: primary = the
+            # employee's single largest earning line's role.
+            _prim_rows = await conn.fetch(
+                """SELECT employee_id, role FROM (
+                       SELECT psl.employee_id,
+                              COALESCE(sc.expense_role,
+                                  CASE WHEN psl.component_category='borongan'
+                                       THEN 'PRODUCTION_WAGE_EXPENSE' ELSE NULL END) AS role,
+                              ROW_NUMBER() OVER (PARTITION BY psl.employee_id
+                                  ORDER BY SUM(psl.amount) DESC) AS rn
+                       FROM payroll_slip_lines psl
+                       LEFT JOIN salary_components sc ON sc.id = psl.component_id
+                       WHERE psl.payroll_id = $1 AND psl.component_type = 'earning'
+                       GROUP BY psl.employee_id, 2
+                   ) x WHERE rn = 1""",
+                run_id,
+            )
+            _primary_role = {r["employee_id"]: r["role"] for r in _prim_rows}
+            _emp_cost_rows = await conn.fetch(
+                """SELECT employee_id, SUM(amount) AS total FROM payroll_slip_lines
+                   WHERE payroll_id = $1 AND component_type = 'employer_cost'
+                     AND component_category != 'pph21_employer'
+                   GROUP BY employee_id""",
+                run_id,
+            )
+            employer_by_account = {}
+            for _r in _emp_cost_rows:
+                _pr = _primary_role.get(_r["employee_id"])
+                if _pr and _pr != "SALARY_EXPENSE":
+                    _acct = await _resolve_wage_account(conn, ctx["tenant_id"], _pr)
+                else:
+                    _acct = coa_beban_bpjs
+                employer_by_account[_acct] = employer_by_account.get(_acct, Decimal("0")) + _r["total"]
+
             total_debit = total_earnings + total_bpjs_er
             total_credit = total_debit  # balanced
 
@@ -830,29 +894,26 @@ async def post_payroll(request: Request, run_id: UUID):
 
             line_num = 1
 
-            # Dr Beban Gaji & Tunjangan
-            if total_earnings > 0:
-                await conn.execute(
-                    """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
-                       VALUES ($1, $2, $3, $4, 0, 'Beban Gaji & Tunjangan')""",
-                    str(journal_id),
-                    line_num,
-                    coa_beban_gaji,
-                    float(total_earnings),
-                )
-                line_num += 1
+            # Dr earnings, grouped by destination account (V286: production wage -> COGS,
+            # office/admin -> Beban Gaji). Sum across groups == total_earnings, so the header balances.
+            for _acct, _amt in earnings_by_account.items():
+                if _amt and _amt > 0:
+                    await conn.execute(
+                        """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+                           VALUES ($1, $2, $3, $4, 0, 'Beban Gaji/Upah & Tunjangan')""",
+                        str(journal_id), line_num, _acct, float(_amt),
+                    )
+                    line_num += 1
 
-            # Dr Beban BPJS Perusahaan
-            if total_bpjs_er > 0:
-                await conn.execute(
-                    """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
-                       VALUES ($1, $2, $3, $4, 0, 'Beban BPJS Perusahaan')""",
-                    str(journal_id),
-                    line_num,
-                    coa_beban_bpjs,
-                    float(total_bpjs_er),
-                )
-                line_num += 1
+            # Dr employer costs, following each employee's primary wage destination (V286).
+            for _acct, _amt in employer_by_account.items():
+                if _amt and _amt > 0:
+                    await conn.execute(
+                        """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+                           VALUES ($1, $2, $3, $4, 0, 'Beban BPJS Perusahaan')""",
+                        str(journal_id), line_num, _acct, float(_amt),
+                    )
+                    line_num += 1
 
             # Dr Beban PPh 21 Perusahaan (nett method only)
             if total_pph21_er > 0:
