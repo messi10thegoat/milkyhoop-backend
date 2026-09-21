@@ -22,7 +22,7 @@ from google.auth.transport import requests as google_requests
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
-from backend.api_gateway.app.services.session_manager import session_manager
+from backend.api_gateway.app.services.session_manager import session_manager, detect_device_type
 from backend.api_gateway.app.services.db_pool import get_db_pool
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
@@ -146,7 +146,7 @@ async def _login_existing_user(user_row, http_request: Request) -> AuthResponse:
     role = user_row["role"]
     tenant_id = user_row["tenantId"]
     device_id = str(uuid.uuid4())
-    device_type = "mobile"
+    device_type = detect_device_type(http_request.headers.get("User-Agent"))
 
     # Generate JWT tokens with device claims (same as login endpoint)
     try:
@@ -195,7 +195,7 @@ async def _login_existing_user(user_row, http_request: Request) -> AuthResponse:
             pass
 
     # Activate session in Redis (same as auth.py login)
-    session_manager.activate_mobile_device(user_id=user_id, device_id=device_id)
+    session_manager.set_active_device(user_id=user_id, device_type=device_type, device_id=device_id)
     logger.info(
         f"Session activated (Google login): user={user_id[:8]}..., device={device_id[:8]}..."
     )

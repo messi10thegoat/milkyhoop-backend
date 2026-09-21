@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
-from backend.api_gateway.app.services.session_manager import session_manager
+from backend.api_gateway.app.services.session_manager import session_manager, detect_device_type
 from backend.api_gateway.app.services.role_resolution import (
     has_active_membership,
     list_active_tenant_roles,
@@ -158,7 +158,9 @@ async def login_user(request: LoginRequest, http_request: Request):
         # Generate device_id BEFORE calling auth_service
         # This ensures device_id is embedded in JWT
         device_id = str(uuid.uuid4())
-        device_type = "mobile"  # Mobile web = primary device
+        # 21 Sep 2026: detect device_type from the User-Agent (was hardcoded "mobile", which
+        # collapsed phone + desktop onto one session). Coexistence: phone->mobile, desktop->web.
+        device_type = detect_device_type(http_request.headers.get("User-Agent"))
 
         # Call login service with device claims
         result = await auth_client.login_user(
@@ -197,10 +199,11 @@ async def login_user(request: LoginRequest, http_request: Request):
             finally:
                 await prisma.disconnect()
 
-            # ===== ATOMIC SESSION ENFORCEMENT =====
-            # Set mobile session + cascade kill web session (no race condition)
-            session_manager.activate_mobile_device(
-                user_id=result["user_id"], device_id=device_id
+            # ===== SESSION ENFORCEMENT (per device_type) =====
+            # set_active_device replaces ONLY the same device_type's session, so a phone
+            # (mobile) and a desktop (web) login coexist; two same-type logins still collide.
+            session_manager.set_active_device(
+                user_id=result["user_id"], device_type=device_type, device_id=device_id
             )
             logger.info(
                 f"✅ Session activated: user={result['user_id'][:8]}..., device={device_id[:8]}..., type={device_type}"
