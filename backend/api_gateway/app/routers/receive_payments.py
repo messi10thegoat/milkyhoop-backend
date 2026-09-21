@@ -866,7 +866,9 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         "data": {
                             "id": str(journal_row["id"]),
                             "payment_number": journal_row["journal_number"],
-                            "customer_id": dok_pelanggan_id,
+                            "customer_id": str(dok_pelanggan_id)
+                            if dok_pelanggan_id
+                            else None,
                             "customer_name": customer_name,
                             "payment_date": journal_row["journal_date"].isoformat()
                             if journal_row["journal_date"]
