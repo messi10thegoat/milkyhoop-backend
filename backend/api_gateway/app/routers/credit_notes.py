@@ -339,9 +339,13 @@ async def list_credit_notes(
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": row["total_amount"]
-                    - (row["amount_applied"] or 0)
-                    - (row["amount_refunded"] or 0),
+                    "remaining_amount": 0
+                    if row["status"] == "void"
+                    else (
+                        row["total_amount"]
+                        - (row["amount_applied"] or 0)
+                        - (row["amount_refunded"] or 0)
+                    ),
                     "status": row["status"],
                     "reason": row["reason"],
                     "created_at": row["created_at"].isoformat(),
@@ -483,9 +487,13 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 
             # Build response
             remaining = (
-                cn["total_amount"]
-                - (cn["amount_applied"] or 0)
-                - (cn["amount_refunded"] or 0)
+                0
+                if cn["status"] == "void"
+                else (
+                    cn["total_amount"]
+                    - (cn["amount_applied"] or 0)
+                    - (cn["amount_refunded"] or 0)
+                )
             )
 
             return {

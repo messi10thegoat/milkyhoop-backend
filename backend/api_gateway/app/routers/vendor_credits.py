@@ -297,9 +297,13 @@ async def list_vendor_credits(
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_received"] or 0,
-                    "remaining_amount": row["total_amount"]
-                    - (row["amount_applied"] or 0)
-                    - (row["amount_received"] or 0),
+                    "remaining_amount": 0
+                    if row["status"] == "void"
+                    else (
+                        row["total_amount"]
+                        - (row["amount_applied"] or 0)
+                        - (row["amount_received"] or 0)
+                    ),
                     "status": row["status"],
                     "reason": row["reason"],
                     "ref_no": row["ref_no"],
@@ -442,9 +446,13 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
 
             # Build response
             remaining = (
-                vc["total_amount"]
-                - (vc["amount_applied"] or 0)
-                - (vc["amount_received"] or 0)
+                0
+                if vc["status"] == "void"
+                else (
+                    vc["total_amount"]
+                    - (vc["amount_applied"] or 0)
+                    - (vc["amount_received"] or 0)
+                )
             )
 
             return {
