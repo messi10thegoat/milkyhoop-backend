@@ -349,6 +349,29 @@ async def update_payroll_run(
                     vi.amount,
                 )
 
+        # Borongan piece lines (V285): full-replace the run's ad-hoc lines (FE sends the
+        # complete set; [] clears them).
+        if body.piece_lines is not None:
+            await conn.execute(
+                "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1", run_id
+            )
+            for pl in body.piece_lines:
+                await conn.execute(
+                    """INSERT INTO payroll_run_piece_lines
+                         (tenant_id, payroll_id, employee_id, description, job_reference,
+                          work_order_id, quantity, rate, sort_order)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    ctx["tenant_id"],
+                    run_id,
+                    pl.employee_id,
+                    pl.description,
+                    pl.job_reference,
+                    pl.work_order_id,
+                    pl.quantity,
+                    pl.rate,
+                    pl.sort_order,
+                )
+
         return {"success": True, "message": "Updated"}
 
 
@@ -444,12 +467,21 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     period_start,
                 )
 
+                # Borongan piece lines (V285): ad-hoc {description, job_ref, qty, rate} per run.
+                piece_lines = await conn.fetch(
+                    """SELECT description, job_reference, work_order_id, quantity, rate
+                       FROM payroll_run_piece_lines
+                       WHERE payroll_id = $1 AND employee_id = $2 ORDER BY sort_order""",
+                    run_id,
+                    emp_id,
+                )
+
                 # V283: an employee with ZERO assigned salary components must be NAMED, not
                 # silently dropped and not given a synthetic 0/employer-only line. (The engine
                 # can emit employer BPJS lines even with no earnings, so "produced no lines" is
                 # not the right test -- emptiness of the assigned config is.) This is the state
                 # all grapgrap employees are in today.
-                if not salary_config:
+                if not salary_config and not piece_lines:
                     empty_employees.append((str(emp_id), employee["name"]))
                     continue
 
@@ -495,6 +527,7 @@ async def calculate_payroll(request: Request, run_id: UUID):
                         period_month,
                         variable_inputs,
                         ytd,
+                        [dict(p) for p in piece_lines],
                     )
                 except PayrollInputError as e:
                     raise HTTPException(
@@ -520,8 +553,8 @@ async def calculate_payroll(request: Request, run_id: UUID):
                         """INSERT INTO payroll_slip_lines
                            (tenant_id, payroll_id, employee_id, component_id, component_name,
                             component_type, component_category, amount, quantity, rate,
-                            is_taxable, sort_order)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
+                            is_taxable, sort_order, job_reference, work_order_id)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)""",
                         ctx["tenant_id"],
                         run_id,
                         emp_id,
@@ -536,6 +569,8 @@ async def calculate_payroll(request: Request, run_id: UUID):
                         line.get("rate"),
                         line.get("is_taxable", False),
                         line.get("sort_order", 0),
+                        line.get("job_reference"),
+                        line.get("work_order_id"),
                     )
 
                 total_gross += Decimal(str(slip["gross"]))

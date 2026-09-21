@@ -24,12 +24,23 @@ class VariableInput(BaseModel):
     days_worked: Optional[float] = None
 
 
+class PieceLineInput(BaseModel):
+    employee_id: UUID
+    description: str
+    job_reference: Optional[str] = None
+    work_order_id: Optional[UUID] = None
+    quantity: float
+    rate: float
+    sort_order: int = 0
+
+
 class UpdatePayrollRequest(BaseModel):
     payment_date: Optional[date] = None
     description: Optional[str] = None
     payment_method: Optional[str] = None
     bank_account_id: Optional[UUID] = None
     variable_inputs: Optional[List[VariableInput]] = None
+    piece_lines: Optional[List[PieceLineInput]] = None
 
 
 class CreatePayrollPaymentRequest(BaseModel):

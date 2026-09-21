@@ -208,6 +208,7 @@ async def calculate_employee_slip(
     period_month: int,
     variable_inputs: Dict[str, Any],
     ytd_data: Optional[dict] = None,
+    piece_lines: Optional[List[dict]] = None,
 ) -> Dict[str, Any]:
     """Calculate a single employee's payroll slip."""
 
@@ -284,6 +285,32 @@ async def calculate_employee_slip(
                     "sort_order": comp["sort_order"],
                 }
             )
+
+    # Borongan / piece-rate ad-hoc lines (V285): rate belongs to the JOB, so these are per-run
+    # lines (description + job_reference + qty + rate), repeatable N per employee -- NOT a
+    # per-employee component. Each is an earning, IDR whole-rupiah per line, carrying the optional
+    # work_order link so the wage can later land in production cost without re-entry.
+    for pl in (piece_lines or []):
+        q = d(pl.get("quantity"))
+        r = d(pl.get("rate"))
+        amt = round_idr(q * r)
+        if amt <= 0:
+            continue
+        earnings.append(
+            {
+                "component_id": None,
+                "component_name": pl.get("description") or "Borongan",
+                "component_type": "earning",
+                "component_category": "borongan",
+                "amount": float(amt),
+                "quantity": float(q),
+                "rate": float(r),
+                "is_taxable": False,
+                "sort_order": 50,
+                "job_reference": pl.get("job_reference"),
+                "work_order_id": pl.get("work_order_id"),
+            }
+        )
 
     gross = round2(sum(d(e["amount"]) for e in earnings))
 
