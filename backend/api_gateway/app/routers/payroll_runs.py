@@ -320,9 +320,51 @@ async def get_payroll_run(request: Request, run_id: UUID):
             run_id,
         )
 
+        # Piece-line read-back (V285): the ad-hoc borongan lines stored for this run so the
+        # FE edit grid can load what a full-replace PUT is about to overwrite (without this
+        # an edit path silently deletes them). Pay-group scoped like /slips -- OWNER/ADMIN
+        # see all; others see only lines whose employee is in an accessible pay group.
+        if role_code in ("OWNER", "ADMIN"):
+            piece_rows = await conn.fetch(
+                """SELECT prpl.id, prpl.employee_id, prpl.description, prpl.job_reference,
+                          prpl.work_order_id, prpl.quantity, prpl.rate, prpl.sort_order
+                   FROM payroll_run_piece_lines prpl
+                   WHERE prpl.payroll_id = $1
+                   ORDER BY prpl.employee_id, prpl.sort_order""",
+                run_id,
+            )
+        else:
+            piece_rows = await conn.fetch(
+                """SELECT prpl.id, prpl.employee_id, prpl.description, prpl.job_reference,
+                          prpl.work_order_id, prpl.quantity, prpl.rate, prpl.sort_order
+                   FROM payroll_run_piece_lines prpl
+                   JOIN employees e ON e.id = prpl.employee_id
+                   WHERE prpl.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])
+                   ORDER BY prpl.employee_id, prpl.sort_order""",
+                run_id,
+                accessible_ids,
+            )
+        piece_lines = [
+            {
+                "id": str(p["id"]),
+                "employee_id": str(p["employee_id"]),
+                "description": p["description"],
+                "job_reference": p["job_reference"],
+                "work_order_id": str(p["work_order_id"]) if p["work_order_id"] is not None else None,
+                "quantity": float(p["quantity"]) if p["quantity"] is not None else None,
+                "rate": float(p["rate"]) if p["rate"] is not None else None,
+                "sort_order": p["sort_order"],
+            }
+            for p in piece_rows
+        ]
+
         return {
             "success": True,
-            "data": {**dict(row), "payments": [dict(p) for p in payments]},
+            "data": {
+                **dict(row),
+                "payments": [dict(p) for p in payments],
+                "piece_lines": piece_lines,
+            },
         }
 
 
