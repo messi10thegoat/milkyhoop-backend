@@ -886,6 +886,29 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
 READ_DEFAULT_OPEN_ALLOWLIST = [
     r"^/api/documents(/|$)",
     r"^/api/document-intake(/|$)",
+    # --- STEP 2 leave-open set (added 2026-09-21), reviewed route-by-route with MASTER ---
+    # Self-service: read of the caller's OWN profile / devices / sessions.
+    r"^/api/user/",
+    r"^/api/devices(/|$)",
+    r"^/api/session/",
+    # Pre-provision: invited / onboarding user acting BEFORE a role exists.
+    r"^/api/invite/",
+    r"^/api/onboarding/",
+    # Chat: reads are session-scoped to the caller; business actions forward the JWT to the
+    # target module (enforced there), mirroring WRITE_EXEMPT.
+    r"^/api/v3/chat/",
+    r"^/chat/",
+    r"^/api/setup/chat",
+    r"^/api/tenant/[^/]+/chat",
+    # Tenant branding/info: broadly read (logo shown to everyone).
+    r"^/api/tenant/profile",
+    r"^/api/tenant/[^/]+/info",
+    # Cross-module surfaces that enforce per-module READ authz IN THE HANDLER (policy.can per
+    # module, OWNER bypass, fail-closed) -- same shape as documents. Verified enforced
+    # 2026-09-21: search (routers/search.py per-group _allowed) + SSE stream
+    # (events.py _allowed_from_ctx). Middleware leaves them open; the handler filters results.
+    r"^/api/search",
+    r"^/api/events/stream",
 ]
 
 # Routes that don't require permission checks
@@ -903,6 +926,15 @@ SKIP_PATTERNS = [
     r"^/api/team-members/roles/list$",  # Role list
     r"^/favicon",
     r"^/$",
+    # 21 Sep 2026 (STEP 2 prep): infra/health probes must be OUT of the auth+permission path
+    # entirely so they can NEVER 401 (monitoring + mh-restart.sh probes /healthz). SKIP, not
+    # allowlist -- allowlist is after-auth and would 401 an unauthenticated probe.
+    r"^/healthz$",
+    r"^/health(/|$)",
+    r"^/metrics$",
+    r"^/ready$",
+    r"^/version$",
+    r"^/api/[^/]+/health(/|$)",
 ]
 
 # 14 Sep 2026 TAHAP 3: WRITE tak terpetakan -> 403 (default tertutup). Himpunan ini adalah WRITE yang SENGAJA tak
@@ -948,6 +980,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         ]
         self._compiled_skip = [re.compile(p) for p in SKIP_PATTERNS]
         self._compiled_write_exempt = [re.compile(p) for p, _ in WRITE_EXEMPT]
+        self._compiled_read_open = [re.compile(p) for p in READ_DEFAULT_OPEN_ALLOWLIST]
         self._write_methods = {"POST", "PUT", "PATCH", "DELETE"}
 
     async def dispatch(self, request: Request, call_next):
@@ -1125,6 +1158,43 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error(f"PERMISSION_UNMAPPED check error -> DITOLAK: path={path} method={method} err={type(e).__name__}: {e}")
+                return JSONResponse(status_code=403, content={"error": "Permission check failed", "code": "PERMISSION_CHECK_ERROR"})
+
+        # 21 Sep 2026 STEP 2: default-CLOSED for READ. Unmatched GET/HEAD NOT in the READ
+        # leave-open allowlist -> OWNER passes (consistent with can() bypass), non-owner -> 403
+        # PERMISSION_DENIED (the code the FE r105 access-state renders). Infra/health + self are
+        # already returned by SKIP_PATTERNS above; documents/chat/search/etc stay open via the
+        # allowlist. Mirrors the WRITE default-closed branch.
+        elif method in ("GET", "HEAD") and not any(p.match(path) for p in self._compiled_read_open):
+            if not hasattr(request.state, "user") or not request.state.user:
+                return JSONResponse(status_code=401, content={"error": "Authentication required", "code": "UNAUTHENTICATED"})
+            user = request.state.user
+            try:
+                context = await get_policy_engine().get_user_context(
+                    user_id=user["user_id"], tenant_id=user["tenant_id"], subscription_role=user.get("role", "USER"),
+                )
+                if context.business_role_code == "OWNER":
+                    request.state.user["business_role_code"] = context.business_role_code
+                    request.state.user["business_role_id"] = context.business_role_id
+                    return await call_next(request)
+                if not context.membership_active:
+                    return JSONResponse(status_code=403, content={"detail": {"error_code": "MEMBERSHIP_INACTIVE", "message": MSG_INACTIVE}})
+                logger.warning(
+                    f"READ tak terpetakan ditolak (default tertutup STEP 2): user={user['user_id']} "
+                    f"path={path} method={method} role={context.business_role_code}"
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "Permission denied",
+                        "message": "Anda belum diberi izin melihat data ini. Hubungi pemilik usaha.",
+                        "code": "PERMISSION_DENIED",
+                        "required_module": None,
+                        "required_action": "R",
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"READ default-closed check error -> DITOLAK: path={path} method={method} err={type(e).__name__}: {e}")
                 return JSONResponse(status_code=403, content={"error": "Permission check failed", "code": "PERMISSION_CHECK_ERROR"})
 
         return await call_next(request)
