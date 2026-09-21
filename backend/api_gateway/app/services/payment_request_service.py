@@ -22,7 +22,7 @@ async def get_payment_request_service():
     """Get service instance with pool"""
     global _pool
     if _pool is None:
-        from ..db_pool import get_db_pool
+        from .db_pool import get_db_pool
         _pool = await get_db_pool()
     return PaymentRequestService(_pool)
 
