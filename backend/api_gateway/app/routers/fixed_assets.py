@@ -362,6 +362,138 @@ async def list_fixed_assets(
         return FixedAssetListResponse(items=items, total=total)
 
 
+@router.get("/depreciation-due", response_model=CalculateDepreciationResponse)
+async def get_depreciation_due(
+    request: Request,
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+):
+    """Get assets due for depreciation"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_depreciation_due($1, $2, $3)",
+            ctx["tenant_id"],
+            year,
+            month,
+        )
+
+        items = [
+            CalculateDepreciationItem(
+                asset_id=row["asset_id"],
+                asset_number=row["asset_number"],
+                asset_name=row["asset_name"],
+                depreciation_amount=row["depreciation_amount"],
+                accumulated_amount=row["accumulated_amount"],
+                book_value=row["book_value"],
+            )
+            for row in rows
+        ]
+
+        return CalculateDepreciationResponse(
+            year=year,
+            month=month,
+            items=items,
+            total_depreciation=sum(Decimal(str(i.depreciation_amount)) for i in items),
+            asset_count=len(items),
+        )
+
+@router.get("/register", response_model=AssetRegisterResponse)
+async def get_asset_register(request: Request, status: Optional[AssetStatus] = None):
+    """Get asset register report"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_asset_register($1, $2)",
+            ctx["tenant_id"],
+            status.value if status else None,
+        )
+
+        items = [AssetRegisterItem(**dict(row)) for row in rows]
+
+        return AssetRegisterResponse(
+            items=items,
+            total_purchase_price=sum(Decimal(str(i.purchase_price)) for i in items),
+            total_current_value=sum(Decimal(str(i.current_value)) for i in items),
+            total_accumulated_depreciation=sum(
+                Decimal(str(i.accumulated_depreciation)) for i in items
+            ),
+            asset_count=len(items),
+        )
+
+@router.get("/by-category", response_model=AssetsByCategoryResponse)
+async def get_assets_by_category(request: Request):
+    """Get assets summary by category"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_assets_by_category($1)", ctx["tenant_id"]
+        )
+
+        return AssetsByCategoryResponse(
+            items=[AssetsByCategoryItem(**dict(row)) for row in rows]
+        )
+
+@router.get("/by-location", response_model=AssetsByLocationResponse)
+async def get_assets_by_location(request: Request):
+    """Get assets summary by location"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_assets_by_location($1)", ctx["tenant_id"]
+        )
+
+        return AssetsByLocationResponse(
+            items=[AssetsByLocationItem(**dict(row)) for row in rows]
+        )
+
+@router.get("/maintenance-due", response_model=MaintenanceDueResponse)
+async def get_maintenance_due(
+    request: Request, days_ahead: int = Query(30, ge=1, le=365)
+):
+    """Get assets with upcoming maintenance"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_maintenance_due($1, $2)", ctx["tenant_id"], days_ahead
+        )
+
+        return MaintenanceDueResponse(
+            days_ahead=days_ahead,
+            items=[MaintenanceDueItem(**dict(row)) for row in rows],
+        )
+
+
 @router.get("/{asset_id}", response_model=FixedAssetDetailResponse)
 async def get_fixed_asset(request: Request, asset_id: UUID):
     """Get fixed asset with depreciation and maintenance history"""
@@ -746,48 +878,6 @@ async def get_depreciation_schedule(request: Request, asset_id: UUID):
             months_remaining=len(scheduled),
         )
 
-
-@router.get("/depreciation-due", response_model=CalculateDepreciationResponse)
-async def get_depreciation_due(
-    request: Request,
-    year: int = Query(...),
-    month: int = Query(..., ge=1, le=12),
-):
-    """Get assets due for depreciation"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_depreciation_due($1, $2, $3)",
-            ctx["tenant_id"],
-            year,
-            month,
-        )
-
-        items = [
-            CalculateDepreciationItem(
-                asset_id=row["asset_id"],
-                asset_number=row["asset_number"],
-                asset_name=row["asset_name"],
-                depreciation_amount=row["depreciation_amount"],
-                accumulated_amount=row["accumulated_amount"],
-                book_value=row["book_value"],
-            )
-            for row in rows
-        ]
-
-        return CalculateDepreciationResponse(
-            year=year,
-            month=month,
-            items=items,
-            total_depreciation=sum(Decimal(str(i.depreciation_amount)) for i in items),
-            asset_count=len(items),
-        )
 
 
 @router.post("/post-depreciation", response_model=PostDepreciationResponse)
@@ -1368,74 +1458,7 @@ async def sell_fixed_asset(request: Request, asset_id: UUID, data: SellAssetRequ
 # ============================================================================
 
 
-@router.get("/register", response_model=AssetRegisterResponse)
-async def get_asset_register(request: Request, status: Optional[AssetStatus] = None):
-    """Get asset register report"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
 
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_asset_register($1, $2)",
-            ctx["tenant_id"],
-            status.value if status else None,
-        )
-
-        items = [AssetRegisterItem(**dict(row)) for row in rows]
-
-        return AssetRegisterResponse(
-            items=items,
-            total_purchase_price=sum(Decimal(str(i.purchase_price)) for i in items),
-            total_current_value=sum(Decimal(str(i.current_value)) for i in items),
-            total_accumulated_depreciation=sum(
-                Decimal(str(i.accumulated_depreciation)) for i in items
-            ),
-            asset_count=len(items),
-        )
-
-
-@router.get("/by-category", response_model=AssetsByCategoryResponse)
-async def get_assets_by_category(request: Request):
-    """Get assets summary by category"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_assets_by_category($1)", ctx["tenant_id"]
-        )
-
-        return AssetsByCategoryResponse(
-            items=[AssetsByCategoryItem(**dict(row)) for row in rows]
-        )
-
-
-@router.get("/by-location", response_model=AssetsByLocationResponse)
-async def get_assets_by_location(request: Request):
-    """Get assets summary by location"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_assets_by_location($1)", ctx["tenant_id"]
-        )
-
-        return AssetsByLocationResponse(
-            items=[AssetsByLocationItem(**dict(row)) for row in rows]
-        )
 
 
 # ============================================================================
@@ -1518,25 +1541,3 @@ async def log_asset_maintenance(
 
         return AssetMaintenanceResponse(**dict(row), vendor_name=vendor_name)
 
-
-@router.get("/maintenance-due", response_model=MaintenanceDueResponse)
-async def get_maintenance_due(
-    request: Request, days_ahead: int = Query(30, ge=1, le=365)
-):
-    """Get assets with upcoming maintenance"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_maintenance_due($1, $2)", ctx["tenant_id"], days_ahead
-        )
-
-        return MaintenanceDueResponse(
-            days_ahead=days_ahead,
-            items=[MaintenanceDueItem(**dict(row)) for row in rows],
-        )

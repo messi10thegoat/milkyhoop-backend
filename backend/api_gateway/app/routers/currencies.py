@@ -94,6 +94,85 @@ async def list_currencies(request: Request, include_inactive: bool = Query(False
         raise HTTPException(status_code=500, detail="Failed to list currencies")
 
 
+@router.get("/exchange-rates", response_model=ExchangeRateListResponse)
+async def list_exchange_rates(
+    request: Request,
+    from_currency_id: Optional[str] = Query(None),
+    to_currency_id: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """List exchange rates."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            conditions = ["er.tenant_id = $1"]
+            params = [ctx["tenant_id"]]
+            idx = 2
+
+            if from_currency_id:
+                conditions.append(f"er.from_currency_id = ${idx}")
+                params.append(uuid_module.UUID(from_currency_id))
+                idx += 1
+            if to_currency_id:
+                conditions.append(f"er.to_currency_id = ${idx}")
+                params.append(uuid_module.UUID(to_currency_id))
+                idx += 1
+            if start_date:
+                conditions.append(f"er.rate_date >= ${idx}")
+                params.append(start_date)
+                idx += 1
+            if end_date:
+                conditions.append(f"er.rate_date <= ${idx}")
+                params.append(end_date)
+                idx += 1
+
+            where_clause = " AND ".join(conditions)
+            count = await conn.fetchval(
+                f"SELECT COUNT(*) FROM exchange_rates er WHERE {where_clause}", *params
+            )
+
+            query = f"""
+                SELECT er.*, cf.code as from_code, ct.code as to_code
+                FROM exchange_rates er
+                JOIN currencies cf ON er.from_currency_id = cf.id
+                JOIN currencies ct ON er.to_currency_id = ct.id
+                WHERE {where_clause}
+                ORDER BY er.rate_date DESC
+                LIMIT ${idx} OFFSET ${idx+1}
+            """
+            params.extend([limit, skip])
+            rows = await conn.fetch(query, *params)
+
+            return ExchangeRateListResponse(
+                items=[
+                    ExchangeRateDetail(
+                        id=str(r["id"]),
+                        from_currency_id=str(r["from_currency_id"]),
+                        from_currency_code=r["from_code"],
+                        to_currency_id=str(r["to_currency_id"]),
+                        to_currency_code=r["to_code"],
+                        rate_date=r["rate_date"].isoformat(),
+                        rate=float(r["rate"]),
+                        source=r["source"],
+                        created_at=r["created_at"].isoformat(),
+                    )
+                    for r in rows
+                ],
+                total=count,
+                has_more=(skip + limit) < count,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing exchange rates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list exchange rates")
+
+
 @router.get("/{currency_id}")
 async def get_currency(request: Request, currency_id: str):
     """Get currency detail."""
@@ -262,84 +341,6 @@ async def set_base_currency(request: Request, currency_id: str):
 # EXCHANGE RATE ENDPOINTS
 # ============================================================================
 
-
-@router.get("/exchange-rates", response_model=ExchangeRateListResponse)
-async def list_exchange_rates(
-    request: Request,
-    from_currency_id: Optional[str] = Query(None),
-    to_currency_id: Optional[str] = Query(None),
-    start_date: Optional[date] = Query(None),
-    end_date: Optional[date] = Query(None),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-):
-    """List exchange rates."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            conditions = ["er.tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            idx = 2
-
-            if from_currency_id:
-                conditions.append(f"er.from_currency_id = ${idx}")
-                params.append(uuid_module.UUID(from_currency_id))
-                idx += 1
-            if to_currency_id:
-                conditions.append(f"er.to_currency_id = ${idx}")
-                params.append(uuid_module.UUID(to_currency_id))
-                idx += 1
-            if start_date:
-                conditions.append(f"er.rate_date >= ${idx}")
-                params.append(start_date)
-                idx += 1
-            if end_date:
-                conditions.append(f"er.rate_date <= ${idx}")
-                params.append(end_date)
-                idx += 1
-
-            where_clause = " AND ".join(conditions)
-            count = await conn.fetchval(
-                f"SELECT COUNT(*) FROM exchange_rates er WHERE {where_clause}", *params
-            )
-
-            query = f"""
-                SELECT er.*, cf.code as from_code, ct.code as to_code
-                FROM exchange_rates er
-                JOIN currencies cf ON er.from_currency_id = cf.id
-                JOIN currencies ct ON er.to_currency_id = ct.id
-                WHERE {where_clause}
-                ORDER BY er.rate_date DESC
-                LIMIT ${idx} OFFSET ${idx+1}
-            """
-            params.extend([limit, skip])
-            rows = await conn.fetch(query, *params)
-
-            return ExchangeRateListResponse(
-                items=[
-                    ExchangeRateDetail(
-                        id=str(r["id"]),
-                        from_currency_id=str(r["from_currency_id"]),
-                        from_currency_code=r["from_code"],
-                        to_currency_id=str(r["to_currency_id"]),
-                        to_currency_code=r["to_code"],
-                        rate_date=r["rate_date"].isoformat(),
-                        rate=float(r["rate"]),
-                        source=r["source"],
-                        created_at=r["created_at"].isoformat(),
-                    )
-                    for r in rows
-                ],
-                total=count,
-                has_more=(skip + limit) < count,
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing exchange rates: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list exchange rates")
 
 
 @router.get("/exchange-rates/latest", response_model=LatestRatesResponse)

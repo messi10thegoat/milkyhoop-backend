@@ -104,6 +104,50 @@ async def list_budgets(
         return BudgetListResponse(items=items, total=total)
 
 
+@router.get("/variance-alerts", response_model=VarianceAlertsResponse)
+async def get_variance_alerts(
+    request: Request,
+    threshold_percent: float = Query(100, ge=0),
+):
+    """Get accounts over budget"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM get_variance_alerts($1, $2)",
+            ctx["tenant_id"],
+            threshold_percent,
+        )
+
+        items = [
+            VarianceAlertItem(
+                budget_id=row["budget_id"],
+                budget_name=row["budget_name"],
+                fiscal_year=row["fiscal_year"],
+                account_id=row["account_id"],
+                account_code=row["account_code"],
+                account_name=row["account_name"],
+                budget_amount=row["budget_amount"],
+                actual_amount=row["actual_amount"],
+                variance=row["variance"],
+                percentage_used=float(row["percentage_used"])
+                if row["percentage_used"]
+                else 0,
+            )
+            for row in rows
+        ]
+
+        return VarianceAlertsResponse(
+            threshold_percent=threshold_percent,
+            items=items,
+        )
+
+
 @router.get("/{budget_id}", response_model=BudgetDetailResponse)
 async def get_budget(request: Request, budget_id: UUID):
     """Get budget with items"""
@@ -660,49 +704,6 @@ async def get_budget_vs_actual(
             total_variance=total_budget - total_actual,
         )
 
-
-@router.get("/variance-alerts", response_model=VarianceAlertsResponse)
-async def get_variance_alerts(
-    request: Request,
-    threshold_percent: float = Query(100, ge=0),
-):
-    """Get accounts over budget"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_variance_alerts($1, $2)",
-            ctx["tenant_id"],
-            threshold_percent,
-        )
-
-        items = [
-            VarianceAlertItem(
-                budget_id=row["budget_id"],
-                budget_name=row["budget_name"],
-                fiscal_year=row["fiscal_year"],
-                account_id=row["account_id"],
-                account_code=row["account_code"],
-                account_name=row["account_name"],
-                budget_amount=row["budget_amount"],
-                actual_amount=row["actual_amount"],
-                variance=row["variance"],
-                percentage_used=float(row["percentage_used"])
-                if row["percentage_used"]
-                else 0,
-            )
-            for row in rows
-        ]
-
-        return VarianceAlertsResponse(
-            threshold_percent=threshold_percent,
-            items=items,
-        )
 
 
 @router.get("/{budget_id}/summary", response_model=BudgetSummaryResponse)

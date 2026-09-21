@@ -113,6 +113,51 @@ async def list_warehouses(
         return WarehouseListResponse(data=data, total=total)
 
 
+@router.get("/low-stock", response_model=LowStockResponse)
+async def get_low_stock_items(
+    request: Request,
+    warehouse_id: Optional[UUID] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Get items below reorder level"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        where_extra = ""
+        params = [ctx["tenant_id"]]
+        if warehouse_id:
+            where_extra = " AND ws.warehouse_id = $2"
+            params.append(warehouse_id)
+
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                ws.item_id, i.code as item_code, i.name as item_name,
+                ws.warehouse_id, w.name as warehouse_name,
+                ws.quantity, ws.reorder_level,
+                (ws.reorder_level - ws.quantity) as shortage
+            FROM warehouse_stock ws
+            JOIN items i ON ws.item_id = i.id
+            JOIN warehouses w ON ws.warehouse_id = w.id
+            WHERE ws.tenant_id = $1
+            AND ws.reorder_level IS NOT NULL
+            AND ws.quantity <= ws.reorder_level
+            {where_extra}
+            ORDER BY shortage DESC
+            LIMIT ${len(params) + 1}
+            """,
+            *params,
+            limit,
+        )
+
+        return LowStockResponse(data=[dict(row) for row in rows], total=len(rows))
+
+
 @router.get("/{warehouse_id}", response_model=WarehouseDetailResponse)
 async def get_warehouse(request: Request, warehouse_id: UUID):
     """Get warehouse details"""
@@ -418,50 +463,6 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
             total_value=row["total_value"],
         )
 
-
-@router.get("/low-stock", response_model=LowStockResponse)
-async def get_low_stock_items(
-    request: Request,
-    warehouse_id: Optional[UUID] = None,
-    limit: int = Query(100, ge=1, le=500),
-):
-    """Get items below reorder level"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        where_extra = ""
-        params = [ctx["tenant_id"]]
-        if warehouse_id:
-            where_extra = " AND ws.warehouse_id = $2"
-            params.append(warehouse_id)
-
-        rows = await conn.fetch(
-            f"""
-            SELECT
-                ws.item_id, i.code as item_code, i.name as item_name,
-                ws.warehouse_id, w.name as warehouse_name,
-                ws.quantity, ws.reorder_level,
-                (ws.reorder_level - ws.quantity) as shortage
-            FROM warehouse_stock ws
-            JOIN items i ON ws.item_id = i.id
-            JOIN warehouses w ON ws.warehouse_id = w.id
-            WHERE ws.tenant_id = $1
-            AND ws.reorder_level IS NOT NULL
-            AND ws.quantity <= ws.reorder_level
-            {where_extra}
-            ORDER BY shortage DESC
-            LIMIT ${len(params) + 1}
-            """,
-            *params,
-            limit,
-        )
-
-        return LowStockResponse(data=[dict(row) for row in rows], total=len(rows))
 
 
 @router.post("/{warehouse_id}/set-default")

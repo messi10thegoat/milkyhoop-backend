@@ -500,6 +500,37 @@ async def list_vendors(
 # =============================================================================
 # GET VENDOR DETAIL
 # =============================================================================
+@router.get("/next-code")
+async def get_next_vendor_code(request: Request):
+    """Get the next available vendor code for auto-generation."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT code FROM vendors WHERE tenant_id = $1 AND code IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                ctx["tenant_id"],
+            )
+            import re
+
+            if row and row["code"]:
+                match = re.match(r"^([A-Z]*)([0-9]+)$", row["code"])
+                if match:
+                    prefix = match.group(1) or "V"
+                    num = int(match.group(2)) + 1
+                    next_code = f"{prefix}{num:04d}"
+                else:
+                    next_code = "V0001"
+            else:
+                next_code = "V0001"
+            return {"success": True, "next_code": next_code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting next vendor code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get next code")
+
+
 @router.get("/{vendor_id}", response_model=VendorDetailResponse)
 async def get_vendor(request: Request, vendor_id: UUID):
     """Get detailed information for a single vendor."""
@@ -1141,36 +1172,6 @@ async def delete_vendor(request: Request, vendor_id: UUID):
 # VENDOR NEXT CODE (for form auto-generation)
 # =============================================================================
 
-
-@router.get("/next-code")
-async def get_next_vendor_code(request: Request):
-    """Get the next available vendor code for auto-generation."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT code FROM vendors WHERE tenant_id = $1 AND code IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                ctx["tenant_id"],
-            )
-            import re
-
-            if row and row["code"]:
-                match = re.match(r"^([A-Z]*)([0-9]+)$", row["code"])
-                if match:
-                    prefix = match.group(1) or "V"
-                    num = int(match.group(2)) + 1
-                    next_code = f"{prefix}{num:04d}"
-                else:
-                    next_code = "V0001"
-            else:
-                next_code = "V0001"
-            return {"success": True, "next_code": next_code}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting next vendor code: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get next code")
 
 
 # =============================================================================

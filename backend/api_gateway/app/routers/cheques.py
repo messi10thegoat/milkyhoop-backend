@@ -677,6 +677,109 @@ async def list_vendor_cheques(
 # =============================================================================
 
 
+@router.get("/summary", response_model=ChequeSummaryResponse)
+async def get_cheque_summary(request: Request):
+    """Get cheque summary by status."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM get_cheque_summary($1)
+            """,
+                ctx["tenant_id"],
+            )
+
+            summary = {
+                "received_pending": 0,
+                "received_pending_amount": 0,
+                "received_deposited": 0,
+                "received_deposited_amount": 0,
+                "issued_pending": 0,
+                "issued_pending_amount": 0,
+                "bounced_count": 0,
+                "bounced_amount": 0,
+                "due_today_count": 0,
+                "due_today_amount": 0,
+            }
+
+            for row in rows:
+                if row["cheque_type"] == "received" and row["status"] == "pending":
+                    summary["received_pending"] = row["count"]
+                    summary["received_pending_amount"] = row["total_amount"]
+                elif row["cheque_type"] == "received" and row["status"] == "deposited":
+                    summary["received_deposited"] = row["count"]
+                    summary["received_deposited_amount"] = row["total_amount"]
+                elif row["cheque_type"] == "issued" and row["status"] == "pending":
+                    summary["issued_pending"] = row["count"]
+                    summary["issued_pending_amount"] = row["total_amount"]
+                elif row["status"] == "bounced":
+                    summary["bounced_count"] += row["count"]
+                    summary["bounced_amount"] += row["total_amount"]
+
+            # Get due today
+            due_today = await conn.fetch(
+                """
+                SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+                FROM cheques
+                WHERE tenant_id = $1 AND status = 'pending' AND cheque_date <= CURRENT_DATE
+            """,
+                ctx["tenant_id"],
+            )
+
+            if due_today:
+                summary["due_today_count"] = due_today[0]["count"]
+                summary["due_today_amount"] = due_today[0]["total"]
+
+            return {"success": True, "data": summary}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting cheque summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get cheque summary")
+
+@router.get("/aging", response_model=ChequeAgingResponse)
+async def get_cheque_aging(
+    request: Request,
+    cheque_type: Literal["received", "issued"] = Query("received"),
+):
+    """Get aging of pending cheques."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM get_cheque_aging($1, $2)
+            """,
+                ctx["tenant_id"],
+                cheque_type,
+            )
+
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "aging_bucket": row["aging_bucket"],
+                        "count": row["count"],
+                        "total_amount": row["total_amount"],
+                    }
+                    for row in rows
+                ],
+                "cheque_type": cheque_type,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting cheque aging: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get cheque aging")
+
+
 @router.get("/{cheque_id}", response_model=ChequeDetailResponse)
 async def get_cheque(request: Request, cheque_id: UUID):
     """Get cheque detail with history."""
@@ -1489,108 +1592,6 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
 # =============================================================================
 
 
-@router.get("/summary", response_model=ChequeSummaryResponse)
-async def get_cheque_summary(request: Request):
-    """Get cheque summary by status."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_cheque_summary($1)
-            """,
-                ctx["tenant_id"],
-            )
-
-            summary = {
-                "received_pending": 0,
-                "received_pending_amount": 0,
-                "received_deposited": 0,
-                "received_deposited_amount": 0,
-                "issued_pending": 0,
-                "issued_pending_amount": 0,
-                "bounced_count": 0,
-                "bounced_amount": 0,
-                "due_today_count": 0,
-                "due_today_amount": 0,
-            }
-
-            for row in rows:
-                if row["cheque_type"] == "received" and row["status"] == "pending":
-                    summary["received_pending"] = row["count"]
-                    summary["received_pending_amount"] = row["total_amount"]
-                elif row["cheque_type"] == "received" and row["status"] == "deposited":
-                    summary["received_deposited"] = row["count"]
-                    summary["received_deposited_amount"] = row["total_amount"]
-                elif row["cheque_type"] == "issued" and row["status"] == "pending":
-                    summary["issued_pending"] = row["count"]
-                    summary["issued_pending_amount"] = row["total_amount"]
-                elif row["status"] == "bounced":
-                    summary["bounced_count"] += row["count"]
-                    summary["bounced_amount"] += row["total_amount"]
-
-            # Get due today
-            due_today = await conn.fetch(
-                """
-                SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
-                FROM cheques
-                WHERE tenant_id = $1 AND status = 'pending' AND cheque_date <= CURRENT_DATE
-            """,
-                ctx["tenant_id"],
-            )
-
-            if due_today:
-                summary["due_today_count"] = due_today[0]["count"]
-                summary["due_today_amount"] = due_today[0]["total"]
-
-            return {"success": True, "data": summary}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting cheque summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get cheque summary")
-
-
-@router.get("/aging", response_model=ChequeAgingResponse)
-async def get_cheque_aging(
-    request: Request,
-    cheque_type: Literal["received", "issued"] = Query("received"),
-):
-    """Get aging of pending cheques."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_cheque_aging($1, $2)
-            """,
-                ctx["tenant_id"],
-                cheque_type,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "aging_bucket": row["aging_bucket"],
-                        "count": row["count"],
-                        "total_amount": row["total_amount"],
-                    }
-                    for row in rows
-                ],
-                "cheque_type": cheque_type,
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting cheque aging: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get cheque aging")
 
 
 # =============================================================================

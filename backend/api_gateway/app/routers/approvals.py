@@ -775,6 +775,117 @@ async def get_submitted_requests(
         raise HTTPException(status_code=500, detail="Failed to get submitted requests")
 
 
+@router.get("/approval-requests/statistics", response_model=ApprovalStatisticsResponse)
+async def get_approval_statistics(
+    request: Request,
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+):
+    """Get approval statistics."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM get_approval_statistics($1, $2, $3)
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
+
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "document_type": row["document_type"],
+                        "total_requests": row["total_requests"],
+                        "pending_count": row["pending_count"],
+                        "approved_count": row["approved_count"],
+                        "rejected_count": row["rejected_count"],
+                        "cancelled_count": row["cancelled_count"],
+                        "avg_approval_hours": float(row["avg_approval_hours"])
+                        if row["avg_approval_hours"]
+                        else None,
+                    }
+                    for row in rows
+                ],
+                "period": {
+                    "from_date": from_date.isoformat() if from_date else None,
+                    "to_date": to_date.isoformat() if to_date else None,
+                },
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting approval statistics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get approval statistics")
+
+@router.get("/approval-requests/turnaround-time")
+async def get_turnaround_time(
+    request: Request,
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+):
+    """Get average approval turnaround time by workflow."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT aw.name as workflow_name, aw.document_type,
+                       AVG(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as avg_hours,
+                       MIN(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as min_hours,
+                       MAX(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as max_hours,
+                       COUNT(*)::INTEGER as total_completed
+                FROM approval_requests ar
+                JOIN approval_workflows aw ON ar.workflow_id = aw.id
+                WHERE ar.tenant_id = $1
+                AND ar.status = 'approved'
+                AND ar.completed_at IS NOT NULL
+                AND ($2::DATE IS NULL OR ar.requested_at::DATE >= $2)
+                AND ($3::DATE IS NULL OR ar.requested_at::DATE <= $3)
+                GROUP BY aw.name, aw.document_type
+                ORDER BY avg_hours DESC
+            """,
+                ctx["tenant_id"],
+                from_date,
+                to_date,
+            )
+
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "workflow_name": row["workflow_name"],
+                        "document_type": row["document_type"],
+                        "avg_hours": round(row["avg_hours"], 1)
+                        if row["avg_hours"]
+                        else 0,
+                        "min_hours": round(row["min_hours"], 1)
+                        if row["min_hours"]
+                        else 0,
+                        "max_hours": round(row["max_hours"], 1)
+                        if row["max_hours"]
+                        else 0,
+                        "total_completed": row["total_completed"],
+                    }
+                    for row in rows
+                ],
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting turnaround time: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get turnaround time")
+
+
 @router.get(
     "/approval-requests/{request_id}", response_model=ApprovalRequestDetailResponse
 )
@@ -1294,113 +1405,3 @@ async def remove_delegation(request: Request, delegation_id: UUID):
 # =============================================================================
 
 
-@router.get("/approval-requests/statistics", response_model=ApprovalStatisticsResponse)
-async def get_approval_statistics(
-    request: Request,
-    from_date: Optional[date] = Query(None),
-    to_date: Optional[date] = Query(None),
-):
-    """Get approval statistics."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_approval_statistics($1, $2, $3)
-            """,
-                ctx["tenant_id"],
-                from_date,
-                to_date,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "document_type": row["document_type"],
-                        "total_requests": row["total_requests"],
-                        "pending_count": row["pending_count"],
-                        "approved_count": row["approved_count"],
-                        "rejected_count": row["rejected_count"],
-                        "cancelled_count": row["cancelled_count"],
-                        "avg_approval_hours": float(row["avg_approval_hours"])
-                        if row["avg_approval_hours"]
-                        else None,
-                    }
-                    for row in rows
-                ],
-                "period": {
-                    "from_date": from_date.isoformat() if from_date else None,
-                    "to_date": to_date.isoformat() if to_date else None,
-                },
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting approval statistics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get approval statistics")
-
-
-@router.get("/approval-requests/turnaround-time")
-async def get_turnaround_time(
-    request: Request,
-    from_date: Optional[date] = Query(None),
-    to_date: Optional[date] = Query(None),
-):
-    """Get average approval turnaround time by workflow."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT aw.name as workflow_name, aw.document_type,
-                       AVG(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as avg_hours,
-                       MIN(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as min_hours,
-                       MAX(EXTRACT(EPOCH FROM (ar.completed_at - ar.requested_at)) / 3600) as max_hours,
-                       COUNT(*)::INTEGER as total_completed
-                FROM approval_requests ar
-                JOIN approval_workflows aw ON ar.workflow_id = aw.id
-                WHERE ar.tenant_id = $1
-                AND ar.status = 'approved'
-                AND ar.completed_at IS NOT NULL
-                AND ($2::DATE IS NULL OR ar.requested_at::DATE >= $2)
-                AND ($3::DATE IS NULL OR ar.requested_at::DATE <= $3)
-                GROUP BY aw.name, aw.document_type
-                ORDER BY avg_hours DESC
-            """,
-                ctx["tenant_id"],
-                from_date,
-                to_date,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "workflow_name": row["workflow_name"],
-                        "document_type": row["document_type"],
-                        "avg_hours": round(row["avg_hours"], 1)
-                        if row["avg_hours"]
-                        else 0,
-                        "min_hours": round(row["min_hours"], 1)
-                        if row["min_hours"]
-                        else 0,
-                        "max_hours": round(row["max_hours"], 1)
-                        if row["max_hours"]
-                        else 0,
-                        "total_completed": row["total_completed"],
-                    }
-                    for row in rows
-                ],
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting turnaround time: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get turnaround time")

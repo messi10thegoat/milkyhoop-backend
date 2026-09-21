@@ -521,6 +521,106 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
         raise HTTPException(status_code=500, detail="Failed to create production order")
 
 
+@router.get("/active")
+async def get_active_orders(request: Request):
+    """Get in-progress production orders."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT po.*, p.nama_produk as product_name
+                FROM production_orders po
+                JOIN products p ON p.id = po.product_id
+                WHERE po.tenant_id = $1 AND po.status IN ('released', 'in_progress')
+                ORDER BY po.priority, po.planned_start_date
+                """,
+                ctx["tenant_id"],
+            )
+
+            items = [
+                {
+                    "id": str(row["id"]),
+                    "order_number": row["order_number"],
+                    "product_name": row["product_name"],
+                    "planned_quantity": row["planned_quantity"],
+                    "completed_quantity": row["completed_quantity"],
+                    "status": row["status"],
+                    "priority": row["priority"],
+                }
+                for row in rows
+            ]
+
+            return {"success": True, "items": items}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting active orders: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get active orders")
+
+@router.get("/schedule", response_model=ProductionScheduleResponse)
+async def get_production_schedule(
+    request: Request, start_date: date = Query(...), end_date: date = Query(...)
+):
+    """Get production schedule."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT po.*, p.nama_produk as product_name, wc.name as work_center_name
+                FROM production_orders po
+                JOIN products p ON p.id = po.product_id
+                LEFT JOIN work_centers wc ON wc.id = po.work_center_id
+                WHERE po.tenant_id = $1
+                  AND po.status NOT IN ('completed', 'cancelled')
+                  AND (
+                      (po.planned_start_date BETWEEN $2 AND $3) OR
+                      (po.planned_end_date BETWEEN $2 AND $3) OR
+                      (po.planned_start_date <= $2 AND po.planned_end_date >= $3)
+                  )
+                ORDER BY po.planned_start_date, po.priority
+                """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            items = [
+                {
+                    "order_id": str(row["id"]),
+                    "order_number": row["order_number"],
+                    "product_name": row["product_name"],
+                    "planned_quantity": row["planned_quantity"],
+                    "planned_start": row["planned_start_date"],
+                    "planned_end": row["planned_end_date"],
+                    "work_center_name": row["work_center_name"],
+                    "status": row["status"],
+                    "priority": row["priority"],
+                }
+                for row in rows
+            ]
+
+            return {
+                "success": True,
+                "start_date": start_date,
+                "end_date": end_date,
+                "items": items,
+                "total_orders": len(items),
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting production schedule: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get production schedule")
+
+
 @router.get("/{order_id}", response_model=ProductionOrderDetailResponse)
 async def get_production_order(request: Request, order_id: UUID):
     """Get production order detail."""
@@ -2942,105 +3042,6 @@ async def get_cost_analysis(request: Request, order_id: UUID):
 # =============================================================================
 # QUERIES
 # =============================================================================
-@router.get("/active")
-async def get_active_orders(request: Request):
-    """Get in-progress production orders."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT po.*, p.nama_produk as product_name
-                FROM production_orders po
-                JOIN products p ON p.id = po.product_id
-                WHERE po.tenant_id = $1 AND po.status IN ('released', 'in_progress')
-                ORDER BY po.priority, po.planned_start_date
-                """,
-                ctx["tenant_id"],
-            )
-
-            items = [
-                {
-                    "id": str(row["id"]),
-                    "order_number": row["order_number"],
-                    "product_name": row["product_name"],
-                    "planned_quantity": row["planned_quantity"],
-                    "completed_quantity": row["completed_quantity"],
-                    "status": row["status"],
-                    "priority": row["priority"],
-                }
-                for row in rows
-            ]
-
-            return {"success": True, "items": items}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting active orders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get active orders")
-
-
-@router.get("/schedule", response_model=ProductionScheduleResponse)
-async def get_production_schedule(
-    request: Request, start_date: date = Query(...), end_date: date = Query(...)
-):
-    """Get production schedule."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT po.*, p.nama_produk as product_name, wc.name as work_center_name
-                FROM production_orders po
-                JOIN products p ON p.id = po.product_id
-                LEFT JOIN work_centers wc ON wc.id = po.work_center_id
-                WHERE po.tenant_id = $1
-                  AND po.status NOT IN ('completed', 'cancelled')
-                  AND (
-                      (po.planned_start_date BETWEEN $2 AND $3) OR
-                      (po.planned_end_date BETWEEN $2 AND $3) OR
-                      (po.planned_start_date <= $2 AND po.planned_end_date >= $3)
-                  )
-                ORDER BY po.planned_start_date, po.priority
-                """,
-                ctx["tenant_id"],
-                start_date,
-                end_date,
-            )
-
-            items = [
-                {
-                    "order_id": str(row["id"]),
-                    "order_number": row["order_number"],
-                    "product_name": row["product_name"],
-                    "planned_quantity": row["planned_quantity"],
-                    "planned_start": row["planned_start_date"],
-                    "planned_end": row["planned_end_date"],
-                    "work_center_name": row["work_center_name"],
-                    "status": row["status"],
-                    "priority": row["priority"],
-                }
-                for row in rows
-            ]
-
-            return {
-                "success": True,
-                "start_date": start_date,
-                "end_date": end_date,
-                "items": items,
-                "total_orders": len(items),
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting production schedule: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get production schedule")
 
 
 from ..services.role_resolver import AccountRoleUnmappedError  # noqa: E402 (reconcile OH-skip guard)

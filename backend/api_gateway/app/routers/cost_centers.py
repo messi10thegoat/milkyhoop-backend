@@ -159,6 +159,47 @@ async def get_cost_center_tree(request: Request):
         return root_nodes
 
 
+@router.get("/comparison", response_model=CostCenterComparisonResponse)
+async def compare_cost_centers(
+    request: Request,
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """Compare all cost centers"""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+        )
+
+        rows = await conn.fetch(
+            "SELECT * FROM compare_cost_centers($1, $2, $3)",
+            ctx["tenant_id"],
+            start_date,
+            end_date,
+        )
+
+        items = [
+            CostCenterComparisonItem(
+                cost_center_id=row["cost_center_id"],
+                cost_center_code=row["cost_center_code"],
+                cost_center_name=row["cost_center_name"],
+                total_revenue=row["total_revenue"],
+                total_expense=row["total_expense"],
+                net_amount=row["net_amount"],
+            )
+            for row in rows
+        ]
+
+        return CostCenterComparisonResponse(
+            start_date=start_date,
+            end_date=end_date,
+            items=items,
+        )
+
+
 @router.get("/{cost_center_id}", response_model=CostCenterResponse)
 async def get_cost_center(request: Request, cost_center_id: UUID):
     """Get single cost center"""
@@ -497,43 +538,3 @@ async def get_cost_center_transactions(
             total_credit=total_credit,
         )
 
-
-@router.get("/comparison", response_model=CostCenterComparisonResponse)
-async def compare_cost_centers(
-    request: Request,
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-):
-    """Compare all cost centers"""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            "SELECT * FROM compare_cost_centers($1, $2, $3)",
-            ctx["tenant_id"],
-            start_date,
-            end_date,
-        )
-
-        items = [
-            CostCenterComparisonItem(
-                cost_center_id=row["cost_center_id"],
-                cost_center_code=row["cost_center_code"],
-                cost_center_name=row["cost_center_name"],
-                total_revenue=row["total_revenue"],
-                total_expense=row["total_expense"],
-                net_amount=row["net_amount"],
-            )
-            for row in rows
-        ]
-
-        return CostCenterComparisonResponse(
-            start_date=start_date,
-            end_date=end_date,
-            items=items,
-        )

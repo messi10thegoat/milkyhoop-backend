@@ -288,6 +288,267 @@ async def get_branch_tree(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get branch tree")
 
 
+@router.get("/transfers", response_model=BranchTransferListResponse)
+async def list_branch_transfers(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    from_branch_id: Optional[UUID] = Query(None),
+    to_branch_id: Optional[UUID] = Query(None),
+    status: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
+):
+    """List branch transfers."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            conditions = ["bt.tenant_id = $1"]
+            params = [ctx["tenant_id"]]
+            param_idx = 2
+
+            if from_branch_id:
+                conditions.append(f"bt.from_branch_id = ${param_idx}")
+                params.append(from_branch_id)
+                param_idx += 1
+
+            if to_branch_id:
+                conditions.append(f"bt.to_branch_id = ${param_idx}")
+                params.append(to_branch_id)
+                param_idx += 1
+
+            if status:
+                conditions.append(f"bt.status = ${param_idx}")
+                params.append(status)
+                param_idx += 1
+
+            if start_date:
+                conditions.append(f"bt.transfer_date >= ${param_idx}")
+                params.append(start_date)
+                param_idx += 1
+
+            if end_date:
+                conditions.append(f"bt.transfer_date <= ${param_idx}")
+                params.append(end_date)
+                param_idx += 1
+
+            where_clause = " AND ".join(conditions)
+
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM branch_transfers bt WHERE {where_clause}",
+                *params,
+            )
+
+            query = f"""
+                SELECT bt.*,
+                       fb.name as from_branch_name,
+                       tb.name as to_branch_name,
+                       (SELECT COUNT(*) FROM branch_transfer_lines WHERE branch_transfer_id = bt.id) as item_count
+                FROM branch_transfers bt
+                JOIN branches fb ON fb.id = bt.from_branch_id
+                JOIN branches tb ON tb.id = bt.to_branch_id
+                WHERE {where_clause}
+                ORDER BY bt.transfer_date {sort_order}, bt.created_at {sort_order}
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([limit, skip])
+            rows = await conn.fetch(query, *params)
+
+            items = [
+                {
+                    "id": str(row["id"]),
+                    "transfer_number": row["transfer_number"],
+                    "transfer_date": row["transfer_date"],
+                    "from_branch_id": str(row["from_branch_id"]),
+                    "from_branch_name": row["from_branch_name"],
+                    "to_branch_id": str(row["to_branch_id"]),
+                    "to_branch_name": row["to_branch_name"],
+                    "transfer_price": row["transfer_price"],
+                    "status": row["status"],
+                    "item_count": row["item_count"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
+            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing branch transfers: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list branch transfers")
+
+@router.get("/comparison", response_model=BranchComparisonResponse)
+async def compare_branches(
+    request: Request,
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """Compare all branches performance."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    b.id as branch_id,
+                    b.name as branch_name,
+                    COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) as revenue,
+                    COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0) as expenses
+                FROM branches b
+                LEFT JOIN journal_entries je ON je.branch_id = b.id
+                    AND je.entry_date BETWEEN $2 AND $3
+                    AND je.status = 'posted'
+                LEFT JOIN journal_lines jl ON jl.journal_id = je.id
+                LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                WHERE b.tenant_id = $1 AND b.is_active = true
+                GROUP BY b.id, b.name
+                ORDER BY (COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) -
+                         COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0)) DESC
+                """,
+                ctx["tenant_id"],
+                start_date,
+                end_date,
+            )
+
+            items = []
+            totals = {"revenue": 0, "expenses": 0, "net_income": 0}
+
+            for row in rows:
+                revenue = row["revenue"] or 0
+                expenses = row["expenses"] or 0
+                net_income = revenue - expenses
+                margin = round((net_income / revenue * 100) if revenue else 0, 2)
+
+                items.append(
+                    {
+                        "branch_id": str(row["branch_id"]),
+                        "branch_name": row["branch_name"],
+                        "revenue": revenue,
+                        "expenses": expenses,
+                        "net_income": net_income,
+                        "margin_percent": margin,
+                    }
+                )
+
+                totals["revenue"] += revenue
+                totals["expenses"] += expenses
+                totals["net_income"] += net_income
+
+            return {
+                "success": True,
+                "period_start": start_date,
+                "period_end": end_date,
+                "items": items,
+                "totals": totals,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error comparing branches: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to compare branches")
+
+@router.get("/ranking", response_model=BranchRankingResponse)
+async def rank_branches(
+    request: Request,
+    ranking_by: Literal["revenue", "profit", "transactions"] = Query("revenue"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """Rank branches by metric."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+
+        async with pool.acquire() as conn:
+            if ranking_by == "transactions":
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        b.id as branch_id,
+                        b.name as branch_name,
+                        COUNT(DISTINCT je.id) as value
+                    FROM branches b
+                    LEFT JOIN journal_entries je ON je.branch_id = b.id
+                        AND je.entry_date BETWEEN $2 AND $3
+                        AND je.status = 'posted'
+                    WHERE b.tenant_id = $1 AND b.is_active = true
+                    GROUP BY b.id, b.name
+                    ORDER BY value DESC
+                    """,
+                    ctx["tenant_id"],
+                    start_date,
+                    end_date,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        b.id as branch_id,
+                        b.name as branch_name,
+                        CASE
+                            WHEN $4 = 'revenue' THEN
+                                COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0)
+                            ELSE
+                                COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) -
+                                COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0)
+                        END as value
+                    FROM branches b
+                    LEFT JOIN journal_entries je ON je.branch_id = b.id
+                        AND je.entry_date BETWEEN $2 AND $3
+                        AND je.status = 'posted'
+                    LEFT JOIN journal_lines jl ON jl.journal_id = je.id
+                    LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE b.tenant_id = $1 AND b.is_active = true
+                    GROUP BY b.id, b.name
+                    ORDER BY value DESC
+                    """,
+                    ctx["tenant_id"],
+                    start_date,
+                    end_date,
+                    ranking_by,
+                )
+
+            total = sum(row["value"] or 0 for row in rows)
+            items = []
+
+            for rank, row in enumerate(rows, 1):
+                value = row["value"] or 0
+                items.append(
+                    {
+                        "rank": rank,
+                        "branch_id": str(row["branch_id"]),
+                        "branch_name": row["branch_name"],
+                        "value": value,
+                        "percent_of_total": round(
+                            (value / total * 100) if total else 0, 2
+                        ),
+                    }
+                )
+
+            return {
+                "success": True,
+                "ranking_by": ranking_by,
+                "period_start": start_date,
+                "period_end": end_date,
+                "items": items,
+                "total": total,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error ranking branches: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to rank branches")
+
+
 @router.get("/{branch_id}", response_model=BranchDetailResponse)
 async def get_branch(request: Request, branch_id: UUID):
     """Get branch detail."""
@@ -634,100 +895,6 @@ async def get_user_branches(request: Request, user_id: UUID):
 # =============================================================================
 # BRANCH TRANSFERS
 # =============================================================================
-@router.get("/transfers", response_model=BranchTransferListResponse)
-async def list_branch_transfers(
-    request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    from_branch_id: Optional[UUID] = Query(None),
-    to_branch_id: Optional[UUID] = Query(None),
-    status: Optional[str] = Query(None),
-    start_date: Optional[date] = Query(None),
-    end_date: Optional[date] = Query(None),
-    sort_order: Literal["asc", "desc"] = Query("desc"),
-):
-    """List branch transfers."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            conditions = ["bt.tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            param_idx = 2
-
-            if from_branch_id:
-                conditions.append(f"bt.from_branch_id = ${param_idx}")
-                params.append(from_branch_id)
-                param_idx += 1
-
-            if to_branch_id:
-                conditions.append(f"bt.to_branch_id = ${param_idx}")
-                params.append(to_branch_id)
-                param_idx += 1
-
-            if status:
-                conditions.append(f"bt.status = ${param_idx}")
-                params.append(status)
-                param_idx += 1
-
-            if start_date:
-                conditions.append(f"bt.transfer_date >= ${param_idx}")
-                params.append(start_date)
-                param_idx += 1
-
-            if end_date:
-                conditions.append(f"bt.transfer_date <= ${param_idx}")
-                params.append(end_date)
-                param_idx += 1
-
-            where_clause = " AND ".join(conditions)
-
-            total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM branch_transfers bt WHERE {where_clause}",
-                *params,
-            )
-
-            query = f"""
-                SELECT bt.*,
-                       fb.name as from_branch_name,
-                       tb.name as to_branch_name,
-                       (SELECT COUNT(*) FROM branch_transfer_lines WHERE branch_transfer_id = bt.id) as item_count
-                FROM branch_transfers bt
-                JOIN branches fb ON fb.id = bt.from_branch_id
-                JOIN branches tb ON tb.id = bt.to_branch_id
-                WHERE {where_clause}
-                ORDER BY bt.transfer_date {sort_order}, bt.created_at {sort_order}
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([limit, skip])
-            rows = await conn.fetch(query, *params)
-
-            items = [
-                {
-                    "id": str(row["id"]),
-                    "transfer_number": row["transfer_number"],
-                    "transfer_date": row["transfer_date"],
-                    "from_branch_id": str(row["from_branch_id"]),
-                    "from_branch_name": row["from_branch_name"],
-                    "to_branch_id": str(row["to_branch_id"]),
-                    "to_branch_name": row["to_branch_name"],
-                    "transfer_price": row["transfer_price"],
-                    "status": row["status"],
-                    "item_count": row["item_count"],
-                    "created_at": row["created_at"],
-                }
-                for row in rows
-            ]
-
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing branch transfers: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list branch transfers")
-
 
 @router.post("/transfers", response_model=BranchResponse, status_code=201)
 async def create_branch_transfer(request: Request, body: CreateBranchTransferRequest):
@@ -1313,169 +1480,3 @@ async def get_branch_trial_balance(
         raise HTTPException(status_code=500, detail="Failed to get trial balance")
 
 
-@router.get("/comparison", response_model=BranchComparisonResponse)
-async def compare_branches(
-    request: Request,
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-):
-    """Compare all branches performance."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT
-                    b.id as branch_id,
-                    b.name as branch_name,
-                    COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) as revenue,
-                    COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0) as expenses
-                FROM branches b
-                LEFT JOIN journal_entries je ON je.branch_id = b.id
-                    AND je.entry_date BETWEEN $2 AND $3
-                    AND je.status = 'posted'
-                LEFT JOIN journal_lines jl ON jl.journal_id = je.id
-                LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE b.tenant_id = $1 AND b.is_active = true
-                GROUP BY b.id, b.name
-                ORDER BY (COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) -
-                         COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0)) DESC
-                """,
-                ctx["tenant_id"],
-                start_date,
-                end_date,
-            )
-
-            items = []
-            totals = {"revenue": 0, "expenses": 0, "net_income": 0}
-
-            for row in rows:
-                revenue = row["revenue"] or 0
-                expenses = row["expenses"] or 0
-                net_income = revenue - expenses
-                margin = round((net_income / revenue * 100) if revenue else 0, 2)
-
-                items.append(
-                    {
-                        "branch_id": str(row["branch_id"]),
-                        "branch_name": row["branch_name"],
-                        "revenue": revenue,
-                        "expenses": expenses,
-                        "net_income": net_income,
-                        "margin_percent": margin,
-                    }
-                )
-
-                totals["revenue"] += revenue
-                totals["expenses"] += expenses
-                totals["net_income"] += net_income
-
-            return {
-                "success": True,
-                "period_start": start_date,
-                "period_end": end_date,
-                "items": items,
-                "totals": totals,
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error comparing branches: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to compare branches")
-
-
-@router.get("/ranking", response_model=BranchRankingResponse)
-async def rank_branches(
-    request: Request,
-    ranking_by: Literal["revenue", "profit", "transactions"] = Query("revenue"),
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-):
-    """Rank branches by metric."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            if ranking_by == "transactions":
-                rows = await conn.fetch(
-                    """
-                    SELECT
-                        b.id as branch_id,
-                        b.name as branch_name,
-                        COUNT(DISTINCT je.id) as value
-                    FROM branches b
-                    LEFT JOIN journal_entries je ON je.branch_id = b.id
-                        AND je.entry_date BETWEEN $2 AND $3
-                        AND je.status = 'posted'
-                    WHERE b.tenant_id = $1 AND b.is_active = true
-                    GROUP BY b.id, b.name
-                    ORDER BY value DESC
-                    """,
-                    ctx["tenant_id"],
-                    start_date,
-                    end_date,
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT
-                        b.id as branch_id,
-                        b.name as branch_name,
-                        CASE
-                            WHEN $4 = 'revenue' THEN
-                                COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0)
-                            ELSE
-                                COALESCE(SUM(CASE WHEN coa.account_type = 'revenue' THEN jl.credit - jl.debit ELSE 0 END), 0) -
-                                COALESCE(SUM(CASE WHEN coa.account_type = 'expense' THEN jl.debit - jl.credit ELSE 0 END), 0)
-                        END as value
-                    FROM branches b
-                    LEFT JOIN journal_entries je ON je.branch_id = b.id
-                        AND je.entry_date BETWEEN $2 AND $3
-                        AND je.status = 'posted'
-                    LEFT JOIN journal_lines jl ON jl.journal_id = je.id
-                    LEFT JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE b.tenant_id = $1 AND b.is_active = true
-                    GROUP BY b.id, b.name
-                    ORDER BY value DESC
-                    """,
-                    ctx["tenant_id"],
-                    start_date,
-                    end_date,
-                    ranking_by,
-                )
-
-            total = sum(row["value"] or 0 for row in rows)
-            items = []
-
-            for rank, row in enumerate(rows, 1):
-                value = row["value"] or 0
-                items.append(
-                    {
-                        "rank": rank,
-                        "branch_id": str(row["branch_id"]),
-                        "branch_name": row["branch_name"],
-                        "value": value,
-                        "percent_of_total": round(
-                            (value / total * 100) if total else 0, 2
-                        ),
-                    }
-                )
-
-            return {
-                "success": True,
-                "ranking_by": ranking_by,
-                "period_start": start_date,
-                "period_end": end_date,
-                "items": items,
-                "total": total,
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error ranking branches: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to rank branches")

@@ -1167,6 +1167,43 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
 # =============================================================================
 
 
+@router.delete("/items/categories")
+async def delete_category(request: Request, name: str = Query(..., min_length=1, max_length=100, description="Nama kategori (boleh mengandung / dsb)")):
+    """Hapus kategori dari registry. HANYA bila 0 item AKTIF memakainya (selain itu 409).
+
+    products.kategori (string bebas) TAK disentuh — item lama tetap membawa labelnya; yang
+    dihapus hanya baris registry. Pencocokan case-insensitive.
+    """
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        n = await conn.fetchval(
+            "SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2) AND status = 'active'",
+            tenant_id,
+            name,
+        )
+        if n and n > 0:
+            raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
+        deleted = await conn.fetchval(
+            "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
+            tenant_id,
+            name,
+        )
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+        return {"success": True, "message": f"Kategori '{name}' dihapus"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting category: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
 @router.delete("/items/{item_id}", response_model=DeleteItemResponse)
 async def delete_item(request: Request, item_id: UUID):
     """Delete an item. Hard-deletes if no ledger footprint; else raises 400."""
@@ -1730,42 +1767,6 @@ async def create_category(request: Request, body: CreateCategoryRequest):
         if conn:
             await conn.close()
 
-
-@router.delete("/items/categories")
-async def delete_category(request: Request, name: str = Query(..., min_length=1, max_length=100, description="Nama kategori (boleh mengandung / dsb)")):
-    """Hapus kategori dari registry. HANYA bila 0 item AKTIF memakainya (selain itu 409).
-
-    products.kategori (string bebas) TAK disentuh — item lama tetap membawa labelnya; yang
-    dihapus hanya baris registry. Pencocokan case-insensitive.
-    """
-    tenant_id = get_tenant_id(request)
-    conn = None
-    try:
-        conn = await get_db_connection()
-        n = await conn.fetchval(
-            "SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2) AND status = 'active'",
-            tenant_id,
-            name,
-        )
-        if n and n > 0:
-            raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
-        deleted = await conn.fetchval(
-            "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
-            tenant_id,
-            name,
-        )
-        if deleted is None:
-            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
-        return {"success": True, "message": f"Kategori '{name}' dihapus"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting category: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            await conn.close()
 
 
 # =============================================================================
