@@ -89,6 +89,7 @@ CALC: calc_{{op}}_{{what}}
   "total saldo semua rekening"→calc_sum_all_bank_balances. "total pembayaran masuk/keluar"→calc_sum_received/paid_this_month.
   "pelanggan piutang terbesar"→calc_rank_customers_by_ar. "vendor hutang terbesar"→calc_rank_vendors_by_ap.
   RULE: "total/jumlah" + angka = calc_sum. "terbesar/ranking" = calc_rank. "berapa banyak" = calc_count. BUKAN query.
+  DI LUAR KOSAKATA (WAJIB): kalau pertanyaan menyebut DOMAIN yang TIDAK ADA di daftar intent di atas — khususnya PENGGAJIAN/GAJI/UPAH/KARYAWAN/KASBON/LEMBUR (payroll belum punya intent) — JANGAN paksakan ke calc_sum/query terdekat (mis. "total gaji" -> penjualan). Kembalikan intent "ambiguous" dengan clarification yang mengaku topik itu belum bisa dijawab lewat chat. Angka yang percaya diri tapi SALAH DOMAIN lebih berbahaya daripada mengaku tidak bisa.
 
 OTHER: chitchat, ambiguous, reformat_as_table, contextual_drill_down
 
