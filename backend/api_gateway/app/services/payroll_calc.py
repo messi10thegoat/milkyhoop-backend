@@ -83,6 +83,17 @@ def round2(val) -> Decimal:
     return d(val).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
+WHOLE_RUPIAH = Decimal("1")
+
+
+def round_idr(val) -> Decimal:
+    # IDR is a WHOLE-RUPIAH currency: the treasurer rounds each qty x rate LINE HALF_UP to
+    # the rupiah (e.g. 11,5 h x 11.875 = 136.562,5 -> 136.563), NOT to 2 decimals. Used ONLY
+    # for payroll qty x rate earning lines in calculate_employee_slip (daily / hourly /
+    # overtime). Everything else (sales/bills/tax) keeps 2dp via round2 -- do NOT swap them.
+    return d(val).quantize(WHOLE_RUPIAH, rounding=ROUND_HALF_UP)
+
+
 async def lookup_ter_rate(
     conn, ptkp_status: str, gross_monthly: Decimal, year: int = 2024
 ) -> Decimal:
@@ -235,8 +246,8 @@ async def calculate_employee_slip(
                 )
             qty = d(days)
             line_rate = rate
-            # Decimal x Decimal, HALF_UP to 2 dp (rupiah-cent, matches numeric(18,2)).
-            amount = round2(line_rate * qty)
+            # IDR whole-rupiah HALF_UP per line (treasurer's method); see round_idr.
+            amount = round_idr(line_rate * qty)
         elif method in ("hourly", "overtime"):
             hours = vi.get("overtime_hours")
             if hours is None:
@@ -246,7 +257,7 @@ async def calculate_employee_slip(
                 )
             qty = d(hours)
             line_rate = rate
-            amount = round2(line_rate * qty)
+            amount = round_idr(line_rate * qty)  # IDR whole-rupiah HALF_UP per line
         else:  # fixed / percentage -> flat amount, with optional per-run override
             amount = d(cfg["amount"])
             override = vi.get("amount")
@@ -266,7 +277,7 @@ async def calculate_employee_slip(
                     "component_name": comp["name"],
                     "component_type": "earning",
                     "component_category": category,
-                    "amount": float(round2(amount)),
+                    "amount": float(round2(amount)),  # already whole for qty x rate lines
                     "quantity": float(qty) if qty is not None else None,
                     "rate": float(line_rate) if line_rate is not None else None,
                     "is_taxable": comp["is_taxable"],
