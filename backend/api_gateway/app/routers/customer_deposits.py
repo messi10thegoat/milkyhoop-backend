@@ -604,9 +604,13 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
 
             # Build response
             remaining = (
-                dep["amount"]
-                - (dep["amount_applied"] or 0)
-                - (dep["amount_refunded"] or 0)
+                0
+                if dep["status"] == "void"
+                else (
+                    dep["amount"]
+                    - (dep["amount_applied"] or 0)
+                    - (dep["amount_refunded"] or 0)
+                )
             )
 
             return {
