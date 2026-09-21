@@ -390,6 +390,22 @@ async def update_payroll_run(
             if run["status"] != "draft":
                 raise HTTPException(400, detail="Can only update draft payroll runs")
 
+            # Pay-group scope for the WRITE path (RULE: every employee_id-bearing endpoint,
+            # read OR write, filters pay-group). OWNER/ADMIN keep full-replace; a scoped
+            # caller may only touch employees in their accessible pay groups. Out-of-scope
+            # OR nonexistent employee ids return 404 (indistinguishable from "not found") so
+            # a scoped caller cannot enumerate staff outside their groups.
+            role_code, accessible_ids = await _pg_filter(conn, ctx)
+            privileged = role_code in ("OWNER", "ADMIN")
+            scoped_emp_ids = None
+            if not privileged:
+                _rows = await conn.fetch(
+                    "SELECT id FROM employees WHERE tenant_id = $1 AND pay_group_id = ANY($2::uuid[])",
+                    ctx["tenant_id"],
+                    accessible_ids,
+                )
+                scoped_emp_ids = {str(r["id"]) for r in _rows}
+
             updates = body.dict(exclude_unset=True, exclude={"variable_inputs", "piece_lines"})
             if updates:
                 set_clauses = []
@@ -412,6 +428,8 @@ async def update_payroll_run(
             # input replaces it (idempotent per component), never appends a duplicate.
             if body.variable_inputs:
                 for vi in body.variable_inputs:
+                    if not privileged and str(vi.employee_id) not in scoped_emp_ids:
+                        raise HTTPException(404, detail="Employee not found")
                     comp = await conn.fetchrow(
                         "SELECT id FROM salary_components WHERE tenant_id = $1 AND code = $2 AND is_active = true",
                         ctx["tenant_id"],
@@ -447,9 +465,27 @@ async def update_payroll_run(
             # Borongan piece lines (V285): full-replace the run's ad-hoc lines (FE sends the
             # complete set; [] clears them).
             if body.piece_lines is not None:
-                await conn.execute(
-                    "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1", run_id
-                )
+                if privileged:
+                    await conn.execute(
+                        "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1", run_id
+                    )
+                else:
+                    # Reject out-of-scope / unknown employees BEFORE deleting anything (404,
+                    # indistinguishable from nonexistent) so a scoped writer can neither
+                    # INJECT lines for nor learn about employees outside their pay groups.
+                    for pl in body.piece_lines:
+                        if str(pl.employee_id) not in scoped_emp_ids:
+                            raise HTTPException(404, detail="Employee not found")
+                    # Full-replace only the caller's in-scope slice; other pay groups'
+                    # lines are left untouched (they were never shown to this caller).
+                    await conn.execute(
+                        "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1 "
+                        "AND employee_id IN (SELECT id FROM employees "
+                        "WHERE tenant_id = $2 AND pay_group_id = ANY($3::uuid[]))",
+                        run_id,
+                        ctx["tenant_id"],
+                        accessible_ids,
+                    )
                 for pl in body.piece_lines:
                     await conn.execute(
                         """INSERT INTO payroll_run_piece_lines
