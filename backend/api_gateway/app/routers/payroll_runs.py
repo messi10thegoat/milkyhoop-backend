@@ -336,95 +336,96 @@ async def update_payroll_run(
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-        run = await conn.fetchrow(
-            "SELECT id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
-            run_id,
-            ctx["tenant_id"],
-        )
-        if not run:
-            raise HTTPException(404, detail="Payroll run not found")
-        if run["status"] != "draft":
-            raise HTTPException(400, detail="Can only update draft payroll runs")
-
-        updates = body.dict(exclude_unset=True, exclude={"variable_inputs", "piece_lines"})
-        if updates:
-            set_clauses = []
-            params = []
-            idx = 1
-            for key, val in updates.items():
-                set_clauses.append(f"{key} = ${idx}")
-                params.append(val)
-                idx += 1
-            params.append(run_id)
-            await conn.execute(
-                f"UPDATE payroll_runs SET {', '.join(set_clauses)}, updated_at = now() WHERE id = ${idx}",
-                *params,
+        async with conn.transaction():
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            run = await conn.fetchrow(
+                "SELECT id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
+                run_id,
+                ctx["tenant_id"],
             )
+            if not run:
+                raise HTTPException(404, detail="Payroll run not found")
+            if run["status"] != "draft":
+                raise HTTPException(400, detail="Can only update draft payroll runs")
 
-        # Per-run variable inputs (V282 quantity x rate): store days_worked /
-        # overtime_hours / amount-override per (run, employee, component). These are
-        # NOT written to the GL here -- calculate_payroll multiplies them by the
-        # employee's configured rate and rebuilds the slip lines. UPSERT so editing an
-        # input replaces it (idempotent per component), never appends a duplicate.
-        if body.variable_inputs:
-            for vi in body.variable_inputs:
-                comp = await conn.fetchrow(
-                    "SELECT id FROM salary_components WHERE tenant_id = $1 AND code = $2 AND is_active = true",
-                    ctx["tenant_id"],
-                    vi.component_code,
+            updates = body.dict(exclude_unset=True, exclude={"variable_inputs", "piece_lines"})
+            if updates:
+                set_clauses = []
+                params = []
+                idx = 1
+                for key, val in updates.items():
+                    set_clauses.append(f"{key} = ${idx}")
+                    params.append(val)
+                    idx += 1
+                params.append(run_id)
+                await conn.execute(
+                    f"UPDATE payroll_runs SET {', '.join(set_clauses)}, updated_at = now() WHERE id = ${idx}",
+                    *params,
                 )
-                if not comp:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "UNKNOWN_COMPONENT",
-                            "message": f"Komponen gaji '{vi.component_code}' tidak ditemukan.",
-                        },
+
+            # Per-run variable inputs (V282 quantity x rate): store days_worked /
+            # overtime_hours / amount-override per (run, employee, component). These are
+            # NOT written to the GL here -- calculate_payroll multiplies them by the
+            # employee's configured rate and rebuilds the slip lines. UPSERT so editing an
+            # input replaces it (idempotent per component), never appends a duplicate.
+            if body.variable_inputs:
+                for vi in body.variable_inputs:
+                    comp = await conn.fetchrow(
+                        "SELECT id FROM salary_components WHERE tenant_id = $1 AND code = $2 AND is_active = true",
+                        ctx["tenant_id"],
+                        vi.component_code,
                     )
-                await conn.execute(
-                    """INSERT INTO payroll_run_inputs
-                         (tenant_id, payroll_id, employee_id, component_id,
-                          days_worked, overtime_hours, amount)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)
-                       ON CONFLICT (payroll_id, employee_id, component_id)
-                       DO UPDATE SET days_worked = EXCLUDED.days_worked,
-                                     overtime_hours = EXCLUDED.overtime_hours,
-                                     amount = EXCLUDED.amount,
-                                     updated_at = now()""",
-                    ctx["tenant_id"],
-                    run_id,
-                    vi.employee_id,
-                    comp["id"],
-                    vi.days_worked,
-                    vi.overtime_hours,
-                    vi.amount,
-                )
+                    if not comp:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "code": "UNKNOWN_COMPONENT",
+                                "message": f"Komponen gaji '{vi.component_code}' tidak ditemukan.",
+                            },
+                        )
+                    await conn.execute(
+                        """INSERT INTO payroll_run_inputs
+                             (tenant_id, payroll_id, employee_id, component_id,
+                              days_worked, overtime_hours, amount)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7)
+                           ON CONFLICT (payroll_id, employee_id, component_id)
+                           DO UPDATE SET days_worked = EXCLUDED.days_worked,
+                                         overtime_hours = EXCLUDED.overtime_hours,
+                                         amount = EXCLUDED.amount,
+                                         updated_at = now()""",
+                        ctx["tenant_id"],
+                        run_id,
+                        vi.employee_id,
+                        comp["id"],
+                        vi.days_worked,
+                        vi.overtime_hours,
+                        vi.amount,
+                    )
 
-        # Borongan piece lines (V285): full-replace the run's ad-hoc lines (FE sends the
-        # complete set; [] clears them).
-        if body.piece_lines is not None:
-            await conn.execute(
-                "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1", run_id
-            )
-            for pl in body.piece_lines:
+            # Borongan piece lines (V285): full-replace the run's ad-hoc lines (FE sends the
+            # complete set; [] clears them).
+            if body.piece_lines is not None:
                 await conn.execute(
-                    """INSERT INTO payroll_run_piece_lines
-                         (tenant_id, payroll_id, employee_id, description, job_reference,
-                          work_order_id, quantity, rate, sort_order)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-                    ctx["tenant_id"],
-                    run_id,
-                    pl.employee_id,
-                    pl.description,
-                    pl.job_reference,
-                    pl.work_order_id,
-                    pl.quantity,
-                    pl.rate,
-                    pl.sort_order,
+                    "DELETE FROM payroll_run_piece_lines WHERE payroll_id = $1", run_id
                 )
+                for pl in body.piece_lines:
+                    await conn.execute(
+                        """INSERT INTO payroll_run_piece_lines
+                             (tenant_id, payroll_id, employee_id, description, job_reference,
+                              work_order_id, quantity, rate, sort_order)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                        ctx["tenant_id"],
+                        run_id,
+                        pl.employee_id,
+                        pl.description,
+                        pl.job_reference,
+                        pl.work_order_id,
+                        pl.quantity,
+                        pl.rate,
+                        pl.sort_order,
+                    )
 
-        return {"success": True, "message": "Updated"}
+            return {"success": True, "message": "Updated"}
 
 
 # ========== CALCULATE ==========
