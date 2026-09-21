@@ -72,7 +72,9 @@ class UpdateSalaryComponentRequest(BaseModel):
     is_taxable: Optional[bool] = None
     is_fixed: Optional[bool] = None
     default_amount: Optional[float] = None
-    calculation_method: Optional[str] = None
+    # Validate the same enum as create -- an unrecognised method would be silently treated
+    # as flat by the calc engine (the "looks wired, changes nothing" trap). Reject at the API.
+    calculation_method: Optional[str] = Field(default=None, pattern=r"^(fixed|percentage|daily|hourly|overtime)$")
     percentage_base: Optional[str] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
