@@ -16,6 +16,7 @@ Rules:
     - Auth check   → get_active_device()
 """
 
+import re
 import redis
 import structlog
 from typing import Optional, Literal
@@ -24,6 +25,18 @@ import os
 logger = structlog.get_logger(__name__)
 
 DeviceType = Literal["mobile", "web"]
+
+_MOBILE_UA_RE = re.compile(
+    r"Mobile|Android|iPhone|iPad|iPod|Windows Phone|BlackBerry|webOS|Opera Mini", re.IGNORECASE
+)
+
+
+def detect_device_type(user_agent) -> DeviceType:
+    """User-Agent -> session device_type. CONSERVATIVE: only a clearly-mobile UA is "mobile";
+    desktop OR ambiguous/empty -> "web" ("web" never evicts a phone's mobile session)."""
+    if user_agent and _MOBILE_UA_RE.search(user_agent):
+        return "mobile"
+    return "web"
 
 
 class SessionManager:
