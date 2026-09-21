@@ -193,7 +193,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # ===== SESSION AUTHORITY CHECK (KILL SWITCH) =====
                 # FAIL-CLOSED: Missing device claims = invalid session
                 # This prevents legacy JWTs (without device_id) from bypassing session enforcement
-                if False:  # DISABLED FOR DEV - if device_id and device_type:
+                if device_id and device_type:  # 21 Sep 2026: ENABLED (instant session revocation)
                     # Check Redis session authority
                     if not session_manager.is_session_valid(
                         user_id, device_type, device_id
