@@ -439,9 +439,13 @@ async def list_customer_deposits(
                     "amount": row["amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": row["amount"]
-                    - (row["amount_applied"] or 0)
-                    - (row["amount_refunded"] or 0),
+                    "remaining_amount": 0
+                    if row["status"] == "void"
+                    else (
+                        row["amount"]
+                        - (row["amount_applied"] or 0)
+                        - (row["amount_refunded"] or 0)
+                    ),
                     "status": row["status"],
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
@@ -2656,9 +2660,13 @@ async def list_customer_deposits_by_customer(
                     "amount": row["amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": row["amount"]
-                    - (row["amount_applied"] or 0)
-                    - (row["amount_refunded"] or 0),
+                    "remaining_amount": 0
+                    if row["status"] == "void"
+                    else (
+                        row["amount"]
+                        - (row["amount_applied"] or 0)
+                        - (row["amount_refunded"] or 0)
+                    ),
                     "status": row["status"],
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
