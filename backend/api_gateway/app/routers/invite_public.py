@@ -141,6 +141,12 @@ async def validate_invite(token: str):
                     "UPDATE team_invitations SET status = 'expired' WHERE id = $1 AND status = 'pending'",
                     row["id"],
                 )
+                # Best-effort audit, DELIBERATELY decoupled from the expiry above: the
+                # UPDATE is authoritative and must persist even if this INSERT fails, so
+                # it is intentionally NOT wrapped in a transaction with it (hence the
+                # try/except: pass). Do NOT "fix" this into one conn.transaction() -- e.g.
+                # during a missing-transaction sweep -- that would let a failed audit roll
+                # back a real expiry, which is the opposite of what we want.
                 try:
                     await conn.execute(
                         """INSERT INTO audit_logs (id, "userId", "eventType", entity_type, entity_id, tenant_id, metadata, success, "createdAt")
