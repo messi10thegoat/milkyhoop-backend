@@ -1297,7 +1297,13 @@ async def get_slips(request: Request, run_id: UUID):
             entry = {
                 "component_name": line["component_name"],
                 "component_category": line["component_category"],
+                "component_type": line["component_type"],
                 "amount": float(line["amount"]),
+                # V282/V285: qty x rate + borongan piece detail. NULL for flat/fixed lines.
+                "quantity": float(line["quantity"]) if line["quantity"] is not None else None,
+                "rate": float(line["rate"]) if line["rate"] is not None else None,
+                "job_reference": line["job_reference"],
+                "work_order_id": str(line["work_order_id"]) if line["work_order_id"] is not None else None,
             }
             if line["component_type"] == "earning":
                 slips[eid]["earnings"].append(entry)
