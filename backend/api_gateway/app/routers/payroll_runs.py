@@ -295,7 +295,7 @@ async def update_payroll_run(
         if run["status"] != "draft":
             raise HTTPException(400, detail="Can only update draft payroll runs")
 
-        updates = body.dict(exclude_unset=True, exclude={"variable_inputs"})
+        updates = body.dict(exclude_unset=True, exclude={"variable_inputs", "piece_lines"})
         if updates:
             set_clauses = []
             params = []
