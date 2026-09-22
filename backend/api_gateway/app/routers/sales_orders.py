@@ -10,6 +10,9 @@ from decimal import Decimal
 import asyncpg
 import logging
 import uuid as uuid_module
+from ..services.sales_doc_calc import (
+    compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
+)
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -61,33 +64,22 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-def calculate_item_totals(item: dict) -> dict:
-    """Calculate line item totals."""
-    quantity = Decimal(str(item.get("quantity", 1)))
-    unit_price = Decimal(str(item.get("unit_price", 0)))
-    discount_percent = Decimal(str(item.get("discount_percent", 0)))
-    tax_rate = Decimal(str(item.get("tax_rate", 0)))
-
-    subtotal = quantity * unit_price
-    discount = subtotal * discount_percent / 100
-    after_discount = subtotal - discount
-    tax_amount = after_discount * tax_rate / 100
-    line_total = after_discount + tax_amount
-
-    return {**item, "tax_amount": int(tax_amount), "line_total": int(line_total)}
-
-
-def calculate_order_totals(
-    items: list, discount_amount: int, shipping_amount: int
-) -> dict:
-    """Calculate order totals from items."""
-    subtotal = sum(
-        item.get("line_total", 0) - item.get("tax_amount", 0) for item in items
-    )
-    total_tax = sum(item.get("tax_amount", 0) for item in items)
-    total_amount = subtotal - discount_amount + total_tax + shipping_amount
-
-    return {"subtotal": subtotal, "tax_amount": total_tax, "total_amount": total_amount}
+def _so_doc(items: list, discount_amount, shipping_amount) -> dict:
+    """SO memakai kalkulator bersama (services/sales_doc_calc.py) -- menggantikan
+    salinan lokal yang memotong pajak dengan int() (Law 9) dan mengurangkan diskon
+    dokumen SESUDAH PPN. Arti kolom SO dipertahankan: subtotal header = SIGMA neto baris
+    (sesudah diskon baris, sebelum diskon dokumen); line_total = neto baris + PPN baris.
+    """
+    try:
+        doc = compute_document(
+            items, doc_discount_amount=discount_amount or 0,
+            shipping_amount=shipping_amount or 0,
+        )
+    except DocumentDiscountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    for ln in doc["items"]:
+        ln["line_total"] = ln["total"]
+    return doc
 
 
 # ============================================================================
@@ -563,12 +555,17 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
                     )
 
-                calculated_items = [
-                    calculate_item_totals(item.model_dump()) for item in body.items
-                ]
-                totals = calculate_order_totals(
-                    calculated_items, body.discount_amount, body.shipping_amount
+                _doc = _so_doc(
+                    [item.model_dump() for item in body.items],
+                    body.discount_amount,
+                    body.shipping_amount,
                 )
+                calculated_items = _doc["items"]
+                totals = {
+                    "subtotal": _doc["net_subtotal"],
+                    "tax_amount": _doc["tax_amount"],
+                    "total_amount": _doc["total_amount"],
+                }
 
                 # Auto-resolve customer_name if not provided
                 if not body.customer_name and body.customer_id:
@@ -634,8 +631,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                             id, sales_order_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
                             tax_id, tax_rate, tax_amount, line_total,
-                            warehouse_id, sort_order
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            warehouse_id, sort_order, dpp
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         uuid_module.uuid4(),
                         order_id,
@@ -657,6 +654,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         if item.get("warehouse_id")
                         else None,
                         item.get("sort_order", idx),
+                        item["dpp"],
                     )
 
                 return SalesOrderResponse(
@@ -751,50 +749,68 @@ async def update_sales_order(
                     params.append(value)
                     param_idx += 1
 
+                # Hitung ulang bila BARIS, DISKON, atau ONGKIR berubah. Diskon dokumen kini
+                # memengaruhi PPN tiap baris, jadi suntingan diskon/ongkir-saja WAJIB
+                # menghitung ulang dari baris tersimpan -- dulu total_amount dibiarkan basi.
+                _fs = body.model_fields_set
+                _recalc = body.items is not None or bool(
+                    {"discount_amount", "shipping_amount"} & _fs
+                )
+                if _recalc:
+                    current = await conn.fetchrow(
+                        "SELECT discount_amount, shipping_amount FROM sales_orders WHERE id = $1",
+                        uuid_module.UUID(order_id),
+                    )
+                    discount_amt = (
+                        body.discount_amount
+                        if body.discount_amount is not None
+                        else current["discount_amount"]
+                    )
+                    shipping_amt = (
+                        body.shipping_amount
+                        if body.shipping_amount is not None
+                        else current["shipping_amount"]
+                    )
+                    if body.items is not None:
+                        _src = [item.model_dump() for item in body.items]
+                    else:
+                        _src = [
+                            dict(r)
+                            for r in await conn.fetch(
+                                """SELECT id, quantity, unit_price, discount_percent, tax_rate
+                                   FROM sales_order_items WHERE sales_order_id = $1
+                                   ORDER BY sort_order, id""",
+                                uuid_module.UUID(order_id),
+                            )
+                        ]
+                    _doc = _so_doc(_src, discount_amt, shipping_amt)
+                    calculated_items = _doc["items"]
+
+                    for fld, val in [
+                        ("subtotal", _doc["net_subtotal"]),
+                        ("tax_amount", _doc["tax_amount"]),
+                        ("total_amount", _doc["total_amount"]),
+                    ]:
+                        updates.append(f"{fld} = ${param_idx}")
+                        params.append(val)
+                        param_idx += 1
+
+                    if body.items is None:
+                        # SO draft: compute_so_status mengembalikan 'draft' apa adanya,
+                        # jadi UPDATE baris tak mengubah status (trg_update_so_status).
+                        for _ln in calculated_items:
+                            await conn.execute(
+                                """UPDATE sales_order_items
+                                   SET tax_amount = $2, line_total = $3, dpp = $4
+                                   WHERE id = $1""",
+                                _ln["id"], _ln["tax_amount"], _ln["line_total"], _ln["dpp"],
+                            )
+
                 if body.items is not None:
                     await conn.execute(
                         "DELETE FROM sales_order_items WHERE sales_order_id = $1",
                         uuid_module.UUID(order_id),
                     )
-
-                    calculated_items = [
-                        calculate_item_totals(item.model_dump()) for item in body.items
-                    ]
-                    discount_amt = (
-                        body.discount_amount if body.discount_amount is not None else 0
-                    )
-                    shipping_amt = (
-                        body.shipping_amount if body.shipping_amount is not None else 0
-                    )
-
-                    if body.discount_amount is None or body.shipping_amount is None:
-                        current = await conn.fetchrow(
-                            "SELECT discount_amount, shipping_amount FROM sales_orders WHERE id = $1",
-                            uuid_module.UUID(order_id),
-                        )
-                        discount_amt = (
-                            body.discount_amount
-                            if body.discount_amount is not None
-                            else current["discount_amount"]
-                        )
-                        shipping_amt = (
-                            body.shipping_amount
-                            if body.shipping_amount is not None
-                            else current["shipping_amount"]
-                        )
-
-                    totals = calculate_order_totals(
-                        calculated_items, discount_amt, shipping_amt
-                    )
-
-                    for fld, val in [
-                        ("subtotal", totals["subtotal"]),
-                        ("tax_amount", totals["tax_amount"]),
-                        ("total_amount", totals["total_amount"]),
-                    ]:
-                        updates.append(f"{fld} = ${param_idx}")
-                        params.append(val)
-                        param_idx += 1
 
                     for idx, item in enumerate(calculated_items):
                         await conn.execute(
@@ -803,8 +819,8 @@ async def update_sales_order(
                                 id, sales_order_id, item_id, description,
                                 quantity, unit, unit_price, discount_percent,
                                 tax_id, tax_rate, tax_amount, line_total,
-                                warehouse_id, sort_order
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                warehouse_id, sort_order, dpp
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         """,
                             uuid_module.uuid4(),
                             uuid_module.UUID(order_id),
@@ -826,6 +842,7 @@ async def update_sales_order(
                             if item.get("warehouse_id")
                             else None,
                             item.get("sort_order", idx),
+                            item["dpp"],
                         )
 
                 if updates:
@@ -1319,21 +1336,56 @@ async def convert_to_invoice(
                 )
                 due_date = body.due_date if body and body.due_date else invoice_date
 
-                # Calculate totals
-                subtotal = 0
-                tax_total = 0
+                # Satu kalkulator bersama: diskon & ongkir SO DIBAWA ke faktur (dulu
+                # HILANG -- pelanggan ditagih lebih besar sebesar diskonnya, ongkir tak
+                # tertagih). Pro-rata menurut neto yang ditagih; faktur yang MENUNTASKAN
+                # SO menyerap sisa (SO - yang sudah dibawa faktur lain yang tidak void),
+                # jadi SIGMA faktur parsial == total SO. PPN DIHITUNG ULANG dari DPP
+                # (dulu disalin pro-rata dengan int()).
+                _all_so_items = await conn.fetch(
+                    """SELECT * FROM sales_order_items WHERE sales_order_id = $1
+                       ORDER BY sort_order, id""",
+                    uuid_module.UUID(order_id),
+                )
+                _inv_qty = {}
                 for item in items_to_invoice:
-                    ratio = Decimal(str(item["invoice_qty"])) / Decimal(
-                        str(item["quantity"])
+                    _k = str(item["id"])
+                    _inv_qty[_k] = _dd(_inv_qty.get(_k, 0)) + _dd(item["invoice_qty"])
+                for r in _all_so_items:
+                    _rem = _dd(r["quantity"]) - _dd(r["quantity_invoiced"])
+                    if _inv_qty.get(str(r["id"]), _dd(0)) > _rem:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Quantity {_inv_qty[str(r['id'])]} exceeds uninvoiced {_rem}",
+                        )
+                _is_last = all(
+                    _dd(r["quantity_invoiced"]) + _inv_qty.get(str(r["id"]), _dd(0))
+                    >= _dd(r["quantity"])
+                    for r in _all_so_items
+                )
+                _prior = await conn.fetchrow(
+                    """SELECT COALESCE(SUM(discount_amount), 0) AS disc,
+                              COALESCE(SUM(shipping_amount), 0) AS ship
+                       FROM sales_invoices
+                       WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'void'""",
+                    ctx["tenant_id"],
+                    uuid_module.UUID(order_id),
+                )
+                try:
+                    _plan = plan_so_invoice(
+                        [dict(r) for r in _all_so_items],
+                        _inv_qty,
+                        order["discount_amount"] or 0,
+                        order["shipping_amount"] or 0,
+                        prior_discount=_prior["disc"],
+                        prior_shipping=_prior["ship"],
+                        is_last=_is_last,
                     )
-                    item_subtotal = int(
-                        Decimal(str(item["line_total"] - item["tax_amount"])) * ratio
-                    )
-                    item_tax = int(Decimal(str(item["tax_amount"])) * ratio)
-                    subtotal += item_subtotal
-                    tax_total += item_tax
-
-                total = subtotal + tax_total
+                except DocumentDiscountError as _e:
+                    raise HTTPException(status_code=400, detail=str(_e))
+                subtotal = _plan["gross_subtotal"]
+                tax_total = _plan["tax_amount"]
+                total = _plan["total_amount"]
 
                 header_tax_rate = (
                     float(items_to_invoice[0].get("tax_rate") or 0)
@@ -1355,8 +1407,9 @@ async def convert_to_invoice(
                         subtotal, tax_rate, tax_amount, total_amount,
                         status, sales_order_id, created_by,
                         recognize_at, warehouse_id,
-                        payment_bank_name, payment_account_number, payment_account_holder
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18)
+                        payment_bank_name, payment_account_number, payment_account_holder,
+                        discount_percent, discount_amount, shipping_amount
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18, 0, $19, $20)
                 """,
                     invoice_id,
                     ctx["tenant_id"],
@@ -1380,17 +1433,12 @@ async def convert_to_invoice(
                     or order["payment_account_number"],
                     _rek_eksplisit(body, "payment_account_holder")
                     or order["payment_account_holder"],
+                    _plan["doc_discount"],
+                    _plan["shipping_amount"],
                 )
 
-                for line_idx, item in enumerate(items_to_invoice, start=1):
-                    ratio = Decimal(str(item["invoice_qty"])) / Decimal(
-                        str(item["quantity"])
-                    )
-                    item_subtotal = int(
-                        Decimal(str(item["line_total"] - item["tax_amount"])) * ratio
-                    )
-                    item_tax = int(Decimal(str(item["tax_amount"])) * ratio)
-                    item_total = item_subtotal + item_tax
+                # item["quantity"] di _plan = qty yang DITAGIH faktur ini.
+                for line_idx, item in enumerate(_plan["items"], start=1):
                     # Resolve tax_code_id: prefer SO field, fallback to rate lookup
                     _item_tcid = item.get("tax_id")
                     if not _item_tcid and float(item.get("tax_rate") or 0) > 0:
@@ -1406,24 +1454,26 @@ async def convert_to_invoice(
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
                             tax_code_id, tax_rate, tax_amount, subtotal, total, line_number,
-                            sales_order_item_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            sales_order_item_id, discount_amount, dpp
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     """,
                         uuid_module.uuid4(),
                         invoice_id,
                         item["item_id"],
                         item["description"],
-                        item["invoice_qty"],
+                        item["quantity"],
                         item["unit"],
                         item["unit_price"],
                         item["discount_percent"],
                         _item_tcid,
                         item["tax_rate"],
-                        item_tax,
-                        item_subtotal,
-                        item_total,
+                        item["tax_amount"],
+                        item["subtotal"],
+                        item["total"],
                         line_idx,
                         item["id"],  # V271: link invoice line -> SO line (void decrement)
+                        item["discount_amount"],
+                        item["dpp"],
                     )
 
                     await conn.execute(
@@ -1432,7 +1482,7 @@ async def convert_to_invoice(
                         WHERE id = $1
                     """,
                         item["id"],
-                        item["invoice_qty"],
+                        item["quantity"],
                     )
 
                 return SalesOrderResponse(
