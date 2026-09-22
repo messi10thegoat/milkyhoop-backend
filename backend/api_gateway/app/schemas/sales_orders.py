@@ -64,8 +64,8 @@ class SalesOrderItemResponse(BaseModel):
     discount_percent: float = 0
     tax_id: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: int = 0
-    line_total: int
+    tax_amount: float = 0
+    line_total: float
     warehouse_id: Optional[str] = None
     sort_order: int = 0
 
@@ -264,11 +264,11 @@ class SalesOrderListItem(BaseModel):
     expected_ship_date: Optional[str] = None
     customer_id: str
     customer_name: str
-    subtotal: int
+    subtotal: float
     discount_amount: int
-    tax_amount: int
+    tax_amount: float
     shipping_amount: int
-    total_amount: int
+    total_amount: float
     status: str
     shipped_qty: float = 0
     invoiced_qty: float = 0
@@ -296,11 +296,11 @@ class SalesOrderDetail(BaseModel):
     reference: Optional[str] = None
     shipping_address: Optional[str] = None
     shipping_method: Optional[str] = None
-    subtotal: int
+    subtotal: float
     discount_amount: int
-    tax_amount: int
+    tax_amount: float
     shipping_amount: int
-    total_amount: int
+    total_amount: float
     status: str
     shipped_qty: float = 0
     invoiced_qty: float = 0
@@ -376,7 +376,7 @@ class PendingOrderItem(BaseModel):
     order_number: str
     customer_name: str
     order_date: str
-    total_amount: int
+    total_amount: float
     status: str
     pending_qty: float  # quantity - shipped or quantity - invoiced
     pending_action: str  # 'shipment' or 'invoice'
