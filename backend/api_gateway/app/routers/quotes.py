@@ -8,6 +8,10 @@ from typing import Optional, Literal
 from datetime import date, datetime, timedelta
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.sales_doc_calc import (
+    compute_document, line_net, q2 as _q2, DocumentDiscountError,
+)
+from ..services.tax_factor import attach_dpp_factors
 from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
 import logging
@@ -61,6 +65,44 @@ def get_user_context(request: Request) -> dict:
         "tenant_id": tenant_id,
         "user_id": uuid_module.UUID(user_id) if user_id else None,
     }
+
+
+async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
+    """3g -- dokumen hasil konversi Penawaran (Faktur ATAU SO) dihitung ulang lewat kalkulator
+    bersama, SAMA dengan create Faktur/SO: faktor DPP per kode, diskon dokumen dialokasikan
+    SEBELUM PPN, Decimal 2dp. Dulu konversi MENYALIN pajak baris Penawaran (int(), sebelum
+    diskon dokumen, tanpa faktor DPP) dan MEMBUANG diskon dokumen Penawaran -- faktur menagih
+    lebih dari yang ditawarkan.
+
+    Diskon dokumen Penawaran: 'percentage' -> persen yang sama atas neto baris yang dikonversi;
+    'fixed' -> nilainya, dibagi pro rata neto baris bila hanya sebagian baris dikonversi
+    (Penawaran berstatus 'converted' sesudahnya, jadi sisanya tak pernah ditagih)."""
+    def as_line(r):
+        return {
+            "item_id": str(r["item_id"]) if r["item_id"] else None,
+            "description": r["description"],
+            "quantity": r["quantity"],
+            "unit": r["unit"],
+            "unit_price": r["unit_price"],
+            "discount_percent": r["discount_percent"] or 0,
+            "tax_id": str(r["tax_id"]) if r["tax_id"] else None,
+            "tax_rate": r["tax_rate"] or 0,
+        }
+    sel = [as_line(r) for r in items]
+    await attach_dpp_factors(conn, tenant_id, sel, "tax_id")
+    dtype, dval = quote["discount_type"], Decimal(str(quote["discount_value"] or 0))
+    amt, pct = Decimal("0"), Decimal("0")
+    if dval > 0 and dtype == "percentage":
+        pct = dval
+    elif dval > 0:
+        all_rows = await conn.fetch("SELECT * FROM quote_items WHERE quote_id = $1", quote["id"])
+        net_all = sum((line_net(as_line(r))["net"] for r in all_rows), Decimal("0"))
+        net_sel = sum((line_net(ln)["net"] for ln in sel), Decimal("0"))
+        amt = dval if len(sel) == len(all_rows) or net_all == 0 else _q2(dval * net_sel / net_all)
+    try:
+        return compute_document(sel, doc_discount_amount=amt, doc_discount_percent=pct)
+    except DocumentDiscountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def calculate_item_totals(item: dict) -> dict:
@@ -1447,12 +1489,8 @@ async def convert_to_invoice(
                     else (invoice_date + timedelta(days=30))
                 )
 
-                # Recalculate totals for selected items
-                subtotal = sum(
-                    item["line_total"] - item["tax_amount"] for item in items
-                )
-                tax_total = sum(item["tax_amount"] for item in items)
-                total = subtotal + tax_total
+                # 3g: kalkulator bersama (lihat _quote_converted_doc), bukan salinan angka Penawaran.
+                _doc = await _quote_converted_doc(conn, ctx["tenant_id"], quote, items)
 
                 await conn.execute(
                     """
@@ -1461,12 +1499,13 @@ async def convert_to_invoice(
                         customer_id, customer_name,
                         subtotal, tax_amount, total_amount,
                         status, quote_id, created_by,
-                        payment_bank_name, payment_account_number, payment_account_holder
+                        payment_bank_name, payment_account_number, payment_account_holder,
+                        discount_percent, discount_amount
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7,
                         $8, $9, $10,
-                        'draft', $11, $12, $13, $14, $15
+                        'draft', $11, $12, $13, $14, $15, $16, $17
                     )
                 """,
                     invoice_id,
@@ -1476,9 +1515,9 @@ async def convert_to_invoice(
                     due_date,
                     str(quote["customer_id"]),
                     quote["customer_name"],
-                    subtotal,
-                    tax_total,
-                    total,
+                    _doc["gross_subtotal"],
+                    _doc["tax_amount"],
+                    _doc["total_amount"],
                     uuid_module.UUID(quote_id),
                     ctx["user_id"],
                     # Pewarisan rekening tujuan cetak (tiket MASTER). Yang
@@ -1491,33 +1530,41 @@ async def convert_to_invoice(
                     or quote["payment_account_number"],
                     _rek_eksplisit(body, "payment_account_holder")
                     or quote["payment_account_holder"],
+                    Decimal(str(quote["discount_value"] or 0)) if quote["discount_type"] == "percentage" else Decimal("0"),
+                    _doc["doc_discount"],
                 )
 
-                # Copy items to invoice_items
-                for item in items:
+                # Baris faktur = baris kalkulator (kolom sama dengan create Faktur).
+                for line_no, ln in enumerate(_doc["items"], start=1):
                     await conn.execute(
                         """
                         INSERT INTO sales_invoice_items (
                             id, invoice_id, item_id, description,
-                            quantity, unit, unit_price, discount_percent,
-                            tax_code, tax_rate, tax_amount, subtotal, total
+                            quantity, unit, unit_price, discount_percent, discount_amount,
+                            tax_code, tax_rate, tax_amount, subtotal, total,
+                            line_number, tax_code_id, dpp, dpp_harga_jual
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
                         )
                     """,
                         uuid_module.uuid4(),
                         invoice_id,
-                        item["item_id"],
-                        item["description"],
-                        item["quantity"],
-                        item["unit"],
-                        item["unit_price"],
-                        item["discount_percent"],
-                        item.get("tax_code", "PPN"),
-                        item["tax_rate"],
-                        item["tax_amount"],
-                        item["line_total"] - item.get("tax_amount", 0),
-                        item["line_total"],
+                        uuid_module.UUID(ln["item_id"]) if ln["item_id"] else None,
+                        ln["description"],
+                        ln["quantity"],
+                        ln["unit"],
+                        ln["unit_price"],
+                        ln["discount_percent"],
+                        ln["discount_amount"],
+                        "PPN",
+                        ln["tax_rate"],
+                        ln["tax_amount"],
+                        ln["subtotal"],
+                        ln["total"],
+                        line_no,
+                        uuid_module.UUID(ln["tax_id"]) if ln["tax_id"] else None,
+                        ln["dpp"],
+                        ln["dpp_harga_jual"],
                     )
 
                 # Update quote status
@@ -1612,12 +1659,8 @@ async def convert_to_sales_order(
                     else await tanggal_dokumen(conn, ctx["tenant_id"])
                 )
 
-                # Recalculate totals for selected items
-                subtotal = sum(
-                    item["line_total"] - item["tax_amount"] for item in items
-                )
-                tax_total = sum(item["tax_amount"] for item in items)
-                total = subtotal + tax_total
+                # 3g: kalkulator bersama. Arti kolom SO: subtotal = SIGMA neto baris (lihat _so_doc).
+                _doc = await _quote_converted_doc(conn, ctx["tenant_id"], quote, items)
 
                 # T199 (2026-09-01): syarat DP terbawa dari Penawaran ke Sales Order.
                 # SEBELUMNYA keenam kolom DP quote (dp_percent, dp_amount, terms,
@@ -1633,7 +1676,7 @@ async def convert_to_sales_order(
                     INSERT INTO sales_orders (
                         id, tenant_id, order_number, order_date, expected_ship_date,
                         customer_id, customer_name,
-                        subtotal, tax_amount, total_amount,
+                        subtotal, tax_amount, total_amount, discount_amount,
                         status, quote_id, created_by,
                         notes,
                         dp_percent, dp_amount, payment_terms,
@@ -1642,7 +1685,7 @@ async def convert_to_sales_order(
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7,
-                        $8, $9, $10,
+                        $8, $9, $10, $20,
                         'draft', $11, $12,
                         $13,
                         $14, $15, $16,
@@ -1657,9 +1700,9 @@ async def convert_to_sales_order(
                     body.expected_ship_date if body else None,
                     str(quote["customer_id"]),
                     quote["customer_name"],
-                    subtotal,
-                    tax_total,
-                    total,
+                    _doc["net_subtotal"],
+                    _doc["tax_amount"],
+                    _doc["total_amount"],
                     uuid_module.UUID(quote_id),
                     ctx["user_id"],
                     quote["notes"],
@@ -1669,32 +1712,34 @@ async def convert_to_sales_order(
                     quote["payment_bank_name"],
                     quote["payment_account_number"],
                     quote["payment_account_holder"],
+                    _doc["doc_discount"],
                 )
 
-                # Copy items to sales_order_items
-                for item in items:
+                for idx, ln in enumerate(_doc["items"]):
                     await conn.execute(
                         """
                         INSERT INTO sales_order_items (
                             id, sales_order_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
-                            tax_id, tax_rate, tax_amount, line_total
+                            tax_id, tax_rate, tax_amount, line_total, sort_order, dpp
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
                     """,
                         uuid_module.uuid4(),
                         so_id,
-                        item["item_id"],
-                        item["description"],
-                        item["quantity"],
-                        item["unit"],
-                        item["unit_price"],
-                        item["discount_percent"],
-                        item["tax_id"],
-                        item["tax_rate"],
-                        item["tax_amount"],
-                        item["line_total"],
+                        uuid_module.UUID(ln["item_id"]) if ln["item_id"] else None,
+                        ln["description"],
+                        ln["quantity"],
+                        ln["unit"],
+                        ln["unit_price"],
+                        ln["discount_percent"],
+                        uuid_module.UUID(ln["tax_id"]) if ln["tax_id"] else None,
+                        ln["tax_rate"],
+                        ln["tax_amount"],
+                        ln["total"],
+                        idx,
+                        ln["dpp"],
                     )
 
                 # FIX_P3_BRIDGE 2026-06-16: propagate the new sales_order_id to
