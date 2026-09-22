@@ -60,6 +60,47 @@ async def resolve_dpp_factor(conn, tenant_id, tax_code_id, rate, direction, cach
     return fac
 
 
+async def resolve_shipping_tax(conn, tenant_id, explicit_code_id, lines, shipping_amount, code_key):
+    """Pajak ongkir (V290). Eksplisit -> kode itu. Kosong -> IKUT kode pajak barang (UU PPN
+    Pasal 1 angka 18: Harga Jual termasuk semua biaya yang diminta penjual): satu dasar
+    (tarif+faktor) di antara baris kena pajak -> dipakai; tak ada baris kena pajak -> 0;
+    lebih dari satu -> 400, pengguna memilih. `lines` sudah bertempel faktor.
+    Kembalikan {code_id, rate, num, den}."""
+    if _d(shipping_amount) <= 0:
+        return {"code_id": None, "rate": Decimal("0"), "num": 1, "den": 1}
+    if explicit_code_id:
+        try:
+            tcid = explicit_code_id if isinstance(explicit_code_id, UUID) else UUID(str(explicit_code_id))
+        except ValueError:
+            tcid = None
+        row = await conn.fetchrow(
+            "SELECT id, rate, dpp_factor_num, dpp_factor_den FROM tax_codes WHERE id = $1 AND tenant_id = $2",
+            tcid, tenant_id,
+        ) if tcid else None
+        if not row:
+            raise HTTPException(status_code=400, detail="Kode pajak ongkos kirim tidak ditemukan.")
+        return {"code_id": str(row["id"]), "rate": _d(row["rate"]),
+                "num": row["dpp_factor_num"], "den": row["dpp_factor_den"]}
+    bases = {}
+    for ln in lines:
+        r = _d(ln.get("tax_rate"))
+        if r <= 0:
+            continue
+        key = (r, int(ln.get("dpp_factor_num") or 1), int(ln.get("dpp_factor_den") or 1))
+        bases.setdefault(key, set()).add(str(ln.get(code_key)) if ln.get(code_key) else None)
+    if not bases:
+        return {"code_id": None, "rate": Decimal("0"), "num": 1, "den": 1}
+    if len(bases) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=("Barang pada dokumen ini memakai lebih dari satu tarif/dasar PPN. "
+                    "Pilih kode pajak untuk ongkos kirim."),
+        )
+    (rate, num, den), codes = next(iter(bases.items()))
+    return {"code_id": next(iter(codes)) if len(codes) == 1 else None,
+            "rate": rate, "num": num, "den": den}
+
+
 async def attach_dpp_factors(conn, tenant_id, items, code_key, direction="output"):
     """Tempel dpp_factor_num/den ke tiap baris (dict) untuk compute_document."""
     cache = {}
