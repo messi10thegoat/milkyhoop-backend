@@ -68,7 +68,7 @@
     <!-- 4. Hero Amount -->
     {% set due_amount = invoice.amount_due if invoice.amount_due is defined else (invoice.total_amount or invoice.amount or invoice.grand_total) %}
     <div class="hero">
-        <div class="hero-amount">Rp {{ due_amount | currency }}</div>
+        <div class="hero-amount">Rp {{ due_amount | rupiah(invoice.has_cents) }}</div>
         {% if invoice.due_date %}
         <div class="hero-due">Jatuh tempo {{ invoice.due_date | date_id }}</div>
         {% endif %}
@@ -121,8 +121,8 @@
                 {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date | date_short if item.exp_date else '-' }}</td>{% endif %}
                 <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
                 {% if ns.has_disc %}<td class="col-disc">{{ item.discount_percent if item.discount_percent and item.discount_percent|float > 0 else '-' }}</td>{% endif %}
-                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.subtotal or item.total) | currency }}</td>
+                <td class="col-price">Rp {{ (item.price or item.unit_price) | rupiah(invoice.has_cents) }}</td>
+                <td class="col-amount">Rp {{ (item.subtotal or item.total) | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -150,8 +150,8 @@
                     {% endif %}
                 </td>
                 <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
-                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.subtotal or item.total) | currency }}</td>
+                <td class="col-price">Rp {{ (item.price or item.unit_price) | rupiah(invoice.has_cents) }}</td>
+                <td class="col-amount">Rp {{ (item.subtotal or item.total) | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -163,37 +163,37 @@
         <table class="summary-table">
             <tr>
                 <td class="label">Subtotal</td>
-                <td class="value">Rp {{ invoice.subtotal | currency }}</td>
+                <td class="value">Rp {{ invoice.subtotal | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% if invoice.item_discount_total and invoice.item_discount_total|float > 0 %}
             <tr>
                 <td class="label">Diskon item</td>
-                <td class="value">-Rp {{ invoice.item_discount_total | currency }}</td>
+                <td class="value">-Rp {{ invoice.item_discount_total | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if invoice.invoice_discount_total and invoice.invoice_discount_total|float > 0 %}
             <tr>
                 <td class="label">Diskon faktur</td>
-                <td class="value">-Rp {{ invoice.invoice_discount_total | currency }}</td>
+                <td class="value">-Rp {{ invoice.invoice_discount_total | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if invoice.discount_amount and invoice.discount_amount|float > 0 %}
             <tr>
                 <td class="label">Diskon</td>
-                <td class="value">-Rp {{ invoice.discount_amount | currency }}</td>
+                <td class="value">-Rp {{ invoice.discount_amount | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if invoice.cash_discount_total and invoice.cash_discount_total|float > 0 %}
             <tr>
                 <td class="label">Diskon tunai</td>
-                <td class="value">-Rp {{ invoice.cash_discount_total | currency }}</td>
+                <td class="value">-Rp {{ invoice.cash_discount_total | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {# V290: ongkos kirim = baris sendiri; PPN-nya sudah di baris PPN di bawah. #}
             {% if invoice.shipping_amount and invoice.shipping_amount|float > 0 %}
             <tr>
                 <td class="label">Ongkos kirim</td>
-                <td class="value">Rp {{ invoice.shipping_amount | currency }}</td>
+                <td class="value">Rp {{ invoice.shipping_amount | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
@@ -228,36 +228,36 @@
             {% if invoice.show_dpp_nilai_lain %}
             <tr>
                 <td class="label">DPP</td>
-                <td class="value">Rp {{ invoice.dpp_harga_jual_total | currency }}</td>
+                <td class="value">Rp {{ invoice.dpp_harga_jual_total | rupiah(invoice.has_cents) }}</td>
             </tr>
             <tr>
                 <td class="label">DPP Nilai Lain</td>
-                <td class="value">Rp {{ invoice.dpp_nilai_lain_total | currency }}</td>
+                <td class="value">Rp {{ invoice.dpp_nilai_lain_total | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if invoice.dpp and not invoice.show_dpp_nilai_lain %}
             <tr>
                 <td class="label">DPP</td>
-                <td class="value">Rp {{ invoice.dpp | currency }}</td>
+                <td class="value">Rp {{ invoice.dpp | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             <tr>
                 <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
-                <td class="value">Rp {{ invoice.tax_amount | currency }}</td>
+                <td class="value">Rp {{ invoice.tax_amount | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
             <tr class="total-row">
                 <td class="label">Total</td>
-                <td class="value">Rp {{ (invoice.total_amount or invoice.amount or invoice.grand_total) | currency }}</td>
+                <td class="value">Rp {{ (invoice.total_amount or invoice.amount or invoice.grand_total) | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% if invoice.amount_paid and invoice.amount_paid|float > 0 %}
             <tr class="paid-row">
                 <td class="label">Dibayar</td>
-                <td class="value">Rp {{ invoice.amount_paid | currency }}</td>
+                <td class="value">Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}</td>
             </tr>
             <tr class="due-row">
                 <td class="label">Sisa tagihan</td>
-                <td class="value">Rp {{ invoice.amount_due | currency }}</td>
+                <td class="value">Rp {{ invoice.amount_due | rupiah(invoice.has_cents) }}</td>
             </tr>
             {% endif %}
         </table>
