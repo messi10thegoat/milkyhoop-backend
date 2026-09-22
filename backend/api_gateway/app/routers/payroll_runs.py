@@ -307,7 +307,7 @@ async def get_payroll_run(request: Request, run_id: UUID):
             if not accessible_ids:
                 raise HTTPException(403, detail="No pay group access")
             visible = await conn.fetchval(
-                "SELECT COUNT(*) FROM payroll_slip_lines psl JOIN employees e ON e.id = psl.employee_id WHERE psl.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])",
+                "SELECT COUNT(*) FROM payroll_run_employees pre JOIN employees e ON e.id = pre.employee_id WHERE pre.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])",
                 run_id,
                 accessible_ids,
             )
@@ -358,12 +358,48 @@ async def get_payroll_run(request: Request, run_id: UUID):
             for p in piece_rows
         ]
 
+        # Roster projection (payroll_run_employees) so the FE editor has rows to enter
+        # hari kerja into on a fresh run -- it SURVIVES a failed calculate, unlike
+        # payroll_slip_lines. Pay-group scoped exactly like /slips: OWNER/ADMIN see all;
+        # a scoped caller sees only employees in an accessible pay group.
+        if role_code in ("OWNER", "ADMIN"):
+            roster_rows = await conn.fetch(
+                """SELECT pre.employee_id, e.name AS employee_name,
+                          e.employee_code, e.position
+                   FROM payroll_run_employees pre
+                   JOIN employees e ON e.id = pre.employee_id
+                   WHERE pre.payroll_id = $1
+                   ORDER BY e.name""",
+                run_id,
+            )
+        else:
+            roster_rows = await conn.fetch(
+                """SELECT pre.employee_id, e.name AS employee_name,
+                          e.employee_code, e.position
+                   FROM payroll_run_employees pre
+                   JOIN employees e ON e.id = pre.employee_id
+                   WHERE pre.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])
+                   ORDER BY e.name""",
+                run_id,
+                accessible_ids,
+            )
+        employees = [
+            {
+                "employee_id": str(r["employee_id"]),
+                "employee_name": r["employee_name"],
+                "employee_code": r["employee_code"],
+                "position": r["position"],
+            }
+            for r in roster_rows
+        ]
+
         return {
             "success": True,
             "data": {
                 **dict(row),
                 "payments": [dict(p) for p in payments],
                 "piece_lines": piece_lines,
+                "employees": employees,
             },
         }
 
@@ -881,6 +917,17 @@ async def post_payroll(request: Request, run_id: UUID):
                    GROUP BY component_type, component_category""",
                 run_id,
             )
+
+            # Refuse to post a run that would produce a ZERO-LINE journal (the FE-showable
+            # half; the V287 constraint trigger is the universal DB backstop). Every line
+            # insert below is gated on amount > 0, so with no slip rows the journal gets
+            # zero lines yet still flips to POSTED -- exactly how JV-PAY-PAY-2026-09-012
+            # (0 lines, total 0) was produced live on 2026-09-22.
+            if not slip_agg:
+                raise HTTPException(
+                    400,
+                    detail="Payroll ini belum punya slip gaji (0 baris) -- jalankan Hitung (Calculate) dulu sebelum posting ke jurnal.",
+                )
 
             total_earnings = sum(
                 r["total"] for r in slip_agg if r["component_type"] == "earning"
