@@ -38,6 +38,7 @@ import uuid as uuid_module
 import logging
 import asyncpg
 from datetime import date
+from decimal import Decimal
 
 from ..schemas.receive_payments import (
     CreateReceivePaymentRequest,
@@ -148,7 +149,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         )
 
 
-async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> Decimal:
     """
     Compute invoice remaining balance — delegates to the CANONICAL
     compute_ar_outstanding() (Law 16, single source of truth).
@@ -162,7 +163,7 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
     sales_invoice_payments / orphan-PAYMENT_RECEIVED cases) at migration time.
 
     compute_ar_outstanding() only emits rows where outstanding != 0, so a missing
-    row means fully-settled (0). Returns int for backward-compat with callers.
+    row means fully-settled (0). Returns Decimal (6b, Law 25).
     """
     result = await conn.fetchval(
         """
@@ -173,7 +174,9 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         tenant_id,
         invoice_id,
     )
-    return float(result or 0)
+    # 6b: Decimal. float() (387d66e0, 14 Sep) membuat create-dengan-alokasi (1278) dan
+    # void (invoice_total - journal_remaining) melempar TypeError float-vs-Decimal.
+    return Decimal(str(result or 0))
 
 
 # =============================================================================

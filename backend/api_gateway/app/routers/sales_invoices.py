@@ -3658,7 +3658,9 @@ async def record_payment(
 
                 # Law 14: Idempotency check
                 idem_key = get_idempotency_key(
-                    request, f"INVOICE_PAYMENT:{invoice_id}:{body.amount}"
+                    # nominal bulat ditulis PERSIS seperti dulu (1165500, bukan 1165500.0)
+                    # supaya kunci idempotensi tak berubah untuk pembayaran bulat.
+                    request, f"INVOICE_PAYMENT:{invoice_id}:{int(body.amount) if body.amount == body.amount.to_integral_value() else body.amount}"
                 )
                 existing_idem = await conn.fetchrow(
                     "SELECT result FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
@@ -3735,11 +3737,13 @@ async def record_payment(
                     ctx["tenant_id"],
                 )
 
-                remaining = int(journal_remaining or 0)
+                # 6b: Decimal -- int() memotong sen, sisa ,75 tak pernah bisa dibayar.
+                remaining = Decimal(str(journal_remaining or 0))
                 if body.amount > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Payment amount exceeds remaining balance of Rp {remaining:,}".replace(",", "."),
+                        detail="Payment amount exceeds remaining balance of Rp "
+                        + f"{remaining:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00"),
                     )
 
                 # --- Resolve bank account ---
@@ -4852,7 +4856,7 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
             invoice_remaining = await get_invoice_remaining_from_journal(
                 conn, ctx["tenant_id"], invoice_id
             )
-            invoice_remaining = int(invoice_remaining or 0)
+            invoice_remaining = Decimal(str(invoice_remaining or 0))  # 6b: sen tidak dipotong
 
             # CUSTOMER_DEPOSIT_LIABILITY CoA — net-movement = available.
             deposit_account_id = await resolve_account_id_by_role(
@@ -5163,7 +5167,7 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
                 deposits.append({
                     "deposit_id": str(d["id"]),
                     "deposit_number": d["deposit_number"],
-                    "remaining": int(await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])),
+                    "remaining": float(await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])),
                 })
     def _n(v):
         return f"{v:g}".replace(".", ",")
@@ -5175,7 +5179,7 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
             + ", ".join(f"{_n(x['quantity_released'])} {x['description']}" for x in release)
             + f" ke SO {so_row['order_number']}, sehingga bisa difakturkan ulang."
             + (" Uang muka " + ", ".join(
-                f"{x['deposit_number']} (sisa Rp{x['remaining']:,})".replace(",", ".") for x in deposits
+                f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in deposits
             ) + " tetap utuh." if deposits else "")
         )
     else:

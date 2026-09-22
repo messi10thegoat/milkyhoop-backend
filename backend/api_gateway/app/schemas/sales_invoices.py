@@ -85,7 +85,7 @@ class InvoiceItemResponse(BaseModel):
 class InvoicePaymentCreate(BaseModel):
     """Payment record for creation."""
 
-    amount: int = Field(..., gt=0)
+    amount: Decimal = Field(..., gt=0)  # 6b: sen boleh (faktur ber-PPN ,75)
     payment_date: date
     payment_method: Literal["cash", "transfer", "check", "other"]
     account_id: str = Field(..., description="CoA account ID for Kas/Bank")
@@ -98,7 +98,7 @@ class InvoicePaymentResponse(BaseModel):
     """Payment record response."""
 
     id: str
-    amount: int
+    amount: float
     payment_date: str
     payment_method: str
     account_id: str

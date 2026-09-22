@@ -52,6 +52,7 @@ from uuid import UUID
 from ..services.pihak_helpers import pelanggan_kanonik_tenant
 import logging
 import asyncpg
+from decimal import Decimal
 from datetime import date
 import uuid as uuid_module
 
@@ -155,7 +156,7 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
-async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> int:
+async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> Decimal:
     """Invoice remaining balance — delegates to CANONICAL compute_ar_outstanding().
 
     FIX_P35_ARCANON 2026-06-17 — Layer 2: collapse parallel settlement SQL.
@@ -176,11 +177,12 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
         tenant_id,
         invoice_id,
     )
-    return int(result or 0)
+    # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
+    return Decimal(str(result or 0))
 
 
 # FIX_P1_DEPOSIT 2026-06-16 (b): journal-derived deposit balance.
-async def compute_customer_deposit_balance(conn, tenant_id: str, customer_id) -> int:
+async def compute_customer_deposit_balance(conn, tenant_id: str, customer_id) -> Decimal:
     """Available customer-deposit balance, journal-derived (Law 1/16/29).
 
     Computed as the NET MOVEMENT on the CUSTOMER_DEPOSIT_LIABILITY (2-10500)
@@ -237,11 +239,12 @@ async def compute_customer_deposit_balance(conn, tenant_id: str, customer_id) ->
         customer_id,
         deposit_account_id,
     )
-    return int(result or 0)
+    # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
+    return Decimal(str(result or 0))
 
 
 # FIX_P1_DEPOSIT 2026-06-16 (b): per-deposit journal-derived remaining.
-async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> int:
+async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> Decimal:
     """Available remaining for a SINGLE deposit, journal-derived (Law 1/16).
 
     Net movement on CUSTOMER_DEPOSIT_LIABILITY scoped to one deposit
@@ -271,7 +274,8 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> int:
         deposit_id,
         deposit_account_id,
     )
-    return int(result or 0)
+    # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
+    return Decimal(str(result or 0))
 
 
 async def linked_so_deposits(conn, tenant_id, so_id):
@@ -311,7 +315,7 @@ async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
     if not inv or not inv["sales_order_id"]:
         return []
     so_id = inv["sales_order_id"]
-    left = int(outstanding or 0)
+    left = Decimal(str(outstanding or 0))
     plan = []
     for d in await linked_so_deposits(conn, tenant_id, so_id):
         remaining = await compute_deposit_remaining(conn, tenant_id, d["id"])
@@ -323,14 +327,14 @@ async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
             )
         except HTTPException:
             reason = "Pelanggan uang muka berbeda dengan pelanggan faktur."
-        amt = 0 if reason or remaining <= 0 else max(0, min(remaining, left))
+        amt = Decimal("0") if reason or remaining <= 0 else max(Decimal("0"), min(remaining, left))
         left -= amt
         plan.append({
             "deposit_id": str(d["id"]),
             "deposit_number": d["deposit_number"],
             "deposit_date": d["deposit_date"].isoformat() if d["deposit_date"] else None,
-            "remaining": int(remaining),
-            "planned_amount": int(amt),
+            "remaining": remaining,
+            "planned_amount": amt,
             "skip_reason": reason,
         })
     return plan
@@ -591,10 +595,10 @@ async def get_customer_deposits_summary(request: Request):
                     "posted_count": row["posted_count"] or 0,
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
-                    "total_value": int(row["total_value"] or 0),
-                    "total_applied": int(row["total_applied"] or 0),
-                    "total_refunded": int(row["total_refunded"] or 0),
-                    "available_balance": int(available_balance or 0),
+                    "total_value": float(row["total_value"] or 0),
+                    "total_applied": float(row["total_applied"] or 0),
+                    "total_refunded": float(row["total_refunded"] or 0),
+                    "available_balance": float(available_balance or 0),
                 },
             }
 
@@ -1751,7 +1755,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
 
         # Update invoice (derive amount_paid from journal-based remaining)
         new_amount_paid = (
-            invoice["total_amount"] - int(invoice_remaining) + app.amount
+            invoice["total_amount"] - invoice_remaining + Decimal(str(app.amount))
         )
         new_status = (
             "paid"
@@ -2069,16 +2073,14 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
         invoice_remaining = await get_invoice_remaining_from_journal(
             conn, ctx["tenant_id"], inv_id
         )
-        new_amount_paid = int(invoice["total_amount"]) - int(
-            invoice_remaining
-        )
+        new_amount_paid = invoice["total_amount"] - invoice_remaining
         if new_amount_paid < 0:
             new_amount_paid = 0
         # Revert: if no longer fully paid, demote 'paid' back to
         # 'posted' (posted-unsettled). Other states unchanged.
         new_status = (
             "paid"
-            if new_amount_paid >= int(invoice["total_amount"])
+            if new_amount_paid >= invoice["total_amount"]
             else (
                 "posted"
                 if invoice["status"] == "paid"
