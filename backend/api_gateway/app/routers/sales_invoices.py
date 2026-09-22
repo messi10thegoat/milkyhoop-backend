@@ -143,6 +143,17 @@ def _r2(v: Decimal) -> float:
 # services/sales_doc_calc.compute_document (lihat /calculate, create, update, preview-journal).
 
 
+# 8a / unit 8: qty per baris SO yang DILEPAS bila draf faktur ini dihapus. SATU sumber untuk
+# DELETE (yang melepas) dan GET /{id}/delete-impact (yang menjanjikan) -- pratinjau yang
+# menghitung sendiri (mis. dari pencacah quantity_invoiced SO) akan menyimpang begitu satu
+# baris SO dipecah ke beberapa faktur.
+SO_RELEASE_SQL = (
+    "SELECT sales_order_item_id AS soi_id, SUM(quantity) AS qty "
+    "FROM sales_invoice_items WHERE invoice_id = $1 "
+    "AND sales_order_item_id IS NOT NULL GROUP BY 1"
+)
+
+
 def _plan_so_link_edit(old_lines: list, new_items: list) -> tuple:
     """Pasangkan baris BARU hasil edit draf dengan baris LAMA yang bertaut SO.
 
@@ -4991,9 +5002,7 @@ async def delete_invoice(request: Request, invoice_id: UUID):
                     # terukur 23 Sep grapgrap INV-2609-0001 (SO 001-09-26, 63 pcs).
                     "UPDATE sales_order_items soi "
                     "SET quantity_invoiced = GREATEST(0, soi.quantity_invoiced - v.qty) "
-                    "FROM (SELECT sales_order_item_id AS soi_id, SUM(quantity) AS qty "
-                    "      FROM sales_invoice_items WHERE invoice_id = $1 "
-                    "        AND sales_order_item_id IS NOT NULL GROUP BY 1) v "
+                    f"FROM ({SO_RELEASE_SQL}) v "
                     "WHERE soi.id = v.soi_id",
                     invoice_id,
                 )
@@ -5106,6 +5115,85 @@ from ..services.pdf_service import (
 from ..services.storage_service import get_storage_service  # noqa: E402  # pre-existing mid-file import
 import base64  # noqa: E402  # pre-existing mid-file import
 from pathlib import Path as _Path  # noqa: E402  # pre-existing mid-file import
+
+
+@router.get("/{invoice_id}/delete-impact")
+async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
+    """Unit 8 -- READ-ONLY: apa yang terjadi bila draf faktur ini DIHAPUS. Angka pelepasan SO
+    berasal dari SO_RELEASE_SQL -- SQL yang SAMA yang dijalankan DELETE. Uang muka SO
+    ditampilkan karena TETAP utuh (penghapusan tidak menyentuhnya). FE menampilkan
+    `message` dan angka ini apa adanya, tanpa menghitung sendiri."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        inv = await conn.fetchrow(
+            "SELECT id, invoice_number, status, sales_order_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+            invoice_id, ctx["tenant_id"],
+        )
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        can_delete = inv["status"] == "draft"
+        blocked = None
+        if not can_delete:
+            blocked = ("Faktur void tidak bisa dihapus." if inv["status"] == "void"
+                       else "Faktur yang sudah diterbitkan tidak bisa dihapus. Gunakan void.")
+        so_row, release, deposits = None, [], []
+        if inv["sales_order_id"]:
+            so_row = await conn.fetchrow(
+                "SELECT id, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                inv["sales_order_id"], ctx["tenant_id"],
+            )
+            rows = await conn.fetch(
+                f"""SELECT v.soi_id, v.qty, soi.description, soi.quantity, soi.quantity_invoiced
+                    FROM ({SO_RELEASE_SQL}) v
+                    JOIN sales_order_items soi ON soi.id = v.soi_id
+                    ORDER BY soi.sort_order""",
+                invoice_id,
+            )
+            release = [{
+                "sales_order_item_id": str(r["soi_id"]),
+                "description": r["description"],
+                "quantity_ordered": float(r["quantity"]),
+                "quantity_invoiced_now": float(r["quantity_invoiced"]),
+                "quantity_released": float(r["qty"]),
+                "quantity_invoiced_after": float(max(r["quantity_invoiced"] - r["qty"], 0)),
+            } for r in rows]
+            from .customer_deposits import linked_so_deposits, compute_deposit_remaining
+            for d in await linked_so_deposits(conn, ctx["tenant_id"], inv["sales_order_id"]):
+                deposits.append({
+                    "deposit_id": str(d["id"]),
+                    "deposit_number": d["deposit_number"],
+                    "remaining": int(await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])),
+                })
+    def _n(v):
+        return f"{v:g}".replace(".", ",")
+    if blocked:
+        message = blocked
+    elif so_row and release:
+        message = (
+            f"Menghapus draf {inv['invoice_number']} mengembalikan "
+            + ", ".join(f"{_n(x['quantity_released'])} {x['description']}" for x in release)
+            + f" ke SO {so_row['order_number']}, sehingga bisa difakturkan ulang."
+            + (" Uang muka " + ", ".join(
+                f"{x['deposit_number']} (sisa Rp{x['remaining']:,})".replace(",", ".") for x in deposits
+            ) + " tetap utuh." if deposits else "")
+        )
+    else:
+        message = f"Menghapus draf {inv['invoice_number']} tidak memengaruhi dokumen lain."
+    return {
+        "success": True,
+        "data": {
+            "invoice_id": str(invoice_id),
+            "invoice_number": inv["invoice_number"],
+            "status": inv["status"],
+            "can_delete": can_delete,
+            "blocked_reason": blocked,
+            "sales_order": {"id": str(so_row["id"]), "order_number": so_row["order_number"]} if so_row else None,
+            "release": release,
+            "deposits_intact": deposits,
+            "message": message,
+        },
+    }
 
 
 @router.get("/{invoice_id}/deposit-plan")
