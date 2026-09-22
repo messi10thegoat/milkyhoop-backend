@@ -473,6 +473,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             "data": {
                 "status": "draft",
                 "subtotal": float(res["gross_subtotal"]),
+                "item_discount_total": float(res["line_discount_total"]),
                 "discount_amount": float(res["doc_discount"]),
                 "tax_amount": float(res["tax_amount"]),
                 "total_amount": float(res["total_amount"]),
@@ -1194,6 +1195,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_rate": float(invoice["tax_rate"] or 0),
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
+                    # 3e: kunci yang SAMA dengan /calculate, arti yang sama (lihat InvoiceCalculation).
+                    "line_tax_amount": (invoice["tax_amount"] or 0) - (invoice.get("shipping_tax_amount") or 0),
+                    "item_discount_total": sum((it["discount_amount"] or 0) for it in items),
                     # V290: ongkir + pajaknya terpisah (tax_amount sudah termasuk PPN ongkir).
                     "shipping_amount": invoice.get("shipping_amount") or 0,
                     "shipping_tax_code_id": str(invoice["shipping_tax_code_id"])

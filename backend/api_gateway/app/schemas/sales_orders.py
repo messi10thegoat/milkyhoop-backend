@@ -274,9 +274,9 @@ class SalesOrderListItem(BaseModel):
     customer_id: str
     customer_name: str
     subtotal: float
-    discount_amount: int
+    discount_amount: float
     tax_amount: float
-    shipping_amount: int
+    shipping_amount: float
     total_amount: float
     status: str
     shipped_qty: float = 0
@@ -305,10 +305,11 @@ class SalesOrderDetail(BaseModel):
     reference: Optional[str] = None
     shipping_address: Optional[str] = None
     shipping_method: Optional[str] = None
-    subtotal: float
-    discount_amount: int
+    subtotal: float  # NETO setelah diskon baris (beda dengan faktur: bruto)
+    discount_amount: float  # 3e: float, bukan int -- int() menolak/memotong sen
     tax_amount: float
-    shipping_amount: int
+    line_tax_amount: float = 0  # 3e: tax_amount - shipping_tax_amount, sama dengan /calculate
+    shipping_amount: float
     shipping_tax_code_id: Optional[str] = None  # pilihan EKSPLISIT (null = ikut kode barang)
     shipping_tax_code_id_effective: Optional[str] = None  # kode yang benar-benar dipakai
     shipping_tax_rate: float = 0

@@ -500,6 +500,9 @@ class InvoiceCalculation(BaseModel):
     total_amount: float
     # V290 ongkir terpisah: tax_amount = line_tax_amount + shipping_tax_amount.
     line_tax_amount: float = 0
+    # 3e: SIGMA diskon baris. subtotal faktur = BRUTO, jadi baris tercetak menjumlah:
+    # subtotal - item_discount_total - discount_amount + tax_amount + shipping_amount = total.
+    item_discount_total: float = 0
     shipping_amount: float = 0
     # shipping_tax_code_id = pilihan EKSPLISIT (null = ikut kode barang), sama dengan GET.
     shipping_tax_code_id: Optional[str] = None

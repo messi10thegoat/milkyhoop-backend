@@ -450,6 +450,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     subtotal=order["subtotal"],
                     discount_amount=order["discount_amount"],
                     tax_amount=order["tax_amount"],
+                    # 3e: sama dengan SO /calculate. subtotal SO = NETO (setelah diskon baris).
+                    line_tax_amount=float((order["tax_amount"] or 0) - (order.get("shipping_tax_amount") or 0)),
                     shipping_amount=order["shipping_amount"],
                     shipping_tax_code_id=str(order["shipping_tax_code_id"])
                     if order.get("shipping_tax_code_id")
