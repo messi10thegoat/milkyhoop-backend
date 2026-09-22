@@ -31,6 +31,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..services.sales_doc_calc import compute_document, DocumentDiscountError
+from ..services.tax_factor import attach_dpp_factors
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
 # VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
@@ -396,8 +397,12 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         # discount_amount header = DISKON DOKUMEN SAJA (arti yang disimpan create/update
         # sejak dulu); diskon baris ada di items[].discount_amount. Dulu endpoint ini
         # mengembalikan diskon baris + dokumen -- arti kedua yang tak pernah disimpan.
+        _items = [item.model_dump() for item in body.items]
+        _pool = await get_pool()
+        async with _pool.acquire() as _conn:
+            await attach_dpp_factors(_conn, ctx["tenant_id"], _items, "tax_code_id")
         res = compute_document(
-            [item.model_dump() for item in body.items],
+            _items,
             doc_discount_amount=body.discount_amount,
             doc_discount_percent=body.discount_percent,
         )
@@ -415,6 +420,8 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             },
         }
 
+    except HTTPException:
+        raise
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -497,6 +504,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             norm["quantity"] = it.get("quantity", it.get("qty", 0)) or 0
             norm["unit_price"] = it.get("unit_price", it.get("price", 0)) or 0
             norms.append(norm)
+        async with pool.acquire() as _conn:
+            await attach_dpp_factors(_conn, ctx["tenant_id"], norms, "tax_code_id")
         _res = compute_document(
             norms,
             doc_discount_amount=body.get("discount_amount") or 0,
@@ -2611,9 +2620,11 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 # dialokasikan pro-rata ke SEMUA baris, PPN per baris dari DPP sesudah
                 # alokasi, header = jumlah baris. discount_amount header = diskon DOKUMEN
                 # saja (arti yang sudah disimpan sejak dulu).
+                _items = [item.model_dump() for item in body.items]
+                await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_code_id")
                 try:
                     _doc = compute_document(
-                        [item.model_dump() for item in body.items],
+                        _items,
                         doc_discount_amount=body.discount_amount,
                         doc_discount_percent=body.discount_percent,
                     )
@@ -3057,12 +3068,13 @@ async def update_invoice(
                             dict(r)
                             for r in await conn.fetch(
                                 """SELECT id, quantity, unit_price, discount_percent,
-                                          discount_amount, tax_rate
+                                          discount_amount, tax_rate, tax_code_id
                                    FROM sales_invoice_items
                                    WHERE invoice_id = $1 ORDER BY line_number""",
                                 invoice_id,
                             )
                         ]
+                    await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_code_id")
                     try:
                         _doc = compute_document(
                             _src,

@@ -48,6 +48,7 @@ from ..schemas.bills import (
 
 # Import calculator for preview endpoint
 from ..services.bills_service import BillCalculator
+from ..services.tax_factor import resolve_dpp_factor
 from ..services.role_resolver import (  # noqa: E402
     AccountRole,
     resolve_account_id_by_role,
@@ -331,6 +332,11 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         except (TypeError, ValueError):
             return d
 
+    async with pool.acquire() as _fconn:
+        _dpp_factor = await resolve_dpp_factor(
+            _fconn, ctx["tenant_id"], body.get("tax_code_id"),
+            int(_num(body.get("tax_rate"), 11)), "input",
+        )
     totals = BillCalculator.calculate(
         items=_items,
         invoice_discount_percent=Decimal(str(_num(body.get("invoice_discount_percent"), 0))),
@@ -338,6 +344,7 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         cash_discount_percent=Decimal(str(_num(body.get("cash_discount_percent"), 0))),
         cash_discount_amount=_num(body.get("cash_discount_amount"), 0.0),
         tax_rate=int(_num(body.get("tax_rate"), 11)),
+        dpp_factor=_dpp_factor,
     )
     # Item4: pratinjau HARUS sama dgn posting -- jangan int() (memangkas sen).
     grand_total = round(float(totals.get("grand_total") or 0), 2)
@@ -1705,7 +1712,13 @@ async def calculate_bill_totals(request: Request, body: CreateBillRequestV2):
     - grand_total: Final total
     """
     try:
-        get_user_context(request)  # Validate auth
+        _ctx = get_user_context(request)  # Validate auth
+        _pool = await get_pool()
+        async with _pool.acquire() as _fconn:
+            _dpp_factor = await resolve_dpp_factor(
+                _fconn, _ctx["tenant_id"], getattr(body, "tax_code_id", None),
+                body.tax_rate, "input",
+            )
 
         result = BillCalculator.calculate(
             items=[item.model_dump() for item in body.items],
@@ -1715,6 +1728,7 @@ async def calculate_bill_totals(request: Request, body: CreateBillRequestV2):
             cash_discount_amount=body.cash_discount_amount,
             tax_rate=body.tax_rate,
             dpp_manual=body.dpp_manual,
+            dpp_factor=_dpp_factor,
         )
 
         return {"success": True, "calculation": result}

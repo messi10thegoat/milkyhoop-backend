@@ -1319,6 +1319,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     cash_discount_percent=Decimal("0"),
                     cash_discount_amount=0.0,
                     tax_rate=0,
+                    # tarif header 0: pajak PO dijumlah per baris di bawah -> tanpa DPP-NL.
+                    dpp_factor=(1, 1),
                 )
                 bill_subtotal = _calc["subtotal"]
                 bill_tax = float(sum(Decimal(str(l["tax"])) for l in _po_lines))

@@ -19,6 +19,7 @@ from datetime import date, datetime
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
 from decimal import Decimal, ROUND_HALF_UP
+from .tax_factor import resolve_dpp_factor
 
 _Dec = Decimal
 
@@ -199,6 +200,7 @@ class BillCalculator:
         cash_discount_amount: float = 0,
         tax_rate: int = 11,
         dpp_manual: Optional[float] = None,
+        dpp_factor: Optional[tuple] = None,
     ) -> Dict[str, float]:
         """
         Calculate all bill totals.
@@ -264,12 +266,17 @@ class BillCalculator:
         else:
             cash_discount_total = Decimal(str(cash_discount_amount))
 
-        # Step 5: DPP — PMK 131/2024
+        # Step 5: DPP — PMK 131/2024. Faktor DPP dari KODE PAJAK (V289, resolve_dpp_factor),
+        # BUKAN dari angka tarif: `if tax_rate == 12` lama SALAH untuk 12% barang mewah
+        # (DPP penuh). Wajib dikirim pemanggil -- tanpa faktor = galat berisik, bukan tebakan.
+        if dpp_factor is None:
+            raise TypeError("BillCalculator.calculate: dpp_factor wajib (services/tax_factor)")
+        _fnum, _fden = int(dpp_factor[0]), int(dpp_factor[1])
         subtotal_setelah_diskon = after_invoice_discount - cash_discount_total
         if dpp_manual is not None:
             dpp = Decimal(str(dpp_manual))
-        elif tax_rate == 12:
-            dpp = subtotal_setelah_diskon * Decimal("11") / Decimal("12")
+        elif _fnum != _fden:
+            dpp = subtotal_setelah_diskon * Decimal(_fnum) / Decimal(_fden)
         else:
             dpp = subtotal_setelah_diskon
 
@@ -277,7 +284,7 @@ class BillCalculator:
         tax_amount = dpp * Decimal(str(tax_rate)) / Decimal("100")
 
         # Step 7: Grand total
-        if tax_rate == 12 and dpp_manual is None:
+        if _fnum != _fden and dpp_manual is None:
             grand_total = subtotal_setelah_diskon + tax_amount
         else:
             grand_total = dpp + tax_amount
@@ -2656,6 +2663,9 @@ class BillsService:
                     for item in items
                 )
                 header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", 0)
+                _dpp_factor = await resolve_dpp_factor(
+                    conn, tenant_id, request.get("tax_code_id"), header_tax_rate, "input"
+                )
                 calc = BillCalculator.calculate(
                     items=items,
                     invoice_discount_percent=Decimal(
@@ -2668,6 +2678,7 @@ class BillsService:
                     cash_discount_amount=request.get("cash_discount_amount", 0),
                     tax_rate=header_tax_rate,
                     dpp_manual=request.get("dpp_manual"),
+                    dpp_factor=_dpp_factor,
                 )
 
                 # 4. Determine status and dates
@@ -3991,6 +4002,9 @@ class BillsService:
                     header_tax_rate = (
                         0 if has_per_item_tax else request.get("tax_rate", 0)
                     )
+                    _dpp_factor = await resolve_dpp_factor(
+                        conn, tenant_id, request.get("tax_code_id"), header_tax_rate, "input"
+                    )
 
                     calc = BillCalculator.calculate(
                         items=items,
@@ -4006,6 +4020,7 @@ class BillsService:
                         cash_discount_amount=request.get("cash_discount_amount", 0),
                         tax_rate=header_tax_rate,
                         dpp_manual=request.get("dpp_manual"),
+                        dpp_factor=_dpp_factor,
                     )
 
                     # Delete existing items
