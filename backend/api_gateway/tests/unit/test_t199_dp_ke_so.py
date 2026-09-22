@@ -99,6 +99,9 @@ def _quote_row(**over):
         "payment_bank_name": "BCA",
         "payment_account_number": "1234567890",
         "payment_account_holder": "CV Kaos Biru",
+        # Kolom nyata tabel quotes (3g: konversi kini membaca diskon dokumen Penawaran).
+        "discount_type": "fixed",
+        "discount_value": 0,
     }
     row.update(over)
     return row
@@ -198,7 +201,9 @@ async def test_u4_quote_tanpa_dp_tetap_konversi_dengan_nilai_none(monkeypatch):
     )
     conn = await _convert(monkeypatch, q)
     _sql, args = _insert_so(conn)
-    assert args[12:] == (None,) * 7, f"ekor argumen tak semuanya None: {args[12:]}"
+    # $13..$19 = notes + enam kolom DP. 3g menambah $20 (discount_amount) SESUDAHNYA,
+    # jadi irisan dipatok ke tujuh posisi itu, bukan "ekor".
+    assert args[12:19] == (None,) * 7, f"argumen DP tak semuanya None: {args[12:19]}"
 
 
 # ─────────────────────────── U5 skema API ───────────────────────────
