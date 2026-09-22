@@ -27,6 +27,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Sales Invoices
     (r"^/api/sales-invoices/summary$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices/calculate$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/sales-orders/calculate$", ["POST"], "sales_order", "R"),  # 3d pratinjau
     (r"^/api/sales-invoices$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices$", ["POST"], "sales_invoice", "C"),
     (r"^/api/sales-invoices/[^/]+$", ["GET"], "sales_invoice", "R"),

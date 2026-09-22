@@ -414,6 +414,7 @@ POST /api/sales-invoices/{invoice_id}/payments
 POST /api/sales-invoices/{invoice_id}/post
 POST /api/sales-invoices/{invoice_id}/void
 POST /api/sales-orders
+POST /api/sales-orders/calculate
 POST /api/sales-orders/{order_id}/cancel
 POST /api/sales-orders/{order_id}/close
 POST /api/sales-orders/{order_id}/confirm

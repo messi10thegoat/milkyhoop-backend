@@ -144,7 +144,9 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         "shipping_tax_rate": s_rate,
         "shipping_dpp": q2(s_base) if shipping > 0 else _ZERO,
         "shipping_tax_amount": s_tax,
-        "shipping_tax_code_id": st.get("code_id") if shipping > 0 else None,
+        # RESOLVED code (explicit, or followed from the goods). The EXPLICIT choice is the
+        # caller's to echo under `shipping_tax_code_id` -- one meaning per key (unit 3d).
+        "shipping_tax_code_id_effective": st.get("code_id") if shipping > 0 else None,
         "total_amount": net_total - doc_disc + tax_total + shipping + s_tax,
     }
 

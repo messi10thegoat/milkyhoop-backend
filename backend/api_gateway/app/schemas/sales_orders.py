@@ -309,7 +309,8 @@ class SalesOrderDetail(BaseModel):
     discount_amount: int
     tax_amount: float
     shipping_amount: int
-    shipping_tax_code_id: Optional[str] = None
+    shipping_tax_code_id: Optional[str] = None  # pilihan EKSPLISIT (null = ikut kode barang)
+    shipping_tax_code_id_effective: Optional[str] = None  # kode yang benar-benar dipakai
     shipping_tax_rate: float = 0
     shipping_dpp: float = 0
     shipping_tax_amount: float = 0
