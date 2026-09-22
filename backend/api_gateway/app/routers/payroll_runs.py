@@ -145,10 +145,10 @@ async def create_payroll_run(request: Request, body: CreatePayrollRequest):
                 accessible_ids,
             )
             if invalid > 0:
-                raise HTTPException(
-                    403,
-                    detail=f"{invalid} employee(s) not in your accessible pay groups",
-                )
+                # 404 + flat message (no count): a scoped caller must not be able to
+                # binary-search the roster by reading how many submitted ids are out of
+                # scope. Out-of-scope is indistinguishable from nonexistent (pay-group RULE).
+                raise HTTPException(404, detail="Karyawan tidak ditemukan")
         async with conn.transaction():
             # Generate payroll number
             year = body.period_start.year
