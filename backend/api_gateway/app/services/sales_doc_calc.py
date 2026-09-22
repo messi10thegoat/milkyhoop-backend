@@ -16,9 +16,10 @@ ATURAN (Law 9: Decimal + ROUND_HALF_UP, 2 desimal):
      DPP harga jual x faktor kode pajaknya (V289; 11/12 = DPP nilai lain, 1/1 = penuh);
      PPN = DPP x tarif baris, HALF_UP 2dp. Faktor dibaca per baris (dpp_factor_num/den,
      ditempel router lewat services/tax_factor.py); tanpa faktor = 1/1.
-  4. Header = JUMLAH baris, tidak pernah dihitung ulang terpisah. Ongkir ditambahkan ke
-     total DI LUAR DPP (perilaku lama SO). Apakah ongkir kena PPN = PERTANYAAN KEBIJAKAN
-     untuk konsultan pajak pemilik -- sengaja TIDAK diputuskan di kode.
+  4. Header = JUMLAH baris, tidak pernah dihitung ulang terpisah. Ongkir (V290) = BARIS
+     SENDIRI: di luar dasar alokasi diskon barang, dikenai PPN menurut kode pajaknya sendiri
+     (shipping_tax: default = kode pajak barang, lihat tax_factor.resolve_shipping_tax).
+     Header tax_amount = PPN baris + PPN ongkir; total = neto - diskon + PPN + ongkir.
   5. DPP per baris yang benar-benar dipakai dikembalikan untuk disimpan.
 
 DI LUAR CAKUPAN (jangan ditambahkan di sini tanpa gerbangnya sendiri): tarif tetap persis
@@ -90,7 +91,7 @@ def allocate(total: Decimal, weights: list) -> list:
 
 
 def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
-                     shipping_amount=0) -> dict:
+                     shipping_amount=0, shipping_tax=None) -> dict:
     """Hitung satu dokumen. `items`: dict dengan quantity, unit_price, discount_percent,
     discount_amount (opsional), tax_rate. Mengembalikan baris (dengan kunci asli
     dipertahankan) + header. Semua angka Decimal 2dp."""
@@ -124,6 +125,11 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         ln["total"] = ln["net"] + tax
         tax_total += tax
     shipping = q2(d(shipping_amount))
+    st = shipping_tax or {}
+    s_rate = d(st.get("rate")) if shipping > 0 else _ZERO
+    s_num, s_den = int(st.get("num") or 1), int(st.get("den") or 1)
+    s_base = shipping if s_num == s_den else shipping * Decimal(s_num) / Decimal(s_den)
+    s_tax = q2(s_base * s_rate / _HUNDRED) if s_rate > 0 else _ZERO
     gross_total = sum((ln["subtotal"] for ln in lines), _ZERO)
     return {
         "items": lines,
@@ -132,14 +138,20 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         "net_subtotal": net_total,
         "doc_discount": doc_disc,
         "dpp_total": net_total - doc_disc,
-        "tax_amount": tax_total,
+        "line_tax_amount": tax_total,
+        "tax_amount": tax_total + s_tax,
         "shipping_amount": shipping,
-        "total_amount": net_total - doc_disc + tax_total + shipping,
+        "shipping_tax_rate": s_rate,
+        "shipping_dpp": q2(s_base) if shipping > 0 else _ZERO,
+        "shipping_tax_amount": s_tax,
+        "shipping_tax_code_id": st.get("code_id") if shipping > 0 else None,
+        "total_amount": net_total - doc_disc + tax_total + shipping + s_tax,
     }
 
 
 def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
-                    prior_discount=0, prior_shipping=0, is_last=False) -> dict:
+                    prior_discount=0, prior_shipping=0, is_last=False,
+                    shipping_tax=None) -> dict:
     """SO -> Faktur (penuh atau parsial). Diskon & ongkir SO dibawa PRO-RATA menurut neto
     yang ditagih; faktur yang MENUNTASKAN SO menyerap sisa (SO - yang sudah dibawa faktur
     sebelumnya yang tidak void), jadi SIGMA semua faktur parsial == total SO.
@@ -165,4 +177,5 @@ def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
         ship = q2(so_ship * inv_net / full_net)
     else:
         disc = ship = _ZERO
-    return compute_document(inv_items, doc_discount_amount=disc, shipping_amount=ship)
+    return compute_document(inv_items, doc_discount_amount=disc, shipping_amount=ship,
+                            shipping_tax=shipping_tax)

@@ -126,6 +126,8 @@ class CreateSalesOrderRequest(BaseModel):
     shipping_address: Optional[str] = Field(None, description="Shipping address")
     shipping_method: Optional[str] = Field(None, max_length=100, description="Shipping method")
     shipping_amount: int = Field(0, ge=0, description="Shipping cost")
+    # V290: kosong = ikut kode pajak barang; NONE = ongkir tanpa PPN.
+    shipping_tax_code_id: Optional[str] = None
     discount_amount: int = Field(0, ge=0, description="Order discount")
     notes: Optional[str] = Field(None, description="Notes to customer")
     internal_notes: Optional[str] = Field(None, description="Internal notes")
@@ -195,6 +197,7 @@ class UpdateSalesOrderRequest(BaseModel):
     shipping_address: Optional[str] = None
     shipping_method: Optional[str] = Field(None, max_length=100)
     shipping_amount: Optional[int] = Field(None, ge=0)
+    shipping_tax_code_id: Optional[str] = None
     discount_amount: Optional[int] = Field(None, ge=0)
     notes: Optional[str] = None
     internal_notes: Optional[str] = None
@@ -300,6 +303,10 @@ class SalesOrderDetail(BaseModel):
     discount_amount: int
     tax_amount: float
     shipping_amount: int
+    shipping_tax_code_id: Optional[str] = None
+    shipping_tax_rate: float = 0
+    shipping_dpp: float = 0
+    shipping_tax_amount: float = 0
     total_amount: float
     status: str
     shipped_qty: float = 0

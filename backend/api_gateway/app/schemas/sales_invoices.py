@@ -154,6 +154,11 @@ class CreateInvoiceRequest(BaseModel):
     tax_rate: float = Field(0, ge=0, le=100)
     auto_post: bool = False
 
+    # Ongkos kirim (V290): BARIS SENDIRI -- akun REVENUE_SHIPPING, kode pajak sendiri.
+    # shipping_tax_code_id kosong = ikut kode pajak barang; pilih NONE untuk tanpa PPN.
+    shipping_amount: float = Field(0, ge=0)
+    shipping_tax_code_id: Optional[str] = None
+
     # P4 (PSAK-72 revenue-timing policy): per-invoice override of the tenant
     # revenue-recognition policy. None -> fall back to tenant_config
     # .revenue_recognition_policy (which itself defaults to 'invoice').
@@ -283,6 +288,8 @@ class UpdateInvoiceRequest(BaseModel):
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     discount_amount: Optional[int] = Field(None, ge=0)
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    shipping_amount: Optional[float] = Field(None, ge=0)
+    shipping_tax_code_id: Optional[str] = None
 
     # Rekening tujuan cetak (tiket MASTER). HANYA instruksi "bayar ke mana" di
     # PDF -- NOL dampak jurnal, dan sengaja TEKS bukan FK ke bank_accounts
@@ -486,6 +493,13 @@ class InvoiceCalculation(BaseModel):
     discount_amount: float
     tax_amount: float
     total_amount: float
+    # V290 ongkir terpisah: tax_amount = line_tax_amount + shipping_tax_amount.
+    line_tax_amount: float = 0
+    shipping_amount: float = 0
+    shipping_tax_code_id: Optional[str] = None
+    shipping_tax_rate: float = 0
+    shipping_dpp: float = 0
+    shipping_tax_amount: float = 0
     items: List[Dict[str, Any]]
 
 

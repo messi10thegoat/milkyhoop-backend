@@ -13,7 +13,7 @@ import uuid as uuid_module
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
-from ..services.tax_factor import attach_dpp_factors
+from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -65,7 +65,7 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-def _so_doc(items: list, discount_amount, shipping_amount) -> dict:
+def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None) -> dict:
     """SO memakai kalkulator bersama (services/sales_doc_calc.py) -- menggantikan
     salinan lokal yang memotong pajak dengan int() (Law 9) dan mengurangkan diskon
     dokumen SESUDAH PPN. Arti kolom SO dipertahankan: subtotal header = SIGMA neto baris
@@ -74,7 +74,7 @@ def _so_doc(items: list, discount_amount, shipping_amount) -> dict:
     try:
         doc = compute_document(
             items, doc_discount_amount=discount_amount or 0,
-            shipping_amount=shipping_amount or 0,
+            shipping_amount=shipping_amount or 0, shipping_tax=shipping_tax,
         )
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -450,6 +450,12 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     discount_amount=order["discount_amount"],
                     tax_amount=order["tax_amount"],
                     shipping_amount=order["shipping_amount"],
+                    shipping_tax_code_id=str(order["shipping_tax_code_id"])
+                    if order.get("shipping_tax_code_id")
+                    else None,
+                    shipping_tax_rate=float(order.get("shipping_tax_rate") or 0),
+                    shipping_dpp=float(order.get("shipping_dpp") or 0),
+                    shipping_tax_amount=float(order.get("shipping_tax_amount") or 0),
                     total_amount=order["total_amount"],
                     status=order["status"],
                     shipped_qty=float(order["shipped_qty"] or 0),
@@ -558,7 +564,11 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
 
                 _items = [item.model_dump() for item in body.items]
                 await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_id")
-                _doc = _so_doc(_items, body.discount_amount, body.shipping_amount)
+                _ship = await resolve_shipping_tax(
+                    conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
+                    body.shipping_amount, "tax_id",
+                )
+                _doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
                 calculated_items = _doc["items"]
                 totals = {
                     "subtotal": _doc["net_subtotal"],
@@ -587,11 +597,12 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         status, notes, internal_notes, created_by,
                         dp_percent, dp_amount, payment_terms,
                         payment_bank_name, payment_account_number,
-                        payment_account_holder
+                        payment_account_holder,
+                        shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                         $12, $13, $14, $15, $16, 'draft', $17, $18, $19,
-                        $20, $21, $22, $23, $24, $25
+                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
                     )
                 """,
                     order_id,
@@ -621,6 +632,11 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                     body.payment_bank_name,
                     body.payment_account_number,
                     body.payment_account_holder,
+                    # V290: hanya pilihan eksplisit (NULL = ikut kode pajak barang).
+                    uuid_module.UUID(body.shipping_tax_code_id) if body.shipping_tax_code_id else None,
+                    _doc["shipping_tax_rate"],
+                    _doc["shipping_tax_amount"],
+                    _doc["shipping_dpp"],
                 )
 
                 for idx, item in enumerate(calculated_items):
@@ -753,11 +769,11 @@ async def update_sales_order(
                 # menghitung ulang dari baris tersimpan -- dulu total_amount dibiarkan basi.
                 _fs = body.model_fields_set
                 _recalc = body.items is not None or bool(
-                    {"discount_amount", "shipping_amount"} & _fs
+                    {"discount_amount", "shipping_amount", "shipping_tax_code_id"} & _fs
                 )
                 if _recalc:
                     current = await conn.fetchrow(
-                        "SELECT discount_amount, shipping_amount FROM sales_orders WHERE id = $1",
+                        "SELECT discount_amount, shipping_amount, shipping_tax_code_id FROM sales_orders WHERE id = $1",
                         uuid_module.UUID(order_id),
                     )
                     discount_amt = (
@@ -783,13 +799,24 @@ async def update_sales_order(
                             )
                         ]
                     await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_id")
-                    _doc = _so_doc(_src, discount_amt, shipping_amt)
+                    _ship_code = (
+                        (body.shipping_tax_code_id or None)
+                        if "shipping_tax_code_id" in _fs
+                        else (str(current["shipping_tax_code_id"]) if current["shipping_tax_code_id"] else None)
+                    )
+                    _ship = await resolve_shipping_tax(
+                        conn, ctx["tenant_id"], _ship_code, _src, shipping_amt, "tax_id"
+                    )
+                    _doc = _so_doc(_src, discount_amt, shipping_amt, _ship)
                     calculated_items = _doc["items"]
 
                     for fld, val in [
                         ("subtotal", _doc["net_subtotal"]),
                         ("tax_amount", _doc["tax_amount"]),
                         ("total_amount", _doc["total_amount"]),
+                        ("shipping_tax_rate", _doc["shipping_tax_rate"]),
+                        ("shipping_tax_amount", _doc["shipping_tax_amount"]),
+                        ("shipping_dpp", _doc["shipping_dpp"]),
                     ]:
                         updates.append(f"{fld} = ${param_idx}")
                         params.append(val)
@@ -1373,6 +1400,14 @@ async def convert_to_invoice(
                 )
                 _so_rows = [dict(r) for r in _all_so_items]
                 await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
+                # V290: pajak ongkir faktur = pilihan eksplisit SO, atau ikut kode barang SO.
+                _so_ship_code = (
+                    str(order["shipping_tax_code_id"]) if order.get("shipping_tax_code_id") else None
+                )
+                _ship = await resolve_shipping_tax(
+                    conn, ctx["tenant_id"], _so_ship_code, _so_rows,
+                    order["shipping_amount"] or 0, "tax_id",
+                )
                 try:
                     _plan = plan_so_invoice(
                         _so_rows,
@@ -1382,6 +1417,7 @@ async def convert_to_invoice(
                         prior_discount=_prior["disc"],
                         prior_shipping=_prior["ship"],
                         is_last=_is_last,
+                        shipping_tax=_ship,
                     )
                 except DocumentDiscountError as _e:
                     raise HTTPException(status_code=400, detail=str(_e))
@@ -1410,8 +1446,9 @@ async def convert_to_invoice(
                         status, sales_order_id, created_by,
                         recognize_at, warehouse_id,
                         payment_bank_name, payment_account_number, payment_account_holder,
-                        discount_percent, discount_amount, shipping_amount
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18, 0, $19, $20)
+                        discount_percent, discount_amount, shipping_amount,
+                        shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18, 0, $19, $20, $21, $22, $23, $24)
                 """,
                     invoice_id,
                     ctx["tenant_id"],
@@ -1437,6 +1474,10 @@ async def convert_to_invoice(
                     or order["payment_account_holder"],
                     _plan["doc_discount"],
                     _plan["shipping_amount"],
+                    uuid_module.UUID(_so_ship_code) if _so_ship_code else None,
+                    _plan["shipping_tax_rate"],
+                    _plan["shipping_tax_amount"],
+                    _plan["shipping_dpp"],
                 )
 
                 # item["quantity"] di _plan = qty yang DITAGIH faktur ini.

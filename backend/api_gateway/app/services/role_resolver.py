@@ -160,6 +160,8 @@ class AccountRole:
     MFG_ACTUAL_OVERHEAD: Final[str] = "MFG_ACTUAL_OVERHEAD"
     REVENUE_SALES_SERVICE: Final[str] = "REVENUE_SALES_SERVICE"
     REVENUE_SALES_DISCOUNT: Final[str] = "REVENUE_SALES_DISCOUNT"
+    # V290: ongkos kirim = baris sendiri (4-10160 Pendapatan Ongkos Kirim).
+    REVENUE_SHIPPING: Final[str] = "REVENUE_SHIPPING"
     # REVENUE_DEFERRED — promoted to TIER 1 in Fase C1.1 addendum (see above).
     REVENUE_UNBILLED: Final[str] = "REVENUE_UNBILLED"
     COGS_PRODUCTION: Final[str] = "COGS_PRODUCTION"
@@ -276,6 +278,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "COGS_VARIANCE_OVERHEAD",
         "CURRENCY_GAIN",
         "CURRENCY_LOSS",
+        "REVENUE_SHIPPING",  # V290
         "BANK_ADJUSTMENT_GAIN",
         "BANK_ADJUSTMENT_LOSS",
         "EMPLOYEE_ADVANCE",

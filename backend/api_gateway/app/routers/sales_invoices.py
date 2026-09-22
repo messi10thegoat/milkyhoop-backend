@@ -25,13 +25,14 @@ from ..schemas.sales_invoices import (
 )
 from ..services.role_resolver import (
     AccountRole,
+    AccountRoleUnmappedError,
     resolve_account_id_by_role,
     resolve_line_revenue_account,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..services.sales_doc_calc import compute_document, DocumentDiscountError
-from ..services.tax_factor import attach_dpp_factors
+from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
 # VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
@@ -214,6 +215,18 @@ async def _apply_so_invoiced_deltas(conn, deltas: dict) -> None:
                    WHERE id = $1""",
                 UUID(soi_id), delta,
             )
+
+
+def _ship_json(doc: dict) -> dict:
+    """Medan ongkir header (V290) dari hasil compute_document -> JSON."""
+    return {
+        "line_tax_amount": float(doc["line_tax_amount"]),
+        "shipping_amount": float(doc["shipping_amount"]),
+        "shipping_tax_code_id": doc["shipping_tax_code_id"],
+        "shipping_tax_rate": float(doc["shipping_tax_rate"]),
+        "shipping_dpp": float(doc["shipping_dpp"]),
+        "shipping_tax_amount": float(doc["shipping_tax_amount"]),
+    }
 
 
 def _doc_line_json(ln: dict, line_number: int) -> dict:
@@ -401,10 +414,16 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         _pool = await get_pool()
         async with _pool.acquire() as _conn:
             await attach_dpp_factors(_conn, ctx["tenant_id"], _items, "tax_code_id")
+            _ship = await resolve_shipping_tax(
+                _conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
+                body.shipping_amount, "tax_code_id",
+            )
         res = compute_document(
             _items,
             doc_discount_amount=body.discount_amount,
             doc_discount_percent=body.discount_percent,
+            shipping_amount=body.shipping_amount,
+            shipping_tax=_ship,
         )
         return {
             "success": True,
@@ -414,6 +433,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 "discount_amount": float(res["doc_discount"]),
                 "tax_amount": float(res["tax_amount"]),
                 "total_amount": float(res["total_amount"]),
+                **_ship_json(res),
                 "items": [
                     _doc_line_json(ln, i + 1) for i, ln in enumerate(res["items"])
                 ],
@@ -497,6 +517,7 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     # diskon dokumen sama sekali -- pendapatan DAN PPN-nya.)
     subtotal = Decimal("0")   # sesudah diskon baris DAN dokumen, SEBELUM pajak
     tax_total = Decimal("0")
+    ship_amt = Decimal("0")   # V290: ongkir = baris JV sendiri (REVENUE_SHIPPING)
     try:
         norms = []
         for it in items:
@@ -506,13 +527,20 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             norms.append(norm)
         async with pool.acquire() as _conn:
             await attach_dpp_factors(_conn, ctx["tenant_id"], norms, "tax_code_id")
+            _pv_ship = await resolve_shipping_tax(
+                _conn, ctx["tenant_id"], body.get("shipping_tax_code_id"), norms,
+                body.get("shipping_amount") or 0, "tax_code_id",
+            )
         _res = compute_document(
             norms,
             doc_discount_amount=body.get("discount_amount") or 0,
             doc_discount_percent=body.get("discount_percent") or 0,
+            shipping_amount=body.get("shipping_amount") or 0,
+            shipping_tax=_pv_ship,
         )
         subtotal = _res["dpp_total"]
         tax_total = _res["tax_amount"]
+        ship_amt = _res["shipping_amount"]
         if subtotal == 0 and tax_total == 0:
             subtotal = Decimal(str(body.get("total_amount") or 0))
     except DocumentDiscountError as _e:
@@ -713,12 +741,18 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         # Pengakuan pendapatan (RECOG) memakai nilai TANPA pajak (:1862-1863).
         amt = round(float(subtotal), 2)
         tax_amt = round(float(tax_total), 2)
+        ship = round(float(ship_amt), 2)
         lines = [
             {"account_name": ar_name, "account_code": ar_code,
-             "debit": amt + tax_amt, "credit": 0, "event": "JV"},
+             "debit": round(amt + tax_amt + ship, 2), "credit": 0, "event": "JV"},
             {"account_name": defer_name, "account_code": defer_code,
              "debit": 0, "credit": amt, "event": "JV"},
         ]
+        if ship > 0:
+            # V290: ongkir langsung ke akunnya sendiri, BUKAN lewat Ditangguhkan/allocated.
+            ship_name, ship_code = await _acct(AccountRole.REVENUE_SHIPPING, "Pendapatan Ongkos Kirim")
+            lines.append({"account_name": ship_name, "account_code": ship_code,
+                          "debit": 0, "credit": ship, "event": "JV"})
         if tax_amt > 0:
             # _post_invoice TIDAK memeriksa Tenant.is_pkp di sini: ia menerbitkan
             # baris PPN semata-mata karena tax_amount > 0, lewat
@@ -754,7 +788,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             "cogs_recognized_at_invoice": cogs_will_post,
             "subtotal": round(float(subtotal), 2),
             "tax_amount": round(float(tax_total), 2),
-            "total_amount": round(float(subtotal + tax_total), 2),
+            "shipping_amount": round(float(ship_amt), 2),
+            "total_amount": round(float(subtotal + tax_total + ship_amt), 2),
         }
 
 
@@ -1116,6 +1151,14 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "tax_rate": float(invoice["tax_rate"] or 0),
                     "tax_amount": invoice["tax_amount"],
                     "total_amount": invoice["total_amount"],
+                    # V290: ongkir + pajaknya terpisah (tax_amount sudah termasuk PPN ongkir).
+                    "shipping_amount": invoice.get("shipping_amount") or 0,
+                    "shipping_tax_code_id": str(invoice["shipping_tax_code_id"])
+                    if invoice.get("shipping_tax_code_id")
+                    else None,
+                    "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
+                    "shipping_dpp": invoice.get("shipping_dpp") or 0,
+                    "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
                     "amount_paid": journal_amount_paid,
                     # FIX_AR_HERO_SETTLED: amount_due + remaining_amount from ledger
                     # truth (_amount_due). remaining_amount is the field the FE hero
@@ -1985,7 +2028,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         """
         SELECT id, invoice_number, customer_id, customer_name, total_amount,
                tax_amount, subtotal, invoice_date, due_date, warehouse_id,
-               recognize_at
+               recognize_at, shipping_amount, shipping_tax_code_id,
+               shipping_tax_rate, shipping_tax_amount, shipping_dpp
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
         invoice_id,
@@ -2069,7 +2113,23 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
     # Compute subtotal (revenue without tax)
     tax_amount = _d(invoice["tax_amount"] or 0)
-    subtotal_amount = total_amount - tax_amount
+    # V290: ongkir = pendapatan SENDIRI (REVENUE_SHIPPING), bukan bagian Ditangguhkan
+    # dan bukan bagian allocated_amount baris barang.
+    shipping_amount = _d(invoice.get("shipping_amount") or 0)
+    subtotal_amount = total_amount - tax_amount - shipping_amount
+    shipping_rev_account = None
+    if shipping_amount > 0:
+        try:
+            shipping_rev_account = await resolve_account_id_by_role(
+                conn, ctx["tenant_id"], AccountRole.REVENUE_SHIPPING
+            )
+        except AccountRoleUnmappedError:
+            raise HTTPException(
+                status_code=422,
+                detail=("Akun Pendapatan Ongkos Kirim belum diatur untuk usaha ini "
+                        "(peran REVENUE_SHIPPING). Atur dulu sebelum memposting faktur "
+                        "berongkos kirim."),
+            )
     line_number = 1
 
     # Insert journal lines
@@ -2102,6 +2162,22 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             unearned_account["id"],
             subtotal_amount,
             f"Pendapatan Diterima Dimuka - {invoice_number}",
+        )
+        line_number += 1
+
+    # Line 2b (V290): Credit Pendapatan Ongkos Kirim = ongkir (tanpa PPN-nya)
+    if shipping_amount > 0:
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            """,
+            uuid.uuid4(),
+            journal_id,
+            line_number,
+            shipping_rev_account,
+            shipping_amount,
+            f"Pendapatan Ongkos Kirim - {invoice_number}",
         )
         line_number += 1
 
@@ -2188,6 +2264,38 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             vat_jl_id,
         )
 
+    # V290: PPN ongkir -> baris document_tax_lines sendiri (line_item_id NULL), supaya
+    # SIGMA DTL == PPN Keluaran di jurnal.
+    _ship_tax = _d(invoice.get("shipping_tax_amount") or 0)
+    if _ship_tax > 0:
+        _stc = invoice.get("shipping_tax_code_id")
+        if not _stc:
+            _stc = await conn.fetchval(
+                "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (direction = 'output') DESC, (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
+                ctx["tenant_id"],
+                invoice["shipping_tax_rate"],
+            )
+        if _stc:
+            await conn.execute(
+                """
+                INSERT INTO document_tax_lines (
+                    id, tenant_id, document_type, document_id, line_item_id,
+                    tax_code_id, direction, base_amount, tax_amount,
+                    coa_id, journal_line_id
+                ) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8,
+                          (SELECT coa_id FROM tax_codes WHERE id = $5), $9)
+                """,
+                uuid.uuid4(),
+                ctx["tenant_id"],
+                "SALES_INVOICE",
+                invoice_id,
+                _stc,
+                "output",
+                float(invoice["shipping_dpp"] or 0),
+                float(_ship_tax),
+                vat_jl_id,
+            )
+
     # =============================================================
     # PSAK 72 Step 4: Calculate allocated_amount per item
     # =============================================================
@@ -2202,7 +2310,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     )
 
     tax_amount_total = _d(invoice.get("tax_amount", 0) or 0)
-    subtotal_after_discount = _d(invoice["total_amount"]) - tax_amount_total
+    # V290: ongkir bukan bagian allocated_amount baris barang.
+    subtotal_after_discount = (
+        _d(invoice["total_amount"]) - tax_amount_total - _d(invoice.get("shipping_amount") or 0)
+    )
 
     total_line_subtotals = Decimal("0")
     for itm in items:
@@ -2622,11 +2733,17 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 # saja (arti yang sudah disimpan sejak dulu).
                 _items = [item.model_dump() for item in body.items]
                 await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_code_id")
+                _ship = await resolve_shipping_tax(
+                    conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
+                    body.shipping_amount, "tax_code_id",
+                )
                 try:
                     _doc = compute_document(
                         _items,
                         doc_discount_amount=body.discount_amount,
                         doc_discount_percent=body.discount_percent,
+                        shipping_amount=body.shipping_amount,
+                        shipping_tax=_ship,
                     )
                 except DocumentDiscountError as _e:
                     raise HTTPException(status_code=400, detail=str(_e))
@@ -2700,8 +2817,10 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         tax_rate, tax_amount, total_amount,
                         status, created_by, recognize_at,
                         payment_bank_name, payment_account_number, payment_account_holder,
-                        purchase_order_no, delivery_order_no
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16, $17, $18, $19, $20, $21)
+                        purchase_order_no, delivery_order_no,
+                        shipping_amount, shipping_tax_code_id, shipping_tax_rate,
+                        shipping_tax_amount, shipping_dpp
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'draft', $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -2734,6 +2853,13 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     body.payment_account_holder,
                     body.purchase_order_no,
                     body.delivery_order_no,
+                    _doc["shipping_amount"],
+                    # disimpan HANYA pilihan eksplisit: NULL = ikut kode pajak barang,
+                    # supaya edit barang berikutnya tetap menyeret ongkir.
+                    UUID(body.shipping_tax_code_id) if body.shipping_tax_code_id else None,
+                    _doc["shipping_tax_rate"],
+                    _doc["shipping_tax_amount"],
+                    _doc["shipping_dpp"],
                 )
 
                 # Insert items
@@ -3043,11 +3169,13 @@ async def update_invoice(
                 # dibiarkan basi. Ongkir (dibawa dari SO) ikut di total, di luar DPP.
                 _fs = body.model_fields_set
                 _recalc = body.items is not None or bool(
-                    {"discount_amount", "discount_percent"} & _fs
+                    {"discount_amount", "discount_percent", "shipping_amount",
+                     "shipping_tax_code_id"} & _fs
                 )
                 if _recalc:
                     _cur = await conn.fetchrow(
-                        """SELECT discount_amount, discount_percent, shipping_amount
+                        """SELECT discount_amount, discount_percent, shipping_amount,
+                                  shipping_tax_code_id
                            FROM sales_invoices WHERE id = $1""",
                         invoice_id,
                     )
@@ -3075,12 +3203,26 @@ async def update_invoice(
                             )
                         ]
                     await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_code_id")
+                    _ship_amt = (
+                        body.shipping_amount
+                        if "shipping_amount" in _fs and body.shipping_amount is not None
+                        else _cur["shipping_amount"]
+                    ) or 0
+                    _ship_code = (
+                        (body.shipping_tax_code_id or None)
+                        if "shipping_tax_code_id" in _fs
+                        else (str(_cur["shipping_tax_code_id"]) if _cur["shipping_tax_code_id"] else None)
+                    )
+                    _ship = await resolve_shipping_tax(
+                        conn, ctx["tenant_id"], _ship_code, _src, _ship_amt, "tax_code_id"
+                    )
                     try:
                         _doc = compute_document(
                             _src,
                             doc_discount_amount=_amt,
                             doc_discount_percent=_pct,
-                            shipping_amount=_cur["shipping_amount"] or 0,
+                            shipping_amount=_ship_amt,
+                            shipping_tax=_ship,
                         )
                     except DocumentDiscountError as _e:
                         raise HTTPException(status_code=400, detail=str(_e))
@@ -3233,7 +3375,9 @@ async def update_invoice(
                         """
                         UPDATE sales_invoices
                         SET subtotal = $2, discount_percent = $3, discount_amount = $4,
-                            tax_amount = $5, total_amount = $6
+                            tax_amount = $5, total_amount = $6,
+                            shipping_amount = $7, shipping_tax_code_id = $8,
+                            shipping_tax_rate = $9, shipping_tax_amount = $10, shipping_dpp = $11
                         WHERE id = $1
                     """,
                         invoice_id,
@@ -3242,6 +3386,11 @@ async def update_invoice(
                         invoice_discount,
                         total_tax,
                         total_amount,
+                        _doc["shipping_amount"],
+                        UUID(_ship_code) if _ship_code else None,
+                        _doc["shipping_tax_rate"],
+                        _doc["shipping_tax_amount"],
+                        _doc["shipping_dpp"],
                     )
 
                 # Update other fields
@@ -3255,7 +3404,8 @@ async def update_invoice(
                 # discount_amount tersimpan 0).
                 update_data = body.model_dump(
                     exclude_unset=True,
-                    exclude={"items", "auto_post", "discount_amount", "discount_percent"},
+                    exclude={"items", "auto_post", "discount_amount", "discount_percent",
+                             "shipping_amount", "shipping_tax_code_id"},
                 )
 
                 # Ganti nomor faktur: pagar salinan SEBELUM menulis.
