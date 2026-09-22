@@ -5300,6 +5300,14 @@ async def get_invoice_pdf(
                 "tax_rate": float(invoice["tax_rate"] or 0),
                 "tax_amount": invoice["tax_amount"],
                 "total_amount": invoice["total_amount"],
+                # V290 ongkir baris sendiri: dicetak sebagai baris "Ongkos kirim"; PPN-nya
+                # sudah termasuk di tax_amount. item_discount_total dikirim supaya baris
+                # "Diskon item" template A tercetak -- tanpa itu, faktur berdiskon baris
+                # mencetak Subtotal - Diskon + PPN != Total.
+                "shipping_amount": invoice.get("shipping_amount") or 0,
+                "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
+                "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
+                "item_discount_total": sum((it["discount_amount"] or 0) for it in items),
                 "amount_paid": pdf_amount_paid,
                 "amount_due": float(pdf_ar_row["outstanding"])
                 if pdf_ar_row

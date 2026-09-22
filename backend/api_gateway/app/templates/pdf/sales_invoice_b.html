@@ -133,12 +133,30 @@
       <td class="c-harga">Subtotal</td>
       <td class="c-jml">{{ invoice.subtotal | currency2 }}</td>
     </tr>
+    {# Diskon (baris + dokumen) dan ongkir (V290): tanpa baris ini, Subtotal + Tax
+       yang tercetak tidak sama dengan Total pada faktur berdiskon/berongkir. #}
+    {% set _disc_b = (invoice.item_discount_total or 0)|float + (invoice.discount_amount or 0)|float %}
+    {% if _disc_b > 0 %}
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">Discount</td>
+      <td class="c-jml">-{{ _disc_b | currency2 }}</td>
+    </tr>
+    {% endif %}
+    {% if invoice.shipping_amount and invoice.shipping_amount|float > 0 %}
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">Shipping</td>
+      <td class="c-jml">{{ invoice.shipping_amount | currency2 }}</td>
+    </tr>
+    {% endif %}
     {# Baris Tax HANYA untuk tenant PKP. Non-PKP yang menampilkan "Tax 0"
        menyiratkan ia memungut pajak nol, bukan tidak memungut sama sekali. #}
     {% if t.get('is_pkp') %}
     <tr class="jumlah">
       <td class="sisi-kosong" colspan="4"></td>
-      <td class="c-harga">Tax 11%</td>
+      {# Tarif dari faktur, bukan tulisan mati "11%" (salah untuk kode 12%). #}
+      <td class="c-harga">Tax{% if (invoice.tax_rate or 0)|float > 0 %} {{ (invoice.tax_rate|float)|round(0)|int }}%{% endif %}</td>
       <td class="c-jml">{{ invoice.tax_amount | currency2 }}</td>
     </tr>
     {% endif %}
