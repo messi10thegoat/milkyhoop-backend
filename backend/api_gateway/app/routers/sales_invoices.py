@@ -32,7 +32,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..services.sales_doc_calc import compute_document, DocumentDiscountError
-from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax
+from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
 # VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
@@ -217,12 +217,15 @@ async def _apply_so_invoiced_deltas(conn, deltas: dict) -> None:
             )
 
 
-def _ship_json(doc: dict) -> dict:
-    """Medan ongkir header (V290) dari hasil compute_document -> JSON."""
+def _ship_json(doc: dict, explicit_code_id=None) -> dict:
+    """Medan ongkir header (V290) dari hasil compute_document -> JSON.
+    shipping_tax_code_id = pilihan EKSPLISIT (null = ikut barang), SAMA artinya dengan GET;
+    shipping_tax_code_id_effective = kode yang benar-benar dipakai (unit 3d)."""
     return {
         "line_tax_amount": float(doc["line_tax_amount"]),
         "shipping_amount": float(doc["shipping_amount"]),
-        "shipping_tax_code_id": doc["shipping_tax_code_id"],
+        "shipping_tax_code_id": str(explicit_code_id) if explicit_code_id else None,
+        "shipping_tax_code_id_effective": doc["shipping_tax_code_id_effective"],
         "shipping_tax_rate": float(doc["shipping_tax_rate"]),
         "shipping_dpp": float(doc["shipping_dpp"]),
         "shipping_tax_amount": float(doc["shipping_tax_amount"]),
@@ -462,7 +465,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 "discount_amount": float(res["doc_discount"]),
                 "tax_amount": float(res["tax_amount"]),
                 "total_amount": float(res["total_amount"]),
-                **_ship_json(res),
+                **_ship_json(res, body.shipping_tax_code_id),
                 "items": [
                     _doc_line_json(ln, i + 1) for i, ln in enumerate(res["items"])
                 ],
@@ -1188,6 +1191,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
                     "shipping_dpp": invoice.get("shipping_dpp") or 0,
                     "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
+                    "shipping_tax_code_id_effective": effective_shipping_code(
+                        invoice.get("shipping_tax_code_id"), [dict(i) for i in items],
+                        "tax_code_id", invoice.get("shipping_amount") or 0,
+                    ),
                     "amount_paid": journal_amount_paid,
                     # FIX_AR_HERO_SETTLED: amount_due + remaining_amount from ledger
                     # truth (_amount_due). remaining_amount is the field the FE hero

@@ -501,7 +501,11 @@ class InvoiceCalculation(BaseModel):
     # V290 ongkir terpisah: tax_amount = line_tax_amount + shipping_tax_amount.
     line_tax_amount: float = 0
     shipping_amount: float = 0
+    # shipping_tax_code_id = pilihan EKSPLISIT (null = ikut kode barang), sama dengan GET.
     shipping_tax_code_id: Optional[str] = None
+    # kode yang BENAR-BENAR dipakai (eksplisit, atau kode barang yang diikuti; null bila
+    # barang hanya membawa tarif -> lihat shipping_tax_rate).
+    shipping_tax_code_id_effective: Optional[str] = None
     shipping_tax_rate: float = 0
     shipping_dpp: float = 0
     shipping_tax_amount: float = 0

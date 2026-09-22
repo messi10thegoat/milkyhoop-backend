@@ -13,7 +13,7 @@ import uuid as uuid_module
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
-from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax
+from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -457,6 +457,10 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     shipping_tax_rate=float(order.get("shipping_tax_rate") or 0),
                     shipping_dpp=float(order.get("shipping_dpp") or 0),
                     shipping_tax_amount=float(order.get("shipping_tax_amount") or 0),
+                    shipping_tax_code_id_effective=effective_shipping_code(
+                        order.get("shipping_tax_code_id"), [dict(i) for i in items],
+                        "tax_id", order.get("shipping_amount") or 0,
+                    ),
                     total_amount=order["total_amount"],
                     status=order["status"],
                     shipped_qty=float(order["shipped_qty"] or 0),
@@ -684,6 +688,48 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
     except Exception as e:
         logger.error(f"Error creating sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create sales order")
+
+
+@router.post("/calculate")
+async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest):
+    """Unit 3d -- pratinjau SO TANPA menyimpan: kalkulator bersama yang SAMA dengan create
+    (faktor DPP per kode, pajak ongkir). KONTRAK: mengembalikan PERSIS yang akan disimpan
+    create. shipping_tax_code_id = pilihan eksplisit dari permintaan (null = ikut barang);
+    shipping_tax_code_id_effective = kode yang benar-benar dipakai."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    _items = [item.model_dump() for item in body.items]
+    async with pool.acquire() as conn:
+        await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_id")
+        _ship = await resolve_shipping_tax(
+            conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
+            body.shipping_amount, "tax_id",
+        )
+    doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+    f = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "success": True,
+        "data": {
+            "subtotal": f(doc["net_subtotal"]),
+            "discount_amount": f(doc["doc_discount"]),
+            "line_tax_amount": f(doc["line_tax_amount"]),
+            "tax_amount": f(doc["tax_amount"]),
+            "shipping_amount": f(doc["shipping_amount"]),
+            "shipping_tax_code_id": body.shipping_tax_code_id or None,
+            "shipping_tax_code_id_effective": doc["shipping_tax_code_id_effective"],
+            "shipping_tax_rate": f(doc["shipping_tax_rate"]),
+            "shipping_dpp": f(doc["shipping_dpp"]),
+            "shipping_tax_amount": f(doc["shipping_tax_amount"]),
+            "total_amount": f(doc["total_amount"]),
+            "items": [
+                {"line_number": i + 1, "description": ln.get("description"),
+                 "quantity": f(ln.get("quantity")), "unit_price": f(ln.get("unit_price")),
+                 "discount_percent": f(ln.get("discount_percent") or 0), "tax_rate": f(ln.get("tax_rate") or 0),
+                 "tax_amount": f(ln["tax_amount"]), "line_total": f(ln["line_total"]), "dpp": f(ln["dpp"])}
+                for i, ln in enumerate(doc["items"])
+            ],
+        },
+    }
 
 
 @router.patch("/{order_id}", response_model=SalesOrderResponse)

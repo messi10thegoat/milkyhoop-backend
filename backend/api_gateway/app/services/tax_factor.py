@@ -101,6 +101,19 @@ async def resolve_shipping_tax(conn, tenant_id, explicit_code_id, lines, shippin
             "rate": rate, "num": num, "den": den}
 
 
+def effective_shipping_code(explicit_code_id, lines, code_key, shipping_amount):
+    """Unit 3d: the code shipping is ACTUALLY taxed under, for GET responses: the explicit
+    choice, else the single tax code shared by all taxable goods lines, else None (goods
+    carry only a rate, or no shipping). Same identity rule as resolve_shipping_tax; pure."""
+    if _d(shipping_amount) <= 0:
+        return None
+    if explicit_code_id:
+        return str(explicit_code_id)
+    codes = {str(ln.get(code_key)) if ln.get(code_key) else None
+             for ln in lines if _d(ln.get("tax_rate")) > 0}
+    return next(iter(codes)) if len(codes) == 1 and None not in codes else None
+
+
 async def attach_dpp_factors(conn, tenant_id, items, code_key, direction="output"):
     """Tempel dpp_factor_num/den ke tiap baris (dict) untuk compute_document."""
     cache = {}
