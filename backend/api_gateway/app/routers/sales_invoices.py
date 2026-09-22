@@ -30,6 +30,7 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
+from ..services.sales_doc_calc import compute_document, DocumentDiscountError
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
 # VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
@@ -136,30 +137,15 @@ def _r2(v: Decimal) -> float:
     return float(v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def calculate_item_totals(item: dict) -> dict:
-    """Calculate line item totals with Decimal precision (PSAK/IFRS)."""
-    qty = _d(item["quantity"])
-    price = _d(item["unit_price"])
-    subtotal = qty * price
+# calculate_item_totals() DIHAPUS: aritmetika pajak faktur kini SATU sumber,
+# services/sales_doc_calc.compute_document (lihat /calculate, create, update, preview-journal).
 
-    discount = _d(item.get("discount_amount", 0))
-    if item.get("discount_percent", 0) > 0:
-        discount = subtotal * _d(item["discount_percent"]) / Decimal("100")
 
-    after_discount = subtotal - discount
-    tax_amount = Decimal("0")
-    if item.get("tax_rate", 0) > 0:
-        tax_amount = after_discount * _d(item["tax_rate"]) / Decimal("100")
-
-    total = after_discount + tax_amount
-
-    return {
-        **item,
-        "subtotal": _r2(subtotal),
-        "discount_amount": _r2(discount),
-        "tax_amount": _r2(tax_amount),
-        "total": _r2(total),
-    }
+def _doc_line_json(ln: dict, line_number: int) -> dict:
+    """Baris hasil compute_document -> dict JSON (Decimal -> float)."""
+    out = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in ln.items()}
+    out["line_number"] = line_number
+    return out
 
 
 # =============================================================================
@@ -331,42 +317,32 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
     try:
         ctx = get_user_context(request)  # noqa: F841  # pre-existing: kept for auth side-effect
 
-        # Calculate each item
-        calculated_items = []
-        subtotal = 0
-        total_item_discount = 0
-        total_tax = 0
-
-        for i, item in enumerate(body.items):
-            calc = calculate_item_totals(item.model_dump())
-            calc["line_number"] = i + 1
-            calculated_items.append(calc)
-            subtotal += calc["subtotal"]
-            total_item_discount += calc["discount_amount"]
-            total_tax += calc["tax_amount"]
-
-        # Invoice-level discount
-        invoice_discount = body.discount_amount
-        if body.discount_percent > 0:
-            invoice_discount = _r2(
-                _d(subtotal) * _d(body.discount_percent) / Decimal("100")
-            )
-
-        # Total
-        total_amount = subtotal - total_item_discount - invoice_discount + total_tax
-
+        # KONTRAK: /calculate mengembalikan PERSIS yang akan disimpan create -- satu
+        # kalkulator bersama (services/sales_doc_calc.py), bukan salinan aritmetika.
+        # discount_amount header = DISKON DOKUMEN SAJA (arti yang disimpan create/update
+        # sejak dulu); diskon baris ada di items[].discount_amount. Dulu endpoint ini
+        # mengembalikan diskon baris + dokumen -- arti kedua yang tak pernah disimpan.
+        res = compute_document(
+            [item.model_dump() for item in body.items],
+            doc_discount_amount=body.discount_amount,
+            doc_discount_percent=body.discount_percent,
+        )
         return {
             "success": True,
             "data": {
                 "status": "draft",
-                "subtotal": subtotal,
-                "discount_amount": total_item_discount + invoice_discount,
-                "tax_amount": total_tax,
-                "total_amount": total_amount,
-                "items": calculated_items,
+                "subtotal": float(res["gross_subtotal"]),
+                "discount_amount": float(res["doc_discount"]),
+                "tax_amount": float(res["tax_amount"]),
+                "total_amount": float(res["total_amount"]),
+                "items": [
+                    _doc_line_json(ln, i + 1) for i, ln in enumerate(res["items"])
+                ],
             },
         }
 
+    except DocumentDiscountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error calculating invoice: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to calculate invoice")
@@ -432,23 +408,34 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     customer_id = body.get("customer_id")
     warnings: list[str] = []
 
-    # Aritmetika baris memakai calculate_item_totals() — FUNGSI YANG SAMA yang
-    # dipakai jalur create/update (:345, :2164, :2463) dan yang menghasilkan
-    # `tax_amount` yang kelak dibaca _post_invoice. Sengaja TIDAK dihitung ulang
-    # di sini: dua salinan aritmetika pajak akan menyimpang, dan divergensi itu
-    # persis penyakit yang endpoint ini ada untuk menyembuhkan.
-    subtotal = Decimal("0")   # setelah diskon, SEBELUM pajak
+    # Aritmetika memakai compute_document() — KALKULATOR YANG SAMA dengan create/
+    # update//calculate, yang menghasilkan `tax_amount` yang kelak dibaca
+    # _post_invoice. Sengaja TIDAK dihitung ulang di sini: dua salinan aritmetika
+    # pajak akan menyimpang, dan divergensi itu persis penyakit yang endpoint ini
+    # ada untuk menyembuhkan. (Sebelum kalkulator bersama, pratinjau ini mengabaikan
+    # diskon dokumen sama sekali -- pendapatan DAN PPN-nya.)
+    subtotal = Decimal("0")   # sesudah diskon baris DAN dokumen, SEBELUM pajak
     tax_total = Decimal("0")
     try:
+        norms = []
         for it in items:
             norm = dict(it)
             norm["quantity"] = it.get("quantity", it.get("qty", 0)) or 0
             norm["unit_price"] = it.get("unit_price", it.get("price", 0)) or 0
-            calc = calculate_item_totals(norm)
-            subtotal += _d(calc["subtotal"]) - _d(calc["discount_amount"])
-            tax_total += _d(calc["tax_amount"])
+            norms.append(norm)
+        _res = compute_document(
+            norms,
+            doc_discount_amount=body.get("discount_amount") or 0,
+            doc_discount_percent=body.get("discount_percent") or 0,
+        )
+        subtotal = _res["dpp_total"]
+        tax_total = _res["tax_amount"]
         if subtotal == 0 and tax_total == 0:
             subtotal = Decimal(str(body.get("total_amount") or 0))
+    except DocumentDiscountError as _e:
+        warnings.append(str(_e))
+        subtotal = Decimal(str(body.get("total_amount") or 0))
+        tax_total = Decimal("0")
     except (ValueError, TypeError, ArithmeticError, KeyError):
         subtotal = Decimal(str(body.get("total_amount") or 0))
         tax_total = Decimal("0")
@@ -2538,30 +2525,26 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
                     )
 
-                # Calculate totals
-                subtotal = 0
-                total_item_discount = 0
-                total_tax = 0
-                calculated_items = []
-
-                for i, item in enumerate(body.items):
-                    calc = calculate_item_totals(item.model_dump())
-                    calc["line_number"] = i + 1
-                    calculated_items.append(calc)
-                    subtotal += calc["subtotal"]
-                    total_item_discount += calc["discount_amount"]
-                    total_tax += calc["tax_amount"]
-
-                # Invoice-level discount
-                invoice_discount = body.discount_amount
-                if body.discount_percent > 0:
-                    invoice_discount = _r2(
-                        _d(subtotal) * _d(body.discount_percent) / Decimal("100")
+                # Satu kalkulator bersama (services/sales_doc_calc.py): diskon dokumen
+                # dialokasikan pro-rata ke SEMUA baris, PPN per baris dari DPP sesudah
+                # alokasi, header = jumlah baris. discount_amount header = diskon DOKUMEN
+                # saja (arti yang sudah disimpan sejak dulu).
+                try:
+                    _doc = compute_document(
+                        [item.model_dump() for item in body.items],
+                        doc_discount_amount=body.discount_amount,
+                        doc_discount_percent=body.discount_percent,
                     )
-
-                total_amount = (
-                    subtotal - total_item_discount - invoice_discount + total_tax
-                )
+                except DocumentDiscountError as _e:
+                    raise HTTPException(status_code=400, detail=str(_e))
+                calculated_items = []
+                for i, _ln in enumerate(_doc["items"]):
+                    _ln["line_number"] = i + 1
+                    calculated_items.append(_ln)
+                subtotal = _doc["gross_subtotal"]
+                invoice_discount = _doc["doc_discount"]
+                total_tax = _doc["tax_amount"]
+                total_amount = _doc["total_amount"]
 
                 # Convert customer_id
                 # customer_id is TEXT column, use string directly
@@ -2780,8 +2763,10 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         UUID(item.get("tax_code_id"))
                         if item.get("tax_code_id")
                         else None,
-                        item.get("dpp")
-                        or (item["subtotal"] - item.get("discount_amount", 0)),
+                        # DPP yang BENAR-BENAR dipakai menghitung PPN (sesudah alokasi
+                        # diskon dokumen). Tanpa `or`-fallback: DPP 0 yang sah (baris
+                        # terdiskon penuh) dulu diam-diam diganti subtotal-diskon.
+                        item["dpp"],
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -2959,7 +2944,57 @@ async def update_invoice(
                 )
 
             async with conn.transaction():
-                # If items provided, recalculate
+                # Hitung ulang bila BARIS atau DISKON DOKUMEN berubah. Diskon dokumen kini
+                # memengaruhi PPN tiap baris, jadi suntingan diskon-saja (tanpa `items`)
+                # WAJIB menghitung ulang dari baris tersimpan -- dulu total/pajaknya
+                # dibiarkan basi. Ongkir (dibawa dari SO) ikut di total, di luar DPP.
+                _fs = body.model_fields_set
+                _recalc = body.items is not None or bool(
+                    {"discount_amount", "discount_percent"} & _fs
+                )
+                if _recalc:
+                    _cur = await conn.fetchrow(
+                        """SELECT discount_amount, discount_percent, shipping_amount
+                           FROM sales_invoices WHERE id = $1""",
+                        invoice_id,
+                    )
+                    _pct = (
+                        body.discount_percent
+                        if "discount_percent" in _fs and body.discount_percent is not None
+                        else _cur["discount_percent"]
+                    ) or 0
+                    _amt = (
+                        body.discount_amount
+                        if "discount_amount" in _fs and body.discount_amount is not None
+                        else _cur["discount_amount"]
+                    ) or 0
+                    if body.items is not None:
+                        _src = [item.model_dump() for item in body.items]
+                    else:
+                        _src = [
+                            dict(r)
+                            for r in await conn.fetch(
+                                """SELECT id, quantity, unit_price, discount_percent,
+                                          discount_amount, tax_rate
+                                   FROM sales_invoice_items
+                                   WHERE invoice_id = $1 ORDER BY line_number""",
+                                invoice_id,
+                            )
+                        ]
+                    try:
+                        _doc = compute_document(
+                            _src,
+                            doc_discount_amount=_amt,
+                            doc_discount_percent=_pct,
+                            shipping_amount=_cur["shipping_amount"] or 0,
+                        )
+                    except DocumentDiscountError as _e:
+                        raise HTTPException(status_code=400, detail=str(_e))
+                    subtotal = _doc["gross_subtotal"]
+                    invoice_discount = _doc["doc_discount"]
+                    total_tax = _doc["tax_amount"]
+                    total_amount = _doc["total_amount"]
+
                 if body.items is not None:
                     # Delete existing items
                     await conn.execute(
@@ -2967,17 +3002,9 @@ async def update_invoice(
                         invoice_id,
                     )
 
-                    # Calculate and insert new items
-                    subtotal = 0
-                    total_item_discount = 0
-                    total_tax = 0
-
                     for i, item in enumerate(body.items):
-                        calc = calculate_item_totals(item.model_dump())
+                        calc = _doc["items"][i]
                         calc["line_number"] = i + 1
-                        subtotal += calc["subtotal"]
-                        total_item_discount += calc["discount_amount"]
-                        total_tax += calc["tax_amount"]
 
                         item_uuid = None
                         if item.item_id:
@@ -3066,29 +3093,36 @@ async def update_invoice(
                             UUID(str(item.tax_code_id))
                             if getattr(item, "tax_code_id", None)
                             else None,
-                            calc.get("dpp")
-                            or (calc["subtotal"] - calc["discount_amount"]),
+                            calc["dpp"],
                         )
 
-                    # Update invoice totals
-                    invoice_discount = body.discount_amount or 0
-                    if body.discount_percent and body.discount_percent > 0:
-                        invoice_discount = _r2(
-                            _d(subtotal) * _d(body.discount_percent) / Decimal("100")
+                elif _recalc:
+                    # Suntingan diskon-saja: baris tetap, DPP/PPN tiap baris dihitung ulang.
+                    for _ln in _doc["items"]:
+                        await conn.execute(
+                            """UPDATE sales_invoice_items
+                               SET subtotal = $2, discount_amount = $3, dpp = $4,
+                                   tax_amount = $5, total = $6
+                               WHERE id = $1""",
+                            _ln["id"],
+                            _ln["subtotal"],
+                            _ln["discount_amount"],
+                            _ln["dpp"],
+                            _ln["tax_amount"],
+                            _ln["total"],
                         )
 
-                    total_amount = (
-                        subtotal - total_item_discount - invoice_discount + total_tax
-                    )
-
+                if _recalc:
                     await conn.execute(
                         """
                         UPDATE sales_invoices
-                        SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5
+                        SET subtotal = $2, discount_percent = $3, discount_amount = $4,
+                            tax_amount = $5, total_amount = $6
                         WHERE id = $1
                     """,
                         invoice_id,
                         subtotal,
+                        _pct,
                         invoice_discount,
                         total_tax,
                         total_amount,
@@ -3099,8 +3133,13 @@ async def update_invoice(
                 # Tanpa dikecualikan di sini, ia ikut masuk pembangun UPDATE
                 # dinamis dan menghasilkan 500 (kolom tak ada) untuk
                 # auto_post=false -- terungkap oleh gerbang T222 butir (3).
+                # discount_amount/discount_percent ditulis HANYA oleh blok hitung-ulang
+                # di atas. Dulu nilai mentah badan permintaan menimpa hasil hitungan
+                # SESUDAHNYA (mis. percent=3 + amount=0 -> total berdiskon tapi
+                # discount_amount tersimpan 0).
                 update_data = body.model_dump(
-                    exclude_unset=True, exclude={"items", "auto_post"}
+                    exclude_unset=True,
+                    exclude={"items", "auto_post", "discount_amount", "discount_percent"},
                 )
 
                 # Ganti nomor faktur: pagar salinan SEBELUM menulis.
