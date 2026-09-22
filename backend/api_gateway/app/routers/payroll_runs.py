@@ -393,6 +393,43 @@ async def get_payroll_run(request: Request, run_id: UUID):
             for r in roster_rows
         ]
 
+        # Variable inputs (V282) read-back: project stored days_worked / overtime_hours /
+        # amount per (employee_id, component_id) so the editor POPULATES its cells instead of
+        # seeding 0 and full-replace-PUTting zeros it never read (silent earnings loss --
+        # penulis-menganggap-yang-tampil-adalah-segalanya; run 82139035 lost its earnings this
+        # way). A run with NO inputs returns [] (never a missing key), so the FE can distinguish
+        # "read it, nothing there" from "never read it". Pay-group scoped like /slips + roster.
+        if role_code in ("OWNER", "ADMIN"):
+            input_rows = await conn.fetch(
+                """SELECT pri.employee_id, pri.component_id,
+                          pri.days_worked, pri.overtime_hours, pri.amount
+                   FROM payroll_run_inputs pri
+                   WHERE pri.payroll_id = $1
+                   ORDER BY pri.employee_id, pri.component_id""",
+                run_id,
+            )
+        else:
+            input_rows = await conn.fetch(
+                """SELECT pri.employee_id, pri.component_id,
+                          pri.days_worked, pri.overtime_hours, pri.amount
+                   FROM payroll_run_inputs pri
+                   JOIN employees e ON e.id = pri.employee_id
+                   WHERE pri.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])
+                   ORDER BY pri.employee_id, pri.component_id""",
+                run_id,
+                accessible_ids,
+            )
+        inputs = [
+            {
+                "employee_id": str(i["employee_id"]),
+                "component_id": str(i["component_id"]) if i["component_id"] is not None else None,
+                "days_worked": float(i["days_worked"]) if i["days_worked"] is not None else None,
+                "overtime_hours": float(i["overtime_hours"]) if i["overtime_hours"] is not None else None,
+                "amount": float(i["amount"]) if i["amount"] is not None else None,
+            }
+            for i in input_rows
+        ]
+
         return {
             "success": True,
             "data": {
@@ -400,6 +437,7 @@ async def get_payroll_run(request: Request, run_id: UUID):
                 "payments": [dict(p) for p in payments],
                 "piece_lines": piece_lines,
                 "employees": employees,
+                "inputs": inputs,
             },
         }
 
