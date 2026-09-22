@@ -38,6 +38,12 @@ class InvoiceItemCreate(BaseModel):
     tax_code_id: Optional[str] = None
     tax_rate: float = Field(0, ge=0, le=100)
 
+    # Tautan ke baris Sales Order (V271). HANYA dihormati saat UPDATE draf, dan hanya
+    # bila baris SO itu MEMANG sudah tertaut ke faktur ini (tak bisa menempelkan baris
+    # SO baru lewat edit). Create mengabaikannya (tautan lahir di /to-invoice). Bila FE
+    # tidak mengirimnya, server memasangkan ulang menurut produk/deskripsi, berurutan.
+    sales_order_item_id: Optional[str] = None
+
     # Batch/expiry tracking
     batch_id: Optional[str] = None
     batch_no: Optional[str] = None

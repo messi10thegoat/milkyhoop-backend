@@ -141,6 +141,80 @@ def _r2(v: Decimal) -> float:
 # services/sales_doc_calc.compute_document (lihat /calculate, create, update, preview-journal).
 
 
+def _plan_so_link_edit(old_lines: list, new_items: list) -> tuple:
+    """Pasangkan baris BARU hasil edit draf dengan baris LAMA yang bertaut SO.
+
+    old_lines: baris lama yang punya sales_order_item_id, urut line_number.
+    new_items: baris kiriman (dict), urut kiriman.
+    Kembalikan (links, deltas): links[i] = sales_order_item_id untuk baris baru i (atau
+    None = baris lepas, bukan dari SO); deltas = {soi_id: SIGMA qty baru - SIGMA qty lama}.
+    Baris lama yang tak terpasang = dikeluarkan dari faktur -> delta negatif (dilepas ke SO).
+    ValueError bila tautan eksplisit bukan milik faktur ini (tak boleh menempel SO baru).
+    """
+    used, links = set(), [None] * len(new_items)
+    by_soi = {}
+    for o in old_lines:
+        by_soi.setdefault(str(o["sales_order_item_id"]), []).append(o)
+    for i, it in enumerate(new_items):  # 1) tautan eksplisit (FE menggemakan GET)
+        sid = it.get("sales_order_item_id")
+        if not sid:
+            continue
+        cand = [o for o in by_soi.get(str(sid), []) if o["id"] not in used]
+        if not cand:
+            raise ValueError(
+                f"Baris faktur merujuk baris Sales Order {sid} yang bukan milik faktur ini."
+            )
+        links[i] = str(sid)
+        used.add(cand[0]["id"])
+
+    def _key(r):
+        return (("item", str(r["item_id"])) if r.get("item_id")
+                else ("desc", (r.get("description") or "").strip()))
+
+    for i, it in enumerate(new_items):  # 2) tanpa tautan: produk/deskripsi, berurutan
+        if links[i] is not None:
+            continue
+        for o in old_lines:
+            if o["id"] not in used and _key(o) == _key(it):
+                links[i] = str(o["sales_order_item_id"])
+                used.add(o["id"])
+                break
+    deltas = {}
+    for o in old_lines:
+        k = str(o["sales_order_item_id"])
+        deltas[k] = deltas.get(k, Decimal("0")) - _d(o["quantity"])
+    for i, it in enumerate(new_items):
+        if links[i]:
+            deltas[links[i]] = deltas.get(links[i], Decimal("0")) + _d(it["quantity"])
+    return links, deltas
+
+
+async def _apply_so_invoiced_deltas(conn, deltas: dict) -> None:
+    """Terapkan deltas ke sales_order_items.quantity_invoiced. Naik: ditolak bila melebihi
+    qty SO (tak boleh menagih lebih dari pesanan). Turun: GREATEST(0, ...) seperti void."""
+    for soi_id, delta in deltas.items():
+        if delta > 0:
+            ok = await conn.fetchval(
+                """UPDATE sales_order_items
+                   SET quantity_invoiced = quantity_invoiced + $2
+                   WHERE id = $1 AND quantity_invoiced + $2 <= quantity
+                   RETURNING id""",
+                UUID(soi_id), delta,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Kuantitas baris melebihi sisa Sales Order yang belum difakturkan.",
+                )
+        elif delta < 0:
+            await conn.execute(
+                """UPDATE sales_order_items
+                   SET quantity_invoiced = GREATEST(0, quantity_invoiced + $2)
+                   WHERE id = $1""",
+                UUID(soi_id), delta,
+            )
+
+
 def _doc_line_json(ln: dict, line_number: int) -> dict:
     """Baris hasil compute_document -> dict JSON (Decimal -> float)."""
     out = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in ln.items()}
@@ -1067,6 +1141,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
+                            "dpp": item.get("dpp"),
+                            "sales_order_item_id": str(item["sales_order_item_id"])
+                            if item.get("sales_order_item_id")
+                            else None,
                             "batch_id": str(item["batch_id"])
                             if item.get("batch_id")
                             else None,
@@ -1096,6 +1174,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "subtotal": item["subtotal"],
                             "total": item["total"],
                             "line_number": item["line_number"],
+                            "dpp": item.get("dpp"),
+                            "sales_order_item_id": str(item["sales_order_item_id"])
+                            if item.get("sales_order_item_id")
+                            else None,
                             "batch_id": str(item["batch_id"])
                             if item.get("batch_id")
                             else None,
@@ -2996,6 +3078,25 @@ async def update_invoice(
                     total_amount = _doc["total_amount"]
 
                 if body.items is not None:
+                    # 8a: tautan SO per baris WAJIB bertahan melewati hapus+sisip ulang,
+                    # dan quantity_invoiced SO WAJIB mengikuti perubahan qty. Dulu tautan
+                    # hilang -> void tak lagi mengurangi SO, baris SO macet "sudah
+                    # difakturkan" (V271 bergantung pada tautan ini).
+                    _old_linked = await conn.fetch(
+                        """SELECT id, item_id, description, quantity, sales_order_item_id
+                           FROM sales_invoice_items
+                           WHERE invoice_id = $1 AND sales_order_item_id IS NOT NULL
+                           ORDER BY line_number""",
+                        invoice_id,
+                    )
+                    try:
+                        _so_links, _so_deltas = _plan_so_link_edit(
+                            [dict(r) for r in _old_linked],
+                            [item.model_dump() for item in body.items],
+                        )
+                    except ValueError as _e:
+                        raise HTTPException(status_code=400, detail=str(_e))
+
                     # Delete existing items
                     await conn.execute(
                         "DELETE FROM sales_invoice_items WHERE invoice_id = $1",
@@ -3069,8 +3170,8 @@ async def update_invoice(
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
                                 batch_id, batch_no, exp_date,
-                                tax_code_id, dpp
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                                tax_code_id, dpp, sales_order_item_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                         """,
                             invoice_id,
                             item_uuid,
@@ -3094,7 +3195,10 @@ async def update_invoice(
                             if getattr(item, "tax_code_id", None)
                             else None,
                             calc["dpp"],
+                            UUID(_so_links[i]) if _so_links[i] else None,
                         )
+
+                    await _apply_so_invoiced_deltas(conn, _so_deltas)
 
                 elif _recalc:
                     # Suntingan diskon-saja: baris tetap, DPP/PPN tiap baris dihitung ulang.
@@ -4687,6 +4791,18 @@ async def delete_invoice(request: Request, invoice_id: UUID):
                     str(ctx["user_id"] or ""),
                 )
                 # Delete (cascade will handle items)
+                await conn.execute(
+                    # 8a: lepaskan qty SO milik draf ini SEBELUM dihapus (cermin void V271).
+                    # Dulu draf dari SO dihapus -> baris SO macet "sudah difakturkan":
+                    # terukur 23 Sep grapgrap INV-2609-0001 (SO 001-09-26, 63 pcs).
+                    "UPDATE sales_order_items soi "
+                    "SET quantity_invoiced = GREATEST(0, soi.quantity_invoiced - v.qty) "
+                    "FROM (SELECT sales_order_item_id AS soi_id, SUM(quantity) AS qty "
+                    "      FROM sales_invoice_items WHERE invoice_id = $1 "
+                    "        AND sales_order_item_id IS NOT NULL GROUP BY 1) v "
+                    "WHERE soi.id = v.soi_id",
+                    invoice_id,
+                )
                 await conn.execute(
                     "DELETE FROM sales_invoices WHERE id = $1", invoice_id
                 )
