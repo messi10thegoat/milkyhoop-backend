@@ -48,6 +48,36 @@ WHERE esc.tenant_id = $1 AND esc.employee_id = $2
 ORDER BY sc.sort_order"""
 
 
+# ---- UNIT 1: deduction destination map (shared by calculate + post_payroll) ----
+# A deduction category is "mapped" iff post_payroll has a journal destination for it:
+#   pph21    -> Hutang PPh 21          (credited together with employer pph21)
+#   bpjs_*   -> Hutang BPJS Karyawan   (BPJS_EE_PAYABLE)
+#   kasbon   -> Piutang Karyawan / EMPLOYEE_ADVANCE (1-10450) + FIFO settle
+# Every other category (potongan_lain, pinjaman, ...) has NO destination yet; a configurable
+# per-category destination is a later unit. Until then both calculate and post REFUSE such a
+# category rather than silently drop it from the books. This is the ONLY place the mapped-set
+# is defined -- one predicate, two call sites (no drift).
+def _deduction_has_destination(category) -> bool:
+    c = category or ""
+    return c == "pph21" or c.startswith("bpjs_") or c == "kasbon"
+
+
+def unmapped_deduction_categories(categories) -> list:
+    """Distinct, order-preserving deduction categories with no journal destination.
+    Empty/None categories are skipped here (no name to show the owner) but still cannot
+    silently post: net is computed as earnings - SUM(ALL deductions), so an uncredited
+    amount trips the header/line balance guard (je_balanced + V280). Returns [] when every
+    present category is mapped."""
+    seen = set()
+    out = []
+    for c in categories:
+        c = c or ""
+        if c and not _deduction_has_destination(c) and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get singleton connection pool (Law 32)."""
     from ..services.db_pool import get_db_pool
@@ -845,6 +875,30 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     },
                 )
 
+            # UNIT 1: same unmapped-deduction refusal as post_payroll, surfaced HERE (at
+            # Hitung) so the owner learns a deduction category has no destination account
+            # while still editing -- before approve/post. SHARED single-source predicate
+            # (unmapped_deduction_categories); never a second copy of the category logic.
+            _calc_unmapped = unmapped_deduction_categories(
+                dd.get("component_category")
+                for slip in results
+                for dd in slip["deductions"]
+                if dd.get("amount")
+            )
+            if _calc_unmapped:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "DEDUCTION_CATEGORY_UNMAPPED",
+                        "message": (
+                            "Kategori potongan "
+                            + ", ".join(f"'{c}'" for c in _calc_unmapped)
+                            + " belum punya akun tujuan. Atur dulu di pengaturan gaji."
+                        ),
+                        "categories": _calc_unmapped,
+                    },
+                )
+
             # Update run totals
             await conn.execute(
                 """UPDATE payroll_runs SET
@@ -1036,7 +1090,45 @@ async def post_payroll(request: Request, run_id: UUID):
             total_kasbon = sum(
                 r["total"] for r in slip_agg if r["component_category"] == "kasbon"
             )
-            total_net = total_earnings - total_pph21_ee - total_bpjs_ee - total_kasbon
+
+            # UNIT 1 (deduction unification). The engine's slip net (and total_net_salary
+            # cache) subtracts EVERY deduction line (payroll_calc.py: net = gross - SUM all
+            # deductions), but this journal historically netted only 3 NAMED categories
+            # (pph21 / bpjs_* / kasbon). A config deduction in any OTHER category
+            # (potongan_lain, pinjaman, ...) was therefore in the slip's net yet absent from
+            # Hutang Gaji AND from every credit line -- the journal still balanced at a net
+            # that overstated take-home, and the deduction vanished from the books. Silent,
+            # all-guards-green (guard-yang-bergantung-tabel-kosong class).
+            #
+            # Fix: (1) net = earnings - SUM(ALL deductions), honest and matching the slip;
+            # (2) refuse to post any deduction category without a journal destination. The
+            # refusal is LOAD-BEARING FOR BALANCE, not mere validation: net is reduced by the
+            # unmapped amount below with no offsetting credit, so were the refusal ever
+            # bypassed the header/line balance (je_balanced + V280) would reject the run -- it
+            # can no longer silently post a wrong net. Mapped categories keep their EXACT
+            # existing routing, so a mapped-only run is byte-identical to before this change.
+            _unmapped = unmapped_deduction_categories(
+                r["component_category"]
+                for r in slip_agg
+                if r["component_type"] == "deduction" and r["total"] and r["total"] > 0
+            )
+            if _unmapped:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "DEDUCTION_CATEGORY_UNMAPPED",
+                        "message": (
+                            "Kategori potongan "
+                            + ", ".join(f"'{c}'" for c in _unmapped)
+                            + " belum punya akun tujuan. Atur dulu di pengaturan gaji."
+                        ),
+                        "categories": _unmapped,
+                    },
+                )
+            total_deductions_all = sum(
+                r["total"] for r in slip_agg if r["component_type"] == "deduction"
+            )
+            total_net = total_earnings - total_deductions_all
 
             # Resolve CoA accounts via role catalog (Law 27, Fase D4.3).
             # PPH21_PAYABLE -> 2-10310 (payroll-exclusive boundary), NOT
