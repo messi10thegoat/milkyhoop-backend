@@ -228,6 +228,23 @@ async def _apply_so_invoiced_deltas(conn, deltas: dict) -> None:
             )
 
 
+def _pdf_dpp_rows(invoice, items) -> dict:
+    """3c -- baris "DPP" (harga jual) dan "DPP Nilai Lain" untuk PDF, dari nilai TERSIMPAN.
+    Dicetak hanya bila ada baris kena pajak yang dpp_harga_jual-nya != dpp (faktor != 1/1).
+    Baris lama (dpp_harga_jual NULL) = tak tercatat -> tak dicetak, bukan ditebak dari faktor
+    kode pajak hari ini. Ongkir kena pajak ikut: harga jual = shipping_amount, nilai lain =
+    shipping_dpp, sehingga tarif x DPP Nilai Lain == PPN tercetak (selisih pembulatan per baris)."""
+    taxed = [it for it in items if (it["tax_rate"] or 0) > 0]
+    if not taxed or any(it["dpp_harga_jual"] is None or it["dpp"] is None for it in taxed):
+        return {"show_dpp_nilai_lain": False}
+    hj = sum((it["dpp_harga_jual"] for it in taxed), Decimal("0"))
+    nl = sum((it["dpp"] for it in taxed), Decimal("0"))
+    if (invoice.get("shipping_tax_amount") or 0) > 0:
+        hj += invoice.get("shipping_amount") or 0
+        nl += invoice.get("shipping_dpp") or 0
+    return {"show_dpp_nilai_lain": hj != nl, "dpp_harga_jual_total": hj, "dpp_nilai_lain_total": nl}
+
+
 def _ship_json(doc: dict, explicit_code_id=None) -> dict:
     """Medan ongkir header (V290) dari hasil compute_document -> JSON.
     shipping_tax_code_id = pilihan EKSPLISIT (null = ikut barang), SAMA artinya dengan GET;
@@ -3009,8 +3026,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             tax_code, tax_rate, tax_amount,
                             subtotal, total, line_number,
                             batch_id, batch_no, exp_date,
-                            tax_code_id, dpp
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                            tax_code_id, dpp, dpp_harga_jual
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                     """,
                         invoice_id,
                         item_uuid,
@@ -3037,6 +3054,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         # diskon dokumen). Tanpa `or`-fallback: DPP 0 yang sah (baris
                         # terdiskon penuh) dulu diam-diam diganti subtotal-diskon.
                         item["dpp"],
+                        # 3c: DPP harga jual DISIMPAN (faktor kode pajak bisa berubah kelak).
+                        item["dpp_harga_jual"],
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -3375,8 +3394,8 @@ async def update_invoice(
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
                                 batch_id, batch_no, exp_date,
-                                tax_code_id, dpp, sales_order_item_id
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                                tax_code_id, dpp, sales_order_item_id, dpp_harga_jual
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
                         """,
                             invoice_id,
                             item_uuid,
@@ -3401,6 +3420,7 @@ async def update_invoice(
                             else None,
                             calc["dpp"],
                             UUID(_so_links[i]) if _so_links[i] else None,
+                            calc["dpp_harga_jual"],
                         )
 
                     await _apply_so_invoiced_deltas(conn, _so_deltas)
@@ -3411,7 +3431,7 @@ async def update_invoice(
                         await conn.execute(
                             """UPDATE sales_invoice_items
                                SET subtotal = $2, discount_amount = $3, dpp = $4,
-                                   tax_amount = $5, total = $6
+                                   tax_amount = $5, total = $6, dpp_harga_jual = $7
                                WHERE id = $1""",
                             _ln["id"],
                             _ln["subtotal"],
@@ -3419,6 +3439,7 @@ async def update_invoice(
                             _ln["dpp"],
                             _ln["tax_amount"],
                             _ln["total"],
+                            _ln["dpp_harga_jual"],
                         )
 
                 if _recalc:
@@ -5468,6 +5489,7 @@ async def get_invoice_pdf(
                 "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
                 "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
                 "item_discount_total": sum((it["discount_amount"] or 0) for it in items),
+                **_pdf_dpp_rows(invoice, items),
                 "amount_paid": pdf_amount_paid,
                 "amount_due": float(pdf_ar_row["outstanding"])
                 if pdf_ar_row
