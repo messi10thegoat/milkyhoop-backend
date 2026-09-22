@@ -1545,8 +1545,10 @@ async def adjust_bank_balance(
                     ctx["user_id"],
                 )
 
-                # For simplicity, use the bank account itself as both debit/credit
-                # In production, you'd want separate adjustment income/expense accounts
+                # Rekening bank di satu sisi, akun peran penyesuaian (adj_acct_id:
+                # BANK_ADJUSTMENT_GAIN / _LOSS) di sisi lain -- TIDAK pernah akun yang
+                # sama di kedua sisi (cacat nol-bersih yang membuat /adjust dimatikan
+                # 15 Sep; dikunci tes test_ii_adjust_never_net_zero_same_account).
                 if adjustment > 0:
                     # Dr. Bank Account
                     await conn.execute(
