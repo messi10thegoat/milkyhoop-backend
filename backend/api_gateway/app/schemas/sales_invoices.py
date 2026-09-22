@@ -320,6 +320,11 @@ class PostInvoiceRequest(BaseModel):
     sales_account_id: Optional[str] = Field(
         None, description="Override default sales account"
     )
+    # Unit 6: faktur dari SO -> uang muka SO diterapkan OTOMATIS saat posting (FIFO, dibatasi
+    # sisa tagihan). Pengguna bisa menolak semuanya atau per uang muka; FE menampilkan
+    # rencananya lebih dulu dari GET /{id}/deposit-plan.
+    apply_deposits: bool = True
+    skip_deposit_ids: List[str] = Field(default_factory=list)
 
 
 class VoidInvoiceRequest(BaseModel):

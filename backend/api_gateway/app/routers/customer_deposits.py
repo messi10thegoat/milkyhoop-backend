@@ -274,6 +274,58 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> int:
     return int(result or 0)
 
 
+async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
+    """Unit 6: FIFO plan for applying the invoice's SO deposits. ONE derivation, used by both
+    GET /sales-invoices/{id}/deposit-plan (pre-fill) and posting (auto-apply):
+    deposits linked to the invoice's SO (directly or via its proforma, resolved with the
+    SAME resolve_order_id_for_deposit the DP-ceiling guard uses), status posted/partial,
+    oldest first; each capped at min(remaining, what is still outstanding).
+    remaining = compute_deposit_remaining (journal-derived). Whole rupiah, like /apply."""
+    inv = await conn.fetchrow(
+        "SELECT id, sales_order_id, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+        invoice_id, tenant_id,
+    )
+    if not inv or not inv["sales_order_id"]:
+        return []
+    so_id = inv["sales_order_id"]
+    rows = await conn.fetch(
+        """SELECT d.id, d.deposit_number, d.deposit_date, d.customer_id,
+                  d.sales_order_id, d.proforma_id
+           FROM customer_deposits d
+           WHERE d.tenant_id = $1 AND d.status IN ('posted', 'partial')
+             AND (d.sales_order_id = $2
+                  OR d.proforma_id IN (SELECT id FROM proformas
+                                       WHERE tenant_id = $1 AND sales_order_id = $2))
+           ORDER BY d.deposit_date, d.created_at, d.deposit_number""",
+        tenant_id, so_id,
+    )
+    left = int(outstanding or 0)
+    plan = []
+    for d in rows:
+        if await resolve_order_id_for_deposit(conn, tenant_id, d["sales_order_id"], d["proforma_id"]) != so_id:
+            continue
+        remaining = await compute_deposit_remaining(conn, tenant_id, d["id"])
+        reason = None
+        try:
+            pastikan_pihak_sama(
+                normalisasi_pihak(d["customer_id"], "Pelanggan uang muka"),
+                inv["customer_id"], "Faktur",
+            )
+        except HTTPException:
+            reason = "Pelanggan uang muka berbeda dengan pelanggan faktur."
+        amt = 0 if reason or remaining <= 0 else max(0, min(remaining, left))
+        left -= amt
+        plan.append({
+            "deposit_id": str(d["id"]),
+            "deposit_number": d["deposit_number"],
+            "deposit_date": d["deposit_date"].isoformat() if d["deposit_date"] else None,
+            "remaining": int(remaining),
+            "planned_amount": int(amt),
+            "skip_reason": reason,
+        })
+    return plan
+
+
 # FIX_P1_DEPOSIT 2026-06-16 (d): Invariant guard #7 — AR-side must be AR_TRADE.
 async def _assert_ar_side_is_ar_trade(conn, tenant_id: str, ar_line_account_id) -> None:
     """Guard: the AR-side journal line of an apply/un-apply MUST resolve to
@@ -1456,6 +1508,299 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
 # =============================================================================
 
 
+async def apply_deposit_core(conn, ctx, deposit_id, body):
+    """Apply a customer deposit to invoice(s) INSIDE the caller's transaction (unit 6).
+    Body moved verbatim from the /apply handler, which now just calls this -- so the
+    endpoint and posting-time auto-apply share ONE apply path (remaining =
+    compute_deposit_remaining, same guards, same journal). `body` needs .applications
+    (each .invoice_id, .amount) and .application_date."""
+
+    # Law 13: Advisory lock
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"DEPOSIT:{deposit_id}",
+    )
+
+    # Get deposit
+    dep = await conn.fetchrow(
+        """
+        SELECT * FROM customer_deposits
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        deposit_id,
+        ctx["tenant_id"],
+    )
+
+    if not dep:
+        raise HTTPException(
+            status_code=404, detail="Customer deposit not found"
+        )
+
+    if dep["status"] not in ("posted", "partial"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot apply deposit with status '{dep['status']}'",
+        )
+
+    # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
+    # A terbukti (eksekusi, ROLLBACK) bisa melunasi faktur pelanggan B. Diperiksa
+    # di dalam lock, untuk SEMUA faktur, SEBELUM tulis apa pun. customer_deposits.
+    # customer_id VARCHAR vs sales_invoices.customer_id uuid -> dinormalisasi.
+    pelanggan_dp = normalisasi_pihak(dep["customer_id"], "Pelanggan uang muka")
+    for _app in body.applications:
+        _inv = await conn.fetchrow(
+            "SELECT invoice_number, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+            UUID(_app.invoice_id),
+            ctx["tenant_id"],
+        )
+        if not _inv:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invoice {_app.invoice_id} not found",
+            )
+        pastikan_pihak_sama(
+            pelanggan_dp, _inv["customer_id"], f"Faktur {_inv['invoice_number']}"
+        )
+
+    # FIX_P1_DEPOSIT 2026-06-16 (b): authoritative remaining is
+    # journal-derived (net movement on CUSTOMER_DEPOSIT_LIABILITY
+    # over is_effective journals for this deposit), NOT the cache
+    # subtraction. Correct by construction after un-apply (Law 16).
+    remaining = await compute_deposit_remaining(
+        conn, ctx["tenant_id"], deposit_id
+    )
+    total_to_apply = sum(app.amount for app in body.applications)
+
+    if total_to_apply > remaining:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
+        )
+
+    application_date = body.application_date or date.today()
+    applications_created = []
+
+    # Fase C1.4: Resolve via role mapping (Law 27).
+    # FIX: legacy AR_ACCOUNT_CODE constant (hardcoded 1-10300)
+    # pointed at Kas Kecil
+    # (Petty Cash), NOT Piutang Usaha (which is 1-10400). Apply-
+    # deposit credited the wrong account whenever it was used.
+    # No production records exist for this path (zero apply
+    # journals in DB at migration time) — historical data fix
+    # tracked separately if any tenant triggers it later.
+    deposit_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
+    )
+    ar_account_id = await resolve_account_id_by_role(
+        conn, ctx["tenant_id"], AccountRole.AR_TRADE
+    )
+
+    # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the
+    # Cr line below MUST be AR_TRADE, never REVENUE_DEFERRED.
+    await _assert_ar_side_is_ar_trade(conn, ctx["tenant_id"], ar_account_id)
+
+    for app in body.applications:
+        # Validate invoice
+        # FIX_P1_DEPOSIT 2026-06-16: latent column bug — sales_invoices
+        # has total_amount, not grand_total (apply path never exercised
+        # against real data before P1). Was raising 500 on every apply.
+        invoice = await conn.fetchrow(
+            """
+            SELECT id, customer_id, customer_name, invoice_number,
+                   total_amount, status
+            FROM sales_invoices
+            WHERE id = $1 AND tenant_id = $2
+        """,
+            UUID(app.invoice_id),
+            ctx["tenant_id"],
+        )
+
+        if not invoice:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invoice {app.invoice_id} not found",
+            )
+
+        # Check invoice has balance (Law 16: journal-based)
+        invoice_remaining = await get_invoice_remaining_from_journal(
+            conn, ctx["tenant_id"], UUID(app.invoice_id)
+        )
+        if app.amount > invoice_remaining:
+            raise HTTPException(
+                status_code=400,
+                detail="Application amount exceeds invoice remaining balance",
+            )
+
+        # Check for existing application.
+        # FIX_P1_DEPOSIT 2026-06-16: exclude reversed (un-applied)
+        # applications so the same deposit can be re-applied to the
+        # same invoice after an un-apply (dead-end fixed).
+        existing = await conn.fetchval(
+            """
+            SELECT id FROM customer_deposit_applications
+            WHERE deposit_id = $1 AND invoice_id = $2
+              AND COALESCE(status, 'active') <> 'reversed'
+        """,
+            deposit_id,
+            UUID(app.invoice_id),
+        )
+
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Deposit already applied to invoice {app.invoice_id}",
+            )
+
+        # Create journal entry for application
+        journal_id = uuid_module.uuid4()
+        trace_id = uuid_module.uuid4()
+
+        journal_number = (
+            await conn.fetchval(
+                """
+            SELECT get_next_journal_number($1, 'DA')
+        """,
+                ctx["tenant_id"],
+            )
+            or f"DA-{dep['deposit_number']}"
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_APPLICATION', $6, $7, 'DRAFT', $8, $8, $9)
+        """,
+            journal_id,
+            ctx["tenant_id"],
+            journal_number,
+            application_date,
+            f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
+            deposit_id,
+            str(trace_id),
+            app.amount,
+            ctx["user_id"],
+        )
+
+        # Dr. Customer Deposit Liability
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, 1, $3, $4, 0, $5)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            deposit_account_id,
+            app.amount,
+            f"Aplikasi Uang Muka - {invoice['invoice_number']}",
+        )
+
+        # Cr. Accounts Receivable
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, 2, $3, 0, $4, $5)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            ar_account_id,
+            app.amount,
+            f"Pelunasan dari Deposit - {dep['deposit_number']}",
+        )
+
+        # Law 20: Promote DRAFT -> POSTED after all lines inserted
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            journal_id,
+        )
+
+        # Create application record
+        app_id = uuid_module.uuid4()
+
+        await conn.execute(
+            """
+            INSERT INTO customer_deposit_applications (
+                id, tenant_id, deposit_id, invoice_id, invoice_number,
+                amount_applied, application_date, journal_id, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+            app_id,
+            ctx["tenant_id"],
+            deposit_id,
+            UUID(app.invoice_id),
+            invoice["invoice_number"],
+            app.amount,
+            application_date,
+            journal_id,
+            ctx["user_id"],
+        )
+
+        # Update invoice (derive amount_paid from journal-based remaining)
+        new_amount_paid = (
+            invoice["total_amount"] - int(invoice_remaining) + app.amount
+        )
+        new_status = (
+            "paid"
+            if new_amount_paid >= invoice["total_amount"]
+            else invoice["status"]
+        )
+
+        await conn.execute(
+            """
+            UPDATE sales_invoices
+            SET amount_paid = $2, status = $3, updated_at = NOW()
+            WHERE id = $1
+        """,
+            UUID(app.invoice_id),
+            new_amount_paid,
+            new_status,
+        )
+
+        # Update AR if exists
+        await conn.execute(
+            """
+            UPDATE accounts_receivable
+            SET amount_paid = amount_paid + $2,
+                status = CASE
+                    WHEN amount_paid + $2 >= amount THEN 'PAID'
+                    ELSE 'PARTIAL'
+                END,
+                updated_at = NOW()
+            WHERE source_id = $1 AND source_type = 'INVOICE'
+        """,
+            UUID(app.invoice_id),
+            app.amount,
+        )
+
+        applications_created.append(
+            {
+                "application_id": str(app_id),
+                "invoice_id": app.invoice_id,
+                "invoice_number": invoice["invoice_number"],
+                "amount": app.amount,
+            }
+        )
+
+    # Deposit status will be updated by trigger
+    logger.info(
+        f"Customer deposit applied: {deposit_id}, applications={len(applications_created)}"
+    )
+
+    return {
+        "success": True,
+        "message": f"Deposit applied to {len(applications_created)} invoice(s)",
+        "data": {
+            "id": str(deposit_id),
+            "applications": applications_created,
+        },
+    }
+
+
+
 @router.post("/{deposit_id}/apply", response_model=CustomerDepositResponse)
 async def apply_customer_deposit(
     request: Request, deposit_id: UUID, body: ApplyCustomerDepositRequest
@@ -1483,291 +1828,7 @@ async def apply_customer_deposit(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT:{deposit_id}",
-                )
-
-                # Get deposit
-                dep = await conn.fetchrow(
-                    """
-                    SELECT * FROM customer_deposits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    deposit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not dep:
-                    raise HTTPException(
-                        status_code=404, detail="Customer deposit not found"
-                    )
-
-                if dep["status"] not in ("posted", "partial"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot apply deposit with status '{dep['status']}'",
-                    )
-
-                # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
-                # A terbukti (eksekusi, ROLLBACK) bisa melunasi faktur pelanggan B. Diperiksa
-                # di dalam lock, untuk SEMUA faktur, SEBELUM tulis apa pun. customer_deposits.
-                # customer_id VARCHAR vs sales_invoices.customer_id uuid -> dinormalisasi.
-                pelanggan_dp = normalisasi_pihak(dep["customer_id"], "Pelanggan uang muka")
-                for _app in body.applications:
-                    _inv = await conn.fetchrow(
-                        "SELECT invoice_number, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-                        UUID(_app.invoice_id),
-                        ctx["tenant_id"],
-                    )
-                    if not _inv:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {_app.invoice_id} not found",
-                        )
-                    pastikan_pihak_sama(
-                        pelanggan_dp, _inv["customer_id"], f"Faktur {_inv['invoice_number']}"
-                    )
-
-                # FIX_P1_DEPOSIT 2026-06-16 (b): authoritative remaining is
-                # journal-derived (net movement on CUSTOMER_DEPOSIT_LIABILITY
-                # over is_effective journals for this deposit), NOT the cache
-                # subtraction. Correct by construction after un-apply (Law 16).
-                remaining = await compute_deposit_remaining(
-                    conn, ctx["tenant_id"], deposit_id
-                )
-                total_to_apply = sum(app.amount for app in body.applications)
-
-                if total_to_apply > remaining:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
-                    )
-
-                application_date = body.application_date or date.today()
-                applications_created = []
-
-                # Fase C1.4: Resolve via role mapping (Law 27).
-                # FIX: legacy AR_ACCOUNT_CODE constant (hardcoded 1-10300)
-                # pointed at Kas Kecil
-                # (Petty Cash), NOT Piutang Usaha (which is 1-10400). Apply-
-                # deposit credited the wrong account whenever it was used.
-                # No production records exist for this path (zero apply
-                # journals in DB at migration time) — historical data fix
-                # tracked separately if any tenant triggers it later.
-                deposit_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
-                )
-                ar_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.AR_TRADE
-                )
-
-                # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the
-                # Cr line below MUST be AR_TRADE, never REVENUE_DEFERRED.
-                await _assert_ar_side_is_ar_trade(conn, ctx["tenant_id"], ar_account_id)
-
-                for app in body.applications:
-                    # Validate invoice
-                    # FIX_P1_DEPOSIT 2026-06-16: latent column bug — sales_invoices
-                    # has total_amount, not grand_total (apply path never exercised
-                    # against real data before P1). Was raising 500 on every apply.
-                    invoice = await conn.fetchrow(
-                        """
-                        SELECT id, customer_id, customer_name, invoice_number,
-                               total_amount, status
-                        FROM sales_invoices
-                        WHERE id = $1 AND tenant_id = $2
-                    """,
-                        UUID(app.invoice_id),
-                        ctx["tenant_id"],
-                    )
-
-                    if not invoice:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Invoice {app.invoice_id} not found",
-                        )
-
-                    # Check invoice has balance (Law 16: journal-based)
-                    invoice_remaining = await get_invoice_remaining_from_journal(
-                        conn, ctx["tenant_id"], UUID(app.invoice_id)
-                    )
-                    if app.amount > invoice_remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Application amount exceeds invoice remaining balance",
-                        )
-
-                    # Check for existing application.
-                    # FIX_P1_DEPOSIT 2026-06-16: exclude reversed (un-applied)
-                    # applications so the same deposit can be re-applied to the
-                    # same invoice after an un-apply (dead-end fixed).
-                    existing = await conn.fetchval(
-                        """
-                        SELECT id FROM customer_deposit_applications
-                        WHERE deposit_id = $1 AND invoice_id = $2
-                          AND COALESCE(status, 'active') <> 'reversed'
-                    """,
-                        deposit_id,
-                        UUID(app.invoice_id),
-                    )
-
-                    if existing:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Deposit already applied to invoice {app.invoice_id}",
-                        )
-
-                    # Create journal entry for application
-                    journal_id = uuid_module.uuid4()
-                    trace_id = uuid_module.uuid4()
-
-                    journal_number = (
-                        await conn.fetchval(
-                            """
-                        SELECT get_next_journal_number($1, 'DA')
-                    """,
-                            ctx["tenant_id"],
-                        )
-                        or f"DA-{dep['deposit_number']}"
-                    )
-
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, trace_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_APPLICATION', $6, $7, 'DRAFT', $8, $8, $9)
-                    """,
-                        journal_id,
-                        ctx["tenant_id"],
-                        journal_number,
-                        application_date,
-                        f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
-                        deposit_id,
-                        str(trace_id),
-                        app.amount,
-                        ctx["user_id"],
-                    )
-
-                    # Dr. Customer Deposit Liability
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        deposit_account_id,
-                        app.amount,
-                        f"Aplikasi Uang Muka - {invoice['invoice_number']}",
-                    )
-
-                    # Cr. Accounts Receivable
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        ar_account_id,
-                        app.amount,
-                        f"Pelunasan dari Deposit - {dep['deposit_number']}",
-                    )
-
-                    # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        journal_id,
-                    )
-
-                    # Create application record
-                    app_id = uuid_module.uuid4()
-
-                    await conn.execute(
-                        """
-                        INSERT INTO customer_deposit_applications (
-                            id, tenant_id, deposit_id, invoice_id, invoice_number,
-                            amount_applied, application_date, journal_id, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    """,
-                        app_id,
-                        ctx["tenant_id"],
-                        deposit_id,
-                        UUID(app.invoice_id),
-                        invoice["invoice_number"],
-                        app.amount,
-                        application_date,
-                        journal_id,
-                        ctx["user_id"],
-                    )
-
-                    # Update invoice (derive amount_paid from journal-based remaining)
-                    new_amount_paid = (
-                        invoice["total_amount"] - int(invoice_remaining) + app.amount
-                    )
-                    new_status = (
-                        "paid"
-                        if new_amount_paid >= invoice["total_amount"]
-                        else invoice["status"]
-                    )
-
-                    await conn.execute(
-                        """
-                        UPDATE sales_invoices
-                        SET amount_paid = $2, status = $3, updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        UUID(app.invoice_id),
-                        new_amount_paid,
-                        new_status,
-                    )
-
-                    # Update AR if exists
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET amount_paid = amount_paid + $2,
-                            status = CASE
-                                WHEN amount_paid + $2 >= amount THEN 'PAID'
-                                ELSE 'PARTIAL'
-                            END,
-                            updated_at = NOW()
-                        WHERE source_id = $1 AND source_type = 'INVOICE'
-                    """,
-                        UUID(app.invoice_id),
-                        app.amount,
-                    )
-
-                    applications_created.append(
-                        {
-                            "application_id": str(app_id),
-                            "invoice_id": app.invoice_id,
-                            "invoice_number": invoice["invoice_number"],
-                            "amount": app.amount,
-                        }
-                    )
-
-                # Deposit status will be updated by trigger
-                logger.info(
-                    f"Customer deposit applied: {deposit_id}, applications={len(applications_created)}"
-                )
-
-                return {
-                    "success": True,
-                    "message": f"Deposit applied to {len(applications_created)} invoice(s)",
-                    "data": {
-                        "id": str(deposit_id),
-                        "applications": applications_created,
-                    },
-                }
-
+                return await apply_deposit_core(conn, ctx, deposit_id, body)
     except HTTPException:
         raise
     except Exception as e:
@@ -1781,6 +1842,282 @@ async def apply_customer_deposit(
 # REVERSE (UN-APPLY) A CUSTOMER DEPOSIT APPLICATION
 # FIX_P1_DEPOSIT 2026-06-16 (a)
 # =============================================================================
+
+
+async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id):
+    """Reverse (un-apply) one application INSIDE the caller's transaction (unit 6).
+    Body moved verbatim from the /reverse handler -- void_invoice cascades through this,
+    so there is ONE un-apply path."""
+
+    # Law 13: reuse the SAME lock key as apply so apply and
+    # un-apply on the same deposit serialize and cannot race.
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"DEPOSIT:{deposit_id}",
+    )
+
+    # Fetch the application (scoped to deposit + tenant)
+    app_row = await conn.fetchrow(
+        """
+        SELECT * FROM customer_deposit_applications
+        WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3
+        """,
+        application_id,
+        deposit_id,
+        ctx["tenant_id"],
+    )
+    if not app_row:
+        raise HTTPException(
+            status_code=404,
+            detail="Deposit application not found",
+        )
+
+    # Idempotency guard: already reversed -> return existing reversal.
+    if (app_row["status"] or "active") == "reversed" or app_row[
+        "reversed_by_id"
+    ]:
+        return {
+            "success": True,
+            "message": "Application already reversed (idempotent)",
+            "data": {
+                "id": str(deposit_id),
+                "application_id": str(application_id),
+                "reversal_journal_id": (
+                    str(app_row["reversed_by_id"])
+                    if app_row["reversed_by_id"]
+                    else None
+                ),
+                "status": "reversed",
+            },
+        }
+
+    original_journal_id = app_row["journal_id"]
+    if not original_journal_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Application has no journal to reverse",
+        )
+
+    # Law 5: period-open check (reversal posts at today).
+    period_row = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        ctx["tenant_id"],
+        date.today(),
+    )
+    if period_row and period_row["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Periode akuntansi sudah {period_row['status']}",
+        )
+
+    # Defensive: original must not already be reversed (Law 26).
+    orig_je = await conn.fetchrow(
+        "SELECT id, reversed_by_id, status FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+        original_journal_id,
+        ctx["tenant_id"],
+    )
+    if orig_je and orig_je["reversed_by_id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Original application journal already reversed",
+        )
+
+    # Fetch original application journal lines (Dr 2-10500 / Cr AR).
+    original_lines = await conn.fetch(
+        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
+        original_journal_id,
+    )
+    if not original_lines:
+        raise HTTPException(
+            status_code=400,
+            detail="Original application journal has no lines",
+        )
+
+    # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the AR
+    # side of the original apply (credit > 0) MUST be AR_TRADE.
+    ar_side_line = next(
+        (ln for ln in original_lines if (ln["credit"] or 0) > 0),
+        None,
+    )
+    if ar_side_line is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Invariant #7: original apply journal missing AR-side credit line",
+        )
+    await _assert_ar_side_is_ar_trade(
+        conn, ctx["tenant_id"], ar_side_line["account_id"]
+    )
+
+    reversal_journal_id = uuid_module.uuid4()
+    reversal_amount = app_row["amount_applied"]
+
+    journal_number = (
+        await conn.fetchval(
+            "SELECT get_next_journal_number($1, 'RV')", ctx["tenant_id"]
+        )
+        or f"RV-DA-{str(application_id)[:8]}"
+    )
+
+    # Reversal header — MANDATORY reversal_of_id = original apply je.
+    #
+    # FIX_P1_DEPOSIT 2026-06-16 OPTION B: source_id = the INVOICE id
+    # (the real obligation that was settled), NOT the deposit id.
+    # This is the SAME ledger-honest mechanism an invoice posting
+    # uses to satisfy guard_arap_requires_obligation: the un-apply
+    # DEBITS RECEIVABLE, so the guard's AR-debit branch fires and
+    # checks EXISTS(SELECT 1 FROM sales_invoices WHERE id = source_id).
+    # Carrying the invoice id makes that EXISTS true -> the guard
+    # passes NATURALLY because the obligation genuinely exists, with
+    # NO source_type whitelist (Option A whitelist removed in V177).
+    #
+    # Balance integrity is unaffected: this reversal carries
+    # reversal_of_id, and the original apply gets reversed_by_id set
+    # below, so is_effective_journal() drops BOTH from the
+    # journal-derived deposit balance (net movement on 2-10500). The
+    # reversal therefore need not (and does not) join customer_deposits
+    # via source_id -- the restored balance comes from is_effective
+    # dropping the now-reversed original apply, leaving only the POST.
+    invoice_obligation_id = app_row["invoice_id"]
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, reversal_of_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'DEPOSIT_APPLICATION', $5, $6, 'DRAFT', $7, $7, $8)
+        """,
+        reversal_journal_id,
+        ctx["tenant_id"],
+        journal_number,
+        f"Un-apply Deposit application {app_row['invoice_number'] or application_id}",
+        invoice_obligation_id,
+        original_journal_id,
+        reversal_amount,
+        ctx["user_id"],
+    )
+
+    # Reversed lines (swap debit/credit) -> Dr AR / Cr 2-10500.
+    for idx, line in enumerate(original_lines, 1):
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            uuid_module.uuid4(),
+            reversal_journal_id,
+            idx,
+            line["account_id"],
+            line["credit"],  # swap
+            line["debit"],  # swap
+            f"Reversal - {line['memo'] or ''}",
+        )
+
+    # Law 20: promote DRAFT -> POSTED.
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        reversal_journal_id,
+    )
+
+    # Mark original application journal reversed (drops via
+    # reversed_by_id; reversal drops via reversal_of_id).
+    await conn.execute(
+        """
+        UPDATE journal_entries
+        SET reversed_by_id = $2
+        WHERE id = $1
+        """,
+        original_journal_id,
+        reversal_journal_id,
+    )
+
+    # Law 26: single reversal pointer on the application row +
+    # status + reversed_at. This also fires the deposit-status
+    # trigger which re-derives the cache (excludes reversed rows).
+    await conn.execute(
+        """
+        UPDATE customer_deposit_applications
+        SET status = 'reversed',
+            reversed_by_id = $2,
+            reversed_at = NOW()
+        WHERE id = $1
+        """,
+        application_id,
+        reversal_journal_id,
+    )
+
+    # Restore invoice cache: un-applying credits AR back, so the
+    # invoice outstanding rises again. Re-derive amount_paid from
+    # the journal-based remaining (Law 16) after the reversal.
+    inv_id = app_row["invoice_id"]
+    invoice = await conn.fetchrow(
+        "SELECT id, total_amount, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+        inv_id,
+        ctx["tenant_id"],
+    )
+    if invoice:
+        invoice_remaining = await get_invoice_remaining_from_journal(
+            conn, ctx["tenant_id"], inv_id
+        )
+        new_amount_paid = int(invoice["total_amount"]) - int(
+            invoice_remaining
+        )
+        if new_amount_paid < 0:
+            new_amount_paid = 0
+        # Revert: if no longer fully paid, demote 'paid' back to
+        # 'posted' (posted-unsettled). Other states unchanged.
+        new_status = (
+            "paid"
+            if new_amount_paid >= int(invoice["total_amount"])
+            else (
+                "posted"
+                if invoice["status"] == "paid"
+                else invoice["status"]
+            )
+        )
+        await conn.execute(
+            """
+            UPDATE sales_invoices
+            SET amount_paid = $2, status = $3, updated_at = NOW()
+            WHERE id = $1
+            """,
+            inv_id,
+            new_amount_paid,
+            new_status,
+        )
+        # Mirror accounts_receivable cache if a row exists.
+        await conn.execute(
+            """
+            UPDATE accounts_receivable
+            SET amount_paid = GREATEST(amount_paid - $2, 0),
+                status = CASE
+                    WHEN GREATEST(amount_paid - $2, 0) >= amount THEN 'PAID'
+                    WHEN GREATEST(amount_paid - $2, 0) > 0 THEN 'PARTIAL'
+                    ELSE 'OPEN'
+                END,
+                updated_at = NOW()
+            WHERE source_id = $1 AND source_type = 'INVOICE'
+            """,
+            inv_id,
+            reversal_amount,
+        )
+
+    logger.info(
+        f"Customer deposit application reversed: deposit={deposit_id}, "
+        f"application={application_id}, reversal_journal={reversal_journal_id}"
+    )
+
+    return {
+        "success": True,
+        "message": "Deposit application reversed (un-applied)",
+        "data": {
+            "id": str(deposit_id),
+            "application_id": str(application_id),
+            "reversal_journal_id": str(reversal_journal_id),
+            "status": "reversed",
+        },
+    }
+
 
 
 @router.post(
@@ -1820,276 +2157,7 @@ async def reverse_customer_deposit_application(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-                # Law 13: reuse the SAME lock key as apply so apply and
-                # un-apply on the same deposit serialize and cannot race.
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"DEPOSIT:{deposit_id}",
-                )
-
-                # Fetch the application (scoped to deposit + tenant)
-                app_row = await conn.fetchrow(
-                    """
-                    SELECT * FROM customer_deposit_applications
-                    WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3
-                    """,
-                    application_id,
-                    deposit_id,
-                    ctx["tenant_id"],
-                )
-                if not app_row:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Deposit application not found",
-                    )
-
-                # Idempotency guard: already reversed -> return existing reversal.
-                if (app_row["status"] or "active") == "reversed" or app_row[
-                    "reversed_by_id"
-                ]:
-                    return {
-                        "success": True,
-                        "message": "Application already reversed (idempotent)",
-                        "data": {
-                            "id": str(deposit_id),
-                            "application_id": str(application_id),
-                            "reversal_journal_id": (
-                                str(app_row["reversed_by_id"])
-                                if app_row["reversed_by_id"]
-                                else None
-                            ),
-                            "status": "reversed",
-                        },
-                    }
-
-                original_journal_id = app_row["journal_id"]
-                if not original_journal_id:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Application has no journal to reverse",
-                    )
-
-                # Law 5: period-open check (reversal posts at today).
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    date.today(),
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
-                    )
-
-                # Defensive: original must not already be reversed (Law 26).
-                orig_je = await conn.fetchrow(
-                    "SELECT id, reversed_by_id, status FROM journal_entries WHERE id = $1 AND tenant_id = $2",
-                    original_journal_id,
-                    ctx["tenant_id"],
-                )
-                if orig_je and orig_je["reversed_by_id"]:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Original application journal already reversed",
-                    )
-
-                # Fetch original application journal lines (Dr 2-10500 / Cr AR).
-                original_lines = await conn.fetch(
-                    "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
-                    original_journal_id,
-                )
-                if not original_lines:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Original application journal has no lines",
-                    )
-
-                # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the AR
-                # side of the original apply (credit > 0) MUST be AR_TRADE.
-                ar_side_line = next(
-                    (ln for ln in original_lines if (ln["credit"] or 0) > 0),
-                    None,
-                )
-                if ar_side_line is None:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Invariant #7: original apply journal missing AR-side credit line",
-                    )
-                await _assert_ar_side_is_ar_trade(
-                    conn, ctx["tenant_id"], ar_side_line["account_id"]
-                )
-
-                reversal_journal_id = uuid_module.uuid4()
-                reversal_amount = app_row["amount_applied"]
-
-                journal_number = (
-                    await conn.fetchval(
-                        "SELECT get_next_journal_number($1, 'RV')", ctx["tenant_id"]
-                    )
-                    or f"RV-DA-{str(application_id)[:8]}"
-                )
-
-                # Reversal header — MANDATORY reversal_of_id = original apply je.
-                #
-                # FIX_P1_DEPOSIT 2026-06-16 OPTION B: source_id = the INVOICE id
-                # (the real obligation that was settled), NOT the deposit id.
-                # This is the SAME ledger-honest mechanism an invoice posting
-                # uses to satisfy guard_arap_requires_obligation: the un-apply
-                # DEBITS RECEIVABLE, so the guard's AR-debit branch fires and
-                # checks EXISTS(SELECT 1 FROM sales_invoices WHERE id = source_id).
-                # Carrying the invoice id makes that EXISTS true -> the guard
-                # passes NATURALLY because the obligation genuinely exists, with
-                # NO source_type whitelist (Option A whitelist removed in V177).
-                #
-                # Balance integrity is unaffected: this reversal carries
-                # reversal_of_id, and the original apply gets reversed_by_id set
-                # below, so is_effective_journal() drops BOTH from the
-                # journal-derived deposit balance (net movement on 2-10500). The
-                # reversal therefore need not (and does not) join customer_deposits
-                # via source_id -- the restored balance comes from is_effective
-                # dropping the now-reversed original apply, leaving only the POST.
-                invoice_obligation_id = app_row["invoice_id"]
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, reversal_of_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'DEPOSIT_APPLICATION', $5, $6, 'DRAFT', $7, $7, $8)
-                    """,
-                    reversal_journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    f"Un-apply Deposit application {app_row['invoice_number'] or application_id}",
-                    invoice_obligation_id,
-                    original_journal_id,
-                    reversal_amount,
-                    ctx["user_id"],
-                )
-
-                # Reversed lines (swap debit/credit) -> Dr AR / Cr 2-10500.
-                for idx, line in enumerate(original_lines, 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                        uuid_module.uuid4(),
-                        reversal_journal_id,
-                        idx,
-                        line["account_id"],
-                        line["credit"],  # swap
-                        line["debit"],  # swap
-                        f"Reversal - {line['memo'] or ''}",
-                    )
-
-                # Law 20: promote DRAFT -> POSTED.
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_journal_id,
-                )
-
-                # Mark original application journal reversed (drops via
-                # reversed_by_id; reversal drops via reversal_of_id).
-                await conn.execute(
-                    """
-                    UPDATE journal_entries
-                    SET reversed_by_id = $2
-                    WHERE id = $1
-                    """,
-                    original_journal_id,
-                    reversal_journal_id,
-                )
-
-                # Law 26: single reversal pointer on the application row +
-                # status + reversed_at. This also fires the deposit-status
-                # trigger which re-derives the cache (excludes reversed rows).
-                await conn.execute(
-                    """
-                    UPDATE customer_deposit_applications
-                    SET status = 'reversed',
-                        reversed_by_id = $2,
-                        reversed_at = NOW()
-                    WHERE id = $1
-                    """,
-                    application_id,
-                    reversal_journal_id,
-                )
-
-                # Restore invoice cache: un-applying credits AR back, so the
-                # invoice outstanding rises again. Re-derive amount_paid from
-                # the journal-based remaining (Law 16) after the reversal.
-                inv_id = app_row["invoice_id"]
-                invoice = await conn.fetchrow(
-                    "SELECT id, total_amount, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-                    inv_id,
-                    ctx["tenant_id"],
-                )
-                if invoice:
-                    invoice_remaining = await get_invoice_remaining_from_journal(
-                        conn, ctx["tenant_id"], inv_id
-                    )
-                    new_amount_paid = int(invoice["total_amount"]) - int(
-                        invoice_remaining
-                    )
-                    if new_amount_paid < 0:
-                        new_amount_paid = 0
-                    # Revert: if no longer fully paid, demote 'paid' back to
-                    # 'posted' (posted-unsettled). Other states unchanged.
-                    new_status = (
-                        "paid"
-                        if new_amount_paid >= int(invoice["total_amount"])
-                        else (
-                            "posted"
-                            if invoice["status"] == "paid"
-                            else invoice["status"]
-                        )
-                    )
-                    await conn.execute(
-                        """
-                        UPDATE sales_invoices
-                        SET amount_paid = $2, status = $3, updated_at = NOW()
-                        WHERE id = $1
-                        """,
-                        inv_id,
-                        new_amount_paid,
-                        new_status,
-                    )
-                    # Mirror accounts_receivable cache if a row exists.
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET amount_paid = GREATEST(amount_paid - $2, 0),
-                            status = CASE
-                                WHEN GREATEST(amount_paid - $2, 0) >= amount THEN 'PAID'
-                                WHEN GREATEST(amount_paid - $2, 0) > 0 THEN 'PARTIAL'
-                                ELSE 'OPEN'
-                            END,
-                            updated_at = NOW()
-                        WHERE source_id = $1 AND source_type = 'INVOICE'
-                        """,
-                        inv_id,
-                        reversal_amount,
-                    )
-
-                logger.info(
-                    f"Customer deposit application reversed: deposit={deposit_id}, "
-                    f"application={application_id}, reversal_journal={reversal_journal_id}"
-                )
-
-                return {
-                    "success": True,
-                    "message": "Deposit application reversed (un-applied)",
-                    "data": {
-                        "id": str(deposit_id),
-                        "application_id": str(application_id),
-                        "reversal_journal_id": str(reversal_journal_id),
-                        "status": "reversed",
-                    },
-                }
-
+                return await reverse_deposit_application_core(conn, ctx, deposit_id, application_id)
     except HTTPException:
         raise
     except Exception as e:
