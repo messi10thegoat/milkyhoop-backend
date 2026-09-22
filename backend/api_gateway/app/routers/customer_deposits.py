@@ -274,6 +274,29 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> int:
     return int(result or 0)
 
 
+async def linked_so_deposits(conn, tenant_id, so_id):
+    """Customer deposits that belong to a Sales Order: linked directly or through one of its
+    proformas, resolved with the SAME resolve_order_id_for_deposit the DP-ceiling guard uses;
+    status posted/partial; oldest first. ONE derivation, used by the post-time auto-apply
+    plan (unit 6) and the close-SO guard (unit 7)."""
+    rows = await conn.fetch(
+        """SELECT d.id, d.deposit_number, d.deposit_date, d.customer_id,
+                  d.sales_order_id, d.proforma_id
+           FROM customer_deposits d
+           WHERE d.tenant_id = $1 AND d.status IN ('posted', 'partial')
+             AND (d.sales_order_id = $2
+                  OR d.proforma_id IN (SELECT id FROM proformas
+                                       WHERE tenant_id = $1 AND sales_order_id = $2))
+           ORDER BY d.deposit_date, d.created_at, d.deposit_number""",
+        tenant_id, so_id,
+    )
+    out = []
+    for d in rows:
+        if await resolve_order_id_for_deposit(conn, tenant_id, d["sales_order_id"], d["proforma_id"]) == so_id:
+            out.append(d)
+    return out
+
+
 async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
     """Unit 6: FIFO plan for applying the invoice's SO deposits. ONE derivation, used by both
     GET /sales-invoices/{id}/deposit-plan (pre-fill) and posting (auto-apply):
@@ -288,22 +311,9 @@ async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
     if not inv or not inv["sales_order_id"]:
         return []
     so_id = inv["sales_order_id"]
-    rows = await conn.fetch(
-        """SELECT d.id, d.deposit_number, d.deposit_date, d.customer_id,
-                  d.sales_order_id, d.proforma_id
-           FROM customer_deposits d
-           WHERE d.tenant_id = $1 AND d.status IN ('posted', 'partial')
-             AND (d.sales_order_id = $2
-                  OR d.proforma_id IN (SELECT id FROM proformas
-                                       WHERE tenant_id = $1 AND sales_order_id = $2))
-           ORDER BY d.deposit_date, d.created_at, d.deposit_number""",
-        tenant_id, so_id,
-    )
     left = int(outstanding or 0)
     plan = []
-    for d in rows:
-        if await resolve_order_id_for_deposit(conn, tenant_id, d["sales_order_id"], d["proforma_id"]) != so_id:
-            continue
+    for d in await linked_so_deposits(conn, tenant_id, so_id):
         remaining = await compute_deposit_remaining(conn, tenant_id, d["id"])
         reason = None
         try:
