@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 from ..services.db_pool import get_db_pool
+from ..services.pay_group_access import get_user_role_code
 
 logger = logging.getLogger(__name__)
 
@@ -204,39 +205,48 @@ async def set_user_pay_group_access(
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
-        )
-
-        member = await conn.fetchrow(
-            "SELECT user_id FROM user_tenant_roles WHERE id = $1 AND tenant_id = $2",
-            member_id,
-            tenant_id,
-        )
-        if not member:
-            raise HTTPException(404, "Member tidak ditemukan")
-
-        target_user_id = str(member["user_id"])
-
-        # Revoke all existing access
-        await conn.execute(
-            """UPDATE user_pay_group_access SET revoked_at = NOW()
-               WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL""",
-            target_user_id,
-            tenant_id,
-        )
-
-        # Grant new access
-        for pg_id in data.pay_group_ids:
+        async with conn.transaction():
             await conn.execute(
-                """INSERT INTO user_pay_group_access (user_id, tenant_id, pay_group_id, granted_by)
-                   VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (user_id, tenant_id, pay_group_id)
-                   DO UPDATE SET revoked_at = NULL, granted_by = $4, created_at = NOW()""",
-                target_user_id,
-                tenant_id,
-                pg_id,
-                str(grantor_id),
+                "SELECT set_config('app.tenant_id', $1, true)", str(tenant_id)
             )
 
-        return {"success": True}
+            # OWNER-only, enforced IN THE HANDLER so the boundary does not depend on the
+            # permission table being configured (defence-in-depth: a guard that holds only
+            # because role_permissions has no pay_group grant is a coincidence, not a guard).
+            role_code = await get_user_role_code(str(grantor_id), str(tenant_id), conn)
+            if role_code != "OWNER":
+                raise HTTPException(403, "Hanya OWNER yang dapat mengatur akses pay-group")
+
+            member = await conn.fetchrow(
+                "SELECT user_id FROM user_tenant_roles WHERE id = $1 AND tenant_id = $2",
+                member_id,
+                tenant_id,
+            )
+            if not member:
+                raise HTTPException(404, "Member tidak ditemukan")
+
+            target_user_id = str(member["user_id"])
+
+            # Revoke-all + re-grant wrapped in ONE transaction: a failure between the
+            # revoke and the inserts must NOT leave the member with no access at all.
+            await conn.execute(
+                """UPDATE user_pay_group_access SET revoked_at = NOW()
+                   WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL""",
+                target_user_id,
+                tenant_id,
+            )
+
+            # Grant new access
+            for pg_id in data.pay_group_ids:
+                await conn.execute(
+                    """INSERT INTO user_pay_group_access (user_id, tenant_id, pay_group_id, granted_by)
+                       VALUES ($1, $2, $3, $4)
+                       ON CONFLICT (user_id, tenant_id, pay_group_id)
+                       DO UPDATE SET revoked_at = NULL, granted_by = $4, created_at = NOW()""",
+                    target_user_id,
+                    tenant_id,
+                    pg_id,
+                    str(grantor_id),
+                )
+
+            return {"success": True}
