@@ -229,6 +229,35 @@ def _ship_json(doc: dict) -> dict:
     }
 
 
+async def _auto_apply_so_deposits(conn, ctx, invoice_id, application_date, skip_ids=()):
+    """Unit 6: apply the SO's deposits to a JUST-POSTED SO-derived invoice, in the posting
+    transaction (Law 23: post + apply commit or roll back together). Plan and apply are the
+    deposit module's own (plan_so_deposit_application + apply_deposit_core). Returns the
+    applications made."""
+    from types import SimpleNamespace
+    from .customer_deposits import (
+        apply_deposit_core, plan_so_deposit_application, get_invoice_remaining_from_journal,
+    )
+    outstanding = await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id)
+    plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding)
+    skip = {str(s) for s in (skip_ids or ())}
+    applied = []
+    for p in plan:
+        if p["planned_amount"] <= 0 or p["deposit_id"] in skip:
+            continue
+        res = await apply_deposit_core(
+            conn, ctx, UUID(p["deposit_id"]),
+            SimpleNamespace(
+                applications=[SimpleNamespace(invoice_id=str(invoice_id), amount=p["planned_amount"])],
+                application_date=application_date,
+            ),
+        )
+        applied.append({"deposit_id": p["deposit_id"], "deposit_number": p["deposit_number"],
+                        "amount": p["planned_amount"],
+                        "application_id": res["data"]["applications"][0]["application_id"]})
+    return applied
+
+
 def _doc_line_json(ln: dict, line_number: int) -> dict:
     """Baris hasil compute_document -> dict JSON (Decimal -> float)."""
     out = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in ln.items()}
@@ -3545,6 +3574,13 @@ async def post_invoice(
                     invoice["invoice_number"],
                     invoice["total_amount"],
                 )
+                # Unit 6: faktur dari SO -> terapkan uang muka SO di transaksi yang SAMA.
+                deposit_applications = []
+                if body is None or body.apply_deposits:
+                    deposit_applications = await _auto_apply_so_deposits(
+                        conn, ctx, invoice_id, invoice["invoice_date"],
+                        (body.skip_deposit_ids if body else ()),
+                    )
 
                 logger.info(
                     f"Invoice posted: {invoice_id}, AR: {post_result.get('ar_id')}"
@@ -3561,6 +3597,7 @@ async def post_invoice(
                         "fulfillment_status": post_result.get("fulfillment_status"),
                         "revenue_status": post_result.get("revenue_status"),
                         "warnings": post_result.get("warnings", []),
+                        "deposit_applications": deposit_applications,
                     },
                 }
 
@@ -4100,30 +4137,11 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 invoice_id,
                 ctx["tenant_id"],
             )
-            if active_deposit_apps:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": (
-                            "Tidak bisa void: ada Uang Muka teralokasi ke faktur "
-                            "ini. Un-apply deposit dulu."
-                        ),
-                        "code": "DEPOSIT_APPLIED",
-                        "applications": [
-                            {
-                                "application_id": str(a["application_id"]),
-                                "deposit_id": str(a["deposit_id"]),
-                                "deposit_number": a["deposit_number"],
-                                "amount_applied": int(a["amount_applied"] or 0),
-                                "unapply_url": (
-                                    f"/api/customer-deposits/{a['deposit_id']}"
-                                    f"/applications/{a['application_id']}/reverse"
-                                ),
-                            }
-                            for a in active_deposit_apps
-                        ],
-                    },
-                )
+            # Unit 6: void MEMBATALKAN penerapan uang muka yang masih aktif (termasuk yang
+            # diterapkan otomatis saat posting), di transaksi void di bawah, lewat logika
+            # un-apply YANG SAMA dengan /reverse. Dulu (FIX_P3_BRIDGE) void DITOLAK sampai
+            # pengguna un-apply manual; kini keadaan tetap simetris tanpa jalan buntu:
+            # deposit kembali tersedia, piutang faktur ikut dibalik oleh void.
 
             # ============================================================
             # Fulfillment pre-checks (3-Event Revenue Recognition)
@@ -4198,6 +4216,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"INVOICE_VOID:{str(invoice_id)}",
                 )
+
+                if active_deposit_apps:
+                    from .customer_deposits import reverse_deposit_application_core
+                    for _a in active_deposit_apps:
+                        await reverse_deposit_application_core(
+                            conn, ctx, _a["deposit_id"], _a["application_id"]
+                        )
 
                 year_month_str = today.strftime("%y%m")
                 reversal_journal_id = None
@@ -5074,6 +5099,38 @@ from ..services.pdf_service import (
 from ..services.storage_service import get_storage_service  # noqa: E402  # pre-existing mid-file import
 import base64  # noqa: E402  # pre-existing mid-file import
 from pathlib import Path as _Path  # noqa: E402  # pre-existing mid-file import
+
+
+@router.get("/{invoice_id}/deposit-plan")
+async def get_invoice_deposit_plan(request: Request, invoice_id: UUID):
+    """Unit 6 -- READ-ONLY: which of the SO's deposits posting would apply to this invoice,
+    and how much (same planner posting uses). Draft: against the invoice total; posted:
+    against the journal-derived outstanding."""
+    from .customer_deposits import plan_so_deposit_application, get_invoice_remaining_from_journal
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        inv = await conn.fetchrow(
+            "SELECT id, status, total_amount, sales_order_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+            invoice_id, ctx["tenant_id"],
+        )
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        outstanding = (
+            int(inv["total_amount"] or 0) if inv["status"] == "draft"
+            else await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id)
+        )
+        plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding)
+    return {
+        "success": True,
+        "data": {
+            "invoice_id": str(invoice_id),
+            "sales_order_id": str(inv["sales_order_id"]) if inv["sales_order_id"] else None,
+            "outstanding": outstanding,
+            "total_planned": sum(p["planned_amount"] for p in plan),
+            "deposits": plan,
+        },
+    }
 
 
 @router.get("/{invoice_id}/pdf")
