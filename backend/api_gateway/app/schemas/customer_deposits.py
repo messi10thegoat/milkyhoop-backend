@@ -20,6 +20,7 @@ Journal Entry on REFUND:
         Cr. Kas/Bank (1-10100/1-10200)           refund_amount
 """
 
+from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
@@ -91,7 +92,7 @@ class UpdateCustomerDepositRequest(BaseModel):
 class ApplyDepositItem(BaseModel):
     """Single application to an invoice."""
     invoice_id: str = Field(..., description="Invoice UUID to apply deposit to")
-    amount: int = Field(..., gt=0, description="Amount to apply in IDR")
+    amount: Decimal = Field(..., gt=0, description="Amount to apply in IDR (sen boleh, 6b)")
 
 
 class ApplyCustomerDepositRequest(BaseModel):
@@ -102,7 +103,7 @@ class ApplyCustomerDepositRequest(BaseModel):
 
 class RefundCustomerDepositRequest(BaseModel):
     """Request body for refunding deposit to customer."""
-    amount: int = Field(..., gt=0, description="Refund amount in IDR")
+    amount: Decimal = Field(..., gt=0, description="Refund amount in IDR (sen boleh, 6b)")
     refund_date: date
     payment_method: Literal["cash", "transfer", "check", "other"]
     account_id: str = Field(..., description="Kas/Bank account UUID (CoA)")
@@ -125,7 +126,7 @@ class DepositApplicationResponse(BaseModel):
     id: str
     invoice_id: str
     invoice_number: Optional[str] = None
-    amount_applied: int
+    amount_applied: float
     application_date: str
     created_at: str
 
@@ -154,9 +155,9 @@ class CustomerDepositListItem(BaseModel):
     customer_name: str
     deposit_date: str
     amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    amount_applied: float = 0
+    amount_refunded: float = 0
+    remaining_amount: float = 0
     status: str
     payment_method: str
     reference: Optional[str] = None
@@ -172,9 +173,9 @@ class CustomerDepositDetail(BaseModel):
 
     # Amounts
     amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    amount_applied: float = 0
+    amount_refunded: float = 0
+    remaining_amount: float = 0
 
     # Payment details
     deposit_date: str

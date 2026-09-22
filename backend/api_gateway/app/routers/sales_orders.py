@@ -1190,7 +1190,7 @@ async def close_sales_order(
                 for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
                     rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
                     if rem > 0:
-                        sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": int(rem)})
+                        sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": float(rem)})
                 if sisa_dp:
                     raise HTTPException(
                         status_code=400,
@@ -1198,7 +1198,7 @@ async def close_sales_order(
                             "code": "SO_DEPOSIT_REMAINING",
                             "message": (
                                 f"SO {order['order_number']} tidak bisa ditutup: uang muka "
-                                + ", ".join(f"{x['deposit_number']} (sisa Rp{x['remaining']:,})".replace(",", ".") for x in sisa_dp)
+                                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
                                 + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
                             ),
                             "deposits": sisa_dp,
