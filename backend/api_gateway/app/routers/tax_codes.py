@@ -221,7 +221,8 @@ async def list_tax_codes(
 
             # Get items
             query = f"""
-                SELECT id, code, name, rate, tax_type, is_inclusive, is_active, is_default
+                SELECT id, code, name, rate, tax_type, is_inclusive, is_active, is_default,
+                       dpp_factor_num, dpp_factor_den
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -241,6 +242,8 @@ async def list_tax_codes(
                     "is_inclusive": row["is_inclusive"],
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
+                    "dpp_factor_num": row["dpp_factor_num"],
+                    "dpp_factor_den": row["dpp_factor_den"],
                 }
                 for row in rows
             ]
@@ -273,7 +276,8 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
             query = """
                 SELECT id, code, name, rate, tax_type, is_inclusive,
                        sales_tax_account, purchase_tax_account, description,
-                       is_active, is_default, created_at, updated_at
+                       is_active, is_default, created_at, updated_at,
+                       dpp_factor_num, dpp_factor_den
                 FROM tax_codes
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -291,6 +295,8 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                     "rate": float(row["rate"]),
                     "tax_type": row["tax_type"],
                     "is_inclusive": row["is_inclusive"],
+                    "dpp_factor_num": row["dpp_factor_num"],
+                    "dpp_factor_den": row["dpp_factor_den"],
                     "sales_tax_account": row["sales_tax_account"],
                     "purchase_tax_account": row["purchase_tax_account"],
                     "description": row["description"],
@@ -341,8 +347,8 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
                 INSERT INTO tax_codes (
                     tenant_id, code, name, rate, tax_type, is_inclusive,
                     sales_tax_account, purchase_tax_account, description,
-                    is_default, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    is_default, created_by, dpp_factor_num, dpp_factor_den
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 RETURNING id
             """,
                 ctx["tenant_id"],
@@ -356,6 +362,8 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
                 body.description,
                 body.is_default,
                 ctx["user_id"],
+                body.dpp_factor_num,
+                body.dpp_factor_den,
             )
 
             logger.info(f"Tax code created: {tax_code_id}, code={body.code}")

@@ -13,6 +13,7 @@ import uuid as uuid_module
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
+from ..services.tax_factor import attach_dpp_factors
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -555,11 +556,9 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
                     )
 
-                _doc = _so_doc(
-                    [item.model_dump() for item in body.items],
-                    body.discount_amount,
-                    body.shipping_amount,
-                )
+                _items = [item.model_dump() for item in body.items]
+                await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_id")
+                _doc = _so_doc(_items, body.discount_amount, body.shipping_amount)
                 calculated_items = _doc["items"]
                 totals = {
                     "subtotal": _doc["net_subtotal"],
@@ -777,12 +776,13 @@ async def update_sales_order(
                         _src = [
                             dict(r)
                             for r in await conn.fetch(
-                                """SELECT id, quantity, unit_price, discount_percent, tax_rate
+                                """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id
                                    FROM sales_order_items WHERE sales_order_id = $1
                                    ORDER BY sort_order, id""",
                                 uuid_module.UUID(order_id),
                             )
                         ]
+                    await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_id")
                     _doc = _so_doc(_src, discount_amt, shipping_amt)
                     calculated_items = _doc["items"]
 
@@ -1371,9 +1371,11 @@ async def convert_to_invoice(
                     ctx["tenant_id"],
                     uuid_module.UUID(order_id),
                 )
+                _so_rows = [dict(r) for r in _all_so_items]
+                await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
                 try:
                     _plan = plan_so_invoice(
-                        [dict(r) for r in _all_so_items],
+                        _so_rows,
                         _inv_qty,
                         order["discount_amount"] or 0,
                         order["shipping_amount"] or 0,

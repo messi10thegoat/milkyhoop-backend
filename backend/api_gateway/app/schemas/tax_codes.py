@@ -4,7 +4,7 @@ Pydantic schemas for Tax Codes module.
 This module defines request and response models for the /api/tax-codes endpoints.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from decimal import Decimal
 
@@ -33,6 +33,20 @@ class CreateTaxCodeRequest(BaseModel):
     purchase_tax_account: Optional[str] = Field(None, max_length=20, description="CoA code for purchase tax")
     description: Optional[str] = None
     is_default: bool = Field(False, description="Set as default tax for this type")
+    # V289: DPP = DPP harga jual x (num/den). 11/12 = DPP nilai lain (PMK 131/2024), 1/1 = penuh.
+    dpp_factor_num: int = Field(1, ge=1, description="Pembilang faktor DPP")
+    dpp_factor_den: int = Field(1, ge=1, description="Penyebut faktor DPP")
+
+    @model_validator(mode="after")
+    def _faktor_dpp_sah(self):
+        # V289: DPP = DPP harga jual x num/den, 0 < num <= den (11/12 atau 1/1). Ditolak di
+        # gerbang (422) alih-alih jadi 500 dari CHECK basis data.
+        n, d = self.dpp_factor_num, self.dpp_factor_den
+        if n is not None and d is not None and n > d:
+            raise ValueError("Faktor DPP tidak sah: pembilang harus <= penyebut (mis. 11/12 atau 1/1).")
+        if (n is None) != (d is None):
+            raise ValueError("Faktor DPP harus dikirim berpasangan: dpp_factor_num dan dpp_factor_den.")
+        return self
 
     @field_validator('code')
     @classmethod
@@ -54,6 +68,19 @@ class UpdateTaxCodeRequest(BaseModel):
     description: Optional[str] = None
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
+    dpp_factor_num: Optional[int] = Field(None, ge=1)
+    dpp_factor_den: Optional[int] = Field(None, ge=1)
+
+    @model_validator(mode="after")
+    def _faktor_dpp_sah(self):
+        # V289: DPP = DPP harga jual x num/den, 0 < num <= den (11/12 atau 1/1). Ditolak di
+        # gerbang (422) alih-alih jadi 500 dari CHECK basis data.
+        n, d = self.dpp_factor_num, self.dpp_factor_den
+        if n is not None and d is not None and n > d:
+            raise ValueError("Faktor DPP tidak sah: pembilang harus <= penyebut (mis. 11/12 atau 1/1).")
+        if (n is None) != (d is None):
+            raise ValueError("Faktor DPP harus dikirim berpasangan: dpp_factor_num dan dpp_factor_den.")
+        return self
 
     @field_validator('code')
     @classmethod
@@ -77,6 +104,8 @@ class TaxCodeListItem(BaseModel):
     is_inclusive: bool
     is_active: bool
     is_default: bool
+    dpp_factor_num: int = 1
+    dpp_factor_den: int = 1
 
 
 class TaxCodeListResponse(BaseModel):
@@ -98,6 +127,8 @@ class TaxCodeDetail(BaseModel):
     rate: float
     tax_type: str
     is_inclusive: bool
+    dpp_factor_num: int = 1
+    dpp_factor_den: int = 1
     sales_tax_account: Optional[str] = None
     purchase_tax_account: Optional[str] = None
     description: Optional[str] = None

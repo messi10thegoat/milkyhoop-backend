@@ -12,14 +12,17 @@ ATURAN (Law 9: Decimal + ROUND_HALF_UP, 2 desimal):
      pajak. Baris TERAKHIR menyerap sisa pembulatan. Ini pola yang sama dengan alokasi
      PSAK-72 `allocated_amount` di _post_invoice, sehingga per baris DPP == allocated_amount
      (bila tanpa ongkir).
-  3. Per baris: DPP = neto - alokasi diskon dokumen; PPN = DPP x tarif baris, HALF_UP 2dp.
+  3. Per baris: DPP harga jual = neto - alokasi diskon dokumen. DPP yang dikenai tarif =
+     DPP harga jual x faktor kode pajaknya (V289; 11/12 = DPP nilai lain, 1/1 = penuh);
+     PPN = DPP x tarif baris, HALF_UP 2dp. Faktor dibaca per baris (dpp_factor_num/den,
+     ditempel router lewat services/tax_factor.py); tanpa faktor = 1/1.
   4. Header = JUMLAH baris, tidak pernah dihitung ulang terpisah. Ongkir ditambahkan ke
      total DI LUAR DPP (perilaku lama SO). Apakah ongkir kena PPN = PERTANYAAN KEBIJAKAN
      untuk konsultan pajak pemilik -- sengaja TIDAK diputuskan di kode.
   5. DPP per baris yang benar-benar dipakai dikembalikan untuk disimpan.
 
 DI LUAR CAKUPAN (jangan ditambahkan di sini tanpa gerbangnya sendiri): tarif tetap persis
-yang dikirim baris / tax_codes; TIDAK ada DPP nilai lain 11/12; TIDAK ada PPN diskon tunai;
+yang dikirim baris / tax_codes; TIDAK ada PPN diskon tunai;
 Tagihan, Nota Kredit, e-Faktur = fase 3.
 
 Modul ini MURNI (tanpa DB, tanpa FastAPI) supaya gerbangnya bisa diulang tanpa efek samping.
@@ -103,11 +106,17 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
     allocs = allocate(doc_disc, [ln["net"] for ln in lines])
     tax_total = _ZERO
     for ln, a in zip(lines, allocs):
-        dpp = ln["net"] - a
+        dpp_hj = ln["net"] - a
+        num = int(ln.get("dpp_factor_num") or 1)
+        den = int(ln.get("dpp_factor_den") or 1)
+        base = dpp_hj if num == den else dpp_hj * Decimal(num) / Decimal(den)
         rate = d(ln.get("tax_rate"))
-        tax = q2(dpp * rate / _HUNDRED) if rate > 0 else _ZERO
+        tax = q2(base * rate / _HUNDRED) if rate > 0 else _ZERO
         ln["doc_discount_allocated"] = a
-        ln["dpp"] = dpp
+        ln["dpp_harga_jual"] = dpp_hj
+        # `dpp` = dasar yang BENAR-BENAR dikenai tarif (sama arti dengan bills.dpp):
+        # == DPP harga jual bila faktor 1/1, == DPP nilai lain bila 11/12.
+        ln["dpp"] = q2(base)
         ln["tax_amount"] = tax
         # `total` baris = neto + PPN baris (arti lama dipertahankan: nilai baris SEBELUM
         # diskon dokumen, ditambah PPN-nya). Header total = SIGMA total baris - diskon
