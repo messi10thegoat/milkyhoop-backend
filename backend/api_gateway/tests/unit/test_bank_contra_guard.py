@@ -2,8 +2,9 @@
 
 (a) create_manual_transaction: contra == CoA bank -> HTTP 400 (RED-discriminating);
     contra != bank -> lewat guard, sampai fetchrow fiscal_periods -> _Sentinel (GREEN).
-(ii) adjust_bank_balance: 400 sementara SEBELUM get_pool (get_pool diganti agar meledak
-    jika tercapai -> membuktikan 400 mendahului kerja DB).
+(ii) adjust_bank_balance (dihidupkan lagi 70434814): selisih lebih Dr Bank / Cr GAIN,
+    selisih kurang Dr LOSS / Cr Bank, tak pernah nol-bersih akun sama, peran tak terpetakan
+    -> 400 tanpa jurnal. (Dulu memaku saklar-mati sementara 15 Sep.)
 """
 import uuid
 from datetime import date
@@ -119,19 +120,113 @@ async def test_a_green_contra_differs(monkeypatch):
     assert ei.value.status_code == 418
 
 
-@pytest.mark.asyncio
-async def test_ii_adjust_rejected_before_pool(monkeypatch):
-    async def boom():
-        raise AssertionError("get_pool tak boleh tercapai; 400 harus mendahului DB")
+# (ii) /adjust DIHIDUPKAN LAGI di 70434814 (20 Sep, V274): akun lawan = peran per
+# tenant BANK_ADJUSTMENT_GAIN (selisih lebih) / BANK_ADJUSTMENT_LOSS (selisih kurang).
+# Tes lama memaku SAKLAR-MATI sementara 15 Sep (400 "sementara tidak tersedia") dan
+# merah sejak jalur uang ini hidup kembali -- jalur itu berjalan TANPA satu pun tes.
+# Tes di bawah memanggil handler SESUNGGUHNYA dan membaca baris jurnal yang ditulisnya.
 
-    monkeypatch.setattr(ba_mod, "get_pool", boom)
-    body = AdjustBalanceRequest(
-        adjustment_date=date(2026, 9, 15), adjustment_amount=1000, reason="gate"
-    )
+GAIN_COA = uuid.uuid4()
+LOSS_COA = uuid.uuid4()
+
+
+class _AdjConn:
+    """Merekam INSERT; baris jurnal dibaca sisi debit/kredit dari pola VALUES-nya."""
+
+    def __init__(self, ledger_balance):
+        self.ledger_balance = ledger_balance
+        self.lines = []      # (side, account_id, amount)
+        self.headers = []    # (total_debit, total_credit)
+
+    def transaction(self):
+        return _Txn()
+
+    async def fetchrow(self, sql, *args):
+        return {"id": args[0], "coa_id": BANK_COA, "coa_account_id": BANK_COA,
+                "account_name": "BCA Gate", "is_active": True,
+                "ledger_balance": self.ledger_balance}
+
+    async def execute(self, sql, *args):
+        s = " ".join(str(sql).split())
+        if "INSERT INTO journal_entries" in s:
+            self.headers.append((args[7], args[7]))
+        elif "INSERT INTO journal_lines" in s:
+            side = "Dr" if ", $4, 0, $5)" in s else "Cr" if ", 0, $4, $5)" in s else "?"
+            self.lines.append((side, args[2], args[3]))
+        return None
+
+
+def _adj_wire(monkeypatch, conn, roles_asked, unmapped=False):
+    class _P:
+        def acquire(self):
+            class _A:
+                async def __aenter__(self_):
+                    return conn
+
+                async def __aexit__(self_, *a):
+                    return False
+            return _A()
+
+    async def _pool():
+        return _P()
+
+    async def _resolve(c, tenant, role):
+        roles_asked.append(role)
+        if unmapped:
+            raise ba_mod.AccountRoleUnmappedError(role)
+        return GAIN_COA if role == ba_mod.AccountRole.BANK_ADJUSTMENT_GAIN else LOSS_COA
+
+    monkeypatch.setattr(ba_mod, "get_pool", _pool)
+    monkeypatch.setattr(ba_mod, "resolve_account_id_by_role", _resolve)
+
+
+def _adj_body(amount):
+    return AdjustBalanceRequest(adjustment_date=date(2026, 9, 15),
+                                adjustment_amount=amount, reason="gate")
+
+
+@pytest.mark.asyncio
+async def test_ii_adjust_surplus_dr_bank_cr_gain(monkeypatch):
+    conn, roles = _AdjConn(ledger_balance=0), []
+    _adj_wire(monkeypatch, conn, roles)
+    res = await adjust_bank_balance(_req(), BANK_ACCT_ID, _adj_body(1000))
+    assert res["success"] is True
+    assert roles == [ba_mod.AccountRole.BANK_ADJUSTMENT_GAIN]
+    assert conn.lines == [("Dr", BANK_COA, 1000), ("Cr", GAIN_COA, 1000)]
+    assert conn.headers == [(1000, 1000)]
+
+
+@pytest.mark.asyncio
+async def test_ii_adjust_shortfall_dr_loss_cr_bank(monkeypatch):
+    conn, roles = _AdjConn(ledger_balance=5000), []
+    _adj_wire(monkeypatch, conn, roles)
+    await adjust_bank_balance(_req(), BANK_ACCT_ID, _adj_body(-1000))
+    assert roles == [ba_mod.AccountRole.BANK_ADJUSTMENT_LOSS]
+    assert conn.lines == [("Dr", LOSS_COA, 1000), ("Cr", BANK_COA, 1000)]
+
+
+@pytest.mark.asyncio
+async def test_ii_adjust_never_net_zero_same_account(monkeypatch):
+    """Cacat yang membuat /adjust dimatikan 15 Sep: Dr bank / Cr bank (nol bersih)."""
+    for amt, bal in ((1000, 0), (-1000, 5000)):
+        conn, roles = _AdjConn(ledger_balance=bal), []
+        _adj_wire(monkeypatch, conn, roles)
+        await adjust_bank_balance(_req(), BANK_ACCT_ID, _adj_body(amt))
+        accts = [a for _, a, _ in conn.lines]
+        assert len(set(accts)) == 2, conn.lines
+        assert sum(x for sd, _, x in conn.lines if sd == "Dr") == sum(
+            x for sd, _, x in conn.lines if sd == "Cr")
+
+
+@pytest.mark.asyncio
+async def test_ii_adjust_unmapped_role_400_no_journal(monkeypatch):
+    conn, roles = _AdjConn(ledger_balance=0), []
+    _adj_wire(monkeypatch, conn, roles, unmapped=True)
     with pytest.raises(HTTPException) as ei:
-        await adjust_bank_balance(_req(), BANK_ACCT_ID, body)
+        await adjust_bank_balance(_req(), BANK_ACCT_ID, _adj_body(1000))
     assert ei.value.status_code == 400
-    assert "sementara tidak tersedia" in ei.value.detail
+    assert "belum diatur" in ei.value.detail
+    assert conn.lines == [] and conn.headers == []
 
 
 def test_transfer_same_bank_rejected():

@@ -20,7 +20,8 @@ ACCT2 = uuid.uuid4()
 
 
 def _req():
-    return SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}))
+    # headers={}: sejak 40299673 PATCH membaca request.headers (If-Match opt-in).
+    return SimpleNamespace(headers={}, state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}))
 
 
 def _row(status="draft"):

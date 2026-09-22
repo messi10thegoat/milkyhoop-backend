@@ -12,6 +12,7 @@ Setiap tes di berkas ini sudah dibuktikan BISA MERAH lewat sabotase pada KODE
 PRODUKSI (bukan pada tes), lalu dipulihkan. Lihat laporan tiket.
 """
 
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -23,6 +24,10 @@ from app.schemas.customer_deposits import UpdateCustomerDepositRequest
 TENANT = "kaos-biru-konveksi"
 SO = UUID("6552e5bc-641c-48d0-b99d-893d8b5adcc6")
 DEP = UUID("11111111-2222-3333-4444-555555555555")
+# Sejak 40299673 (If-Match opt-in) handler PATCH membaca request.headers. object()
+# tak punya .headers -> 500 SEBELUM pagar plafon tercapai: 3 hari 9 tes ini merah
+# dan pagar plafon-PATCH tanpa satu pun tes yang lulus. headers={} = tanpa If-Match.
+_REQ = SimpleNamespace(headers={})
 
 
 class _Tx:
@@ -102,7 +107,7 @@ def _rows(order_total, sudah_lain, sales_order_id=SO):
 async def _patch(monkeypatch, rows, **fields):
     conn = _wire(monkeypatch, rows)
     body = UpdateCustomerDepositRequest(**fields)
-    res = await cd.update_customer_deposit(object(), DEP, body)
+    res = await cd.update_customer_deposit(_REQ, DEP, body)
     return conn, res
 
 
@@ -120,9 +125,9 @@ async def test_patch_pesan_penolakan_menyebut_tiga_angka(monkeypatch):
     with pytest.raises(HTTPException) as ex:
         await _patch(monkeypatch, _rows(5_000_000, 1_600_000), amount=4_000_000)
     detail = ex.value.detail
-    assert "5,000,000.00" in detail, detail
-    assert "1,600,000.00" in detail, detail
-    assert "3,400,000.00" in detail, detail
+    assert "5.000.000,00" in detail, detail
+    assert "1.600.000,00" in detail, detail
+    assert "3.400.000,00" in detail, detail
 
 
 # ------------------------------------------------ KONTROL BATAS: TEPAT SISA
@@ -144,7 +149,7 @@ async def test_patch_tidak_menghitung_dirinya_sendiri(monkeypatch):
     oleh deposit ITU SENDIRI akan ditolak KELIRU."""
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     body = UpdateCustomerDepositRequest(amount=1_001)
-    res = await cd.update_customer_deposit(object(), DEP, body)
+    res = await cd.update_customer_deposit(_REQ, DEP, body)
     assert res["success"] is True
     # query akumulasi menerima deposit_id sebagai exclude_id ($3)
     akum = [i for i, s in enumerate(conn.sqls) if "SUM(amount)" in s]
@@ -155,7 +160,7 @@ async def test_patch_tidak_menghitung_dirinya_sendiri(monkeypatch):
 async def test_query_akumulasi_punya_klausa_exclude(monkeypatch):
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     await cd.update_customer_deposit(
-        object(), DEP, UpdateCustomerDepositRequest(amount=1)
+        _REQ, DEP, UpdateCustomerDepositRequest(amount=1)
     )
     sql = [s for s in conn.sqls if "SUM(amount)" in s][0]
     assert "id <> $3" in sql, sql
@@ -177,7 +182,7 @@ async def test_patch_tanpa_sales_order_lolos(monkeypatch):
     ]
     conn = _wire(monkeypatch, rows)
     res = await cd.update_customer_deposit(
-        object(), DEP, UpdateCustomerDepositRequest(amount=999_999_999)
+        _REQ, DEP, UpdateCustomerDepositRequest(amount=999_999_999)
     )
     assert res["success"] is True
     assert not any("FROM sales_orders" in s for s in conn.sqls), conn.sqls
@@ -189,7 +194,7 @@ async def test_patch_tanpa_sales_order_lolos(monkeypatch):
 async def test_akumulasi_patch_mengecualikan_void(monkeypatch):
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     await cd.update_customer_deposit(
-        object(), DEP, UpdateCustomerDepositRequest(amount=1)
+        _REQ, DEP, UpdateCustomerDepositRequest(amount=1)
     )
     sql = [s for s in conn.sqls if "SUM(amount)" in s][0]
     assert "status <> 'void'" in sql, sql
@@ -198,7 +203,7 @@ async def test_akumulasi_patch_mengecualikan_void(monkeypatch):
 async def test_query_pagar_patch_menyaring_tenant_id(monkeypatch):
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     await cd.update_customer_deposit(
-        object(), DEP, UpdateCustomerDepositRequest(amount=1)
+        _REQ, DEP, UpdateCustomerDepositRequest(amount=1)
     )
     so_i = [i for i, s in enumerate(conn.sqls) if "FROM sales_orders" in s][0]
     assert "tenant_id = $2" in conn.sqls[so_i]
@@ -214,7 +219,7 @@ async def test_query_pagar_patch_menyaring_tenant_id(monkeypatch):
 async def test_patch_tanpa_amount_tidak_memicu_pagar(monkeypatch):
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     res = await cd.update_customer_deposit(
-        object(), DEP, UpdateCustomerDepositRequest(notes="ubah catatan")
+        _REQ, DEP, UpdateCustomerDepositRequest(notes="ubah catatan")
     )
     assert res["success"] is True
     assert not any("FROM sales_orders" in s for s in conn.sqls), conn.sqls

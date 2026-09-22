@@ -79,7 +79,7 @@ async def test_pagar_total_menolak_dan_menyebut_sisa():
             conn, "kaos-biru-konveksi", "so-1", 10_000_000.0, 5_000_000.0
         )
     assert ex.value.status_code == 400
-    assert "4,000,000.00" in ex.value.detail, ex.value.detail
+    assert "4.000.000,00" in ex.value.detail, ex.value.detail
 
 
 async def test_pagar_total_meloloskan_tepat_sisa():

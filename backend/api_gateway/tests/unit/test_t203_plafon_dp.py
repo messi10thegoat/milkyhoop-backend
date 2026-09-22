@@ -84,9 +84,9 @@ async def test_pesan_penolakan_menyebut_tiga_angka():
     with pytest.raises(HTTPException) as ex:
         await cd.assert_deposit_within_order_total(conn, TENANT, SO, 4_000_000)
     detail = ex.value.detail
-    assert "5,000,000.00" in detail, detail
-    assert "1,600,000.00" in detail, detail
-    assert "3,400,000.00" in detail, detail
+    assert "5.000.000,00" in detail, detail
+    assert "1.600.000,00" in detail, detail
+    assert "3.400.000,00" in detail, detail
 
 
 # ------------------------------------------- KONTROL BATAS: TEPAT SISA LOLOS
