@@ -153,6 +153,18 @@
     {# Baris Tax HANYA untuk tenant PKP. Non-PKP yang menampilkan "Tax 0"
        menyiratkan ia memungut pajak nol, bukan tidak memungut sama sekali. #}
     {% if t.get('is_pkp') %}
+    {% if invoice.show_dpp_nilai_lain %}
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">DPP</td>
+      <td class="c-jml">{{ invoice.dpp_harga_jual_total | currency2 }}</td>
+    </tr>
+    <tr class="jumlah">
+      <td class="sisi-kosong" colspan="4"></td>
+      <td class="c-harga">DPP Nilai Lain</td>
+      <td class="c-jml">{{ invoice.dpp_nilai_lain_total | currency2 }}</td>
+    </tr>
+    {% endif %}
     <tr class="jumlah">
       <td class="sisi-kosong" colspan="4"></td>
       {# Tarif dari faktur, bukan tulisan mati "11%" (salah untuk kode 12%). #}

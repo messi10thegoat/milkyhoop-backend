@@ -223,7 +223,19 @@
                 {% set trs.found = true %}
             {% endif %}
             {% if _tax_amt > 0 %}
-            {% if invoice.dpp %}
+            {# 3c: faktor DPP != 1/1 (mis. 11/12) -> cetak dasar harga jual DAN nilai lain, supaya
+               tarif x DPP Nilai Lain = PPN bisa diperiksa dari kertasnya. #}
+            {% if invoice.show_dpp_nilai_lain %}
+            <tr>
+                <td class="label">DPP</td>
+                <td class="value">Rp {{ invoice.dpp_harga_jual_total | currency }}</td>
+            </tr>
+            <tr>
+                <td class="label">DPP Nilai Lain</td>
+                <td class="value">Rp {{ invoice.dpp_nilai_lain_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if invoice.dpp and not invoice.show_dpp_nilai_lain %}
             <tr>
                 <td class="label">DPP</td>
                 <td class="value">Rp {{ invoice.dpp | currency }}</td>
