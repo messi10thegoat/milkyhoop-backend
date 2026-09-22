@@ -5525,6 +5525,16 @@ async def get_invoice_pdf(
 
         # Generate PDF
         pdf_service = get_pdf_service()
+        # 3f: template A mencetak dua desimal HANYA bila faktur ini bersen. Dicetak bulat per
+        # baris, faktur bersen (mis. PPN 12% @11/12) menampilkan baris yang tak menjumlah ke Total.
+        invoice_data["has_cents"] = pdf_service.money_has_cents(
+            *[invoice_data.get(k) for k in (
+                "subtotal", "item_discount_total", "discount_amount", "shipping_amount",
+                "shipping_tax_amount", "tax_amount", "total_amount", "amount_paid", "amount_due",
+                "dpp_harga_jual_total", "dpp_nilai_lain_total",
+            )],
+            *[it.get(k) for it in invoice_data["items"] for k in ("unit_price", "subtotal", "total")],
+        )
         try:
             tpl = pilih_template(
                 tenant_row["pdf_template"] if tenant_row else "a", template
