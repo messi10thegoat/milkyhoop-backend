@@ -112,6 +112,11 @@ class PDFService:
         # tanpa desimal dan tidak boleh ikut berubah. Faktur gaya industri
         # menuntut dua desimal (12.500,00) karena harga satuan bisa pecahan.
         self.jinja_env.filters["currency2"] = self.format_currency2
+        # 3h/3f: `rupiah(v, dokumen_bersen)` -- dua desimal HANYA bila dokumennya bersen,
+        # selain itu PERSIS `currency` (tata letak dokumen bulat tak berubah).
+        self.jinja_env.filters["rupiah"] = (
+            lambda v, bersen=False: self.format_currency2(v) if bersen else self.format_currency(v)
+        )
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
         self.jinja_env.filters["date_full"] = self.format_date_full
         self.jinja_env.filters["date_short"] = self.format_date_short
@@ -182,6 +187,22 @@ class PDFService:
             return f"{value:,.0f}".replace(",", ".")
         except (ValueError, TypeError):
             return "0"
+
+    @staticmethod
+    def money_has_cents(*values: Any) -> bool:
+        """3h/3f: True bila SALAH SATU nominal punya sen. Dokumen bersen yang dicetak bulat per
+        baris menghasilkan baris yang tak menjumlah ke Total (terukur: faktur 12% @11/12)."""
+        from decimal import Decimal, InvalidOperation
+        for v in values:
+            if v is None or isinstance(v, bool):
+                continue
+            try:
+                dv = Decimal(str(v))
+            except (InvalidOperation, ValueError):
+                continue
+            if dv != dv.to_integral_value():
+                return True
+        return False
 
     @staticmethod
     def format_currency2(amount: Any) -> str:

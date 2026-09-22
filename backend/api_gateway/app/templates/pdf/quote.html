@@ -78,7 +78,7 @@
 
     <!-- 4. Hero Amount -->
     <div class="hero">
-        <div class="hero-amount">Rp {{ quote.total_amount | currency }}</div>
+        <div class="hero-amount">Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</div>
         {% if quote.expiry_date %}
         <div class="hero-due">Berlaku s/d {{ quote.expiry_date | date_id }}</div>
         {% endif %}
@@ -111,8 +111,8 @@
                     {% endif %}
                 </td>
                 <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                <td class="col-price">Rp {{ item.unit_price | currency }}</td>
-                <td class="col-amount">Rp {{ item.line_total | currency }}</td>
+                <td class="col-price">Rp {{ item.unit_price | rupiah(quote.has_cents) }}</td>
+                <td class="col-amount">Rp {{ item.line_total | rupiah(quote.has_cents) }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -123,18 +123,18 @@
         <table class="summary-table">
             <tr>
                 <td class="label">Subtotal</td>
-                <td class="value">Rp {{ quote.subtotal | currency }}</td>
+                <td class="value">Rp {{ quote.subtotal | rupiah(quote.has_cents) }}</td>
             </tr>
             {% if quote.discount_amount and quote.discount_amount|float > 0 %}
             <tr>
                 <td class="label">Diskon{% if quote.discount_type == "percentage" %} ({{ quote.discount_value }}%){% endif %}</td>
-                <td class="value">-Rp {{ quote.discount_amount | currency }}</td>
+                <td class="value">-Rp {{ quote.discount_amount | rupiah(quote.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if quote.shipping_charges and quote.shipping_charges|float > 0 %}
             <tr>
                 <td class="label">Pengiriman</td>
-                <td class="value">Rp {{ quote.shipping_charges | currency }}</td>
+                <td class="value">Rp {{ quote.shipping_charges | rupiah(quote.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if quote.tax_amount and quote.tax_amount|float > 0 %}
@@ -153,18 +153,18 @@
             {% endfor %}
             <tr>
                 <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
-                <td class="value">Rp {{ quote.tax_amount | currency }}</td>
+                <td class="value">Rp {{ quote.tax_amount | rupiah(quote.has_cents) }}</td>
             </tr>
             {% endif %}
             {% if quote.adjustment and quote.adjustment|float != 0 %}
             <tr>
                 <td class="label">{{ quote.adjustment_label or "Penyesuaian" }}</td>
-                <td class="value">Rp {{ quote.adjustment | currency }}</td>
+                <td class="value">Rp {{ quote.adjustment | rupiah(quote.has_cents) }}</td>
             </tr>
             {% endif %}
             <tr class="total-row">
                 <td class="label">Total</td>
-                <td class="value">Rp {{ quote.total_amount | currency }}</td>
+                <td class="value">Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</td>
             </tr>
         </table>
     </div>
@@ -177,11 +177,11 @@
         <table class="summary-table">
             <tr>
                 <td class="label">Uang Muka{% if quote.dp_percent and quote.dp_percent|float > 0 %} ({{ quote.dp_percent|round(0)|int }}%){% endif %}</td>
-                <td class="value">Rp {{ quote.dp_amount | currency }}</td>
+                <td class="value">Rp {{ quote.dp_amount | rupiah(quote.has_cents) }}</td>
             </tr>
             <tr class="total-row">
                 <td class="label">Sisa Pembayaran</td>
-                <td class="value">Rp {{ quote.dp_remaining | currency }}</td>
+                <td class="value">Rp {{ quote.dp_remaining | rupiah(quote.has_cents) }}</td>
             </tr>
         </table>
     </div>

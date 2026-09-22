@@ -67,6 +67,43 @@ def get_user_context(request: Request) -> dict:
     }
 
 
+async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fixed_amount=None) -> dict:
+    """3h -- SATU jalan hitung Penawaran: create, update, dan konversi (3g) semuanya lewat
+    kalkulator bersama (sama dengan Faktur/SO). Arti kolom Penawaran dipertahankan:
+    subtotal = SIGMA neto baris (sesudah diskon baris), line_total = neto baris + PPN baris.
+    percentage -> persen atas neto; fixed -> nilainya (atau `fixed_amount` bila diberikan)."""
+    await attach_dpp_factors(conn, tenant_id, lines, "tax_id")
+    dval = Decimal(str(discount_value or 0))
+    amt, pct = Decimal("0"), Decimal("0")
+    if dval > 0 and discount_type == "percentage":
+        pct = dval
+    elif dval > 0:
+        amt = dval if fixed_amount is None else fixed_amount
+    try:
+        doc = compute_document(lines, doc_discount_amount=amt, doc_discount_percent=pct)
+    except DocumentDiscountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    for ln in doc["items"]:
+        ln["line_total"] = ln["total"]
+    return doc
+
+
+def _quote_line(r) -> dict:
+    """Baris quote_items tersimpan -> masukan kalkulator."""
+    return {
+        "item_id": str(r["item_id"]) if r["item_id"] else None,
+        "description": r["description"],
+        "quantity": r["quantity"],
+        "unit": r["unit"],
+        "unit_price": r["unit_price"],
+        "discount_percent": r["discount_percent"] or 0,
+        "tax_id": str(r["tax_id"]) if r["tax_id"] else None,
+        "tax_rate": r["tax_rate"] or 0,
+        "group_name": r.get("group_name"),
+        "sort_order": r.get("sort_order"),
+    }
+
+
 async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
     """3g -- dokumen hasil konversi Penawaran (Faktur ATAU SO) dihitung ulang lewat kalkulator
     bersama, SAMA dengan create Faktur/SO: faktor DPP per kode, diskon dokumen dialokasikan
@@ -77,32 +114,16 @@ async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
     Diskon dokumen Penawaran: 'percentage' -> persen yang sama atas neto baris yang dikonversi;
     'fixed' -> nilainya, dibagi pro rata neto baris bila hanya sebagian baris dikonversi
     (Penawaran berstatus 'converted' sesudahnya, jadi sisanya tak pernah ditagih)."""
-    def as_line(r):
-        return {
-            "item_id": str(r["item_id"]) if r["item_id"] else None,
-            "description": r["description"],
-            "quantity": r["quantity"],
-            "unit": r["unit"],
-            "unit_price": r["unit_price"],
-            "discount_percent": r["discount_percent"] or 0,
-            "tax_id": str(r["tax_id"]) if r["tax_id"] else None,
-            "tax_rate": r["tax_rate"] or 0,
-        }
-    sel = [as_line(r) for r in items]
-    await attach_dpp_factors(conn, tenant_id, sel, "tax_id")
+    sel = [_quote_line(r) for r in items]
     dtype, dval = quote["discount_type"], Decimal(str(quote["discount_value"] or 0))
-    amt, pct = Decimal("0"), Decimal("0")
-    if dval > 0 and dtype == "percentage":
-        pct = dval
-    elif dval > 0:
+    fixed = None
+    if dval > 0 and dtype != "percentage":
         all_rows = await conn.fetch("SELECT * FROM quote_items WHERE quote_id = $1", quote["id"])
-        net_all = sum((line_net(as_line(r))["net"] for r in all_rows), Decimal("0"))
-        net_sel = sum((line_net(ln)["net"] for ln in sel), Decimal("0"))
-        amt = dval if len(sel) == len(all_rows) or net_all == 0 else _q2(dval * net_sel / net_all)
-    try:
-        return compute_document(sel, doc_discount_amount=amt, doc_discount_percent=pct)
-    except DocumentDiscountError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        if len(sel) != len(all_rows):
+            net_all = sum((line_net(_quote_line(r))["net"] for r in all_rows), Decimal("0"))
+            net_sel = sum((line_net(ln)["net"] for ln in sel), Decimal("0"))
+            fixed = dval if net_all == 0 else _q2(dval * net_sel / net_all)
+    return await _quote_calc(conn, tenant_id, sel, dtype, dval, fixed_amount=fixed)
 
 
 def calculate_item_totals(item: dict) -> dict:
@@ -593,15 +614,18 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
                     )
 
-                # Calculate item totals
-                calculated_items = [
-                    calculate_item_totals(item.model_dump()) for item in body.items
-                ]
-
-                # Calculate quote totals
-                totals = calculate_quote_totals(
-                    calculated_items, body.discount_type, body.discount_value
+                # 3h: kalkulator bersama (bukan calculate_item_totals/int()).
+                _doc = await _quote_calc(
+                    conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
+                    body.discount_type, body.discount_value,
                 )
+                calculated_items = _doc["items"]
+                totals = {
+                    "subtotal": _doc["net_subtotal"],
+                    "discount_amount": _doc["doc_discount"],
+                    "tax_amount": _doc["tax_amount"],
+                    "total_amount": _doc["total_amount"],
+                }
 
                 # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER)
                 dp = resolve_dp(
@@ -801,18 +825,25 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     params.append(value)
                     param_idx += 1
 
-                # Update items if provided
-                if body.items is not None:
+                # 3h: hitung ulang bila BARIS atau DISKON berubah. Dulu suntingan diskon-saja
+                # menulis discount_type/value tapi membiarkan discount_amount/tax/total basi.
+                _recalc = body.items is not None or bool(
+                    {"discount_type", "discount_value"} & body.model_fields_set
+                )
+                if _recalc:
+                    if body.items is not None:
+                        _lines = [item.model_dump() for item in body.items]
+                    else:
+                        _lines = [_quote_line(r) for r in await conn.fetch(
+                            "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id",
+                            uuid_module.UUID(quote_id),
+                        )]
                     # Delete existing items
                     await conn.execute(
                         "DELETE FROM quote_items WHERE quote_id = $1",
                         uuid_module.UUID(quote_id),
                     )
 
-                    # Calculate and insert new items
-                    calculated_items = [
-                        calculate_item_totals(item.model_dump()) for item in body.items
-                    ]
                     discount_type = body.discount_type or "fixed"
                     discount_value = body.discount_value or 0
 
@@ -829,9 +860,14 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                             else float(current["discount_value"])
                         )
 
-                    totals = calculate_quote_totals(
-                        calculated_items, discount_type, discount_value
-                    )
+                    _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value)
+                    calculated_items = _doc["items"]
+                    totals = {
+                        "subtotal": _doc["net_subtotal"],
+                        "discount_amount": _doc["doc_discount"],
+                        "tax_amount": _doc["tax_amount"],
+                        "total_amount": _doc["total_amount"],
+                    }
 
                     # Add totals to update
                     updates.append(f"subtotal = ${param_idx}")
@@ -888,14 +924,14 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 # (new total if items changed this update, else the stored total).
                 # Only touch dp columns when the client actually sent a dp_* field.
                 if body.dp_amount is not None or body.dp_percent is not None:
-                    if body.items is not None:
+                    if _recalc:
                         effective_total = totals["total_amount"]
                     else:
                         eff = await conn.fetchrow(
                             "SELECT total_amount FROM quotes WHERE id = $1",
                             uuid_module.UUID(quote_id),
                         )
-                        effective_total = int(eff["total_amount"]) if eff else 0
+                        effective_total = eff["total_amount"] if eff else 0
 
                     dp = resolve_dp(effective_total, body.dp_amount, body.dp_percent)
 
@@ -1909,10 +1945,11 @@ async def get_quote_pdf(
                 "tax_amount": quote["tax_amount"],
                 "total_amount": quote["total_amount"],
                 # FIX_P2_QUOTEDP 2026-06-16 — down-payment block (NO-LEDGER, display only)
-                "dp_amount": int(quote["dp_amount"]) if quote["dp_amount"] is not None else None,
+                "dp_amount": quote["dp_amount"],
                 "dp_percent": float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
+                # 3h: Decimal, bukan int() -- sisa dari total bersen tak boleh terpotong.
                 "dp_remaining": (
-                    int(quote["total_amount"]) - int(quote["dp_amount"])
+                    quote["total_amount"] - quote["dp_amount"]
                     if quote["dp_amount"] is not None
                     else None
                 ),
@@ -1948,6 +1985,12 @@ async def get_quote_pdf(
 
         # Generate PDF
         pdf_service = get_pdf_service()
+        # 3h: dua desimal hanya bila Penawaran ini bersen (lihat filter `rupiah`).
+        quote_data["has_cents"] = pdf_service.money_has_cents(
+            quote_data["subtotal"], quote_data["discount_amount"], quote_data["tax_amount"],
+            quote_data["total_amount"], quote_data["dp_amount"], quote_data["dp_remaining"],
+            *[v for it in quote_data["items"] for v in (it["unit_price"], it["tax_amount"], it["line_total"])],
+        )
         pdf_bytes = pdf_service.generate_quote_pdf(quote_data, tenant_info)
 
         # Generate filename
