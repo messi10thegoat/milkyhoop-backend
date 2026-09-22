@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Canonical "assigned + effective salary components for (employee, date)" query, shared by
+# calculate (reads component_id/amount/percentage) and the GET /{id} eligibility projection
+# (reads the sc.* metadata) so the projection shows EXACTLY the set the engine consumes --
+# one source, not two SELECTs that agree today and drift later. Predicate is byte-identical
+# to the pre-refactor calculate query (effective_date <= $3 <= end_date, NO is_active filter,
+# ORDER BY sc.sort_order); proven equivalent across all kaos + grapgrap employees at
+# config-boundary dates before this landed. NOTE a third copy still lives at the create/preview
+# path (~:207) -- left as its own ticket, folded in only when it has its own gate.
+ASSIGNED_COMPONENTS_SQL = """SELECT esc.component_id, esc.amount, esc.percentage,
+       sc.code, sc.name, sc.type, sc.category, sc.calculation_method, sc.sort_order
+FROM employee_salary_config esc
+JOIN salary_components sc ON sc.id = esc.component_id
+WHERE esc.tenant_id = $1 AND esc.employee_id = $2
+  AND esc.effective_date <= $3
+  AND (esc.end_date IS NULL OR esc.end_date >= $3)
+ORDER BY sc.sort_order"""
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get singleton connection pool (Law 32)."""
     from ..services.db_pool import get_db_pool
@@ -430,6 +448,33 @@ async def get_payroll_run(request: Request, run_id: UUID):
             for i in input_rows
         ]
 
+        # Per-employee ELIGIBILITY (Finding 2): each roster employee's ASSIGNED components
+        # (from the SAME ASSIGNED_COMPONENTS_SQL the engine consumes), so the FE renders
+        # quantity columns PER EMPLOYEE instead of tenant-wide, and inputs for unassigned
+        # components stop being silently discarded (calculate iterates assigned config only).
+        # EVERY roster employee appears; one with zero assigned components returns
+        # components: [] -- an explicit "not set up", NOT omitted (Rojak: "not set up" and
+        # "no data" are different sentences). Scoped exactly like the roster above.
+        eligibility = []
+        for r in roster_rows:
+            comp_rows = await conn.fetch(
+                ASSIGNED_COMPONENTS_SQL, ctx["tenant_id"], r["employee_id"], row["period_start"]
+            )
+            eligibility.append({
+                "employee_id": str(r["employee_id"]),
+                "components": [
+                    {
+                        "component_id": str(cc["component_id"]),
+                        "code": cc["code"],
+                        "name": cc["name"],
+                        "type": cc["type"],
+                        "category": cc["category"],
+                        "calculation_method": cc["calculation_method"],
+                    }
+                    for cc in comp_rows
+                ],
+            })
+
         return {
             "success": True,
             "data": {
@@ -438,6 +483,7 @@ async def get_payroll_run(request: Request, run_id: UUID):
                 "piece_lines": piece_lines,
                 "employees": employees,
                 "inputs": inputs,
+                "eligibility": eligibility,
             },
         }
 
@@ -659,14 +705,11 @@ async def calculate_payroll(request: Request, run_id: UUID):
                     empty_employees.append((str(emp_id), "(karyawan tidak ditemukan)"))
                     continue
 
+                # V283/Finding-2: shared ASSIGNED_COMPONENTS_SQL (same set the GET /{id}
+                # eligibility projection returns). calculate reads component_id/amount/
+                # percentage; the extra sc.* columns are ignored here.
                 salary_config = await conn.fetch(
-                    """SELECT esc.component_id, esc.amount, esc.percentage
-                       FROM employee_salary_config esc
-                       JOIN salary_components sc ON sc.id = esc.component_id
-                       WHERE esc.tenant_id = $1 AND esc.employee_id = $2
-                         AND esc.effective_date <= $3
-                         AND (esc.end_date IS NULL OR esc.end_date >= $3)
-                       ORDER BY sc.sort_order""",
+                    ASSIGNED_COMPONENTS_SQL,
                     ctx["tenant_id"],
                     emp_id,
                     period_start,
