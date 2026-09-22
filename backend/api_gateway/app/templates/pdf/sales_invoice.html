@@ -189,6 +189,13 @@
                 <td class="value">-Rp {{ invoice.cash_discount_total | currency }}</td>
             </tr>
             {% endif %}
+            {# V290: ongkos kirim = baris sendiri; PPN-nya sudah di baris PPN di bawah. #}
+            {% if invoice.shipping_amount and invoice.shipping_amount|float > 0 %}
+            <tr>
+                <td class="label">Ongkos kirim</td>
+                <td class="value">Rp {{ invoice.shipping_amount | currency }}</td>
+            </tr>
+            {% endif %}
             {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
             {% set _tax_amt = (invoice.tax_amount or 0)|float %}
             {% set _dpp = (invoice.dpp or 0)|float %}
@@ -207,6 +214,10 @@
                     {% endif %}
                 {% endfor %}
             {% endif %}
+            {# Ongkir dikenai tarif lain dari barang (kode pajak ongkir eksplisit): label
+               satu tarif akan salah -> tampilkan sebagai campuran. #}
+            {% set _srate = (invoice.shipping_tax_rate or 0)|float %}
+            {% if trs.found and (invoice.shipping_tax_amount or 0)|float > 0 and _srate != trs.rate %}{% set trs.mixed = true %}{% endif %}
             {% if not trs.found and _tax_amt > 0 and _dpp > 0 %}
                 {% set trs.rate = ((_tax_amt / _dpp) * 100)|round(2) %}
                 {% set trs.found = true %}
