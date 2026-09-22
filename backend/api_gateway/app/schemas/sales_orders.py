@@ -229,6 +229,12 @@ class UpdateSalesOrderRequest(BaseModel):
         v = v.strip()
         return v or None
 
+class CloseSalesOrderRequest(BaseModel):
+    """Unit 7: menutup SO yang BELUM terfakturkan penuh (pelanggan membatalkan sisanya)
+    WAJIB beralasan; alasan dicatat di audit_logs."""
+    reason: Optional[str] = Field(None, max_length=500, description="Alasan menutup SO yang belum terfakturkan penuh")
+
+
 class CancelSalesOrderRequest(BaseModel):
     """Schema for cancelling a sales order."""
     reason: Optional[str] = Field(None, max_length=500, description="Cancellation reason")

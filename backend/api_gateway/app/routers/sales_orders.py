@@ -21,6 +21,7 @@ from ..schemas.sales_orders import (
     CreateShipmentRequest,
     ConvertToInvoiceRequest,
     CancelSalesOrderRequest,
+    CloseSalesOrderRequest,
     SalesOrderListResponse,
     SalesOrderDetailResponse,
     SalesOrderResponse,
@@ -1094,56 +1095,129 @@ async def cancel_sales_order(
 
 
 @router.post("/{order_id}/close", response_model=SalesOrderResponse)
-async def close_sales_order(request: Request, order_id: str):
-    """Close a completed sales order."""
+async def close_sales_order(
+    request: Request, order_id: str, body: CloseSalesOrderRequest = None
+):
+    """Close (complete) a sales order.
+
+    Unit 7 (kasus Rahayu Umar): dulu SO ditutup HANYA berdasar status, dan status itu
+    berasal dari PENCACAH quantity_invoiced -- yang bisa berkata 63/63 tanpa satu pun
+    faktur. Kini sebelum menutup:
+      (a) tiap baris: qty pada baris faktur NON-VOID YANG TERTAUT harus >= qty dipesan
+          (BUKAN quantity_invoiced). Kurang -> ditolak, KECUALI dengan alasan (pelanggan
+          membatalkan sisanya) -> ditutup + dicatat di audit_logs. Karena itu SO
+          partial_invoiced / partial_shipped kini BISA ditutup, asal beralasan.
+      (b) uang muka milik SO yang masih bersisa -> DITOLAK TANPA pengecualian: menutup di
+          atasnya menelantarkan uang pelanggan. Terapkan ke faktur atau kembalikan dulu.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        reason = ((body.reason if body else None) or "").strip() or None
 
         async with pool.acquire() as conn:
-            order = await conn.fetchrow(
-                """
-                SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(order_id),
-                ctx["tenant_id"],
-            )
-
-            if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
-
-            if order["status"] not in ("invoiced", "shipped"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot close order with status '{order['status']}'",
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"SO_CLOSE:{order_id}"
+                )
+                order = await conn.fetchrow(
+                    """
+                    SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
+                """,
+                    uuid_module.UUID(order_id),
+                    ctx["tenant_id"],
                 )
 
-            await conn.execute(
-                """
-                UPDATE sales_orders SET status = 'completed'
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(order_id),
-                ctx["tenant_id"],
-            )
+                if not order:
+                    raise HTTPException(status_code=404, detail="Sales order not found")
 
-            return SalesOrderResponse(
-                success=True,
-                message="Sales order closed",
-                data={"order_number": order["order_number"], "status": "completed"},
-            )
+                if order["status"] not in ("invoiced", "shipped", "partial_invoiced", "partial_shipped"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot close order with status '{order['status']}'",
+                    )
+
+                from .customer_deposits import compute_deposit_remaining, linked_so_deposits
+
+                # (b) uang muka bersisa -> tolak, tanpa pengecualian
+                sisa_dp = []
+                for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
+                    rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
+                    if rem > 0:
+                        sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": int(rem)})
+                if sisa_dp:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "SO_DEPOSIT_REMAINING",
+                            "message": (
+                                f"SO {order['order_number']} tidak bisa ditutup: uang muka "
+                                + ", ".join(f"{x['deposit_number']} (sisa Rp{x['remaining']:,})".replace(",", ".") for x in sisa_dp)
+                                + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
+                            ),
+                            "deposits": sisa_dp,
+                        },
+                    )
+
+                # (a) qty pada faktur non-void yang TERTAUT, bukan pencacah quantity_invoiced
+                lines = await conn.fetch(
+                    """
+                    SELECT soi.description, soi.quantity,
+                           COALESCE((SELECT SUM(sii.quantity) FROM sales_invoice_items sii
+                                     JOIN sales_invoices si ON si.id = sii.invoice_id
+                                     WHERE sii.sales_order_item_id = soi.id AND si.status <> 'void'), 0) AS on_invoices
+                    FROM sales_order_items soi WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order
+                """,
+                    order["id"],
+                )
+                kurang = [
+                    {"description": r["description"], "quantity_ordered": float(r["quantity"]),
+                     "quantity_on_invoices": float(r["on_invoices"])}
+                    for r in lines if r["on_invoices"] < r["quantity"]
+                ]
+                if kurang and not reason:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "SO_NOT_FULLY_INVOICED",
+                            "message": (
+                                f"SO {order['order_number']} belum terfakturkan penuh: "
+                                + "; ".join(f"{k['description']} {k['quantity_on_invoices']:g} dari {k['quantity_ordered']:g}" for k in kurang)
+                                + ". Buat fakturnya dulu, atau bila pelanggan membatalkan sisanya, tutup dengan alasan."
+                            ),
+                            "lines": kurang,
+                        },
+                    )
+
+                await conn.execute(
+                    """
+                    UPDATE sales_orders SET status = 'completed'
+                    WHERE id = $1 AND tenant_id = $2
+                """,
+                    order["id"],
+                    ctx["tenant_id"],
+                )
+                if kurang:
+                    await conn.execute(
+                        """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+                           VALUES (gen_random_uuid()::text, 'SALES_ORDER_FORCE_CLOSED', 'sales_order', $1, $2, $3, 'api:sales_orders.close',
+                                   jsonb_build_object('reason', $4::text, 'user_id', $5::text, 'lines', $6::jsonb), true, now())""",
+                        str(order["id"]), order["order_number"], ctx["tenant_id"], reason,
+                        str(ctx["user_id"]), __import__("json").dumps(kurang),
+                    )
+
+                return SalesOrderResponse(
+                    success=True,
+                    message="Sales order closed",
+                    data={"order_number": order["order_number"], "status": "completed",
+                          "forced": bool(kurang), "reason": reason if kurang else None},
+                )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error closing sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to close sales order")
-
-
-# ============================================================================
-# SHIPMENT ENDPOINTS
-# ============================================================================
-
 
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
 async def create_shipment(request: Request, order_id: str, body: CreateShipmentRequest):
