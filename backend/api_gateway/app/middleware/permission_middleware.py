@@ -205,6 +205,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customer-deposits$", ["GET"], "customer_deposit", "R"),
     (r"^/api/sales-invoices/[^/]+/deposit-plan$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices/[^/]+/delete-impact$", ["GET"], "sales_invoice", "R"),
+    # Pengingat anomali (G.17): gerbang rute = baca faktur; tiap pemeriksaan disaring lagi
+    # per modul di handler (SO -> sales_order, uang muka -> customer_deposit).
+    (r"^/api/anomalies$", ["GET"], "sales_invoice", "R"),
     (r"^/api/customer-deposits/summary$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/customer/[^/]+$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/[^/]+/pdf$", ["GET"], "customer_deposit", "R"),

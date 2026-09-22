@@ -16,6 +16,7 @@ from prometheus_client import (
 # Import routers
 from .routers import health
 from .routers import events
+from .routers import anomalies
 from .routers import chat
 from .routers import session
 from .routers import auth
@@ -432,6 +433,8 @@ def _prometheus_metrics():
 # Include routers - Industry Standard Route Structure
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
+# Pengingat anomali (tiket G.17): read-only; izin per pemeriksaan di dalam handler.
+app.include_router(anomalies.router, prefix="/api/anomalies", tags=["anomalies"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(signup.router, prefix="/api/auth/signup", tags=["signup"])
