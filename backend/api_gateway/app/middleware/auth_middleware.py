@@ -125,33 +125,41 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        entered_downstream = False
+
+        async def _forward():
+            # Mark that control has left auth logic and entered the downstream stack, so
+            # the outer except can tell a handler failure from an auth-middleware failure.
+            nonlocal entered_downstream
+            entered_downstream = True
+            return await call_next(request)
 
         try:
             # Allow public paths
             if self._is_public_invite(path, request.method):
-                return await call_next(request)
+                return await _forward()
 
             if path in self.public_paths:
-                return await call_next(request)
+                return await _forward()
 
             # Allow customer chat endpoint (POST only, no auth)
             if self._is_customer_chat_endpoint(path) and request.method == "POST":
                 logger.info(f"Bypassing auth for customer endpoint: {path}")
-                return await call_next(request)
+                return await _forward()
 
             # Allow tenant info endpoint (GET only, no auth)
             if self._is_tenant_info_endpoint(path) and request.method == "GET":
                 logger.info(f"Bypassing auth for tenant info endpoint: {path}")
-                return await call_next(request)
+                return await _forward()
 
             # Allow Device WebSocket endpoint (auth via device_id in path)
             if self._is_device_ws_endpoint(path):
                 logger.info(f"Bypassing auth for Device WebSocket: {path}")
-                return await call_next(request)
+                return await _forward()
 
             # Allow signup verify-link endpoint (dynamic token in URL)
             if self._is_signup_public_endpoint(path):
-                return await call_next(request)
+                return await _forward()
 
             # 14 Sep 2026: bypass internal X-Source=action_executor DIHAPUS (pensiun layanan action_executor).
             # Dulu: X-Source + X-Tenant-ID -> role ADMIN tanpa auth -> lubang kepercayaan-header (siapa pun yang bisa
@@ -251,16 +259,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-            return await call_next(request)
+            return await _forward()
 
         except HTTPException:
             raise
         except Exception as e:
             import traceback
 
-            logger.error(
-                "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
-            )
+            if entered_downstream:
+                # The exception came from a DOWNSTREAM handler, not from auth logic.
+                # Log it as such so a reader can tell WHICH subsystem failed: an
+                # ImportError / ResponseValidationError from a router used to be
+                # mislabelled "Auth middleware error" and hid real outages. The
+                # client-facing 500 below is intentionally IDENTICAL either way.
+                logger.error(
+                    "Downstream handler error (not auth): %s\n%s",
+                    str(e),
+                    traceback.format_exc(),
+                )
+            else:
+                logger.error(
+                    "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
+                )
             return JSONResponse(
                 status_code=500,
                 content={"error": "Internal server error", "detail": str(e)},
