@@ -53,6 +53,7 @@ from ..services.role_resolver import (  # noqa: E402
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
+    PESAN_NON_PKP_PEMBELIAN,
 )
 from decimal import Decimal  # noqa: E402
 
@@ -480,9 +481,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                 # "kartu menampilkan jurnal yang salah" yang endpoint ini ada
                 # untuk membasmi. Yang benar: nol baris + satu kalimat jelas.
                 warnings.append(
-                    "Tenant ini belum berstatus PKP, jadi PPN Masukan tidak dapat "
-                    "dicatat — tagihan berpajak akan DITOLAK saat diterbitkan. "
-                    "Hapus pajaknya, atau ubah status PKP di Pengaturan."
+                    PESAN_NON_PKP_PEMBELIAN
+                    + " Tagihan berpajak akan DITOLAK saat diterbitkan."
                 )
                 return {
                     "journal_lines": [],

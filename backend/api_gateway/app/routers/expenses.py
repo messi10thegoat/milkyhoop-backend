@@ -32,6 +32,7 @@ from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
+    PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -1484,10 +1485,7 @@ async def create_expense_journal(
         if vat_input_id is None:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    "Tenant non-PKP tidak boleh mencatat PPN Masukan "
-                    "(tax_amount harus 0)."
-                ),
+                detail=PESAN_NON_PKP_PEMBELIAN,
             )
         await conn.execute(
             """

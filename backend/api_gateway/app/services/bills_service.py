@@ -31,6 +31,7 @@ from .role_resolver import (  # noqa: E402
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
+    PESAN_NON_PKP_PEMBELIAN,
 )
 from .role_precondition import assert_required_roles_for_path  # noqa: E402
 from .unit_helpers import convert_to_base_unit  # noqa: E402
@@ -2965,11 +2966,7 @@ class BillsService:
                         if vat_input_acct_id is None:
                             # Tenant non-PKP submitting bill with PPN > 0 -> 422
                             # (Law 4 consistency, no silent skip).
-                            raise ValueError(
-                                "Tenant non-PKP tidak dapat memposting tagihan "
-                                "dengan PPN > 0. Atur tax_amount = 0 atau "
-                                "aktifkan status PKP terlebih dahulu."
-                            )
+                            raise ValueError(PESAN_NON_PKP_PEMBELIAN)
 
                     if not ap_acct_id:
                         raise ValueError("Akun AP_TRADE tidak ter-resolve")
@@ -3643,11 +3640,7 @@ class BillsService:
                         # Non-PKP tenant with tax_amount > 0 -> reject loudly.
                         return {
                             "success": False,
-                            "message": (
-                                "Tenant non-PKP tidak dapat memposting tagihan "
-                                "dengan PPN > 0. Atur tax_amount = 0 atau "
-                                "aktifkan status PKP terlebih dahulu."
-                            ),
+                            "message": PESAN_NON_PKP_PEMBELIAN,
                             "data": None,
                         }
 

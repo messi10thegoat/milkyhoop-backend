@@ -47,6 +47,7 @@ from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
+    PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -1110,11 +1111,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                         # (no PPN Masukan original to reverse). Reject loudly.
                         raise HTTPException(
                             status_code=422,
-                            detail=(
-                                "Tenant non-PKP tidak dapat memposting kredit "
-                                "vendor dengan PPN > 0. Atur tax_amount = 0 "
-                                "atau aktifkan status PKP terlebih dahulu."
-                            ),
+                            detail=PESAN_NON_PKP_PEMBELIAN,
                         )
 
                     tax_jl_id = uuid_module.uuid4()

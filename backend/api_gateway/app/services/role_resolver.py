@@ -376,6 +376,12 @@ _VAT_ROLES: Final[frozenset[str]] = frozenset(
 )
 
 
+# Penolakan sisi PEMBELIAN untuk tenant non-PKP (tagihan, beban, kredit vendor): katakan apa yang
+# harus DILAKUKAN. Pembeli non-PKP tak mengkreditkan PPN Masukan -- PPN vendor adalah bagian dari
+# harga/biaya, jadi yang benar = harga termasuk PPN, tanpa kode pajak (cara grapgrap mencatat).
+PESAN_NON_PKP_PEMBELIAN = "Tenant non-PKP: masukkan harga termasuk PPN, tanpa kode pajak."
+
+
 async def resolve_account_id_by_role_if_pkp(
     conn, tenant_id: str, role_key: str
 ) -> UUID | None:
