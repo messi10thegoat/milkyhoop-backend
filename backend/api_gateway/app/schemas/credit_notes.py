@@ -31,6 +31,7 @@ class CreditNoteItemCreate(BaseModel):
     discount_percent: float = Field(0, ge=0, le=100)
     discount_amount: Decimal = Field(Decimal("0"), ge=0)
     tax_code: Optional[str] = Field(None, max_length=20)
+    tax_code_id: Optional[str] = Field(None, description="3(c): PPN code id; else resolved from tax_code / rate (output)")
     tax_rate: float = Field(0, ge=0, le=100)
     original_invoice_item_id: Optional[str] = Field(None, description="Original invoice item UUID")
 

@@ -161,6 +161,55 @@ def calculate_item_totals(item: dict) -> dict:
     }
 
 
+async def _cn_line_code(conn, tenant_id, ln, cache):
+    """3(c): kode PPN baris, DETERMINISTIK dan berarah 'output'. Urutan: tax_code_id eksplisit ->
+    tax_code (teks) milik tenant -> kode output aktif bertarif sama (is_default DESC, code)."""
+    if ln.get("tax_code_id"):
+        return str(ln["tax_code_id"])
+    rate = Decimal(str(ln.get("tax_rate") or 0))
+    if rate <= 0:
+        return None
+    key = (ln.get("tax_code") or "", str(rate))
+    if key in cache:
+        return cache[key]
+    tcid = None
+    if ln.get("tax_code"):
+        tcid = await conn.fetchval(
+            "SELECT id FROM tax_codes WHERE tenant_id = $1 AND code = $2 AND tax_type = 'ppn' AND direction = 'output' LIMIT 1",
+            tenant_id, ln["tax_code"],
+        )
+    if tcid is None:
+        tcid = await conn.fetchval(
+            """SELECT id FROM tax_codes WHERE tenant_id = $1 AND tax_type = 'ppn' AND direction = 'output'
+               AND rate = $2 AND is_active ORDER BY is_default DESC, code LIMIT 1""",
+            tenant_id, rate,
+        )
+    cache[key] = str(tcid) if tcid else None
+    return cache[key]
+
+
+async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, header_tax_rate) -> dict:
+    """3(c) -- nota kredit lewat kalkulator bersama (services/sales_doc_calc), SAMA dengan faktur:
+    diskon baris MENGURANGI total (dulu subtotal header = SIGMA BRUTO baris, diskon baris hilang),
+    diskon dokumen dialokasikan SEBELUM PPN, faktor DPP per kode. tax_rate header (lama: 'pajak
+    menyeluruh') diterapkan ke baris yang tak punya tarif sendiri."""
+    from ..services.sales_doc_calc import compute_document, DocumentDiscountError
+    from ..services.tax_factor import attach_dpp_factors
+    lines = [dict(it) for it in items]
+    hr = Decimal(str(header_tax_rate or 0))
+    cache = {}
+    for ln in lines:
+        if hr > 0 and Decimal(str(ln.get("tax_rate") or 0)) <= 0:
+            ln["tax_rate"] = hr
+        ln["tax_code_id"] = await _cn_line_code(conn, tenant_id, ln, cache)
+    await attach_dpp_factors(conn, tenant_id, lines, "tax_code_id")
+    try:
+        return compute_document(lines, doc_discount_amount=discount_amount or 0,
+                                doc_discount_percent=discount_percent or 0)
+    except DocumentDiscountError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> Decimal:
     """Compute invoice remaining from journal lines on AR account (Law 16).
 
@@ -622,31 +671,16 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                     "SELECT generate_credit_note_number($1, 'CN')", ctx["tenant_id"]
                 )
 
-                # Calculate items and totals
-                calculated_items = [
-                    calculate_item_totals(item.model_dump()) for item in body.items
-                ]
-                subtotal = sum(item["subtotal"] for item in calculated_items)
-                total_tax = sum(item["tax_amount"] for item in calculated_items)
-
-                # Apply overall discount
-                if body.discount_percent > 0:
-                    overall_discount = _q2(
-                        subtotal * Decimal(str(body.discount_percent)) / 100
-                    )
-                else:
-                    overall_discount = body.discount_amount
-
-                # Apply overall tax if specified
-                after_discount = subtotal - overall_discount
-                if body.tax_rate > 0:
-                    overall_tax = _q2(
-                        after_discount * Decimal(str(body.tax_rate)) / 100
-                    )
-                else:
-                    overall_tax = total_tax
-
-                total_amount = after_discount + overall_tax
+                # 3(c): kalkulator bersama (lihat _cn_doc).
+                _doc = await _cn_doc(
+                    conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
+                    body.discount_percent, body.discount_amount, body.tax_rate,
+                )
+                calculated_items = _doc["items"]
+                subtotal = _doc["gross_subtotal"]
+                overall_discount = _doc["doc_discount"]
+                overall_tax = _doc["tax_amount"]
+                total_amount = _doc["total_amount"]
 
                 # Get original invoice number if provided
                 original_invoice_number = None
@@ -701,8 +735,9 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
                             tax_code, tax_rate, tax_amount,
-                            subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            subtotal, total, line_number,
+                            tax_code_id, dpp, dpp_harga_jual
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                     """,
                         cn_id,
                         UUID(item["item_id"]) if item.get("item_id") else None,
@@ -719,6 +754,9 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
                         item["subtotal"],
                         item["total"],
                         idx,
+                        UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                        item["dpp"],
+                        item["dpp_harga_jual"],
                     )
 
                 logger.info(f"Credit note created: {cn_id}, number={cn_number}")
@@ -792,42 +830,49 @@ async def update_credit_note(
                         "data": {"id": str(credit_note_id)},
                     }
 
-                # Handle items if provided
-                if "items" in update_data and update_data["items"]:
-                    # Delete existing items
+                # 3(c): hitung ulang bila BARIS atau DISKON/TARIF berubah. Dulu: suntingan baris tanpa
+                # mengirim ulang diskon MENOLKAN diskon (default 0, bukan nilai tersimpan), dan
+                # suntingan diskon-saja tak menghitung ulang total.
+                _recalc = bool(update_data.get("items")) or bool(
+                    {"discount_percent", "discount_amount", "tax_rate"} & set(update_data)
+                )
+                if _recalc and not update_data.get("items"):
+                    _rows = await conn.fetch(
+                        "SELECT * FROM credit_note_items WHERE credit_note_id = $1 ORDER BY line_number",
+                        credit_note_id,
+                    )
+                    update_data["items"] = [
+                        {k: r[k] for k in ("item_id", "item_code", "description", "quantity", "unit",
+                                           "unit_price", "discount_percent", "discount_amount",
+                                           "tax_code", "tax_code_id", "tax_rate")}
+                        for r in _rows
+                    ]
+                if _recalc:
+                    _cur = await conn.fetchrow(
+                        "SELECT discount_percent, discount_amount, tax_rate FROM credit_notes WHERE id = $1",
+                        credit_note_id,
+                    )
                     await conn.execute(
                         "DELETE FROM credit_note_items WHERE credit_note_id = $1",
                         credit_note_id,
                     )
-
-                    # Calculate and insert new items
-                    calculated_items = [
-                        calculate_item_totals(item.model_dump()) for item in body.items
+                    _items = [
+                        (i.model_dump() if hasattr(i, "model_dump") else dict(i))
+                        for i in (body.items if body.items else update_data["items"])
                     ]
-
-                    subtotal = sum(item["subtotal"] for item in calculated_items)
-                    total_tax = sum(item["tax_amount"] for item in calculated_items)
-
-                    # Recalculate totals
-                    discount_percent = update_data.get("discount_percent", 0)
-                    discount_amount = update_data.get("discount_amount", 0)
-                    tax_rate = update_data.get("tax_rate", 0)
-
-                    if discount_percent > 0:
-                        overall_discount = _q2(
-                            subtotal * Decimal(str(discount_percent)) / 100
-                        )
-                    else:
-                        overall_discount = discount_amount
-
-                    after_discount = subtotal - overall_discount
-
-                    if tax_rate > 0:
-                        overall_tax = _q2(after_discount * Decimal(str(tax_rate)) / 100)
-                    else:
-                        overall_tax = total_tax
-
-                    total_amount = after_discount + overall_tax
+                    for i in _items:
+                        if i.get("item_id") is not None:
+                            i["item_id"] = str(i["item_id"])
+                    discount_percent = update_data.get("discount_percent", _cur["discount_percent"] or 0)
+                    discount_amount = update_data.get("discount_amount", _cur["discount_amount"] or 0)
+                    tax_rate = update_data.get("tax_rate", _cur["tax_rate"] or 0)
+                    _doc = await _cn_doc(conn, ctx["tenant_id"], _items, discount_percent,
+                                         discount_amount if not discount_percent else 0, tax_rate)
+                    calculated_items = _doc["items"]
+                    subtotal = _doc["gross_subtotal"]
+                    overall_discount = _doc["doc_discount"]
+                    overall_tax = _doc["tax_amount"]
+                    total_amount = _doc["total_amount"]
 
                     # Update totals
                     await conn.execute(
@@ -852,8 +897,9 @@ async def update_credit_note(
                                 quantity, unit, unit_price,
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
-                                subtotal, total, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                subtotal, total, line_number,
+                                tax_code_id, dpp, dpp_harga_jual
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                         """,
                             credit_note_id,
                             UUID(item["item_id"]) if item.get("item_id") else None,
@@ -870,9 +916,12 @@ async def update_credit_note(
                             item["subtotal"],
                             item["total"],
                             idx,
+                            UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
+                            item["dpp"],
+                            item["dpp_harga_jual"],
                         )
 
-                    del update_data["items"]
+                    update_data.pop("items", None)
 
                 # Update other fields
                 if update_data:
@@ -1403,21 +1452,30 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
 
                 # Wave 3: Write document_tax_lines (PPN reversal on CN)
                 if tax_amount > 0 and tax_jl_id:
-                    # Resolve PPN tax_code from tax_codes
-                    ppn_tc_id = await conn.fetchval(
-                        """
-                        SELECT id FROM tax_codes
-                        WHERE tenant_id = $1 AND tax_type = 'ppn' AND rate > 0 AND is_active = true
-                        LIMIT 1
-                        """,
-                        ctx["tenant_id"],
+                    # 3(c): SATU baris DTL per kode PPN baris (arah 'output'), dasar = dpp TERSIMPAN.
+                    # Dulu: "kode PPN aktif MANA SAJA, LIMIT 1, tanpa ORDER BY" (bisa kode MASUKAN) dan
+                    # dasar = subtotal header (bruto).
+                    _groups = await conn.fetch(
+                        """SELECT cni.tax_code_id, SUM(COALESCE(cni.dpp, cni.subtotal - COALESCE(cni.discount_amount, 0))) AS base,
+                                  SUM(cni.tax_amount) AS tax
+                           FROM credit_note_items cni
+                           WHERE cni.credit_note_id = $1 AND COALESCE(cni.tax_amount, 0) > 0
+                           GROUP BY cni.tax_code_id""",
+                        credit_note_id,
                     )
-                    if ppn_tc_id:
+                    for _g in _groups:
+                        ppn_tc_id = _g["tax_code_id"] or await conn.fetchval(
+                            """SELECT id FROM tax_codes WHERE tenant_id = $1 AND tax_type = 'ppn'
+                               AND direction = 'output' AND is_active ORDER BY is_default DESC, code LIMIT 1""",
+                            ctx["tenant_id"],
+                        )
+                        if not ppn_tc_id:
+                            continue
                         tc_coa = await conn.fetchval(
                             "SELECT coa_id FROM tax_codes WHERE id = $1",
                             ppn_tc_id,
                         )
-                        dpp_val = float(subtotal)
+                        dpp_val = float(_g["base"])
                         await conn.execute(
                             """
                             INSERT INTO document_tax_lines (
@@ -1433,7 +1491,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                             ppn_tc_id,
                             "output",
                             dpp_val,
-                            float(tax_amount),
+                            float(_g["tax"]),
                             tc_coa,
                             tax_jl_id,
                         )
