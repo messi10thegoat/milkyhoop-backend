@@ -4071,6 +4071,10 @@ async def record_payment(
 # =============================================================================
 # VOID INVOICE
 # =============================================================================
+# Status periode untuk pesan pengguna (CLOSED/LOCKED dulu tampil apa adanya: "yang sudah closed").
+_STATUS_PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
+
+
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
 async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequest):
     """
@@ -4101,7 +4105,10 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
             if invoice["status"] == "void":
-                raise HTTPException(status_code=400, detail="Invoice is already voided")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Faktur {invoice['invoice_number']} sudah dibatalkan.",
+                )
 
             # Pure Ledger: check if invoice has journal-based payments (Law 16)
             journal_paid = await conn.fetchval(
@@ -4136,9 +4143,24 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 ctx["tenant_id"],
             )
             if (journal_paid or 0) > 0:
+                # Sebut pembayarannya. "Refund first" dulu menyesatkan: tak ada jalan refund
+                # yang membuka faktur; fitur lepas-pembayaran belum ada (menunggu pemilik).
+                bayar = await conn.fetch(
+                    """SELECT DISTINCT rp.payment_number
+                       FROM receive_payment_allocations rpa
+                       JOIN receive_payments rp ON rp.id = rpa.payment_id
+                       WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                         AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
+                       ORDER BY rp.payment_number""",
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+                nomor = ", ".join(r["payment_number"] for r in bayar if r["payment_number"])
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot void invoice with payments. Refund first.",
+                    detail=f"Faktur {invoice['invoice_number']} sudah menerima pembayaran"
+                    + (f" ({nomor})" if nomor else "")
+                    + ". Faktur yang sudah dibayar belum bisa dibatalkan di MilkyHoop.",
                 )
 
             # Unit B (14 Sep 2026): nota kredit yang terkait (original_invoice_id) mengkredit piutang faktur ini.
@@ -4153,9 +4175,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
             if cn_terkait:
                 raise HTTPException(
                     status_code=400,
-                    detail="Faktur ini punya nota kredit terkait ("
+                    detail=f"Faktur {invoice['invoice_number']} punya nota kredit terkait ("
                     + ", ".join(r["credit_note_number"] for r in cn_terkait)
-                    + "). Faktur tidak bisa dibatalkan selama nota kredit itu terkait.",
+                    + "). Faktur yang punya nota kredit tidak bisa dibatalkan.",
                 )
 
             # ============================================================
@@ -4215,7 +4237,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     raise HTTPException(
                         status_code=409,
                         detail={
-                            "message": f"Pengiriman {f['fulfillment_number']} di periode {f_period['period_name']} yang sudah {f_period['status'].lower()}",
+                            "message": f"Pengiriman {f['fulfillment_number']} ada di periode {f_period['period_name']} yang sudah {_STATUS_PERIODE.get(f_period['status'], 'ditutup')}",
                             "suggestion": "credit_note",
                             "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
                             "prefill": {
@@ -4241,7 +4263,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "message": f"Faktur di periode {billing_period['period_name']} yang sudah {billing_period['status'].lower()}",
+                        "message": f"Faktur {invoice['invoice_number']} ada di periode {billing_period['period_name']} yang sudah {_STATUS_PERIODE.get(billing_period['status'], 'ditutup')}",
                         "suggestion": "credit_note",
                         "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
                         "prefill": {
