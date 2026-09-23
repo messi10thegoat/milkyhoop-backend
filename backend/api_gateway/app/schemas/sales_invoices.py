@@ -28,7 +28,13 @@ class InvoiceItemCreate(BaseModel):
 
     item_id: Optional[str] = None
     item_code: Optional[str] = Field(None, max_length=50)
-    description: str = Field(..., min_length=1, max_length=255)
+    # 500 = batas yang sama dengan baris SO/Penawaran (kolom V300 = text); dulu 255 di sini
+    # sementara SO/Penawaran menerima 500 -> SO->Faktur dengan keterangan panjang meledak.
+    description: str = Field(..., min_length=1, max_length=500)
+    # Unit D: keterangan baris yang DISUNTING pengguna (form dasbor). True -> disimpan apa
+    # adanya walau item_id ter-resolve. False/absen -> perilaku Q5: nama master menggantikan
+    # teks (jalur chat mengetik "kaos" untuk barang yang namanya lengkap di katalog).
+    description_custom: bool = False
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
     unit_price: int = Field(..., ge=0)

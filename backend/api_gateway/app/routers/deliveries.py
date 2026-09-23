@@ -260,6 +260,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 fi.notes,
                 fi.created_at,
                 p.nama_produk AS product_name,
+                sii.description AS line_description,
                 p.sku AS product_sku,
                 sii.unit
             FROM invoice_fulfillment_items fi
@@ -340,6 +341,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 "invoice_item_id": str(i["invoice_item_id"]),
                 "product_id": str(i["product_id"]) if i["product_id"] else None,
                 "product_name": i["product_name"],
+                "description": i["line_description"],
                 "product_sku": i["product_sku"],
                 "quantity": str(i["quantity"]),
                 "unit": i["unit"],
@@ -435,6 +437,7 @@ async def get_delivery_pdf(
                 fi.quantity,
                 fi.notes,
                 p.nama_produk AS product_name,
+                sii.description AS line_description,
                 p.sku AS product_sku,
                 sii.unit
             FROM invoice_fulfillment_items fi
@@ -475,7 +478,9 @@ async def get_delivery_pdf(
         "items": [
             {
                 "id": str(i["id"]),
-                "product_name": i["product_name"],
+                # Unit D: Surat Jalan mencetak keterangan BARIS FAKTUR (yang dicetak faktur),
+                # bukan nama master; nama master hanya bila baris tak punya teks.
+                "product_name": i["line_description"] or i["product_name"],
                 "product_sku": i["product_sku"],
                 "quantity": str(i["quantity"]),
                 "unit": i["unit"],

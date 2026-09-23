@@ -55,6 +55,7 @@ class SalesOrderItemResponse(BaseModel):
     id: str
     item_id: Optional[str] = None
     description: str
+    product_name: Optional[str] = None  # nama master (katalog); description = teks dokumen
     quantity: float
     quantity_shipped: float = 0
     quantity_invoiced: float = 0

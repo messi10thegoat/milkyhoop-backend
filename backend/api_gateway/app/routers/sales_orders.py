@@ -358,9 +358,13 @@ async def get_sales_order_detail(request: Request, order_id: str):
             # Get items
             items = await conn.fetch(
                 """
-                SELECT * FROM sales_order_items WHERE sales_order_id = $1 ORDER BY sort_order, id
+                SELECT soi.*, p.nama_produk AS product_name
+                FROM sales_order_items soi
+                LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2
+                WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order, soi.id
             """,
                 uuid_module.UUID(order_id),
+                ctx["tenant_id"],
             )
 
             # Get shipments
@@ -481,6 +485,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             id=str(item["id"]),
                             item_id=str(item["item_id"]) if item["item_id"] else None,
                             description=item["description"],
+                            product_name=item["product_name"],
                             quantity=float(item["quantity"]),
                             quantity_shipped=float(item["quantity_shipped"]),
                             quantity_invoiced=float(item["quantity_invoiced"]),

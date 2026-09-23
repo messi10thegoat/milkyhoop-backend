@@ -489,11 +489,13 @@ async def get_quote_detail(request: Request, quote_id: str):
 
             # Get items
             items_query = """
-                SELECT * FROM quote_items
-                WHERE quote_id = $1
-                ORDER BY sort_order, id
+                SELECT qi.*, p.nama_produk AS product_name
+                FROM quote_items qi
+                LEFT JOIN products p ON p.id = qi.item_id AND p.tenant_id = $2
+                WHERE qi.quote_id = $1
+                ORDER BY qi.sort_order, qi.id
             """
-            items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
+            items = await conn.fetch(items_query, uuid_module.UUID(quote_id), ctx["tenant_id"])
 
             is_expired = (
                 quote["expiry_date"] is not None
@@ -546,6 +548,7 @@ async def get_quote_detail(request: Request, quote_id: str):
                             id=str(item["id"]),
                             item_id=str(item["item_id"]) if item["item_id"] else None,
                             description=item["description"],
+                            product_name=item["product_name"],
                             quantity=float(item["quantity"]),
                             unit=item["unit"],
                             unit_price=item["unit_price"],

@@ -1084,14 +1084,17 @@ async def get_invoice(request: Request, invoice_id: UUID):
             if not invoice:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
-            # Get items
+            # Get items (+ nama master sebagai product_name; description = teks dokumen)
             items = await conn.fetch(
                 """
-                SELECT * FROM sales_invoice_items
-                WHERE invoice_id = $1
-                ORDER BY line_number
+                SELECT sii.*, p.nama_produk AS product_name
+                FROM sales_invoice_items sii
+                LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+                WHERE sii.invoice_id = $1
+                ORDER BY sii.line_number
             """,
                 invoice_id,
+                ctx["tenant_id"],
             )
 
             # Get payments from receive_payments (NOT deprecated sales_invoice_payments)
@@ -1258,6 +1261,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             else None,
                             "item_code": item["item_code"],
                             "description": item["description"],
+                            "product_name": item["product_name"],
                             "quantity": float(item["quantity"]),
                             "unit": item.get("unit"),
                             "unit_price": item["unit_price"],
@@ -1291,6 +1295,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             else None,
                             "item_code": item["item_code"],
                             "description": item["description"],
+                            "product_name": item["product_name"],
                             "quantity": float(item["quantity"]),
                             "unit": item.get("unit"),
                             "unit_price": item["unit_price"],
@@ -2985,7 +2990,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     # katalog, teks bebas), teks user dipertahankan apa adanya —
                     # ia satu-satunya keterangan yang kita punya.
                     _desc = item["description"]
-                    if item_uuid:
+                    # Unit D: keterangan yang sengaja disunting pengguna menang atas nama master.
+                    if item_uuid and not item.get("description_custom"):
                         if item_uuid not in _nama_master:
                             _nama_master[item_uuid] = await conn.fetchval(
                                 """SELECT nama_produk FROM products

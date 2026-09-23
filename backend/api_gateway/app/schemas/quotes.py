@@ -55,6 +55,7 @@ class QuoteItemResponse(BaseModel):
     id: str
     item_id: Optional[str] = None
     description: str
+    product_name: Optional[str] = None  # nama master (katalog); description = teks dokumen
     quantity: float
     unit: Optional[str] = None
     unit_price: int
