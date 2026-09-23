@@ -594,6 +594,12 @@ async def list_customer_cheques(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # get_customer_cheques() menyaring customer_id SAJA, tanpa tenant: tanpa pagar ini tenant mana pun bisa membaca
+            # cek milik tenant lain lewat id-nya (tertutup sementara hanya oleh 500 tipe bigint).
+            if not await conn.fetchval(
+                "SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, ctx["tenant_id"]
+            ):
+                raise HTTPException(status_code=404, detail="Customer not found")
             rows = await conn.fetch(
                 """
                 SELECT * FROM get_customer_cheques($1, $2)
@@ -639,6 +645,12 @@ async def list_vendor_cheques(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # get_vendor_cheques() menyaring vendor_id SAJA, tanpa tenant: tanpa pagar ini tenant mana pun bisa membaca
+            # cek milik tenant lain lewat id-nya (tertutup sementara hanya oleh 500 tipe bigint).
+            if not await conn.fetchval(
+                "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, ctx["tenant_id"]
+            ):
+                raise HTTPException(status_code=404, detail="Vendor not found")
             rows = await conn.fetch(
                 """
                 SELECT * FROM get_vendor_cheques($1, $2)
