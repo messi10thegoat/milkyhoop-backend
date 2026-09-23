@@ -317,6 +317,15 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
 # =============================================================================
 # CREATE TAX CODE
 # =============================================================================
+def _wajib_arah_ppn(tax_type, direction) -> None:
+    """Kode PPN wajib punya arah (CHECK basis data). Ditolak di gerbang dengan pesan, bukan 500."""
+    if tax_type == "ppn" and direction not in ("input", "output"):
+        raise HTTPException(
+            status_code=422,
+            detail="Kode PPN wajib punya arah: 'input' (pembelian) atau 'output' (penjualan).",
+        )
+
+
 @router.post("", response_model=TaxCodeResponse, status_code=201)
 async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
     """
@@ -341,14 +350,16 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
                     status_code=400, detail=f"Tax code '{body.code}' already exists"
                 )
 
+            _wajib_arah_ppn(body.tax_type, body.direction)
+
             # Insert tax code
             tax_code_id = await conn.fetchval(
                 """
                 INSERT INTO tax_codes (
                     tenant_id, code, name, rate, tax_type, is_inclusive,
                     sales_tax_account, purchase_tax_account, description,
-                    is_default, created_by, dpp_factor_num, dpp_factor_den
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    is_default, created_by, dpp_factor_num, dpp_factor_den, direction
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id
             """,
                 ctx["tenant_id"],
@@ -364,6 +375,7 @@ async def create_tax_code(request: Request, body: CreateTaxCodeRequest):
                 ctx["user_id"],
                 body.dpp_factor_num,
                 body.dpp_factor_den,
+                body.direction,
             )
 
             logger.info(f"Tax code created: {tax_code_id}, code={body.code}")
@@ -400,12 +412,18 @@ async def update_tax_code(
         async with pool.acquire() as conn:
             # Check if tax code exists
             existing = await conn.fetchrow(
-                "SELECT id, code FROM tax_codes WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, code, tax_type, direction FROM tax_codes WHERE id = $1 AND tenant_id = $2",
                 tax_code_id,
                 ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Tax code not found")
+            # Keadaan SESUDAH sunting: PPN tanpa arah ditolak 422 (dulu 500 dari CHECK).
+            _ubah = body.model_dump(exclude_unset=True)
+            _wajib_arah_ppn(
+                _ubah.get("tax_type", existing["tax_type"]),
+                _ubah["direction"] if "direction" in _ubah else existing["direction"],
+            )
 
             # Check for duplicate code if code is being changed
             if body.code and body.code != existing["code"]:

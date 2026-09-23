@@ -33,6 +33,9 @@ class CreateTaxCodeRequest(BaseModel):
     purchase_tax_account: Optional[str] = Field(None, max_length=20, description="CoA code for purchase tax")
     description: Optional[str] = None
     is_default: bool = Field(False, description="Set as default tax for this type")
+    # Arah: input = pembelian (PPN Masukan), output = penjualan (PPN Keluaran). WAJIB untuk PPN
+    # (CHECK basis data); dulu medan ini tak ada -> kode PPN tak bisa dibuat (500).
+    direction: Optional[Literal["input", "output"]] = None
     # V289: DPP = DPP harga jual x (num/den). 11/12 = DPP nilai lain (PMK 131/2024), 1/1 = penuh.
     dpp_factor_num: int = Field(1, ge=1, description="Pembilang faktor DPP")
     dpp_factor_den: int = Field(1, ge=1, description="Penyebut faktor DPP")
@@ -68,6 +71,7 @@ class UpdateTaxCodeRequest(BaseModel):
     description: Optional[str] = None
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
+    direction: Optional[Literal["input", "output"]] = None
     dpp_factor_num: Optional[int] = Field(None, ge=1)
     dpp_factor_den: Optional[int] = Field(None, ge=1)
 
