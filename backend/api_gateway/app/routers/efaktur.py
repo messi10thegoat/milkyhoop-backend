@@ -6,14 +6,16 @@ import io
 import zipfile
 import logging
 from decimal import Decimal
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
+from ..services.efaktur_module import require_efaktur_module
 from fastapi.responses import Response
 
 from ..schemas.efaktur import EfakturPeriodRequest
 from ..services.xml_generator import load_xml_config, generate_xml
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# V293: seluruh rute modul ini butuh tabel e-Faktur lengkap -> 409 jujur, bukan 500.
+router = APIRouter(dependencies=[Depends(require_efaktur_module)])
 
 
 # ── Helpers (per-router pool pattern) ─────────────────────

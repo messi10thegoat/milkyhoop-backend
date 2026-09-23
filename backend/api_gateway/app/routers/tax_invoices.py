@@ -5,7 +5,8 @@ Tax invoices are SEPARATE documents from sales invoices/bills.
 Linked via tax_invoice_sources junction table (M:N).
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Depends
+from ..services.efaktur_module import require_efaktur_module
 from typing import Optional
 import logging
 import asyncpg
@@ -884,7 +885,7 @@ async def get_tax_invoice(request: Request, tax_invoice_id: str):
         return result
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_efaktur_module)])
 async def create_tax_invoice(request: Request, payload: TaxInvoiceCreate):
     """Create tax invoice from source document(s)."""
     ctx = get_user_context(request)
@@ -933,7 +934,7 @@ async def create_tax_invoice(request: Request, payload: TaxInvoiceCreate):
             return result
 
 
-@router.post("/bulk")
+@router.post("/bulk", dependencies=[Depends(require_efaktur_module)])
 async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCreate):
     """Bulk create tax invoices for all eligible invoices in a period."""
     ctx = get_user_context(request)
@@ -1046,7 +1047,7 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
         return {"created": created, "skipped": skipped, "errors": errors}
 
 
-@router.post("/{tax_invoice_id}/assign-nsfp")
+@router.post("/{tax_invoice_id}/assign-nsfp", dependencies=[Depends(require_efaktur_module)])
 async def assign_nsfp(request: Request, tax_invoice_id: str):
     """Assign NSFP number to a draft tax invoice."""
     ctx = get_user_context(request)
@@ -1107,7 +1108,7 @@ async def assign_nsfp(request: Request, tax_invoice_id: str):
             return {"faktur_number": faktur_number, "status": "nsfp_assigned"}
 
 
-@router.post("/bulk-assign-nsfp")
+@router.post("/bulk-assign-nsfp", dependencies=[Depends(require_efaktur_module)])
 async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
     """Bulk assign NSFP to draft tax invoices."""
     ctx = get_user_context(request)
@@ -1180,7 +1181,7 @@ async def bulk_assign_nsfp(request: Request, payload: BulkAssignNSFP):
         return {"assigned": assigned, "errors": errors}
 
 
-@router.patch("/{tax_invoice_id}/status")
+@router.patch("/{tax_invoice_id}/status", dependencies=[Depends(require_efaktur_module)])
 async def update_status(
     request: Request, tax_invoice_id: str, payload: TaxInvoiceStatusUpdate
 ):
@@ -1215,7 +1216,7 @@ async def update_status(
         return {"id": str(tax_invoice_id), "status": payload.status}
 
 
-@router.post("/{tax_invoice_id}/cancel")
+@router.post("/{tax_invoice_id}/cancel", dependencies=[Depends(require_efaktur_module)])
 async def cancel_tax_invoice(
     request: Request, tax_invoice_id: str, payload: TaxInvoiceCancel
 ):
@@ -1262,7 +1263,7 @@ async def cancel_tax_invoice(
         return {"id": str(tax_invoice_id), "status": "cancelled"}
 
 
-@router.post("/{tax_invoice_id}/replace")
+@router.post("/{tax_invoice_id}/replace", dependencies=[Depends(require_efaktur_module)])
 async def replace_tax_invoice(
     request: Request, tax_invoice_id: str, payload: TaxInvoiceReplace
 ):

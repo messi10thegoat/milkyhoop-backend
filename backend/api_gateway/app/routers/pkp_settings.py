@@ -5,14 +5,16 @@ GET/PATCH endpoints for managing PKP identity (NPWP, NITKU, etc.)
 stored in the tax_info table.
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
+from ..services.efaktur_module import require_efaktur_module
 import logging
 import asyncpg
 
 from ..schemas.pkp_settings import PKPSettingsResponse, PKPSettingsUpdate
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# V293: seluruh rute modul ini butuh tabel e-Faktur lengkap -> 409 jujur, bukan 500.
+router = APIRouter(dependencies=[Depends(require_efaktur_module)])
 
 
 async def get_pool() -> asyncpg.Pool:
