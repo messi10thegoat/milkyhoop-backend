@@ -2227,10 +2227,22 @@ async def unapply_receive_payment_allocation(
                 alloc["bank_account_id"], f"Lepas dari {alloc['payment_number']}", _note, ctx["user_id"],
             )
             journal_id = uuid_module.uuid4()
-            journal_number = (
-                await conn.fetchval("SELECT get_next_journal_number($1, 'LPS')", ctx["tenant_id"])
-                or f"LPS-{alloc['payment_number']}"
-            )
+            # L2 (c) C1: jurnal lepas bernomor SAMA dengan uang muka LPS yang ia lahirkan -- satu ruang
+            # nama. Dulu jurnal memakai urutan jurnal 'LPS' sendiri sementara uang muka memakai
+            # penghitung uang muka: "LPS-2609-0001" = jurnal, "LPS-2609-0078" = uang mukanya; pencarian
+            # nomor jurnal tak menemukan uang muka apa pun. Nomor jurnal unik per tenant
+            # (uq_je_tenant_number): bila nomor itu SUDAH dipakai jurnal lain (mis. jurnal lama dari
+            # urutan 'LPS'), pakai urutan 'LPJ' -- dicek dulu, bukan ditangkap (pelanggaran unik
+            # membatalkan transaksi).
+            journal_number = dep_no
+            if await conn.fetchval(
+                "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND journal_number = $2",
+                ctx["tenant_id"], dep_no,
+            ):
+                journal_number = (
+                    await conn.fetchval("SELECT get_next_journal_number($1, 'LPJ')", ctx["tenant_id"])
+                    or f"LPJ-{alloc['payment_number']}"
+                )
             await conn.execute(
                 """
                 INSERT INTO journal_entries (
