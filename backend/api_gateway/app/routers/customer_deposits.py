@@ -282,6 +282,11 @@ async def compute_deposit_remaining_many(conn, tenant_id: str, deposit_ids) -> d
                              SELECT journal_id FROM receive_payments
                              WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
                          )
+                         -- V299: kredit dari LEPAS PEMBAYARAN (jurnal lepas bersumber faktur, Law 29/30)
+                         OR je.id IN (
+                             SELECT unapply_journal_id FROM receive_payment_allocations
+                             WHERE tenant_id = $1 AND unapply_deposit_id = d.id AND unapply_journal_id IS NOT NULL
+                         )
                      )
                ), 0) AS remaining
         FROM unnest($2::uuid[]) AS d(id)

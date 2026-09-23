@@ -240,6 +240,11 @@ class ReceivePaymentDetail(BaseModel):
 # =============================================================================
 
 
+class UnapplyAllocationRequest(BaseModel):
+    """Lepas Pembayaran: alasan (opsional) melepas alokasi pelunasan dari faktur."""
+    reason: Optional[str] = Field(None, max_length=500)
+
+
 class ReceivePaymentResponse(BaseModel):
     """Generic receive payment operation response."""
 

@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..schemas.receive_payments import (
+    UnapplyAllocationRequest,
     CreateReceivePaymentRequest,
     ReceivePaymentDetail,
     ReceivePaymentDetailResponse,
@@ -2103,6 +2104,210 @@ async def post_receive_payment(request: Request, payment_id: UUID):
 # =============================================================================
 
 
+# =============================================================================
+# LEPAS PEMBAYARAN (V299) -- unapply ONE allocation of a posted receive payment from its invoice.
+# Journal = NEW entries only (Law 2): Dr Piutang Usaha / Cr Uang Muka Pelanggan, source_type
+# RECEIVE_PAYMENT_UNAPPLY, source_id = the INVOICE (Law 29/30). compute_ar_outstanding Branch 4 counts it
+# as a negative credit on that invoice (outstanding restored -> the invoice becomes voidable). The freed
+# credit becomes a dedicated customer deposit (LPS-...) -- re-apply it through the EXISTING deposit
+# /apply path. Idempotent: a second unapply of the same allocation answers "sudah dilepas", no journal.
+# =============================================================================
+@router.post(
+    "/{payment_id}/allocations/{allocation_id}/unapply",
+    response_model=ReceivePaymentResponse,
+)
+async def unapply_receive_payment_allocation(
+    request: Request,
+    payment_id: UUID,
+    allocation_id: UUID,
+    body: Optional[UnapplyAllocationRequest] = None,
+):
+    ctx = get_user_context(request)
+    if not ctx.get("user_id"):
+        raise HTTPException(status_code=401, detail="User ID required")
+    reason = (body.reason.strip() if body and body.reason else None) or None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Law 13: the same payment lock as void (void and unapply never interleave), then the allocation
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"RECEIVE_PAYMENT_VOID:{payment_id}")
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"RECEIVE_PAYMENT_UNAPPLY:{allocation_id}")
+            alloc = await conn.fetchrow(
+                """
+                SELECT rpa.*, rp.status AS rp_status, rp.payment_number, rp.customer_id AS rp_customer_id,
+                       rp.customer_name AS rp_customer_name, rp.discount_amount, rp.journal_id AS rp_journal_id,
+                       rp.payment_method, rp.bank_account_id
+                FROM receive_payment_allocations rpa
+                JOIN receive_payments rp ON rp.id = rpa.payment_id
+                WHERE rpa.id = $1 AND rpa.payment_id = $2 AND rpa.tenant_id = $3 AND rp.tenant_id = $3
+                FOR UPDATE OF rpa
+                """,
+                allocation_id, payment_id, ctx["tenant_id"],
+            )
+            if not alloc:
+                raise HTTPException(status_code=404, detail="Alokasi pembayaran tidak ditemukan")
+            if alloc["status"] == "reversed":
+                dep_no = await conn.fetchval("SELECT deposit_number FROM customer_deposits WHERE id = $1", alloc["unapply_deposit_id"])
+                return {
+                    "success": True,
+                    "message": f"Pembayaran {alloc['payment_number']} sudah dilepas dari faktur {alloc['invoice_number']}.",
+                    "data": {
+                        "already": True,
+                        "allocation_id": str(allocation_id),
+                        "unapply_journal_id": str(alloc["unapply_journal_id"]) if alloc["unapply_journal_id"] else None,
+                        "deposit_id": str(alloc["unapply_deposit_id"]) if alloc["unapply_deposit_id"] else None,
+                        "deposit_number": dep_no,
+                    },
+                }
+            if alloc["rp_status"] != "posted" or not alloc["rp_journal_id"]:
+                raise HTTPException(status_code=409, detail=f"Pembayaran {alloc['payment_number']} tidak terposting; hanya pembayaran terposting yang bisa dilepas.")
+            if (alloc["discount_amount"] or 0) > 0:
+                raise HTTPException(status_code=409, detail=f"Pembayaran {alloc['payment_number']} memakai potongan pelunasan; lepas pembayaran berpotongan belum tersedia.")
+            inv = await conn.fetchrow(
+                "SELECT id, invoice_number, status, total_amount FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                alloc["invoice_id"], ctx["tenant_id"],
+            )
+            if not inv or inv["status"] in ("void", "draft"):
+                raise HTTPException(status_code=409, detail="Faktur alokasi ini tidak aktif; tidak ada yang bisa dilepas.")
+            # Law 5: the unapply journal is dated today
+            today = date.today()
+            per = await conn.fetchrow(
+                "SELECT period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+                ctx["tenant_id"], today,
+            )
+            if per and per["status"] in ("CLOSED", "LOCKED"):
+                raise HTTPException(status_code=409, detail=f"Periode {per['period_name']} sudah ditutup; lepas pembayaran dicatat hari ini dan tidak bisa masuk periode tertutup.")
+            # The allocation's CURRENT credited share on the ledger -- the SAME formula as
+            # compute_ar_outstanding Branch 1 -- so the unapply cancels exactly what was credited.
+            share = await conn.fetchval(
+                """
+                WITH pb AS (
+                    SELECT COALESCE(SUM(jl.credit), 0) AS ar_credit
+                    FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                    WHERE je.id = $1 AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+                      AND coa.account_type = 'RECEIVABLE' AND jl.credit > 0
+                ),
+                a AS (
+                    SELECT rpa.id,
+                           CASE WHEN SUM(rpa.amount_applied) OVER () > 0
+                                THEN ROUND((SELECT ar_credit FROM pb) * rpa.amount_applied / SUM(rpa.amount_applied) OVER (), 2)
+                                ELSE 0 END AS bagian,
+                           ROW_NUMBER() OVER (ORDER BY rpa.id DESC) AS urut
+                    FROM receive_payment_allocations rpa WHERE rpa.payment_id = $2
+                ),
+                b AS (SELECT a.*, SUM(a.bagian) OVER () AS jumlah FROM a)
+                SELECT b.bagian + CASE WHEN b.urut = 1 AND b.jumlah > 0 THEN (SELECT ar_credit FROM pb) - b.jumlah ELSE 0 END
+                FROM b WHERE b.id = $3
+                """,
+                alloc["rp_journal_id"], payment_id, allocation_id,
+            )
+            share = Decimal(str(share or 0))
+            if share <= 0:
+                raise HTTPException(status_code=409, detail="Alokasi ini tidak punya pelunasan tercatat di jurnal; tidak ada yang bisa dilepas.")
+            ar_account_id = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.AR_TRADE)
+            deposit_account_id = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+            # the freed credit: a dedicated customer deposit (re-appliable via the existing deposit /apply)
+            dep_no = await conn.fetchval("SELECT generate_customer_deposit_number($1, 'LPS')", ctx["tenant_id"])
+            _note = f"Lepas pembayaran {alloc['payment_number']} dari faktur {inv['invoice_number']}" + (f": {reason}" if reason else "")
+            dep_id = await conn.fetchval(
+                """
+                INSERT INTO customer_deposits (
+                    tenant_id, deposit_number, customer_id, customer_name,
+                    amount, deposit_date, payment_method,
+                    account_id, reference, notes,
+                    status, posted_at, posted_by, created_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'posted', NOW(), $11, $11)
+                RETURNING id
+                """,
+                ctx["tenant_id"], dep_no, alloc["rp_customer_id"], alloc["rp_customer_name"],
+                share, today, _deposit_payment_method(alloc["payment_method"]),
+                alloc["bank_account_id"], f"Lepas dari {alloc['payment_number']}", _note, ctx["user_id"],
+            )
+            journal_id = uuid_module.uuid4()
+            journal_number = (
+                await conn.fetchval("SELECT get_next_journal_number($1, 'LPS')", ctx["tenant_id"])
+                or f"LPS-{alloc['payment_number']}"
+            )
+            await conn.execute(
+                """
+                INSERT INTO journal_entries (
+                    id, tenant_id, journal_number, journal_date,
+                    description, source_type, source_id, trace_id,
+                    status, total_debit, total_credit, created_by
+                ) VALUES ($1, $2, $3, $4, $5, 'RECEIVE_PAYMENT_UNAPPLY', $6, $7, 'DRAFT', $8, $8, $9)
+                """,
+                journal_id, ctx["tenant_id"], journal_number, today,
+                f"Lepas Pembayaran {alloc['payment_number']} dari {inv['invoice_number']} - {alloc['rp_customer_name']}",
+                alloc["invoice_id"], str(uuid_module.uuid4()), share, ctx["user_id"],
+            )
+            for n, (acct, dr, cr, memo) in enumerate((
+                (ar_account_id, share, Decimal("0"), f"Lepas pelunasan {inv['invoice_number']}"),
+                (deposit_account_id, Decimal("0"), share, f"Kredit pelanggan {dep_no} (lepas {alloc['payment_number']})"),
+            ), 1):
+                await conn.execute(
+                    "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    uuid_module.uuid4(), journal_id, n, acct, dr, cr, memo,
+                )
+            # Law 20: DRAFT -> POSTED after all lines
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)
+            await conn.execute(
+                """
+                UPDATE receive_payment_allocations
+                SET status = 'reversed', reversed_at = NOW(), reversed_by = $2,
+                    unapply_journal_id = $3, unapply_deposit_id = $4, unapply_reason = $5
+                WHERE id = $1
+                """,
+                allocation_id, ctx["user_id"], journal_id, dep_id, reason,
+            )
+            # caches (Law 21, write-side only): invoice amount_paid/status from the canonical outstanding
+            outstanding = await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], alloc["invoice_id"])
+            invoice_total = Decimal(str(inv["total_amount"] or 0))
+            new_paid = max(Decimal("0"), invoice_total - max(Decimal("0"), outstanding))
+            new_status = "posted" if new_paid <= 0 else ("paid" if outstanding <= 0 else "partial")
+            await conn.execute(
+                "UPDATE sales_invoices SET amount_paid = $2, status = $3, updated_at = NOW() WHERE id = $1 AND status <> 'void'",
+                alloc["invoice_id"], new_paid, new_status,
+            )
+            await conn.execute(
+                """
+                UPDATE accounts_receivable
+                SET amount_paid = GREATEST(0, amount_paid - $2),
+                    status = CASE WHEN GREATEST(0, amount_paid - $2) = 0 THEN 'OPEN' ELSE 'PARTIAL' END,
+                    updated_at = NOW()
+                WHERE source_id = $1 AND source_type = 'INVOICE'
+                """,
+                alloc["invoice_id"], share,
+            )
+            # server figures for the screen: the customer's available credit (same derivation as the deposit list)
+            from .customer_deposits import compute_deposit_remaining_many
+            _deps = await conn.fetch(
+                "SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2 AND status IN ('posted', 'partial')",
+                ctx["tenant_id"], alloc["rp_customer_id"],
+            )
+            _saldo = await compute_deposit_remaining_many(conn, ctx["tenant_id"], [d["id"] for d in _deps])
+            customer_credit = sum((v for v in _saldo.values() if v > 0), Decimal("0"))
+    logger.info(f"Lepas pembayaran {alloc['payment_number']} dari {inv['invoice_number']}: {share} -> {dep_no}")
+    return {
+        "success": True,
+        "message": f"Pembayaran {alloc['payment_number']} dilepas dari faktur {inv['invoice_number']}. Kredit Rp {share:,.2f} menjadi uang muka {dep_no}.",
+        "data": {
+            "already": False,
+            "allocation_id": str(allocation_id),
+            "invoice_id": str(alloc["invoice_id"]),
+            "invoice_number": inv["invoice_number"],
+            "amount": float(share),
+            "unapply_journal_id": str(journal_id),
+            "unapply_journal_number": journal_number,
+            "deposit_id": str(dep_id),
+            "deposit_number": dep_no,
+            "invoice_remaining": float(max(Decimal("0"), outstanding)),
+            "invoice_status": new_status,
+            "customer_credit_balance": float(customer_credit),
+        },
+    }
+
+
 @router.post("/{payment_id}/void", response_model=ReceivePaymentResponse)
 async def void_receive_payment(
     request: Request, payment_id: UUID, body: VoidPaymentRequest
@@ -2182,6 +2387,33 @@ async def void_receive_payment(
                                 "itu dulu sebelum membatalkan pembayaran."
                             ),
                         )
+
+                # V299 Lepas Pembayaran: alokasi yang sudah DILEPAS punya jurnal lepas + uang muka LPS. Void
+                # pembayaran membatalkan keduanya di transaksi yang sama -- kecuali kreditnya sudah
+                # dipakai/dikembalikan (pola Option B di atas: tolak, batalkan pemakaian dulu).
+                _lepas = await conn.fetch(
+                    """
+                    SELECT rpa.id, rpa.unapply_journal_id, rpa.unapply_deposit_id, cd.deposit_number
+                    FROM receive_payment_allocations rpa
+                    JOIN customer_deposits cd ON cd.id = rpa.unapply_deposit_id
+                    WHERE rpa.payment_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'reversed'
+                      AND rpa.unapply_journal_id IS NOT NULL AND is_effective_journal(rpa.unapply_journal_id)
+                    """,
+                    payment_id, ctx["tenant_id"],
+                )
+                if _lepas:
+                    from .customer_deposits import compute_deposit_remaining_many
+                    _sisa_lps = await compute_deposit_remaining_many(conn, ctx["tenant_id"], [r["unapply_deposit_id"] for r in _lepas])
+                    for _r in _lepas:
+                        _amt_lps = await conn.fetchval("SELECT COALESCE(SUM(credit), 0) FROM journal_lines WHERE journal_id = $1", _r["unapply_journal_id"])
+                        if _sisa_lps[str(_r["unapply_deposit_id"])] < Decimal(str(_amt_lps)):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Kredit {_r['deposit_number']} dari lepas pembayaran ini sudah dipakai/dikembalikan. "
+                                    "Batalkan pemakaian/pengembalian itu dulu sebelum membatalkan pembayaran."
+                                ),
+                            )
 
                 # Create reversal journal
                 void_journal_id = uuid_module.uuid4()
@@ -2291,6 +2523,35 @@ async def void_receive_payment(
                             description_prefix="[VOID]",
                         )
 
+                # V299: reverse each still-effective unapply journal (new entries, Law 2) and void its LPS deposit
+                for _r in _lepas:
+                    _rev = uuid_module.uuid4()
+                    _orig = await conn.fetchrow("SELECT source_id, total_debit FROM journal_entries WHERE id = $1", _r["unapply_journal_id"])
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            id, tenant_id, journal_number, journal_date,
+                            description, source_type, source_id, reversal_of_id,
+                            status, total_debit, total_credit, created_by
+                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'RECEIVE_PAYMENT_UNAPPLY', $5, $6, 'DRAFT', $7, $7, $8)
+                        """,
+                        _rev, ctx["tenant_id"],
+                        (await conn.fetchval("SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"])) or f"VD-LPS-{payment['payment_number']}",
+                        f"Void {payment['payment_number']}: batal lepas pembayaran ({_r['deposit_number']})",
+                        _orig["source_id"], _r["unapply_journal_id"], _orig["total_debit"], ctx["user_id"],
+                    )
+                    for _i, _ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"]), 1):
+                        await conn.execute(
+                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                            uuid_module.uuid4(), _rev, _i, _ln["account_id"], _ln["credit"], _ln["debit"], f"Reversal - {_ln['memo'] or ''}",
+                        )
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", _rev)
+                    await conn.execute("UPDATE journal_entries SET reversed_by_id = $2, reversed_at = NOW() WHERE id = $1", _r["unapply_journal_id"], _rev)
+                    await conn.execute(
+                        "UPDATE customer_deposits SET status = 'void', voided_at = NOW(), voided_reason = $2 WHERE id = $1",
+                        _r["unapply_deposit_id"], f"Pembayaran {payment['payment_number']} dibatalkan",
+                    )
+
                 # Restore invoice balances
                 allocations = await conn.fetch(
                     "SELECT * FROM receive_payment_allocations WHERE payment_id = $1",
@@ -2298,6 +2559,10 @@ async def void_receive_payment(
                 )
 
                 for alloc in allocations:
+                    # V299: a DILEPAS allocation already gave its effect back at unapply time (cache included);
+                    # its invoice may even be void by now -- never rewrite it here.
+                    if alloc["status"] == "reversed":
+                        continue
                     # Law 16: compute new amount_paid from journal-based remaining
                     # At this point the reversal journal is already created and the
                     # original journal is marked VOID, so get_invoice_remaining_from_journal

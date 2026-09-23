@@ -1103,6 +1103,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                        rp.notes, rp.journal_id, rp.created_at, rp.status,
                        rp.posted_at,
                        ba.account_name AS bank_account_name,
+                       rpa.id AS allocation_id, rpa.amount_applied AS allocated_amount,
+                       rpa.status AS allocation_status, rpa.reversed_at AS allocation_reversed_at,
                        COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
                        COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
                 FROM receive_payment_allocations rpa
@@ -1336,6 +1338,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             if p.get("created_at")
                             else None,
                             "status": p.get("status"),
+                            # V299: per-ALLOCATION fields (amount above is the whole payment)
+                            "allocation_id": str(p["allocation_id"]) if p.get("allocation_id") else None,
+                            "allocated_amount": float(p["allocated_amount"] or 0) if p.get("allocated_amount") is not None else None,
+                            "allocation_status": p.get("allocation_status") or "active",
+                            "allocation_reversed_at": p["allocation_reversed_at"].isoformat() if p.get("allocation_reversed_at") else None,
                             "created_by_name": p.get("created_by_name"),
                             "posted_at": p["posted_at"].isoformat()
                             if p.get("posted_at")
@@ -4136,6 +4143,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         FROM receive_payment_allocations rpa
                         JOIN receive_payments rp ON rp.id = rpa.payment_id
                         WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                          AND rpa.status = 'active'  -- V299: a DILEPAS allocation no longer settles
                           AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
                     + COALESCE((SELECT SUM(sip_jl.credit)
                         FROM sales_invoice_payments sip
@@ -4167,7 +4175,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     """SELECT DISTINCT rp.payment_number
                        FROM receive_payment_allocations rpa
                        JOIN receive_payments rp ON rp.id = rpa.payment_id
-                       WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                       WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'active'
                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
                        ORDER BY rp.payment_number""",
                     invoice_id,
@@ -4178,7 +4186,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     status_code=400,
                     detail=f"Faktur {invoice['invoice_number']} sudah menerima pembayaran"
                     + (f" ({nomor})" if nomor else "")
-                    + ". Faktur yang sudah dibayar belum bisa dibatalkan di MilkyHoop.",
+                    + ". Lepas pembayaran itu dulu (Lepas Pembayaran), lalu batalkan fakturnya.",
                 )
 
             # Unit B (14 Sep 2026): nota kredit yang terkait (original_invoice_id) mengkredit piutang faktur ini.
