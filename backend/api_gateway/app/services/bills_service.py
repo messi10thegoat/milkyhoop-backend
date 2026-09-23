@@ -175,6 +175,19 @@ async def _timpa_nama_dari_master(conn, tenant_id, items) -> None:
 
 
 
+# SATU aturan (header mode DAN per-line mode): diskon header mana yang MENGURANGI DPP Masukan.
+# Diskon tunai yang TIDAK tercetak di faktur pajak vendor kemungkinan TIDAK boleh mengurangi DPP
+# -- menunggu konsultan pajak pemilik (tiket item 14). Jawaban apa pun = ubah SATU baris ini,
+# kedua mode ikut bergerak bersama (3b2).
+CASH_DISCOUNT_REDUCES_DPP = True
+
+
+def _dpp_header_discount(invoice_discount_total, cash_discount_total):
+    inv = Decimal(str(invoice_discount_total or 0))
+    cash = Decimal(str(cash_discount_total or 0))
+    return inv + (cash if CASH_DISCOUNT_REDUCES_DPP else Decimal("0"))
+
+
 async def _bill_line_tax(conn, tenant_id, item_calc, tax_code_id, tax_rate, cache=None, alloc=0):
     """3(b) -- PPN per baris tagihan: DPP = neto baris (item_calc["total"], SESUDAH diskon baris)
     x faktor DPP kode pajak (PMK 131/2024; resolve_dpp_factor arah 'input', SAMA dengan mode header).
@@ -291,18 +304,23 @@ class BillCalculator:
             raise TypeError("BillCalculator.calculate: dpp_factor wajib (services/tax_factor)")
         _fnum, _fden = int(dpp_factor[0]), int(dpp_factor[1])
         subtotal_setelah_diskon = after_invoice_discount - cash_discount_total
+        # 3b2: dasar DPP = sesudah diskon item dikurangi diskon header menurut SATU aturan
+        # (_dpp_header_discount / CASH_DISCOUNT_REDUCES_DPP). Dengan aturan saat ini (tunai
+        # mengurangi DPP) nilainya PERSIS subtotal_setelah_diskon, seperti sebelumnya.
+        dpp_base = after_item_discount - _dpp_header_discount(invoice_discount_total, cash_discount_total)
         if dpp_manual is not None:
             dpp = Decimal(str(dpp_manual))
         elif _fnum != _fden:
-            dpp = subtotal_setelah_diskon * Decimal(_fnum) / Decimal(_fden)
+            dpp = dpp_base * Decimal(_fnum) / Decimal(_fden)
         else:
-            dpp = subtotal_setelah_diskon
+            dpp = dpp_base
 
         # Step 6: Tax
         tax_amount = dpp * Decimal(str(tax_rate)) / Decimal("100")
 
         # Step 7: Grand total
-        if _fnum != _fden and dpp_manual is None:
+        # Yang dibayar tetap sesudah SEMUA diskon (tunai termasuk) + PPN, apa pun aturan DPP-nya.
+        if dpp_manual is None:
             grand_total = subtotal_setelah_diskon + tax_amount
         else:
             grand_total = dpp + tax_amount
@@ -352,7 +370,7 @@ def _bill_line_allocs(items, calc, request, has_per_item_tax):
     n = len(items or [])
     if not n or not has_per_item_tax or request.get("dpp_manual") is not None or not calc:
         return [Decimal("0")] * n
-    total = Decimal(str(calc.get("invoice_discount_total") or 0)) + Decimal(str(calc.get("cash_discount_total") or 0))
+    total = _dpp_header_discount(calc.get("invoice_discount_total"), calc.get("cash_discount_total"))  # SATU aturan
     if total <= 0:
         return [Decimal("0")] * n
     nets = []
