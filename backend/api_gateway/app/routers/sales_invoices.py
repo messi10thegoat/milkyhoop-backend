@@ -4950,15 +4950,7 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
                     cd.deposit_date,
                     cd.quote_id,
                     cd.sales_order_id,
-                    COALESCE((
-                        SELECT SUM(jl.credit) - SUM(jl.debit)
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        WHERE je.tenant_id = cd.tenant_id
-                          AND je.source_id = cd.id
-                          AND jl.account_id = $3
-                          AND is_effective_journal(je.id)
-                    ), 0) AS available
+                    cd.status
                 FROM customer_deposits cd
                 WHERE cd.tenant_id = $1
                   AND cd.customer_id = $2
@@ -4966,14 +4958,19 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
                 """,
                 ctx["tenant_id"],
                 str(invoice["customer_id"]),  # BATCH1 A1: cd.customer_id is VARCHAR (lone drift) -> bind str, not UUID
-                deposit_account_id,
             )
+            # "available" = THE single deposit derivation (compute_deposit_remaining_many: journals sourced on
+            # the deposit + the receive payment that created it + LEPAS PEMBAYARAN credit, V299). The old inline
+            # SQL counted only je.source_id = cd.id -> overpayment deposits and LPS credits read 0 and vanished
+            # from "Pakai saldo"; int() also dropped sen.
+            from .customer_deposits import compute_deposit_remaining_many
+            _avail = await compute_deposit_remaining_many(conn, ctx["tenant_id"], [r["deposit_id"] for r in rows])
 
             inv_quote_id = invoice["quote_id"]
             inv_so_id = invoice["sales_order_id"]
             items = []
             for r in rows:
-                available = int(r["available"] or 0)
+                available = float(_avail.get(str(r["deposit_id"]), 0))
                 if available <= 0:
                     continue
                 is_spine = (
