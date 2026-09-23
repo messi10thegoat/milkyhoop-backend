@@ -34,7 +34,6 @@ FINANCIAL_PATHS = frozenset({
     "/api/cheques",
     "/api/opening-balance",
     "/api/sales-receipts",
-    "/api/recurring-invoices",
     "/api/recurring-bills",
     "/api/fixed-assets",
     "/api/payroll",

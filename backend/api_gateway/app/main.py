@@ -82,7 +82,6 @@ from .routers import opening_balance
 from .routers import warehouses
 from .routers import stock_transfers
 from .routers import sales_receipts
-from .routers import recurring_invoices
 from .routers import item_batches
 from .routers import item_serials
 from .routers import documents
@@ -633,12 +632,6 @@ app.include_router(
     sales_receipts.router, prefix="/api/sales-receipts", tags=["sales-receipts"]
 )
 
-# Recurring Invoices router (Faktur Berulang)
-app.include_router(
-    recurring_invoices.router,
-    prefix="/api/recurring-invoices",
-    tags=["recurring-invoices"],
-)
 
 # Item Batches router (Nomor Lot & Kedaluwarsa - FEFO)
 app.include_router(

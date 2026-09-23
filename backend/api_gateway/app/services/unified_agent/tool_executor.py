@@ -8529,8 +8529,6 @@ TOOL_STAGE_LABELS: dict[str, str] = {
     "get_customer_deposit_detail": "Melihat detail deposit pelanggan",
     "get_cheques": "Memeriksa daftar giro",
     # === Sprint 3: Recurring & Pipeline ===
-    "get_recurring_invoices": "Memeriksa faktur berulang",
-    "get_recurring_invoices_due": "Memeriksa faktur berulang jatuh tempo",
     "get_recurring_bills": "Memeriksa tagihan berulang",
     "get_recurring_bills_due": "Memeriksa tagihan berulang jatuh tempo",
     "get_sales_orders": "Memeriksa sales order",

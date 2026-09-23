@@ -561,12 +561,6 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/recurring-bills/[^/]+/pause$", ["POST"], "purchase_invoice", "P"),
     (r"^/api/recurring-bills/[^/]+/resume$", ["POST"], "purchase_invoice", "P"),
     (r"^/api/recurring-bills/process-due$", ["POST"], "purchase_invoice", "P"),
-    # recurring_invoices
-    (r"^/api/recurring-invoices$", ["POST"], "sales_invoice", "C"),
-    (r"^/api/recurring-invoices/[^/]+/generate$", ["POST"], "sales_invoice", "P"),
-    (r"^/api/recurring-invoices/[^/]+/pause$", ["POST"], "sales_invoice", "P"),
-    (r"^/api/recurring-invoices/[^/]+/resume$", ["POST"], "sales_invoice", "P"),
-    (r"^/api/recurring-invoices/process-due$", ["POST"], "sales_invoice", "P"),
     # sales_invoices
     (r"^/api/sales-invoices/[^/]+/attachments$", ["POST"], "sales_invoice", "C"),
     (r"^/api/sales-invoices/[^/]+/attachments/[^/]+$", ["DELETE"], "sales_invoice", "D"),
@@ -840,10 +834,6 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/recurring\-expenses$", ["GET"], "expense", "R"),
     (r"^/api/recurring\-expenses/summary$", ["GET"], "expense", "R"),
     (r"^/api/recurring\-expenses/[^/]+$", ["GET"], "expense", "R"),
-    (r"^/api/recurring\-invoices$", ["GET"], "sales_invoice", "R"),
-    (r"^/api/recurring\-invoices/due$", ["GET"], "sales_invoice", "R"),
-    (r"^/api/recurring\-invoices/[^/]+$", ["GET"], "sales_invoice", "R"),
-    (r"^/api/recurring\-invoices/[^/]+/history$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales\-invoices/[^/]+/applicable\-deposits$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales\-invoices/[^/]+/attachments$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales\-invoices/[^/]+/attachments/[^/]+/download$", ["GET"], "sales_invoice", "R"),

@@ -157,18 +157,6 @@ TOOL_ENDPOINTS: Dict[str, Dict[str, str]] = {
         "description": "List giro/cheque. Filter: pending, deposited, cleared, bounced",
     },
     # === Sprint 3: Recurring & Pipeline ===
-    "get_recurring_invoices": {
-        "method": "GET",
-        "path": "/api/recurring-invoices",
-        "params": ["status", "customer_id"],
-        "description": "List faktur berulang (recurring invoice)",
-    },
-    "get_recurring_invoices_due": {
-        "method": "GET",
-        "path": "/api/recurring-invoices/due",
-        "params": [],
-        "description": "Faktur berulang yang jatuh tempo",
-    },
     "get_recurring_bills": {
         "method": "GET",
         "path": "/api/recurring-bills",
@@ -1090,29 +1078,6 @@ READ_TOOLS: List[Dict[str, Any]] = [
     },
     # === Sprint 3: Recurring & Pipeline ===
     {
-        "name": "get_recurring_invoices",
-        "description": "List faktur berulang (recurring invoice). GUNAKAN untuk: recurring invoice apa saja, faktur otomatis, invoice berlangganan.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter status: active, paused, expired",
-                },
-                "customer_id": {
-                    "type": "string",
-                    "description": "Filter berdasarkan customer UUID",
-                },
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "get_recurring_invoices_due",
-        "description": "Faktur berulang yang jatuh tempo untuk diproses. GUNAKAN untuk: invoice recurring mana yang harus diproses, ada tagihan otomatis yang perlu dikirim?",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-    {
         "name": "get_recurring_bills",
         "description": "List tagihan berulang (subscription, langganan). GUNAKAN untuk: tagihan recurring apa saja, subscription aktif, biaya berlangganan.",
         "parameters": {
@@ -2023,8 +1988,6 @@ TOOL_DOMAINS: dict = {
     "get_customer_deposits": {"PIPELINE", "AR_INVOICES"},
     "get_customer_deposit_detail": {"PIPELINE", "AR_INVOICES"},
     "get_cheques": {"PIPELINE", "BANKING"},
-    "get_recurring_invoices": {"PIPELINE", "AR_INVOICES"},
-    "get_recurring_invoices_due": {"PIPELINE", "AR_INVOICES"},
     "get_recurring_bills": {"PIPELINE", "AP_BILLS"},
     "get_recurring_bills_due": {"PIPELINE", "AP_BILLS"},
     "get_sales_orders": {"PIPELINE"},

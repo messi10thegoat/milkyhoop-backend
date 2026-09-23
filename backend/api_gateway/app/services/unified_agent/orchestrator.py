@@ -609,8 +609,6 @@ def _format_thinking_label(function_name: str, arguments_json: str = "") -> str:
         "get_customer_deposits": "Mengambil data uang muka pelanggan",
         "get_customer_deposit_detail": "Melihat detail deposit pelanggan",
         "get_cheques": "Mengambil data giro",
-        "get_recurring_invoices": "Mengambil faktur berulang",
-        "get_recurring_invoices_due": "Mengecek faktur berulang jatuh tempo",
         "get_recurring_bills": "Mengambil tagihan berulang",
         "get_recurring_bills_due": "Mengecek tagihan berulang jatuh tempo",
         "get_sales_orders": "Mengambil data pesanan",

@@ -398,11 +398,6 @@ POST /api/recurring-bills/{recurring_bill_id}/pause
 POST /api/recurring-bills/{recurring_bill_id}/resume
 POST /api/recurring-expenses
 POST /api/recurring-expenses/{template_id}/toggle
-POST /api/recurring-invoices
-POST /api/recurring-invoices/process-due
-POST /api/recurring-invoices/{recurring_id}/generate
-POST /api/recurring-invoices/{recurring_id}/pause
-POST /api/recurring-invoices/{recurring_id}/resume
 POST /api/reports/aging-snapshot
 POST /api/salary-components
 POST /api/sales-invoices
