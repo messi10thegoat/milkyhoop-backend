@@ -2428,6 +2428,16 @@ from ..schemas.aging_reports import (  # noqa: E402
 )
 
 
+def _tolak_as_of_lampau(as_of_date: date) -> None:
+    """Umur piutang = saldo JURNAL hari ini (compute_ar_outstanding tak punya tanggal as-of, V298).
+    Tanggal lampau ditolak jujur, bukan menampilkan saldo hari ini seolah-olah saldo masa lalu."""
+    if as_of_date < date.today():
+        raise HTTPException(
+            status_code=422,
+            detail="Umur piutang per tanggal lampau belum tersedia; saldo dihitung dari jurnal per hari ini.",
+        )
+
+
 @router.get("/ar-aging", response_model=ARAgingSummaryResponse)
 async def get_ar_aging_summary(
     request: Request,
@@ -2455,6 +2465,7 @@ async def get_ar_aging_summary(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         as_of_date = as_of or date.today()
+        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -2508,6 +2519,7 @@ async def get_ar_aging_detail(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         as_of_date = as_of or date.today()
+        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -2585,6 +2597,7 @@ async def get_ar_aging_for_customer(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         as_of_date = as_of or date.today()
+        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -2601,7 +2614,7 @@ async def get_ar_aging_for_customer(
                 raise HTTPException(status_code=404, detail="Customer not found")
 
             rows = await conn.fetch(
-                "SELECT * FROM get_ar_aging_customer($1, $2)", customer_id, as_of_date
+                "SELECT * FROM get_ar_aging_customer($1, $2, $3)", tenant_id, customer_id, as_of_date
             )
 
             items = [

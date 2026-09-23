@@ -57,13 +57,13 @@ class AgingBracketsResponse(AgingBracketsBase):
 # ============================================
 
 class ARAgingSummary(BaseModel):
-    total_current: int
-    total_1_30: int
-    total_31_60: int
-    total_61_90: int
-    total_91_120: int
-    total_over_120: int
-    grand_total: int
+    total_current: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_1_30: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_31_60: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_61_90: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_91_120: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_over_120: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    grand_total: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
     overdue_count: int
 
 
@@ -77,13 +77,13 @@ class ARAgingDetailItem(BaseModel):
     customer_id: UUID
     customer_name: str
     customer_code: Optional[str] = None
-    current_amount: int
-    days_1_30: int
-    days_31_60: int
-    days_61_90: int
-    days_91_120: int
-    days_over_120: int
-    total_balance: int
+    current_amount: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    days_1_30: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    days_31_60: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    days_61_90: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    days_91_120: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    days_over_120: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    total_balance: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
     oldest_invoice_date: Optional[date] = None
     invoice_count: int
 
@@ -99,9 +99,9 @@ class ARCustomerAgingItem(BaseModel):
     invoice_number: str
     invoice_date: date
     due_date: date
-    total_amount: int
-    paid_amount: int
-    balance: int
+    total_amount: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    paid_amount: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
+    balance: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
     days_overdue: int
     aging_bucket: str
 
@@ -111,7 +111,7 @@ class ARCustomerAgingResponse(BaseModel):
     customer_name: str
     as_of_date: date
     items: List[ARCustomerAgingItem]
-    total_balance: int
+    total_balance: float  # V298: NUMERIC(18,2) dari jurnal; int membuang sen
 
 
 # ============================================
