@@ -169,12 +169,12 @@ async def get_expired_batches(
             "SELECT * FROM get_expired_batches($1, $2)", ctx["tenant_id"], warehouse_id
         )
 
-        total_value = sum(row.get("total_value", 0) or 0 for row in rows)
+        total_value = sum((row.get("total_value") or 0 for row in rows), Decimal("0"))
 
         return ExpiredBatchesResponse(
             data=[dict(row) for row in rows],
             total=len(rows),
-            total_value=int(total_value),
+            total_value=float(total_value),
         )
 
 

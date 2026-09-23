@@ -212,7 +212,7 @@ class ExpiredBatch(BaseModel):
     expiry_date: date
     days_expired: int
     quantity: Decimal
-    total_value: int
+    total_value: float  # V297: NUMERIC(18,2); int membuang sen
     warehouse_id: UUID
     warehouse_name: str
 
@@ -222,7 +222,7 @@ class ExpiredBatchesResponse(BaseModel):
     success: bool = True
     data: List[ExpiredBatch]
     total: int
-    total_value: int
+    total_value: float
 
 
 # ============================================================================
