@@ -2277,6 +2277,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         SELECT id, tax_code_id, tax_rate, tax_amount, subtotal, discount_amount, dpp
         FROM sales_invoice_items
         WHERE invoice_id = $1 AND COALESCE(tax_amount, 0) > 0
+        ORDER BY line_number, id
         """,
         invoice_id,
     )
@@ -2373,6 +2374,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                batch_id, batch_no, exp_date, discount_amount
         FROM sales_invoice_items
         WHERE invoice_id = $1
+        ORDER BY line_number, id
         """,
         invoice_id,
     )
@@ -2403,7 +2405,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             )
             items[i] = dict(itm)  # make mutable copy
             items[i]["_allocated"] = alloc
-        # Last item absorbs rounding
+        # Baris terakhir menurut line_number menyerap sisa -- URUTAN YANG SAMA dengan kalkulator
+        # (sales_doc_calc.allocate, urutan permintaan = line_number). Dulu fetch tanpa ORDER BY:
+        # "terakhir" = urutan fisik baris, bisa beda baris dengan dpp tersimpan.
         sum_others = sum(items[j]["_allocated"] for j in range(len(items) - 1))
         items[-1]["_allocated"] = subtotal_after_discount - sum_others
     else:
