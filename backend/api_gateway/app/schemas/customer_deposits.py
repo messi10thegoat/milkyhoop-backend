@@ -129,6 +129,8 @@ class DepositApplicationResponse(BaseModel):
     amount_applied: float
     application_date: str
     created_at: str
+    status: str = "active"  # "active" | "reversed"
+    reversed_at: Optional[str] = None
 
 
 class DepositRefundResponse(BaseModel):
@@ -178,7 +180,8 @@ class CustomerDepositDetail(BaseModel):
     amount: int
     amount_applied: float = 0
     amount_refunded: float = 0
-    remaining_amount: float = 0
+    remaining_amount: Optional[float] = 0  # null untuk DRAF (sama dengan daftar)
+    remaining_state: str = "posted"  # "posted" | "draft_belum_diposting"
 
     # Payment details
     deposit_date: str

@@ -691,16 +691,15 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                 deposit_id,
             )
 
-            # Build response
-            remaining = (
-                0
-                if dep["status"] == "void"
-                else (
-                    dep["amount"]
-                    - (dep["amount_applied"] or 0)
-                    - (dep["amount_refunded"] or 0)
+            # Sisa = turunan jurnal YANG SAMA dengan daftar (compute_deposit_remaining_many); dulu CACHE
+            # (amount - applied - refunded) -> draf tampil penuh di detail sementara daftar "belum diposting".
+            if dep["status"] == "draft":
+                remaining, remaining_state = None, "draft_belum_diposting"
+            else:
+                remaining = float(
+                    (await compute_deposit_remaining_many(conn, ctx["tenant_id"], [dep["id"]]))[str(dep["id"])]
                 )
-            )
+                remaining_state = "posted"
 
             return {
                 "success": True,
@@ -714,6 +713,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "amount_applied": dep["amount_applied"] or 0,
                     "amount_refunded": dep["amount_refunded"] or 0,
                     "remaining_amount": remaining,
+                    "remaining_state": remaining_state,
                     "deposit_date": dep["deposit_date"].isoformat(),
                     "payment_method": dep["payment_method"],
                     "account_id": str(dep["account_id"]) if dep["account_id"] else None,
@@ -736,6 +736,10 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                             "amount_applied": app["amount_applied"],
                             "application_date": app["application_date"].isoformat(),
                             "created_at": app["created_at"].isoformat(),
+                            # Penerapan yang sudah DIBATALKAN dulu tiba tanpa status -> UI menampilkan
+                            # tombol Batalkan yang basi (gladi #2). NULL (baris lama) = active.
+                            "status": app["status"] or "active",
+                            "reversed_at": app["reversed_at"].isoformat() if app["reversed_at"] else None,
                         }
                         for app in applications
                     ],
