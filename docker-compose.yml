@@ -164,7 +164,7 @@ services:
     container_name: milkyhoop-dev-api_gateway
     command: ["python", "-B", "-m", "uvicorn", "backend.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     ports:
-    - 8001:8000
+    - 127.0.0.1:8001:8000
     networks:
     - internal
     environment:
@@ -235,7 +235,7 @@ services:
       context: .
       dockerfile: backend/services/chatbot_service/Dockerfile
     ports:
-    - 7003:5002
+    - 127.0.0.1:7003:5002
     networks:
     - internal
     environment:
@@ -364,7 +364,7 @@ services:
       context: .
       dockerfile: backend/services/ragcrud_service/Dockerfile
     ports:
-    - 7001:5001
+    - 127.0.0.1:7001:5001
     networks:
     - internal
     environment:
@@ -1192,7 +1192,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 3001:80
+    - 127.0.0.1:3001:80
     depends_on:
     - api_gateway
     networks:
