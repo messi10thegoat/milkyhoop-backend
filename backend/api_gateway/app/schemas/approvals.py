@@ -218,7 +218,7 @@ class ApprovalRequestItem(BaseModel):
     document_type: str
     document_id: str
     document_number: Optional[str] = None
-    document_amount: Optional[int] = None
+    document_amount: Optional[float] = None  # NUMERIC(18,2); int menolak sen
     current_level: int
     status: str
     requested_by: str
@@ -233,7 +233,7 @@ class ApprovalRequestDetail(BaseModel):
     document_type: str
     document_id: str
     document_number: Optional[str] = None
-    document_amount: Optional[int] = None
+    document_amount: Optional[float] = None  # NUMERIC(18,2); int menolak sen
     current_level: int
     total_levels: int
     status: str
@@ -251,7 +251,7 @@ class PendingApprovalItem(BaseModel):
     document_type: str
     document_id: str
     document_number: Optional[str] = None
-    document_amount: Optional[int] = None
+    document_amount: Optional[float] = None  # NUMERIC(18,2); int menolak sen
     current_level: int
     level_name: str
     requested_by: str
@@ -346,7 +346,7 @@ class ApprovalStatisticsResponse(BaseModel):
     """Response for approval statistics."""
     success: bool = True
     data: List[ApprovalStatistics]
-    period: Optional[Dict[str, str]] = None
+    period: Optional[Dict[str, Optional[str]]] = None  # tanpa filter tanggal -> None (dulu 500)
 
 
 class SubmitApprovalResponse(BaseModel):

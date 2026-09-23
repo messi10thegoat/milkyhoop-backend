@@ -38,6 +38,7 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+import json
 import logging
 import asyncpg
 from datetime import date, datetime
@@ -72,6 +73,20 @@ async def get_pool() -> asyncpg.Pool:
     from ..services.db_pool import get_db_pool
 
     return await get_db_pool()
+
+
+_STATUS_APPROVAL = ("pending", "approved", "rejected", "cancelled")
+
+
+def _status_approval(status: str) -> str:
+    """Filter status: huruf besar/kecil sama (dulu hanya huruf kecil -> 422 polos pada PENDING)."""
+    s = status.strip().lower()
+    if s not in _STATUS_APPROVAL:
+        raise HTTPException(
+            status_code=422,
+            detail="status harus salah satu dari: " + ", ".join(_STATUS_APPROVAL),
+        )
+    return s
 
 
 def get_user_context(request: Request) -> dict:
@@ -567,7 +582,7 @@ async def remove_approval_level(request: Request, workflow_id: UUID, level_id: U
 @router.get("/approval-requests", response_model=ApprovalRequestListResponse)
 async def list_approval_requests(
     request: Request,
-    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(
+    status: Optional[str] = Query(
         None
     ),
     document_type: Optional[str] = Query(None),
@@ -588,7 +603,7 @@ async def list_approval_requests(
 
             if status:
                 conditions.append(f"ar.status = ${param_idx}")
-                params.append(status)
+                params.append(_status_approval(status))
                 param_idx += 1
 
             if document_type:
@@ -704,7 +719,7 @@ async def get_pending_approvals(request: Request):
 @router.get("/approval-requests/submitted")
 async def get_submitted_requests(
     request: Request,
-    status: Optional[Literal["pending", "approved", "rejected", "cancelled"]] = Query(
+    status: Optional[str] = Query(
         None
     ),
     skip: int = Query(0, ge=0),
@@ -722,7 +737,7 @@ async def get_submitted_requests(
 
             if status:
                 conditions.append(f"ar.status = ${param_idx}")
-                params.append(status)
+                params.append(_status_approval(status))
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
@@ -896,6 +911,14 @@ async def get_approval_request(request: Request, request_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # get_approval_request_detail() menyaring id SAJA, tanpa tenant: tanpa pagar ini tenant
+            # mana pun bisa membaca permintaan persetujuan tenant lain lewat id-nya.
+            if not await conn.fetchval(
+                "SELECT 1 FROM approval_requests WHERE id = $1 AND tenant_id = $2",
+                request_id,
+                ctx["tenant_id"],
+            ):
+                raise HTTPException(status_code=404, detail="Approval request not found")
             row = await conn.fetchrow(
                 """
                 SELECT * FROM get_approval_request_detail($1)
@@ -916,7 +939,11 @@ async def get_approval_request(request: Request, request_id: UUID):
                 row["workflow_id"],
             )
 
+            # jsonb tiba sebagai STRING (pool tanpa codec json): dulu diiterasi per karakter -> 500
+            # begitu ada satu tindakan persetujuan.
             actions = row["actions"] or []
+            if isinstance(actions, str):
+                actions = json.loads(actions)
 
             return {
                 "success": True,
