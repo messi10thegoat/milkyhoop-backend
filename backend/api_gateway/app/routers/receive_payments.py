@@ -2234,6 +2234,8 @@ async def unapply_receive_payment_allocation(
             # (uq_je_tenant_number): bila nomor itu SUDAH dipakai jurnal lain (mis. jurnal lama dari
             # urutan 'LPS'), pakai urutan 'LPJ' -- dicek dulu, bukan ditangkap (pelanggaran unik
             # membatalkan transaksi).
+            # PREMIS RAS (tanpa kunci tenant-lebar): tak ada penulis lain nomor jurnal LPS-/DEP-;
+            # diuji tests/unit/test_nomor_jurnal_satu_ruang.py pada tiap merge.
             journal_number = dep_no
             if await conn.fetchval(
                 "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND journal_number = $2",

@@ -1372,15 +1372,23 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
 
-    journal_number = await conn.fetchval(
-        """
-        SELECT get_next_journal_number($1, 'DEP')
-    """,
-        ctx["tenant_id"],
-    )
-
-    if not journal_number:
-        journal_number = f"DEP-{dep['deposit_number']}"
+    # C2 (23 Sep 2026): jurnal uang muka bernomor SAMA dengan uang mukanya -- satu ruang nama.
+    # Dulu urutan jurnal 'DEP' terpisah dari penghitung uang muka (yang dibagi dengan OVP/LPS):
+    # kaos 69/77 jurnal bernomor = nomor uang muka LAIN; grapgrap 29/29 cocok hanya karena kedua
+    # penghitung kebetulan seiring (get_next_journal_number menyembuhkan diri ke MAX yang ada).
+    # Bila nomor itu sudah dipakai jurnal lain (baris lama), pakai urutan 'DPJ'.
+    # PREMIS RAS (pra-cek lalu INSERT tanpa kunci tenant-lebar): tak ada penulis LAIN yang
+    # menerbitkan nomor jurnal DEP-/LPS-; nomor uang muka unik per tenant (upsert baris
+    # customer_deposit_sequences berurutan). Premis ini DIUJI tests/unit/test_nomor_jurnal_satu_ruang.py
+    # (tiap merge): awalan literal 'DEP'/'LPS' terlarang, awalan non-literal wajib berizin.
+    journal_number = dep["deposit_number"]
+    if await conn.fetchval(
+        "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND journal_number = $2",
+        ctx["tenant_id"], journal_number,
+    ):
+        journal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, 'DPJ')", ctx["tenant_id"]
+        ) or f"DPJ-{dep['deposit_number']}"
 
     await conn.execute(
         """
