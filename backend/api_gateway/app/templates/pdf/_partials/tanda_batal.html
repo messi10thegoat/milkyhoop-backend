@@ -1,0 +1,12 @@
+{#
+  Tanda DIBATALKAN untuk dokumen void/batal (temuan gladi #2 #42: PDF dokumen batal tercetak bersih).
+  SATU blok position:fixed -> diulang di setiap halaman dan TIDAK mengambil ruang di alur halaman, jadi
+  tata letak dokumen (hidup maupun batal) tidak bergeser. Tampil hanya bila `batal` diisi pdf_service.
+  Merah SENGAJA: ini stempel pembatalan, satu-satunya pengecualian dari aturan teks #1a1a1a.
+#}
+{% if batal %}
+<div style="position: fixed; top: 34%; left: 0; right: 0; text-align: center; transform: rotate(-24deg); z-index: 0;">
+  <div style="font-size: 64pt; font-weight: 700; letter-spacing: 6pt; color: rgba(185, 28, 28, 0.22);">DIBATALKAN</div>
+  <div style="font-size: 11pt; font-weight: 600; color: rgba(185, 28, 28, 0.55);">{% if batal.tanggal %}Dibatalkan pada {{ batal.tanggal }}{% else %}Dokumen ini telah dibatalkan{% endif %}{% if batal.alasan %} &mdash; Alasan: {{ batal.alasan }}{% endif %}</div>
+</div>
+{% endif %}

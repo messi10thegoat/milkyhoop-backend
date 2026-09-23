@@ -2958,6 +2958,10 @@ async def get_customer_deposit_pdf(
             )
 
             receipt_data = {
+                # status + voided_* -> tanda DIBATALKAN di kwitansi uang muka yang void (pdf_service._tanda_batal)
+                "status": dep["status"],
+                "voided_at": dep["voided_at"],
+                "voided_reason": dep["voided_reason"],
                 "receipt_number": dep["deposit_number"],
                 "receipt_date": dep["deposit_date"].isoformat()
                 if dep["deposit_date"] else None,

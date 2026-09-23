@@ -2711,6 +2711,10 @@ async def get_receive_payment_pdf(
             receipt_number = pay["payment_number"] or pay["reference_number"]
 
             receipt_data = {
+                # status + voided_at/void_reason -> tanda DIBATALKAN di kwitansi pembayaran yang void
+                "status": pay["status"],
+                "voided_at": pay["voided_at"],
+                "void_reason": pay["void_reason"],
                 "receipt_number": receipt_number,
                 "receipt_date": pay["payment_date"].isoformat()
                 if pay["payment_date"] else None,

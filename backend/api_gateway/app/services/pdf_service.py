@@ -269,6 +269,28 @@ class PDFService:
             logger.warning(f"Failed to format date {date_value}: {e}")
             return str(date_value)
 
+    _STATUS_BATAL = frozenset({"void", "voided", "cancelled"})
+
+    def _tanda_batal(self, doc: Dict[str, Any]):
+        """Konteks tanda DIBATALKAN (templates/pdf/_partials/tanda_batal.html) atau None bila dokumen hidup.
+        Tanggal = voided_at / cancelled_at dalam WIB (Asia/Jakarta; kolomnya UTC); alasan bila tersimpan."""
+        if str(doc.get("status") or "").lower() not in self._STATUS_BATAL:
+            return None
+        tgl = doc.get("voided_at") or doc.get("cancelled_at")
+        if isinstance(tgl, str):
+            try:
+                tgl = datetime.fromisoformat(tgl.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        if isinstance(tgl, datetime) and tgl.tzinfo is not None:
+            from zoneinfo import ZoneInfo
+            tgl = tgl.astimezone(ZoneInfo("Asia/Jakarta"))
+        alasan = doc.get("voided_reason") or doc.get("void_reason") or doc.get("cancelled_reason")
+        return {
+            "tanggal": self.format_date_full(tgl) if tgl else None,
+            "alasan": (str(alasan).strip() or None) if alasan else None,
+        }
+
     def generate_bill_pdf(self, bill: Dict[str, Any]) -> bytes:
         """
         Generate PDF for a bill (purchase invoice).
@@ -292,6 +314,7 @@ class PDFService:
             bill=bill,
             status_label=status_label,
             generated_at=datetime.now(),
+            batal=self._tanda_batal(bill),
         )
 
         # Load CSS
@@ -350,6 +373,7 @@ class PDFService:
             "invoice": invoice,
             "status_label": self.STATUS_LABELS.get(status, status.upper()),
             "generated_at": datetime.now(),
+            "batal": self._tanda_batal(invoice),
         }
 
     def generate_sales_invoice_pdf(
@@ -481,6 +505,7 @@ class PDFService:
             purpose_label=purpose_label,
             status_label=status_label,
             generated_at=datetime.now(),
+            batal=self._tanda_batal(proforma_data),
         )
 
         css_path = TEMPLATE_DIR / "invoice.css"
@@ -739,6 +764,7 @@ class PDFService:
             receipt=receipt_data,
             company=company,
             generated_at=datetime.now(),
+            batal=self._tanda_batal(receipt_data),
         )
 
         # Load CSS

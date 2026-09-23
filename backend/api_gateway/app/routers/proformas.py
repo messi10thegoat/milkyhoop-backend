@@ -971,6 +971,9 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
                 "payment_account_number": row["payment_account_number"],
                 "payment_account_holder": row["payment_account_holder"],
                 "status": row["status"],
+                # tanda DIBATALKAN pada proforma yang dibatalkan (pdf_service._tanda_batal)
+                "cancelled_at": row["cancelled_at"],
+                "cancelled_reason": row["cancelled_reason"],
             }
 
         from ..services.pdf_service import get_pdf_service
