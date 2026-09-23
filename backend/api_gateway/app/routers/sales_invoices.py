@@ -1155,6 +1155,23 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 ctx["tenant_id"],
             )
 
+            # L2 (a): uang muka (DP / LPS lepas pembayaran) yang diterapkan ke faktur ini. Dulu tak
+            # terlihat: faktur yang lunas lewat uang muka terbaca "Lunas" tanpa sumber. Aktif DAN
+            # dibatalkan (status/reversed_at) -- riwayat, bukan hanya yang berlaku.
+            deposit_applications = await conn.fetch(
+                """
+                SELECT cda.id, cda.deposit_id, cd.deposit_number, cda.amount_applied,
+                       cda.application_date, cda.status, cda.reversed_at, je.journal_number
+                FROM customer_deposit_applications cda
+                JOIN customer_deposits cd ON cd.id = cda.deposit_id AND cd.tenant_id = cda.tenant_id
+                LEFT JOIN journal_entries je ON je.id = cda.journal_id AND je.tenant_id = cda.tenant_id
+                WHERE cda.invoice_id = $1 AND cda.tenant_id = $2
+                ORDER BY cda.application_date, cda.created_at
+            """,
+                invoice_id,
+                ctx["tenant_id"],
+            )
+
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
             ar_row = await conn.fetchrow(
                 """
@@ -1368,6 +1385,24 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "reason": c.get("reason"),
                         }
                         for c in applied_credits
+                    ],
+                    # L2 (a): pemakaian uang muka pada faktur ini
+                    "deposit_applications": [
+                        {
+                            "application_id": str(a["id"]),
+                            "deposit_id": str(a["deposit_id"]),
+                            "deposit_number": a["deposit_number"],
+                            "amount_applied": float(a["amount_applied"] or 0),
+                            "application_date": a["application_date"].isoformat()
+                            if a["application_date"]
+                            else None,
+                            "status": "reversed" if a["status"] == "reversed" else "active",
+                            "reversed_at": a["reversed_at"].isoformat()
+                            if a["reversed_at"]
+                            else None,
+                            "journal_number": a["journal_number"],
+                        }
+                        for a in deposit_applications
                     ],
                     "ar_id": str(invoice["ar_id"]) if invoice["ar_id"] else None,
                     "journal_id": str(invoice["journal_id"])

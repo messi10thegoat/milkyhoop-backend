@@ -40,6 +40,8 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..services.pihak_helpers import rupiah
+
 from ..schemas.receive_payments import (
     UnapplyAllocationRequest,
     CreateReceivePaymentRequest,
@@ -2290,7 +2292,7 @@ async def unapply_receive_payment_allocation(
     logger.info(f"Lepas pembayaran {alloc['payment_number']} dari {inv['invoice_number']}: {share} -> {dep_no}")
     return {
         "success": True,
-        "message": f"Pembayaran {alloc['payment_number']} dilepas dari faktur {inv['invoice_number']}. Kredit Rp {share:,.2f} menjadi uang muka {dep_no}.",
+        "message": f"Pembayaran {alloc['payment_number']} dilepas dari faktur {inv['invoice_number']}. Kredit {rupiah(share)} menjadi uang muka {dep_no}.",
         "data": {
             "already": False,
             "allocation_id": str(allocation_id),
