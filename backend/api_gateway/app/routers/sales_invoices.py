@@ -204,6 +204,27 @@ def _plan_so_link_edit(old_lines: list, new_items: list) -> tuple:
     return links, deltas
 
 
+def _t43_dibayar_dan_sisa(status, total_amount, outstanding) -> tuple:
+    """(dibayar, sisa) untuk hero detail faktur -- #43(b).
+
+    `outstanding` = baris compute_ar_outstanding (None bila fungsi itu tak
+    mengembalikan baris). Tanpa baris artinya: lunas (termasuk lewat nota
+    kredit/retur), ATAU draf, ATAU void.
+    - draf: belum jadi piutang -> sisa = total (angka yang AKAN ditagih).
+    - void: dibatalkan -> tak ada yang ditagih -> sisa 0. Dulu = total
+      (INV-2609-0077 void menampilkan sisa 850.000), sementara DAFTAR (CASE
+      status IN ('draft','void') THEN 0) sudah 0 -> daftar != detail.
+    """
+    total = float(total_amount or 0)
+    if outstanding is not None:
+        return float(_d(total_amount) - _d(outstanding)), float(outstanding)
+    if status == "draft":
+        return 0.0, total
+    if status == "void":
+        return 0.0, 0.0
+    return total, 0.0
+
+
 async def _apply_so_invoiced_deltas(conn, deltas: dict) -> None:
     """Terapkan deltas ke sales_order_items.quantity_invoiced. Naik: ditolak bila melebihi
     qty SO (tak boleh menagih lebih dari pesanan). Turun: GREATEST(0, ...) seperti void."""
@@ -1188,17 +1209,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # status: only draft/void are unpaid. Do NOT gate "fully paid" on cached
             # status=='paid' — a stale cache (e.g. 'partial') otherwise shows DITERIMA 0
             # / SISA = full on an invoice that the ledger says is settled.
-            if ar_row:
-                journal_amount_paid = float(
-                    invoice["total_amount"] - ar_row["outstanding"]
-                )
-                _amount_due = float(ar_row["outstanding"])
-            elif invoice["status"] in ("draft", "void"):
-                journal_amount_paid = 0.0
-                _amount_due = float(invoice["total_amount"] or 0)
-            else:
-                journal_amount_paid = float(invoice["total_amount"])
-                _amount_due = 0.0
+            journal_amount_paid, _amount_due = _t43_dibayar_dan_sisa(
+                invoice["status"],
+                invoice["total_amount"],
+                ar_row["outstanding"] if ar_row else None,
+            )
 
             return {
                 "success": True,
@@ -4852,7 +4867,9 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 # ============================================================
                 # 5. Update invoice status to void (+ fulfillment tracking reset)
                 # ============================================================
-                await conn.execute(
+                # #43(a): status respons dibaca dari baris yang BENAR-BENAR ditulis,
+                # bukan literal (dulu membalas "draft" untuk faktur yang void).
+                voided_status = await conn.fetchval(
                     """
                     UPDATE sales_invoices
                     SET status = 'void', operational_status = 'VOID', accounting_status = 'REVERSED',
@@ -4861,6 +4878,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         total_fulfilled_qty = 0, total_recognized_amount = 0,
                         updated_at = NOW()
                     WHERE id = $1
+                    RETURNING status
                 """,
                     invoice_id,
                     body.reason,
@@ -4899,7 +4917,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     "success": True,
                     "message": "Invoice voided successfully with reversal journals",
                     "data": {
-                        "status": "draft",
+                        "status": voided_status,
                         "id": str(invoice_id),
                         "reversal_journal_id": str(reversal_journal_id)
                         if reversal_journal_id
