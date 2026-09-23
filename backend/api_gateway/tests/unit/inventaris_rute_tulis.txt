@@ -322,7 +322,6 @@ POST /api/members/add-points
 POST /api/nsfp-ranges
 POST /api/onboarding/chat/{tenant_id}
 POST /api/onboarding/conversational-setup
-POST /api/onboarding/faq/{tenant_id}
 POST /api/opening-balance
 POST /api/opening-balance/validate
 POST /api/pay-groups
@@ -485,9 +484,6 @@ POST /api/vendors/merge
 POST /api/vendors/{vendor_id}/opening-balance
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
-POST /chat/chat/
-POST /chat/tenant/{tenant_id}/chat
-POST /{tenant_id}/chat
 PUT /api/employees/{employee_id}
 PUT /api/employees/{employee_id}/salary-config
 PUT /api/expense-policy

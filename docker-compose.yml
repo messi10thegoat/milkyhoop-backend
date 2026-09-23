@@ -214,8 +214,6 @@ services:
     restart: always
     depends_on:
     - postgres
-    - chatbot_service
-    - ragcrud_service
     - minio
     deploy:
       resources:
@@ -231,6 +229,8 @@ services:
         max-size: 10m
         max-file: '3'
   chatbot_service:
+    # 23 Sep 2026: tak dipakai (0 panggilan FE/gateway, 0 RPC 45 hari); tanpa auth. Tidak ikut `up -d` biasa.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: backend/services/chatbot_service/Dockerfile
@@ -331,6 +331,8 @@ services:
         max-size: 10m
         max-file: '3'
   flow-executor:
+    # 23 Sep 2026: bergantung pada ragcrud_service (profil legacy); tak pernah dibuat di server ini.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: ./backend/services/flow-executor/Dockerfile
@@ -360,6 +362,8 @@ services:
         max-size: 10m
         max-file: '3'
   ragcrud_service:
+    # 23 Sep 2026: tak dipakai (0 panggilan FE/gateway, 0 RPC 45 hari); tanpa auth. Tidak ikut `up -d` biasa.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: backend/services/ragcrud_service/Dockerfile
@@ -701,6 +705,8 @@ services:
         max-size: 10m
         max-file: '3'
   setup_orchestrator:
+    # 23 Sep 2026: bergantung pada ragcrud_service (profil legacy); tak pernah dibuat di server ini.
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: backend/services/setup_orchestrator/Dockerfile

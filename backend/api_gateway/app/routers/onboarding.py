@@ -11,7 +11,6 @@ from datetime import datetime
 # Import service clients for 8-service integration
 from backend.api_gateway.app.services.intent_client import IntentParserClient
 from backend.api_gateway.app.services.ragllm_client import RagLLMClient
-from backend.api_gateway.app.services.ragcrud_client import RagCrudClient
 
 # REMOVED: memory_client (gRPC service not running since Feb)
 from backend.api_gateway.app.services.setup_orchestrator_client import (
@@ -100,24 +99,6 @@ def save_conversation_turn(
         conversation_memory[session_id] = conversation_memory[session_id][-10:]
 
 
-async def call_chatbot_service(
-    user_id: str, tenant_id: str, message: str, trace_id: str
-) -> Dict:
-    """Call Chatbot Service via gRPC"""
-    try:
-        from backend.api_gateway.app.services.chatbot_client import ChatbotClient
-
-        chatbot_client = ChatbotClient()
-        result = await chatbot_client.send_message(
-            user_id=user_id, session_id=trace_id, message=message, tenant_id=tenant_id
-        )
-
-        logger.info(f"[{trace_id}] ✅ Chatbot Service gRPC response received")
-        return {"status": "success", "result": result}
-
-    except Exception as e:
-        logger.error(f"[{trace_id}] ❌ Chatbot Service gRPC call failed: {e}")
-        return {"status": "error", "result": str(e)}
 
 
 async def call_flow_executor(
@@ -412,108 +393,9 @@ async def chat_with_assistant(tenant_id: str, data: ChatRequest):
 
 
 # 📤 FAQ UPLOAD ENDPOINT: Direct RAG Integration
-@router.post("/faq/{tenant_id}")
-async def upload_faq(tenant_id: str, data: FAQUploadRequest, request: Request):
-    """Upload FAQ directly to RAG system with tenant isolation"""
-    trace_id = generate_trace_id()
-    client_ip = request.client.host
-
-    logger.info(
-        f"[{trace_id}] 📥 FAQ upload: tenant={tenant_id}, count={len(data.faqs)}, ip={client_ip}"
-    )
-
-    try:
-        # Direct call to RAG CRUD Service
-        rag_client = RagCrudClient()
-        uploaded_count = 0
-
-        for faq in data.faqs:
-            doc = await rag_client.create_document(
-                tenant_id=tenant_id,
-                title=f"FAQ: {faq.question[:50]}...",
-                content=f"Q: {faq.question}\nA: {faq.answer}",
-                source="FAQ_Upload",
-                tags=["faq"],
-            )
-            logger.info(f"[{trace_id}] ✅ FAQ uploaded: {doc.id}")
-            uploaded_count += 1
-
-        # Send notification
-        await send_notification(
-            data.user_id,
-            "faq_upload_completed",
-            {"tenant_id": tenant_id, "count": uploaded_count},
-            trace_id,
-        )
-
-        return {
-            "status": "success",
-            "message": "FAQ uploaded successfully",
-            "count": uploaded_count,
-            "trace_id": trace_id,
-        }
-
-    except Exception as e:
-        logger.error(f"[{trace_id}] ❌ FAQ upload failed: {e}")
-        return {
-            "status": "error",
-            "message": "Failed to upload FAQ",
-            "trace_id": trace_id,
-        }
 
 
 # 📋 GET FAQ ENDPOINT: RAG Retrieval
-@router.get("/faq")
-async def get_faq(tenant_id: str):
-    """Get FAQ list from RAG system with semantic support"""
-    trace_id = generate_trace_id()
-
-    try:
-        rag_client = RagCrudClient()
-        docs = await rag_client.list_documents(tenant_id=tenant_id)
-
-        # Filter FAQ documents - FIX: Handle gRPC response properly
-        if hasattr(docs, "documents"):
-            faq_docs = docs.documents
-        elif isinstance(docs, list):
-            faq_docs = docs
-        else:
-            faq_docs = [docs] if docs else []
-
-        faqs = []
-        for doc in faq_docs:
-            content = doc.content
-
-            # Smart semantic format detection
-            if "Q:" in content and "A:" in content:
-                # Legacy Q: A: format
-                parts = content.split("A:", 1)
-                if len(parts) == 2:
-                    question = parts[0].replace("Q:", "").strip()
-                    answer = parts[1].strip()
-                    faqs.append({"id": doc.id, "question": question, "answer": answer})
-            else:
-                # Natural conversational format
-                if doc.title and doc.content:
-                    question = doc.title
-                    answer = doc.content
-                    faqs.append({"id": doc.id, "question": question, "answer": answer})
-
-        return {
-            "tenant_id": tenant_id,
-            "faqs": faqs,
-            "count": len(faqs),
-            "trace_id": trace_id,
-        }
-
-    except Exception as e:
-        logger.error(f"[{trace_id}] ❌ FAQ retrieval failed: {e}")
-        return {
-            "tenant_id": tenant_id,
-            "faqs": [],
-            "error": str(e),
-            "trace_id": trace_id,
-        }
 
 
 # 🔍 DEBUG ENDPOINTS

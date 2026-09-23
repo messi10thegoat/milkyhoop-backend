@@ -56,7 +56,6 @@ POST /api/invite/{token}/decline
 POST /api/members/add-points
 POST /api/onboarding/chat/{tenant_id}
 POST /api/onboarding/conversational-setup
-POST /api/onboarding/faq/{tenant_id}
 POST /api/session/logout
 POST /api/session/logout-all
 POST /api/setup/chat
@@ -75,8 +74,5 @@ POST /api/v3/chat/feedback
 POST /api/v3/chat/message
 POST /api/v3/chat/message/stream
 POST /api/v3/chat/message/upload
-POST /chat/chat/
-POST /chat/tenant/{tenant_id}/chat
-POST /{tenant_id}/chat
 PUT /api/user/favorites
 PUT /api/user/profile
