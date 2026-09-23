@@ -174,6 +174,23 @@ async def _timpa_nama_dari_master(conn, tenant_id, items) -> None:
             item["product_name"] = _cache[_uuid]
 
 
+
+async def _bill_line_tax(conn, tenant_id, item_calc, tax_code_id, tax_rate, cache=None):
+    """3(b) -- PPN per baris tagihan: DPP = neto baris (item_calc["total"], SESUDAH diskon baris)
+    x faktor DPP kode pajak (PMK 131/2024; resolve_dpp_factor arah 'input', SAMA dengan mode header).
+    Mengembalikan (dpp_yang_dikenai_tarif, ppn) sebagai float 2dp. bill_items.dpp menyimpan dasar
+    yang BENAR-BENAR dikenai tarif -- arti yang sama dengan sales_invoice_items.dpp."""
+    rate = Decimal(str(tax_rate or 0))
+    net = Decimal(str(item_calc["total"]))
+    if rate <= 0:
+        return float(net), 0
+    num, den = await resolve_dpp_factor(conn, tenant_id, tax_code_id, rate, "input", cache)
+    base = net if int(num) == int(den) else (net * Decimal(int(num)) / Decimal(int(den)))
+    base = base.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    tax = (base * rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(base), float(tax)
+
+
 class BillCalculator:
     """
     Pure calculation logic for pharmacy bills.
@@ -2782,13 +2799,11 @@ class BillsService:
                     # Per-item tax calculation
                     item_tax_code_id = item.get("tax_code_id")
                     item_tax_rate = float(item.get("tax_rate") or 0)
-                    item_dpp = float(
-                        item_calc["subtotal"]
-                    )  # DPP = subtotal after discount
-                    item_tax_amount = (
-                        float((Decimal(str(item_dpp)) * Decimal(str(item_tax_rate)) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                        if item_tax_rate > 0
-                        else 0
+                    # 3(b): DPP = NETO baris (sesudah diskon baris) lewat faktor DPP kode pajak.
+                    # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
+                    # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
+                    item_dpp, item_tax_amount = await _bill_line_tax(
+                        conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None
                     )
 
                     # Convert exp_date string to date if provided
@@ -4052,13 +4067,11 @@ class BillsService:
                         # Per-item tax calculation
                         item_tax_code_id = item.get("tax_code_id")
                         item_tax_rate = float(item.get("tax_rate") or 0)
-                        item_dpp = float(
-                            item_calc["subtotal"]
-                        )  # DPP = subtotal after discount
-                        item_tax_amount = (
-                            float((Decimal(str(item_dpp)) * Decimal(str(item_tax_rate)) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                            if item_tax_rate > 0
-                            else 0
+                        # 3(b): DPP = NETO baris (sesudah diskon baris) lewat faktor DPP kode pajak.
+                        # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
+                        # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
+                        item_dpp, item_tax_amount = await _bill_line_tax(
+                            conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None
                         )
 
                         await conn.execute(
