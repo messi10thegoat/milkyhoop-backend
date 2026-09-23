@@ -5548,6 +5548,9 @@ async def get_invoice_pdf(
                     else float(invoice["total_amount"])
                 ),
                 "status": invoice["status"],
+                # tanggal + alasan pembatalan -> baris tanda DIBATALKAN (pdf_service._tanda_batal)
+                "voided_at": invoice["voided_at"],
+                "voided_reason": invoice["voided_reason"],
                 "tenant": tenant_info,
                 "items": [
                     {

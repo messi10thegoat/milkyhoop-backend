@@ -4454,6 +4454,9 @@ class BillsService:
                     "initials": initials,
                 },
                 "status": bill["calculated_status"],
+                # tanggal + alasan pembatalan -> baris tanda DIBATALKAN di PDF tagihan (pdf_service._tanda_batal)
+                "voided_at": bill["voided_at"],
+                "voided_reason": bill["voided_reason"],
                 "issue_date": bill["issue_date"].isoformat(),
                 "due_date": bill["due_date"].isoformat(),
                 "tax_rate": bill["tax_rate"],
