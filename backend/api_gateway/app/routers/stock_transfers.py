@@ -9,7 +9,7 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 
 from ..schemas.stock_transfers import (
     CancelTransferRequest,
@@ -31,6 +31,21 @@ from ..schemas.stock_transfers import (
 )
 
 router = APIRouter()
+
+
+# Ditahan 23 Sep 2026: ship/receive (fungsi DB) dan cancel menulis inventory_ledger(item_id, quantity_change,
+# total_value, transaction_date) -- kolom yang TIDAK ADA (terbukti: INSERT persis itu gagal "column item_id
+# ... does not exist"). 0 transfer di semua tenant, tak ada UI, tiap tenant 1 gudang. Tulis -> 409 jujur
+# SEBELUM badan handler jalan (tak ada baris setengah jadi). Baca tetap terbuka (daftar kosong).
+# Tiket: bangun ulang di atas ledger nyata bila pemilik menambah gudang kedua.
+async def _transfer_stok_belum_tersedia():
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "STOCK_TRANSFER_NOT_AVAILABLE", "message": "Transfer stok belum tersedia."},
+    )
+
+
+_TAHAN = [Depends(_transfer_stok_belum_tersedia)]
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -222,7 +237,7 @@ async def get_stock_transfer(request: Request, transfer_id: UUID):
         return StockTransferDetailResponse(data=data)
 
 
-@router.post("", response_model=CreateStockTransferResponse)
+@router.post("", response_model=CreateStockTransferResponse, dependencies=_TAHAN)
 async def create_stock_transfer(request: Request, body: CreateStockTransferRequest):
     """Create a new stock transfer (draft)"""
     ctx = get_user_context(request)
@@ -328,7 +343,7 @@ async def create_stock_transfer(request: Request, body: CreateStockTransferReque
             return CreateStockTransferResponse(data=data)
 
 
-@router.patch("/{transfer_id}", response_model=StockTransferDetailResponse)
+@router.patch("/{transfer_id}", response_model=StockTransferDetailResponse, dependencies=_TAHAN)
 async def update_stock_transfer(
     request: Request, transfer_id: UUID, body: UpdateStockTransferRequest
 ):
@@ -431,7 +446,7 @@ async def update_stock_transfer(
             return await get_stock_transfer(request, transfer_id)
 
 
-@router.delete("/{transfer_id}")
+@router.delete("/{transfer_id}", dependencies=_TAHAN)
 async def delete_stock_transfer(request: Request, transfer_id: UUID):
     """Delete draft stock transfer"""
     ctx = get_user_context(request)
@@ -461,7 +476,7 @@ async def delete_stock_transfer(request: Request, transfer_id: UUID):
         return {"success": True, "message": "Stock transfer deleted"}
 
 
-@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse)
+@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse, dependencies=_TAHAN)
 async def ship_stock_transfer(
     request: Request, transfer_id: UUID, body: ShipTransferRequest = None
 ):
@@ -500,7 +515,7 @@ async def ship_stock_transfer(
             return ShipTransferResponse(data=StockTransferData(**dict(row)))
 
 
-@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse)
+@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse, dependencies=_TAHAN)
 async def receive_stock_transfer(
     request: Request, transfer_id: UUID, body: ReceiveTransferRequest = None
 ):
@@ -553,7 +568,7 @@ async def receive_stock_transfer(
             return ReceiveTransferResponse(data=StockTransferData(**dict(row)))
 
 
-@router.post("/{transfer_id}/cancel", response_model=CancelTransferResponse)
+@router.post("/{transfer_id}/cancel", response_model=CancelTransferResponse, dependencies=_TAHAN)
 async def cancel_stock_transfer(
     request: Request, transfer_id: UUID, body: CancelTransferRequest
 ):
