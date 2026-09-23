@@ -18,7 +18,7 @@ LAPIS = int(sys.argv[1])
 T, TB = "kaos-biru-konveksi", "grapgrap-manado"
 SRC = "/app/backend/api_gateway/app/routers/customers.py"
 TABEL = ["accounts_receivable", "cheques", "credit_notes", "customer_activities", "customer_deposits", "customer_price_lists",
-         "item_serials", "production_orders", "proformas", "quotes", "receive_payments", "recurring_invoices", "sales_invoices",
+         "item_serials", "production_orders", "proformas", "quotes", "receive_payments", "sales_invoices",
          "sales_orders", "sales_receipts", "table_reservations"]
 
 TAMBAL = [

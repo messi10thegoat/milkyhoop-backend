@@ -22,7 +22,7 @@ ROUTER_MODUL = {
     "expense_extended": "expense", "expenses": "expense",
     "bills": "purchase_invoice", "recurring_bills": "purchase_invoice", "purchase_orders": "purchase_order",
     "production": "item", "production_costing": "journal", "stock_transfers": "item", "items": "item", "stock_adjustments": "item",
-    "customers": "customer", "vendors": "supplier", "recurring_invoices": "sales_invoice", "sales_invoices": "sales_invoice",
+    "customers": "customer", "vendors": "supplier", "sales_invoices": "sales_invoice",
     "customer_deposits": "customer", "sales_receipts": "sales_invoice", "tax_invoices": "tax", "nsfp": "tax", "efaktur": "tax",
     "payroll_runs": "payroll",
 }

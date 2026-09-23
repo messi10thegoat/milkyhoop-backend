@@ -26,7 +26,7 @@ U0 = "00000000-0000-4000-8000-000000000001"
 DISETUJUI = {"bank_reconciliation", "cheques", "bank_transfers", "fixed_assets", "opening_balance", "consolidation", "intercompany",
              "budgets", "periods", "fiscal_years", "production_costing", "expense_extended", "expenses", "bills", "recurring_bills",
              "purchase_orders", "production", "stock_transfers", "items", "stock_adjustments", "customers", "vendors",
-             "recurring_invoices", "sales_invoices", "customer_deposits", "sales_receipts", "tax_invoices", "nsfp", "efaktur", "payroll_runs"}
+             "sales_invoices", "customer_deposits", "sales_receipts", "tax_invoices", "nsfp", "efaktur", "payroll_runs"}
 TERBUKA = {"unified_chat", "document_intake"}
 hasil = []
 

@@ -15,7 +15,7 @@ MODE = sys.argv[1]
 BADAN = "/tmp/V252_badan.sql"
 T, TB = "kaos-biru-konveksi", "grapgrap-manado"
 BER_BARIS = ["sales_invoices", "receive_payments", "accounts_receivable", "proformas", "quotes", "sales_orders"]
-SEMUA = BER_BARIS + ["recurring_invoices", "sales_receipts"]
+SEMUA = BER_BARIS + ["sales_receipts"]  # recurring_invoices dihapus V292
 hasil = []
 
 
@@ -37,7 +37,7 @@ async def main():
                   (SELECT attnum FROM pg_attribute WHERE attrelid=$1::regclass AND attname='customer_id'),
                   (SELECT attnum FROM pg_attribute WHERE attrelid=$1::regclass AND attname='tenant_id')]::smallint[]""", t)
             catat("SKEMA", f"{t}: FK komposit (customer_id, tenant_id) ada", komp >= 1, komp)
-        for t in ("sales_invoices", "receive_payments", "recurring_invoices", "sales_receipts"):
+        for t in ("sales_invoices", "receive_payments", "sales_receipts"):
             simpel = await conn.fetchval("SELECT count(*) FROM pg_constraint WHERE conname=$1", f"{t}_customer_id_fkey")
             catat("SKEMA", f"{t}: FK simpel lama hilang", simpel == 0, simpel)
 

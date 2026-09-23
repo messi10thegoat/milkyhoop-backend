@@ -1647,7 +1647,7 @@ MERGE_TABEL = (
     ("sales_orders", "customer_id"),
     ("proformas", "customer_id"),
     ("quotes", "customer_id"),
-    ("recurring_invoices", "customer_id"),
+    # recurring_invoices: tabel dihapus V292 (fitur Faktur Berulang dicabut).
     ("sales_receipts", "customer_id"),
     ("cheques", "customer_id"),
     ("item_serials", "customer_id"),
