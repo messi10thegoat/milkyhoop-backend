@@ -157,7 +157,10 @@ class CustomerDepositListItem(BaseModel):
     amount: int
     amount_applied: float = 0
     amount_refunded: float = 0
-    remaining_amount: float = 0
+    # Sisa = turunan jurnal (compute_deposit_remaining_many). null untuk DRAF (belum diposting,
+    # belum ada uang di buku) -- bukan 0 yang terbaca 'sudah terpakai habis'.
+    remaining_amount: Optional[float] = 0
+    remaining_state: str = "posted"  # "posted" | "draft_belum_diposting"
     status: str
     payment_method: str
     reference: Optional[str] = None

@@ -251,31 +251,47 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> Decimal
     (je.source_id = deposit_id), is_effective journals only. Used as the
     AUTHORITATIVE balance for apply-validation (replaces cache-column read).
     """
+    # satu id -> tepat satu baris unnest; tak bergantung pada ejaan string id si pemanggil
+    return next(iter((await compute_deposit_remaining_many(conn, tenant_id, [deposit_id])).values()))
+
+
+async def compute_deposit_remaining_many(conn, tenant_id: str, deposit_ids) -> dict:
+    """{str(deposit_id): Decimal remaining} -- SATU-SATUNYA SQL sisa uang muka. Dipakai oleh
+    compute_deposit_remaining (validasi apply) DAN kedua daftar (dulu daftar membaca CACHE
+    amount - amount_applied - amount_refunded). Net CUSTOMER_DEPOSIT_LIABILITY per uang muka
+    (je.source_id = id, atau jurnal receive_payment yang membuatnya), is_effective saja."""
+    ids = [str(d) for d in deposit_ids]
+    if not ids:
+        return {}
     deposit_account_id = await resolve_account_id_by_role(
         conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY
     )
-    result = await conn.fetchval(
+    rows = await conn.fetch(
         """
-        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        WHERE je.tenant_id = $1
-          AND jl.account_id = $3
-          AND is_effective_journal(je.id)
-          AND (
-              je.source_id = $2
-              OR je.id IN (
-                  SELECT journal_id FROM receive_payments
-                  WHERE tenant_id = $1 AND created_deposit_id = $2 AND journal_id IS NOT NULL
-              )
-          )
+        SELECT d.id,
+               COALESCE((
+                   SELECT SUM(jl.credit) - SUM(jl.debit)
+                   FROM journal_lines jl
+                   JOIN journal_entries je ON je.id = jl.journal_id
+                   WHERE je.tenant_id = $1
+                     AND jl.account_id = $3
+                     AND is_effective_journal(je.id)
+                     AND (
+                         je.source_id = d.id
+                         OR je.id IN (
+                             SELECT journal_id FROM receive_payments
+                             WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
+                         )
+                     )
+               ), 0) AS remaining
+        FROM unnest($2::uuid[]) AS d(id)
         """,
         tenant_id,
-        deposit_id,
+        ids,
         deposit_account_id,
     )
     # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
-    return Decimal(str(result or 0))
+    return {str(r["id"]): Decimal(str(r["remaining"] or 0)) for r in rows}
 
 
 async def linked_so_deposits(conn, tenant_id, so_id):
@@ -500,6 +516,9 @@ async def list_customer_deposits(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            _sisa = await compute_deposit_remaining_many(
+                conn, ctx["tenant_id"], [r["id"] for r in rows if r["status"] != "draft"]
+            )
 
             items = [
                 {
@@ -512,13 +531,10 @@ async def list_customer_deposits(
                     "amount": row["amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": 0
-                    if row["status"] == "void"
-                    else (
-                        row["amount"]
-                        - (row["amount_applied"] or 0)
-                        - (row["amount_refunded"] or 0)
-                    ),
+                    "remaining_amount": None
+                    if row["status"] == "draft"
+                    else float(_sisa.get(str(row["id"]), 0)),
+                    "remaining_state": "draft_belum_diposting" if row["status"] == "draft" else "posted",
                     "status": row["status"],
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
@@ -2739,6 +2755,9 @@ async def list_customer_deposits_by_customer(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            _sisa = await compute_deposit_remaining_many(
+                conn, ctx["tenant_id"], [r["id"] for r in rows if r["status"] != "draft"]
+            )
 
             items = [
                 {
@@ -2751,13 +2770,10 @@ async def list_customer_deposits_by_customer(
                     "amount": row["amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": 0
-                    if row["status"] == "void"
-                    else (
-                        row["amount"]
-                        - (row["amount_applied"] or 0)
-                        - (row["amount_refunded"] or 0)
-                    ),
+                    "remaining_amount": None
+                    if row["status"] == "draft"
+                    else float(_sisa.get(str(row["id"]), 0)),
+                    "remaining_state": "draft_belum_diposting" if row["status"] == "draft" else "posted",
                     "status": row["status"],
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
