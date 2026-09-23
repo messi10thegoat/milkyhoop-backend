@@ -57,7 +57,7 @@ def get_user_context(request: Request) -> dict:
 # ============================================================================
 
 
-@router.get("", response_model=ItemSerialListResponse)
+@router.get("", dependencies=[Depends(fitur_belum_tersedia)], response_model=ItemSerialListResponse)
 async def list_item_serials(
     request: Request,
     skip: int = Query(0, ge=0),
@@ -158,7 +158,7 @@ async def search_serial_number(
         )
 
 
-@router.get("/{serial_id}", response_model=ItemSerialDetailResponse)
+@router.get("/{serial_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=ItemSerialDetailResponse)
 async def get_item_serial(request: Request, serial_id: UUID):
     """Get serial details with movement history"""
     ctx = get_user_context(request)
