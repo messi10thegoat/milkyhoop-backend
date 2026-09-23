@@ -175,13 +175,14 @@ async def _timpa_nama_dari_master(conn, tenant_id, items) -> None:
 
 
 
-async def _bill_line_tax(conn, tenant_id, item_calc, tax_code_id, tax_rate, cache=None):
+async def _bill_line_tax(conn, tenant_id, item_calc, tax_code_id, tax_rate, cache=None, alloc=0):
     """3(b) -- PPN per baris tagihan: DPP = neto baris (item_calc["total"], SESUDAH diskon baris)
     x faktor DPP kode pajak (PMK 131/2024; resolve_dpp_factor arah 'input', SAMA dengan mode header).
     Mengembalikan (dpp_yang_dikenai_tarif, ppn) sebagai float 2dp. bill_items.dpp menyimpan dasar
     yang BENAR-BENAR dikenai tarif -- arti yang sama dengan sales_invoice_items.dpp."""
     rate = Decimal(str(tax_rate or 0))
-    net = Decimal(str(item_calc["total"]))
+    # 3(b2): minus this line's share of the header discounts (invoice + cash), see _bill_line_allocs.
+    net = Decimal(str(item_calc["total"])) - Decimal(str(alloc or 0))
     if rate <= 0:
         return float(net), 0
     num, den = await resolve_dpp_factor(conn, tenant_id, tax_code_id, rate, "input", cache)
@@ -338,6 +339,30 @@ class BillCalculator:
             "discount_amount": float(discount_amount.quantize(TWO, rounding=ROUND_HALF_UP)),
             "total": float(total.quantize(TWO, rounding=ROUND_HALF_UP)),
         }
+
+
+
+def _bill_line_allocs(items, calc, request, has_per_item_tax):
+    """3(b2) -- per-line share of the header discounts (invoice_discount_total + cash_discount_total:
+    the SAME total the header mode subtracts before DPP), pro rata over ALL line nets (taxable and
+    not), last line absorbs (sales_doc_calc.allocate -- the SI rule). None/zeros when there is no
+    per-line tax or when dpp_manual is set (the manual DPP stays the override; for bills the legal
+    DPP is what the vendor's faktur pajak states)."""
+    from .sales_doc_calc import allocate
+    n = len(items or [])
+    if not n or not has_per_item_tax or request.get("dpp_manual") is not None or not calc:
+        return [Decimal("0")] * n
+    total = Decimal(str(calc.get("invoice_discount_total") or 0)) + Decimal(str(calc.get("cash_discount_total") or 0))
+    if total <= 0:
+        return [Decimal("0")] * n
+    nets = []
+    for it in items:
+        try:
+            nets.append(Decimal(str(BillCalculator.calculate_item_total(
+                it.get("qty") or 0, it.get("price") or 0, Decimal(str(it.get("discount_percent", 0) or 0)))["total"])))
+        except Exception:
+            nets.append(Decimal("0"))
+    return allocate(total, nets)
 
 
 class BillsService:
@@ -2766,6 +2791,7 @@ class BillsService:
                 # T14: nama master menang bila product_id ter-resolve
                 await _timpa_nama_dari_master(conn, tenant_id, items)
 
+                _line_allocs = _bill_line_allocs(items, calc, request, has_per_item_tax)  # 3(b2)
                 for idx, item in enumerate(items, start=1):
                     # Validate required item fields
                     if "qty" not in item or item["qty"] is None:
@@ -2803,7 +2829,7 @@ class BillsService:
                     # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
                     # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
                     item_dpp, item_tax_amount = await _bill_line_tax(
-                        conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None
+                        conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None, _line_allocs[idx - 1]
                     )
 
                     # Convert exp_date string to date if provided
@@ -4047,6 +4073,7 @@ class BillsService:
                     # T14: nama master menang bila product_id ter-resolve
                     await _timpa_nama_dari_master(conn, tenant_id, items)
 
+                    _line_allocs = _bill_line_allocs(items, calc, request, has_per_item_tax)  # 3(b2)
                     for idx, item in enumerate(items, start=1):
                         qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
                         price = Decimal(str(item["price"]))
@@ -4071,7 +4098,7 @@ class BillsService:
                         # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
                         # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
                         item_dpp, item_tax_amount = await _bill_line_tax(
-                            conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None
+                            conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None, _line_allocs[idx - 1]
                         )
 
                         await conn.execute(
