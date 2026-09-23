@@ -9,7 +9,8 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.vendor_deposits import (
     VendorDepositCreate,
@@ -196,7 +197,7 @@ async def get_vendor_deposit_summary(request: Request):
         return VendorDepositSummary(**dict(row))
 
 
-@router.get("/{deposit_id}", response_model=VendorDepositDetailResponse)
+@router.get("/{deposit_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=VendorDepositDetailResponse)
 async def get_vendor_deposit(request: Request, deposit_id: UUID):
     """Get vendor deposit with applications and refunds"""
     ctx = get_user_context(request)
@@ -1176,7 +1177,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
 # ============================================================================
 
 
-@router.get("/by-vendor/{vendor_id}", response_model=VendorDepositsForVendorResponse)
+@router.get("/by-vendor/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=VendorDepositsForVendorResponse)
 async def get_vendor_deposits_for_vendor(
     request: Request,
     vendor_id: UUID,
@@ -1237,7 +1238,7 @@ async def get_vendor_deposits_for_vendor(
         )
 
 
-@router.get("/available/{vendor_id}", response_model=AvailableDepositsResponse)
+@router.get("/available/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=AvailableDepositsResponse)
 async def get_available_deposits_for_vendor(request: Request, vendor_id: UUID):
     """Get available deposits for application"""
     ctx = get_user_context(request)

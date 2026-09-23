@@ -4,7 +4,8 @@ Endpoints for Neraca (Balance Sheet), Arus Kas (Cash Flow), Laba Rugi (Income St
 and Trial Balance using the Accounting Kernel.
 Supports both Cash and Accrual accounting basis.
 """
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import Depends, APIRouter, HTTPException, Request, Query
+from ..services.fitur_parkir import fitur_belum_tersedia
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
@@ -2706,7 +2707,7 @@ async def get_ap_aging_summary(
         )
 
 
-@router.get("/ap-aging/detail", response_model=APAgingDetailResponse)
+@router.get("/ap-aging/detail", dependencies=[Depends(fitur_belum_tersedia)], response_model=APAgingDetailResponse)
 async def get_ap_aging_detail(
     request: Request,
     as_of: Optional[date] = Query(
@@ -2782,7 +2783,7 @@ async def get_ap_aging_detail(
         )
 
 
-@router.get("/ap-aging/vendor/{vendor_id}", response_model=APVendorAgingResponse)
+@router.get("/ap-aging/vendor/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=APVendorAgingResponse)
 async def get_ap_aging_for_vendor(
     request: Request,
     vendor_id: uuid.UUID,
@@ -2897,7 +2898,7 @@ async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
         raise HTTPException(status_code=500, detail="Failed to create aging snapshot")
 
 
-@router.get("/aging-trend", response_model=AgingTrendResponse)
+@router.get("/aging-trend", dependencies=[Depends(fitur_belum_tersedia)], response_model=AgingTrendResponse)
 async def get_aging_trend(
     request: Request,
     snapshot_type: AgingType = Query(...),

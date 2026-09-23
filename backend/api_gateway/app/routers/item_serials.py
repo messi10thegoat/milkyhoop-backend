@@ -8,7 +8,8 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.item_serials import (
     AdjustSerialRequest,
@@ -528,7 +529,7 @@ async def get_serial_history(request: Request, serial_id: UUID):
 
 
 @router.get(
-    "/items/{item_id}/serials/available", response_model=AvailableSerialsResponse
+    "/items/{item_id}/serials/available", dependencies=[Depends(fitur_belum_tersedia)], response_model=AvailableSerialsResponse
 )
 async def get_available_serials_for_item(
     request: Request,

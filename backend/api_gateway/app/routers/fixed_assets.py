@@ -17,7 +17,8 @@ from uuid import UUID
 import uuid as uuid_module
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.fixed_assets import (
     AssetCategoryCreate,
@@ -362,7 +363,7 @@ async def list_fixed_assets(
         return FixedAssetListResponse(items=items, total=total)
 
 
-@router.get("/depreciation-due", response_model=CalculateDepreciationResponse)
+@router.get("/depreciation-due", dependencies=[Depends(fitur_belum_tersedia)], response_model=CalculateDepreciationResponse)
 async def get_depreciation_due(
     request: Request,
     year: int = Query(...),
@@ -404,7 +405,7 @@ async def get_depreciation_due(
             asset_count=len(items),
         )
 
-@router.get("/register", response_model=AssetRegisterResponse)
+@router.get("/register", dependencies=[Depends(fitur_belum_tersedia)], response_model=AssetRegisterResponse)
 async def get_asset_register(request: Request, status: Optional[AssetStatus] = None):
     """Get asset register report"""
     ctx = get_user_context(request)

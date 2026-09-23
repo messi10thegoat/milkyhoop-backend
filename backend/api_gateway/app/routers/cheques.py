@@ -37,7 +37,8 @@ Endpoints:
 - GET    /cheques/aging                     - Aging of pending cheques
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import Depends, APIRouter, HTTPException, Request, Query
+from ..services.fitur_parkir import fitur_belum_tersedia
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -445,7 +446,7 @@ async def list_pending_cheques(
         raise HTTPException(status_code=500, detail="Failed to list pending cheques")
 
 
-@router.get("/due-today")
+@router.get("/due-today", dependencies=[Depends(fitur_belum_tersedia)])
 async def list_due_today(request: Request):
     """List cheques due for deposit today."""
     try:
@@ -487,7 +488,7 @@ async def list_due_today(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list cheques due today")
 
 
-@router.get("/upcoming")
+@router.get("/upcoming", dependencies=[Depends(fitur_belum_tersedia)])
 async def list_upcoming_cheques(
     request: Request,
     days: int = Query(30, ge=1, le=365),
@@ -582,7 +583,7 @@ async def list_bounced_cheques(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list bounced cheques")
 
 
-@router.get("/by-customer/{customer_id}")
+@router.get("/by-customer/{customer_id}", dependencies=[Depends(fitur_belum_tersedia)])
 async def list_customer_cheques(
     request: Request,
     customer_id: UUID,
@@ -633,7 +634,7 @@ async def list_customer_cheques(
         raise HTTPException(status_code=500, detail="Failed to list customer cheques")
 
 
-@router.get("/by-vendor/{vendor_id}")
+@router.get("/by-vendor/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)])
 async def list_vendor_cheques(
     request: Request,
     vendor_id: UUID,
@@ -753,7 +754,7 @@ async def get_cheque_summary(request: Request):
         logger.error(f"Error getting cheque summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get cheque summary")
 
-@router.get("/aging", response_model=ChequeAgingResponse)
+@router.get("/aging", dependencies=[Depends(fitur_belum_tersedia)], response_model=ChequeAgingResponse)
 async def get_cheque_aging(
     request: Request,
     cheque_type: Literal["received", "issued"] = Query("received"),

@@ -8,7 +8,8 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.fitur_parkir import fitur_belum_tersedia
 from dateutil.relativedelta import relativedelta
 
 from ..schemas.recurring_bills import (
@@ -125,7 +126,7 @@ async def list_recurring_bills(
         return RecurringBillListResponse(items=items, total=total)
 
 
-@router.get("/due", response_model=DueRecurringBillsResponse)
+@router.get("/due", dependencies=[Depends(fitur_belum_tersedia)], response_model=DueRecurringBillsResponse)
 async def get_due_recurring_bills(
     request: Request,
     as_of_date: Optional[date] = None,
@@ -169,7 +170,7 @@ async def get_due_recurring_bills(
         )
 
 
-@router.get("/stats", response_model=RecurringBillStats)
+@router.get("/stats", dependencies=[Depends(fitur_belum_tersedia)], response_model=RecurringBillStats)
 async def get_recurring_bill_stats(request: Request):
     """Get recurring bill statistics"""
     ctx = get_user_context(request)
@@ -635,7 +636,7 @@ async def generate_bill(
             )
 
 
-@router.post("/process-due", response_model=ProcessDueBillsResponse)
+@router.post("/process-due", dependencies=[Depends(fitur_belum_tersedia)], response_model=ProcessDueBillsResponse)
 async def process_due_bills(request: Request, data: ProcessDueBillsRequest = None):
     """Process all due recurring bills (batch)"""
     ctx = get_user_context(request)
@@ -765,7 +766,7 @@ async def process_due_bills(request: Request, data: ProcessDueBillsRequest = Non
         )
 
 
-@router.get("/{recurring_bill_id}/history", response_model=GeneratedBillsResponse)
+@router.get("/{recurring_bill_id}/history", dependencies=[Depends(fitur_belum_tersedia)], response_model=GeneratedBillsResponse)
 async def get_recurring_bill_history(request: Request, recurring_bill_id: UUID):
     """Get bills generated from this template"""
     ctx = get_user_context(request)
