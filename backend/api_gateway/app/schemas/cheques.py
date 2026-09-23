@@ -130,7 +130,7 @@ class ChequeItem(BaseModel):
     cheque_date: date
     bank_name: Optional[str] = None
     cheque_type: str  # received, issued
-    amount: int
+    amount: float  # NUMERIC(18,2); int menolak sen -> 500
     party_name: Optional[str] = None
     status: str
     reference_number: Optional[str] = None
@@ -146,7 +146,7 @@ class ChequeDetail(BaseModel):
     bank_branch: Optional[str] = None
     cheque_type: str
 
-    amount: int
+    amount: float  # NUMERIC(18,2); int menolak sen -> 500
     customer_id: Optional[str] = None
     customer_name: Optional[str] = None
     vendor_id: Optional[str] = None
@@ -210,28 +210,28 @@ class ChequeSummaryItem(BaseModel):
     cheque_type: str
     status: str
     count: int
-    total_amount: int
+    total_amount: float  # NUMERIC(18,2); int menolak sen -> 500
 
 
 class ChequeAgingItem(BaseModel):
     """Cheque aging bucket."""
     aging_bucket: str
     count: int
-    total_amount: int
+    total_amount: float  # NUMERIC(18,2); int menolak sen -> 500
 
 
 class ChequeSummary(BaseModel):
     """Overall cheque summary."""
     received_pending: int = 0
-    received_pending_amount: int = 0
+    received_pending_amount: float = 0  # NUMERIC(18,2); int menolak sen -> 500
     received_deposited: int = 0
-    received_deposited_amount: int = 0
+    received_deposited_amount: float = 0  # NUMERIC(18,2); int menolak sen -> 500
     issued_pending: int = 0
-    issued_pending_amount: int = 0
+    issued_pending_amount: float = 0  # NUMERIC(18,2); int menolak sen -> 500
     bounced_count: int = 0
-    bounced_amount: int = 0
+    bounced_amount: float = 0  # NUMERIC(18,2); int menolak sen -> 500
     due_today_count: int = 0
-    due_today_amount: int = 0
+    due_today_amount: float = 0  # NUMERIC(18,2); int menolak sen -> 500
 
 
 # =============================================================================
