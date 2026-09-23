@@ -2362,7 +2362,9 @@ async def get_timing_differences(
                     id=str(r["id"]),
                     bill_number=r["bill_number"],
                     vendor_name=r["vendor_name"] or "Unknown",
-                    bill_date=r["bill_date"].isoformat() if r["bill_date"] else "",
+                    # SELECT memberi alias bill_date AS issue_date; dulu dibaca r["bill_date"] -> KeyError -> 500
+                    # untuk SETIAP tenant yang punya tagihan belum lunas (terukur 23 Sep: kaos).
+                    bill_date=r["issue_date"].isoformat() if r["issue_date"] else "",
                     due_date=r["due_date"].isoformat() if r["due_date"] else None,
                     total_amount=int(r["total_amount"] or 0),
                     paid_amount=int(r["paid_amount"] or 0),
