@@ -301,13 +301,18 @@ async def linked_so_deposits(conn, tenant_id, so_id):
     return out
 
 
-async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
+async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding, skip_ids=()):
     """Unit 6: FIFO plan for applying the invoice's SO deposits. ONE derivation, used by both
     GET /sales-invoices/{id}/deposit-plan (pre-fill) and posting (auto-apply):
     deposits linked to the invoice's SO (directly or via its proforma, resolved with the
     SAME resolve_order_id_for_deposit the DP-ceiling guard uses), status posted/partial,
     oldest first; each capped at min(remaining, what is still outstanding).
-    remaining = compute_deposit_remaining (journal-derived). Whole rupiah, like /apply."""
+    remaining = compute_deposit_remaining (journal-derived).
+    skip_ids: uang muka yang DILEWATI pengguna -- tampil dengan planned 0 dan TIDAK memakan sisa
+    tagihan, jadi uang muka berikutnya (FIFO) boleh menutup lebih. Dilewati DI SINI, bukan
+    sesudah rencana dibuat: dulu POST membuang yang dilewati SESUDAH FIFO, sehingga faktur
+    kurang-diterapkan (yang lain tetap dipatok pada jatah lamanya)."""
+    skip = {str(s) for s in (skip_ids or ())}
     inv = await conn.fetchrow(
         "SELECT id, sales_order_id, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
         invoice_id, tenant_id,
@@ -327,6 +332,8 @@ async def plan_so_deposit_application(conn, tenant_id, invoice_id, outstanding):
             )
         except HTTPException:
             reason = "Pelanggan uang muka berbeda dengan pelanggan faktur."
+        if reason is None and str(d["id"]) in skip:
+            reason = "Dilewati pengguna."
         amt = Decimal("0") if reason or remaining <= 0 else max(Decimal("0"), min(remaining, left))
         left -= amt
         plan.append({

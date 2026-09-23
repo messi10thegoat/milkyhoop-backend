@@ -7,7 +7,7 @@ Handles draft -> posted -> paid lifecycle with AR and journal entry creation.
 
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
-from typing import Optional, Literal
+from typing import List, Optional, Literal
 from uuid import UUID
 import logging
 import asyncpg
@@ -270,11 +270,11 @@ async def _auto_apply_so_deposits(conn, ctx, invoice_id, application_date, skip_
         apply_deposit_core, plan_so_deposit_application, get_invoice_remaining_from_journal,
     )
     outstanding = await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id)
-    plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding)
-    skip = {str(s) for s in (skip_ids or ())}
+    # Lewati DI DALAM perencana (sama dengan GET /deposit-plan?skip_deposit_ids=...).
+    plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding, skip_ids)
     applied = []
     for p in plan:
-        if p["planned_amount"] <= 0 or p["deposit_id"] in skip:
+        if p["planned_amount"] <= 0:
             continue
         res = await apply_deposit_core(
             conn, ctx, UUID(p["deposit_id"]),
@@ -5226,7 +5226,11 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
 
 
 @router.get("/{invoice_id}/deposit-plan")
-async def get_invoice_deposit_plan(request: Request, invoice_id: UUID):
+async def get_invoice_deposit_plan(
+    request: Request,
+    invoice_id: UUID,
+    skip_deposit_ids: List[str] = Query(default=[], description="Berulang atau dipisah koma"),
+):
     """Unit 6 -- READ-ONLY: which of the SO's deposits posting would apply to this invoice,
     and how much (same planner posting uses). Draft: against the invoice total; posted:
     against the journal-derived outstanding."""
@@ -5241,15 +5245,20 @@ async def get_invoice_deposit_plan(request: Request, invoice_id: UUID):
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
         outstanding = (
-            int(inv["total_amount"] or 0) if inv["status"] == "draft"
+            Decimal(str(inv["total_amount"] or 0)) if inv["status"] == "draft"
             else await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id)
         )
-        plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding)
+        # Rencana SEOLAH uang muka ini dilewati -- perencana yang SAMA dengan POST /post.
+        # Dipanggil langsung (bukan lewat HTTP) nilai bawaannya objek Query, bukan list.
+        _raw = skip_deposit_ids if isinstance(skip_deposit_ids, (list, tuple)) else []
+        _skip = [s.strip() for v in _raw for s in str(v).split(",") if s.strip()]
+        plan = await plan_so_deposit_application(conn, ctx["tenant_id"], invoice_id, outstanding, _skip)
     return {
         "success": True,
         "data": {
             "invoice_id": str(invoice_id),
             "sales_order_id": str(inv["sales_order_id"]) if inv["sales_order_id"] else None,
+            "skip_deposit_ids": _skip,
             "outstanding": outstanding,
             "total_planned": sum(p["planned_amount"] for p in plan),
             "deposits": plan,
