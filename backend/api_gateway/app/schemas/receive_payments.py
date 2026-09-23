@@ -122,6 +122,10 @@ class AllocationResponse(BaseModel):
     """Invoice allocation in response."""
 
     id: str
+    # L3: alokasi yang dilepas (Lepas Pembayaran) = 'reversed'; riwayat, bukan pelunasan berlaku
+    status: str = "active"
+    reversed_at: Optional[str] = None
+    unapply_journal_number: Optional[str] = None
     invoice_id: str
     invoice_number: str
     invoice_amount: float

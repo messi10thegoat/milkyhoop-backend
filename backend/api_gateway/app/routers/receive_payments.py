@@ -937,13 +937,18 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     }
 
             # Get allocations
+            # L3: + status/reversed_at alokasi dan nomor jurnal lepas-nya (alokasi yang dilepas dulu
+            # tampil seolah masih berlaku). Semua alokasi, aktif DAN dilepas (riwayat).
             allocations = await conn.fetch(
                 """
-                SELECT * FROM receive_payment_allocations
-                WHERE payment_id = $1
-                ORDER BY created_at
+                SELECT rpa.*, uj.journal_number AS unapply_journal_number
+                FROM receive_payment_allocations rpa
+                LEFT JOIN journal_entries uj ON uj.id = rpa.unapply_journal_id AND uj.tenant_id = $2
+                WHERE rpa.payment_id = $1 AND rpa.tenant_id = $2
+                ORDER BY rpa.created_at
             """,
                 payment_id,
+                ctx["tenant_id"],
             )
 
             # Fetch attachments
@@ -1024,6 +1029,9 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     "allocations": [
                         {
                             "id": str(alloc["id"]),
+                            "status": "reversed" if alloc["status"] == "reversed" else "active",
+                            "reversed_at": alloc["reversed_at"].isoformat() if alloc["reversed_at"] else None,
+                            "unapply_journal_number": alloc["unapply_journal_number"],
                             "invoice_id": str(alloc["invoice_id"]),
                             "invoice_number": alloc["invoice_number"],
                             "invoice_amount": alloc["invoice_amount"],
