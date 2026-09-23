@@ -42,6 +42,7 @@ from .routers import (
     tax_groups,
     tax_reports,
     pkp_settings,
+    pkp_status,
     djp_master,
     nsfp,
     product_djp_mapping,
@@ -499,6 +500,8 @@ app.include_router(tax_reports.router, prefix="/api/tax-reports", tags=["tax-rep
 app.include_router(
     pkp_settings.router, prefix="/api/settings/pkp", tags=["PKP Settings"]
 )
+# Status PKP ("Tenant".is_pkp) -- status pajak tenant, DI LUAR penjaga modul e-Faktur (pemilik saja).
+app.include_router(pkp_status.router, prefix="/api/settings/pkp-status", tags=["PKP Status"])
 app.include_router(djp_master.router, prefix="/api/djp", tags=["DJP Master Data"])
 app.include_router(nsfp.router, prefix="/api/nsfp-ranges", tags=["NSFP Management"])
 app.include_router(
