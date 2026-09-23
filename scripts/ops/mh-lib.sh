@@ -81,7 +81,10 @@ mh_resolve() {
     fi
 
     # (b) Nama service: tanya compose, jangan menebak sufiks.
-    if id=$(cd "$TREE" && docker compose ps -q "$arg" 2>/dev/null) && [ -n "$id" ]; then
+    # `ps -a` (23 Sep 2026): tanpa -a, service yang BERHENTI tak terselesaikan -> mh-recreate
+    # menolak (exit 2) justru saat kontainer perlu dinyalakan lagi. Rotasi Redis 08:37 membuat
+    # API mati ~2 menit karena ini (penolakannya pun tertelan `| tail -1` di skrip pemanggil).
+    if id=$(cd "$TREE" && docker compose ps -aq "$arg" 2>/dev/null) && [ -n "$id" ]; then
         # `|| true` WAJIB. Tanpa itu, `set -euo pipefail` membunuh skrip di
         # baris INI begitu `docker container inspect` gagal -- misalnya
         # kontainernya lenyap antara `compose ps -q` dan pemanggilan ini --
@@ -110,7 +113,7 @@ mh_resolve() {
 mh_daftar_kontainer() {
     echo "" >&2
     echo "Service compose yang tersedia (service -> kontainer):" >&2
-    (cd "$TREE" && docker compose ps --format '  {{.Service}} -> {{.Name}}' 2>/dev/null) >&2 \
+    (cd "$TREE" && docker compose ps -a --format '  {{.Service}} -> {{.Name}} ({{.State}})' 2>/dev/null) >&2 \
         || echo "  (tak bisa membaca compose)" >&2
 }
 
