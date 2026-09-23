@@ -3,6 +3,7 @@ Centralized Configuration - API Gateway
 All secrets loaded from environment variables
 """
 import os
+from urllib.parse import quote
 from typing import Optional, List
 from functools import lru_cache
 from dotenv import load_dotenv
@@ -40,8 +41,15 @@ class Settings:
         if url:
             return url
         if self.REDIS_PASSWORD:
-            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+            # URL-ENCODED: kata sandi berisi '/' dulu membuat parser membaca sisa kata sandi
+            # sebagai PORT -- koneksi gagal dan pesan galatnya MENCETAK potongan kata sandi ke log.
+            return f"redis://:{quote(self.REDIS_PASSWORD, safe='')}@{self.REDIS_HOST}:{self.REDIS_PORT}/0"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @property
+    def REDIS_TARGET(self) -> str:
+        """host:port untuk LOG. Jangan pernah mencatat REDIS_URL atau pesan galat koneksi mentah."""
+        return f"{self.REDIS_HOST}:{self.REDIS_PORT}"
 
     # JWT Configuration
     JWT_SECRET: str = os.getenv("JWT_SECRET", "")  # REQUIRED
@@ -53,6 +61,8 @@ class Settings:
     RATE_LIMIT_WINDOW: int = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # seconds
     RATE_LIMIT_AUTH_REQUESTS: int = int(os.getenv("RATE_LIMIT_AUTH_REQUESTS", "10"))  # stricter for auth
     RATE_LIMIT_AUTH_WINDOW: int = int(os.getenv("RATE_LIMIT_AUTH_WINDOW", "60"))
+    # #26: baca (GET/HEAD) punya anggaran sendiri; RATE_LIMIT_REQUESTS kini = TULIS saja.
+    RATE_LIMIT_READ_REQUESTS: int = int(os.getenv("RATE_LIMIT_READ_REQUESTS", "600"))
 
     # CORS Configuration
     CORS_ORIGINS: List[str] = [
