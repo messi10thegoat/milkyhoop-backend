@@ -28,8 +28,10 @@ from ..schemas.sales_receipts import (
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
     resolve_line_revenue_account,
 )
+from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
 
 # Fase C1.2: required role mappings for sales_receipts posting path
@@ -370,6 +372,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                 ).quantize(Decimal("0.01"))
 
             total_amount = subtotal - discount_amount + tax_amount
+            await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], tax_amount)
             change_amount = body.amount_received - total_amount
 
             if change_amount < 0:
@@ -644,9 +647,11 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
             # CR Tax (if any) — Fase C1.2: role resolver (VAT_OUTPUT interim 2-10300)
             if tax_amount > 0:
-                tax_acct = await resolve_account_id_by_role(
+                tax_acct = await resolve_account_id_by_role_if_pkp(
                     conn, ctx["tenant_id"], AccountRole.VAT_OUTPUT
                 )
+                if tax_acct is None:
+                    raise HTTPException(status_code=422, detail=PESAN_NON_PKP)
                 if tax_acct:
                     await conn.execute(
                         """

@@ -27,8 +27,10 @@ from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
     resolve_account_id_by_role,
+    resolve_account_id_by_role_if_pkp,
     resolve_line_revenue_account,
 )
+from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..services.sales_doc_calc import compute_document, DocumentDiscountError
@@ -485,6 +487,8 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             shipping_amount=body.shipping_amount,
             shipping_tax=_ship,
         )
+        async with _pool.acquire() as _conn:
+            await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], res["tax_amount"])
         return {
             "success": True,
             "data": {
@@ -601,6 +605,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         )
         subtotal = _res["dpp_total"]
         tax_total = _res["tax_amount"]
+        async with pool.acquire() as _conn:
+            await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], tax_total)
         ship_amt = _res["shipping_amount"]
         if subtotal == 0 and tax_total == 0:
             subtotal = Decimal(str(body.get("total_amount") or 0))
@@ -2103,6 +2109,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         invoice_id,
         ctx["tenant_id"],
     )
+    # Non-PKP + PPN: tolak SEBELUM tulis apa pun (AR, jurnal). Jalur langsung, SO->INV, quote->INV
+    # semuanya bermuara di sini.
+    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], invoice["tax_amount"])
 
     # Create AR record
     ar_id = await conn.fetchval(
@@ -2173,11 +2182,14 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Fase C1.1: VAT_OUTPUT interim → 2-10300 (Hutang Pajak) per LOCKED mapping.
     # Was hardcoded to 2-10600 which only existed for 2/5 tenants (latent bug
     # for anthonius-iwan, ponte-publishing, potus-id on any taxed invoice).
+    # Varian _if_pkp (sama dgn nota kredit): non-PKP -> None; pajak > 0 sudah ditolak di atas.
     vat_output_account = {
-        "id": await resolve_account_id_by_role(
+        "id": await resolve_account_id_by_role_if_pkp(
             conn, ctx["tenant_id"], AccountRole.VAT_OUTPUT
         )
     }
+    if vat_output_account["id"] is None and _d(invoice["tax_amount"] or 0) > 0:
+        raise HTTPException(status_code=422, detail=PESAN_NON_PKP)
 
     # Compute subtotal (revenue without tax)
     tax_amount = _d(invoice["tax_amount"] or 0)
@@ -2827,6 +2839,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                 invoice_discount = _doc["doc_discount"]
                 total_tax = _doc["tax_amount"]
                 total_amount = _doc["total_amount"]
+                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], total_tax)
 
                 # Convert customer_id
                 # customer_id is TEXT column, use string directly
@@ -3300,6 +3313,7 @@ async def update_invoice(
                         )
                     except DocumentDiscountError as _e:
                         raise HTTPException(status_code=400, detail=str(_e))
+                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
                     subtotal = _doc["gross_subtotal"]
                     invoice_discount = _doc["doc_discount"]
                     total_tax = _doc["tax_amount"]
