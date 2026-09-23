@@ -13,8 +13,12 @@ router = APIRouter()
 
 
 async def get_db_connection():
-    db_config = settings.get_db_config()
-    return await asyncpg.connect(**db_config)
+    """Koneksi dari POOL tunggal (Law 32), bukan koneksi langsung sendiri. .close() di finally tiap
+    handler MENGEMBALIKAN koneksi ke pool (PoolConnectionWrapper). Dulu koneksi langsung ke DB dari
+    settings: melewati pool -- dan melewati harness gerbang (23 Sep: gerbang scratch menulis ke prod)."""
+    from ..services.db_pool import get_db_connection as _koneksi_pool
+
+    return await _koneksi_pool()
 
 
 def _get_user_id(request: Request) -> str:
