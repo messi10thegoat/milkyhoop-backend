@@ -69,9 +69,12 @@ async def get_facade() -> AccountingFacade:
 
 # Database connection helper (legacy - for existing endpoints)
 async def get_db_connection():
-    """Get database connection using centralized config"""
-    db_config = settings.get_db_config()
-    return await asyncpg.connect(**db_config)
+    """Koneksi dari POOL tunggal (Law 32), bukan koneksi langsung sendiri. .close() di finally tiap
+    handler MENGEMBALIKAN koneksi ke pool (PoolConnectionWrapper). Dulu koneksi langsung ke DB dari
+    settings: melewati pool -- dan melewati harness gerbang (23 Sep: gerbang scratch menulis ke prod)."""
+    from ..services.db_pool import get_db_connection as _koneksi_pool
+
+    return await _koneksi_pool()
 
 
 def get_user_context(request: Request) -> dict:
@@ -947,9 +950,6 @@ async def get_laba_rugi(
                 basis = (
                     settings_row["default_report_basis"] if settings_row else "accrual"
                 )
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
-            )
 
             # Get revenue using journal-based SQL function
             revenue_rows = await conn.fetch(
@@ -1875,9 +1875,6 @@ async def get_profit_loss_by_basis(
                 )
 
             # Set tenant context for RLS
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
-            )
 
             # Query revenue using helper function
             revenue_rows = await conn.fetch(
@@ -2059,9 +2056,6 @@ async def get_cash_accrual_comparison(request: Request, periode: str):
         conn = await get_db_connection()
 
         try:
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
-            )
 
             # Get revenue for both bases
             cash_revenue = await conn.fetch(
@@ -2294,9 +2288,6 @@ async def get_timing_differences(
         conn = await get_db_connection()
 
         try:
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, false)", tenant_id
-            )
 
             # Get unpaid invoices (journal-based via compute_ar_outstanding)
             unpaid_invoices = await conn.fetch(
