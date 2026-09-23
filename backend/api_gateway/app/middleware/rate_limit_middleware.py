@@ -64,7 +64,8 @@ class RedisRateLimiter:
             logger.info("Redis rate limiter connected")
             return True
         except Exception as e:
-            logger.error(f"Redis connection failed: {e}")
+            # JANGAN cetak `e`: pesan galat redis-py bisa memuat potongan URL/kata sandi.
+            logger.error(f"Redis rate limiter connection failed ({type(e).__name__}) target={settings.REDIS_TARGET}")
             self._connected = False
             return False
 
@@ -117,7 +118,7 @@ class RedisRateLimiter:
             return False, max(0, remaining), 0
 
         except Exception as e:
-            logger.error(f"Redis rate limit error: {e}")
+            logger.error(f"Redis rate limit error ({type(e).__name__}) target={settings.REDIS_TARGET}")
             # Fail open - allow request on error
             return False, max_requests, 0
 
@@ -201,6 +202,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Paths exempt from rate limiting
         self.exempt_paths = {
+            "/api/events/stream",  # #26: SSE -- reconnect tak boleh memakan anggaran halaman
             "/healthz",
             "/health",
             "/docs",
@@ -250,20 +252,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         return f"ip:{client_ip}"
 
-    def _get_limits(self, path: str) -> Tuple[int, int]:
-        """Get rate limit settings based on path"""
+    def _bucket(self, path: str, method: str) -> str:
+        """#26: tiga ember terpisah per pengguna -- auth (ketat), read (GET/HEAD, longgar:
+        satu muatan dasbor memicu puluhan GET), write (ketat). Dulu SATU ember 100/menit
+        untuk semuanya, sehingga beberapa tab pemilik bisa memicu 429."""
         if path in self.auth_paths:
-            # Stricter limits for auth endpoints (brute force protection)
+            return "auth"
+        if method in ("GET", "HEAD", "OPTIONS"):
+            return "read"
+        return "write"
+
+    def _get_limits(self, path: str, method: str = "POST") -> Tuple[int, int]:
+        """Get rate limit settings based on path + method"""
+        b = self._bucket(path, method)
+        if b == "auth":
             return settings.RATE_LIMIT_AUTH_REQUESTS, settings.RATE_LIMIT_AUTH_WINDOW
-        else:
-            # Standard limits for other endpoints
-            return settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW
+        if b == "read":
+            return settings.RATE_LIMIT_READ_REQUESTS, settings.RATE_LIMIT_WINDOW
+        return settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW
 
     async def _check_rate_limit(
-        self, client_key: str, path: str
+        self, client_key: str, path: str, method: str = "POST"
     ) -> Tuple[bool, int, int]:
         """Check rate limit using appropriate backend"""
-        max_requests, window_seconds = self._get_limits(path)
+        max_requests, window_seconds = self._get_limits(path, method)
+        client_key = f"{client_key}:{self._bucket(path, method)}"
 
         if self._redis_limiter and self._redis_limiter._connected:
             return await self._redis_limiter.is_rate_limited(
@@ -298,7 +311,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         client_key = self._get_client_key(request)
         is_limited, remaining, retry_after = await self._check_rate_limit(
-            client_key, path
+            client_key, path, request.method
         )
 
         if is_limited:
@@ -327,7 +340,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Add rate limit headers to response
         response = await call_next(request)
-        max_requests, _ = self._get_limits(path)
+        max_requests, _ = self._get_limits(path, request.method)
         response.headers["X-RateLimit-Limit"] = str(max_requests)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
 

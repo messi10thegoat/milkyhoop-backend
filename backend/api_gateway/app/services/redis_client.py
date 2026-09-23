@@ -60,7 +60,8 @@ async def get_redis():
         logger.info(f"Redis client connected (pool max={max_conns})")
         return _redis
     except Exception as e:
-        logger.warning(f"Redis connection failed: {e}. App continues without cache.")
+        # JANGAN cetak `e` (bisa memuat potongan URL/kata sandi) -- tipe + host:port saja.
+        logger.warning(f"Redis cache connection failed ({type(e).__name__}) target={settings.REDIS_TARGET}. App continues without cache.")
         _redis = None
         return None
 
