@@ -912,17 +912,17 @@ async def update_sales_order(
                             item["quantity"],
                             item.get("unit"),
                             item["unit_price"],
-                            item.get("discount_percent", 0),
+                            item.get("discount_percent") or 0,
                             uuid_module.UUID(item["tax_id"])
                             if item.get("tax_id")
                             else None,
-                            item.get("tax_rate", 0),
+                            item.get("tax_rate") or 0,
                             item["tax_amount"],
                             item["line_total"],
                             uuid_module.UUID(item["warehouse_id"])
                             if item.get("warehouse_id")
                             else None,
-                            item.get("sort_order", idx),
+                            item.get("sort_order") if item.get("sort_order") is not None else idx,
                             item["dpp"],
                         )
 

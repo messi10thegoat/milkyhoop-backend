@@ -911,15 +911,15 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                             item["quantity"],
                             item.get("unit"),
                             item["unit_price"],
-                            item.get("discount_percent", 0),
+                            item.get("discount_percent") or 0,
                             uuid_module.UUID(item["tax_id"])
                             if item.get("tax_id")
                             else None,
-                            item.get("tax_rate", 0),
+                            item.get("tax_rate") or 0,
                             item["tax_amount"],
                             item["line_total"],
                             item.get("group_name"),
-                            item.get("sort_order", idx),
+                            item.get("sort_order") if item.get("sort_order") is not None else idx,
                         )
 
                 # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER).
