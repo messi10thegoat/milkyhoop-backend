@@ -7,12 +7,9 @@ Bridges the chat upload flow with the Intelligence Layer (Phases 3-5).
 Used by: unified_chat.py (upload handler)
 Depends on: document_intake.py (DocumentIntakeService), document_processor.py (DocumentProcessor)
 """
-import hashlib
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional
-from uuid import UUID, uuid4
 
 import asyncpg
 
@@ -41,7 +38,9 @@ PIPELINE_MIME_TYPES = {
     "application/pdf",
 }
 
-UPLOAD_BASE_DIR = os.getenv("DOCUMENT_UPLOAD_DIR", "/tmp/milkyhoop_uploads")
+# Unit U2: `upload_chat_file_to_pipeline` (penulis disk <t>/documents/, 0
+# pemanggil sejak lahir) DIHAPUS. Unggahan chat -> MinIO lewat
+# routers/unified_chat._store_upload_file; intake -> services/document_intake.
 
 
 # ---------------------------------------------------------------------------
@@ -96,149 +95,6 @@ def detect_upload_intent(text: str, file_metas: List[Dict[str, Any]]) -> str:
 
     # 6. Single image without signal = let LLM decide via vision
     return "vision_general"
-
-
-# ---------------------------------------------------------------------------
-# Upload Bridge: Chat file -> uploaded_documents record
-# ---------------------------------------------------------------------------
-
-async def upload_chat_file_to_pipeline(
-    conn: asyncpg.Connection,
-    file_content: bytes,
-    filename: str,
-    content_type: str,
-    tenant_id: str,
-    user_id: str,
-) -> Optional[Dict[str, Any]]:
-    """
-    Create an uploaded_documents record from a chat-uploaded file.
-    Stores file in document intake path and creates DB record.
-
-    Returns dict with document info or None if file type not supported.
-    """
-    # Determine extension from content type
-    mime_ext_map = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/heic": ".heic",
-        "image/heif": ".heif",
-        "application/pdf": ".pdf",
-    }
-    ext = mime_ext_map.get(content_type)
-    if not ext:
-        # Try from filename
-        ext = os.path.splitext(filename or "")[1].lower()
-        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".pdf"):
-            logger.warning(f"[ChatBridge] Unsupported file type: {content_type} / {ext}")
-            return None
-
-    file_hash = hashlib.sha256(file_content).hexdigest()
-    idempotency_key = f"chat:{file_hash}"
-
-    # Check dedup
-    existing = await conn.fetchrow(
-        """
-        SELECT id, status, draft_plan, doc_type, original_filename
-        FROM uploaded_documents
-        WHERE tenant_id = $1 AND idempotency_key = $2
-          AND status NOT IN ('rejected', 'cancelled')
-        """,
-        tenant_id, idempotency_key,
-    )
-    if existing:
-        logger.info(f"[ChatBridge] Dedup hit: {filename} -> {file_hash[:12]}")
-        return {
-            "id": str(existing["id"]),
-            "filename": existing["original_filename"],
-            "status": existing["status"],
-            "is_duplicate": True,
-            "draft_plan": (
-                json.loads(existing["draft_plan"])
-                if existing["draft_plan"] else None
-            ),
-            "doc_type": existing["doc_type"],
-        }
-
-    # Advisory lock
-    lock_key = f"DOC_UPLOAD:{tenant_id}:{file_hash}"
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
-
-    # Double-check after lock
-    existing = await conn.fetchrow(
-        """
-        SELECT id, status, draft_plan, doc_type, original_filename
-        FROM uploaded_documents
-        WHERE tenant_id = $1 AND idempotency_key = $2
-          AND status NOT IN ('rejected', 'cancelled')
-        """,
-        tenant_id, idempotency_key,
-    )
-    if existing:
-        return {
-            "id": str(existing["id"]),
-            "filename": existing["original_filename"],
-            "status": existing["status"],
-            "is_duplicate": True,
-            "draft_plan": (
-                json.loads(existing["draft_plan"])
-                if existing["draft_plan"] else None
-            ),
-            "doc_type": existing["doc_type"],
-        }
-
-    # Store file in document intake path (not chat path)
-    store_dir = os.path.join(UPLOAD_BASE_DIR, tenant_id, "documents")
-    os.makedirs(store_dir, exist_ok=True)
-    store_path = os.path.join(store_dir, f"{file_hash}{ext}")
-
-    if not os.path.exists(store_path):
-        with open(store_path, "wb") as fh:
-            fh.write(file_content)
-        logger.info(f"[ChatBridge] Stored: {filename} ({len(file_content)} bytes) -> {store_path}")
-
-    # Create batch for this chat upload
-    batch_id = uuid4()
-    await conn.execute(
-        """
-        INSERT INTO document_batches (id, tenant_id, user_id, total_documents, status)
-        VALUES ($1, $2, $3::uuid, 1, 'processing')
-        """,
-        batch_id, tenant_id, user_id,
-    )
-
-    # Insert document record
-    doc_id = uuid4()
-    await conn.fetchrow(
-        """
-        INSERT INTO uploaded_documents (
-            id, tenant_id, batch_id, user_id,
-            original_filename, file_path, file_hash,
-            file_size_bytes, mime_type,
-            idempotency_key, status, status_detail
-        ) VALUES (
-            $1, $2, $3, $4::uuid,
-            $5, $6, $7,
-            $8, $9,
-            $10, 'queued', 'Uploaded via chat'
-        )
-        """,
-        doc_id, tenant_id, batch_id, user_id,
-        filename or "unnamed", store_path, file_hash,
-        len(file_content), content_type,
-        idempotency_key,
-    )
-
-    logger.info(f"[ChatBridge] Created doc record: {doc_id} for {filename}")
-
-    return {
-        "id": str(doc_id),
-        "filename": filename,
-        "status": "queued",
-        "is_duplicate": False,
-        "draft_plan": None,
-        "doc_type": None,
-    }
 
 
 # ---------------------------------------------------------------------------

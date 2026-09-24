@@ -308,13 +308,11 @@ UPLOAD_ALLOWED_EXTENSIONS = {
     ".heic",
     ".heif",
 }
-UPLOAD_BASE_DIR = "/tmp/milkyhoop_uploads"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
-# Import resolve_file_ref from utils (re-export for backward compatibility)
-from ..utils.file_ref import resolve_file_ref  # noqa: F401, E402
 from ..utils.chat_file_path import (  # noqa: E402
+    ambil_objek_unggahan,
     isi_atau_none,
     kunci_unggahan,
     sajikan_objek_unggahan,
@@ -323,15 +321,10 @@ from ..utils.chat_file_path import (  # noqa: E402
 )
 from ..services.storage_service import get_storage_service  # noqa: E402
 
-# Unit U1: sumber kebenaran berkas unggahan chat = MinIO. Salinan disk di
-# UPLOAD_BASE_DIR/<tenant>/chat/<sha><ext> HANYA tembolok SEMENTARA untuk
-# pembaca TERTUNDA yang masih membaca disk (file_ref impor/rekonsiliasi bank
-# -- utils/file_ref.py + workflow_engine.check_has_file_or_nofile -- dan
-# antrean FIX_MULTIDOC _process_one_document). Tanpa tembolok ini jalur itu
-# mati SEKETIKA, bukan baru sesudah recreate seperti hari ini. HAPUS (set
-# False) saat U2 memindahkan pembaca tertunda ke MinIO. Rute penyaji dan
-# pembaca sinkron TIDAK memakai tembolok ini.
-TEMBOLOK_DISK_PEMBACA_TERTUNDA = True
+# Unit U1+U2: sumber kebenaran berkas unggahan chat = MinIO, SATU-SATUNYA.
+# U2 memindahkan pembaca tertunda (file_ref impor/rekonsiliasi bank, antrean
+# FIX_MULTIDOC) ke MinIO, jadi tembolok disk sementara U1 DIHAPUS: unggah
+# chat = NOL tulisan disk.
 
 
 async def _save_chat_attachments(
@@ -452,18 +445,12 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
         raise ValueError("Tipe file tidak didukung")
     storage_key = kunci_unggahan(tenant_id, "chat", file_hash, ext)
     file_url_path = url_berkas(storage_key)
-    # Path tembolok disk (lihat TEMBOLOK_DISK_PEMBACA_TERTUNDA) -- internal
-    # server, tidak pernah masuk respons.
-    store_dir = os.path.join(UPLOAD_BASE_DIR, tenant_id, "chat")
-    store_path = os.path.join(store_dir, f"{file_hash}{ext}")
-
     file_meta = {
         "file_hash": file_hash,
         "filename": file.filename,
         "size": len(content),
         "extension": ext,
         "content_type": file.content_type,
-        "stored_path": store_path,
         "storage_key": storage_key,
         "file_url": file_url_path,
         "_isi": content,
@@ -481,19 +468,7 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
         f"[FileUpload] Stored: {file_hash[:12]}{ext} ({len(content)} bytes)"
     )
 
-    # 2) Tembolok disk SEMENTARA untuk pembaca tertunda (best-effort).
-    if TEMBOLOK_DISK_PEMBACA_TERTUNDA:
-        try:
-            if not os.path.exists(store_path):
-                os.makedirs(store_dir, exist_ok=True)
-                tmp_path = f"{store_path}.{uuid_mod.uuid4().hex}.tmp"
-                with open(tmp_path, "wb") as fh:
-                    fh.write(content)
-                os.replace(tmp_path, store_path)
-        except Exception as _cache_err:  # noqa: BLE001
-            logger.warning(f"[FileUpload] tembolok disk gagal: {_cache_err}")
-
-    # 3) Baris documents (audit trail / entity linking). Non-blocking.
+    # 2) Baris documents (audit trail / entity linking). Non-blocking.
     try:
         async with pool.acquire() as _doc_conn:
             async with _doc_conn.transaction():
@@ -3340,18 +3315,23 @@ async def _process_one_document(
 
         _ocr_pool = await _get_ocr_pool()
 
-        _stored_path = _fm.get("stored_path", "")
-        if not (_stored_path and os.path.exists(_stored_path)):
+        # Unit U2: entri antrean membawa KUNCI MinIO (storage_key), bukan
+        # path disk. Kunci tak sah / milik tenant lain / entri bentuk lama
+        # (stored_path) / objek hilang -> None (pemanggil melewati dokumen ini
+        # dengan catatan, sama seperti berkas tak terbaca dulu).
+        _kunci_q = _fm.get("storage_key") or ""
+        _img_bytes = await ambil_objek_unggahan(
+            get_storage_service(), ctx["tenant_id"], _kunci_q
+        )
+        if not _img_bytes:
             logger.warning(
-                "[FIX_MULTIDOC] queued doc has no readable stored_path: %s",
+                "[FIX_MULTIDOC] queued doc tak terbaca dari storage: %s",
                 _fm.get("filename"),
             )
             return None
 
         import base64 as _b64
 
-        with open(_stored_path, "rb") as _img_f:
-            _img_bytes = _img_f.read()
         _mime = _fm.get("content_type", "image/jpeg")
         try:
             from PIL import Image as _PILImage
@@ -6081,7 +6061,7 @@ Aturan:
                 _remaining = [
                     {
                         "document_id": _q.get("document_id"),
-                        "stored_path": _q.get("stored_path"),
+                        "storage_key": _q.get("storage_key"),
                         "content_type": _q.get("content_type"),
                         "extension": _q.get("extension"),
                         "filename": _q.get("filename"),

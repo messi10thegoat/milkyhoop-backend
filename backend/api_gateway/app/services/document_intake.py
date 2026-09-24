@@ -7,7 +7,6 @@ Phase 2: Upload + storage pipeline. OCR/classification deferred to Phase 3.
 import hashlib
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
@@ -15,10 +14,15 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import UploadFile
 
+from ..utils.chat_file_path import kunci_unggahan, simpan_objek_unggahan
+from .storage_service import get_storage_service
+
 logger = logging.getLogger(__name__)
 
-# Storage configuration
-UPLOAD_BASE_DIR = os.getenv("DOCUMENT_UPLOAD_DIR", "/tmp/milkyhoop_uploads")
+# Unit U2 (24 Sep 2026): isi berkas disimpan di MinIO berkunci
+# `<tenant>/uploads/documents/<sha256><ext>` (dulu disk kontainer
+# /tmp/milkyhoop_uploads/<t>/documents/ -> hilang tiap recreate).
+# uploaded_documents.file_path = KUNCI objek itu, bukan path disk.
 
 # Allowed MIME types for financial documents
 ALLOWED_MIME_TYPES = {
@@ -60,7 +64,7 @@ class DocumentIntakeService:
         Steps:
         1. Validate files (type, size)
         2. Create or reuse batch
-        3. For each file: hash, dedup, store on disk, insert DB row
+        3. For each file: hash, dedup, store in MinIO, insert DB row
         4. Update batch counters
         """
         if len(files) > MAX_FILES_PER_BATCH:
@@ -157,10 +161,9 @@ class DocumentIntakeService:
         doc_type_hint: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> asyncpg.Record:
-        """Store file on disk + insert uploaded_documents row."""
+        """Store file in MinIO + insert uploaded_documents row."""
 
-        store_dir = os.path.join(UPLOAD_BASE_DIR, tenant_id, "documents")
-        store_path = os.path.join(store_dir, f"{file_hash}{ext}")
+        storage_key = kunci_unggahan(tenant_id, "documents", file_hash, ext)
 
         # Idempotency key = hash (same content = same document)
         idempotency_key = f"doc:{file_hash}"
@@ -220,13 +223,12 @@ class DocumentIntakeService:
                 )
             return existing
 
-        # Write file to disk
-        os.makedirs(store_dir, exist_ok=True)
-        with open(store_path, "wb") as fh:
-            fh.write(content)
+        # Objek MinIO SEBELUM baris (PUT gagal -> exception -> transaksi
+        # batal, tak ada baris tanpa objek). Kunci deterministik -> idempoten.
+        await simpan_objek_unggahan(get_storage_service(), storage_key, content)
 
         logger.info(
-            f"[DocIntake] Stored: {file.filename} ({len(content)} bytes) -> {store_path}"
+            f"[DocIntake] Stored: {file_hash[:12]}{ext} ({len(content)} bytes)"
         )
 
         # Insert DB row
@@ -249,7 +251,7 @@ class DocumentIntakeService:
             RETURNING *
             """,
             doc_id, tenant_id, batch_id, user_id,
-            file.filename or "unnamed", store_path, file_hash,
+            file.filename or "unnamed", storage_key, file_hash,
             len(content), file.content_type,
             idempotency_key, notes,
             doc_type_hint,

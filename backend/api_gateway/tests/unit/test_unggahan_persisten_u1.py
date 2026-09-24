@@ -216,7 +216,9 @@ def chat(monkeypatch, tmp_path):
     db = FakeDocsDB()
     storage = FakeStorage()
     monkeypatch.setattr(UC, "get_storage_service", lambda: storage)
-    monkeypatch.setattr(UC, "UPLOAD_BASE_DIR", str(tmp_path))
+    # U2: UPLOAD_BASE_DIR dihapus dari unified_chat; kode lama (tembolok U1)
+    # menulis ke sini -> tetap diarahkan ke tmp supaya tulisan terlihat.
+    monkeypatch.setattr(UC, "UPLOAD_BASE_DIR", str(tmp_path), raising=False)
     return SimpleNamespace(db=db, pool=FakePool(db), storage=storage, tmp=tmp_path)
 
 
@@ -351,10 +353,10 @@ async def test_chat_unggah_ke_minio_baris_s3(chat):
 
 
 @pytest.mark.asyncio
-async def test_chat_tanpa_tembolok_nol_tulisan_disk(chat, monkeypatch):
-    """Dengan tembolok pembaca-tertunda dimatikan (keadaan sesudah U2), unggah
-    chat = NOL tulisan disk dan tetap lengkap (objek + baris + isi memori)."""
-    monkeypatch.setattr(UC, "TEMBOLOK_DISK_PEMBACA_TERTUNDA", False)
+async def test_chat_nol_tulisan_disk(chat):
+    """U2 (dibalik dari tembolok U1): unggah chat = NOL tulisan disk, tanpa
+    saklar apa pun, dan tetap lengkap (objek + baris + isi memori)."""
+    assert not hasattr(UC, "TEMBOLOK_DISK_PEMBACA_TERTUNDA")
     fm = await UC._store_upload_file(berkas(), TENANT, chat.pool)
     assert isi_dir(chat.tmp) == []
     assert chat.storage.client.objek[(BUCKET, kunci("chat"))] == ISI_PNG
@@ -362,11 +364,27 @@ async def test_chat_tanpa_tembolok_nol_tulisan_disk(chat, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_tembolok_hanya_satu_berkas_di_path_lama(chat):
-    """Satu-satunya tulisan disk = tembolok SEMENTARA di path yang dibaca
-    pembaca tertunda (file_ref/antrean multidoc)."""
+async def test_chat_nol_tulisan_disk_di_semua_lokasi(chat, monkeypatch):
+    """Bukan hanya tmp yang dipantau: SETIAP open() mode tulis / makedirs /
+    replace selama unggah chat dicatat -> harus nol (termasuk path lama
+    /tmp/milkyhoop_uploads bila UPLOAD_BASE_DIR tak bisa dialihkan)."""
+    import builtins
+
+    tulis = []
+    asli_open, asli_makedirs, asli_replace = builtins.open, os.makedirs, os.replace
+
+    def _open(p, mode="r", *a, **k):
+        if any(c in mode for c in "wax+"):
+            tulis.append(("open", str(p)))
+        return asli_open(p, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    monkeypatch.setattr(os, "makedirs", lambda p, *a, **k: tulis.append(("makedirs", str(p))) or asli_makedirs(p, *a, **k))
+    monkeypatch.setattr(os, "replace", lambda a_, b_: tulis.append(("replace", str(b_))) or asli_replace(a_, b_))
     await UC._store_upload_file(berkas(), TENANT, chat.pool)
-    assert isi_dir(chat.tmp) == [TENANT, f"{TENANT}/chat", f"{TENANT}/chat/{SHA_PNG}.png"]
+    await UC._store_upload_file(berkas(nama="lain.jpg", tipe="image/jpeg", isi=b"jpg"), TENANT, chat.pool)
+    assert tulis == []
+    assert "stored_path" not in (await UC._store_upload_file(berkas(), TENANT, chat.pool))
 
 
 @pytest.mark.asyncio
@@ -449,7 +467,7 @@ async def test_chat_attachments_storage_key_kunci_minio(chat):
 @pytest.mark.asyncio
 async def test_respons_chat_tanpa_stored_path(chat):
     fm = await UC._store_upload_file(berkas(), TENANT, chat.pool)
-    assert fm["stored_path"].startswith(str(chat.tmp))  # internal saja
+    assert "stored_path" not in fm  # U2: path disk tak ada lagi, bahkan internal
     out = UC._berkas_terunggah_respons([fm])
     assert out == [{
         "filename": "nota.png", "size": len(ISI_PNG), "extension": ".png",
@@ -467,9 +485,8 @@ def test_respons_chat_memakai_pembentuk_tanpa_stored_path():
 # ================== pembaca SINKRON: isi dari memori, bukan disk
 @pytest.mark.asyncio
 async def test_blok_gambar_vision_dari_memori_tanpa_disk(chat, monkeypatch):
-    monkeypatch.setattr(UC, "TEMBOLOK_DISK_PEMBACA_TERTUNDA", False)
     fm = await UC._store_upload_file(berkas(), TENANT, chat.pool)
-    assert not os.path.exists(fm["stored_path"])
+    assert isi_dir(chat.tmp) == []
     blok = UC._build_image_content_blocks("halo", [fm])
     assert blok is not None and blok[1]["type"] == "image_url"
 
@@ -542,7 +559,7 @@ async def test_get_objek_hilang_404(chat):
         f"{TENANT}\\uploads\\chat\\{SHA_PNG}.png",               # backslash
         f"{TENANT}/uploads/chat/{SHA_PNG}%2epng",               # persen
         f"{TENANT}%2Fuploads/chat/{SHA_PNG}.png",
-        f"{TENANT}/uploads/documents/{SHA_PNG}.png",            # subdir tak sah
+        f"{TENANT}/uploads/lain/{SHA_PNG}.png",                 # subdir tak sah
         f"{TENANT}/uploads/chat/{SHA_PNG.upper()}.png",         # huruf besar
         f"{TENANT}/uploads/chat/{SHA_PNG[:63]}.png",            # hash pendek
         f"{TENANT}/uploads/chat/{SHA_PNG}.html",                # ext di luar allowlist

@@ -40,7 +40,7 @@ class OpenAIOCRProvider(OCRProvider):
 
     async def extract(
         self,
-        file_path: str,
+        isi: bytes,
         mime_type: str,
         tier: int,
         prompt: str,
@@ -48,7 +48,7 @@ class OpenAIOCRProvider(OCRProvider):
         model = self.get_model_for_tier(tier)
         
         # Convert file to base64 image
-        image_b64, image_mime = await self._prepare_image(file_path, mime_type)
+        image_b64, image_mime = await self._prepare_image(isi, mime_type)
         
         # Build message with vision content
         messages = [
@@ -117,19 +117,18 @@ class OpenAIOCRProvider(OCRProvider):
         )
 
     async def _prepare_image(
-        self, file_path: str, mime_type: str
+        self, isi: bytes, mime_type: str
     ) -> tuple[str, str]:
         """
-        Convert file to base64 image suitable for Vision API.
-        - Images: read directly as base64
-        - PDFs: convert first page to PNG using pymupdf
+        Convert file BYTES (Unit U2: dari MinIO, bukan path disk) to base64
+        image suitable for Vision API.
+        - Images: bytes as base64
+        - PDFs: convert first page to PNG using pymupdf (dari stream)
         """
         if mime_type == "application/pdf":
-            return self._pdf_to_base64(file_path)
-        
-        # Image files: read directly
-        with open(file_path, "rb") as f:
-            data = f.read()
+            return self._pdf_to_base64(isi)
+
+        data = bytes(isi)
         
         # For HEIC/HEIF, convert to JPEG using Pillow
         if mime_type in ("image/heic", "image/heif"):
@@ -145,11 +144,11 @@ class OpenAIOCRProvider(OCRProvider):
         
         return base64.b64encode(data).decode("utf-8"), mime_type
 
-    def _pdf_to_base64(self, file_path: str) -> tuple[str, str]:
-        """Convert first page of PDF to PNG base64."""
+    def _pdf_to_base64(self, isi: bytes) -> tuple[str, str]:
+        """Convert first page of PDF (bytes) to PNG base64."""
         try:
             import fitz  # pymupdf
-            doc = fitz.open(file_path)
+            doc = fitz.open(stream=bytes(isi), filetype="pdf")
             page = doc[0]  # First page only
             # Render at 2x for better OCR quality
             mat = fitz.Matrix(2.0, 2.0)

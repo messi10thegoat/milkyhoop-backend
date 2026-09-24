@@ -54,7 +54,9 @@ def test_segmen_titik_kosong_backslash_persen_ditolak():
 def test_nama_harus_hash_subdir_dan_ext_harus_sah():
     assert not kunci_sah_milik_tenant("tenant-a", "tenant-a/uploads/chat/di-luar.txt")
     assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/lain/{H}.png")
-    assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/documents/{H}.png")
+    # U2: `documents` (unggahan /api/document-intake) kini subdir SAH.
+    assert kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/documents/{H}.png")
+    assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/dokumen/{H}.png")
     assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/chat/{H}.html")
     assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/chat/{H}")
     assert not kunci_sah_milik_tenant("tenant-a", f"tenant-a/uploads/chat/{H.upper()}.png")

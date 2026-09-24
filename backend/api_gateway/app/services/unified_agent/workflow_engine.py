@@ -177,26 +177,37 @@ async def check_has_balance(ctx: WorkflowContext, user_data: dict) -> Tuple[bool
 
 async def check_has_file_or_nofile(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
     """Gate: do we have a file_ref OR user said no file?
-    If file_ref present, validates file actually exists on disk.
-    Clears stale file_ref and asks user to re-upload if missing.
+    Unit U2: if file_ref present, validates the OBJECT exists in MinIO
+    (head_object di threadpool, kunci <tenant>/uploads/chat/<sha><ext>,
+    tenant dari konteks) -- bukan disk. Bentuk salah / objek tak ada ->
+    clear file_ref and ask user to re-upload. Galat storage (MinIO sesaat
+    tak terjangkau) -> file_ref DIPERTAHANKAN, minta coba lagi.
     """
     if ctx.data.get("no_file"):
         return (True, "")
     file_ref = ctx.data.get("file_ref")
     if not file_ref:
         return (False, "file_ref or no_file")
-    # Validate file exists on disk
-    if file_ref.startswith("chat_upload:"):
-        hash_ext = file_ref.split(":", 1)[1]
-        tenant_id = ctx.tenant_id or ""
-        filepath = os.path.join("/tmp/milkyhoop_uploads", tenant_id, "chat", hash_ext)
-        if not os.path.exists(filepath):
-            ctx.data.pop("file_ref", None)
-            logger.warning(
-                f"[RECON] File not found: {filepath}. "
-                f"Clearing file_ref, asking user to re-upload."
-            )
-            return (False, "File tidak ditemukan (mungkin sudah expired). Silakan upload ulang.")
+    from ...utils.chat_file_path import objek_unggahan_ada
+    from ...utils.file_ref import kunci_file_ref
+    from ..storage_service import get_storage_service
+
+    tenant_id = ctx.tenant_id or ""
+    kunci = kunci_file_ref(file_ref, tenant_id)
+    try:
+        ada = bool(kunci) and await objek_unggahan_ada(
+            get_storage_service(), tenant_id, kunci
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[RECON] Cek berkas di storage gagal: {type(e).__name__}")
+        return (False, "Penyimpanan berkas sedang tidak tersedia. Silakan coba lagi.")
+    if not ada:
+        ctx.data.pop("file_ref", None)
+        logger.warning(
+            f"[RECON] File not found in storage: {file_ref}. "
+            f"Clearing file_ref, asking user to re-upload."
+        )
+        return (False, "File tidak ditemukan (mungkin sudah expired). Silakan upload ulang.")
     return (True, "")
 
 

@@ -7,7 +7,7 @@ _store_upload_file) dulu ditulis ke /tmp/milkyhoop_uploads di dalam kontainer
 `chat_attachments` jadi referensi mati. Kini isi berkas disimpan di MinIO
 (bucket `milkyhoop-documents`, persisten) dengan kunci DETERMINISTIK:
 
-    <tenant_id>/uploads/<forms|chat>/<sha256 64 hex><ext>
+    <tenant_id>/uploads/<forms|chat|documents>/<sha256 64 hex><ext>
 
 tenant dari JWT, sha256 dihitung server, ext dari allowlist server (bukan nama
 berkas mentah). Modul ini = SATU-SATUNYA sumber bentuk kunci: penulis
@@ -32,8 +32,11 @@ logger = logging.getLogger(__name__)
 # Penanda unik (window_item.sh memastikan kode ini terpasang).
 PENANDA_UNGGAHAN_U1 = "unggahan-persisten-u1-minio"
 
+PENANDA_UNGGAHAN_U2 = "unggahan-persisten-u2-pembaca-minio"
+
 URL_BERKAS_PREFIX = "/api/v3/chat/files/"
-SUBDIR_UNGGAHAN = frozenset({"forms", "chat"})
+# U2: `documents` = unggahan /api/document-intake (dulu disk <t>/documents/).
+SUBDIR_UNGGAHAN = frozenset({"forms", "chat", "documents"})
 
 # Ext -> Content-Type objek. Gabungan allowlist penulis form (uploads.py,
 # dari content-type) dan chat (UPLOAD_ALLOWED_EXTENSIONS). Ext di luar ini tak
@@ -82,7 +85,7 @@ def url_berkas(kunci: str) -> str:
 
 
 def kunci_sah_milik_tenant(tenant_id: str, kunci: str) -> bool:
-    """True hanya untuk `<tenant_id>/uploads/<forms|chat>/<sha256><ext>` persis,
+    """True hanya untuk `<tenant_id>/uploads/<forms|chat|documents>/<sha256><ext>` persis,
     tenant = tenant pemanggil, ext di TIPE_EXT. Menolak `..`, segmen kosong,
     backslash, `%`, huruf besar, dan bentuk lama tanpa `uploads`."""
     if not isinstance(tenant_id, str) or not _TENANT_SAH.match(tenant_id):
@@ -170,6 +173,52 @@ async def sajikan_objek_unggahan(
         nama = kunci.rsplit("/", 1)[-1]  # <sha><ext>: ASCII, aman untuk header
         headers["Content-Disposition"] = f'attachment; filename="{nama}"'
     return StreamingResponse(iter_body(), media_type=content_type, headers=headers)
+
+
+_KODE_TAK_ADA = ("NoSuchKey", "404", "NotFound")
+
+
+async def ambil_objek_unggahan(storage, tenant_id: str, kunci: str) -> Optional[bytes]:
+    """Unit U2: ISI objek unggahan milik tenant untuk pembaca TERTUNDA (impor
+    rekening via file_ref, antrean multidoc, document-intake). Kunci tak sah /
+    milik tenant lain -> None TANPA menyentuh storage. Objek tak ada -> None.
+    Galat storage lain DILEMPAR (bukan disamarkan jadi "tak ada" -> pembaca
+    tak menghapus referensi karena MinIO sesaat mati). Tanpa disk; boto3
+    sinkron (get + read) di threadpool."""
+    if not kunci_sah_milik_tenant(tenant_id, kunci):
+        return None
+
+    def _ambil() -> bytes:
+        obj = storage.client.get_object(Bucket=storage.config.bucket, Key=kunci)
+        body = obj["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
+
+    try:
+        return await asyncio.to_thread(_ambil)
+    except Exception as e:  # noqa: BLE001
+        if _kode_galat(e) in _KODE_TAK_ADA:
+            return None
+        raise
+
+
+async def objek_unggahan_ada(storage, tenant_id: str, kunci: str) -> bool:
+    """Unit U2: cek keberadaan (head_object di threadpool) untuk gerbang
+    workflow. Kunci tak sah -> False tanpa menyentuh storage; tak ada ->
+    False; galat storage lain DILEMPAR."""
+    if not kunci_sah_milik_tenant(tenant_id, kunci):
+        return False
+    try:
+        await asyncio.to_thread(
+            storage.client.head_object, Bucket=storage.config.bucket, Key=kunci
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        if _kode_galat(e) in _KODE_TAK_ADA:
+            return False
+        raise
 
 
 def isi_atau_none(fm: dict) -> Optional[bytes]:

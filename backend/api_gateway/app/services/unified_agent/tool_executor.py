@@ -3837,45 +3837,53 @@ class ToolExecutor:
         When no column mapping is provided in config, auto-detects columns first.
         """
         session_id = params.get("session_id")
-        file_path = params.get("file_path")
         config = params.get("config", {})
 
-        # Resolve opaque file_ref if provided (preferred over raw file_path)
+        # Unit U2: berkas HANYA lewat file_ref opak (chat_upload:<sha><ext>)
+        # -> isi dari MinIO (kunci <tenant>/uploads/chat/<sha><ext>, tenant
+        # dari konteks). Cabang `file_path` mentah (path disk server) DIHAPUS.
         file_ref = params.get("file_ref", "")
-        if file_ref:
-            from utils.file_ref import resolve_file_ref
-
-            resolved = resolve_file_ref(file_ref, self.context.tenant_id)
-            if resolved:
-                file_path = resolved
-                logger.info(f"Resolved file_ref '{file_ref}' -> '{file_path}'")
-            else:
-                return _error(
-                    "INVALID_FILE_REF",
-                    f"File reference tidak valid atau file tidak ditemukan: {file_ref}",
-                )
 
         if not session_id:
             return _error("MISSING_SESSION_ID", "Parameter 'session_id' wajib diisi.")
-        if not file_path:
-            return _error("MISSING_FILE_PATH", "Parameter 'file_path' wajib diisi.")
+        if not file_ref:
+            return _error("MISSING_FILE_REF", "Parameter 'file_ref' wajib diisi.")
 
         import os  # noqa: E402
+        from ...utils.file_ref import baca_file_ref, kunci_file_ref  # noqa: E402
+        from ..storage_service import get_storage_service  # noqa: E402
 
-        if not os.path.exists(file_path):
-            return _error("FILE_NOT_FOUND", f"File tidak ditemukan: {file_path}")
+        kunci = kunci_file_ref(file_ref, self.context.tenant_id)
+        try:
+            file_content = (
+                await baca_file_ref(
+                    get_storage_service(), file_ref, self.context.tenant_id
+                )
+                if kunci
+                else None
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[ImportBankStatement] storage gagal: {type(e).__name__}")
+            return _error(
+                "STORAGE_UNAVAILABLE",
+                "Penyimpanan berkas sedang tidak tersedia. Silakan coba lagi.",
+            )
+        if file_content is None:
+            return _error(
+                "INVALID_FILE_REF",
+                f"File reference tidak valid atau file tidak ditemukan: {file_ref}. "
+                "Silakan upload ulang.",
+            )
+        nama_berkas = kunci.rsplit("/", 1)[-1]  # <sha><ext>, tanpa path server
+        logger.info(f"[ImportBankStatement] file_ref '{file_ref}' dibaca dari storage")
 
         # Auto-detect format from extension
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = os.path.splitext(nama_berkas)[1].lower()
         if not config.get("format"):
             format_map = {".csv": "csv", ".xlsx": "xlsx", ".xls": "xlsx", ".ofx": "ofx"}
             config["format"] = format_map.get(ext, "csv")
 
         try:
-            # Read file content
-            with open(file_path, "rb") as f:
-                file_content = f.read()
-
             import httpx  # noqa: E402
 
             base_url = "http://localhost:8000"
@@ -3902,7 +3910,7 @@ class ToolExecutor:
                     import pandas as pd  # noqa: E402
                     import io as _io  # noqa: E402
 
-                    filename_lower = os.path.basename(file_path).lower()
+                    filename_lower = nama_berkas.lower()
                     if filename_lower.endswith((".xlsx", ".xls")):
                         df = pd.read_excel(_io.BytesIO(file_content), nrows=20)
                     else:
@@ -3956,7 +3964,7 @@ class ToolExecutor:
                     headers=import_headers,
                     files={
                         "file": (
-                            os.path.basename(file_path),
+                            nama_berkas,
                             file_content,
                             "application/octet-stream",
                         )

@@ -31,12 +31,13 @@ class OCRProvider(ABC):
     @abstractmethod
     async def extract(
         self,
-        file_path: str,
+        isi: bytes,
         mime_type: str,
         tier: int,
         prompt: str,
     ) -> OCRProviderResult:
-        """Extract structured data from document image/PDF."""
+        """Extract structured data from document image/PDF BYTES (U2: dari
+        MinIO; provider tak pernah membaca disk)."""
         pass
 
     @abstractmethod

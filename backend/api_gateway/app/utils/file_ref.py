@@ -1,27 +1,43 @@
 """
-Utility functions for file reference resolution.
-Opaque file references hide server filesystem paths from the LLM context.
+File reference (`file_ref`) -> kunci objek MinIO unggahan chat.
+
+`file_ref` = rujukan OPAK yang tampil di teks chat & konteks LLM
+(`[Attached: ..., file_ref=chat_upload:<sha256><ext>]`), menyembunyikan
+lokasi penyimpanan dari LLM.
+
+Unit U2 (24 Sep 2026): dulu dipetakan ke path DISK
+/tmp/milkyhoop_uploads/<tenant>/chat/<sha><ext> (tembolok sementara U1,
+hilang tiap recreate). Kini dipetakan ke kunci MinIO
+`<tenant>/uploads/chat/<sha256><ext>` (utils/chat_file_path) dan isinya
+dibaca dari MinIO -- TANPA disk. Tenant SELALU dari konteks pemanggil, bukan
+dari file_ref, jadi file_ref tak bisa menunjuk objek tenant lain.
 """
-import os
 import re
 from typing import Optional
 
-UPLOAD_BASE_DIR = "/tmp/milkyhoop_uploads"
+from .chat_file_path import ambil_objek_unggahan, kunci_sah_milik_tenant
+
+_PREFIX = "chat_upload"
+_HASH_EXT = re.compile(r"^[a-f0-9]+\.[a-z0-9]+$")
 
 
-def resolve_file_ref(file_ref: str, tenant_id: str) -> Optional[str]:
-    """
-    Resolve an opaque file reference to an actual filesystem path.
-    Format: 'chat_upload:<hash><ext>' -> '/tmp/milkyhoop_uploads/<tenant>/chat/<hash><ext>'
-    Returns None if file_ref is invalid or file doesn't exist.
-    """
-    if not file_ref or ':' not in file_ref:
+def kunci_file_ref(file_ref: str, tenant_id: str) -> Optional[str]:
+    """`chat_upload:<sha><ext>` -> `<tenant>/uploads/chat/<sha><ext>`, atau
+    None bila bentuk salah / tak lolos `kunci_sah_milik_tenant` (hash 64 hex,
+    ext allowlist). Murni -- tak menyentuh storage."""
+    if not isinstance(file_ref, str) or ":" not in file_ref:
         return None
-    prefix, hash_ext = file_ref.split(':', 1)
-    if prefix != 'chat_upload' or not hash_ext:
+    prefix, hash_ext = file_ref.split(":", 1)
+    if prefix != _PREFIX or not _HASH_EXT.match(hash_ext):
         return None
-    # Sanitize: only allow hex chars + dot + extension
-    if not re.match(r'^[a-f0-9]+\.[a-z0-9]+$', hash_ext):
+    kunci = f"{tenant_id}/uploads/chat/{hash_ext}"
+    return kunci if kunci_sah_milik_tenant(tenant_id, kunci) else None
+
+
+async def baca_file_ref(storage, file_ref: str, tenant_id: str) -> Optional[bytes]:
+    """Isi berkas untuk file_ref dari MinIO. None = bentuk salah atau objek
+    tak ada. Galat storage lain dilempar (lihat ambil_objek_unggahan)."""
+    kunci = kunci_file_ref(file_ref, tenant_id)
+    if kunci is None:
         return None
-    path = os.path.join(UPLOAD_BASE_DIR, tenant_id, 'chat', hash_ext)
-    return path if os.path.exists(path) else None
+    return await ambil_objek_unggahan(storage, tenant_id, kunci)

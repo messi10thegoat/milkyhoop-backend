@@ -22,7 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
 
+from ..utils.chat_file_path import ambil_objek_unggahan
 from .ocr_providers import get_ocr_provider, OCRProviderResult
+from .storage_service import get_storage_service
 from .document_classifier import classify_document
 from .financial_intelligence import FinancialIntelligence
 from .draft_plan_generator import DraftPlanGenerator, validate_draft_balance
@@ -255,7 +257,9 @@ class DocumentProcessor:
         """
         doc_id = str(doc["id"])
         tenant_id = doc["tenant_id"]
-        file_path = doc["file_path"]
+        # Unit U2: file_path = KUNCI MinIO <tenant>/uploads/documents/<sha><ext>
+        # (bukan path disk). Isi dibaca dari storage, tanpa disk.
+        kunci = doc["file_path"]
         mime_type = doc.get("mime_type") or "application/octet-stream"
         retry_count = doc.get("retry_count", 0)
         max_retries = doc.get("max_retries", 3)
@@ -269,13 +273,36 @@ class DocumentProcessor:
         tier = self._determine_tier(mime_type)
 
         try:
+            isi = await ambil_objek_unggahan(get_storage_service(), tenant_id, kunci)
+        except Exception as e:  # noqa: BLE001 -- storage sesaat gagal: jalur retry OCR
+            isi, galat_storage = None, e
+        else:
+            galat_storage = None
+        if isi is None and galat_storage is None:
+            # Kunci tak sah / milik tenant lain / bentuk lama (path disk) /
+            # objek hilang -> gagal final tanpa retry: unggah ulang.
+            logger.warning(f"[Processor] Berkas tak tersedia di storage: {doc_id}")
+            await self._update_status(
+                doc_id, tenant_id, "extraction_failed",
+                detail="Berkas tidak tersedia. Silakan unggah ulang.",
+            )
+            await self._update_batch_failed(batch_id, tenant_id)
+            return {
+                "document_id": doc_id,
+                "status": "extraction_failed",
+                "error": "berkas tidak tersedia",
+            }
+
+        try:
+            if galat_storage is not None:
+                raise galat_storage
             if tier == 1:
-                ocr_dict = await self._parse_structured(file_path, mime_type)
+                ocr_dict = await self._parse_structured(isi, mime_type)
                 model_used = "parser"
                 ocr_confidence = Decimal(str(ocr_dict.get("confidence", "0.8")))
             else:
                 provider_result = await self.ocr_provider.extract(
-                    file_path=file_path,
+                    isi=isi,
                     mime_type=mime_type,
                     tier=tier,
                     prompt=OCR_EXTRACTION_PROMPT,
@@ -291,7 +318,7 @@ class DocumentProcessor:
                         f"(confidence={ocr_confidence})"
                     )
                     provider_result = await self.ocr_provider.extract(
-                        file_path=file_path,
+                        isi=isi,
                         mime_type=mime_type,
                         tier=3,
                         prompt=OCR_EXTRACTION_PROMPT,
@@ -573,15 +600,15 @@ class DocumentProcessor:
     # STRUCTURED FILE PARSER (Tier 1)
     # ------------------------------------------------------------------
 
-    async def _parse_structured(self, file_path: str, mime_type: str) -> Dict[str, Any]:
-        """Parse CSV/XLSX without LLM. Detect document type via heuristics."""
+    async def _parse_structured(self, isi: bytes, mime_type: str) -> Dict[str, Any]:
+        """Parse CSV/XLSX (isi dari storage, U2) without LLM. Detect document type via heuristics."""
         try:
             import pandas as pd
 
             if mime_type == "text/csv":
-                df = pd.read_csv(file_path, nrows=100)
+                df = pd.read_csv(io.BytesIO(isi), nrows=100)
             else:
-                df = pd.read_excel(file_path, nrows=100)
+                df = pd.read_excel(io.BytesIO(isi), nrows=100)
 
             columns_lower = {c.lower() for c in df.columns}
 
