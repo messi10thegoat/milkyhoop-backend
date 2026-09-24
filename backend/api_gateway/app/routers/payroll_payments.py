@@ -7,6 +7,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.payroll import CreatePayrollPaymentRequest, VoidPayrollRequest
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 
@@ -330,12 +331,13 @@ async def void_payment(request: Request, payment_id: UUID, body: VoidPayrollRequ
                     "SELECT * FROM journal_entries WHERE id = $1", payment["journal_id"]
                 )
                 if orig:
+                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                     rev_id = await conn.fetchval(
                         """INSERT INTO journal_entries (
                             tenant_id, journal_number, journal_date, description,
                             source_type, source_id, status, total_debit, total_credit,
                             reversal_of_id
-                        ) VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, 'DRAFT', $6, $7, $8)
+                        ) VALUES ($1, $2, $9, $3, $4, $5, 'DRAFT', $6, $7, $8)
                         RETURNING id""",
                         ctx["tenant_id"],
                         f"REV-{orig['journal_number']}",
@@ -345,6 +347,7 @@ async def void_payment(request: Request, payment_id: UUID, body: VoidPayrollRequ
                         float(orig["total_debit"]),
                         float(orig["total_credit"]),
                         orig["id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
                     orig_lines = await conn.fetch(
                         "SELECT * FROM journal_lines WHERE journal_id = $1",

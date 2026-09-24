@@ -10,6 +10,7 @@ import logging
 import asyncpg
 
 # Import centralized config
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -554,7 +555,7 @@ async def add_product(request: Request, body: AddProductRequest):
                         source_type, quantity_in, quantity_out, quantity_balance,
                         unit_cost, total_cost, average_cost, warehouse_id, notes
                     ) VALUES (
-                        $1, $2::uuid, $3, 'IN', CURRENT_DATE,
+                        $1, $2::uuid, $3, 'IN', $7,
                         'OPENING_BALANCE', $4, 0, $4,
                         $5, $4 * $5, $5, $6, 'Initial stock from product creation'
                     )
@@ -567,6 +568,7 @@ async def add_product(request: Request, body: AddProductRequest):
                     body.stok_awal,
                     body.nilai_per_unit or 0,
                     ob_warehouse,
+                    await tanggal_dokumen(conn, tenant_id),  # t10-tanggal-bisnis
                 )
 
             logger.info(

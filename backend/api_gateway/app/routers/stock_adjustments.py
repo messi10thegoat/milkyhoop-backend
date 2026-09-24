@@ -29,6 +29,7 @@ from datetime import date
 from decimal import Decimal
 import uuid as uuid_module
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.stock_adjustments import (
     CreateStockAdjustmentRequest,
     UpdateStockAdjustmentRequest,
@@ -1278,7 +1279,8 @@ async def void_stock_adjustment(
                     }
 
                 # Law 5: Check fiscal period is open for reversal date
-                await check_period_is_open(conn, ctx["tenant_id"], date.today())
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
                 # Create reversal journal
                 reversal_journal_id = None
@@ -1302,7 +1304,7 @@ async def void_stock_adjustment(
                         "SELECT get_next_journal_number($1, $2, $3)",
                         ctx["tenant_id"],
                         "JV-REV",
-                        date.today(),
+                        hari_ini,  # t10-tanggal-bisnis
                     )
                     reversal_trace = str(uuid_module.uuid4())
 
@@ -1313,7 +1315,7 @@ async def void_stock_adjustment(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             trace_id, status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'STOCK_ADJUSTMENT', $5, $6, $7, 'DRAFT', $8, $8, $9)
+                        ) VALUES ($1, $2, $3, $10, $4, 'STOCK_ADJUSTMENT', $5, $6, $7, 'DRAFT', $8, $8, $9)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1324,6 +1326,7 @@ async def void_stock_adjustment(
                         reversal_trace,
                         sa["total_value"],  # Law 25: pass Decimal directly
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Step 2: INSERT reversal journal_lines
@@ -1388,7 +1391,7 @@ async def void_stock_adjustment(
                         source_id=adjustment_id,
                         reversal_journal_id=reversal_journal_id,
                         created_by=ctx["user_id"],
-                        reversal_date=date.today(),
+                        reversal_date=hari_ini,  # t10-tanggal-bisnis
                         notes_prefix=f"VOID {sa['adjustment_number']}",
                     )
 

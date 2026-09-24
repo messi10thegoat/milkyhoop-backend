@@ -18,6 +18,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
@@ -257,14 +258,16 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
             principal = round(float(adv["principal"]), 2)
             journal_id = uuid_module.uuid4()
             jnum = f"KASBON-VOID-{uuid_module.uuid4().hex[:8].upper()}"
+            hari_ini = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
             await conn.execute(
                 """INSERT INTO journal_entries
                        (id, tenant_id, journal_number, journal_date, description,
                         source_type, source_id, status, total_debit, total_credit,
                         reversal_of_id, created_by)
-                   VALUES ($1,$2,$3,CURRENT_DATE,$4,'EMPLOYEE_ADVANCE_GRANT_REVERSAL',$5,'DRAFT',$6,$6,$7,$8)""",
+                   VALUES ($1,$2,$3,$9,$4,'EMPLOYEE_ADVANCE_GRANT_REVERSAL',$5,'DRAFT',$6,$6,$7,$8)""",
                 journal_id, tenant_id, jnum, f"Pembatalan kasbon: {body.reason}",
                 advance_id, principal, adv["grant_journal_id"], ctx["user_id"],
+                hari_ini,  # t10-tanggal-bisnis
             )
             # reversal legs: Dr cash-bank / Cr Piutang Karyawan (mirror of the grant)
             await conn.execute(

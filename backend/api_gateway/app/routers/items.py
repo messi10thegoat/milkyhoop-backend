@@ -25,6 +25,7 @@ from uuid import UUID
 from datetime import date as dateclass
 from decimal import Decimal
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.items import (
     CreateItemRequest,
     UpdateItemRequest,
@@ -3208,6 +3209,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 journal_id = None
                 journal_note = None
                 created_by_uuid = None
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
 
                 if total_value == 0:
                     journal_note = (
@@ -3229,7 +3231,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                     if inv_account_id and adj_account_id:
                         journal_id = uuid_module.uuid4()
                         trace_id = uuid_module.uuid4()
-                        today = date_type.today()
+                        today = hari_ini  # t10-tanggal-bisnis
 
                         # Law 5: Period lock check
                         period_row = await conn.fetchrow(
@@ -3405,7 +3407,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                             warehouse_id, journal_id, notes, created_at
                         ) VALUES (
                             gen_random_uuid(), $1, $2, $3, $4,
-                            'ADJUSTMENT', CURRENT_DATE,
+                            'ADJUSTMENT', $15,
                             'STOCK_ADJUSTMENT', $5, $6,
                             0, $7, $8,
                             $9, $10, $11,
@@ -3426,6 +3428,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         warehouse_id,
                         journal_id,
                         f"Penyesuaian stok: {reason}",
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                 # --- Audit trail ---

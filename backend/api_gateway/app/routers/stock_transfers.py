@@ -11,6 +11,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Depends
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.stock_transfers import (
     CancelTransferRequest,
     CancelTransferResponse,
@@ -605,13 +606,14 @@ async def cancel_stock_transfer(
 
             for item in items:
                 # Add back to from_warehouse
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 await conn.execute(
                     """
                     INSERT INTO inventory_ledger (
                         tenant_id, item_id, warehouse_id,
                         quantity_change, unit_cost, total_value,
                         source_type, source_id, transaction_date
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 'STOCK_TRANSFER_CANCEL', $7, CURRENT_DATE)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'STOCK_TRANSFER_CANCEL', $7, $8)
                     """,
                     ctx["tenant_id"],
                     item["item_id"],
@@ -620,6 +622,7 @@ async def cancel_stock_transfer(
                     item["unit_cost"],
                     int(item["quantity_shipped"] * item["unit_cost"]),
                     transfer_id,
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
         await conn.execute(

@@ -54,6 +54,7 @@ from decimal import Decimal
 import json
 from pydantic import BaseModel, Field
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -322,7 +323,7 @@ async def get_next_payroll_number(conn, tenant_id: str) -> str:
         pass
 
     # Fallback: generate manually
-    today = datetime.now()
+    today = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
     prefix = f"PR-{today.strftime('%Y%m')}"
 
     last_number = await conn.fetchval(
@@ -1631,7 +1632,8 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                     )
 
                 # Law 5: Check accounting period
-                await check_period_is_open(conn, ctx["tenant_id"], date.today())
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
                 # Create reversal journal if original journal exists
                 void_journal_id = None
@@ -1665,7 +1667,7 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'PAYROLL', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'PAYROLL', $5, $6, 'DRAFT', $7, $7, $8)
                         RETURNING id
                         """,
                         uuid_module.uuid4(),
@@ -1678,6 +1680,7 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
                             "total_debit"
                         ],  # Law 25: already Decimal from DB
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Law 20: Step 2 — INSERT reversed lines (swap debit/credit)

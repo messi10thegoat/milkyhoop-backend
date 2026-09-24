@@ -11,6 +11,7 @@ from decimal import Decimal
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.payroll import (
     CreatePayrollRequest,
     UpdatePayrollRequest,
@@ -1501,12 +1502,13 @@ async def void_payroll(request: Request, run_id: UUID, body: VoidPayrollRequest)
                     "SELECT * FROM journal_entries WHERE id = $1", run["journal_id"]
                 )
                 if orig:
+                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                     rev_id = await conn.fetchval(
                         """INSERT INTO journal_entries (
                             tenant_id, journal_number, journal_date, description,
                             source_type, source_id, status, total_debit, total_credit,
                             reversal_of_id
-                        ) VALUES ($1, $2, CURRENT_DATE, $3, 'PAYROLL', $4, 'DRAFT', $5, $6, $7)
+                        ) VALUES ($1, $2, $8, $3, 'PAYROLL', $4, 'DRAFT', $5, $6, $7)
                         RETURNING id""",
                         ctx["tenant_id"],
                         f"REV-{orig['journal_number']}",
@@ -1515,6 +1517,7 @@ async def void_payroll(request: Request, run_id: UUID, body: VoidPayrollRequest)
                         float(orig["total_debit"]),
                         float(orig["total_credit"]),
                         orig["id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     orig_lines = await conn.fetch(
