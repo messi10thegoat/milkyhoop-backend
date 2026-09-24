@@ -14,6 +14,7 @@ from typing import Optional
 from enum import Enum
 
 from ..config import settings
+from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
 
@@ -407,13 +408,16 @@ async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = data.as_of_date or date.today()
+        as_of_date = data.as_of_date
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            if as_of_date is None:
+                # t10b-3b: tanggal bisnis tenant, bukan UTC
+                as_of_date = await tanggal_dokumen(conn, tenant_id)
 
             if data.snapshot_type == AgingType.ar:
                 snapshot_id = await conn.fetchval(

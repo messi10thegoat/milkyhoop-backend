@@ -670,18 +670,19 @@ async def create_item(request: Request, body: CreateItemRequest):
                 # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
                 # (Law 16: stock derived from inventory_ledger, no persediaan writes)
                 if initial_qty > 0:
-                    from datetime import date as dateclass_today
-
+                    # t10-tanggal-bisnis: cadangan tanggal saldo awal = hari ini
+                    # menurut zona tenant, bukan date.today() (UTC container:
+                    # 00-07 WIB memberi KEMARIN).
                     ob_date = None
                     if body.opening_stock_date:
                         try:
-                            ob_date = dateclass_today.fromisoformat(
+                            ob_date = dateclass.fromisoformat(
                                 str(body.opening_stock_date)
                             )
                         except (ValueError, TypeError):
-                            ob_date = dateclass_today.today()
-                    else:
-                        ob_date = dateclass_today.today()
+                            ob_date = None
+                    if ob_date is None:
+                        ob_date = await tanggal_dokumen(conn, tenant_id)
 
                     # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026).
                     # Titik ini tak pernah menyebut `warehouse_id` sama sekali,
@@ -3075,7 +3076,6 @@ async def create_stock_adjustment(request: Request, item_id: str):
 
         from decimal import Decimal, ROUND_HALF_UP
         import uuid as uuid_module
-        from datetime import date as date_type
 
         # Read adjustment_type (support both "adjustment_type" and legacy "type" key)
         adjustment_type = body.get("adjustment_type") or body.get("type", "set")
@@ -3779,7 +3779,8 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
                 )
 
                 # 5. Create stock_transfer record (immediate transfer = status 'received')
-                transfer_date = await conn.fetchval("SELECT CURRENT_DATE")
+                # t10-tanggal-bisnis: bukan SELECT CURRENT_DATE (UTC).
+                transfer_date = await tanggal_dokumen(conn, ctx["tenant_id"])
                 transfer_row = await conn.fetchrow(
                     """
                     INSERT INTO stock_transfers (

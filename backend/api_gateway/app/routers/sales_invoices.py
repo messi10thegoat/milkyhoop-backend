@@ -6240,7 +6240,8 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         # Parse body manually (no Pydantic schema yet)
         body = await request.json()
         warehouse_id_str = body.get("warehouse_id")
-        fulfillment_date_str = body.get("fulfillment_date", str(dt_date.today()))
+        # t10b-3b: default = tanggal bisnis tenant, diisi di dalam conn di bawah
+        fulfillment_date_str = body.get("fulfillment_date")
         recognize_revenue = body.get("recognize_revenue", True)
         client_idempotency_key = body.get("idempotency_key")
         notes = body.get("notes")
@@ -6252,9 +6253,15 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
             raise HTTPException(400, "items required")
 
         warehouse_id = UUID(warehouse_id_str)
-        fulfillment_date = dt_date.fromisoformat(fulfillment_date_str)
+        fulfillment_date = (
+            dt_date.fromisoformat(fulfillment_date_str) if fulfillment_date_str else None
+        )
 
         async with pool.acquire() as conn:
+            if fulfillment_date is None:
+                # t10b-3b: tanggal bisnis tenant, bukan UTC
+                fulfillment_date = await tanggal_dokumen(conn, ctx["tenant_id"])
+                fulfillment_date_str = fulfillment_date.isoformat()
             async with conn.transaction():
                 # Dual-int advisory lock (Law 13)
                 await conn.execute(

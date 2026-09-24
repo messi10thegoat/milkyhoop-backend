@@ -39,6 +39,7 @@ import json
 import io
 from decimal import Decimal
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_reconciliation import (
     CreateSessionRequest,
     AccountsListResponse,
@@ -162,7 +163,7 @@ async def list_accounts(
             )
 
             accounts = []
-            today = date.today()
+            today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
 
             for row in rows:
                 last_recon = row["last_reconciled_date"]
@@ -2610,10 +2611,9 @@ async def categorize_statement_line(
                     )
 
                 # 7. Generate transaction number
-                from datetime import datetime as dt
-
-                now = dt.utcnow()
-                prefix = f"BT-{now.strftime('%y%m')}-"
+                # t10b-3b: bulan di nomor dokumen = bulan bisnis tenant, bukan UTC
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                prefix = f"BT-{hari_ini.strftime('%y%m')}-"
                 last_num = await conn.fetchval(
                     """SELECT transaction_number FROM bank_transactions
                        WHERE tenant_id = $1 AND transaction_number LIKE $2
@@ -2877,6 +2877,8 @@ async def complete_session(
                 )
 
                 # Law 5: Check period is open for adjustment journals
+                # t10b-3b: jurnal RECON-ADJ bertanggal bisnis tenant; periode dicek pada tanggal yang sama
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 period = await conn.fetchrow(
                     """
                     SELECT id, status FROM fiscal_periods
@@ -2884,7 +2886,7 @@ async def complete_session(
                     ORDER BY start_date DESC LIMIT 1
                     """,
                     ctx["tenant_id"],
-                    datetime.utcnow().date(),
+                    hari_ini,
                 )
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
@@ -2935,7 +2937,7 @@ async def complete_session(
                         """,
                         journal_id,
                         ctx["tenant_id"],
-                        now.date(),
+                        hari_ini,  # t10-tanggal-bisnis
                         f"RECON-ADJ-{session_id.hex[:8]}",
                         f"Bank Reconciliation Adjustment: {adj.description}",
                         session_id,

@@ -31,6 +31,7 @@ from ..schemas.bom import (
     BOMResponse,
 )
 from ..services.bom_unit_guard import resolve_component_unit
+from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -951,6 +952,8 @@ async def activate_bom(request: Request, bom_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC — dihitung di luar transaksi
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 bom = await conn.fetchrow(
                     "SELECT product_id, status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
@@ -980,10 +983,11 @@ async def activate_bom(request: Request, bom_id: UUID):
                 await conn.execute(
                     """
                     UPDATE bill_of_materials
-                    SET status = 'active', is_current = true, effective_date = COALESCE(effective_date, CURRENT_DATE)
+                    SET status = 'active', is_current = true, effective_date = COALESCE(effective_date, $2::date)
                     WHERE id = $1
                     """,
                     bom_id,
+                    hari_ini,
                 )
 
                 return {"success": True, "message": "BOM activated"}
@@ -1003,14 +1007,17 @@ async def obsolete_bom(request: Request, bom_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             result = await conn.execute(
                 """
                 UPDATE bill_of_materials
-                SET status = 'obsolete', is_current = false, obsolete_date = CURRENT_DATE
+                SET status = 'obsolete', is_current = false, obsolete_date = $3::date
                 WHERE tenant_id = $1 AND id = $2 AND status = 'active'
                 """,
                 ctx["tenant_id"],
                 bom_id,
+                hari_ini,
             )
             if result == "UPDATE 0":
                 raise HTTPException(

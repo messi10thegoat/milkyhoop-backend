@@ -4,7 +4,6 @@ Item Batches Router
 Batch/Lot tracking with expiry dates.
 Default selection method: FEFO (First Expiry First Out).
 """
-from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -12,6 +11,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.item_batches import (
     AdjustBatchQuantityRequest,
     AdjustBatchResponse,
@@ -248,6 +248,11 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
 
             total_value = int(body.initial_quantity * body.unit_cost)
 
+            # t10-tanggal-bisnis: cadangan received_date = hari ini zona tenant.
+            received_date = body.received_date or await tanggal_dokumen(
+                conn, ctx["tenant_id"]
+            )
+
             row = await conn.fetchrow(
                 """
                 INSERT INTO item_batches (
@@ -263,7 +268,7 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
                 body.batch_number,
                 body.manufacture_date,
                 body.expiry_date,
-                body.received_date or date.today(),
+                received_date,
                 body.initial_quantity,
                 body.unit_cost,
                 total_value,
@@ -474,11 +479,14 @@ async def get_available_batches_for_item(
         total_available = sum(row["available_quantity"] for row in rows)
         total_allocated = sum(row["quantity_to_use"] for row in rows)
 
+        # t10-tanggal-bisnis: sisa hari kedaluwarsa dihitung dari hari ini
+        # zona tenant (date.today() = UTC, 00-07 WIB meleset satu hari).
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
         batches = []
         for row in rows:
             days_until = None
             if row["expiry_date"]:
-                days_until = (row["expiry_date"] - date.today()).days
+                days_until = (row["expiry_date"] - hari_ini).days
 
             batches.append(
                 AvailableBatch(

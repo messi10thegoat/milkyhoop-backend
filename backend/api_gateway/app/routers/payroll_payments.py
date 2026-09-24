@@ -303,6 +303,31 @@ async def post_payment(request: Request, payment_id: UUID):
         }
 
 
+async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
+    """Law 5: periode akuntansi tanggal ini harus terbuka (salinan expenses.py).
+
+    t10b-3b: tanpa ini, void di periode tertutup hanya tertangkap trigger DB
+    prevent_closed_period_journal -> asyncpg RaiseError -> 500 bagi pengguna.
+    """
+    period = await conn.fetchrow(
+        """
+        SELECT id, period_name, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+        ORDER BY start_date DESC LIMIT 1
+        """,
+        tenant_id,
+        transaction_date,
+    )
+
+    if period and period["status"] in ("CLOSED", "LOCKED"):
+        period_name = period["period_name"]
+        period_status = period["status"].lower()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot post to {period_status} period ({period_name})",
+        )
+
+
 @router.post("/{payment_id}/void")
 async def void_payment(request: Request, payment_id: UUID, body: VoidPayrollRequest):
     ctx = get_user_context(request)
@@ -332,6 +357,9 @@ async def void_payment(request: Request, payment_id: UUID, body: VoidPayrollRequ
                 )
                 if orig:
                     hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                    # Law 5 (t10b-3b): periode asal + periode jurnal pembalik, SEBELUM tulis apa pun
+                    await check_period_is_open(conn, ctx["tenant_id"], orig["journal_date"])
+                    await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
                     rev_id = await conn.fetchval(
                         """INSERT INTO journal_entries (
                             tenant_id, journal_number, journal_date, description,

@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from .role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
@@ -148,9 +149,8 @@ async def record_inventory_outbound(
             "masuk stok gudang -- terlihat ada di layar, ditolak saat dikirim."
         )
 
-    from datetime import date as date_type
-
-    movement_date = receipt_date or date_type.today()
+    # t10-tanggal-bisnis: cadangan = hari ini zona tenant, bukan date.today().
+    movement_date = receipt_date or await tanggal_dokumen(conn, tenant_id)
 
     # 1. Get weighted average cost
     cost_info = await get_cost_for_sale(conn, tenant_id, product_id)
@@ -359,10 +359,9 @@ async def record_inventory_inbound(
             "masuk stok gudang -- terlihat ada di layar, ditolak saat dikirim."
         )
 
-    from datetime import date as date_type
-
+    # t10-tanggal-bisnis: cadangan = hari ini zona tenant, bukan date.today().
     if movement_date is None:
-        movement_date = date_type.today()
+        movement_date = await tanggal_dokumen(conn, tenant_id)
 
     quantity_dec = Decimal(str(quantity))
     unit_cost_dec = Decimal(str(unit_cost))
@@ -472,6 +471,29 @@ async def record_inventory_inbound(
     }
 
 
+# Sumber yang barang-masuknya memang PEMBELIAN: pembaliknya = retur pembelian.
+_SUMBER_PEMBELIAN = frozenset({"BILL", "PURCHASE_INVOICE"})
+# inventory_ledger.movement_type = character varying(30), tanpa CHECK.
+_PANJANG_MAKS_MOVEMENT_TYPE = 30
+
+
+def label_pembalikan_masuk(source_type: str) -> str:
+    """movement_type untuk baris yang MEMBALIK gerakan masuk (qty_in) sebuah sumber.
+
+    BILL/PURCHASE_INVOICE -> 'PURCHASE_RETURN' (tetap, perilaku lama).
+    Sumber lain -> '{source_type}_REVERSAL', sepola dengan
+    MATERIAL_ISSUE_REVERSAL / PRODUCTION_OUTPUT_REVERSAL (production.py).
+    Nama kepanjangan (>30) -> 'INBOUND_REVERSAL' agar tak ditolak kolom.
+    """
+    st = (source_type or "").upper()
+    if st in _SUMBER_PEMBELIAN:
+        return "PURCHASE_RETURN"
+    label = f"{st}_REVERSAL" if st else "INBOUND_REVERSAL"
+    if len(label) > _PANJANG_MAKS_MOVEMENT_TYPE:
+        return "INBOUND_REVERSAL"
+    return label
+
+
 async def record_inventory_reversal(
     conn,
     tenant_id: str,
@@ -489,8 +511,10 @@ async def record_inventory_reversal(
     (swap quantity_in <-> quantity_out), links journal_id to reversal journal.
 
     Architecture (milkyhoop-inventory Rule 9):
-    - Original PURCHASE (qty_in) -> reversal PURCHASE_RETURN (qty_out)
-    - Original SALE (qty_out) -> reversal VOID_REVERSAL (qty_in)
+    - Original inbound (qty_in) -> reversal label per SUMBER, lihat
+      `label_pembalikan_masuk()`: BILL -> PURCHASE_RETURN; lainnya
+      (STOCK_ADJUSTMENT, CREDIT_NOTE, ...) -> "{source_type}_REVERSAL".
+    - Original outbound (qty_out) -> reversal VOID_REVERSAL (qty_in)
     - source_type = "{original}_VOID" (e.g. BILL_VOID, SALES_INVOICE_VOID)
     - journal_id = reversal_journal_id (NOT original — D5 fix)
     - WAC: snapshot only, no recalc on outbound (Rule 3)
@@ -499,9 +523,9 @@ async def record_inventory_reversal(
 
     Returns list of {"product_id", "ledger_id", "quantity_reversed", "direction"}.
     """
-    from datetime import date as date_type
-
-    movement_date = reversal_date or date_type.today()
+    # t10-tanggal-bisnis: cadangan = hari ini zona tenant, bukan date.today().
+    # (credit_notes void memanggil tanpa reversal_date -> jalur ini.)
+    movement_date = reversal_date or await tanggal_dokumen(conn, tenant_id)
 
     # Find original inventory_ledger entries for this source
     original_entries = await conn.fetch(
@@ -542,7 +566,10 @@ async def record_inventory_reversal(
 
         # Determine movement_type
         if orig_qty_in > 0:
-            movement_type = "PURCHASE_RETURN"  # Reversing inbound (purchase void)
+            # Label per sumber: dulu SELALU 'PURCHASE_RETURN', juga untuk void
+            # penyesuaian stok / nota kredit -- kartu stok menyebut "retur
+            # pembelian" untuk dokumen yang bukan pembelian.
+            movement_type = label_pembalikan_masuk(source_type)
         else:
             movement_type = "VOID_REVERSAL"  # Reversing outbound (restoring stock)
 

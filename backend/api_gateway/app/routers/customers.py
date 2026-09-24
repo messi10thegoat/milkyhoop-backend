@@ -1392,9 +1392,9 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
 
                 # Generate journal number
                 import uuid as uuid_module
-                from datetime import date as dt_date
 
-                today = dt_date.today()
+                # t10b-3b: tanggal bisnis tenant, bukan UTC
+                today = await tanggal_dokumen(conn, ctx["tenant_id"])
                 year_month_str = today.strftime("%y%m")
 
                 # Self-healing canonical generator (V176): emits OB, bumps OB counter.
@@ -1498,7 +1498,6 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
     """
     try:
         import uuid as uuid_module
-        from datetime import date as dt_date
 
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1536,7 +1535,8 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
                 )
 
                 # Generate reversal journal number
-                today = dt_date.today()
+                # t10b-3b: tanggal bisnis tenant, bukan UTC
+                today = await tanggal_dokumen(conn, ctx["tenant_id"])
                 year_month_str = today.strftime("%y%m")
                 # Self-healing canonical generator (V176): emits OBR, bumps OBR counter.
                 reversal_number = await conn.fetchval(

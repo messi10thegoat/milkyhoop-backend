@@ -399,6 +399,11 @@ class PaymentRequestService:
             logger.warning("Could not find accounts for journal - skipping journal creation")
             return None
         
+        # t10b-3b: tanggal bisnis tenant, bukan UTC (CURRENT_DATE = UTC)
+        from ..utils.tanggal_tenant import tanggal_dokumen
+
+        hari_ini = await tanggal_dokumen(conn, str(tenant_id))
+
         # Create journal entry
         journal_row = await conn.fetchrow("""
             INSERT INTO journal_entries (
@@ -407,7 +412,7 @@ class PaymentRequestService:
                 source_type, source_id, created_by_name,
                 confidentiality_level
             ) VALUES (
-                $1, 'PAYMENT', CURRENT_DATE, $2,
+                $1, 'PAYMENT', $7::date, $2,
                 $3, $3, 'POSTED',
                 'PAYMENT_REQUEST', $4::uuid, $5,
                 $6::confidentiality_level
@@ -419,7 +424,8 @@ class PaymentRequestService:
             amount, 
             request['id'],
             payer_name,
-            request.get('confidentiality_level', 'L3')
+            request.get('confidentiality_level', 'L3'),
+            hari_ini,
         )
         
         journal_id = journal_row['id']

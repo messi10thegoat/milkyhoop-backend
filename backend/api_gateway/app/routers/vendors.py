@@ -350,8 +350,13 @@ async def list_vendors(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Build query conditions
-            conditions = ["tenant_id = $1"]
+            # Build query conditions.
+            # SEMUA kueri di bawah memakai alias tabel `v` (FROM vendors v),
+            # jadi setiap kondisi ditulis EKSPLISIT ber-prefiks v. — dulu
+            # WHERE dialias lewat str.replace("tenant_id", "v.tenant_id")
+            # yang juga merusak fragmen has_overdue (vendors.tenant_id ->
+            # vendors.v.tenant_id) -> 500 saat has_overdue+sort ap_balance.
+            conditions = ["v.tenant_id = $1"]
             params = [ctx["tenant_id"]]
             param_idx = 2
 
@@ -360,9 +365,9 @@ async def list_vendors(
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
-                        f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                        f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
+                        f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
+                        f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
+                        f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -370,26 +375,26 @@ async def list_vendors(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(name ILIKE ${param_idx} OR code ILIKE ${param_idx} "
-                            f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                            f"OR contact_person ILIKE ${param_idx} OR phone ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
+                            f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
+                            f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
+                            f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1
                     conditions.append(f"({' AND '.join(word_conds)})")
 
             if is_active is not None:
-                conditions.append(f"is_active = ${param_idx}")
+                conditions.append(f"v.is_active = ${param_idx}")
                 params.append(is_active)
                 param_idx += 1
 
             # Filter by has_balance (vendors with opening_balance > 0)
             if has_balance is True:
-                conditions.append("COALESCE(opening_balance, 0) > 0")
+                conditions.append("COALESCE(v.opening_balance, 0) > 0")
 
             # Filter by is_pkp (PKP vendors only)
             if is_pkp is True:
-                conditions.append("is_pkp = true")
+                conditions.append("v.is_pkp = true")
 
             # Pure Ledger: has_overdue filter using compute_ap_outstanding() DB function
             if has_overdue is True:
@@ -397,8 +402,8 @@ async def list_vendors(
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
                 conditions.append(
                     f"""EXISTS (
-                    SELECT 1 FROM compute_ap_outstanding(vendors.tenant_id) ap_fn
-                    WHERE ap_fn.vendor_id = vendors.id
+                    SELECT 1 FROM compute_ap_outstanding(v.tenant_id) ap_fn
+                    WHERE ap_fn.vendor_id = v.id
                       AND ap_fn.due_date < ${param_idx}::date
                       AND ap_fn.outstanding > 0
                 )"""
@@ -421,15 +426,11 @@ async def list_vendors(
             use_ap_balance_sort = sort_by == "ap_balance"
 
             # Get total count
-            count_query = f"SELECT COUNT(*) FROM vendors WHERE {where_clause}"
+            count_query = f"SELECT COUNT(*) FROM vendors v WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
 
             # Get items - handle ap_balance sorting with subquery
             if use_ap_balance_sort:
-                # Build WHERE clause with table alias
-                where_aliased = where_clause.replace(
-                    "tenant_id", "v.tenant_id"
-                ).replace("is_active", "v.is_active")
                 query = f"""
                     SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email,
                            v.payment_terms_days, v.is_active, v.created_at,
@@ -441,7 +442,7 @@ async def list_vendors(
                         FROM compute_ap_outstanding($1)
                         GROUP BY vendor_id
                     ) ap ON ap.vendor_id = v.id
-                    WHERE {where_aliased}
+                    WHERE {where_clause}
                     ORDER BY COALESCE(ap.ap_balance, 0) {sort_dir}
                     LIMIT ${param_idx} OFFSET ${param_idx + 1}
                 """
@@ -449,7 +450,7 @@ async def list_vendors(
                 query = f"""
                     SELECT id, code, name, company_name, display_name, contact_person, phone, email,
                            payment_terms_days, is_active, created_at
-                    FROM vendors
+                    FROM vendors v
                     WHERE {where_clause}
                     ORDER BY {sort_field} {sort_dir}
                     LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -1357,7 +1358,8 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
                 else as_of_date
             )
         else:
-            as_of_date = date_type.today()
+            # t10b-3b: default diisi tanggal bisnis tenant di dalam conn di bawah
+            as_of_date = None
         description = raw_body.get("description")
 
         if amount <= 0:
@@ -1367,6 +1369,9 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+            if as_of_date is None:
+                # t10b-3b: tanggal bisnis tenant, bukan UTC
+                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             async with conn.transaction():
                 # Law 13: Advisory lock for opening balance

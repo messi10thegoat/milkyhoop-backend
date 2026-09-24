@@ -3,7 +3,6 @@ Item Serials Router
 ===================
 Serial number tracking for individual units.
 """
-from datetime import date
 from typing import Optional
 from uuid import UUID
 
@@ -11,6 +10,7 @@ import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
 from ..services.fitur_parkir import fitur_belum_tersedia
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.item_serials import (
     AdjustSerialRequest,
     AdjustSerialResponse,
@@ -233,6 +233,11 @@ async def create_item_serial(request: Request, body: CreateItemSerialRequest):
                     status_code=400, detail="Serial number already exists for this item"
                 )
 
+            # t10-tanggal-bisnis: cadangan received_date = hari ini zona tenant.
+            received_date = body.received_date or await tanggal_dokumen(
+                conn, ctx["tenant_id"]
+            )
+
             row = await conn.fetchrow(
                 """
                 INSERT INTO item_serials (
@@ -247,7 +252,7 @@ async def create_item_serial(request: Request, body: CreateItemSerialRequest):
                 body.item_id,
                 body.serial_number,
                 body.warehouse_id,
-                body.received_date or date.today(),
+                received_date,
                 body.warranty_start_date,
                 body.warranty_expiry,
                 body.unit_cost,
@@ -311,6 +316,11 @@ async def bulk_create_serials(request: Request, body: BulkCreateSerialsRequest):
                 "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
             )
 
+            # t10-tanggal-bisnis: satu tanggal untuk seluruh batch serial.
+            received_date = body.received_date or await tanggal_dokumen(
+                conn, ctx["tenant_id"]
+            )
+
             created = []
             for serial_number in body.serial_numbers:
                 # Check uniqueness
@@ -335,7 +345,7 @@ async def bulk_create_serials(request: Request, body: BulkCreateSerialsRequest):
                     body.item_id,
                     serial_number,
                     body.warehouse_id,
-                    body.received_date or date.today(),
+                    received_date,
                     body.unit_cost,
                     body.purchase_order_id,
                     body.bill_id,

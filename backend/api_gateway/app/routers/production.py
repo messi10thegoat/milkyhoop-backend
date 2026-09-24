@@ -36,6 +36,7 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -415,6 +416,8 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 # Get BOM info
                 bom = await conn.fetchrow(
@@ -452,7 +455,7 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                         work_center_id, warehouse_id, sales_order_id, customer_id,
                         planned_material_cost, planned_labor_cost, planned_overhead_cost,
                         priority, notes, created_by
-                    ) VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    ) VALUES ($1, $2, $19::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                     RETURNING id
                     """,
                     ctx["tenant_id"],
@@ -473,6 +476,7 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     body.priority,
                     body.notes,
                     ctx["user_id"],
+                    hari_ini,
                 )
 
                 # Create planned materials from BOM components
@@ -921,6 +925,8 @@ async def release_order(request: Request, order_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             async with conn.transaction():
                 # Advisory lock for subcontract release
                 await conn.execute(
@@ -996,7 +1002,7 @@ async def release_order(request: Request, order_id: UUID):
                             tax_rate, tax_inclusive, created_by
                         ) VALUES (
                             $1, $2, $3, $4,
-                            $5, 0, CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', $6,
+                            $5, 0, $8::date, $8::date + INTERVAL '30 days', $6,
                             'draft', 'draft', $5, $5,
                             0, false, $7
                         ) RETURNING id
@@ -1008,6 +1014,7 @@ async def release_order(request: Request, order_id: UUID):
                         line_total,
                         f"Subcontract: {op['operation_name']} for WO {order_id}",
                         user_id,
+                        hari_ini,
                     )
 
                     # Create bill item — purchase_account = WIP (1-10650) per Law 27
@@ -1091,14 +1098,17 @@ async def start_production(request: Request, order_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             result = await conn.execute(
                 """
                 UPDATE production_orders
-                SET status = 'in_progress', actual_start_date = CURRENT_DATE, updated_at = NOW()
+                SET status = 'in_progress', actual_start_date = $3::date, updated_at = NOW()
                 WHERE tenant_id = $1 AND id = $2 AND status = 'released'
                 """,
                 ctx["tenant_id"],
                 order_id,
+                hari_ini,
             )
             if result == "UPDATE 0":
                 raise HTTPException(
@@ -1122,6 +1132,8 @@ async def complete_order(request: Request, order_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 order = await conn.fetchrow(
                     """
@@ -1153,13 +1165,14 @@ async def complete_order(request: Request, order_id: UUID):
                 await conn.execute(
                     """
                     UPDATE production_orders
-                    SET status = 'completed', actual_end_date = CURRENT_DATE,
+                    SET status = 'completed', actual_end_date = $4::date,
                         variance_amount = $3, updated_at = NOW()
                     WHERE tenant_id = $1 AND id = $2
                     """,
                     ctx["tenant_id"],
                     order_id,
                     variance,
+                    hari_ini,
                 )
 
                 # Bug #9 fix: Flush WIP residual via variance journal
@@ -1219,7 +1232,6 @@ async def complete_order(request: Request, order_id: UUID):
                     )
 
                     if wip_residual and abs(float(wip_residual)) > Decimal("0.01"):
-                        from datetime import date as _date_var
                         import uuid as _uuid_var
 
                         wip_residual = Decimal(str(wip_residual))
@@ -1230,7 +1242,7 @@ async def complete_order(request: Request, order_id: UUID):
                             f"VARIANCE:{order_id}",
                         )
 
-                        today_var = _date_var.today()
+                        today_var = hari_ini  # #10b-3b: tanggal bisnis tenant, bukan UTC
                         var_id = _uuid_var.uuid4()
                         ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
                         # Self-healing canonical generator (V176): emits JV-VAR
@@ -1330,11 +1342,10 @@ async def complete_order(request: Request, order_id: UUID):
 
 
 async def _reverse_journal(
-    conn, tenant_id: str, user_id, original_journal_id, reason: str
+    conn, tenant_id: str, user_id, original_journal_id, reason: str, hari_ini=None
 ):
     """Create a reversal journal (Law 2 + Law 26): swap debit/credit of original, link via reversal_of_id."""
     import uuid as _uuid_rev
-    from datetime import date as _date_rev
 
     original = await conn.fetchrow(
         "SELECT id, journal_number, source_type, source_id, total_debit, total_credit, status, reversed_by_id, journal_date, period_id FROM journal_entries WHERE id = $1 AND tenant_id = $2",
@@ -1372,7 +1383,9 @@ async def _reverse_journal(
         )
 
     orig_date = original["journal_date"]
-    today_actual = _date_rev.today()
+    # #10b-3b: tanggal bisnis tenant, bukan UTC
+    # (pemanggil boleh mengoper hari_ini supaya satu aksi = satu tanggal)
+    today_actual = hari_ini or await tanggal_dokumen(conn, tenant_id)
     if orig_date is not None and await _period_is_open(orig_date):
         reversal_date = orig_date
     elif await _period_is_open(today_actual):
@@ -1460,9 +1473,13 @@ async def _reverse_inventory_ledger(
     source_id,
     reversal_journal_id,
     movement_tag: str,
+    hari_ini=None,
 ):
     """Insert reversal rows for all inventory_ledger entries of a given source.
     Flips quantity_in/out, recomputes balance, sets movement_type to {TAG}_REVERSAL, links new journal."""
+    # #10b-3b: tanggal bisnis tenant, bukan UTC
+    if hari_ini is None:
+        hari_ini = await tanggal_dokumen(conn, tenant_id)
     rows = await conn.fetch(
         """
         SELECT id, product_id, product_code, product_name, warehouse_id, source_number,
@@ -1497,7 +1514,7 @@ async def _reverse_inventory_ledger(
                 warehouse_id, created_by, notes, journal_id
             ) VALUES (
                 gen_random_uuid(), $1, $2, $3, $4,
-                $5, CURRENT_DATE, $6, $7, $8,
+                $5, $18::date, $6, $7, $8,
                 $9, $10, $11,
                 $12, $13, $12,
                 $14, $15, $16, $17
@@ -1520,6 +1537,7 @@ async def _reverse_inventory_ledger(
             user_id,
             "Reversal of production cancellation",
             reversal_journal_id,
+            hari_ini,
         )
 
 
@@ -1532,6 +1550,8 @@ async def cancel_order(request: Request, order_id: UUID):
         await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 # Law 13: advisory lock
                 await conn.execute(
@@ -1559,6 +1579,7 @@ async def cancel_order(request: Request, order_id: UUID):
                         ctx["user_id"],
                         order["completion_journal_id"],
                         "Production order cancelled",
+                        hari_ini=hari_ini,
                     )
                     if rev_fg_id:
                         await _reverse_inventory_ledger(
@@ -1569,6 +1590,7 @@ async def cancel_order(request: Request, order_id: UUID):
                             order_id,
                             rev_fg_id,
                             "PRODUCTION_OUTPUT",
+                            hari_ini=hari_ini,
                         )
 
                 # 2. Reverse Material Issue (un-debit WIP, un-credit Persediaan RM)
@@ -1579,6 +1601,7 @@ async def cancel_order(request: Request, order_id: UUID):
                         ctx["user_id"],
                         order["material_issue_journal_id"],
                         "Production order cancelled",
+                        hari_ini=hari_ini,
                     )
                     if rev_mi_id:
                         await _reverse_inventory_ledger(
@@ -1589,6 +1612,7 @@ async def cancel_order(request: Request, order_id: UUID):
                             order_id,
                             rev_mi_id,
                             "MATERIAL_ISSUE",
+                            hari_ini=hari_ini,
                         )
 
                 # 2b. Balik SEMUA jurnal LABOR + OVERHEAD milik WO ini.
@@ -1638,6 +1662,7 @@ async def cancel_order(request: Request, order_id: UUID):
                         ctx["user_id"],
                         _j["id"],
                         "Production order cancelled",
+                        hari_ini=hari_ini,
                     )
                 if _jurnal_lo:
                     logger.info(
@@ -1717,6 +1742,8 @@ async def issue_materials(
         await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 order = await conn.fetchrow(
                     "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
@@ -1815,7 +1842,7 @@ async def issue_materials(
                             UPDATE production_order_materials
                             SET issued_quantity = issued_quantity + $3,
                                 actual_cost = actual_cost + $4,
-                                issued_date = CURRENT_DATE,
+                                issued_date = $8::date,
                                 issued_by = $5,
                                 warehouse_id = $6,
                                 batch_id = $7
@@ -1828,6 +1855,7 @@ async def issue_materials(
                             ctx["user_id"],
                             mat.warehouse_id,
                             mat.batch_id,
+                            hari_ini,
                         )
                     else:
                         await conn.execute(
@@ -1835,7 +1863,7 @@ async def issue_materials(
                             INSERT INTO production_order_materials (
                                 production_order_id, product_id, planned_quantity, unit,
                                 issued_quantity, actual_cost, issued_date, issued_by, warehouse_id, batch_id
-                            ) VALUES ($1, $2, 0, $3, $4, $5, CURRENT_DATE, $6, $7, $8)
+                            ) VALUES ($1, $2, 0, $3, $4, $5, $9::date, $6, $7, $8)
                             """,
                             order_id,
                             mat.product_id,
@@ -1845,6 +1873,7 @@ async def issue_materials(
                             ctx["user_id"],
                             mat.warehouse_id,
                             mat.batch_id,
+                            hari_ini,
                         )
 
                     total_issued_cost += issue_cost
@@ -1896,8 +1925,6 @@ async def issue_materials(
                             detail="Akun WIP_GENERIC atau INVENTORY_MERCHANDISE tidak ter-resolve",
                         )
 
-                    from datetime import date as _date
-
                     # Optional period-gated posting date (default = today). Must
                     # fall in an OPEN fiscal period. Clean HTTP 400 pre-check
                     # BEFORE any journal/ledger insert (the
@@ -1905,9 +1932,10 @@ async def issue_materials(
                     # a raw DB error). Iron Law 5. Mirrors record_labor /
                     # report_output posting_date gate. posting_date is taken from
                     # the first material row (single journal per request).
+                    # #10b-3b: tanggal bisnis tenant, bukan UTC
                     effective_date = (
                         materials[0].posting_date if materials else None
-                    ) or _date.today()
+                    ) or hari_ini
                     fp_mi = await conn.fetchrow(
                         """
                         SELECT status FROM fiscal_periods
@@ -2085,13 +2113,14 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
     """
     try:
         import uuid as _uuid_lb
-        from datetime import date as _date_lb
 
         ctx = get_user_context(request)
         pool = await get_pool()
         await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 # PRO-D-2 advisory lock at TOP of tx (Surprise #28 pattern)
                 await conn.execute(
@@ -2278,7 +2307,7 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 # fall in an OPEN fiscal period. Clean HTTP 400 pre-check BEFORE
                 # any journal insert (the prevent_closed_period_journal trigger
                 # would otherwise surface a raw DB error). Iron Law 5.
-                effective_date = body.posting_date or _date_lb.today()
+                effective_date = body.posting_date or hari_ini  # #10b-3b: tanggal bisnis tenant, bukan UTC
                 fp_lb = await conn.fetchrow(
                     """
                     SELECT status FROM fiscal_periods
@@ -2471,6 +2500,8 @@ async def report_output(
         await _ensure_production_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             async with conn.transaction():
                 order = await conn.fetchrow(
                     "SELECT * FROM production_orders WHERE tenant_id = $1 AND id = $2",
@@ -2631,7 +2662,7 @@ async def report_output(
                         production_order_id, completion_date, good_quantity,
                         scrap_quantity, quality_status, inspection_notes,
                         unit_cost, total_cost, warehouse_id, batch_id, completed_by, is_overrun
-                    ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ) VALUES ($1, $12::date, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     RETURNING id
                     """,
                     order_id,
@@ -2645,6 +2676,7 @@ async def report_output(
                     body.batch_id,
                     ctx["user_id"],
                     is_overrun,
+                    hari_ini,
                 )
 
                 # Update order quantities
@@ -2708,14 +2740,12 @@ async def report_output(
                             detail="Akun INVENTORY_MERCHANDISE (FG) atau WIP_GENERIC tidak ter-resolve",
                         )
 
-                    from datetime import date as _date_ro
-
                     # Optional period-gated posting date (default = today). Must
                     # fall in an OPEN fiscal period. Clean HTTP 400 pre-check
                     # BEFORE any journal insert (the prevent_closed_period_journal
                     # trigger would otherwise surface a raw DB error). Iron Law 5.
                     # Mirrors record_labor's posting_date gate.
-                    effective_date = body.posting_date or _date_ro.today()
+                    effective_date = body.posting_date or hari_ini  # #10b-3b: tanggal bisnis tenant, bukan UTC
                     fp_ro = await conn.fetchrow(
                         """
                         SELECT status FROM fiscal_periods

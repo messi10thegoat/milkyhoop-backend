@@ -337,22 +337,26 @@ async def get_expenses_summary(
             # CURRENT_DATE = kemarin -> tgl 1 "bulan ini" menjumlah bulan lalu).
             # Fragmen memakai penanda {h}; tiap kueri mengisinya dengan nomor
             # parameter bebas BERIKUTNYA miliknya sendiri (lihat _jf/_ef).
+            # #10b-3b (keputusan MASTER): periode = hari pertama s.d. AKHIR
+            # periode (batas atas eksklusif); week = 7 hari terakhir s.d. hari
+            # ini inklusif. {h} dipakai 2x per fragmen -> nomor parameter SAMA,
+            # tak ada argumen tambahan.
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             # Date filter based on period (applied to journal_date)
             _tpl_journal = {
-                "week": "je.journal_date >= {h} - INTERVAL '7 days'",
-                "month": "je.journal_date >= DATE_TRUNC('month', {h})",
-                "quarter": "je.journal_date >= DATE_TRUNC('quarter', {h})",
-                "year": "je.journal_date >= DATE_TRUNC('year', {h})",
+                "week": "(je.journal_date >= {h} - INTERVAL '7 days' AND je.journal_date <= {h})",
+                "month": "(je.journal_date >= DATE_TRUNC('month', {h}) AND je.journal_date < DATE_TRUNC('month', {h}) + INTERVAL '1 month')",
+                "quarter": "(je.journal_date >= DATE_TRUNC('quarter', {h}) AND je.journal_date < DATE_TRUNC('quarter', {h}) + INTERVAL '3 months')",
+                "year": "(je.journal_date >= DATE_TRUNC('year', {h}) AND je.journal_date < DATE_TRUNC('year', {h}) + INTERVAL '1 year')",
             }[period]
 
             # Same date filter for expenses table (metadata queries)
             _tpl_expense = {
-                "week": "e.expense_date >= {h} - INTERVAL '7 days'",
-                "month": "e.expense_date >= DATE_TRUNC('month', {h})",
-                "quarter": "e.expense_date >= DATE_TRUNC('quarter', {h})",
-                "year": "e.expense_date >= DATE_TRUNC('year', {h})",
+                "week": "(e.expense_date >= {h} - INTERVAL '7 days' AND e.expense_date <= {h})",
+                "month": "(e.expense_date >= DATE_TRUNC('month', {h}) AND e.expense_date < DATE_TRUNC('month', {h}) + INTERVAL '1 month')",
+                "quarter": "(e.expense_date >= DATE_TRUNC('quarter', {h}) AND e.expense_date < DATE_TRUNC('quarter', {h}) + INTERVAL '3 months')",
+                "year": "(e.expense_date >= DATE_TRUNC('year', {h}) AND e.expense_date < DATE_TRUNC('year', {h}) + INTERVAL '1 year')",
             }[period]
 
             def _jf(n: int) -> str:

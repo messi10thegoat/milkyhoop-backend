@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.production_costing import (
     CostingResponse,
     CostPoolListResponse,
@@ -218,11 +219,12 @@ async def calculate_standard_cost_from_bom(
     ctx = get_user_context(request)
     pool = await get_pool()
 
-    if effective_date is None:
-        effective_date = date.today()
-
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+
+        if effective_date is None:
+            # #10b-3b: tanggal bisnis tenant, bukan UTC
+            effective_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
         # Get BOM with product
         bom = await conn.fetchrow(

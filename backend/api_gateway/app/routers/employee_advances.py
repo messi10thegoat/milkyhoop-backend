@@ -220,6 +220,31 @@ async def employee_balances(request: Request):
     return {"success": True, "data": [dict(r) for r in rows]}
 
 
+async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
+    """Law 5: periode akuntansi tanggal ini harus terbuka (salinan expenses.py).
+
+    t10b-3b: tanpa ini, void di periode tertutup hanya tertangkap trigger DB
+    prevent_closed_period_journal -> asyncpg RaiseError -> 500 bagi pengguna.
+    """
+    period = await conn.fetchrow(
+        """
+        SELECT id, period_name, status FROM fiscal_periods
+        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
+        ORDER BY start_date DESC LIMIT 1
+        """,
+        tenant_id,
+        transaction_date,
+    )
+
+    if period and period["status"] in ("CLOSED", "LOCKED"):
+        period_name = period["period_name"]
+        period_status = period["status"].lower()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot post to {period_status} period ({period_name})",
+        )
+
+
 @router.post("/{advance_id}/void")
 async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequest):
     """Void a grant (Law 2, by reversal). Only allowed while untouched (no deductions yet)."""
@@ -234,7 +259,7 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
                 "SELECT pg_advisory_xact_lock(hashtext($1))", f"EMP_ADV_VOID:{advance_id}"
             )
             adv = await conn.fetchrow(
-                "SELECT id, employee_id, principal, status, grant_journal_id, source_account_id FROM employee_advances WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, employee_id, principal, status, grant_journal_id, source_account_id, granted_date FROM employee_advances WHERE id = $1 AND tenant_id = $2",
                 advance_id, tenant_id,
             )
             if not adv:
@@ -259,6 +284,9 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
             journal_id = uuid_module.uuid4()
             jnum = f"KASBON-VOID-{uuid_module.uuid4().hex[:8].upper()}"
             hari_ini = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
+            # Law 5 (t10b-3b): periode asal + periode jurnal pembalik, SEBELUM tulis apa pun
+            await check_period_is_open(conn, tenant_id, adv["granted_date"])
+            await check_period_is_open(conn, tenant_id, hari_ini)
             await conn.execute(
                 """INSERT INTO journal_entries
                        (id, tenant_id, journal_number, journal_date, description,
