@@ -2395,65 +2395,116 @@ async def get_payment_transactions(
         raise HTTPException(status_code=500, detail="Failed to get transactions")
 
 
+
+# =============================================================================
+# LAMPIRAN PEMBAYARAN KELUAR (Unit 1a, 24 Sep 2026)
+#
+# Penyimpanan: `documents` + `document_attachments` dengan entity_type='payment'
+# -- entity_type yang SAMA dipakai receive_payments. Karena itu setiap bacaan di
+# sini meng-JOIN `bill_payments_v2` + tenant: id penerimaan tak boleh bisa
+# membaca/mengunduh lampiran lewat rute pembayaran keluar (dan sebaliknya).
+#
+# `url` = path relatif rute download di bawah (stream lewat gateway). Dulu:
+# presign MinIO (host publik :9000, mati sejak port ditutup 23 Sep) dengan
+# cadangan `/api/documents/{id}/download` yang tak pernah terpakai.
+# =============================================================================
+from ..services.storage_service import get_storage_service  # noqa: E402
+from ..utils.lampiran_unduh import (  # noqa: E402
+    stream_lampiran,
+    url_unduh_lampiran,
+)
+
+_BP_ATT_MODUL_URL = "bill-payments"
+
+_BP_ATT_SQL_DAFTAR = """
+    SELECT d.id, d.file_name, d.file_size, d.file_type AS mime_type,
+           d.thumbnail_path AS thumbnail_url, d.description,
+           d.uploaded_at, d.created_at, d.uploaded_by,
+           da.attachment_type, da.display_order
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN bill_payments_v2 bp ON bp.id = da.entity_id
+    WHERE da.entity_type = 'payment'
+      AND da.entity_id = $1
+      AND bp.tenant_id = $2
+      AND da.tenant_id = $2
+      AND d.tenant_id = $2
+      AND d.deleted_at IS NULL
+    ORDER BY da.display_order, da.attached_at DESC
+"""
+
+_BP_ATT_SQL_UNDUH = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN bill_payments_v2 bp ON bp.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'payment'
+      AND bp.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
+
+
+async def _bp_att_daftar(conn, payment_id: UUID, tenant_id: str):
+    """Baris lampiran pembayaran keluar milik tenant (JOIN induk)."""
+    return await conn.fetch(_BP_ATT_SQL_DAFTAR, payment_id, tenant_id)
+
+
 @router.get("/{payment_id}/documents")
 async def get_payment_documents(request: Request, payment_id: str):
     """
     Tab: Documents - Get attached documents for this payment.
+
+    Unit 1a: dulu membaca `documents.entity_type/entity_id/created_by/file_url`
+    -- tiga kolom pertama TIDAK ADA di tabel `documents` (diukur
+    information_schema 24 Sep), jadi rute ini selalu 500. Kini lewat
+    `document_attachments` (sumber yang sama dengan /attachments) dan
+    `file_url` = path relatif rute download.
     """
     try:
-        validate_uuid(payment_id, "payment_id")
+        pid = validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
+        tenant_id = ctx["tenant_id"]
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+                payment = await conn.fetchrow(
+                    "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
+                    pid,
+                    tenant_id,
+                )
+                if not payment:
+                    raise HTTPException(status_code=404, detail="Payment not found")
+                documents = await _bp_att_daftar(conn, pid, tenant_id)
 
-            # Verify payment exists
-            payment = await conn.fetchrow(
-                "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                payment_id,
-                ctx["tenant_id"],
-            )
-            if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found")
-
-            # Get documents from documents table
-            documents = await conn.fetch(
-                """
-                SELECT id, file_name, file_type, file_size, file_url,
-                       description, created_at, created_by
-                FROM documents
-                WHERE tenant_id = $1 AND entity_type = 'payment' AND entity_id = $2::uuid
-                ORDER BY created_at DESC
-                """,
-                ctx["tenant_id"],
-                payment_id,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(d["id"]),
-                        "file_name": d["file_name"],
-                        "file_type": d["file_type"],
-                        "file_size": d["file_size"],
-                        "file_url": d["file_url"],
-                        "description": d["description"],
-                        "created_at": d["created_at"].isoformat()
-                        if d["created_at"]
-                        else None,
-                        "created_by": str(d["created_by"]) if d["created_by"] else None,
-                    }
-                    for d in documents
-                ],
-                "total": len(documents),
-            }
+        return {
+            "success": True,
+            "data": [
+                {
+                    "id": str(d["id"]),
+                    "file_name": d["file_name"],
+                    "file_type": d["mime_type"],
+                    "file_size": d["file_size"],
+                    "file_url": url_unduh_lampiran(_BP_ATT_MODUL_URL, pid, d["id"]),
+                    "description": d["description"],
+                    "created_at": d["created_at"].isoformat()
+                    if d["created_at"]
+                    else None,
+                    "created_by": str(d["uploaded_by"]) if d["uploaded_by"] else None,
+                }
+                for d in documents
+            ],
+            "total": len(documents),
+        }
     except HTTPException:
         raise
-    except asyncpg.exceptions.UndefinedTableError:
-        # Documents table doesn't exist yet, return empty
-        return {"success": True, "data": [], "total": 0}
     except Exception as e:
         logger.error(f"Error getting payment documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get documents")
@@ -2462,51 +2513,57 @@ async def get_payment_documents(request: Request, payment_id: str):
 @router.get("/{payment_id}/attachments")
 async def list_payment_attachments(request: Request, payment_id: str):
     """List attachments for a payment via document_attachments table."""
+    pid = validate_uuid(payment_id, "payment_id")
     ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-        rows = await conn.fetch(
-            """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                      d.file_url, d.file_path, d.thumbnail_path as thumbnail_url,
-                      d.uploaded_at, da.attachment_type, da.display_order
-               FROM document_attachments da
-               JOIN documents d ON da.document_id = d.id
-               WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
-                 AND d.deleted_at IS NULL
-               ORDER BY da.display_order, da.attached_at DESC""",
-            ctx["tenant_id"],
-            payment_id,
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            rows = await _bp_att_daftar(conn, pid, tenant_id)
+
+    result = []
+    for r in rows:
+        result.append(
+            {
+                "id": str(r["id"]),
+                "file_name": r["file_name"],
+                "file_size": r["file_size"],
+                "mime_type": r["mime_type"],
+                "url": url_unduh_lampiran(_BP_ATT_MODUL_URL, pid, r["id"]),
+                "thumbnail_url": r["thumbnail_url"],
+                "uploaded_at": r["uploaded_at"].isoformat()
+                if r["uploaded_at"]
+                else None,
+                "attachment_type": r["attachment_type"],
+            }
         )
 
-        try:
-            from app.services.storage_service import get_storage_service
+    return {"success": True, "data": result}
 
-            storage = get_storage_service()
-        except Exception:
-            storage = None
 
-        result = []
-        for r in rows:
-            url = r["file_url"]
-            if storage and r.get("file_path"):
-                try:
-                    url = await storage.generate_signed_url(r["file_path"])
-                except Exception:
-                    url = r["file_url"]
-            result.append(
-                {
-                    "id": str(r["id"]),
-                    "file_name": r["file_name"],
-                    "file_size": r["file_size"],
-                    "mime_type": r["mime_type"],
-                    "url": url or f"/api/documents/{r['id']}/download",
-                    "thumbnail_url": r["thumbnail_url"],
-                    "uploaded_at": r["uploaded_at"].isoformat()
-                    if r["uploaded_at"]
-                    else None,
-                    "attachment_type": r["attachment_type"],
-                }
+@router.get("/{payment_id}/attachments/{attachment_id}/download")
+async def download_payment_attachment(
+    request: Request, payment_id: UUID, attachment_id: UUID
+):
+    """Stream satu lampiran pembayaran keluar lewat gateway (Unit 1a).
+
+    Izin: pola READ `send_payment` (sama dengan GET .../attachments).
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            row = await conn.fetchrow(
+                _BP_ATT_SQL_UNDUH, attachment_id, payment_id, tenant_id
+            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
-        return {"success": True, "data": result}
+    return stream_lampiran(row, get_storage_service())

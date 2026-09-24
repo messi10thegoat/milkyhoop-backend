@@ -131,6 +131,87 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
+# =============================================================================
+# LAMPIRAN PENERIMAAN (Unit 1a, 24 Sep 2026)
+#
+# Penyimpanan: `documents` + `document_attachments`, entity_type='payment' --
+# DIPAKAI BERSAMA bill_payments_v2. Karena itu daftar & download di sini
+# meng-JOIN `receive_payments` + tenant: id pembayaran keluar tak boleh bisa
+# membaca/mengunduh lampiran lewat rute penerimaan (dan sebaliknya).
+# `url` = path relatif rute download (stream lewat gateway). Dulu: detail
+# mengirim `documents.file_url` mentah (NULL untuk baris s3), daftar memakai
+# cadangan `/api/documents/{id}/download` (izin modul tak berlaku di sana).
+# =============================================================================
+from ..services.storage_service import get_storage_service  # noqa: E402
+from ..utils.lampiran_unduh import (  # noqa: E402
+    stream_lampiran,
+    url_unduh_lampiran,
+)
+
+_RP_ATT_MODUL_URL = "receive-payments"
+
+_RP_ATT_SQL_DAFTAR = """
+    SELECT d.id, d.file_name, d.file_size, d.file_type AS mime_type,
+           d.thumbnail_path AS thumbnail_url,
+           d.uploaded_at, da.attachment_type, da.display_order
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN receive_payments rp ON rp.id = da.entity_id
+    WHERE da.entity_type = 'payment'
+      AND da.entity_id = $1
+      AND rp.tenant_id = $2
+      AND da.tenant_id = $2
+      AND d.tenant_id = $2
+      AND d.deleted_at IS NULL
+    ORDER BY da.display_order, d.uploaded_at DESC
+"""
+
+_RP_ATT_SQL_UNDUH = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN receive_payments rp ON rp.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'payment'
+      AND rp.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
+
+
+def _validasi_uuid_rp(value: str, field_name: str = "id") -> UUID:
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400, detail=f"{field_name} harus berupa UUID yang valid"
+        )
+
+
+def _rp_lampiran_ke_respons(rows, payment_id) -> list:
+    """Bentuk respons lampiran penerimaan. `payment_id` None (induk bukan
+    receive_payments, mis. jalur jurnal-saja) -> url None."""
+    return [
+        {
+            "id": str(r["id"]),
+            "file_name": r["file_name"],
+            "file_size": r["file_size"],
+            "mime_type": r["mime_type"],
+            "url": url_unduh_lampiran(_RP_ATT_MODUL_URL, payment_id, r["id"])
+            if payment_id is not None
+            else None,
+            "thumbnail_url": r["thumbnail_url"],
+            "uploaded_at": r["uploaded_at"].isoformat()
+            if r["uploaded_at"]
+            else None,
+            "attachment_type": r["attachment_type"],
+        }
+        for r in rows
+    ]
+
+
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     """Check if the accounting period for the transaction date is open."""
     period = await conn.fetchrow(
@@ -841,7 +922,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     # Fetch attachments for journal-only path
                     jo_attachment_rows = await conn.fetch(
                         """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                          d.file_url as url, d.thumbnail_path as thumbnail_url,
+                          d.thumbnail_path as thumbnail_url,
                           d.uploaded_at, da.attachment_type
                    FROM document_attachments da
                    JOIN documents d ON da.document_id = d.id
@@ -851,21 +932,13 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         ctx["tenant_id"],
                         str(journal_row["id"]),
                     )
-                    jo_attachments = [
-                        {
-                            "id": str(r["id"]),
-                            "file_name": r["file_name"],
-                            "file_size": r["file_size"],
-                            "mime_type": r["mime_type"],
-                            "url": r["url"],
-                            "thumbnail_url": r["thumbnail_url"],
-                            "uploaded_at": r["uploaded_at"].isoformat()
-                            if r["uploaded_at"]
-                            else None,
-                            "attachment_type": r["attachment_type"],
-                        }
-                        for r in jo_attachment_rows
-                    ]
+                    # Unit 1a: induk jalur ini JURNAL, bukan receive_payments;
+                    # rute download penerimaan memverifikasi induk di
+                    # receive_payments, jadi url = None (bukan tautan yang
+                    # pasti 404, bukan file_url mentah). Diukur 24 Sep: 0 baris.
+                    jo_attachments = _rp_lampiran_ke_respons(
+                        jo_attachment_rows, None
+                    )
 
                     return {
                         "success": True,
@@ -954,7 +1027,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             # Fetch attachments
             attachment_rows = await conn.fetch(
                 """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                          d.file_url as url, d.thumbnail_path as thumbnail_url,
+                          d.thumbnail_path as thumbnail_url,
                           d.uploaded_at, da.attachment_type
                    FROM document_attachments da
                    JOIN documents d ON da.document_id = d.id
@@ -964,21 +1037,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                 ctx["tenant_id"],
                 str(payment["id"]),
             )
-            attachments = [
-                {
-                    "id": str(r["id"]),
-                    "file_name": r["file_name"],
-                    "file_size": r["file_size"],
-                    "mime_type": r["mime_type"],
-                    "url": r["url"],
-                    "thumbnail_url": r["thumbnail_url"],
-                    "uploaded_at": r["uploaded_at"].isoformat()
-                    if r["uploaded_at"]
-                    else None,
-                    "attachment_type": r["attachment_type"],
-                }
-                for r in attachment_rows
-            ]
+            attachments = _rp_lampiran_ke_respons(attachment_rows, payment["id"])
 
             return {
                 "success": True,
@@ -2845,40 +2904,42 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
 @router.get("/{payment_id}/attachments")
 async def list_payment_attachments(request: Request, payment_id: str):
     """List attachments for a payment via document_attachments table."""
+    pid = _validasi_uuid_rp(payment_id, "payment_id")
     ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-        rows = await conn.fetch(
-            """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                      d.file_url as url, d.thumbnail_path as thumbnail_url,
-                      d.uploaded_at, da.attachment_type, da.display_order
-               FROM document_attachments da
-               JOIN documents d ON da.document_id = d.id
-               WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
-                 AND d.deleted_at IS NULL
-               ORDER BY da.display_order, d.uploaded_at DESC""",
-            ctx["tenant_id"],
-            payment_id,
-        )
-        return {
-            "success": True,
-            "data": [
-                {
-                    "id": str(r["id"]),
-                    "file_name": r["file_name"],
-                    "file_size": r["file_size"],
-                    "mime_type": r["mime_type"],
-                    "url": r["url"] or f"/api/documents/{r['id']}/download",
-                    "thumbnail_url": r["thumbnail_url"],
-                    "uploaded_at": r["uploaded_at"].isoformat()
-                    if r["uploaded_at"]
-                    else None,
-                    "attachment_type": r["attachment_type"],
-                }
-                for r in rows
-            ],
-        }
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            rows = await conn.fetch(_RP_ATT_SQL_DAFTAR, pid, tenant_id)
+    return {"success": True, "data": _rp_lampiran_ke_respons(rows, pid)}
+
+
+@router.get("/{payment_id}/attachments/{attachment_id}/download")
+async def download_payment_attachment(
+    request: Request, payment_id: UUID, attachment_id: UUID
+):
+    """Stream satu lampiran penerimaan lewat gateway (Unit 1a).
+
+    Izin: pola READ `receive_payment` (sama dengan GET .../attachments).
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            row = await conn.fetchrow(
+                _RP_ATT_SQL_UNDUH, attachment_id, payment_id, tenant_id
+            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return stream_lampiran(row, get_storage_service())
 
 
 # =============================================================================

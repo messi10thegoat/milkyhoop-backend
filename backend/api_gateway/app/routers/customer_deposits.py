@@ -3079,6 +3079,29 @@ from ..attachment_limits import (  # noqa: E402
 _DEP_ATT_MAX_BYTES = ATTACHMENT_MAX_BYTES
 _DEP_ATT_ALLOWED_TYPES = ATTACHMENT_ALLOWED_TYPES
 _DEP_ATT_ENTITY = "customer_deposit"
+_DEP_ATT_MODUL_URL = "customer-deposits"
+
+from ..utils.lampiran_unduh import (  # noqa: E402
+    stream_lampiran,
+    url_unduh_lampiran,
+)
+
+# Pagar rute download: lampiran HARUS tertaut ke uang muka INI, uang mukanya
+# milik tenant JWT (predikat eksplisit -- gateway memakai peran BYPASSRLS),
+# dan dokumennya belum dihapus. Tak cocok -> 0 baris -> 404.
+_DEP_ATT_SQL_UNDUH = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN customer_deposits cd ON cd.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'customer_deposit'
+      AND cd.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
 
 
 async def _dep_att_load_deposit(conn, deposit_id: UUID, tenant_id: str):
@@ -3176,7 +3199,11 @@ async def upload_deposit_attachment(
             "data": {
                 "id": str(document_id),
                 "filename": file.filename,
-                "url": result.url,
+                # Unit 1a: path relatif gateway, BUKAN result.url (presign
+                # ber-host MinIO publik yang sudah ditutup).
+                "url": url_unduh_lampiran(
+                    _DEP_ATT_MODUL_URL, deposit_id, document_id
+                ),
                 "size": len(content),
                 "mime_type": file.content_type,
             },
@@ -3228,22 +3255,15 @@ async def list_deposit_attachments(
                 tenant_id,
             )
 
-    storage = get_storage_service()
     attachments = []
     for r in rows:
-        try:
-            url = (
-                await storage.generate_signed_url(r["file_path"])
-                if r["file_path"]
-                else None
-            )
-        except Exception:
-            url = None
         attachments.append(
             {
                 "id": str(r["id"]),
                 "filename": r["file_name"],
-                "url": url,
+                # Unit 1a: path relatif rute download di bawah (stream lewat
+                # gateway). Presign MinIO mati sejak port publik ditutup.
+                "url": url_unduh_lampiran(_DEP_ATT_MODUL_URL, deposit_id, r["id"]),
                 "size": r["file_size"],
                 "mime_type": r["file_type"],
                 "uploaded_at": r["uploaded_at"].isoformat()
@@ -3254,6 +3274,35 @@ async def list_deposit_attachments(
         )
 
     return {"attachments": attachments}
+
+
+@router.get("/{deposit_id}/attachments/{attachment_id}/download")
+async def download_deposit_attachment(
+    request: Request,
+    deposit_id: UUID,
+    attachment_id: UUID,
+):
+    """Stream satu lampiran uang muka lewat gateway (Unit 1a).
+
+    Izin: pola READ `customer_deposit` di permission_middleware (modul yang
+    sama dengan GET .../attachments).
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            row = await conn.fetchrow(
+                _DEP_ATT_SQL_UNDUH, attachment_id, deposit_id, tenant_id
+            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return stream_lampiran(row, get_storage_service())
 
 
 @router.delete("/{deposit_id}/attachments/{attachment_id}")

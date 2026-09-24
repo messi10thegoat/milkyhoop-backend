@@ -626,6 +626,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bill\-payments/vendors/[^/]+/open\-bills$", ["GET"], "send_payment", "R"),
     (r"^/api/bill\-payments/[^/]+/activities$", ["GET"], "send_payment", "R"),
     (r"^/api/bill\-payments/[^/]+/attachments$", ["GET"], "send_payment", "R"),
+    (r"^/api/bill\-payments/[^/]+/attachments/[^/]+/download$", ["GET"], "send_payment", "R"),  # Unit 1a
     (r"^/api/bill\-payments/[^/]+/documents$", ["GET"], "send_payment", "R"),
     (r"^/api/bill\-payments/[^/]+/journal\-entries$", ["GET"], "send_payment", "R"),
     (r"^/api/bill\-payments/[^/]+/transactions$", ["GET"], "send_payment", "R"),
@@ -681,6 +682,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/currencies/forex/gain\-loss$", ["GET"], "currency", "R"),
     (r"^/api/currencies/[^/]+$", ["GET"], "currency", "R"),
     (r"^/api/customer\-deposits/[^/]+/attachments$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/customer\-deposits/[^/]+/attachments/[^/]+/download$", ["GET"], "customer_deposit", "R"),  # Unit 1a
     (r"^/api/customers/[^/]+/activity$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/available\-deposits$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/balance$", ["GET"], "customer", "R"),
@@ -816,6 +818,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase\-orders/vendor/[^/]+$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/[^/]+$", ["GET"], "purchase_order", "R"),
     (r"^/api/receive\-payments/[^/]+/attachments$", ["GET"], "receive_payment", "R"),
+    (r"^/api/receive\-payments/[^/]+/attachments/[^/]+/download$", ["GET"], "receive_payment", "R"),  # Unit 1a
     (r"^/api/receive\-payments/[^/]+/journal\-entries$", ["GET"], "receive_payment", "R"),
     (r"^/api/receive\-payments/[^/]+/pdf$", ["GET"], "receive_payment", "R"),
     (r"^/api/recipes$", ["GET"], "recipe", "R"),
