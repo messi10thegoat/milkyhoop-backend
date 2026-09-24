@@ -231,6 +231,8 @@ def test_url_lampiran_dokumen_s3_ke_rute_download():
     )
 
 
+# SEMENTARA -- HAPUS/BALIK saat unggahan-persisten live: sesudah unit itu baris local juga
+# harus ke url_unduh_lampiran (lihat penanda di app/utils/lampiran_unduh.py).
 def test_url_lampiran_dokumen_local_berkas_chat_dipertahankan():
     assert (
         lu.url_lampiran_dokumen("expenses", INDUK, LAMPIRAN, "local", URL_CHAT)

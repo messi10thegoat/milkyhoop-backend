@@ -71,6 +71,10 @@ def url_lampiran_dokumen(
       Mengarahkannya ke rute download = regresi seketika. Berkas lokal yang
       sudah hilang tetap 404 di rute chat -- sama bersihnya.
     """
+    # SEMENTARA -- HAPUS saat unggahan-persisten live (putusan MASTER 24 Sep).
+    # Cabang ini + tes pasangannya di tests/unit/test_lampiran_1b_download.py
+    # (url baris local = path berkas-chat) HARUS dibalik di unit itu: sesudahnya
+    # semua baris -> url_unduh_lampiran.
     if (storage_type or "").lower() == "local" and _URL_BERKAS_CHAT.match(
         file_url or ""
     ):
