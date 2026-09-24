@@ -17,8 +17,20 @@ def test_b_limit_is_10mb():
     assert ATTACHMENT_MAX_BYTES == 10 * MB
 
 
-def test_b_14_types_reference():
-    assert len(ATTACHMENT_ALLOWED_TYPES) == 14
+def test_b_daftar_tipe_resmi():
+    # Putusan MASTER 24 Sep 2026 (L1): 13 format. Alias image/jpg SENGAJA di
+    # luar (lihat _CTYPE_ALIAS) -- jalur SI/uang muka meneruskannya ke storage.
+    assert ATTACHMENT_ALLOWED_TYPES == {
+        "image/jpeg", "image/png", "image/webp", "image/gif",
+        "image/heic", "image/heif", "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/csv", "text/plain",
+    }
+    for dibuang in ("image/svg+xml", "application/zip", "application/x-rar-compressed"):
+        assert dibuang not in ATTACHMENT_ALLOWED_TYPES
     assert "application/pdf" in ATTACHMENT_ALLOWED_TYPES
     assert "image/jpeg" in ATTACHMENT_ALLOWED_TYPES
 

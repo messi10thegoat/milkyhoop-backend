@@ -59,7 +59,27 @@ def url_lampiran_dokumen(
     return url_unduh_lampiran(modul, induk_id, lampiran_id)
 
 
-def content_disposition_lampiran(nama: str | None) -> str:
+# L1 (24 Sep 2026): HANYA tipe ini disajikan dengan tipe aslinya + inline.
+# Selain itu -> application/octet-stream + attachment. Alasan: FE membuka
+# lampiran lewat fetchWithAuth -> blob, dan blob: URL MEWARISI origin aplikasi;
+# SVG/HTML yang disajikan dengan tipe aslinya menjalankan skrip di origin
+# milkyhoop apa pun Content-Disposition-nya. nosniff di SEMUA respons.
+TIPE_SAJIAN_INLINE = frozenset(
+    {"image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"}
+)
+
+
+def sajian_lampiran(file_type: str | None) -> tuple[str, bool]:
+    """(media_type, inline?) untuk tipe tersimpan di `documents.file_type`."""
+    t = (file_type or "").strip().lower()
+    if t == "image/jpg":
+        t = "image/jpeg"
+    if t in TIPE_SAJIAN_INLINE:
+        return t, True
+    return "application/octet-stream", False
+
+
+def content_disposition_lampiran(nama: str | None, inline: bool = True) -> str:
     """`inline; filename="..."; filename*=UTF-8''...` yang aman untuk header.
 
     Buang `"`, CR, LF (pemecah header / pemutus kutip); nama non-ASCII utuh di
@@ -68,8 +88,9 @@ def content_disposition_lampiran(nama: str | None) -> str:
     bersih = (nama or "").replace('"', "").replace("\r", "").replace("\n", "").strip()
     bersih = bersih or "lampiran"
     ascii_fallback = bersih.encode("ascii", "replace").decode("ascii")
+    jenis = "inline" if inline else "attachment"
     return (
-        f"inline; filename=\"{ascii_fallback}\"; "
+        f"{jenis}; filename=\"{ascii_fallback}\"; "
         f"filename*=UTF-8''{quote(bersih, safe='')}"
     )
 
@@ -107,11 +128,13 @@ def stream_lampiran(row, storage) -> StreamingResponse:
         finally:
             body.close()
 
+    media_type, inline = sajian_lampiran(row["file_type"])
     return StreamingResponse(
         iter_body(),
-        media_type=row["file_type"] or "application/octet-stream",
+        media_type=media_type,
         headers={
-            "Content-Disposition": content_disposition_lampiran(row["file_name"]),
+            "Content-Disposition": content_disposition_lampiran(row["file_name"], inline),
             "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
         },
     )

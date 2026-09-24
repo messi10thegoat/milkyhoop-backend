@@ -63,6 +63,7 @@ from .routers import price_lists
 from .routers import quotes
 from .routers import proformas
 from .routers import sales_orders
+from .routers import sales_order_lampiran  # L1 lampiran SO
 from .routers import currencies
 from .routers import bank_reconciliation
 from backend.api_gateway.app.routers import flow
@@ -606,6 +607,9 @@ app.include_router(
 # Sales Orders router (Pesanan Penjualan)
 app.include_router(
     sales_orders.router, prefix="/api/sales-orders", tags=["sales-orders"]
+)
+app.include_router(
+    sales_order_lampiran.router, prefix="/api/sales-orders", tags=["sales-orders"]
 )
 
 # Currencies router (Multi-currency Management)

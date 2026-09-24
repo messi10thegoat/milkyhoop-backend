@@ -7,7 +7,7 @@ _store_upload_file) dulu ditulis ke /tmp/milkyhoop_uploads di dalam kontainer
 `chat_attachments` jadi referensi mati. Kini isi berkas disimpan di MinIO
 (bucket `milkyhoop-documents`, persisten) dengan kunci DETERMINISTIK:
 
-    <tenant_id>/uploads/<forms|chat|documents>/<sha256 64 hex><ext>
+    <tenant_id>/uploads/<forms|chat|documents|lampiran>/<sha256 64 hex><ext>
 
 tenant dari JWT, sha256 dihitung server, ext dari allowlist server (bukan nama
 berkas mentah). Modul ini = SATU-SATUNYA sumber bentuk kunci: penulis
@@ -36,7 +36,8 @@ PENANDA_UNGGAHAN_U2 = "unggahan-persisten-u2-pembaca-minio"
 
 URL_BERKAS_PREFIX = "/api/v3/chat/files/"
 # U2: `documents` = unggahan /api/document-intake (dulu disk <t>/documents/).
-SUBDIR_UNGGAHAN = frozenset({"forms", "chat", "documents"})
+# L1: `lampiran` = unggahan rute lampiran dokumen (mis. /api/sales-orders/{id}/attachments).
+SUBDIR_UNGGAHAN = frozenset({"forms", "chat", "documents", "lampiran"})
 
 # Ext -> Content-Type objek. Gabungan allowlist penulis form (uploads.py,
 # dari content-type) dan chat (UPLOAD_ALLOWED_EXTENSIONS). Ext di luar ini tak
@@ -54,6 +55,11 @@ TIPE_EXT = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
     ".ofx": "application/x-ofx",
+    # L1 lampiran SO: sisa ekstensi resmi (attachment_limits.EKSTENSI_LAMPIRAN)
+    # supaya kuncinya sah. Tak satu pun masuk TIPE_INLINE -> selalu diunduh.
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
 }
 
 # Hanya tipe ini yang boleh tampil inline; selain itu diunduh sebagai lampiran
@@ -85,7 +91,7 @@ def url_berkas(kunci: str) -> str:
 
 
 def kunci_sah_milik_tenant(tenant_id: str, kunci: str) -> bool:
-    """True hanya untuk `<tenant_id>/uploads/<forms|chat|documents>/<sha256><ext>` persis,
+    """True hanya untuk `<tenant_id>/uploads/<forms|chat|documents|lampiran>/<sha256><ext>` persis,
     tenant = tenant pemanggil, ext di TIPE_EXT. Menolak `..`, segmen kosong,
     backslash, `%`, huruf besar, dan bentuk lama tanpa `uploads`."""
     if not isinstance(tenant_id, str) or not _TENANT_SAH.match(tenant_id):

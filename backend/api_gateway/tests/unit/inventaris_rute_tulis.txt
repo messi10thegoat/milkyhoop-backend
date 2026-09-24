@@ -60,6 +60,7 @@ DELETE /api/salary-components/{component_id}
 DELETE /api/sales-invoices/{invoice_id}
 DELETE /api/sales-invoices/{invoice_id}/attachments/{attachment_id}
 DELETE /api/sales-orders/{order_id}
+DELETE /api/sales-orders/{order_id}/attachments/{attachment_id}
 DELETE /api/stock-adjustments/{adjustment_id}
 DELETE /api/stock-transfers/{transfer_id}
 DELETE /api/storage-locations/{location_id}
@@ -409,6 +410,7 @@ POST /api/sales-invoices/{invoice_id}/post
 POST /api/sales-invoices/{invoice_id}/void
 POST /api/sales-orders
 POST /api/sales-orders/calculate
+POST /api/sales-orders/{order_id}/attachments
 POST /api/sales-orders/{order_id}/cancel
 POST /api/sales-orders/{order_id}/close
 POST /api/sales-orders/{order_id}/confirm
