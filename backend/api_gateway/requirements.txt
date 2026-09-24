@@ -72,6 +72,15 @@ weasyprint==67.0
 
 # Excel Export
 openpyxl==3.1.2
+
+# Tabel CSV/XLSX: impor rekening koran (deteksi kolom + endpoint impor),
+# document_processor._parse_structured, pdf_parser.pdf_to_dataframe.
+# Semua di-pin (==) termasuk dependensi barunya: image dibangun ulang tak boleh
+# diam-diam memakai versi lain. openpyxl (read_excel) sudah ada di atas.
+pandas==2.2.3
+numpy==2.2.6
+pytz==2026.4
+tzdata==2026.4
 pymupdf>=1.27.0
 resend>=2.0.0
 
