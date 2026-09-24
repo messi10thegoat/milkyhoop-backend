@@ -1700,6 +1700,10 @@ async def convert_to_sales_order(
 
                 # 3g: kalkulator bersama. Arti kolom SO: subtotal = SIGMA neto baris (lihat _so_doc).
                 _doc = await _quote_converted_doc(conn, ctx["tenant_id"], quote, items)
+                # #34: SO ber-PPN untuk tenant non-PKP ditolak di SEMUA jalur pembuat SO (faktur dari
+                # penawaran tetap draf dan dijaga saat posting).
+                from ..services.pkp_guard import tolak_ppn_bila_non_pkp
+                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
 
                 # T199 (2026-09-01): syarat DP terbawa dari Penawaran ke Sales Order.
                 # SEBELUMNYA keenam kolom DP quote (dp_percent, dp_amount, terms,

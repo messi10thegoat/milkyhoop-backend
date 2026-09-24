@@ -114,6 +114,50 @@ def effective_shipping_code(explicit_code_id, lines, code_key, shipping_amount):
     return next(iter(codes)) if len(codes) == 1 and None not in codes else None
 
 
+async def turunkan_tarif_baris(conn, tenant_id, items, code_key, direction="output"):
+    """#34 -- tarif PPN baris ditentukan SERVER dari kode pajak, bukan dari kiriman klien.
+
+    Baris berkode: tarif = tax_codes.rate milik tenant (kode tak dikenal/bukan milik tenant -> 400);
+    tarif kiriman klien DIABAIKAN (PPN-11 + tax_rate 0 -> 11%).
+    Baris tanpa kode bertarif > 0: tarif itu wajib dimiliki kode PPN AKTIF tenant (arah sama);
+    tidak ada -> 400 (klien tak boleh mengarang tarif). Tarif 0 tanpa kode -> tanpa pajak.
+    Mengubah `items` di tempat; panggil SEBELUM attach_dpp_factors."""
+    cache = {}
+    for it in items:
+        code = it.get(code_key)
+        if code:
+            try:
+                tcid = code if isinstance(code, UUID) else UUID(str(code))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Kode pajak tidak valid.")
+            if tcid not in cache:
+                cache[tcid] = await conn.fetchval(
+                    "SELECT rate FROM tax_codes WHERE id = $1 AND tenant_id = $2", tcid, tenant_id
+                )
+            if cache[tcid] is None:
+                raise HTTPException(status_code=400, detail="Kode pajak tidak ditemukan.")
+            it["tax_rate"] = _d(cache[tcid])
+            continue
+        rate = _d(it.get("tax_rate"))
+        if rate <= 0:
+            it["tax_rate"] = Decimal("0")
+            continue
+        key = ("rate", rate)
+        if key not in cache:
+            cache[key] = await conn.fetchval(
+                """SELECT count(*) FROM tax_codes
+                   WHERE tenant_id = $1 AND tax_type = 'ppn' AND direction = $2
+                     AND rate = $3 AND is_active = true""",
+                tenant_id, direction, rate,
+            )
+        if not cache[key]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tidak ada kode pajak aktif bertarif {rate.normalize()}%. Pilih kode pajaknya.",
+            )
+    return items
+
+
 async def attach_dpp_factors(conn, tenant_id, items, code_key, direction="output"):
     """Tempel dpp_factor_num/den ke tiap baris (dict) untuk compute_document."""
     cache = {}

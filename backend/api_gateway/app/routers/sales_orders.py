@@ -14,7 +14,10 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
-from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
+from ..services.tax_factor import (
+    attach_dpp_factors, resolve_shipping_tax, effective_shipping_code, turunkan_tarif_baris,
+)
+from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -576,12 +579,14 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                     )
 
                 _items = [item.model_dump() for item in body.items]
+                await turunkan_tarif_baris(conn, ctx["tenant_id"], _items, "tax_id")  # #34
                 await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_id")
                 _ship = await resolve_shipping_tax(
                     conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
                     body.shipping_amount, "tax_id",
                 )
                 _doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
                 calculated_items = _doc["items"]
                 totals = {
                     "subtotal": _doc["net_subtotal"],
@@ -708,12 +713,14 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
     pool = await get_pool()
     _items = [item.model_dump() for item in body.items]
     async with pool.acquire() as conn:
+        await turunkan_tarif_baris(conn, ctx["tenant_id"], _items, "tax_id")  # #34
         await attach_dpp_factors(conn, ctx["tenant_id"], _items, "tax_id")
         _ship = await resolve_shipping_tax(
             conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
             body.shipping_amount, "tax_id",
         )
-    doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+        doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+        await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     return {
         "success": True,
@@ -843,6 +850,7 @@ async def update_sales_order(
                     )
                     if body.items is not None:
                         _src = [item.model_dump() for item in body.items]
+                        await turunkan_tarif_baris(conn, ctx["tenant_id"], _src, "tax_id")  # #34
                     else:
                         _src = [
                             dict(r)
@@ -863,6 +871,7 @@ async def update_sales_order(
                         conn, ctx["tenant_id"], _ship_code, _src, shipping_amt, "tax_id"
                     )
                     _doc = _so_doc(_src, discount_amt, shipping_amt, _ship)
+                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
                     calculated_items = _doc["items"]
 
                     for fld, val in [
