@@ -69,7 +69,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy installed packages from builder
+# Copy installed packages from builder -- GANTI, bukan tumpuk. COPY hanya
+# menimpa: paket bawaan image dasar yang versinya diturunkan di builder
+# (terukur: packaging 26.3 -> kunci 26.2) meninggalkan dist-info GANDA, dan
+# metadata melaporkan versi yang kodenya tak terpasang. Builder memakai image
+# dasar yang sama (digest), jadi isinya = dasar + kunci, lengkap.
+RUN rm -rf /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 

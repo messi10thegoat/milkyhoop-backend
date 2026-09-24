@@ -166,6 +166,31 @@ def _selisih_terpasang(kunci):
     return beda
 
 
+def _dist_info_ganda(nama_nama):
+    hitung = {}
+    for d in md.distributions():
+        n = canonicalize_name(d.metadata["Name"])
+        if n in nama_nama:
+            hitung.setdefault(n, []).append(d.version)
+    return {n: v for n, v in hitung.items() if len(v) > 1}
+
+
+def test_tak_ada_dist_info_ganda_untuk_paket_terkunci():
+    # 24 Sep: build pertama image pin-freeze punya packaging-26.2 DAN -26.3
+    # dist-info (COPY site-packages menumpuk di atas image dasar); kode 26.2,
+    # metadata 26.3. Versi "terpasang" jadi tak bermakna.
+    ganda = _dist_info_ganda(set(_kunci(REQ.read_text())))
+    assert not ganda, f"dist-info ganda: {ganda}"
+
+
+def test_dockerfile_site_packages_diganti_bukan_ditumpuk():
+    teks = _dockerfile()
+    i_rm = teks.find("rm -rf /usr/local/lib/python3.11/site-packages")
+    i_cp = teks.find("COPY --from=builder /usr/local/lib/python3.11/site-packages")
+    assert i_cp != -1, "COPY site-packages dari builder hilang"
+    assert i_rm != -1 and i_rm < i_cp, "site-packages image dasar harus dihapus SEBELUM COPY dari builder"
+
+
 def test_versi_terpasang_sama_dengan_kunci():
     beda = _selisih_terpasang(_kunci(REQ.read_text()))
     assert not beda, "image yang menjalankan tes != requirements.txt:\n  " + "\n  ".join(beda)
