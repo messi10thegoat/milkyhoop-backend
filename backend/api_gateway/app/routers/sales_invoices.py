@@ -12,6 +12,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.sales_invoices import (
     CreateInvoiceRequest,
     UpdateInvoiceRequest,
@@ -1568,7 +1569,7 @@ async def _execute_fulfillment(
 
     invoice_id = invoice["id"]
     invoice_number = invoice["invoice_number"]
-    today = dt_date.today()
+    today = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
     year_month_str = today.strftime("%y%m")
 
     total_cogs = Decimal("0")
@@ -2199,7 +2200,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Create journal entry
     journal_id = uuid.uuid4()
     trace_id = str(uuid.uuid4())
-    today = dt_date.today()
+    today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
     year_month_str = today.strftime("%y%m")
 
     # Billing (INVOICE) journal number via self-healing canonical fn (V176).
@@ -4332,9 +4333,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     )
 
             # Check billing period (with CN suggestion if closed)
-            from datetime import date as dt_date
-
-            today = dt_date.today()
+            today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
 
             billing_period = await conn.fetchrow(
                 "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",

@@ -31,6 +31,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendor_credits import (
     CreateVendorCreditRequest,
     UpdateVendorCreditRequest,
@@ -1314,7 +1315,7 @@ async def apply_vendor_credit(
                         detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
                     )
 
-                application_date = body.application_date or date.today()
+                application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 applications_created = []
 
                 for app in body.applications:
@@ -1770,9 +1771,11 @@ async def void_vendor_credit(
                     reversal_journal_id = uuid_module.uuid4()
 
                     # Law 5: Period check on CURRENT_DATE
+                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                     period_row = await conn.fetchrow(
-                        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE",
+                        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
                         ctx["tenant_id"],
+                        hari_ini,
                     )
                     if period_row and period_row["status"] != "OPEN":
                         raise HTTPException(
@@ -1802,7 +1805,7 @@ async def void_vendor_credit(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_CREDIT', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'VENDOR_CREDIT', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -1812,6 +1815,7 @@ async def void_vendor_credit(
                         vc["journal_id"],
                         vc["total_amount"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Create reversed lines (swap debit/credit)

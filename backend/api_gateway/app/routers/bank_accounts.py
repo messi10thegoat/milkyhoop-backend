@@ -23,6 +23,7 @@ import asyncpg
 from datetime import date
 import uuid as uuid_module
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_accounts import (
     CreateManualTransactionRequest,
     CreateBankAccountRequest,
@@ -630,7 +631,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                 if body.opening_balance > 0:
                     journal_id = uuid_module.uuid4()
                     trace_id = uuid_module.uuid4()
-                    opening_date = body.opening_date or date.today()
+                    opening_date = body.opening_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
 
                     # Law 27: Use resolve_account_id helper
                     equity_account_id = await resolve_account_id(

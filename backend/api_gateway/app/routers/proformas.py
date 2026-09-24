@@ -25,6 +25,8 @@ from typing import Literal, Optional
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
+
+from ..utils.tanggal_tenant import tanggal_dokumen
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -595,7 +597,7 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 """,
                 ctx["tenant_id"],
                 number,
-                body.proforma_date or date.today(),
+                body.proforma_date or await tanggal_dokumen(conn, ctx["tenant_id"]),  # t10-tanggal-bisnis
                 body.due_date,
                 oid,
                 order["customer_id"],

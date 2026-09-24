@@ -1064,6 +1064,17 @@ async def void_bank_transfer(
                 )
 
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                # Periode jurnal pembalik (HARI INI) juga harus terbuka -> galat rapi, bukan 500 trigger
+                period_hari_ini = await conn.fetchrow(
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                    ctx["tenant_id"],
+                    hari_ini,
+                )
+                if period_hari_ini and period_hari_ini["status"] != "OPEN":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Periode akuntansi sudah {period_hari_ini['status']}",
+                    )
                 await conn.execute(
                     """
                     INSERT INTO journal_entries (

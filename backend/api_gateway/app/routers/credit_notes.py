@@ -26,6 +26,7 @@ Endpoints:
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import (
     pelanggan_kanonik_tenant,
     faktur_tenant_untuk_pelanggan,
@@ -1605,7 +1606,7 @@ async def apply_credit_note(
                 import uuid as uuid_module
 
                 app_id = uuid_module.uuid4()
-                application_date = body.application_date or date.today()
+                application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 await conn.execute(
                     """
                     INSERT INTO credit_note_applications (
@@ -2107,11 +2108,12 @@ async def void_credit_note(
                         detail="Cannot void credit note with refunds. Reverse refunds first.",
                     )
 
-                    # Law 5: Period lock check
+                    # Law 5: Period lock check (tanggal jurnal pembalik = hari ini, tanggal bisnis)
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
                     ctx["tenant_id"],
-                    date.today(),
+                    hari_ini,
                 )
                 if period_row and period_row["status"] != "OPEN":
                     raise HTTPException(
@@ -2147,7 +2149,7 @@ async def void_credit_note(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'CREDIT_NOTE', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'CREDIT_NOTE', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -2157,6 +2159,7 @@ async def void_credit_note(
                         cn["journal_id"],
                         cn["total_amount"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Create reversed lines (swap debit/credit)
@@ -2232,7 +2235,7 @@ async def void_credit_note(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4,
+                        ) VALUES ($1, $2, $3, $9, $4,
                                   'CREDIT_NOTE_COGS', $5, $6, 'DRAFT', $7, $7, $8)
                         """,
                         companion_rev_id,
@@ -2243,6 +2246,7 @@ async def void_credit_note(
                         companion["id"],
                         companion["total_debit"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
                     for idx, line in enumerate(companion_orig_lines, 1):
                         await conn.execute(

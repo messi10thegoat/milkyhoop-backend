@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 import uuid as uuid_module
 import logging
@@ -189,7 +190,7 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
 async def generate_payment_number(conn, tenant_id: str) -> str:
     from datetime import datetime
 
-    year_month = datetime.now().strftime("%Y-%m")
+    year_month = (await tanggal_dokumen(conn, tenant_id)).strftime("%Y-%m")  # t10-tanggal-bisnis
     try:
         row = await conn.fetchrow(
             """INSERT INTO bill_payment_sequences (tenant_id, year_month, prefix, last_number)
@@ -1763,6 +1764,9 @@ async def void_bill_payment(
                 await check_period_is_open(
                     conn, ctx["tenant_id"], payment["payment_date"]
                 )
+                # Jurnal pembalik bertanggal HARI INI (tanggal bisnis): periodenya juga harus terbuka
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
                 # C6: Create reversal journal by iterating ALL original lines
                 void_journal_id = uuid_module.uuid4()
@@ -1800,7 +1804,7 @@ async def void_bill_payment(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BILL_PAYMENT', $5::uuid, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'BILL_PAYMENT', $5::uuid, $6, 'DRAFT', $7, $7, $8)
                         """,
                         void_journal_id,
                         ctx["tenant_id"],
@@ -1810,6 +1814,7 @@ async def void_bill_payment(
                         payment["journal_id"],
                         original_journal["total_debit"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Law 20 Step 2: INSERT reversed lines (swap debit/credit)
@@ -1872,7 +1877,7 @@ async def void_bill_payment(
                                 reference_type, reference_id, reference_number,
                                 description, journal_id, status, origin_type, source_module,
                                 created_by, posted_by, posted_at
-                            ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, 0,
+                            ) VALUES ($1, $2, $3, $11, $4, $5, 0,
                                 'bill_payment_void', $6::uuid, $7, $8, $9,
                                 'POSTED', 'SYSTEM', 'bill_payment', $10, $10, NOW())
                             """,
@@ -1886,6 +1891,7 @@ async def void_bill_payment(
                             f"Void payment - {payload.void_reason}",
                             void_journal_id,
                             ctx["user_id"],
+                            hari_ini,  # t10-tanggal-bisnis
                         )
 
                 # Reverse bill allocations (reduce paid_amount on bills)

@@ -12,6 +12,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.journals import (
     CreateJournalRequest,
     ReverseJournalRequest,
@@ -61,7 +62,7 @@ async def get_next_journal_number(
     the journal_date so the YYMM segment tracks the document date.
     """
     if p_date is None:
-        p_date = date.today()
+        p_date = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
     return await conn.fetchval(
         "SELECT get_next_journal_number($1, $2, $3)",
         tenant_id,
@@ -957,7 +958,7 @@ async def reclassify_bill_inventory(
     entry_date=None,
 ):
     """Server-computed, idempotent reclass of mis-posted Persediaan bill debits."""
-    entry_date = entry_date or date.today()
+    entry_date = entry_date or await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
     async with conn.transaction():
         await conn.execute(
             "SELECT pg_advisory_xact_lock(hashtext($1))",

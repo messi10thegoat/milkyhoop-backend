@@ -10,6 +10,7 @@ from decimal import Decimal
 import asyncpg
 import logging
 import uuid as uuid_module
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
@@ -1486,7 +1487,7 @@ async def convert_to_invoice(
 
                 invoice_id = uuid_module.uuid4()
                 invoice_date = (
-                    body.invoice_date if body and body.invoice_date else date.today()
+                    body.invoice_date if body and body.invoice_date else await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 )
                 due_date = body.due_date if body and body.due_date else invoice_date
 

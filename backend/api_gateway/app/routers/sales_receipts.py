@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.sales_receipts import (
     CreateSalesReceiptRequest,
     CreateSalesReceiptResponse,
@@ -812,7 +813,7 @@ async def void_sales_receipt(
                 raise HTTPException(status_code=400, detail="Receipt already voided")
 
             # Law 5: Period check for void date
-            void_date = date.today()
+            void_date = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
             period = await conn.fetchrow(
                 "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
                 ctx["tenant_id"],

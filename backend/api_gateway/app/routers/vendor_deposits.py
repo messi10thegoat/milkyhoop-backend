@@ -10,6 +10,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.vendor_deposits import (
@@ -650,7 +651,7 @@ async def apply_vendor_deposit(
                 detail=f"Amount exceeds bill balance. Bill balance: {bill_remaining}",
             )
 
-        applied_date = data.applied_date or date.today()
+        applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
 
         # Get accounts
         ap_account = await resolve_account_id(conn, ctx["tenant_id"], "2-10100")
@@ -1060,10 +1061,12 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                         detail="Original journal not found or not POSTED",
                     )
 
-                # Law 5: Period check on CURRENT_DATE
+                # Law 5: Period check on HARI INI (tanggal bisnis = tanggal jurnal pembalik)
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE",
+                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
                     ctx["tenant_id"],
+                    hari_ini,
                 )
                 if period_row and period_row["status"] != "OPEN":
                     raise HTTPException(
@@ -1086,7 +1089,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                         id, tenant_id, journal_number, journal_date, description,
                         source_type, source_id, total_debit, total_credit,
                         status, created_by, reversal_of_id
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'VENDOR_DEPOSIT', $5, $6, $6, 'DRAFT', $7, $8)
+                    ) VALUES ($1, $2, $3, $9, $4, 'VENDOR_DEPOSIT', $5, $6, $6, 'DRAFT', $7, $8)
                     """,
                     reversal_id,
                     ctx["tenant_id"],
@@ -1096,6 +1099,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                     original_journal["total_debit"],
                     ctx.get("user_id"),
                     original_journal["id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Law 20 Step 2: Insert reversed lines with line_number (swap debit<->credit)

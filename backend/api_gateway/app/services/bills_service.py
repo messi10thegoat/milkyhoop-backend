@@ -1622,7 +1622,7 @@ class BillsService:
                     await conn.fetchval(
                         "SELECT get_next_journal_number($1, 'BP')", tenant_id
                     )
-                    or f"BP-{date.today().strftime('%y%m')}-AUTO"
+                    or f"BP-{(await tanggal_dokumen(conn, tenant_id)).strftime('%y%m')}-AUTO"
                 )
 
                 # 7. Create journal DRAFT → lines → POSTED (Law 20)
@@ -2085,7 +2085,7 @@ class BillsService:
 
                 reason = request.get("reason", "Voided")
                 reversal_journal_id = None
-                today = date.today()
+                today = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
 
                 # ============================================================
                 # 1. Create REVERSAL Journal (D2/D3 FIX: direct, not via facade)

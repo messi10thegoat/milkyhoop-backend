@@ -38,6 +38,7 @@ Endpoints:
 """
 
 from fastapi import Depends, APIRouter, HTTPException, Request, Query
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.fitur_parkir import fitur_belum_tersedia
 from typing import Optional, Literal
 from uuid import UUID
@@ -1569,7 +1570,7 @@ async def cancel_cheque(request: Request, cheque_id: UUID, body: CancelChequeReq
                         conn,
                         ctx["tenant_id"],
                         cheque["receipt_journal_id"],
-                        date.today(),
+                        await tanggal_dokumen(conn, ctx["tenant_id"]),  # t10-tanggal-bisnis
                         f"Pembatalan Giro - {cheque['cheque_number']}",
                         "CHEQUE_CANCEL",
                         cheque_id,
@@ -1722,7 +1723,7 @@ async def delete_cheque(request: Request, cheque_id: UUID):
                         conn,
                         ctx["tenant_id"],
                         cheque["receipt_journal_id"],
-                        date.today(),
+                        await tanggal_dokumen(conn, ctx["tenant_id"]),  # t10-tanggal-bisnis
                         f"Reversal - Hapus Giro {cheque['cheque_number']}",
                         "CHEQUE_DELETE",
                         cheque_id,

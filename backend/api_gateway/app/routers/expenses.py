@@ -2226,6 +2226,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
 
                 # Void original journal + create reversal (Law 2)
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)  # periode jurnal pembalik
                 if expense["journal_id"]:
                     # Create reversal journal entry
                     original_lines = await conn.fetch(
