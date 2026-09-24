@@ -72,6 +72,16 @@ class FakeConn:
         self.calls.append(("fetch", sql, args))
         return self._f(sql, args)
 
+    async def fetchval(self, sql, *args):
+        # L2: rute unggah DP menghitung kuota lampiran. Hanya SQL itu yang
+        # dijawab (0 terpakai); SQL lain = tes tak mengenalnya -> gagal keras.
+        self.calls.append(("fetchval", sql, args))
+        from app.attachment_limits import SQL_HITUNG_LAMPIRAN_TERSEDIA
+
+        if sql == SQL_HITUNG_LAMPIRAN_TERSEDIA:
+            return 0
+        raise AssertionError(f"fetchval tak dikenal: {sql}")
+
     def transaction(self):
         return _Ctx(None)
 
@@ -202,7 +212,7 @@ async def test_cd_unggah_url_relatif_bukan_presign(monkeypatch):
     conn = FakeConn(on_fetchrow=lambda s, a: {"id": INDUK})
     pasang(monkeypatch, cd, conn)
     f = UploadFile(
-        file=io.BytesIO(b"\x89PNG kecil"),
+        file=io.BytesIO(b"\x89PNG\r\n\x1a\n kecil"),  # L2: tanda tangan PNG SAH (byte awal diperiksa)
         filename="bukti.png",
         headers=Headers({"content-type": "image/png"}),
     )

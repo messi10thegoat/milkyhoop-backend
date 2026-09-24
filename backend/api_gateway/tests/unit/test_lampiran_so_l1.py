@@ -263,7 +263,14 @@ T = AL.tentukan_tipe_lampiran
         # ditolak
         ("gambar.svg", "image/svg+xml", b"<svg", (None, None, "tipe_ditolak")),
         ("arsip.zip", "application/zip", b"PK", (None, None, "tipe_ditolak")),
-        ("tanpa-ekstensi", "image/jpeg", JPG, (None, None, "tipe_ditolak")),
+        # L2: tanpa ekstensi -> tipe dari content_type RESMI (kamera/canvas "blob");
+        # byte awal tetap diperiksa; tanpa ekstensi + ctype netral/tak resmi ditolak.
+        ("blob", "image/jpeg", JPG, ("image/jpeg", ".jpg", None)),
+        ("blob", "image/jpg", JPG, ("image/jpeg", ".jpg", None)),
+        ("blob", "image/png", JPG, (None, None, "isi_tak_cocok")),
+        ("blob", "application/octet-stream", JPG, (None, None, "tipe_ditolak")),
+        ("blob", "text/html", b"<html>", (None, None, "tipe_ditolak")),
+        ("gambar.svg", "image/png", PNG, (None, None, "tipe_ditolak")),
         ("nota.jpg", "text/html", JPG, (None, None, "tipe_ditolak")),
         ("kosong.png", "image/png", b"", (None, None, "kosong")),
         ("besar.pdf", "application/pdf", b"%PDF-" + b"x" * (10 * MB), (None, None, "terlalu_besar")),

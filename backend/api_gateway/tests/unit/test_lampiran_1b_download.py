@@ -212,7 +212,7 @@ def url_sah(url, modul, induk=INDUK, lampiran=LAMPIRAN):
 
 def upload(nama="nota.png", tipe="image/png"):
     return UploadFile(
-        file=io.BytesIO(b"\x89PNG kecil"),
+        file=io.BytesIO(b"\x89PNG\r\n\x1a\n kecil"),  # L2: tanda tangan PNG SAH (byte awal diperiksa)
         filename=nama,
         headers=Headers({"content-type": tipe}),
     )

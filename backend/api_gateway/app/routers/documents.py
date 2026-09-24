@@ -43,7 +43,13 @@ from ..attachment_limits import (  # noqa: E402
     ATTACHMENT_ALLOWED_TYPES,
     ATTACHMENT_MAX_BYTES,
     enforce_attachment_limits,
+    MAKS_LAMPIRAN_PER_DOKUMEN,
+    baca_lampiran_atau_400,
+    hitung_lampiran_tersedia,
+    http_400_lampiran,
+    kunci_kuota_lampiran,
 )
+from ..utils.lampiran_unduh import content_disposition_lampiran, sajian_lampiran  # noqa: E402
 
 MAX_FILE_SIZE = ATTACHMENT_MAX_BYTES  # alias untuk referensi lain (storage-usage dsb.)
 ALLOWED_CONTENT_TYPES = ATTACHMENT_ALLOWED_TYPES
@@ -360,12 +366,9 @@ async def upload_document(
     await _require_active_member_docs(request)
     pool = await get_pool()
 
-    # Read file content
-    content = await file.read()
+    # L2: satu sumber aturan lampiran (ekstensi + byte awal + 10 MB).
+    tipe, content = await baca_lampiran_atau_400(file)
     file_size = len(content)
-
-    # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
-    enforce_attachment_limits(file_size, file.content_type)
 
     # Parse tags
     tag_list = None
@@ -412,7 +415,7 @@ async def upload_document(
             ctx["tenant_id"],
             file.filename,
             file.filename,
-            file.content_type,
+            tipe,
             file_size,
             file_path,
             category,
@@ -523,61 +526,163 @@ async def delete_document(request: Request, document_id: UUID):
         return DeleteDocumentResponse()
 
 
+# ---------------------------------------------------------------------------
+# L2 (24 Sep 2026): hub attach/detach berpagar ENTITAS + izin PER-DOCTYPE.
+# Dulu hanya "anggota aktif": entity_id tak diverifikasi (tautan ke entitas
+# tenant lain / tak ada), dan staf tanpa izin modul bisa melampirkan ke dokumen
+# modul itu. Sekarang: entitas HARUS ada & milik tenant JWT (predikat eksplisit,
+# gateway = BYPASSRLS), dan izin diambil dari ROUTE_PERMISSIONS rute PATCH
+# entitas itu sendiri (satu sumber kebenaran; tak dikodekan ulang di sini).
+# ---------------------------------------------------------------------------
+PENANDA_L2_HUB = "l2-hub-attach-pagar-entitas"
+
+# entity_type -> daftar (tabel, segmen URL modul). `payment` DIPAKAI BERSAMA
+# penerimaan & pembayaran-keluar; tabel pertama yang memuat id itu menang.
+_ENTITAS_HUB = {
+    "sales_invoice": (("sales_invoices", "sales-invoices"),),
+    "bill": (("bills", "bills"),),
+    "expense": (("expenses", "expenses"),),
+    "customer": (("customers", "customers"),),
+    "vendor": (("vendors", "vendors"),),
+    "item": (("products", "items"),),
+    "journal": (("journal_entries", "journals"),),
+    "quote": (("quotes", "quotes"),),
+    "purchase_order": (("purchase_orders", "purchase-orders"),),
+    "sales_order": (("sales_orders", "sales-orders"),),
+    "sales_receipt": (("sales_receipts", "sales-receipts"),),
+    "payment": (("receive_payments", "receive-payments"), ("bill_payments_v2", "bill-payments")),
+    "credit_note": (("credit_notes", "credit-notes"),),
+    "vendor_credit": (("vendor_credits", "vendor-credits"),),
+    "stock_adjustment": (("stock_adjustments", "stock-adjustments"),),
+    "stock_transfer": (("stock_transfers", "stock-transfers"),),
+    "employee": (("employees", "employees"),),
+    "asset": (("fixed_assets", "fixed-assets"),),
+    "proforma": (("proformas", "proformas"),),
+}
+# Tak didukung (tanpa tabel entitas yang bisa diverifikasi): project, contract,
+# other, delivery -> 422.
+
+_RESOLVER_IZIN = None
+
+
+def _izin_modul(segmen: str, entity_id) -> Optional[tuple]:
+    """(modul, aksi) dari ROUTE_PERMISSIONS untuk PATCH /api/<segmen>/<id>."""
+    global _RESOLVER_IZIN
+    if _RESOLVER_IZIN is None:
+        from ..middleware.permission_middleware import PermissionMiddleware
+
+        _RESOLVER_IZIN = PermissionMiddleware(app=None)
+    return _RESOLVER_IZIN._find_permission(f"/api/{segmen}/{entity_id}", "PATCH")
+
+
+async def _cari_entitas_hub(conn, entity_type: str, entity_id, tenant_id: str) -> str:
+    """Segmen URL modul entitas yang ADA & milik tenant; 422/404 bila tidak."""
+    calon = _ENTITAS_HUB.get(entity_type)
+    if not calon:
+        raise HTTPException(
+            status_code=422, detail=f"Jenis entitas '{entity_type}' tidak didukung untuk lampiran"
+        )
+    for tabel, segmen in calon:
+        ada = await conn.fetchval(
+            f"SELECT 1 FROM {tabel} WHERE id = $1 AND tenant_id = $2",  # nosec B608 - tabel dari peta tetap
+            entity_id,
+            tenant_id,
+        )
+        if ada:
+            return segmen
+    raise HTTPException(status_code=404, detail="Entitas tujuan tidak ditemukan")
+
+
+async def _wajib_izin_entitas(request: Request, segmen: str, entity_id) -> None:
+    """Anggota aktif + izin modul entitas (OWNER lolos; tak terpetakan ->
+    hanya OWNER, sama dengan default-tertutup middleware)."""
+    from ..services.policy_engine_client import get_policy_engine
+
+    u = getattr(request.state, "user", {}) or {}
+    eng = get_policy_engine()
+    c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
+    if not c.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    if c.business_role_code == "OWNER":
+        return
+    izin = _izin_modul(segmen, entity_id)
+    # C ATAU U pada modul entitas: FE melampirkan TEPAT SESUDAH membuat dokumen
+    # (quote, penerimaan), jadi staf yang boleh membuat harus boleh melampirkan.
+    if izin is None or not (
+        await eng.can(c, "U", izin[0]) or await eng.can(c, "C", izin[0])
+    ):
+        raise HTTPException(
+            status_code=403, detail="Anda tidak punya izin mengubah dokumen ini."
+        )
+
+
 @router.post("/{document_id}/attach", response_model=AttachDocumentResponse)
 async def attach_document(
     request: Request, document_id: UUID, body: AttachDocumentRequest
 ):
-    """Attach document to an entity"""
+    """Attach document to an entity (L2: entitas + izin + kuota 10)."""
     ctx = get_user_context(request)
-    await _require_active_member_docs(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        # Verify document exists
-        doc = await conn.fetchval(
-            "SELECT id FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            document_id,
-            ctx["tenant_id"],
-        )
-
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
-
-        # Check for existing attachment
-        existing = await conn.fetchval(
-            """
-            SELECT id FROM document_attachments
-            WHERE document_id = $1 AND entity_type = $2 AND entity_id = $3
-            """,
-            document_id,
-            body.entity_type,
-            body.entity_id,
-        )
-
-        if existing:
-            raise HTTPException(
-                status_code=400, detail="Document already attached to this entity"
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
             )
+            segmen = await _cari_entitas_hub(
+                conn, body.entity_type, body.entity_id, ctx["tenant_id"]
+            )
+            await _wajib_izin_entitas(request, segmen, body.entity_id)
 
-        row = await conn.fetchrow(
-            """
-            INSERT INTO document_attachments (
-                tenant_id, document_id, entity_type, entity_id, attachment_type, display_order, attached_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING *
-            """,
-            ctx["tenant_id"],
-            document_id,
-            body.entity_type,
-            body.entity_id,
-            body.attachment_type,
-            body.display_order,
-            ctx.get("user_id"),
-        )
+            doc = await conn.fetchval(
+                "SELECT id FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+                document_id,
+                ctx["tenant_id"],
+            )
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            # Kuota: lock per entitas DULU, hitung SESUDAHNYA, satu transaksi.
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                kunci_kuota_lampiran(ctx["tenant_id"], body.entity_type, body.entity_id),
+            )
+            existing = await conn.fetchval(
+                """
+                SELECT id FROM document_attachments
+                WHERE document_id = $1 AND entity_type = $2 AND entity_id = $3
+                  AND tenant_id = $4
+                """,
+                document_id,
+                body.entity_type,
+                body.entity_id,
+                ctx["tenant_id"],
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=400, detail="Document already attached to this entity"
+                )
+            terpakai = await hitung_lampiran_tersedia(
+                conn, ctx["tenant_id"], body.entity_type, body.entity_id
+            )
+            if terpakai >= MAKS_LAMPIRAN_PER_DOKUMEN:
+                raise http_400_lampiran("kuota_penuh")
+
+            row = await conn.fetchrow(
+                """
+                INSERT INTO document_attachments (
+                    tenant_id, document_id, entity_type, entity_id, attachment_type, display_order, attached_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *
+                """,
+                ctx["tenant_id"],
+                document_id,
+                body.entity_type,
+                body.entity_id,
+                body.attachment_type,
+                body.display_order,
+                ctx.get("user_id"),
+            )
 
         return AttachDocumentResponse(attachment=DocumentAttachmentData(**dict(row)))
 
@@ -586,7 +691,7 @@ async def attach_document(
 async def detach_document(
     request: Request, document_id: UUID, body: DetachDocumentRequest
 ):
-    """Detach document from an entity"""
+    """Detach document from an entity (L2: anggota aktif + izin modul entitas)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -594,6 +699,10 @@ async def detach_document(
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
+        segmen = await _cari_entitas_hub(
+            conn, body.entity_type, body.entity_id, ctx["tenant_id"]
+        )
+        await _wajib_izin_entitas(request, segmen, body.entity_id)
 
         deleted = await conn.fetchval(
             """
@@ -671,11 +780,17 @@ async def download_document(request: Request, document_id: UUID):
             yield chunk
         body.close()
 
+    # L2: sajian aman sama dengan rute /download modul (lampiran_unduh):
+    # inline hanya jpeg/png/webp/gif/pdf; lainnya octet-stream + attachment;
+    # nosniff; nama berkas lewat content_disposition_lampiran (tak bisa
+    # memutus header -- dulu nama mentah di f-string).
+    media_type, inline = sajian_lampiran(row["file_type"])
     return StreamingResponse(
         iter_body(),
-        media_type=row["file_type"] or "application/octet-stream",
+        media_type=media_type,
         headers={
-            "Content-Disposition": f'inline; filename="{row["file_name"]}"',
+            "Content-Disposition": content_disposition_lampiran(row["file_name"], inline),
             "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
         },
     )

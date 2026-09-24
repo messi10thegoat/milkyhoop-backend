@@ -1338,13 +1338,10 @@ async def upload_attachment(
             raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
         await file.seek(0)
 
-        # Validate file type
-        allowed_types = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
-        if file.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File type {file.content_type} not allowed. Use JPEG, PNG, WebP, or PDF.",
-            )
+        # L2: satu sumber aturan lampiran (dulu 4 tipe di sini + 6 di storage).
+        from ..attachment_limits import baca_lampiran_atau_400
+
+        tipe, _isi = await baca_lampiran_atau_400(file)
 
         tenant_id = ctx["tenant_id"]
         user_id = ctx["user_id"]
@@ -1383,7 +1380,7 @@ async def upload_attachment(
                 file.filename,
                 result.file_path,
                 len(content),
-                file.content_type,
+                tipe,
                 user_id,
             )
 
@@ -1397,7 +1394,7 @@ async def upload_attachment(
                         _BILL_ATT_MODUL_URL, bill_id, attachment_id
                     ),
                     "size": len(content),
-                    "mime_type": file.content_type,
+                    "mime_type": tipe,
                 },
             }
 

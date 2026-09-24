@@ -124,10 +124,16 @@ def tentukan_tipe_lampiran(nama: str | None, content_type: str | None, isi: byte
     ext = "." + n.rsplit(".", 1)[-1] if "." in n else ""
     if ext == ".jpeg":
         ext = ".jpg"
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    if not ext and (ct in ATTACHMENT_ALLOWED_TYPES or ct in _CTYPE_ALIAS):
+        # L2: nama TANPA ekstensi (kamera/canvas: "blob", "image") -> tipe dari
+        # content_type resmi; tanda tangan byte di bawah tetap berlaku. Ekstensi
+        # yang ADA tapi tak resmi (.svg/.exe) tetap ditolak.
+        kanon = "image/jpeg" if ct in _CTYPE_ALIAS else ct
+        ext = next(e for e, t in EKSTENSI_LAMPIRAN.items() if t == kanon and e != ".jpeg")
     tipe = EKSTENSI_LAMPIRAN.get(ext)
     if tipe is None:
         return None, None, "tipe_ditolak"
-    ct = (content_type or "").split(";", 1)[0].strip().lower()
     if ct not in _CTYPE_NETRAL and ct not in _CTYPE_ALIAS and ct not in ATTACHMENT_ALLOWED_TYPES:
         return None, None, "tipe_ditolak"
     if len(isi) <= 0:
@@ -170,3 +176,55 @@ async def hitung_lampiran_tersedia(conn, tenant_id: str, entity_type: str, entit
         await conn.fetchval(SQL_HITUNG_LAMPIRAN_TERSEDIA, tenant_id, entity_type, entity_id)
         or 0
     )
+
+
+# --------------------------------------------------------------------------
+# L2 (24 Sep 2026): satu jalur validasi untuk SEMUA pengunggah lampiran
+# (storage.upload_file, rute uang muka/SI/bills, hub /api/documents/upload).
+# Dulu: enforce_attachment_limits (content_type) lalu storage.upload_file dgn
+# whitelist SENDIRI 6 tipe -> gif/docx/xlsx/csv/txt ke rute DP = 500.
+# --------------------------------------------------------------------------
+PESAN_GALAT_LAMPIRAN = {
+    "tipe_ditolak": (
+        "Jenis berkas tidak didukung. Gunakan gambar (JPG/PNG/WebP/GIF/HEIC), "
+        "PDF, Word, Excel, atau teks/CSV."
+    ),
+    "kosong": "Berkas kosong.",
+    "terlalu_besar": f"Ukuran berkas melebihi batas {ATTACHMENT_MAX_MB} MB.",
+    "isi_tak_cocok": "Isi berkas tidak cocok dengan jenisnya.",
+    "kuota_penuh": (
+        f"Lampiran penuh: maksimal {MAKS_LAMPIRAN_PER_DOKUMEN} berkas per dokumen."
+    ),
+}
+
+
+class LampiranDitolak(ValueError):
+    """Berkas ditolak aturan lampiran. `kode` = kunci PESAN_GALAT_LAMPIRAN."""
+
+    def __init__(self, kode: str):
+        self.kode = kode
+        super().__init__(PESAN_GALAT_LAMPIRAN.get(kode, kode))
+
+
+def periksa_lampiran(nama, content_type, isi: bytes) -> str:
+    """Tipe kanonik, atau lempar LampiranDitolak."""
+    tipe, _ext, kode = tentukan_tipe_lampiran(nama, content_type, isi)
+    if kode:
+        raise LampiranDitolak(kode)
+    return tipe
+
+
+def http_400_lampiran(kode: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=PESAN_GALAT_LAMPIRAN.get(kode, kode))
+
+
+async def baca_lampiran_atau_400(file) -> tuple:
+    """Baca UploadFile, validasi (ekstensi + byte awal + ukuran), kembalikan
+    (tipe_kanonik, isi) lalu seek(0). Ditolak -> HTTP 400 berpesan jujur."""
+    isi = await file.read()
+    try:
+        tipe = periksa_lampiran(file.filename, file.content_type, isi)
+    except LampiranDitolak as e:
+        raise http_400_lampiran(e.kode)
+    await file.seek(0)
+    return tipe, isi

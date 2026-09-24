@@ -228,12 +228,14 @@ class StorageService:
         # Read file content
         content = await file.read()
         file_size = len(content)
-        content_type = file.content_type or "application/octet-stream"
 
-        # Validate
-        is_valid, error = self.validate_file(content_type, file_size)
-        if not is_valid:
-            raise ValueError(error)
+        # L2 (24 Sep 2026): SATU sumber aturan lampiran (attachment_limits):
+        # ekstensi + tanda tangan byte + 10 MB -> tipe KANONIK. Dulu whitelist
+        # sendiri 6 tipe (ALLOWED_TYPES) -> tipe resmi lain lolos rute lalu
+        # ValueError di sini = 500. LampiranDitolak turunan ValueError.
+        from ..attachment_limits import periksa_lampiran
+
+        content_type = periksa_lampiran(file.filename, file.content_type, content)
 
         # Generate path
         file_path = self._generate_file_path(
@@ -252,9 +254,12 @@ class StorageService:
                 Key=file_path,
                 Body=content,
                 ContentType=content_type,
+                # #17: `original_filename` DIBUANG dari metadata -- nama
+                # non-ASCII (mis. "nota-Bapak Ö.jpg") membuat botocore gagal
+                # validate_ascii_metadata -> PutObject gagal. Nama asli tetap
+                # di baris `documents`. tenant_id/category selalu ASCII.
                 Metadata={
                     "tenant_id": tenant_id,
-                    "original_filename": file.filename or "unnamed",
                     "category": category,
                 },
             )

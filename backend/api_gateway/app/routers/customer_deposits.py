@@ -3072,8 +3072,15 @@ async def get_customer_deposit_pdf(
 from ..attachment_limits import (  # noqa: E402
     ATTACHMENT_ALLOWED_TYPES,
     ATTACHMENT_MAX_BYTES,
-    enforce_attachment_limits,
+    MAKS_LAMPIRAN_PER_DOKUMEN,
+    baca_lampiran_atau_400,
+    hitung_lampiran_tersedia,
+    http_400_lampiran,
+    kunci_kuota_lampiran,
 )
+
+# Penanda unik L2 (window_item.sh).
+PENANDA_L2_KUOTA_DP = "l2-kuota-lampiran-uang-muka"
 
 # SATU SUMBER: app/attachment_limits.py (10 MB + 14 tipe).
 _DEP_ATT_MAX_BYTES = ATTACHMENT_MAX_BYTES
@@ -3133,10 +3140,9 @@ async def upload_deposit_attachment(
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
-        content = await file.read()
-        # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
-        enforce_attachment_limits(len(content), file.content_type)
-        await file.seek(0)
+        # L2: satu sumber aturan (ekstensi + byte awal + 10 MB); tipe resmi
+        # PENUH (dulu storage.upload_file menolak selain 6 tipe -> 500).
+        tipe, content = await baca_lampiran_atau_400(file)
 
         tenant_id = ctx["tenant_id"]
         user_id = ctx["user_id"]
@@ -3148,6 +3154,17 @@ async def upload_deposit_attachment(
                     "SELECT set_config('app.tenant_id', $1, true)", tenant_id
                 )
                 await _dep_att_load_deposit(conn, deposit_id, tenant_id)
+                # L2 kuota: lock per uang muka DULU, hitung SESUDAHNYA, di
+                # transaksi yang sama -> unggahan paralel tak melewati 10.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    kunci_kuota_lampiran(tenant_id, _DEP_ATT_ENTITY, deposit_id),
+                )
+                terpakai = await hitung_lampiran_tersedia(
+                    conn, tenant_id, _DEP_ATT_ENTITY, deposit_id
+                )
+                if terpakai >= MAKS_LAMPIRAN_PER_DOKUMEN:
+                    raise http_400_lampiran("kuota_penuh")
 
                 storage = get_storage_service()
                 result = await storage.upload_file(
@@ -3167,7 +3184,7 @@ async def upload_deposit_attachment(
                     document_id,
                     tenant_id,
                     file.filename,
-                    file.content_type,
+                    tipe,
                     len(content),
                     result.file_path,
                     # `documents.category` dibatasi CHECK `chk_doc_category` ke 9
@@ -3205,8 +3222,9 @@ async def upload_deposit_attachment(
                     _DEP_ATT_MODUL_URL, deposit_id, document_id
                 ),
                 "size": len(content),
-                "mime_type": file.content_type,
+                "mime_type": tipe,
             },
+            "kuota": {"terpakai": terpakai + 1, "maks": MAKS_LAMPIRAN_PER_DOKUMEN},
         }
 
     except HTTPException:

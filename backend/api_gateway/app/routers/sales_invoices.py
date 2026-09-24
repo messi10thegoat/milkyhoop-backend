@@ -6031,12 +6031,10 @@ async def upload_invoice_attachment(
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
-        content = await file.read()
-        from ..attachment_limits import enforce_attachment_limits
+        from ..attachment_limits import baca_lampiran_atau_400
 
-        # Satu sumber batas & tipe (Unit B): 10 MB + 14 tipe acuan.
-        enforce_attachment_limits(len(content), file.content_type)
-        await file.seek(0)
+        # L2: satu sumber aturan lampiran (ekstensi + byte awal + 10 MB).
+        tipe, content = await baca_lampiran_atau_400(file)
 
         tenant_id = ctx["tenant_id"]
         user_id = ctx["user_id"]
@@ -6072,7 +6070,7 @@ async def upload_invoice_attachment(
                 file.filename,
                 result.file_path,
                 len(content),
-                file.content_type,
+                tipe,
                 user_id,
             )
 
@@ -6086,7 +6084,7 @@ async def upload_invoice_attachment(
                         _SI_ATT_MODUL_URL, invoice_id, attachment_id
                     ),
                     "size": len(content),
-                    "mime_type": file.content_type,
+                    "mime_type": tipe,
                 },
             }
 
