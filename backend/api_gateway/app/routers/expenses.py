@@ -66,8 +66,8 @@ _EXP_ATT_SQL_UNDUH = """
 def _exp_lampiran_ke_respons(rows, expense_id) -> list:
     """Bentuk respons lampiran beban (medan sama seperti sebelumnya).
 
-    url: s3 -> rute download beban; local berkas-chat -> path chat gateway
-    (lihat url_lampiran_dokumen). Dulu `documents.file_url` mentah (NULL untuk
+    url: semua baris -> rute download beban (lihat url_lampiran_dokumen;
+    Unit U1 menghapus cabang local berkas-chat). Dulu `documents.file_url` mentah (NULL untuk
     semua baris s3). thumbnail_url dulu = documents.thumbnail_path, yaitu
     KUNCI storage (bukan URL) -> kini None; medannya tetap ada.
     """

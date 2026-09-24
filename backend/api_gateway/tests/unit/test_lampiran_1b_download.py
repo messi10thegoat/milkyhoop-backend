@@ -231,13 +231,15 @@ def test_url_lampiran_dokumen_s3_ke_rute_download():
     )
 
 
-# SEMENTARA -- HAPUS/BALIK saat unggahan-persisten live: sesudah unit itu baris local juga
-# harus ke url_unduh_lampiran (lihat penanda di app/utils/lampiran_unduh.py).
-def test_url_lampiran_dokumen_local_berkas_chat_dipertahankan():
-    assert (
-        lu.url_lampiran_dokumen("expenses", INDUK, LAMPIRAN, "local", URL_CHAT)
-        == URL_CHAT
+# DIBALIK di Unit U1 (unggahan-persisten): cabang sementara "baris local
+# berkas-chat -> path chat" dihapus; baris local juga ke rute download modul
+# (yang menjawab 404 bersih karena berkas lokalnya sudah hilang).
+def test_url_lampiran_dokumen_local_berkas_chat_ke_rute_download():
+    url_sah(
+        lu.url_lampiran_dokumen("expenses", INDUK, LAMPIRAN, "local", URL_CHAT),
+        "expenses",
     )
+    assert not hasattr(lu, "_URL_BERKAS_CHAT")
 
 
 @pytest.mark.parametrize(
@@ -322,7 +324,8 @@ async def test_bills_daftar_dua_sumber_url_relatif(monkeypatch):
     assert len(atts) == 4
     url_sah(atts[0]["url"], "bills")  # bill_attachments
     url_sah(atts[1]["url"], "bills", lampiran=LAMPIRAN_DOK)  # documents s3
-    assert atts[2]["url"] == URL_CHAT  # local berkas-chat: path chat gateway
+    # local berkas-chat: rute download juga (Unit U1 membalik cabang sementara)
+    url_sah(atts[2]["url"], "bills", lampiran="55555555-5555-5555-5555-555555555555")
     url_sah(atts[3]["url"], "bills", lampiran="66666666-6666-6666-6666-666666666666")
     assert storage.presign_calls == []
     for a in atts:
@@ -406,7 +409,7 @@ async def test_exp_daftar_url_relatif_bukan_file_url(monkeypatch):
     out = await ex.list_expense_attachments(req(), INDUK)
     data = out["data"]
     url_sah(data[0]["url"], "expenses", lampiran=LAMPIRAN_DOK)
-    assert data[1]["url"] == URL_CHAT
+    url_sah(data[1]["url"], "expenses", lampiran="55555555-5555-5555-5555-555555555555")
     for a in data:
         assert a["thumbnail_url"] is None
         # medan respons lama dipertahankan; tak ada medan mentah baru

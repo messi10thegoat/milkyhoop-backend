@@ -1,13 +1,16 @@
 """
 Generic file upload endpoint for forms (expense, bill, invoice, etc).
-Stores file on disk + creates documents row + returns document_id.
+Stores file in MinIO (persisten) + creates documents row + returns document_id.
 Frontend includes document_id in entity create payload (attachment_ids[]).
+
+Unit U1 (24 Sep 2026): dulu ditulis ke /tmp/milkyhoop_uploads di kontainer
+(hilang tiap recreate). Kini objek MinIO berkunci deterministik
+`<tenant>/uploads/forms/<sha256><ext>` (lihat app/utils/chat_file_path.py);
+baris documents storage_type='s3'. Tak ada tulisan ke disk.
 """
-import os
 import hashlib
 import logging
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException
-from fastapi import Request as _Req
 from uuid import UUID as _UUID
 
 def get_user_context(request) -> dict:
@@ -22,14 +25,20 @@ def get_user_context(request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid user context")
     return {"tenant_id": tenant_id, "user_id": _UUID(user_id) if user_id else None}
 from ..services.db_pool import get_db_pool as get_session_db_pool
+from ..services.storage_service import get_storage_service
+from ..utils.chat_file_path import kunci_unggahan, simpan_objek_unggahan, url_berkas
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
-UPLOAD_BASE_DIR = "/tmp/milkyhoop_uploads"
+# Tipe yang diterima -> ext kunci objek (ditentukan server, BUKAN dari nama
+# berkas mentah: "nota.html" bertipe image/png tetap .png).
 ALLOWED_TYPES = {
-    "image/jpeg", "image/png", "image/webp", "image/gif",
-    "application/pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
 }
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -55,53 +64,53 @@ async def upload_document_for_form(
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_SIZE // (1024*1024)}MB")
 
-    # SHA-256 dedup
     file_hash = hashlib.sha256(content).hexdigest()
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    store_dir = os.path.join(UPLOAD_BASE_DIR, tenant_id, "forms")
-    store_path = os.path.join(store_dir, f"{file_hash}{ext}")
+    ext = ALLOWED_TYPES[file.content_type]
+    try:
+        kunci = kunci_unggahan(tenant_id, "forms", file_hash, ext)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Konteks tenant tidak sah")
+    file_url = url_berkas(kunci)
 
-    # Save file (idempotent)
-    if not os.path.exists(store_path):
-        os.makedirs(store_dir, exist_ok=True)
-        with open(store_path, "wb") as fh:
-            fh.write(content)
-        logger.info(f"[FormUpload] Stored: {file.filename} -> {file_hash[:12]}")
-    else:
-        logger.info(f"[FormUpload] Dedup hit: {file.filename} -> {file_hash[:12]}")
+    # Objek dulu, baris sesudahnya: baris s3 hanya ada bila objeknya ada.
+    # Kunci deterministik -> PUT ulang isi yang sama idempoten.
+    try:
+        await simpan_objek_unggahan(get_storage_service(), kunci, content)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[FormUpload] Gagal menyimpan objek: {type(e).__name__}")
+        raise HTTPException(status_code=503, detail="Penyimpanan berkas tidak tersedia")
+    logger.info(f"[FormUpload] Stored -> {file_hash[:12]}{ext}")
 
     pool = await get_session_db_pool()
-    file_url = f"/api/v3/chat/files/{tenant_id}/forms/{file_hash}{ext}"
-    relative_path = store_path[len(UPLOAD_BASE_DIR):].lstrip("/") if store_path.startswith(UPLOAD_BASE_DIR) else store_path
-
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
-            # Dedup by checksum
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"FORM_FILE:{tenant_id}:{file_hash}",
+            )
+            # Dedup HANYA ke baris s3 berkunci sama. Baris 'local' lama
+            # (berkasnya sudah hilang) diabaikan -> unggahan ulang membuat baris
+            # s3 BARU; baris s3 lain (mis. /api/documents, file_url NULL) juga
+            # tak dipakai supaya url tak pernah NULL.
             existing = await conn.fetchrow(
-                "SELECT id, file_url FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2 AND deleted_at IS NULL LIMIT 1",
-                tenant_id, file_hash,
+                "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2"
+                " AND storage_type = 's3' AND file_path = $3 AND deleted_at IS NULL LIMIT 1",
+                tenant_id, file_hash, kunci,
             )
             if existing:
-                return {
-                    "success": True,
-                    "data": {
-                        "id": str(existing["id"]),
-                        "file_name": file.filename,
-                        "file_size": len(content),
-                        "mime_type": file.content_type,
-                        "url": existing["file_url"],
-                    },
-                }
-            doc_id = await conn.fetchval(
-                """INSERT INTO documents (
-                    tenant_id, file_name, original_name, file_type, file_extension,
-                    file_size, storage_type, file_path, file_url, category, checksum_sha256, source, uploaded_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, 'receipt', $9, 'form', $10::uuid)
-                RETURNING id""",
-                tenant_id, file.filename, file.filename, file.content_type, ext,
-                len(content), relative_path, file_url, file_hash, user_id,
-            )
+                doc_id = existing["id"]
+                logger.info(f"[FormUpload] Dedup hit: {file_hash[:12]} -> {doc_id}")
+            else:
+                doc_id = await conn.fetchval(
+                    """INSERT INTO documents (
+                        tenant_id, file_name, original_name, file_type, file_extension,
+                        file_size, storage_type, file_path, file_url, category, checksum_sha256, source, uploaded_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 's3', $7, $8, 'receipt', $9, 'form', $10::uuid)
+                    RETURNING id""",
+                    tenant_id, file.filename or f"upload{ext}", file.filename, file.content_type, ext,
+                    len(content), kunci, file_url, file_hash, user_id,
+                )
 
     return {
         "success": True,

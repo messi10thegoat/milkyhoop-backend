@@ -314,7 +314,24 @@ VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
 # Import resolve_file_ref from utils (re-export for backward compatibility)
 from ..utils.file_ref import resolve_file_ref  # noqa: F401, E402
-from ..utils.chat_file_path import resolve_berkas_tenant, tipe_sajian  # noqa: E402
+from ..utils.chat_file_path import (  # noqa: E402
+    isi_atau_none,
+    kunci_unggahan,
+    sajikan_objek_unggahan,
+    simpan_objek_unggahan,
+    url_berkas,
+)
+from ..services.storage_service import get_storage_service  # noqa: E402
+
+# Unit U1: sumber kebenaran berkas unggahan chat = MinIO. Salinan disk di
+# UPLOAD_BASE_DIR/<tenant>/chat/<sha><ext> HANYA tembolok SEMENTARA untuk
+# pembaca TERTUNDA yang masih membaca disk (file_ref impor/rekonsiliasi bank
+# -- utils/file_ref.py + workflow_engine.check_has_file_or_nofile -- dan
+# antrean FIX_MULTIDOC _process_one_document). Tanpa tembolok ini jalur itu
+# mati SEKETIKA, bukan baru sesudah recreate seperti hari ini. HAPUS (set
+# False) saat U2 memindahkan pembaca tertunda ke MinIO. Rute penyaji dan
+# pembaca sinkron TIDAK memakai tembolok ini.
+TEMBOLOK_DISK_PEMBACA_TERTUNDA = True
 
 
 async def _save_chat_attachments(
@@ -352,12 +369,9 @@ async def _save_chat_attachments(
         attachments = []
 
         for fm in file_metas:
-            stored_path = fm.get("stored_path", "")
-            # Build a storage_key relative to UPLOAD_BASE_DIR
-            if stored_path.startswith(UPLOAD_BASE_DIR):
-                storage_key = stored_path[len(UPLOAD_BASE_DIR) :].lstrip("/")
-            else:
-                storage_key = stored_path
+            # Unit U1: storage_key = kunci objek MinIO
+            # (<tenant>/uploads/chat/<sha><ext>), disajikan GET /files/{kunci}.
+            storage_key = fm.get("storage_key") or ""
 
             att_id = str(uuid_mod.uuid4())
             await pool.execute(
@@ -424,15 +438,22 @@ async def _validate_upload_files(files: List[UploadFile]) -> List[str]:
 
 async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
     """
-    Store uploaded file with SHA-256 dedup + session-level advisory lock.
-    Returns file metadata dict.
+    Simpan berkas unggahan chat ke MinIO (Unit U1, persisten) + baris
+    documents s3 (dedup sha256 ke baris s3 berkunci sama saja).
+    Returns file metadata dict. `_isi` = isi berkas di memori untuk pembaca
+    SINKRON request ini (tanpa disk); tak pernah dikirim ke klien.
     """
     content = await file.read()
     await file.seek(0)
 
     file_hash = hashlib.sha256(content).hexdigest()
     ext = os.path.splitext(file.filename or "")[1].lower()
-
+    if ext not in UPLOAD_ALLOWED_EXTENSIONS:  # _validate_upload_files sudah menolak
+        raise ValueError("Tipe file tidak didukung")
+    storage_key = kunci_unggahan(tenant_id, "chat", file_hash, ext)
+    file_url_path = url_berkas(storage_key)
+    # Path tembolok disk (lihat TEMBOLOK_DISK_PEMBACA_TERTUNDA) -- internal
+    # server, tidak pernah masuk respons.
     store_dir = os.path.join(UPLOAD_BASE_DIR, tenant_id, "chat")
     store_path = os.path.join(store_dir, f"{file_hash}{ext}")
 
@@ -443,46 +464,57 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
         "extension": ext,
         "content_type": file.content_type,
         "stored_path": store_path,
+        "storage_key": storage_key,
+        "file_url": file_url_path,
+        "_isi": content,
     }
 
-    # Fast path: file already exists (same content uploaded before)
-    file_already_exists = os.path.exists(store_path)
-    if file_already_exists:
-        logger.info(f"[FileUpload] Dedup hit: {file.filename} -> {file_hash[:12]}")
-    else:
-        # Session-level advisory lock (released explicitly, not tied to transaction)
-        lock_key = f"CHAT_FILE:{tenant_id}:{file_hash}"
-        try:
-            await pool.execute("SELECT pg_advisory_lock(hashtext($1))", lock_key)
+    # 1) Objek MinIO = sumber kebenaran. Gagal -> galat generik (pemanggil
+    #    menjawab VALIDATION_ERROR "Gagal menyimpan file"), tanpa detail
+    #    endpoint/bucket.
+    try:
+        await simpan_objek_unggahan(get_storage_service(), storage_key, content)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[FileUpload] Gagal menyimpan objek: {type(e).__name__}")
+        raise RuntimeError("penyimpanan berkas tidak tersedia") from None
+    logger.info(
+        f"[FileUpload] Stored: {file_hash[:12]}{ext} ({len(content)} bytes)"
+    )
 
-            # Double-check after acquiring lock
+    # 2) Tembolok disk SEMENTARA untuk pembaca tertunda (best-effort).
+    if TEMBOLOK_DISK_PEMBACA_TERTUNDA:
+        try:
             if not os.path.exists(store_path):
                 os.makedirs(store_dir, exist_ok=True)
-                with open(store_path, "wb") as fh:
+                tmp_path = f"{store_path}.{uuid_mod.uuid4().hex}.tmp"
+                with open(tmp_path, "wb") as fh:
                     fh.write(content)
-                logger.info(
-                    f"[FileUpload] Stored: {file.filename} -> {store_path} "
-                    f"({len(content)} bytes, hash={file_hash[:12]})"
-                )
-        finally:
-            # Release lock immediately — BEFORE any parsing begins
-            await pool.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
+                os.replace(tmp_path, store_path)
+        except Exception as _cache_err:  # noqa: BLE001
+            logger.warning(f"[FileUpload] tembolok disk gagal: {_cache_err}")
 
-    # Insert into documents table for entity linking (Phase A — audit trail)
+    # 3) Baris documents (audit trail / entity linking). Non-blocking.
     try:
-        relative_path = (
-            store_path[len(UPLOAD_BASE_DIR) :].lstrip("/")
-            if store_path.startswith(UPLOAD_BASE_DIR)
-            else store_path
-        )
         async with pool.acquire() as _doc_conn:
             async with _doc_conn.transaction():
-                await _doc_conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
-                # Check if document already exists by SHA-256 (dedup)
+                await _doc_conn.execute(
+                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+                )
+                # Kunci advisory ber-lingkup TRANSAKSI (koneksi yang sama).
+                # Dulu pg_advisory_lock/unlock lewat pool.execute -> bisa jatuh
+                # di dua koneksi berbeda (kunci sesi bocor).
+                await _doc_conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"CHAT_FILE:{tenant_id}:{file_hash}",
+                )
+                # Dedup HANYA ke baris s3 berkunci sama; baris 'local' lama
+                # (berkasnya sudah hilang) diabaikan -> baris s3 BARU.
                 existing = await _doc_conn.fetchrow(
-                    "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2 AND deleted_at IS NULL LIMIT 1",
+                    "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2"
+                    " AND storage_type = 's3' AND file_path = $3 AND deleted_at IS NULL LIMIT 1",
                     tenant_id,
                     file_hash,
+                    storage_key,
                 )
                 if existing:
                     file_meta["document_id"] = str(existing["id"])
@@ -490,10 +522,6 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                         f"[FileUpload] Document dedup: {file_hash[:12]} -> {existing['id']}"
                     )
                 else:
-                    # file_url points to chat file-serving endpoint (tenant-isolated)
-                    file_url_path = (
-                        f"/api/v3/chat/files/{tenant_id}/chat/{file_hash}{ext}"
-                    )
                     # Lane C: store with 'unclassified' so the real category is set
                     # AFTER classification/Lane-C (legacy hardcoded 'receipt' when off).
                     _doc_category = "unclassified" if _lane_c_enabled() else "receipt"
@@ -501,7 +529,7 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                         """INSERT INTO documents (
                             tenant_id, file_name, original_name, file_type, file_extension,
                             file_size, storage_type, file_path, file_url, category, checksum_sha256, source
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'local', $7, $8, $9, $10, 'chat')
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 's3', $7, $8, $9, $10, 'chat')
                         RETURNING id""",
                         tenant_id,
                         file.filename or f"upload{ext}",
@@ -509,7 +537,7 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
                         file.content_type,
                         ext,
                         len(content),
-                        relative_path,
+                        storage_key,
                         file_url_path,
                         _doc_category,
                         file_hash,
@@ -522,6 +550,20 @@ async def _store_upload_file(file: UploadFile, tenant_id: str, pool) -> dict:
         )
 
     return file_meta
+
+
+def _berkas_terunggah_respons(file_metas: List[dict]) -> List[dict]:
+    """Medan `uploaded_files` respons. TANPA stored_path (path absolut server
+    dulu bocor ke klien) dan tanpa isi berkas."""
+    return [
+        {
+            "filename": fm["filename"],
+            "size": fm["size"],
+            "extension": fm["extension"],
+            "file_hash": fm["file_hash"],
+        }
+        for fm in file_metas
+    ]
 
 
 def _resize_image_for_vision(image_bytes: bytes, content_type: str) -> tuple:
@@ -568,12 +610,11 @@ def _build_image_content_blocks(text: str, file_metas: List[dict]):
     blocks = [{"type": "text", "text": full_text}]
 
     for fm in image_metas:
-        stored_path = fm.get("stored_path", "")
-        if not stored_path or not os.path.exists(stored_path):
+        # Unit U1: isi dari memori request ini, bukan disk.
+        raw_bytes = isi_atau_none(fm)
+        if raw_bytes is None:
             continue
         try:
-            with open(stored_path, "rb") as f:
-                raw_bytes = f.read()
             resized_bytes, mime = _resize_image_for_vision(
                 raw_bytes, fm.get("content_type", "image/jpeg")
             )
@@ -588,7 +629,7 @@ def _build_image_content_blocks(text: str, file_metas: List[dict]):
                 }
             )
         except Exception as e:
-            logger.warning(f"[chat] Failed to read image {stored_path}: {e}")
+            logger.warning(f"[chat] Failed to read image {fm.get('file_hash', '')[:12]}: {e}")
 
     return blocks if len(blocks) > 1 else None
 
@@ -4551,12 +4592,11 @@ async def send_message_with_files(
                     ),
                     None,
                 )
-                if _intent_img and _intent_img.get("stored_path"):
+                _raw = isi_atau_none(_intent_img) if _intent_img else None
+                if _raw is not None:  # Unit U1: isi dari memori, bukan disk
                     import base64 as _b64_intent
                     from openai import AsyncOpenAI as _IntentOCR
 
-                    with open(_intent_img["stored_path"], "rb") as _f_intent:
-                        _raw = _f_intent.read()
                     _b64_data = _b64_intent.b64encode(_raw).decode()
                     _mime = _intent_img.get("content_type", "image/jpeg")
                     _ocr_client = _IntentOCR()
@@ -4687,12 +4727,10 @@ async def send_message_with_files(
                     ),
                     file_metas[0],
                 )
-                _stored_path = _fm.get("stored_path", "")
-                if _stored_path and os.path.exists(_stored_path):
+                _img_bytes = isi_atau_none(_fm)  # Unit U1: memori, bukan disk
+                if _img_bytes is not None:
                     import base64 as _b64
 
-                    with open(_stored_path, "rb") as _img_f:
-                        _img_bytes = _img_f.read()
                     _mime = _fm.get("content_type", "image/jpeg")
                     # Resize + JPEG compress to slash OCR latency (vision tokens scale w/ size)
                     try:
@@ -6199,16 +6237,7 @@ Aturan:
         response.data = {}
     if file_metas:
         response.data = response.data or {}
-        response.data["uploaded_files"] = [
-            {
-                "filename": fm["filename"],
-                "size": fm["size"],
-                "extension": fm["extension"],
-                "file_hash": fm["file_hash"],
-                "stored_path": fm["stored_path"],
-            }
-            for fm in file_metas
-        ]
+        response.data["uploaded_files"] = _berkas_terunggah_respons(file_metas)
 
     # -- Save attachment records to DB --
     # Use session_id if present, fall back to conversation_id (may also be a valid session UUID)
@@ -6238,26 +6267,16 @@ Aturan:
 
 @router.get("/files/{storage_key:path}")
 async def get_chat_file(request: Request, storage_key: str):
-    """Serve uploaded chat files with tenant isolation."""
+    """Sajikan berkas unggahan (form/chat) milik tenant dari MinIO (Unit U1).
+
+    Kunci wajib `<tenant>/uploads/<forms|chat>/<sha256><ext>` dengan tenant =
+    tenant JWT; bentuk lama (berkas lokal) dan semua penolakan -> 404 (bukan
+    403, supaya tak jadi oracle). TIDAK membaca disk. Lihat
+    app/utils/chat_file_path.py.
+    """
     ctx = _get_user_context(request)
-    tenant_id = ctx["tenant_id"]
-
-    # Kunci wajib <tenant>/<subdir>/<sha256><ext> dan realpath-nya wajib di
-    # dalam direktori milik tenant pemanggil; semua penolakan = 404 (bukan
-    # 403) supaya tak jadi oracle. Lihat app/utils/chat_file_path.py.
-    file_path = resolve_berkas_tenant(UPLOAD_BASE_DIR, tenant_id, storage_key)
-    if file_path is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    content_type, inline = tipe_sajian(file_path)
-    headers = {"X-Content-Type-Options": "nosniff"}
-    if inline:
-        return FileResponse(file_path, media_type=content_type, headers=headers)
-    return FileResponse(
-        file_path,
-        media_type=content_type,
-        filename=os.path.basename(file_path),
-        headers=headers,
+    return await sajikan_objek_unggahan(
+        get_storage_service(), ctx["tenant_id"], storage_key
     )
 
 

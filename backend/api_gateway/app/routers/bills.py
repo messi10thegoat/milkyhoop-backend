@@ -1482,9 +1482,8 @@ async def list_bill_attachments(
                     {
                         "id": str(r["id"]),
                         "filename": r["file_name"],
-                        # Unit 1b: s3 -> rute download faktur ini (melayani
-                        # sumber document_attachments juga); local berkas-chat
-                        # -> path chat gateway apa adanya.
+                        # Unit 1b/U1: semua baris -> rute download faktur ini
+                        # (melayani sumber document_attachments juga).
                         "url": url_lampiran_dokumen(
                             _BILL_ATT_MODUL_URL,
                             bill_id,

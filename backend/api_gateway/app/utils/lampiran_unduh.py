@@ -18,7 +18,6 @@ receive_payments dan bill_payments_v2: tanpa JOIN induk, id lampiran
 pembayaran-keluar bisa diunduh lewat rute penerimaan dan sebaliknya.
 """
 import logging
-import re
 from urllib.parse import quote
 
 from fastapi import HTTPException
@@ -44,41 +43,19 @@ def url_unduh_lampiran(modul: str, induk_id, lampiran_id) -> str:
 # Penanda unik Unit 1b (faktur penjualan, faktur pembelian, beban).
 PENANDA_LAMPIRAN_1B = "lampiran-1b-unduh-lewat-gateway"
 
-# `documents.file_url` baris LOCAL yang ditulis jalur unggah lokal
-# (uploads.py / chat) = path relatif rute berkas chat gateway. Rute itu
-# memeriksa tenant + bentuk kunci sendiri (utils/chat_file_path.py) dan
-# melayani berkas SELAMA masih ada di disk kontainer. Hanya bentuk persis ini
-# yang dipertahankan; apa pun selain itu (URL absolut, presign, kunci mentah)
-# tak pernah keluar sebagai url.
-_URL_BERKAS_CHAT = re.compile(
-    r"^/api/v3/chat/files/[A-Za-z0-9_-]+/(chat|documents|forms)/"
-    r"[0-9a-f]{64}(\.[a-z0-9]{1,10})?$"
-)
-
-
 def url_lampiran_dokumen(
-    modul: str, induk_id, lampiran_id, storage_type, file_url
+    modul: str, induk_id, lampiran_id, storage_type=None, file_url=None
 ) -> str:
     """url untuk lampiran yang barisnya di `documents` (Unit 1b).
 
-    - baris s3 (dan apa pun yang bukan kasus di bawah) -> rute download modul
-      (`url_unduh_lampiran`), yang men-stream dari storage;
-    - baris LOCAL yang file_url-nya path berkas-chat gateway -> file_url itu
-      apa adanya. Alasannya: rute download modul SENGAJA tak membaca disk
-      (baris local -> 404), sedangkan berkas unggahan lokal yang BARU
-      (AttachmentUpload desktop -> /api/uploads/document) masih ada di disk
-      sampai kontainer dibuat ulang dan hari ini tampil lewat path itu.
-      Mengarahkannya ke rute download = regresi seketika. Berkas lokal yang
-      sudah hilang tetap 404 di rute chat -- sama bersihnya.
+    SEMUA baris -> rute download modul (`url_unduh_lampiran`), yang men-stream
+    dari storage (baris s3) atau menjawab 404 bersih (baris local lama yang
+    berkasnya sudah hilang). Sejak unggahan-persisten (Unit U1) unggahan form
+    ditulis sebagai baris s3, jadi cabang sementara "baris local -> path
+    berkas-chat" sudah dihapus. `storage_type` / `file_url` dipertahankan di
+    tanda tangan supaya pemanggil (bills, expenses) tak berubah, tapi SENGAJA
+    tak dipakai: url tak pernah berasal dari file_url tersimpan.
     """
-    # SEMENTARA -- HAPUS saat unggahan-persisten live (putusan MASTER 24 Sep).
-    # Cabang ini + tes pasangannya di tests/unit/test_lampiran_1b_download.py
-    # (url baris local = path berkas-chat) HARUS dibalik di unit itu: sesudahnya
-    # semua baris -> url_unduh_lampiran.
-    if (storage_type or "").lower() == "local" and _URL_BERKAS_CHAT.match(
-        file_url or ""
-    ):
-        return file_url
     return url_unduh_lampiran(modul, induk_id, lampiran_id)
 
 
