@@ -1050,6 +1050,14 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
 # =============================================================================
 
 
+# #37: satu-satunya alasan nota kredit yang mengembalikan barang ke stok.
+ALASAN_RESTOCK = frozenset({"return"})
+
+
+def _cn_memulihkan_stok(reason) -> bool:
+    return reason in ALASAN_RESTOCK
+
+
 @router.post("/{credit_note_id}/post", response_model=CreditNoteResponse)
 async def post_credit_note(request: Request, credit_note_id: UUID):
     """
@@ -1261,7 +1269,12 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 # Per-product accounts (resolved lazily once per product)
                 _acct_cache = {}
 
-                for item in cn_items:
+                # #37: barang KEMBALI ke stok (+ jurnal Dr Persediaan / Cr HPP) HANYA untuk
+                # retur. Koreksi harga / diskon / rusak / lainnya = nilai saja. Dulu SETIAP
+                # baris barang ber-track_inventory di-restock apa pun alasannya -> CN koreksi
+                # harga yang memilih barang katalog menambah stok fiktif dan mengurangi HPP.
+                # Rusak: putusan pemilik 25 Sep -- tanpa restock; kerugian lewat penyesuaian stok.
+                for item in (cn_items if _cn_memulihkan_stok(cn["reason"]) else []):
                     if not item["item_id"]:
                         continue
                     # Check if product tracks inventory
@@ -1306,6 +1319,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                         user_id=ctx["user_id"],
                         notes=f"Restock from Credit Note {cn['credit_note_number']}",
                         movement_date=cn["credit_note_date"],
+                        movement_type="SALES_RETURN",  # #37 (dulu default 'PURCHASE')
                     )
 
                     if line_cost > 0:

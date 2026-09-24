@@ -481,6 +481,7 @@ def label_pembalikan_masuk(source_type: str) -> str:
     """movement_type untuk baris yang MEMBALIK gerakan masuk (qty_in) sebuah sumber.
 
     BILL/PURCHASE_INVOICE -> 'PURCHASE_RETURN' (tetap, perilaku lama).
+    CREDIT_NOTE -> 'SALES_RETURN_REVERSAL' (pasangan restock 'SALES_RETURN', #37).
     Sumber lain -> '{source_type}_REVERSAL', sepola dengan
     MATERIAL_ISSUE_REVERSAL / PRODUCTION_OUTPUT_REVERSAL (production.py).
     Nama kepanjangan (>30) -> 'INBOUND_REVERSAL' agar tak ditolak kolom.
@@ -488,6 +489,9 @@ def label_pembalikan_masuk(source_type: str) -> str:
     st = (source_type or "").upper()
     if st in _SUMBER_PEMBELIAN:
         return "PURCHASE_RETURN"
+    if st == "CREDIT_NOTE":
+        # #37: restock nota kredit berlabel SALES_RETURN -> pembaliknya sepasang.
+        return "SALES_RETURN_REVERSAL"
     label = f"{st}_REVERSAL" if st else "INBOUND_REVERSAL"
     if len(label) > _PANJANG_MAKS_MOVEMENT_TYPE:
         return "INBOUND_REVERSAL"
@@ -513,7 +517,7 @@ async def record_inventory_reversal(
     Architecture (milkyhoop-inventory Rule 9):
     - Original inbound (qty_in) -> reversal label per SUMBER, lihat
       `label_pembalikan_masuk()`: BILL -> PURCHASE_RETURN; lainnya
-      (STOCK_ADJUSTMENT, CREDIT_NOTE, ...) -> "{source_type}_REVERSAL".
+      (STOCK_ADJUSTMENT, ...) -> "{source_type}_REVERSAL"; CREDIT_NOTE -> SALES_RETURN_REVERSAL.
     - Original outbound (qty_out) -> reversal VOID_REVERSAL (qty_in)
     - source_type = "{original}_VOID" (e.g. BILL_VOID, SALES_INVOICE_VOID)
     - journal_id = reversal_journal_id (NOT original — D5 fix)

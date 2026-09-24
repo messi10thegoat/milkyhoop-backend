@@ -131,7 +131,7 @@ def test_void_cek_periode_asal_dan_pembalik_sebelum_tulis(berkas, nama):
 
 @pytest.mark.parametrize("sumber,harap", [
     ("BILL", "PURCHASE_RETURN"), ("PURCHASE_INVOICE", "PURCHASE_RETURN"),
-    ("STOCK_ADJUSTMENT", "STOCK_ADJUSTMENT_REVERSAL"), ("CREDIT_NOTE", "CREDIT_NOTE_REVERSAL"),
+    ("STOCK_ADJUSTMENT", "STOCK_ADJUSTMENT_REVERSAL"), ("CREDIT_NOTE", "SALES_RETURN_REVERSAL"),
     ("STOCK_ADJUSTMENT_VOID", "STOCK_ADJUSTMENT_VOID_REVERSAL"), ("", "INBOUND_REVERSAL"),
     (None, "INBOUND_REVERSAL"), ("X" * 30, "INBOUND_REVERSAL"),
 ])
