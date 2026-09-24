@@ -3,7 +3,7 @@ Sales Orders Router
 Order management with shipment tracking.
 NO journal entries - accounting impact happens on Invoice creation.
 """
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from datetime import date
 from decimal import Decimal
@@ -11,6 +11,12 @@ import asyncpg
 import logging
 import uuid as uuid_module
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..utils.idempotency import (
+    ambil_replay_klien,
+    hash_payload,
+    kunci_idempotensi_klien,
+    simpan_replay_klien,
+)
 from ..services.sales_doc_calc import (
     compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
 )
@@ -557,14 +563,49 @@ async def get_sales_order_detail(request: Request, order_id: str):
 
 
 @router.post("", response_model=SalesOrderResponse)
-async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
-    """Create a new sales order (draft status)."""
+async def create_sales_order(request: Request, body: CreateSalesOrderRequest, response: Response):
+    """Create a new sales order (draft status).
+
+    W0 (Conversational Workspace): header X-Idempotency-Key (alias Idempotency-Key)
+    -> kunci sama + isi sama dalam 24 jam = respons ASLI diulang (header
+    X-Idempotent-Replay: true), tanpa SO kedua; kunci sama + isi beda = 409.
+    Ruang kunci = (tenant, pengguna, kunci). Hanya respons SUKSES yang dicatat, di
+    transaksi yang sama dengan SO-nya. Badan replay = badan ASLI saat dibuat (bukan
+    status SO terkini). Tanpa header = perilaku lama (SO kembar yang sah tetap boleh).
+    """
     try:
         ctx = get_user_context(request)
+        try:
+            _kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # W0: idempotency DULUAN — sebelum cek nomor manual / penomoran, supaya
+                # pengulangan dengan order_number manual tak ditolak 409 "nomor dipakai".
+                _kunci_penuh = _sidik = None
+                if _kunci_klien:
+                    _kunci_penuh = f"SO_CREATE:{ctx['user_id']}:{_kunci_klien}"
+                    _sidik = hash_payload(body.model_dump(mode="json"))
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"IDEM:{ctx['tenant_id']}:{_kunci_penuh}",
+                    )
+                    try:
+                        _lama = await ambil_replay_klien(
+                            conn, ctx["tenant_id"], _kunci_penuh, _sidik
+                        )
+                    except LookupError:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Idempotency-Key sudah dipakai untuk pesanan lain",
+                        )
+                    if _lama is not None:
+                        response.headers["X-Idempotent-Replay"] = "true"
+                        return SalesOrderResponse(**_lama)
+
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
                 if _nomor_manual:
@@ -690,11 +731,17 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest):
                         item["dpp"],
                     )
 
-                return SalesOrderResponse(
+                _hasil = SalesOrderResponse(
                     success=True,
                     message="Sales order created successfully",
                     data={"id": str(order_id), "order_number": order_number},
                 )
+                if _kunci_penuh:
+                    await simpan_replay_klien(
+                        conn, ctx["tenant_id"], _kunci_penuh, "SALES_ORDER_CREATE",
+                        _sidik, _hasil.model_dump(mode="json"), result_id=order_id,
+                    )
+                return _hasil
 
     except HTTPException:
         raise

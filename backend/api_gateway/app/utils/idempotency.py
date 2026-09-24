@@ -177,3 +177,76 @@ def build_idempotency_default(prefix: str, parts, allocations) -> str:
     alloc_s = "|".join(sorted(f"{d}:{_norm_amount(a)}" for d, a in allocations))
     alloc_h = hashlib.sha256(alloc_s.encode()).hexdigest()[:16]
     return ":".join([prefix, *[str(p) for p in parts], alloc_h])
+
+
+# ── Kunci idempotency KIRIMAN KLIEN (W0 Conversational Workspace, 25 Sep 2026) ──
+# Beda dengan build_idempotency_default: dokumen seperti SO boleh sah KEMBAR (dua
+# pesanan identik untuk pelanggan yang sama), jadi TIDAK ada kunci default sisi server.
+# Tanpa header = perilaku lama. Dengan header = satu kunci per pembukaan form di FE.
+KUNCI_KLIEN_MAKS = 200
+
+
+def kunci_idempotensi_klien(request) -> Optional[str]:
+    """Kunci dari header X-Idempotency-Key (alias: Idempotency-Key), atau None.
+
+    Kosong/spasi = None (bukan kunci ""); terlalu panjang = ValueError (pemanggil -> 400),
+    bukan dipotong diam-diam — dua kunci panjang berbeda akan bertabrakan setelah dipotong.
+    """
+    mentah = request.headers.get("X-Idempotency-Key") or request.headers.get("Idempotency-Key")
+    if mentah is None or not mentah.strip():
+        return None
+    kunci = mentah.strip()
+    if len(kunci) > KUNCI_KLIEN_MAKS:
+        raise ValueError(f"Idempotency-Key maksimal {KUNCI_KLIEN_MAKS} karakter")
+    return kunci
+
+
+def hash_payload(payload) -> str:
+    """Sidik isi permintaan: kunci sama + isi beda = 409, bukan replay respons lain."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+async def ambil_replay_klien(conn, tenant_id: str, kunci_penuh: str, sidik: str):
+    """Cari respons SUKSES tersimpan untuk kunci ini. WAJIB di dalam transaksi, SESUDAH
+    advisory lock per kunci (dua permintaan identik bersamaan tak boleh sama-sama MISS).
+
+    Kembali: dict respons asli, atau None. Isi beda -> LookupError (pemanggil -> 409).
+    """
+    baris = await conn.fetchrow(
+        "SELECT result FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
+        tenant_id, kunci_penuh,
+    )
+    if not baris or baris["result"] is None:
+        return None
+    simpan = baris["result"]
+    if isinstance(simpan, str):
+        simpan = json.loads(simpan)
+    if simpan.get("payload_hash") != sidik:
+        raise LookupError("Idempotency-Key sudah dipakai untuk permintaan dengan isi berbeda")
+    return simpan.get("response")
+
+
+async def simpan_replay_klien(conn, tenant_id: str, kunci_penuh: str, source_type: str,
+                              sidik: str, respons: dict, result_id=None, ttl_hours: int = 24):
+    """Catat respons SUKSES, di transaksi YANG SAMA dengan penulisan dokumennya: bila
+    dokumen gagal (4xx/5xx, rollback) catatan ini ikut hilang -> kunci bebas dipakai ulang.
+
+    Baris kedaluwarsa dengan kunci sama DITIMPA (PK tenant_id+key tetap ada sesudah
+    expires_at; ON CONFLICT DO NOTHING akan diam-diam membuat kunci itu tak tercatat lagi).
+    """
+    await conn.execute(
+        """
+        INSERT INTO idempotency_keys (key, tenant_id, source_type, result, result_id, result_status, expires_at)
+        VALUES ($1, $2, $3, $4, $5, 'SUCCESS', NOW() + make_interval(hours => $6))
+        ON CONFLICT (tenant_id, key) DO UPDATE
+           SET source_type = EXCLUDED.source_type, result = EXCLUDED.result,
+               result_id = EXCLUDED.result_id, result_status = 'SUCCESS',
+               created_at = NOW(), expires_at = EXCLUDED.expires_at
+         WHERE idempotency_keys.expires_at <= NOW()
+        """,
+        kunci_penuh, tenant_id, source_type,
+        json.dumps({"payload_hash": sidik, "response": respons}, default=str),
+        result_id, ttl_hours,
+    )
