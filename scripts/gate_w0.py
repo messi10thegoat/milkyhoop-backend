@@ -107,7 +107,11 @@ async def main():
 
     # 2. kunci sama + isi beda -> 409, tanpa SO baru
     s3, b3, _ = await post(KAOS, UA, "k-satu", badan(KAOS, harga=99999))
-    cek("kunci sama isi beda -> 409", s3 == 409 and await jumlah_so(KAOS) == n1, f"{s3} {b3}")
+    cek("kunci sama isi beda -> 409 + code IDEMPOTENCY_KEY_REUSED",
+        s3 == 409 and await jumlah_so(KAOS) == n1
+        and (b3.get("detail") or {}).get("code") == "IDEMPOTENCY_KEY_REUSED"
+        and (b3.get("detail") or {}).get("message") == "Idempotency-Key sudah dipakai untuk pesanan lain",
+        f"{s3} {b3}")
 
     # 3. kunci sama beda TENANT -> SO terpisah, tanpa bocor respons
     g0 = await jumlah_so(GRAP)
@@ -126,6 +130,8 @@ async def main():
     nomor_dipakai = (b1.get("data") or {}).get("order_number") or "TAK-ADA"
     s6, b6, _ = await post(KAOS, UA, "k-dua", badan(KAOS, nomor=nomor_dipakai))
     s7, b7, h7 = await post(KAOS, UA, "k-dua", badan(KAOS))
+    cek("409 nomor-dipakai TANPA code idempotensi (FE bisa membedakan)",
+        s6 == 409 and not isinstance(b6.get("detail"), dict), f"{b6}")
     cek("gagal lalu sah, kunci sama -> 1 SO (gagal tak dicatat)",
         s6 == 409 and s7 == 200 and await jumlah_so(KAOS) - n2 == 1 and "X-Idempotent-Replay" not in h7,
         f"{s6} lalu {s7}")

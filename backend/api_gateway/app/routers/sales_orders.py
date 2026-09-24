@@ -598,9 +598,14 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                             conn, ctx["tenant_id"], _kunci_penuh, _sidik
                         )
                     except LookupError:
+                        # Kode TETAP supaya FE membedakan dari 409 "nomor dipakai" tanpa
+                        # mencocokkan teks; bentuk {code, message} = konvensi rute lain.
                         raise HTTPException(
                             status_code=409,
-                            detail="Idempotency-Key sudah dipakai untuk pesanan lain",
+                            detail={
+                                "code": "IDEMPOTENCY_KEY_REUSED",
+                                "message": "Idempotency-Key sudah dipakai untuk pesanan lain",
+                            },
                         )
                     if _lama is not None:
                         response.headers["X-Idempotent-Replay"] = "true"
