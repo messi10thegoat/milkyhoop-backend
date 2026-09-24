@@ -73,6 +73,48 @@ except ImportError:
     HAS_ACCOUNTING = False
 from ..services.pdf_service import get_pdf_service
 from ..services.storage_service import get_storage_service
+from ..utils.lampiran_unduh import (
+    stream_lampiran,
+    url_lampiran_dokumen,
+    url_unduh_lampiran,
+)
+
+# Unit 1b: url lampiran faktur pembelian = path relatif rute download
+# GET /api/bills/{bill_id}/attachments/{attachment_id}/download (stream lewat
+# gateway). Presign MinIO mati sejak port publik ditutup (23 Sep).
+_BILL_ATT_MODUL_URL = "bills"
+
+# Rute download melayani DUA sumber, sama seperti GET .../attachments:
+#  (1) bill_attachments (unggah dasbor; ditulis storage.upload_file -> MinIO,
+#      jadi 's3' secara konstruksi; tabelnya TAK punya tenant_id -> pagar
+#      tenant lewat JOIN bills);
+#  (2) documents yang tertaut lewat document_attachments entity_type='bill'
+#      (mis. bukti transfer dari chat, FIX_DOCLINK_PAYMENT).
+# Id keduanya UUID dari tabel berbeda; (1) dicoba dulu, lalu (2) -- urutan
+# yang sama dengan daftar (yang juga membuang duplikat id). Keduanya memaku
+# faktur INI + tenant JWT; tak cocok -> 404.
+_BILL_ATT_SQL_UNDUH_LAMA = """
+    SELECT ba.filename AS file_name, ba.file_path, ba.mime_type AS file_type,
+           's3' AS storage_type
+    FROM bill_attachments ba
+    JOIN bills b ON b.id = ba.bill_id
+    WHERE ba.id = $1
+      AND ba.bill_id = $2
+      AND b.tenant_id = $3
+"""
+_BILL_ATT_SQL_UNDUH_DOKUMEN = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN bills b ON b.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'bill'
+      AND b.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
 
 # Import centralized config
 
@@ -1350,7 +1392,10 @@ async def upload_attachment(
                 "data": {
                     "id": str(attachment_id),
                     "filename": file.filename,
-                    "url": result.url,
+                    # Unit 1b: path relatif gateway, BUKAN result.url (presign).
+                    "url": url_unduh_lampiran(
+                        _BILL_ATT_MODUL_URL, bill_id, attachment_id
+                    ),
                     "size": len(content),
                     "mime_type": file.content_type,
                 },
@@ -1394,24 +1439,14 @@ async def list_bill_attachments(
             bill_id,
         )
 
-        # storage_service already imported at top level
-        storage = get_storage_service()
-
         attachments = []
         for r in rows:
-            try:
-                url = (
-                    await storage.generate_signed_url(r["file_path"])
-                    if r["file_path"]
-                    else None
-                )
-            except Exception:
-                url = None
             attachments.append(
                 {
                     "id": str(r["id"]),
                     "filename": r["filename"],
-                    "url": url,
+                    # Unit 1b: path relatif rute download (stream lewat gateway).
+                    "url": url_unduh_lampiran(_BILL_ATT_MODUL_URL, bill_id, r["id"]),
                     "size": r["file_size"],
                     "mime_type": r["mime_type"],
                     "uploaded_at": r["uploaded_at"].isoformat()
@@ -1431,7 +1466,7 @@ async def list_bill_attachments(
             _seen_ids = {a["id"] for a in attachments}
             doc_rows = await conn.fetch(
                 """SELECT d.id, d.file_name, d.file_size, d.file_type, d.file_url,
-                          d.file_path, d.uploaded_at
+                          d.storage_type, d.uploaded_at
                    FROM document_attachments da
                    JOIN documents d ON da.document_id = d.id
                    WHERE da.tenant_id = $1 AND da.entity_type = 'bill'
@@ -1443,19 +1478,20 @@ async def list_bill_attachments(
             for r in doc_rows:
                 if str(r["id"]) in _seen_ids:
                     continue
-                try:
-                    _u = (
-                        await storage.generate_signed_url(r["file_path"])
-                        if r["file_path"]
-                        else None
-                    ) or r["file_url"]
-                except Exception:
-                    _u = r["file_url"]
                 attachments.append(
                     {
                         "id": str(r["id"]),
                         "filename": r["file_name"],
-                        "url": _u or f"/api/documents/{r['id']}/download",
+                        # Unit 1b: s3 -> rute download faktur ini (melayani
+                        # sumber document_attachments juga); local berkas-chat
+                        # -> path chat gateway apa adanya.
+                        "url": url_lampiran_dokumen(
+                            _BILL_ATT_MODUL_URL,
+                            bill_id,
+                            r["id"],
+                            r["storage_type"],
+                            r["file_url"],
+                        ),
                         "size": r["file_size"],
                         "mime_type": r["file_type"],
                         "uploaded_at": r["uploaded_at"].isoformat()
@@ -1913,46 +1949,29 @@ async def download_bill_attachment(
     bill_id: UUID,
     attachment_id: UUID,
 ):
-    """Proxy-download a bill attachment (avoids mixed-content HTTP→HTTPS)."""
+    """Stream satu lampiran faktur pembelian lewat gateway (Unit 1b).
+
+    Dua sumber (lihat _BILL_ATT_SQL_UNDUH_*): bill_attachments dulu, lalu
+    documents via document_attachments entity_type='bill'. Izin: pola READ
+    `purchase_invoice` (modul yang sama dengan GET .../attachments). Baris
+    local / objek hilang -> 404 (dulu 500); nama berkas disanitasi.
+    """
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
-        row = await conn.fetchrow(
-            """SELECT ba.filename, ba.file_path, ba.mime_type
-            FROM bill_attachments ba
-            JOIN bills b ON b.id = ba.bill_id
-            WHERE ba.id = $1 AND ba.bill_id = $2 AND b.tenant_id = $3""",
-            attachment_id,
-            bill_id,
-            tenant_id,
-        )
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            row = await conn.fetchrow(
+                _BILL_ATT_SQL_UNDUH_LAMA, attachment_id, bill_id, tenant_id
+            )
+            if not row:
+                row = await conn.fetchrow(
+                    _BILL_ATT_SQL_UNDUH_DOKUMEN, attachment_id, bill_id, tenant_id
+                )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    storage = get_storage_service()
-    try:
-        obj = storage.client.get_object(
-            Bucket=storage.config.bucket, Key=row["file_path"]
-        )
-        body = obj["Body"]
-
-        def iter_body():
-            while chunk := body.read(65536):
-                yield chunk
-            body.close()
-
-        return StreamingResponse(
-            iter_body(),
-            media_type=row["mime_type"] or "application/octet-stream",
-            headers={
-                "Content-Disposition": f'inline; filename="{row["filename"]}"',
-                "Cache-Control": "private, max-age=3600",
-            },
-        )
-    except Exception as e:
-        logger.error(
-            f"Error downloading attachment {attachment_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to download attachment")
+    return stream_lampiran(row, get_storage_service())

@@ -705,6 +705,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/expense\-claims/[^/]+$", ["GET"], "expense", "R"),
     (r"^/api/expense\-policy$", ["GET"], "expense", "R"),
     (r"^/api/expenses/[^/]+/attachments$", ["GET"], "expense", "R"),
+    (r"^/api/expenses/[^/]+/attachments/[^/]+/download$", ["GET"], "expense", "R"),  # Unit 1b
     (r"^/api/expenses/[^/]+/journal\-entries$", ["GET"], "expense", "R"),
     (r"^/api/financial\-ratios$", ["GET"], "reports", "R"),
     (r"^/api/financial\-ratios/alerts$", ["GET"], "reports", "R"),

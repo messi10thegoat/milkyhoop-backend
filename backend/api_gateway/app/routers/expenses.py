@@ -35,6 +35,53 @@ from ..services.role_resolver import (
     PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.storage_service import get_storage_service
+from ..utils.lampiran_unduh import stream_lampiran, url_lampiran_dokumen
+
+# Unit 1b (lampiran-1b-unduh-lewat-gateway): lampiran beban = baris
+# `documents` yang tertaut lewat document_attachments entity_type='expense'
+# (tabel expense_attachments ada tapi 0 baris & tanpa penulis). `id`
+# lampiran di respons = documents.id (sama dengan yang dipakai DELETE).
+_EXP_ATT_MODUL_URL = "expenses"
+
+# Pagar rute download: dokumen HARUS tertaut ke beban INI, bebannya milik
+# tenant JWT (predikat eksplisit -- gateway memakai peran BYPASSRLS), dan
+# dokumennya belum dihapus. Tak cocok -> 0 baris -> 404. Baris local -> 404
+# oleh stream_lampiran (disk lokal sengaja tak dibaca).
+_EXP_ATT_SQL_UNDUH = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN expenses e ON e.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'expense'
+      AND e.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
+
+
+def _exp_lampiran_ke_respons(rows, expense_id) -> list:
+    """Bentuk respons lampiran beban (medan sama seperti sebelumnya).
+
+    url: s3 -> rute download beban; local berkas-chat -> path chat gateway
+    (lihat url_lampiran_dokumen). Dulu `documents.file_url` mentah (NULL untuk
+    semua baris s3). thumbnail_url dulu = documents.thumbnail_path, yaitu
+    KUNCI storage (bukan URL) -> kini None; medannya tetap ada.
+    """
+    out = []
+    for r in rows:
+        d = dict(r)
+        storage_type = d.pop("storage_type", None)
+        file_url = d.pop("file_url", None)
+        d["url"] = url_lampiran_dokumen(
+            _EXP_ATT_MODUL_URL, expense_id, d["id"], storage_type, file_url
+        )
+        d["thumbnail_url"] = None
+        out.append(d)
+    return out
 
 import uuid as _uuid_post  # noqa: E402  (dipakai post_expense)
 from types import SimpleNamespace  # noqa: E402
@@ -1369,7 +1416,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                 attachments = await conn.fetch(
                     """
                     SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                           d.width, d.height, d.file_url as url, d.thumbnail_path as thumbnail_url,
+                           d.width, d.height, d.file_url, d.storage_type,
                            d.uploaded_at
                     FROM document_attachments da
                     JOIN documents d ON da.document_id = d.id
@@ -1379,7 +1426,9 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
                     str(expense_id),
                 )
 
-                result_data["attachments"] = [dict(a) for a in attachments]
+                result_data["attachments"] = _exp_lampiran_ke_respons(
+                    attachments, expense_id
+                )
 
                 return {
                     "success": True,
@@ -2350,7 +2399,7 @@ async def list_expense_attachments(request: Request, expense_id: UUID):
             attachments = await conn.fetch(
                 """
                 SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                       d.width, d.height, d.file_url as url, d.thumbnail_path as thumbnail_url,
+                       d.width, d.height, d.file_url, d.storage_type,
                        d.uploaded_at, da.display_order
                 FROM document_attachments da
                 JOIN documents d ON da.document_id = d.id
@@ -2361,13 +2410,47 @@ async def list_expense_attachments(request: Request, expense_id: UUID):
                 str(expense_id),
             )
 
-            return {"success": True, "data": [dict(a) for a in attachments]}
+            return {
+                "success": True,
+                "data": _exp_lampiran_ke_respons(attachments, expense_id),
+            }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error fetching expense attachments: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch attachments")
+
+
+@router.get("/{expense_id}/attachments/{attachment_id}/download")
+async def download_expense_attachment(
+    request: Request,
+    expense_id: UUID,
+    attachment_id: UUID,
+):
+    """Stream satu lampiran beban lewat gateway (Unit 1b).
+
+    `attachment_id` = documents.id (sama dengan daftar & DELETE). Izin: pola
+    READ `expense` di permission_middleware (modul yang sama dengan
+    GET .../attachments). Baris local (banyak lampiran beban lama; berkasnya
+    sudah hilang) -> 404 "Berkas tidak tersedia", bukan 500.
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            row = await conn.fetchrow(
+                _EXP_ATT_SQL_UNDUH, attachment_id, expense_id, tenant_id
+            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return stream_lampiran(row, get_storage_service())
 
 
 @router.post("/{expense_id}/attachments", response_model=AttachmentResponse)

@@ -5994,6 +5994,30 @@ async def get_invoice_journals(
 # SALES INVOICE ATTACHMENTS
 # =============================================================================
 
+from ..utils.lampiran_unduh import (  # noqa: E402
+    stream_lampiran,
+    url_unduh_lampiran,
+)
+
+# Unit 1b: url lampiran = path relatif rute download di bawah (stream lewat
+# gateway). Presign MinIO mati sejak port publik ditutup (23 Sep).
+_SI_ATT_MODUL_URL = "sales-invoices"
+
+# Pagar rute download: lampiran HARUS milik faktur INI dan fakturnya milik
+# tenant JWT (predikat eksplisit -- gateway memakai peran BYPASSRLS). Tabel
+# sales_invoice_attachments hanya ditulis unggah->storage.upload_file (MinIO),
+# jadi storage_type-nya 's3' secara konstruksi; stream_lampiran tetap menolak
+# file_path kosong / objek hilang -> 404.
+_SI_ATT_SQL_UNDUH = """
+    SELECT sa.filename AS file_name, sa.file_path, sa.mime_type AS file_type,
+           's3' AS storage_type
+    FROM sales_invoice_attachments sa
+    JOIN sales_invoices si ON si.id = sa.invoice_id
+    WHERE sa.id = $1
+      AND sa.invoice_id = $2
+      AND si.tenant_id = $3
+"""
+
 
 @router.post("/{invoice_id}/attachments", status_code=201)
 async def upload_invoice_attachment(
@@ -6057,7 +6081,10 @@ async def upload_invoice_attachment(
                 "data": {
                     "id": str(attachment_id),
                     "filename": file.filename,
-                    "url": result.url,
+                    # Unit 1b: path relatif gateway, BUKAN result.url (presign).
+                    "url": url_unduh_lampiran(
+                        _SI_ATT_MODUL_URL, invoice_id, attachment_id
+                    ),
                     "size": len(content),
                     "mime_type": file.content_type,
                 },
@@ -6098,23 +6125,16 @@ async def list_invoice_attachments(
             invoice_id,
         )
 
-        storage = get_storage_service()
-
         attachments = []
         for r in rows:
-            try:
-                url = (
-                    await storage.generate_signed_url(r["file_path"])
-                    if r["file_path"]
-                    else None
-                )
-            except Exception:
-                url = None
             attachments.append(
                 {
                     "id": str(r["id"]),
                     "filename": r["filename"],
-                    "url": url,
+                    # Unit 1b: path relatif rute download (stream lewat gateway).
+                    "url": url_unduh_lampiran(
+                        _SI_ATT_MODUL_URL, invoice_id, r["id"]
+                    ),
                     "size": r["file_size"],
                     "mime_type": r["mime_type"],
                     "uploaded_at": r["uploaded_at"].isoformat()
@@ -6171,49 +6191,27 @@ async def download_invoice_attachment(
     invoice_id: UUID,
     attachment_id: UUID,
 ):
-    """Proxy-download a sales invoice attachment."""
+    """Stream satu lampiran faktur penjualan lewat gateway (Unit 1b).
+
+    Izin: pola READ `sales_invoice` di permission_middleware (modul yang sama
+    dengan GET .../attachments). Objek hilang -> 404 (dulu 500); nama berkas
+    disanitasi sebelum masuk header (dulu disalin mentah).
+    """
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{tenant_id}'")
-        row = await conn.fetchrow(
-            """SELECT sa.filename, sa.file_path, sa.mime_type
-            FROM sales_invoice_attachments sa
-            JOIN sales_invoices si ON si.id = sa.invoice_id
-            WHERE sa.id = $1 AND sa.invoice_id = $2 AND si.tenant_id = $3""",
-            attachment_id,
-            invoice_id,
-            tenant_id,
-        )
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", tenant_id
+            )
+            row = await conn.fetchrow(
+                _SI_ATT_SQL_UNDUH, attachment_id, invoice_id, tenant_id
+            )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    storage = get_storage_service()
-    try:
-        obj = storage.client.get_object(
-            Bucket=storage.config.bucket, Key=row["file_path"]
-        )
-        body = obj["Body"]
-
-        def iter_body():
-            while chunk := body.read(65536):
-                yield chunk
-            body.close()
-
-        return StreamingResponse(
-            iter_body(),
-            media_type=row["mime_type"] or "application/octet-stream",
-            headers={
-                "Content-Disposition": f'inline; filename="{row["filename"]}"',
-                "Cache-Control": "private, max-age=3600",
-            },
-        )
-    except Exception as e:
-        logger.error(
-            f"Error downloading attachment {attachment_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to download attachment")
+    return stream_lampiran(row, get_storage_service())
 
 
 @router.post("/{invoice_id}/fulfill")

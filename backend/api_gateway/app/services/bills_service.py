@@ -80,6 +80,7 @@ async def _ensure_bills_service_role_preconditions(pool, tenant_id=None):
 
 from ..utils.sorting import build_order_by_clause  # noqa: E402
 from ..utils.money import cents_to_decimal_string  # noqa: E402
+from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 
 # Law 16: Journal-derived amount_paid CTE (used by list_bills, get_outstanding_summary)
 # Computes per-bill paid amount from journal_lines via BOTH payment table paths
@@ -916,7 +917,7 @@ class BillsService:
                     }
                     for payment in payments
                 ],
-                "attachments": await self._map_attachments_with_urls(attachments),
+                "attachments": self._map_attachments_with_urls(bill_id, attachments),
                 "created_at": bill["created_at"].isoformat(),
                 "updated_at": bill["updated_at"].isoformat(),
             }
@@ -4246,50 +4247,28 @@ class BillsService:
         """Convert money value to string with .00 suffix."""
         return cents_to_decimal_string(value or 0)
 
-    async def _map_attachments_with_urls(self, attachment_rows) -> list:
-        """Map attachment DB rows to response dicts with signed URLs."""
-        try:
-            from app.services.storage_service import get_storage_service
+    def _map_attachments_with_urls(self, bill_id, attachment_rows) -> list:
+        """Map baris bill_attachments ke respons (Unit 1b, 24 Sep 2026).
 
-            storage = get_storage_service()
-            result = []
-            for att in attachment_rows:
-                try:
-                    url = (
-                        await storage.generate_signed_url(att["file_path"])
-                        if att.get("file_path")
-                        else att.get("file_path")
-                    )
-                except Exception:
-                    url = att.get("file_path")
-                result.append(
-                    {
-                        "id": str(att["id"]),
-                        "filename": att["filename"],
-                        "url": url,
-                        "size": att.get("file_size"),
-                        "mime_type": att.get("mime_type"),
-                        "uploaded_at": att["uploaded_at"].isoformat()
-                        if att.get("uploaded_at")
-                        else None,
-                    }
-                )
-            return result
-        except Exception:
-            # Fallback if storage service unavailable
-            return [
-                {
-                    "id": str(att["id"]),
-                    "filename": att["filename"],
-                    "url": att.get("file_path"),
-                    "size": att.get("file_size"),
-                    "mime_type": att.get("mime_type"),
-                    "uploaded_at": att["uploaded_at"].isoformat()
-                    if att.get("uploaded_at")
-                    else None,
-                }
-                for att in attachment_rows
-            ]
+        url = path relatif rute download faktur pembelian
+        (/api/bills/{bill_id}/attachments/{id}/download) yang men-stream
+        lewat gateway. Dulu: presign MinIO (mati sejak port publik ditutup)
+        dan, bila presign gagal, JATUH ke `file_path` mentah = kunci storage
+        bocor ke respons. file_path kini tak pernah keluar sebagai url.
+        """
+        return [
+            {
+                "id": str(att["id"]),
+                "filename": att["filename"],
+                "url": url_unduh_lampiran("bills", bill_id, att["id"]),
+                "size": att.get("file_size"),
+                "mime_type": att.get("mime_type"),
+                "uploaded_at": att["uploaded_at"].isoformat()
+                if att.get("uploaded_at")
+                else None,
+            }
+            for att in attachment_rows
+        ]
 
     async def get_bill_v2(
         self, tenant_id: str, bill_id: UUID
