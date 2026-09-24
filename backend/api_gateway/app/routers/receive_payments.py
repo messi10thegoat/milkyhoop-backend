@@ -3001,6 +3001,120 @@ def _terbilang(n: int) -> str:
     return _to_words(n).strip() + " Rupiah"
 
 
+# ---------------------------------------------------------------------------
+# PDF untuk baris daftar ber-id JURNAL (24 Sep 2026). Setara cadangan detail:
+# jurnal RECEIVE_PAYMENT -> pembayaran asalnya (kwitansi biasa); jurnal
+# DEPOSIT_APPLICATION -> "Bukti Penerapan Uang Muka", CREDIT_NOTE -> "Bukti Nota
+# Kredit" (judul JUJUR: tak ada uang baru diterima, jadi BUKAN kwitansi; tanpa
+# metode/akun bank).
+# Pagar tenant sama dengan cadangan detail: je.tenant_id + dokumen asal
+# tenant_id, predikat eksplisit (gateway = BYPASSRLS).
+# ---------------------------------------------------------------------------
+PENANDA_PDF_PENERAPAN = "pdf-bukti-penerapan-dari-jurnal"
+
+_PENERAPAN = {
+    "DEPOSIT_APPLICATION": {
+        "sql_dok": """SELECT deposit_number AS nomor, customer_name, NULL::text AS faktur_asal
+                      FROM customer_deposits WHERE id::text = $1::text AND tenant_id = $2""",
+        "sql_faktur": """SELECT invoice_number FROM customer_deposit_applications
+                         WHERE journal_id = $1 AND tenant_id = $2 ORDER BY created_at""",
+        "label": {
+            "title": "Bukti Penerapan Uang Muka",
+            "subtitle": "Tanpa penerimaan uang baru",
+            "number_label": "No. Penerapan",
+            "amount_label": "Jumlah Diterapkan",
+            "source_label": "Dari Uang Muka",
+        },
+    },
+    # Jurnal CREDIT_NOTE di daftar Penerimaan = jurnal PENERBITAN nota kredit
+    # (diukur 24 Sep: 0 baris credit_note_applications ber-journal_id itu),
+    # bukan penerapan -> "Bukti Nota Kredit"; faktur = original_invoice_number.
+    "CREDIT_NOTE": {
+        "sql_dok": """SELECT credit_note_number AS nomor, customer_name,
+                             original_invoice_number AS faktur_asal
+                      FROM credit_notes WHERE id::text = $1::text AND tenant_id = $2""",
+        "sql_faktur": """SELECT invoice_number FROM credit_note_applications
+                         WHERE journal_id = $1 AND tenant_id = $2 ORDER BY created_at""",
+        "label": {
+            "title": "Bukti Nota Kredit",
+            "subtitle": "Pengurangan piutang, tanpa penerimaan uang",
+            "number_label": "No. Bukti",
+            "amount_label": "Jumlah Dikreditkan",
+            "source_label": "Nota Kredit",
+        },
+    },
+}
+
+
+async def _pdf_dari_jurnal(conn, payment_id: str, tenant_id: str):
+    """(pay, None) untuk jurnal RECEIVE_PAYMENT yang punya pembayaran asal;
+    (None, receipt_data) untuk jurnal penerapan; (None, None) = 404."""
+    try:
+        jid = uuid_module.UUID(payment_id)
+    except ValueError:
+        return None, None
+    je = await conn.fetchrow(
+        """SELECT je.id, je.journal_number, je.journal_date, je.description,
+                  je.source_type, je.source_id, je.status
+           FROM journal_entries je
+           WHERE je.id = $1 AND je.tenant_id = $2
+             AND je.source_type IN ('RECEIVE_PAYMENT', 'DEPOSIT_APPLICATION', 'CREDIT_NOTE')""",
+        jid,
+        tenant_id,
+    )
+    if not je:
+        return None, None
+    if je["source_type"] == "RECEIVE_PAYMENT":
+        if not je["source_id"]:
+            return None, None
+        pay = await conn.fetchrow(
+            "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2",
+            je["source_id"],
+            tenant_id,
+        )
+        return pay, None
+    cfg = _PENERAPAN[je["source_type"]]
+    dok = None
+    if je["source_id"]:
+        dok = await conn.fetchrow(cfg["sql_dok"], str(je["source_id"]), tenant_id)
+    # Jumlah = sama dengan detail: kredit akun RECEIVABLE jurnal ini.
+    jumlah = await conn.fetchval(
+        """SELECT COALESCE(SUM(jl.credit), 0)
+           FROM journal_lines jl
+           JOIN chart_of_accounts coa ON coa.id = jl.account_id
+           WHERE jl.journal_id = $1 AND coa.account_type = 'RECEIVABLE' AND jl.credit > 0""",
+        je["id"],
+    )
+    faktur = [r["invoice_number"] for r in await conn.fetch(cfg["sql_faktur"], je["id"], tenant_id)
+              if r["invoice_number"]]
+    if not faktur and dok and dok["faktur_asal"]:
+        faktur = [dok["faktur_asal"]]
+    status = (je["status"] or "POSTED").upper()
+    _amt = float(jumlah or 0)
+    return None, {
+        "status": "posted" if status == "POSTED" else "draft" if status == "DRAFT" else "void",
+        "voided_at": None,
+        "void_reason": None,
+        "receipt_number": je["journal_number"],
+        "receipt_date": je["journal_date"].isoformat() if je["journal_date"] else None,
+        "payer_name": dok["customer_name"] if dok else None,
+        "amount": _amt,
+        "amount_words": _terbilang(_amt),
+        "method": None,
+        "bank_name": None,
+        "purpose_label": "Faktur",
+        "purpose_ref": ", ".join(faktur) or None,
+        "remaining": None,
+        "notes": je["description"],
+        # label jujur (templat kwitansi: default = teks kwitansi lama)
+        **cfg["label"],
+        "party_label": "Pelanggan",
+        "signature_label": "Hormat kami,",
+        "hide_method": True,
+        "source_ref": dok["nomor"] if dok else None,
+    }
+
+
 @router.get("/{payment_id}/pdf")
 async def get_receive_payment_pdf(
     request: Request,
@@ -3021,63 +3135,72 @@ async def get_receive_payment_pdf(
                 uuid_module.UUID(payment_id),
                 ctx["tenant_id"],
             )
+            receipt_data = None
             if not pay:
-                raise HTTPException(status_code=404, detail="Receive payment not found")
+                # Setara jalur cadangan DETAIL (Law 29): daftar Penerimaan
+                # memuat baris ber-id JURNAL. Tanpa ini detail 200 tapi PDF 404
+                # (bug pemilik grapgrap DA-2609-0026, 24 Sep 2026: 38 DA + 2 CN).
+                pay, receipt_data = await _pdf_dari_jurnal(conn, payment_id, ctx["tenant_id"])
+                if pay is None and receipt_data is None:
+                    raise HTTPException(status_code=404, detail="Receive payment not found")
+                if pay is not None:
+                    payment_id = str(pay["id"])  # jurnal RECEIVE_PAYMENT -> pembayaran asalnya
 
-            # Bank account name: prefer stored column, fallback to join
-            bank_name = pay["bank_account_name"]
-            if not bank_name and pay["bank_account_id"]:
-                bank_row = await conn.fetchrow(
-                    "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
-                    pay["bank_account_id"],
+            if receipt_data is None:
+                # Bank account name: prefer stored column, fallback to join
+                bank_name = pay["bank_account_name"]
+                if not bank_name and pay["bank_account_id"]:
+                    bank_row = await conn.fetchrow(
+                        "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
+                        pay["bank_account_id"],
+                    )
+                    if bank_row:
+                        bank_name = bank_row["account_name"] or bank_row["bank_name"]
+
+                # Linked invoice(s) + remaining from allocations
+                allocs = await conn.fetch(
+                    """
+                    SELECT invoice_number, remaining_after
+                    FROM receive_payment_allocations
+                    WHERE payment_id = $1
+                    ORDER BY created_at
+                    """,
+                    uuid_module.UUID(payment_id),
                 )
-                if bank_row:
-                    bank_name = bank_row["account_name"] or bank_row["bank_name"]
+                invoice_number = None
+                remaining = None
+                if allocs:
+                    _nums = [a["invoice_number"] for a in allocs if a["invoice_number"]]
+                    if _nums:
+                        invoice_number = ", ".join(_nums)
+                    if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
+                        remaining = float(allocs[0]["remaining_after"])
 
-            # Linked invoice(s) + remaining from allocations
-            allocs = await conn.fetch(
-                """
-                SELECT invoice_number, remaining_after
-                FROM receive_payment_allocations
-                WHERE payment_id = $1
-                ORDER BY created_at
-                """,
-                uuid_module.UUID(payment_id),
-            )
-            invoice_number = None
-            remaining = None
-            if allocs:
-                _nums = [a["invoice_number"] for a in allocs if a["invoice_number"]]
-                if _nums:
-                    invoice_number = ", ".join(_nums)
-                if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
-                    remaining = float(allocs[0]["remaining_after"])
+                _amt = float(pay["total_amount"] or 0)
+                method_label = (
+                    "Tunai" if (pay["payment_method"] or "").lower() == "cash"
+                    else "Transfer Bank"
+                )
+                receipt_number = pay["payment_number"] or pay["reference_number"]
 
-            _amt = float(pay["total_amount"] or 0)
-            method_label = (
-                "Tunai" if (pay["payment_method"] or "").lower() == "cash"
-                else "Transfer Bank"
-            )
-            receipt_number = pay["payment_number"] or pay["reference_number"]
-
-            receipt_data = {
-                # status + voided_at/void_reason -> tanda DIBATALKAN di kwitansi pembayaran yang void
-                "status": pay["status"],
-                "voided_at": pay["voided_at"],
-                "void_reason": pay["void_reason"],
-                "receipt_number": receipt_number,
-                "receipt_date": pay["payment_date"].isoformat()
-                if pay["payment_date"] else None,
-                "payer_name": pay["customer_name"],
-                "amount": _amt,
-                "amount_words": _terbilang(_amt),
-                "method": method_label,
-                "bank_name": bank_name,
-                "purpose_label": "Pelunasan Faktur",
-                "purpose_ref": invoice_number,
-                "remaining": remaining,
-                "notes": pay["notes"],
-            }
+                receipt_data = {
+                    # status + voided_at/void_reason -> tanda DIBATALKAN di kwitansi pembayaran yang void
+                    "status": pay["status"],
+                    "voided_at": pay["voided_at"],
+                    "void_reason": pay["void_reason"],
+                    "receipt_number": receipt_number,
+                    "receipt_date": pay["payment_date"].isoformat()
+                    if pay["payment_date"] else None,
+                    "payer_name": pay["customer_name"],
+                    "amount": _amt,
+                    "amount_words": _terbilang(_amt),
+                    "method": method_label,
+                    "bank_name": bank_name,
+                    "purpose_label": "Pelunasan Faktur",
+                    "purpose_ref": invoice_number,
+                    "remaining": remaining,
+                    "notes": pay["notes"],
+                }
 
             # Tenant info for header
             tenant_row = await conn.fetchrow(
@@ -3114,7 +3237,7 @@ async def get_receive_payment_pdf(
         pdf_service = _get_pdf_service()
         pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)
 
-        num = receipt_number or str(payment_id)[:8]
+        num = receipt_data.get("receipt_number") or str(payment_id)[:8]
         from ..utils.content_disposition import pdf_content_disposition, sanitize_filename
         filename = sanitize_filename(num) + ".pdf"
 

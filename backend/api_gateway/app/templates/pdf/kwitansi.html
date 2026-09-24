@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Bukti Penerimaan {{ receipt.receipt_number or '-' }}</title></head>
+<head><meta charset="UTF-8"><title>{{ receipt.get('title') or 'Bukti Penerimaan' }} {{ receipt.receipt_number or '-' }}</title></head>
 <body>
 {% include "_partials/tanda_batal.html" %}
 <div class="invoice">
@@ -8,8 +8,8 @@
     <!-- 1. Header -->
     <div class="header">
         <div>
-            <h1 class="doc-title">Bukti Penerimaan</h1>
-            <div class="doc-subtitle">Kwitansi</div>
+            <h1 class="doc-title">{{ receipt.get('title') or 'Bukti Penerimaan' }}</h1>
+            <div class="doc-subtitle">{{ receipt.get('subtitle') or 'Kwitansi' }}</div>
         </div>
         {% if company and company.logo_base64 %}
         <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
@@ -32,7 +32,7 @@
             {% endif %}
         </div>
         <div class="party">
-            <div class="party-label">Telah Terima Dari</div>
+            <div class="party-label">{{ receipt.get('party_label') or 'Telah Terima Dari' }}</div>
             <div class="party-name">{{ receipt.payer_name or '-' }}</div>
         </div>
     </div>
@@ -42,7 +42,7 @@
     <div class="meta-block">
         <table class="meta-table">
             <tr>
-                <td class="meta-label">No. Kwitansi</td>
+                <td class="meta-label">{{ receipt.get('number_label') or 'No. Kwitansi' }}</td>
                 <td class="meta-value">{{ receipt.receipt_number or '-' }}</td>
             </tr>
             <tr>
@@ -54,7 +54,7 @@
 
     <!-- 4. Hero Amount -->
     <div class="hero">
-        <div class="hero-amount">Jumlah Diterima Rp {{ receipt.amount | currency }}</div>
+        <div class="hero-amount">{{ receipt.get('amount_label') or 'Jumlah Diterima' }} Rp {{ receipt.amount | currency }}</div>
     </div>
 
     <!-- 5. Terbilang -->
@@ -70,10 +70,18 @@
     <!-- 6. Detail -->
     <div class="summary">
         <table class="summary-table">
+            {% if not receipt.get('hide_method') %}
             <tr>
                 <td class="label">Metode</td>
                 <td class="value">{{ receipt.method or '-' }}</td>
             </tr>
+            {% endif %}
+            {% if receipt.get('source_ref') %}
+            <tr>
+                <td class="label">{{ receipt.get('source_label') or 'Sumber' }}</td>
+                <td class="value">{{ receipt.source_ref }}</td>
+            </tr>
+            {% endif %}
             {% if receipt.bank_name %}
             <tr>
                 <td class="label">Bank / Rekening</td>
@@ -118,7 +126,7 @@
 
     <!-- 8. Tanda tangan penerima -->
     <div style="margin-top: 36px; text-align: right;">
-        <div class="party-label">Penerima,</div>
+        <div class="party-label">{{ receipt.get('signature_label') or 'Penerima,' }}</div>
         <div style="height: 64px;"></div>
         <div class="party-name">( {{ company.name if company and company.name else '-' }} )</div>
     </div>
