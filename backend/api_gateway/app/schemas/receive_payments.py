@@ -48,7 +48,8 @@ class CreateReceivePaymentRequest(BaseModel):
     customer_id: str = Field(..., description="Customer UUID")
     customer_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up if not provided")
     payment_date: date
-    payment_method: Literal["cash", "bank_transfer"]
+    # #29: opsional; kosong -> diturunkan dari jenis akun Kas/Bank (utils/metode_pembayaran)
+    payment_method: Optional[Literal["cash", "bank_transfer", "e_wallet"]] = None
     bank_account_id: str = Field(..., description="Kas/Bank account UUID (CoA)")
     bank_account_name: Optional[str] = Field(None, max_length=255, description="Auto-looked up if not provided")
     total_amount: Decimal = Field(..., gt=0, description="Total payment amount in IDR")
@@ -94,7 +95,7 @@ class UpdateReceivePaymentRequest(BaseModel):
     customer_id: Optional[str] = None
     customer_name: Optional[str] = Field(None, max_length=255)
     payment_date: Optional[date] = None
-    payment_method: Optional[Literal["cash", "bank_transfer"]] = None
+    payment_method: Optional[Literal["cash", "bank_transfer", "e_wallet"]] = None
     bank_account_id: Optional[str] = None
     bank_account_name: Optional[str] = None
     total_amount: Optional[Decimal] = Field(None, gt=0)

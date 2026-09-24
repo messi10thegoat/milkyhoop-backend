@@ -53,6 +53,7 @@ from ..schemas.receive_payments import (
     UpdateReceivePaymentRequest,
     VoidPaymentRequest,
 )
+from ..utils.metode_pembayaran import label_metode, metode_klien_sah, tentukan_metode
 from ..utils.idempotency import (  # Law 14
     _norm_amount,
     build_idempotency_default,
@@ -1247,6 +1248,11 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                             detail="Bank account must be an asset account (Kas/Bank)",
                         )
 
+                    # t29-metode-dari-akun: override sah klien, atau turunan jenis akun
+                    metode = await tentukan_metode(
+                        conn, str(ctx["tenant_id"]), bank_account_uuid, body.payment_method
+                    )
+
                     # Validate customer exists.
                     # customers.id = UUID (terverifikasi [SQL] 2026-08-09).
                     # uuid: customers.id / sales_invoices / receive_payments.
@@ -1390,7 +1396,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                         # varchar hanya di credit_notes/customer_deposits
                         body.customer_name,
                         body.payment_date,
-                        body.payment_method,
+                        metode,
                         UUID(body.bank_account_id),
                         body.bank_account_name,
                         body.source_type,
@@ -1441,6 +1447,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                             "allocated_amount": allocated_amount,
                             "unapplied_amount": unapplied_amount,
                             "status": "draft",
+                            "payment_method": metode,  # nilai TERSIMPAN
                         },
                     }
 
@@ -1518,6 +1525,19 @@ async def update_receive_payment(
                         "message": "No changes provided",
                         "data": {"id": str(payment_id)},
                     }
+
+                # t29-metode-dari-akun (PATCH: absen = jangan ubah). null eksplisit,
+                # atau akun diganti tanpa metode -> turunkan dari akun (baru/lama).
+                if ("payment_method" in update_data and not update_data["payment_method"]) or (
+                    "bank_account_id" in update_data and "payment_method" not in update_data
+                ):
+                    akun = update_data.get("bank_account_id") or await conn.fetchval(
+                        "SELECT bank_account_id FROM receive_payments WHERE id = $1",
+                        payment_id,
+                    )
+                    update_data["payment_method"] = await tentukan_metode(
+                        conn, str(ctx["tenant_id"]), akun, None
+                    )
 
                 # Handle allocations update
                 if body.allocations is not None:
@@ -1724,7 +1744,8 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
 # L2: kosakata metode receive_payments ({cash, bank_transfer}) != customer_deposits
 # ({cash, transfer, check, other}). Terjemahkan di batas saat overpayment membuat uang muka;
 # metode tak dikenal -> 400 terbaca, JANGAN lolos ke CHECK (yang jadi 500 + rollback post).
-_RP_TO_DEPOSIT_METHOD = {"cash": "cash", "bank_transfer": "transfer"}
+# e_wallet -> other: CHECK deposit tak punya e_wallet (putusan MASTER #29, label saja)
+_RP_TO_DEPOSIT_METHOD = {"cash": "cash", "bank_transfer": "transfer", "e_wallet": "other"}
 
 
 def _deposit_payment_method(rp_method: str) -> str:
@@ -3181,10 +3202,7 @@ async def get_receive_payment_pdf(
                         remaining = float(allocs[0]["remaining_after"])
 
                 _amt = float(pay["total_amount"] or 0)
-                method_label = (
-                    "Tunai" if (pay["payment_method"] or "").lower() == "cash"
-                    else "Transfer Bank"
-                )
+                method_label = label_metode(pay["payment_method"])
                 receipt_number = pay["payment_number"] or pay["reference_number"]
 
                 receipt_data = {

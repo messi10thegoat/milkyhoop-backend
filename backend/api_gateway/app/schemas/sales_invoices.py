@@ -93,7 +93,11 @@ class InvoicePaymentCreate(BaseModel):
 
     amount: Decimal = Field(..., gt=0)  # 6b: sen boleh (faktur ber-PPN ,75)
     payment_date: date
-    payment_method: Literal["cash", "transfer", "check", "other"]
+    # #29: opsional. cash|bank_transfer|e_wallet = override; kosong atau kosakata lama
+    # (transfer/check/other, dulu hardcode FE) -> diturunkan dari jenis akun.
+    payment_method: Optional[
+        Literal["cash", "bank_transfer", "e_wallet", "transfer", "check", "other"]
+    ] = None
     account_id: str = Field(..., description="CoA account ID for Kas/Bank")
     bank_account_id: Optional[str] = None
     reference: Optional[str] = Field(None, max_length=100)

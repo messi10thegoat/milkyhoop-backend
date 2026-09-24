@@ -34,6 +34,7 @@ from ..services.role_resolver import (
 from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
+from ..utils.metode_pembayaran import label_metode, tentukan_metode
 from ..services.sales_doc_calc import compute_document, DocumentDiscountError
 from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
 
@@ -3905,10 +3906,13 @@ async def record_payment(
                     conn, ctx["tenant_id"], AccountRole.AR_TRADE
                 )
 
-                # Map payment_method: receive_payments CHECK allows only 'cash' or 'bank_transfer'
-                pm = body.payment_method
-                if pm not in ("cash", "bank_transfer"):
-                    pm = "bank_transfer"
+                # t29-metode-dari-akun: dulu selain 'cash' -> 'bank_transfer', padahal FE
+                # meng-hardcode 'transfer' -> RCV ke akun kas tercatat Transfer Bank.
+                # Kosakata lama (transfer/check/other) / kosong -> turunkan dari jenis akun;
+                # cash|bank_transfer|e_wallet -> dihormati (override manual).
+                pm = await tentukan_metode(
+                    conn, str(ctx["tenant_id"]), bank_account_uuid, body.payment_method
+                )
 
                 # Generate payment number via DB function (same as golden pattern)
                 payment_number = await conn.fetchval(
@@ -4127,6 +4131,7 @@ async def record_payment(
                         "journal_id": str(journal_id),
                         "journal_number": journal_number,
                         "payment_number": payment_number,
+                        "payment_method": pm,  # nilai TERSIMPAN
                     },
                 }
                 await conn.execute(
@@ -5822,7 +5827,7 @@ async def get_invoice_activity(
                     {
                         "id": f"payment-{p['id']}",
                         "type": "payment",
-                        "description": f"Pembayaran {'tunai' if p['payment_method'] == 'cash' else 'transfer'}",
+                        "description": f"Pembayaran {label_metode(p['payment_method']).lower()}",
                         "actor_name": p_actor,
                         "timestamp": p["created_at"].isoformat()
                         if p["created_at"]
