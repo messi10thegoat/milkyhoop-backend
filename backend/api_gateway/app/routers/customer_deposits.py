@@ -73,6 +73,7 @@ from ..services.role_resolver import (
     resolve_account_id_by_role_if_pkp,  # FIX_P1_DEPOSIT 2026-06-16 (d)
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
@@ -1631,7 +1632,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
             detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
         )
 
-    application_date = body.application_date or date.today()
+    application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
     applications_created = []
 
     # Fase C1.4: Resolve via role mapping (Law 27).
@@ -1953,10 +1954,11 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
         )
 
     # Law 5: period-open check (reversal posts at today).
+    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
     period_row = await conn.fetchrow(
         "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
         ctx["tenant_id"],
-        date.today(),
+        hari_ini,
     )
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
@@ -2038,7 +2040,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, reversal_of_id,
             status, total_debit, total_credit, created_by
-        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'DEPOSIT_APPLICATION', $5, $6, 'DRAFT', $7, $7, $8)
+        ) VALUES ($1, $2, $3, $9, $4, 'DEPOSIT_APPLICATION', $5, $6, 'DRAFT', $7, $7, $8)
         """,
         reversal_journal_id,
         ctx["tenant_id"],
@@ -2048,6 +2050,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
         original_journal_id,
         reversal_amount,
         ctx["user_id"],
+        hari_ini,  # t10-tanggal-bisnis
     )
 
     # Reversed lines (swap debit/credit) -> Dr AR / Cr 2-10500.
@@ -2577,10 +2580,11 @@ async def void_customer_deposit(
                     )
 
                     # Law 5: Period lock check
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 period_row = await conn.fetchrow(
                     "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
                     ctx["tenant_id"],
-                    date.today(),
+                    hari_ini,
                 )
                 if period_row and period_row["status"] != "OPEN":
                     raise HTTPException(
@@ -2614,7 +2618,7 @@ async def void_customer_deposit(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'CUSTOMER_DEPOSIT', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'CUSTOMER_DEPOSIT', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         reversal_journal_id,
                         ctx["tenant_id"],
@@ -2624,6 +2628,7 @@ async def void_customer_deposit(
                         dep["journal_id"],
                         dep["amount"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Create reversed lines (swap debit/credit)

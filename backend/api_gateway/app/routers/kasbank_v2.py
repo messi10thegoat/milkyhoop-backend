@@ -31,6 +31,7 @@ import logging
 import asyncpg
 import uuid as uuid_module
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.kasbank_v2 import (
     CreateManualTransactionRequest,
     VoidTransactionRequest,
@@ -99,7 +100,7 @@ async def generate_transaction_number(conn, tenant_id: str) -> str:
     """Generate a unique transaction number: BT-YYMM-NNNN."""
     from datetime import datetime as dt
 
-    now = dt.now()
+    now = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
     prefix = f"BT-{now.strftime('%y%m')}-"
 
     last = await conn.fetchval(
@@ -344,11 +345,10 @@ async def void_transaction(
                     conn, ctx["tenant_id"], tx["transaction_date"]
                 )
 
-                # Jurnal pembalik bertanggal CURRENT_DATE: periodenya juga harus
-                # terbuka -> galat rapi, bukan 500 dari trigger periode.
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], await conn.fetchval("SELECT CURRENT_DATE")
-                )
+                # Jurnal pembalik bertanggal HARI INI (tanggal bisnis tenant): periodenya
+                # juga harus terbuka -> galat rapi, bukan 500 dari trigger periode.
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
                 # Sudah dibalik lewat pintu lain (mis. pembalikan generik) -> 409,
                 # bukan 500 dari indeks satu-pembalikan (Law 26).
@@ -384,7 +384,7 @@ async def void_transaction(
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, reversal_of_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BANK_TRANSACTION', $5, $6, 'DRAFT', $7, $7, $8)
+                    ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSACTION', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                     reversal_journal_id,
                     ctx["tenant_id"],
@@ -394,6 +394,7 @@ async def void_transaction(
                     tx["journal_id"],
                     abs_amount,
                     ctx["user_id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Swap debit/credit for each line
@@ -442,7 +443,7 @@ async def void_transaction(
                         amount, running_balance, reference_type, reference_id, reference_number,
                         description, journal_id, status, origin_type, source_module,
                         created_by, posted_by, posted_at
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4,
+                    ) VALUES ($1, $2, $3, $11, $4,
                               $5, 0, 'manual_void', $6, $7, $8, $9,
                               'POSTED', 'SYSTEM', 'manual', $10, $10, NOW())
                     """,
@@ -458,6 +459,7 @@ async def void_transaction(
                     f"Void - {body.reason}",
                     reversal_journal_id,
                     ctx["user_id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Mark transaction as VOIDED

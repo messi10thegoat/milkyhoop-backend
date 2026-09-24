@@ -27,6 +27,7 @@ import asyncpg
 from datetime import date
 import uuid as uuid_module
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_transfers import (
     CreateBankTransferRequest,
     UpdateBankTransferRequest,
@@ -1062,13 +1063,14 @@ async def void_bank_transfer(
                     bt["journal_id"],
                 )
 
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 await conn.execute(
                     """
                     INSERT INTO journal_entries (
                         id, tenant_id, journal_number, journal_date,
                         description, source_type, source_id, reversal_of_id,
                         status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'BANK_TRANSFER', $5, $6, 'DRAFT', $7, $7, $8)
+                    ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSFER', $5, $6, 'DRAFT', $7, $7, $8)
                 """,
                     reversal_journal_id,
                     ctx["tenant_id"],
@@ -1078,6 +1080,7 @@ async def void_bank_transfer(
                     bt["journal_id"],
                     bt["total_amount"],
                     ctx["user_id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Create reversed lines (swap debit/credit)
@@ -1123,7 +1126,7 @@ async def void_bank_transfer(
                         id, tenant_id, bank_account_id, transaction_date, transaction_type,
                         amount, running_balance, reference_type, reference_id, reference_number,
                         description, journal_id, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, 'transfer_in', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
+                    ) VALUES ($1, $2, $3, $11, 'transfer_in', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
                 """,
                     uuid_module.uuid4(),
                     ctx["tenant_id"],
@@ -1135,6 +1138,7 @@ async def void_bank_transfer(
                     f"Void transfer - {body.reason}",
                     reversal_journal_id,
                     ctx["user_id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Reverse destination bank (money out)
@@ -1145,7 +1149,7 @@ async def void_bank_transfer(
                         id, tenant_id, bank_account_id, transaction_date, transaction_type,
                         amount, running_balance, reference_type, reference_id, reference_number,
                         description, journal_id, created_by
-                    ) VALUES ($1, $2, $3, CURRENT_DATE, 'transfer_out', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
+                    ) VALUES ($1, $2, $3, $11, 'transfer_out', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
                 """,
                     uuid_module.uuid4(),
                     ctx["tenant_id"],
@@ -1157,6 +1161,7 @@ async def void_bank_transfer(
                     f"Void transfer - {body.reason}",
                     reversal_journal_id,
                     ctx["user_id"],
+                    hari_ini,  # t10-tanggal-bisnis
                 )
 
                 # Mark original bank transactions as voided

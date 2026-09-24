@@ -14,6 +14,7 @@ from decimal import Decimal
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.expenses import (
     CreateExpenseRequest,
     UpdateExpenseRequest,
@@ -2224,6 +2225,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                 )
 
                 # Void original journal + create reversal (Law 2)
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 if expense["journal_id"]:
                     # Create reversal journal entry
                     original_lines = await conn.fetch(
@@ -2243,7 +2245,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 tenant_id, journal_number, journal_date, description,
                                 source_type, source_id, status,
                                 total_debit, total_credit, reversal_of_id
-                            ) VALUES ($1, $2, CURRENT_DATE, $3, 'EXPENSE_REVERSAL', $4, 'DRAFT', $5, $6, $7)
+                            ) VALUES ($1, $2, $8, $3, 'EXPENSE_REVERSAL', $4, 'DRAFT', $5, $6, $7)
                             RETURNING id
                             """,
                             ctx["tenant_id"],
@@ -2256,6 +2258,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                             reversal_total,
                             reversal_total,
                             expense["journal_id"],
+                            hari_ini,  # t10-tanggal-bisnis
                         )
 
                         for line_idx, line in enumerate(original_lines, 1):
@@ -2317,7 +2320,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                     status, origin_type, source_module,
                                     created_by, created_at
                                 ) VALUES (
-                                    gen_random_uuid(), $1, $2, CURRENT_DATE,
+                                    gen_random_uuid(), $1, $2, $9,
                                     $3, $4, $5,
                                     'EXPENSE', $6, $7,
                                     'POSTED', 'SYSTEM', 'EXPENSE',
@@ -2332,6 +2335,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 expense_id,
                                 reversal_journal_id,
                                 ctx.get("user_id"),
+                                hari_ini,  # t10-tanggal-bisnis
                             )
                             await conn.execute(
                                 "UPDATE bank_transactions SET status = 'VOIDED', "

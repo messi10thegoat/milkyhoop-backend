@@ -61,6 +61,7 @@ from ..utils.idempotency import (  # Law 14
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
@@ -2239,7 +2240,7 @@ async def unapply_receive_payment_allocation(
             if not inv or inv["status"] in ("void", "draft"):
                 raise HTTPException(status_code=409, detail="Faktur alokasi ini tidak aktif; tidak ada yang bisa dilepas.")
             # Law 5: the unapply journal is dated today
-            today = date.today()
+            today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
             per = await conn.fetchrow(
                 "SELECT period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
                 ctx["tenant_id"], today,
@@ -2421,8 +2422,9 @@ async def void_receive_payment(
                     f"RECEIVE_PAYMENT_VOID:{payment_id}",
                 )
 
-                # Law 5: Check if today's accounting period is open (void uses CURRENT_DATE)
-                await check_period_is_open(conn, ctx["tenant_id"], date.today())
+                # Law 5: periode tanggal bisnis HARI INI (tanggal jurnal pembalik) harus terbuka
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
                 # Get payment
                 payment = await conn.fetchrow(
@@ -2530,7 +2532,7 @@ async def void_receive_payment(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'RECEIVE_PAYMENT', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT', $5, $6, 'DRAFT', $7, $7, $8)
                     """,
                         void_journal_id,
                         ctx["tenant_id"],
@@ -2540,6 +2542,7 @@ async def void_receive_payment(
                         payment["journal_id"],
                         original_journal["total_debit"],
                         ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
 
                     # Create reversed lines (swap debit/credit)
@@ -2616,12 +2619,13 @@ async def void_receive_payment(
                             id, tenant_id, journal_number, journal_date,
                             description, source_type, source_id, reversal_of_id,
                             status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, 'RECEIVE_PAYMENT_UNAPPLY', $5, $6, 'DRAFT', $7, $7, $8)
+                        ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT_UNAPPLY', $5, $6, 'DRAFT', $7, $7, $8)
                         """,
                         _rev, ctx["tenant_id"],
                         (await conn.fetchval("SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"])) or f"VD-LPS-{payment['payment_number']}",
                         f"Void {payment['payment_number']}: batal lepas pembayaran ({_r['deposit_number']})",
                         _orig["source_id"], _r["unapply_journal_id"], _orig["total_debit"], ctx["user_id"],
+                        hari_ini,  # t10-tanggal-bisnis
                     )
                     for _i, _ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"]), 1):
                         await conn.execute(

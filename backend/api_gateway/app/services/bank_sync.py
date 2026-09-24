@@ -45,6 +45,8 @@ from uuid import UUID
 
 import logging
 
+from ..utils.tanggal_tenant import tanggal_dokumen
+
 logger = logging.getLogger(__name__)
 
 
@@ -247,7 +249,7 @@ async def create_reversal_bank_transaction(
         tenant_id=tenant_id,
         bank_account_id=original["bank_account_id"],
         journal_id=reversal_journal_id,
-        transaction_date=date.today(),
+        transaction_date=await tanggal_dokumen(conn, tenant_id),  # t10-tanggal-bisnis
         transaction_type=reversal_type,
         amount=-original["amount"],  # Negate the original amount
         reference_type=f"{original['reference_type'] or 'unknown'}_reversal",
