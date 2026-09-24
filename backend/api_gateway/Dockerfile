@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1.4
-FROM python:3.11-slim AS builder
+# Image dasar dikunci per DIGEST (pin-freeze 24 Sep 2026): tag python:3.11-slim
+# bergerak (patch Python + rilis Debian -> versi pango/cairo = render PDF).
+# Digest ini = Python 3.11.15, Debian 13 trixie -- sama dengan image prod.
+FROM python:3.11.15-slim-trixie@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -15,15 +18,20 @@ WORKDIR /app
 
 # Copy and install Python requirements
 COPY backend/api_gateway/requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# requirements.txt = kunci LENGKAP (termasuk turunan). --no-deps: resolver tak
+# boleh menarik apa pun di luar daftar; pip check membuktikan daftarnya utuh.
+# Penjaga: tests/unit/test_requirements_kunci.py
+RUN pip install pip==26.1.2 && \
+    pip install --no-cache-dir --no-deps -r requirements.txt && \
+    pip check
 
 # Copy database schema for Prisma
 COPY database/schemas/global_schema.prisma /app/database/schemas/global_schema.prisma
 
 # Install and setup Prisma
 RUN npm install prisma@5.17.0 @prisma/client@5.17.0 && \
-    pip install --no-cache-dir prisma==0.14.0
+    pip install --no-cache-dir --no-deps prisma==0.14.0 && \
+    pip check
 
 # Generate Prisma client
 RUN npx prisma generate --schema=/app/database/schemas/global_schema.prisma
@@ -34,7 +42,7 @@ RUN mkdir -p /app/backend/api_gateway/libs/milkyhoop_prisma && \
     cp -r /root/.cache/prisma-python/binary/5.17.0/* /app/backend/api_gateway/libs/milkyhoop_prisma/ 2>/dev/null || true
 
 # Production stage
-FROM python:3.11-slim AS prod
+FROM python:3.11.15-slim-trixie@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS prod
 
 # Install runtime dependencies (including WeasyPrint)
 RUN apt-get update && apt-get install -y --no-install-recommends \
