@@ -412,10 +412,12 @@ async def test_exp_daftar_url_relatif_bukan_file_url(monkeypatch):
     url_sah(data[1]["url"], "expenses", lampiran="55555555-5555-5555-5555-555555555555")
     for a in data:
         assert a["thumbnail_url"] is None
-        # medan respons lama dipertahankan; tak ada medan mentah baru
+        # medan respons lama dipertahankan; tak ada medan mentah baru.
+        # `tersedia` (bool turunan storage_type) ditambahkan unit
+        # kuota-lampiran-beban -- lihat test_kuota_lampiran_beban.py.
         assert set(a) == {
             "id", "file_name", "file_size", "mime_type", "width", "height",
-            "url", "thumbnail_url", "uploaded_at", "display_order",
+            "url", "thumbnail_url", "uploaded_at", "display_order", "tersedia",
         }
     sql = [c[1] for c in conn.calls if c[0] == "fetch"][0]
     assert "file_url as url" not in sql

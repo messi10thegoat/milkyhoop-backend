@@ -63,6 +63,20 @@ _EXP_ATT_SQL_UNDUH = """
 """
 
 
+# Kuota & `tersedia` (unit kuota-lampiran-beban, 24 Sep 2026): sesudah
+# recreate 23 Sep baris documents storage_type='local' = berkas MATI (rute
+# download -> 404; disk lokal sengaja tak dibaca). Sejak U1 unggahan baru =
+# 's3'. Kuota lampiran beban hanya menghitung lampiran TERSEDIA supaya baris
+# mati tidak memakan jatah saat pemilik mengunggah ulang nota.
+_EXP_ATT_MAKS = 5
+
+
+def _exp_lampiran_tersedia(storage_type, deleted_at=None) -> bool:
+    """Lampiran beban bisa diunduh: tersimpan di storage objek (s3) dan
+    dokumennya belum dihapus. BUKAN cek keberadaan objek di minio per baris."""
+    return storage_type == "s3" and deleted_at is None
+
+
 def _exp_lampiran_ke_respons(rows, expense_id) -> list:
     """Bentuk respons lampiran beban (medan sama seperti sebelumnya).
 
@@ -80,6 +94,7 @@ def _exp_lampiran_ke_respons(rows, expense_id) -> list:
             _EXP_ATT_MODUL_URL, expense_id, d["id"], storage_type, file_url
         )
         d["thumbnail_url"] = None
+        d["tersedia"] = _exp_lampiran_tersedia(storage_type)
         out.append(d)
     return out
 
@@ -2490,16 +2505,27 @@ async def add_expense_attachment(
             if not document:
                 raise HTTPException(status_code=404, detail="Document not found")
 
-            # Check attachment limit (max 5)
-            current_count = await conn.fetchval(
+            # Kuota (max 5) = lampiran TERSEDIA saja (s3, belum dihapus);
+            # baris local mati tak memakan jatah. display_order tetap =
+            # jumlah SEMUA tautan (LEFT JOIN: tautan tanpa documents ikut
+            # terhitung seperti COUNT(*) lama) supaya urutan lama bertahan.
+            tautan = await conn.fetch(
                 """
-                SELECT COUNT(*) FROM document_attachments
-                WHERE entity_type = 'expense' AND entity_id = $1
+                SELECT d.storage_type, d.deleted_at
+                FROM document_attachments da
+                LEFT JOIN documents d ON d.id = da.document_id
+                WHERE da.entity_type = 'expense' AND da.entity_id = $1
             """,
                 str(expense_id),
             )
+            current_count = len(tautan)
+            jumlah_tersedia = sum(
+                1
+                for t in tautan
+                if _exp_lampiran_tersedia(t["storage_type"], t["deleted_at"])
+            )
 
-            if current_count >= 5:
+            if jumlah_tersedia >= _EXP_ATT_MAKS:
                 raise HTTPException(
                     status_code=400, detail="Maximum 5 attachments per expense"
                 )
