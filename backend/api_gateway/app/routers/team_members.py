@@ -19,6 +19,7 @@ from fastapi import APIRouter, Request, Query, HTTPException
 from pydantic import BaseModel
 import asyncpg
 from ..services.email_service import send_invitation_email, EmailDeliveryUnavailable
+from ..services.tenant_features import fitur_aktif
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/team-members", tags=["team-members"])
@@ -1090,6 +1091,18 @@ async def update_member_overrides(
 permissions_router = APIRouter(prefix="/api/permissions", tags=["permissions"])
 
 
+async def _fitur_tenant(tenant_id: str) -> list:
+    """W0: flag fitur AKTIF tenant (V304). Gagal ambil koneksi = [] (fitur baru mati),
+    tak pernah menggagalkan /me — izin tetap terkirim."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await fitur_aktif(conn, tenant_id)
+    except Exception as e:
+        logger.warning("[FITUR] koneksi gagal untuk tenant %s: %s -> features=[]", tenant_id, e)
+        return []
+
+
 @permissions_router.get("/me")
 async def get_my_permissions(request: Request):
     """Get effective permissions for the current user (role + overrides merged)."""
@@ -1104,7 +1117,7 @@ async def get_my_permissions(request: Request):
 
         engine = get_policy_engine()
         result = await engine.get_effective_permissions(user_id, tenant_id)
-        return {"success": True, **result}
+        return {"success": True, **result, "features": await _fitur_tenant(tenant_id)}
     except HTTPException:
         # 409/403 dari PolicyEngine adalah JAWABAN, bukan kecelakaan.
         raise
@@ -1142,6 +1155,7 @@ async def get_my_permissions(request: Request):
                 "success": True,
                 "role_code": role_code,
                 "effective_permissions": effective,
+                "features": await fitur_aktif(conn, tenant_id),
             }
     except Exception as e:
         logger.error(f"Error getting permissions: {e}")
