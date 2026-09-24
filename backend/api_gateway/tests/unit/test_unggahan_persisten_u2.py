@@ -276,6 +276,26 @@ async def test_impor_file_ref_tak_sah_ditolak_tanpa_storage(st, monkeypatch, ref
     assert st.client.panggilan == []
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [f"chat_upload:{SHA_CSV[:40]}.csv", f"chat_upload:{SHA_CSV}.html",
+     f"chat_upload:{SHA_CSV}.CSV", "chat_upload:", f"form_upload:{SHA_CSV}.csv", None],
+)
+def test_kunci_file_ref_menolak_bentuk_salah(ref):
+    """Kontrak fungsi murni (lapis pertama; ambil_objek_unggahan = lapis
+    kedua): bentuk salah -> None, bukan kunci yang 'nanti ditolak storage'."""
+    from app.utils.file_ref import kunci_file_ref
+
+    assert kunci_file_ref(ref, TENANT) is None
+
+
+def test_kunci_file_ref_memetakan_ke_tenant_konteks():
+    from app.utils.file_ref import kunci_file_ref
+
+    assert kunci_file_ref(REF_CSV, TENANT) == KUNCI_CSV
+    assert kunci_file_ref(REF_CSV, TENANT_LAIN) == f"{TENANT_LAIN}/uploads/chat/{SHA_CSV}.csv"
+
+
 @pytest.mark.asyncio
 async def test_impor_file_path_mentah_tak_lagi_diterima(st, monkeypatch, tmp_path):
     p = tmp_path / "mutasi.csv"
