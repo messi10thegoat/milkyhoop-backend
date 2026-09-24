@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -265,7 +266,11 @@ async def test_parse_structured_csv_faktur_membaca_baris():
     assert hasil["doc_type_hint"] == "invoice", hasil
     items = hasil["line_items"]
     assert [i["description"] for i in items] == ["Kaos biru", "Topi"]
-    assert items[0]["quantity"] == "10" and items[0]["unit_price"] == "50000"
-    assert items[0]["total_price"] == "500000"
+    # Kolom yang punya sel kosong jadi float64 di pandas (NaN), jadi "10"
+    # tampil "10.0" (terukur di image baru). Yang dijaga di sini NILAINYA,
+    # bukan ejaannya: Decimal membaca keduanya sama.
+    assert Decimal(items[0]["quantity"]) == 10
+    assert Decimal(items[0]["unit_price"]) == 50000
+    assert Decimal(items[0]["total_price"]) == 500000
     # sel kosong -> None (pd.notna), bukan "nan"
     assert items[1]["quantity"] is None and items[1]["total_price"] is None
