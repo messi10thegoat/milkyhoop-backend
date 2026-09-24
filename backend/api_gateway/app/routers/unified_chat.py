@@ -314,6 +314,7 @@ VISION_MAX_DIMENSION = 1024  # Max px on longest side for vision API
 
 # Import resolve_file_ref from utils (re-export for backward compatibility)
 from ..utils.file_ref import resolve_file_ref  # noqa: F401, E402
+from ..utils.chat_file_path import resolve_berkas_tenant, tipe_sajian  # noqa: E402
 
 
 async def _save_chat_attachments(
@@ -6241,22 +6242,23 @@ async def get_chat_file(request: Request, storage_key: str):
     ctx = _get_user_context(request)
     tenant_id = ctx["tenant_id"]
 
-    # Tenant isolation: storage_key must start with tenant_id/
-    if not storage_key.startswith(f"{tenant_id}/"):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    file_path = os.path.join(UPLOAD_BASE_DIR, storage_key)
-    if not os.path.exists(file_path):
+    # Kunci wajib <tenant>/<subdir>/<sha256><ext> dan realpath-nya wajib di
+    # dalam direktori milik tenant pemanggil; semua penolakan = 404 (bukan
+    # 403) supaya tak jadi oracle. Lihat app/utils/chat_file_path.py.
+    file_path = resolve_berkas_tenant(UPLOAD_BASE_DIR, tenant_id, storage_key)
+    if file_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Determine content type from extension
-    import mimetypes
-
-    content_type, _ = mimetypes.guess_type(file_path)
-    if not content_type:
-        content_type = "application/octet-stream"
-
-    return FileResponse(file_path, media_type=content_type)
+    content_type, inline = tipe_sajian(file_path)
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if inline:
+        return FileResponse(file_path, media_type=content_type, headers=headers)
+    return FileResponse(
+        file_path,
+        media_type=content_type,
+        filename=os.path.basename(file_path),
+        headers=headers,
+    )
 
 
 async def _propose_document_draft(
