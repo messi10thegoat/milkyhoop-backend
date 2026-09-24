@@ -63,12 +63,18 @@ def _skip():
     return [re.compile(p) for p in re.findall(r"r[\"']([^\"']+)[\"']", blok)]
 
 
+def _write_exempt():
+    teks = MIDDLEWARE.read_text(encoding="utf-8")
+    blok = re.search(r"WRITE_EXEMPT\s*=\s*\[(.*?)\n\]", teks, re.S).group(1)
+    return [re.compile(p) for p in re.findall(r"\(\s*r[\"']([^\"']+)[\"']\s*,", blok)]
+
+
 def _konkret(jalur: str) -> str:
     return re.sub(r"\{[^}]+\}", "XX", jalur)
 
 
 def _tanpa_pola():
-    pola, skip = _pola(), _skip()
+    pola, skip, exempt = _pola(), _skip(), _write_exempt()
     kurang = set()
     for baris in _baris(INVENTARIS):
         metode, _, jalur = baris.partition(" ")
@@ -77,6 +83,8 @@ def _tanpa_pola():
         k = _konkret(jalur)
         if any(rx.match(k) and metode in mth for rx, mth in pola):
             continue
+        if any(e.match(k) for e in exempt):
+            continue  # sengaja tak dipetakan (WRITE_EXEMPT: dicek di handler)
         kurang.add(baris)
     return kurang
 

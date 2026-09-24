@@ -65,6 +65,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/receive-payments/[^/]+$", ["DELETE"], "receive_payment", "D"),
     (r"^/api/receive-payments/[^/]+/post$", ["POST"], "receive_payment", "P"),
     (r"^/api/receive-payments/[^/]+/void$", ["POST"], "receive_payment", "V"),
+    # #53 "Lepas" alokasi (24 Sep 2026, putusan MASTER): menulis jurnal
+    # PEMBALIK = setara void -> V. Sebelumnya tanpa pola: default-tertutup
+    # (staf 403 PERMISSION_UNMAPPED, OWNER lolos) -> fitur mati untuk staf.
+    (r"^/api/receive-payments/[^/]+/allocations/[^/]+/unapply$", ["POST"], "receive_payment", "V"),
     # Bill Payments / Send Payments
     (r"^/api/bill-payments/summary$", ["GET"], "send_payment", "R"),
     (r"^/api/bill-payments$", ["GET"], "send_payment", "R"),
@@ -181,6 +185,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Journals
     (r"^/api/journals$", ["GET"], "journal", "R"),
     (r"^/api/journals$", ["POST"], "journal", "C"),
+    # Reklas persediaan->HPP: handler OWNER-only EKSPLISIT (journals.py
+    # reclassify_bill_inventory_endpoint). Pola ini hanya lapis pertama
+    # (menulis jurnal = C); staf ber-izin journal C tetap ditolak handler.
+    (r"^/api/journals/reclassify-bill-inventory$", ["POST"], "journal", "C"),
     (r"^/api/journals/[^/]+$", ["GET"], "journal", "R"),
     (r"^/api/journals/[^/]+/post$", ["POST"], "journal", "P"),
     (r"^/api/journals/[^/]+/reverse$", ["POST"], "journal", "V"),

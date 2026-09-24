@@ -61,6 +61,14 @@ def skip():
     return [re.compile(p) for p in re.findall(r"r[\"']([^\"']+)[\"']", blok)]
 
 
+def write_exempt():
+    """Pola WRITE_EXEMPT: rute tulis yang SENGAJA tak dipetakan (cek di handler).
+    Dulu tak dibaca -> mis. POST /{tenant_id}/chat terhitung 'tanpa pola'."""
+    t = MID.read_text(encoding="utf-8")
+    blok = re.search(r"WRITE_EXEMPT\s*=\s*\[(.*?)\n\]", t, re.S).group(1)
+    return [re.compile(p) for p in re.findall(r"\(\s*r[\"']([^\"']+)[\"']\s*,", blok)]
+
+
 def catat(kode, label, ket=""):
     hasil.append(kode)
     print("  [%s] %s %s" % (kode, label, ket))
@@ -85,7 +93,12 @@ def main():
           "" if not hantu else "%d sudah tak ada: %s" % (len(hantu), hantu[:5]))
 
     # [C] CAKUPAN diukur ulang terhadap rute HIDUP, bukan inventaris
-    pc, sk = pola(), skip()
+    pc, sk, ex = pola(), skip(), write_exempt()
+    # kontrol positif: pengurai WRITE_EXEMPT yang menemukan nol = semua rute
+    # pengecualian kembali "tanpa pola" (atau, lebih buruk, parser rusak diam).
+    if len(ex) < 10:
+        print("GERBANG TAK SAH: WRITE_EXEMPT terbaca %d pola (ambang >=10)" % len(ex))
+        return 2
     dasar = set(baris(GD))
     telanjang = []
     for b in sorted(liv):
@@ -95,6 +108,8 @@ def main():
         k = re.sub(r"\{[^}]+\}", "XX", jalur)
         if any(rx.match(k) and metode in mth for rx, mth in pc):
             continue
+        if any(e.match(k) for e in ex):
+            continue  # sengaja tak dipetakan; dicek di handler (lihat WRITE_EXEMPT)
         telanjang.append(b)
     baru = sorted(set(telanjang) - dasar)
     catat("H" if not baru else "X", "C1 nol rute tulis baru tanpa pola",
@@ -104,8 +119,8 @@ def main():
     catat("H" if not basi else "X", "C2 garis dasar tak memuat entri basi",
           "" if not basi else "%d sudah tertutup: %s" % (len(basi), basi[:5]))
 
-    print("\nrute tulis hidup=%d  inventaris=%d  tanpa pola=%d  garis dasar=%d"
-          % (len(liv), len(inv), len(telanjang), len(dasar)))
+    print("\nrute tulis hidup=%d  inventaris=%d  tanpa pola=%d  garis dasar=%d  write_exempt=%d"
+          % (len(liv), len(inv), len(telanjang), len(dasar), len(ex)))
     buruk = [h for h in hasil if h != "H"]
     print("%s: %d/%d" % ("MERAH" if buruk else "HIJAU",
                          len(hasil) - len(buruk), len(hasil)))

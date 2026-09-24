@@ -42,6 +42,7 @@ DELETE /api/expenses/{expense_id}
 DELETE /api/expenses/{expense_id}/attachments/{attachment_id}
 DELETE /api/fixed-assets/categories/{category_id}
 DELETE /api/fixed-assets/{asset_id}
+DELETE /api/items/categories
 DELETE /api/items/{item_id}
 DELETE /api/journals/{journal_id}
 DELETE /api/onboarding/conversation/{session_id}
@@ -118,6 +119,7 @@ PATCH /api/sales-invoices/{invoice_id}
 PATCH /api/sales-orders/{order_id}
 PATCH /api/settings/accounting
 PATCH /api/settings/pkp
+PATCH /api/settings/pkp-status
 PATCH /api/stock-adjustments/{adjustment_id}
 PATCH /api/stock-transfers/{transfer_id}
 PATCH /api/storage-locations/{location_id}
@@ -153,9 +155,6 @@ POST /api/auth/mfa/disable
 POST /api/auth/mfa/setup
 POST /api/auth/mfa/validate
 POST /api/auth/mfa/verify
-POST /api/auth/qr/approve
-POST /api/auth/qr/generate
-POST /api/auth/qr/scan
 POST /api/auth/refresh
 POST /api/auth/register
 POST /api/auth/signup/complete-setup
@@ -176,6 +175,7 @@ POST /api/bank-reconciliation/sessions/{session_id}/complete
 POST /api/bank-reconciliation/sessions/{session_id}/import
 POST /api/bank-reconciliation/sessions/{session_id}/match
 POST /api/bank-reconciliation/sessions/{session_id}/transactions
+POST /api/bank-transactions/{transaction_id}/void
 POST /api/bank-transfers
 POST /api/bank-transfers/{transfer_id}/post
 POST /api/bank-transfers/{transfer_id}/void
@@ -230,6 +230,7 @@ POST /api/credit-notes/{credit_note_id}/apply
 POST /api/credit-notes/{credit_note_id}/create-tax-invoice
 POST /api/credit-notes/{credit_note_id}/post
 POST /api/credit-notes/{credit_note_id}/refund
+POST /api/credit-notes/{credit_note_id}/unapply
 POST /api/credit-notes/{credit_note_id}/void
 POST /api/currencies
 POST /api/currencies/exchange-rates
@@ -263,6 +264,8 @@ POST /api/documents/upload
 POST /api/documents/{document_id}/attach
 POST /api/efaktur/export
 POST /api/efaktur/validate
+POST /api/employee-advances
+POST /api/employee-advances/{advance_id}/void
 POST /api/employees
 POST /api/expense-claims
 POST /api/expense-claims/{claim_id}/approve
@@ -310,6 +313,7 @@ POST /api/items/{item_id}/duplicate
 POST /api/items/{item_id}/stock-adjustment
 POST /api/items/{item_id}/stock-transfer
 POST /api/journals
+POST /api/journals/reclassify-bill-inventory
 POST /api/journals/{journal_id}/post
 POST /api/journals/{journal_id}/reverse
 POST /api/kds/alerts/{alert_id}/acknowledge
@@ -382,6 +386,7 @@ POST /api/quotes/{quote_id}/to-order
 POST /api/quotes/{quote_id}/void
 POST /api/receive-payments
 POST /api/receive-payments/preview-journal
+POST /api/receive-payments/{payment_id}/allocations/{allocation_id}/unapply
 POST /api/receive-payments/{payment_id}/post
 POST /api/receive-payments/{payment_id}/void
 POST /api/recipes/categories
@@ -453,9 +458,6 @@ POST /api/team-members/invitations/{invitation_id}/resend
 POST /api/team-members/invite
 POST /api/tenant/profile/logo
 POST /api/tenant/{tenant_id}/chat
-POST /api/test/ragcrud/create
-POST /api/test/raginject/rag-inject
-POST /api/test/ragllm/ragllm/test
 POST /api/transactions/parse-guided
 POST /api/transactions/purchase
 POST /api/transactions/sales
@@ -486,6 +488,7 @@ POST /api/vendors/merge
 POST /api/vendors/{vendor_id}/opening-balance
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
+POST /{tenant_id}/chat
 PUT /api/employees/{employee_id}
 PUT /api/employees/{employee_id}/salary-config
 PUT /api/expense-policy

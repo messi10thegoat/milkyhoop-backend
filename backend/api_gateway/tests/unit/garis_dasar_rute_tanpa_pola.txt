@@ -11,19 +11,20 @@
 #
 # Sebuah entri yang polanya sudah ditutup akan membuat
 # test_garis_dasar_hanya_menyusut MERAH sampai ia dicabut dari sini.
+#
+# 24 Sep 2026: 36 entri dicabut -- 33 rute yang SEBENARNYA WRITE_EXEMPT (penjaga
+# ini dan gate_izin_rute dulu tak membaca WRITE_EXEMPT, jadi terhitung
+# "tanpa pola" secara salah) + 3 rute test-rag yang sudah tak ada.
 DELETE /api/approval-delegates/{delegation_id}
 DELETE /api/approval-workflows/{workflow_id}
 DELETE /api/approval-workflows/{workflow_id}/levels/{level_id}
-DELETE /api/devices/{device_id}
 DELETE /api/documents/{document_id}
 DELETE /api/documents/{document_id}/detach
-DELETE /api/onboarding/conversation/{session_id}
 PATCH /api/approval-workflows/{workflow_id}
 PATCH /api/audit/retention-policies/{policy_id}
 PATCH /api/documents/{document_id}
 PATCH /api/team-members/{member_id}/deactivate
 PATCH /api/team-members/{member_id}/reactivate
-PATCH /api/v3/chat/sessions/{session_id}
 POST /api/approval-delegates
 POST /api/approval-requests/{request_id}/cancel
 POST /api/approval-requests/{request_id}/reject
@@ -31,48 +32,15 @@ POST /api/approval-workflows
 POST /api/approval-workflows/{workflow_id}/levels
 POST /api/audit/cleanup
 POST /api/audit/sensitive-access
-POST /api/devices/logout-all-web
-POST /api/devices/remote-scan/cancel
-POST /api/devices/remote-scan/request
-POST /api/devices/remote-scan/result
 POST /api/document-intake/cleanup
-POST /api/document-intake/document/{doc_id}/confirm
-POST /api/document-intake/document/{doc_id}/execute
-POST /api/document-intake/document/{doc_id}/reject
-POST /api/document-intake/document/{doc_id}/retry
-POST /api/document-intake/execute-batch
 POST /api/document-intake/process
 POST /api/document-intake/retry-all-failed
-POST /api/document-intake/upload
-POST /api/documents/upload
-POST /api/documents/{document_id}/attach
 POST /api/financial-ratios/alerts
 POST /api/financial-ratios/snapshot
 POST /api/flow/flow/run
 POST /api/inventory/products
 POST /api/inventory/products/{product_id}/adjust
-POST /api/invite/{token}/accept
-POST /api/invite/{token}/decline
 POST /api/members/add-points
-POST /api/onboarding/chat/{tenant_id}
-POST /api/onboarding/conversational-setup
-POST /api/session/logout
-POST /api/session/logout-all
-POST /api/setup/chat
-POST /api/tenant/{tenant_id}/chat
-POST /api/test/ragcrud/create
-POST /api/test/raginject/rag-inject
-POST /api/test/ragllm/ragllm/test
 POST /api/transactions/parse-guided
 POST /api/transactions/purchase
 POST /api/transactions/sales
-POST /api/uploads/document
-POST /api/v3/chat/action/edit
-POST /api/v3/chat/cancel
-POST /api/v3/chat/confirm
-POST /api/v3/chat/feedback
-POST /api/v3/chat/message
-POST /api/v3/chat/message/stream
-POST /api/v3/chat/message/upload
-PUT /api/user/favorites
-PUT /api/user/profile
