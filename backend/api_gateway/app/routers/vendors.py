@@ -11,6 +11,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendors import (
     VendorActivity,
     VendorActivityResponse,
@@ -392,14 +393,18 @@ async def list_vendors(
 
             # Pure Ledger: has_overdue filter using compute_ap_outstanding() DB function
             if has_overdue is True:
+                # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
                 conditions.append(
-                    """EXISTS (
+                    f"""EXISTS (
                     SELECT 1 FROM compute_ap_outstanding(vendors.tenant_id) ap_fn
                     WHERE ap_fn.vendor_id = vendors.id
-                      AND ap_fn.due_date < CURRENT_DATE
+                      AND ap_fn.due_date < ${param_idx}::date
                       AND ap_fn.outstanding > 0
                 )"""
                 )
+                params.append(hari_ini)
+                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -682,13 +687,17 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
                     COALESCE(SUM(outstanding), 0) as total_balance,
                     COUNT(*) FILTER (WHERE paid_amount = 0 AND outstanding > 0) as unpaid_count,
                     COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0) as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND outstanding > 0) as overdue_count,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND outstanding > 0 THEN outstanding ELSE 0 END), 0) as overdue_amount,
+                    COUNT(*) FILTER (WHERE due_date < $3::date AND outstanding > 0) as overdue_count,
+                    COALESCE(SUM(CASE WHEN due_date < $3::date AND outstanding > 0 THEN outstanding ELSE 0 END), 0) as overdue_amount,
                     COALESCE(SUM(bill_total), 0) as total_billed,
                     COALESCE(SUM(paid_amount), 0) as total_paid
                 FROM compute_vendor_ap($1, $2)
             """
-            balance = await conn.fetchrow(balance_query, ctx["tenant_id"], vendor_id)
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            balance = await conn.fetchrow(
+                balance_query, ctx["tenant_id"], vendor_id, hari_ini
+            )
 
             return {
                 "success": True,
@@ -1265,6 +1274,8 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             # Fixed: use correct column names from bills table
             # invoice_number instead of bill_number
             # issue_date instead of bill_date
@@ -1277,13 +1288,14 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                        bill_total as total_amount,
                        paid_amount,
                        outstanding as remaining_amount,
-                       CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue
+                       CASE WHEN due_date < $3::date THEN true ELSE false END as is_overdue
                 FROM compute_vendor_ap($1, $2::uuid)
                 WHERE outstanding > 0
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
                 vendor_id,
+                hari_ini,
             )
             bills = [
                 {

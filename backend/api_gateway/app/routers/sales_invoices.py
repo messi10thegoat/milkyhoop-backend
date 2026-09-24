@@ -356,7 +356,7 @@ async def get_invoice_summary(request: Request):
                     (SELECT COUNT(*) FROM sales_invoices si3
                      LEFT JOIN ar_fn aw ON aw.invoice_id = si3.id
                      WHERE si3.tenant_id = $1
-                       AND (si3.status = 'overdue' OR (si3.status IN ('posted', 'partial') AND si3.due_date < CURRENT_DATE))
+                       AND (si3.status = 'overdue' OR (si3.status IN ('posted', 'partial') AND si3.due_date < $2::date))
                        AND aw.outstanding > 0
                     ) as overdue_count,
                     COALESCE((SELECT SUM(outstanding) FROM ar_fn), 0) as total_outstanding,
@@ -365,10 +365,12 @@ async def get_invoice_summary(request: Request):
                         FROM ar_fn aw
                         JOIN sales_invoices si3 ON si3.id = aw.invoice_id
                         WHERE si3.status = 'overdue'
-                           OR (si3.status IN ('posted', 'partial') AND si3.due_date < CURRENT_DATE)
+                           OR (si3.status IN ('posted', 'partial') AND si3.due_date < $2::date)
                     ), 0) as total_overdue
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], hari_ini)
 
             return {
                 "success": True,
@@ -415,14 +417,16 @@ async def get_outstanding_summary(request: Request):
                 )
                 SELECT
                     COALESCE(SUM(outstanding), 0) AS total_outstanding,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE THEN outstanding ELSE 0 END), 0) AS overdue_amount,
-                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) AS current_amount,
-                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) AS overdue_count,
-                    COUNT(CASE WHEN due_date >= CURRENT_DATE THEN 1 END) AS current_count,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date THEN outstanding ELSE 0 END), 0) AS overdue_amount,
+                    COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) AS current_amount,
+                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) AS overdue_count,
+                    COUNT(CASE WHEN due_date >= $2::date THEN 1 END) AS current_count,
                     COUNT(DISTINCT customer_id) AS customer_count
                 FROM ar
             """
-            row = await conn.fetchrow(query, tenant_id)
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            row = await conn.fetchrow(query, tenant_id, hari_ini)
 
             # Fix A: per-customer aggregation for deterministic AR rollup intent.
             # Iron Law 1: numbers come from compute_ar_outstanding() (journal-derived).
@@ -966,10 +970,14 @@ async def list_invoices(
                     conditions.append("si.status NOT IN ('draft', 'void')")
                 elif status == "overdue":
                     # Overdue = posted/partial + past due + has outstanding via DB function
+                    # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
                     conditions.append(
-                        "(si.status IN ('posted', 'partial') AND si.due_date < CURRENT_DATE"
+                        f"(si.status IN ('posted', 'partial') AND si.due_date < ${param_idx}::date"
                         " AND si.id IN (SELECT invoice_id FROM compute_ar_outstanding($1) WHERE outstanding > 0))"
                     )
+                    params.append(hari_ini)
+                    param_idx += 1
                 else:
                     conditions.append(f"si.status = ${param_idx}")
                     params.append(status)

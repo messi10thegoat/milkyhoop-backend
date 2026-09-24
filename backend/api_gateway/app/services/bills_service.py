@@ -23,6 +23,10 @@ from .tax_factor import resolve_dpp_factor
 
 _Dec = Decimal
 
+# #10b-3a: penanda tempat parameter hari-ini (tanggal bisnis tenant) di
+# fragmen SQL dinamis; diganti "$N::date" setelah indeksnya pasti.
+TOK_HARI_INI = "__HARI_INI__"
+
 import asyncpg  # noqa: E402
 import uuid as uuid_module  # noqa: E402
 
@@ -426,6 +430,11 @@ class BillsService:
             sort_fields = [("created_at", "desc")]
 
         async with self.pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC. Nomor
+            # parameternya baru ditetapkan sesudah semua filter (lihat
+            # __HARI_INI__ di bawah) supaya indeks filter dinamis tak bergeser.
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+
             # Build WHERE clause
             conditions = ["b.tenant_id = $1"]
             params: List[Any] = [tenant_id]
@@ -440,9 +449,9 @@ class BillsService:
                         WHEN b.status = 'void' THEN 'void'
                         WHEN b.status_v2 = 'draft' THEN 'draft'
                         WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < __HARI_INI__ THEN 'overdue'
                         WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.due_date < __HARI_INI__ THEN 'overdue'
                         ELSE 'unpaid'
                     END
                 """
@@ -507,7 +516,12 @@ class BillsService:
                 params.append(amount_max)
                 param_idx += 1
 
-            where_clause = " AND ".join(conditions)
+            # #10b-3a: $N hari ini = indeks bebas berikutnya SESUDAH semua filter.
+            hari_idx = param_idx
+            hari_ph = f"${hari_idx}::date"
+            raw_where = " AND ".join(conditions)
+            where_uses_hari = TOK_HARI_INI in raw_where
+            where_clause = raw_where.replace(TOK_HARI_INI, hari_ph)
 
             # Build compound ORDER BY clause
             field_mapping = {
@@ -525,9 +539,9 @@ class BillsService:
                     WHEN b.status = 'void' THEN 6
                     WHEN b.status_v2 = 'draft' THEN 5
                     WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 4
-                    WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 1
+                    WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < __HARI_INI__ THEN 1
                     WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 3
-                    WHEN b.due_date < CURRENT_DATE THEN 1
+                    WHEN b.due_date < __HARI_INI__ THEN 1
                     ELSE 2
                 END""",
                 # Legacy aliases
@@ -535,7 +549,9 @@ class BillsService:
                 "invoice_number": "b.invoice_number",
             }
 
-            order_by_clause = build_order_by_clause(sort_fields, field_mapping)
+            order_by_clause = build_order_by_clause(sort_fields, field_mapping).replace(
+                TOK_HARI_INI, hari_ph
+            )
 
             # Get total count
             count_query = f"""
@@ -544,7 +560,14 @@ class BillsService:
                 LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
                 WHERE {where_clause}
             """
-            total = await conn.fetchval(count_query, *params)
+            # Count hanya memakai WHERE: sertakan hari_ini HANYA bila dirujuk
+            # (asyncpg menolak argumen yang tak dirujuk kueri).
+            count_params = params + [hari_ini] if where_uses_hari else params
+            total = await conn.fetchval(count_query, *count_params)
+
+            # SELECT di bawah SELALU merujuk hari_ph (kolom status).
+            params.append(hari_ini)
+            param_idx += 1
 
             # Get items with dynamic status calculation
             # Law 16: Journal-derived amount_paid via CTE
@@ -562,9 +585,9 @@ class BillsService:
                         WHEN b.status = 'void' THEN 'void'
                         WHEN b.status_v2 = 'draft' THEN 'draft'
                         WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < {hari_ph} THEN 'overdue'
                         WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.due_date < {hari_ph} THEN 'overdue'
                         ELSE 'unpaid'
                     END as status,
                     b.issue_date,
@@ -635,6 +658,7 @@ class BillsService:
             Bill detail dict or None if not found
         """
         async with self.pool.acquire() as conn:
+            hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
             # Get bill -- Law 16: journal-derived amount_paid via compute_ap_outstanding()
             bill_query = """
                 SELECT
@@ -645,9 +669,9 @@ class BillsService:
                         WHEN b.status = 'void' THEN 'void'
                         WHEN b.status_v2 = 'draft' THEN 'draft'
                         WHEN COALESCE(ap_paid.total_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < $3::date THEN 'overdue'
                         WHEN COALESCE(ap_paid.total_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.due_date < $3::date THEN 'overdue'
                         ELSE 'unpaid'
                     END as calculated_status
                 FROM bills b
@@ -666,7 +690,7 @@ class BillsService:
                 ) ap_paid ON true
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
-            bill = await conn.fetchrow(bill_query, bill_id, tenant_id)
+            bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
 
             if not bill:
                 return None
@@ -2335,7 +2359,8 @@ class BillsService:
         """
         async with self.pool.acquire() as conn:
             # Determine date range
-            today = date.today()
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            today = await tanggal_dokumen(conn, tenant_id)
 
             if period == "current_month":
                 start_date = today.replace(day=1)
@@ -2386,11 +2411,11 @@ class BillsService:
                     COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as partial_count,
                     COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')), 0) as partial_remaining,
                     -- Unpaid: belum bayar sama sekali, sisa = amount (full)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
-                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_remaining,
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= $4::date AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
+                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= $4::date AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_remaining,
                     -- Overdue: jatuh tempo dan belum lunas, sisa = amount - journal_paid
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < CURRENT_DATE AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_remaining
+                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < $4::date AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
+                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < $4::date AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_remaining
                 FROM bills b
                 LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
                 WHERE b.tenant_id = $1
@@ -2399,7 +2424,7 @@ class BillsService:
                     AND b.status_v2 NOT IN ('draft', 'void')
             """
 
-            row = await conn.fetchrow(query, tenant_id, start_date, end_date)
+            row = await conn.fetchrow(query, tenant_id, start_date, end_date, today)
 
             # Hutang jatuh tempo (ALL-TIME, journal-derived) -- sejajar dgn
             # /api/sales-invoices/summary. compute_ap_outstanding = sumber tunggal
@@ -2409,9 +2434,10 @@ class BillsService:
                 SELECT COUNT(*) AS overdue_count,
                        COALESCE(SUM(outstanding), 0) AS total_overdue
                 FROM compute_ap_outstanding($1)
-                WHERE due_date < CURRENT_DATE AND outstanding > 0
+                WHERE due_date < $2::date AND outstanding > 0
                 """,
                 tenant_id,
+                today,
             )
 
             total_amount = int(row["total_amount"])
@@ -2478,7 +2504,8 @@ class BillsService:
             Summary with breakdown by payment status, counts, and urgency metrics
         """
         async with self.pool.acquire() as conn:
-            today = date.today()
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            today = await tanggal_dokumen(conn, tenant_id)
 
             # ARAP Rule 5: Single source of truth via compute_ap_outstanding()
             # No inline CTE — all amounts derived from the same DB function
@@ -2502,31 +2529,31 @@ class BillsService:
 
                     -- Partial: paid_amount > 0 AND outstanding > 0, not overdue
                     COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0
-                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)) as partial_count,
+                        AND (due_date >= $2::date OR due_date IS NULL)) as partial_count,
                     COALESCE(SUM(outstanding) FILTER (WHERE paid_amount > 0 AND outstanding > 0
-                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)), 0) as partial_amount,
+                        AND (due_date >= $2::date OR due_date IS NULL)), 0) as partial_amount,
 
                     -- Unpaid: paid_amount = 0, not overdue
                     COUNT(*) FILTER (WHERE paid_amount = 0
-                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)) as unpaid_count,
+                        AND (due_date >= $2::date OR due_date IS NULL)) as unpaid_count,
                     COALESCE(SUM(outstanding) FILTER (WHERE paid_amount = 0
-                        AND (due_date >= CURRENT_DATE OR due_date IS NULL)), 0) as unpaid_amount,
+                        AND (due_date >= $2::date OR due_date IS NULL)), 0) as unpaid_amount,
 
                     -- Overdue: due_date < today AND outstanding > 0
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE) as overdue_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_amount,
+                    COUNT(*) FILTER (WHERE due_date < $2::date) as overdue_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE due_date < $2::date), 0) as overdue_amount,
 
                     -- Urgency
-                    COALESCE(MAX(CURRENT_DATE - due_date) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_oldest_days,
-                    COALESCE(MAX(outstanding) FILTER (WHERE due_date < CURRENT_DATE), 0) as overdue_largest,
-                    COUNT(*) FILTER (WHERE due_date >= CURRENT_DATE
-                        AND due_date <= CURRENT_DATE + INTERVAL '7 days') as due_within_7_days_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE due_date >= CURRENT_DATE
-                        AND due_date <= CURRENT_DATE + INTERVAL '7 days'), 0) as due_within_7_days_amount
+                    COALESCE(MAX($2::date - due_date) FILTER (WHERE due_date < $2::date), 0) as overdue_oldest_days,
+                    COALESCE(MAX(outstanding) FILTER (WHERE due_date < $2::date), 0) as overdue_largest,
+                    COUNT(*) FILTER (WHERE due_date >= $2::date
+                        AND due_date <= $2::date + INTERVAL '7 days') as due_within_7_days_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE due_date >= $2::date
+                        AND due_date <= $2::date + INTERVAL '7 days'), 0) as due_within_7_days_amount
                 FROM ap
             """
 
-            row = await conn.fetchrow(query, tenant_id)
+            row = await conn.fetchrow(query, tenant_id, today)
 
             # Fix A: per-vendor aggregation for deterministic AP rollup intent.
             # Iron Law 1: journal-derived via compute_ap_outstanding().
@@ -4280,6 +4307,7 @@ class BillsService:
             Bill detail dict or None if not found
         """
         async with self.pool.acquire() as conn:
+            hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
             # Get bill with V2 fields -- Law 16: journal-derived amount_paid (direct journal query, not compute_ap_outstanding which excludes paid bills)
             bill_query = """
                 SELECT
@@ -4290,9 +4318,9 @@ class BillsService:
                         WHEN b.status = 'void' OR b.status_v2 = 'void' THEN 'void'
                         WHEN b.status_v2 = 'draft' THEN 'draft'
                         WHEN COALESCE(ap_paid.total_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < $3::date THEN 'overdue'
                         WHEN COALESCE(ap_paid.total_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < CURRENT_DATE THEN 'overdue'
+                        WHEN b.due_date < $3::date THEN 'overdue'
                         ELSE 'unpaid'
                     END as calculated_status
                 FROM bills b
@@ -4311,7 +4339,7 @@ class BillsService:
                 ) ap_paid ON true
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
-            bill = await conn.fetchrow(bill_query, bill_id, tenant_id)
+            bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
 
             if not bill:
                 return None

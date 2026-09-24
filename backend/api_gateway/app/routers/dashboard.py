@@ -8,11 +8,12 @@ from fastapi import APIRouter, HTTPException, Request, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 # Import centralized config
 from ..services.db_pool import get_db_pool
 from ..services.role_resolution import require_active_membership
+from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
 # Pagar keanggotaan dipasang di level ROUTER: berlaku untuk KE-15 endpoint
@@ -259,25 +260,25 @@ def calculate_dpo_status(dpo: float) -> str:
         return "warning"
 
 
-def get_days_in_period(period: str) -> int:
+def get_days_in_period(period: str, hari_ini: date) -> int:
     """Get number of days for a period"""
     if period == "7d":
         return 7
     elif period == "30d":
         return 30
     else:  # month
-        now = datetime.now()
-        return now.day  # Days elapsed in current month
+        # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+        return hari_ini.day  # Days elapsed in current month
 
 
-def get_period_date_range(period: str) -> tuple:
+def get_period_date_range(period: str, hari_ini: date) -> tuple:
     """
     Get date range for period as date objects (for journal_date comparison).
     period: '7d' | '30d' | 'month'
+    hari_ini: tanggal bisnis tenant (tanggal_dokumen), bukan date.today() UTC.
     Returns: (start_date, end_date, period_label)
     """
-    now = datetime.now()
-    today = now.date()
+    today = hari_ini
 
     if period == "7d":
         start_date = today - timedelta(days=7)
@@ -297,13 +298,13 @@ def get_period_date_range(period: str) -> tuple:
     return start_date, today, period_label
 
 
-def get_prev_period_date_range(period: str) -> tuple:
+def get_prev_period_date_range(period: str, hari_ini: date) -> tuple:
     """
     Get date range for PREVIOUS period (for comparison).
+    hari_ini: tanggal bisnis tenant (tanggal_dokumen), bukan date.today() UTC.
     Returns: (start_date, end_date) as date objects
     """
-    now = datetime.now()
-    today = now.date()
+    today = hari_ini
 
     if period == "7d":
         start_date = today - timedelta(days=14)
@@ -351,6 +352,8 @@ async def _get_upcoming_due(request: Request):
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+        # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC CURRENT_DATE
+        hari_ini = await tanggal_dokumen(conn, tenant_id)
         rows = await conn.fetch(
             """
             WITH ar AS (
@@ -359,12 +362,12 @@ async def _get_upcoming_due(request: Request):
                     invoice_number AS number,
                     customer_name AS customer_or_vendor,
                     due_date,
-                    (due_date - CURRENT_DATE) AS days_until_due,
+                    (due_date - $2::date) AS days_until_due,
                     outstanding
                 FROM compute_ar_outstanding($1)
                 WHERE outstanding > 0
-                  AND due_date >= CURRENT_DATE
-                  AND due_date <= CURRENT_DATE + 14
+                  AND due_date >= $2::date
+                  AND due_date <= $2::date + 14
             ),
             ap AS (
                 SELECT
@@ -372,18 +375,19 @@ async def _get_upcoming_due(request: Request):
                     bill_number AS number,
                     vendor_name AS customer_or_vendor,
                     due_date,
-                    (due_date - CURRENT_DATE) AS days_until_due,
+                    (due_date - $2::date) AS days_until_due,
                     outstanding
                 FROM compute_ap_outstanding($1)
                 WHERE outstanding > 0
-                  AND due_date >= CURRENT_DATE
-                  AND due_date <= CURRENT_DATE + 14
+                  AND due_date >= $2::date
+                  AND due_date <= $2::date + 14
             )
             SELECT * FROM (SELECT * FROM ar UNION ALL SELECT * FROM ap) combined
             ORDER BY due_date ASC
             LIMIT 10
         """,
             tenant_id,
+            hari_ini,
         )
 
         items = []
@@ -416,13 +420,14 @@ async def _get_sales_today(
 ):
     """Penjualan Hari Ini - journal-derived revenue + invoice context."""
     tenant_id = request.state.user.get("tenant_id")
-    _today_str = date.today().isoformat()  # noqa: F841
-    s_start = date.fromisoformat(sales_start) if sales_start else date.today()
-    s_end = date.fromisoformat(sales_end) if sales_end else date.today()
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
+        # #10b-3a: default periode = tanggal bisnis tenant, bukan date.today() UTC
+        hari_ini = await tanggal_dokumen(conn, tenant_id)
+        s_start = date.fromisoformat(sales_start) if sales_start else hari_ini
+        s_end = date.fromisoformat(sales_end) if sales_end else hari_ini
 
         # Revenue from journal (Law 1/16)
         rev_row = await conn.fetchrow(
@@ -622,9 +627,10 @@ async def get_dashboard_summary(
             prev_start_date = prev_end_date - timedelta(days=delta)
             start_date = sd
             end_date = ed
+            _pakai_periode = False
         else:
-            start_date, end_date, period_label = get_period_date_range(period)
-            prev_start_date, prev_end_date = get_prev_period_date_range(period)
+            # Rentang periode dihitung sesudah koneksi ada (butuh tanggal bisnis tenant)
+            _pakai_periode = True
 
         # Resolve accounting basis (default: tenant setting or accrual)
         effective_basis = basis  # Will resolve after DB connection if None
@@ -632,6 +638,15 @@ async def get_dashboard_summary(
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            if _pakai_periode:
+                start_date, end_date, period_label = get_period_date_range(
+                    period, hari_ini
+                )
+                prev_start_date, prev_end_date = get_prev_period_date_range(
+                    period, hari_ini
+                )
             # ============================
             # 1. LABA RUGI (P&L Summary)
             # Pure Ledger: uses get_revenue_by_basis / get_expenses_by_basis SQL functions
@@ -727,24 +742,24 @@ async def get_dashboard_summary(
             ar_aging_query = """
                 SELECT
                     COUNT(DISTINCT customer_name) as customer_count,
-                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
-                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
+                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) as jatuh_tempo,
+                    COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date AND due_date >= $2::date - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '30 days' AND due_date >= $2::date - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '60 days' AND due_date >= $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
                 FROM compute_ar_outstanding($1)
             """
-            ar_aging = await conn.fetchrow(ar_aging_query, tenant_id)
+            ar_aging = await conn.fetchrow(ar_aging_query, tenant_id, hari_ini)
 
             # ARAP Rule 6: Use compute_ar_outstanding() instead of accounts_receivable table
             oldest_ar_query = """
-                SELECT customer_name, CURRENT_DATE - due_date as days_overdue
+                SELECT customer_name, $2::date - due_date as days_overdue
                 FROM compute_ar_outstanding($1)
-                WHERE due_date < CURRENT_DATE
+                WHERE due_date < $2::date
                 ORDER BY due_date ASC LIMIT 1
             """
-            oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id)
+            oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id, hari_ini)
 
             # Previous period AR balance - Pure Ledger (Law 1/16, ARAP Rule 5/6)
             # Use account_type = 'RECEIVABLE' instead of hardcoded account_code
@@ -792,23 +807,23 @@ async def get_dashboard_summary(
             ap_aging_query = """
                 SELECT
                     COUNT(DISTINCT vendor_name) as supplier_count,
-                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo,
-                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
+                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) as jatuh_tempo,
+                    COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date AND due_date >= $2::date - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '30 days' AND due_date >= $2::date - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '60 days' AND due_date >= $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus
                 FROM compute_ap_outstanding($1)
             """
-            ap_aging = await conn.fetchrow(ap_aging_query, tenant_id)
+            ap_aging = await conn.fetchrow(ap_aging_query, tenant_id, hari_ini)
 
             # ARAP Rule 6: nearest supplier from compute_ap_outstanding()
             nearest_ap_query = """
-                SELECT vendor_name as supplier_name, due_date - CURRENT_DATE as days_until_due
+                SELECT vendor_name as supplier_name, due_date - $2::date as days_until_due
                 FROM compute_ap_outstanding($1)
                 ORDER BY due_date ASC LIMIT 1
             """
-            nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id)
+            nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id, hari_ini)
 
             # Previous period AP balance - Pure Ledger
             # Law 1/16: Pure ledger previous period AP
@@ -932,7 +947,7 @@ async def get_dashboard_summary(
             if start_date and end_date:
                 days_in_period = (end_date - start_date).days or 1
             else:
-                days_in_period = get_days_in_period(period)
+                days_in_period = get_days_in_period(period, hari_ini)
 
             # DSO = AR / daily_revenue
             daily_revenue = pendapatan / days_in_period if days_in_period > 0 else 0
@@ -965,7 +980,8 @@ async def get_dashboard_summary(
                 hutang=hutang,
                 kas_bank=kas_bank,
                 kpi=kpi,
-                generated_at=datetime.now().isoformat(),
+                # waktu sistem (bukan tanggal bisnis) — UTC eksplisit
+                generated_at=datetime.now(timezone.utc).isoformat(),
             )
 
     except HTTPException:
@@ -1006,27 +1022,30 @@ async def get_piutang_detail(
             )
             total_piutang = int(total_row["total_piutang"]) if total_row else 0
 
+            # #10b-3a: hari ini = tanggal bisnis tenant ($2), bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             overdue_filter = ""
             if filter == "overdue":
-                overdue_filter = "AND due_date < CURRENT_DATE"
+                overdue_filter = "AND due_date < $2::date"
 
             # Pure Ledger: AR aging from journal-based per-invoice outstanding
             extra_filter = ""
             if overdue_filter:
-                extra_filter = "AND due_date < CURRENT_DATE"
+                extra_filter = "AND due_date < $2::date"
             # ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
             aging = await conn.fetchrow(
                 f"""
                 SELECT COUNT(DISTINCT customer_name) as customer_count,
-                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus,
-                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo_count
+                    COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date AND due_date >= $2::date - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '30 days' AND due_date >= $2::date - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '60 days' AND due_date >= $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus,
+                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) as jatuh_tempo_count
                 FROM compute_ar_outstanding($1) WHERE 1=1 {extra_filter}
             """,
                 tenant_id,
+                hari_ini,
             )
 
             return PiutangSummary(
@@ -1072,14 +1091,16 @@ async def get_hutang_detail(
             )
             total_hutang = int(total_row["total_hutang"]) if total_row else 0
 
+            # #10b-3a: hari ini = tanggal bisnis tenant ($2), bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             overdue_filter = ""
             if filter == "overdue":
-                overdue_filter = "AND due_date < CURRENT_DATE"
+                overdue_filter = "AND due_date < $2::date"
 
             # Pure Ledger: AP aging from journal-based per-bill outstanding
             extra_filter = ""
             if overdue_filter:
-                extra_filter = "AND due_date < CURRENT_DATE"
+                extra_filter = "AND due_date < $2::date"
             aging = await conn.fetchrow(
                 f"""
                 WITH ap_journal_outstanding AS (
@@ -1132,15 +1153,16 @@ async def get_hutang_detail(
                     WHERE (bill_credit - payment_debit - adjustment_debit) > 0
                 )
                 SELECT COUNT(DISTINCT vendor_name) as supplier_count,
-                    COALESCE(SUM(CASE WHEN due_date >= CURRENT_DATE THEN outstanding ELSE 0 END), 0) as current_amount,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE AND due_date >= CURRENT_DATE - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '30 days' AND due_date >= CURRENT_DATE - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '60 days' AND due_date >= CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
-                    COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus,
-                    COUNT(CASE WHEN due_date < CURRENT_DATE THEN 1 END) as jatuh_tempo_count
+                    COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) as current_amount,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date AND due_date >= $2::date - INTERVAL '30 days' THEN outstanding ELSE 0 END), 0) as overdue_1_30,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '30 days' AND due_date >= $2::date - INTERVAL '60 days' THEN outstanding ELSE 0 END), 0) as overdue_31_60,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '60 days' AND due_date >= $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_61_90,
+                    COALESCE(SUM(CASE WHEN due_date < $2::date - INTERVAL '90 days' THEN outstanding ELSE 0 END), 0) as overdue_90_plus,
+                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) as jatuh_tempo_count
                 FROM ap_with_outstanding WHERE 1=1 {extra_filter}
             """,
                 tenant_id,
+                hari_ini,
             )
 
             return HutangSummary(
@@ -1277,34 +1299,35 @@ async def get_cash_flow_trends(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        # Calculate date range
-        now = datetime.now()
-        if start_date and end_date:
-            from datetime import date as date_type
-
-            cf_start = date_type.fromisoformat(start_date)
-            cf_end = date_type.fromisoformat(end_date)
-        else:
-            if period == "7d":
-                cf_start = now.date() - timedelta(days=6)
-            elif period == "30d":
-                cf_start = now.date() - timedelta(days=29)
-            else:  # month — full calendar month
-                from calendar import monthrange as _mr
-
-                cf_start = date(now.year, now.month, 1)
-                _last = _mr(now.year, now.month)[1]
-                cf_end = date(now.year, now.month, _last)
-            if period != "month":
-                cf_end = now.date()
-
-        # Determine aggregation: monthly for ranges > 60 days, daily otherwise
-        range_days = (cf_end - cf_start).days
-        use_monthly = range_days > 60
-
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # Calculate date range
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan datetime.now() UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            if start_date and end_date:
+                from datetime import date as date_type
+
+                cf_start = date_type.fromisoformat(start_date)
+                cf_end = date_type.fromisoformat(end_date)
+            else:
+                if period == "7d":
+                    cf_start = hari_ini - timedelta(days=6)
+                elif period == "30d":
+                    cf_start = hari_ini - timedelta(days=29)
+                else:  # month — full calendar month
+                    from calendar import monthrange as _mr
+
+                    cf_start = date(hari_ini.year, hari_ini.month, 1)
+                    _last = _mr(hari_ini.year, hari_ini.month)[1]
+                    cf_end = date(hari_ini.year, hari_ini.month, _last)
+                if period != "month":
+                    cf_end = hari_ini
+
+            # Determine aggregation: monthly for ranges > 60 days, daily otherwise
+            range_days = (cf_end - cf_start).days
+            use_monthly = range_days > 60
+
             if use_monthly:
                 # Monthly aggregation for fiscal year views
                 # Fase G-10 Step 5.3: is_cash column, is_effective_journal,
@@ -1465,11 +1488,11 @@ async def get_cash_flow_trends(
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 JOIN chart_of_accounts c ON c.id = jl.account_id
                 WHERE je.tenant_id = $1
-                  AND je.journal_date = CURRENT_DATE
+                  AND je.journal_date = $2::date
                   AND je.status = 'POSTED'
                   AND is_effective_journal(je.id) = true
             """
-            today_trx = await conn.fetchrow(today_trx_query, tenant_id)
+            today_trx = await conn.fetchrow(today_trx_query, tenant_id, hari_ini)
 
             return CashFlowTrendsResponse(
                 kas_masuk=total_masuk,
@@ -1523,30 +1546,31 @@ async def get_top_expenses(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        # Calculate date range
-        now = datetime.now()
-        if start_date and end_date:
-            from datetime import date as date_type
-
-            te_start = date_type.fromisoformat(start_date)
-            te_end = date_type.fromisoformat(end_date)
-        else:
-            if period == "7d":
-                te_start = now.date() - timedelta(days=7)
-            elif period == "30d":
-                te_start = now.date() - timedelta(days=30)
-            else:  # month — full calendar month
-                from calendar import monthrange as _mr
-
-                te_start = date(now.year, now.month, 1)
-                _last = _mr(now.year, now.month)[1]
-                te_end = date(now.year, now.month, _last)
-            if period != "month":
-                te_end = now.date()
-
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # Calculate date range
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan datetime.now() UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            if start_date and end_date:
+                from datetime import date as date_type
+
+                te_start = date_type.fromisoformat(start_date)
+                te_end = date_type.fromisoformat(end_date)
+            else:
+                if period == "7d":
+                    te_start = hari_ini - timedelta(days=7)
+                elif period == "30d":
+                    te_start = hari_ini - timedelta(days=30)
+                else:  # month — full calendar month
+                    from calendar import monthrange as _mr
+
+                    te_start = date(hari_ini.year, hari_ini.month, 1)
+                    _last = _mr(hari_ini.year, hari_ini.month)[1]
+                    te_end = date(hari_ini.year, hari_ini.month, _last)
+                if period != "month":
+                    te_end = hari_ini
+
             # Query expenses grouped by account category
             # Expense accounts typically start with 5-xxx or 6-xxx
             # FIX (Surprise #13, T2): net Dr-Cr per expense category (Dr-normal).
@@ -1617,6 +1641,8 @@ async def get_overdue_invoices(request: Request):
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # #10b-3a: hari ini = tanggal bisnis tenant ($2), bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             # Pure Ledger: overdue invoices from journal-based outstanding
             query = """
                 -- ARAP Rule 5/6: Use compute_ar_outstanding() — single source of truth
@@ -1624,14 +1650,14 @@ async def get_overdue_invoices(request: Request):
                     invoice_number,
                     customer_name,
                     due_date,
-                    CURRENT_DATE - due_date as days_overdue,
+                    $2::date - due_date as days_overdue,
                     outstanding
                 FROM compute_ar_outstanding($1)
-                WHERE due_date < CURRENT_DATE
-                ORDER BY (CURRENT_DATE - due_date) DESC, outstanding DESC
+                WHERE due_date < $2::date
+                ORDER BY ($2::date - due_date) DESC, outstanding DESC
             """
 
-            rows = await conn.fetch(query, tenant_id)
+            rows = await conn.fetch(query, tenant_id, hari_ini)
 
             invoices = []
             total_outstanding = 0
@@ -1683,6 +1709,8 @@ async def get_overdue_bills(request: Request):
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # #10b-3a: hari ini = tanggal bisnis tenant ($2), bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             # Pure Ledger: overdue bills via compute_ap_outstanding()
             # ARAP Rule 5/6: Use compute_ap_outstanding() — single source of truth
             query = """
@@ -1690,14 +1718,14 @@ async def get_overdue_bills(request: Request):
                     bill_number,
                     vendor_name AS supplier_name,
                     due_date,
-                    CURRENT_DATE - due_date as days_overdue,
+                    $2::date - due_date as days_overdue,
                     outstanding
                 FROM compute_ap_outstanding($1)
-                WHERE due_date < CURRENT_DATE
-                ORDER BY (CURRENT_DATE - due_date) DESC, outstanding DESC
+                WHERE due_date < $2::date
+                ORDER BY ($2::date - due_date) DESC, outstanding DESC
             """
 
-            rows = await conn.fetch(query, tenant_id)
+            rows = await conn.fetch(query, tenant_id, hari_ini)
 
             bills = []
             total_outstanding = 0
@@ -1958,6 +1986,8 @@ async def get_cash_flow_projection(request: Request):
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute("SET LOCAL statement_timeout = '5000'")
+            # #10b-3a: hari ini = tanggal bisnis tenant ($2), bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             # 1. Get current kas + bank balance (same as /summary)
             kas_bank_query = """
                 SELECT
@@ -1986,11 +2016,11 @@ async def get_cash_flow_projection(request: Request):
             ar_query = """
                 SELECT due_date, SUM(outstanding) as expected
                 FROM compute_ar_outstanding($1)
-                WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+                WHERE due_date BETWEEN $2::date AND $2::date + INTERVAL '7 days'
                 GROUP BY due_date
                 ORDER BY due_date
             """
-            ar_rows = await conn.fetch(ar_query, tenant_id)
+            ar_rows = await conn.fetch(ar_query, tenant_id, hari_ini)
             ar_by_date = {
                 row["due_date"].strftime("%Y-%m-%d"): int(row["expected"])
                 for row in ar_rows
@@ -2050,11 +2080,11 @@ async def get_cash_flow_projection(request: Request):
                 )
                 SELECT due_date, SUM(outstanding) as expected
                 FROM ap_with_outstanding
-                WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+                WHERE due_date BETWEEN $2::date AND $2::date + INTERVAL '7 days'
                 GROUP BY due_date
                 ORDER BY due_date
             """
-            ap_rows = await conn.fetch(ap_query, tenant_id)
+            ap_rows = await conn.fetch(ap_query, tenant_id, hari_ini)
             ap_by_date = {
                 row["due_date"].strftime("%Y-%m-%d"): int(row["expected"])
                 for row in ap_rows
@@ -2077,7 +2107,7 @@ async def get_cash_flow_projection(request: Request):
             total_out = 0
             warning_date = None
 
-            today = datetime.now().date()
+            today = hari_ini
 
             for i in range(7):
                 proj_date = today + timedelta(days=i)
@@ -2168,14 +2198,16 @@ async def get_sales_daily(
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, false)", str(tenant_id)
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC CURRENT_DATE
+            hari_ini = await tanggal_dokumen(conn, str(tenant_id))
 
             if granularity == "monthly":
                 # Last 12 months
                 query = """
                     WITH months AS (
                         SELECT generate_series(
-                            date_trunc('month', CURRENT_DATE - INTERVAL '11 months'),
-                            date_trunc('month', CURRENT_DATE),
+                            date_trunc('month', $2::date - INTERVAL '11 months'),
+                            date_trunc('month', $2::date),
                             '1 month'::interval
                         )::date AS period_start
                     ),
@@ -2193,7 +2225,7 @@ async def get_sales_daily(
                           AND coa.account_type = 'REVENUE'
                           AND je.status = 'POSTED'
                           AND is_effective_journal(je.id)
-                          AND je.journal_date >= CURRENT_DATE - INTERVAL '11 months'
+                          AND je.journal_date >= $2::date - INTERVAL '11 months'
                         GROUP BY 1
                     )
                     SELECT
@@ -2204,7 +2236,7 @@ async def get_sales_daily(
                     LEFT JOIN sales s ON s.period_start = m.period_start
                     ORDER BY m.period_start
                 """
-                rows = await conn.fetch(query, tenant_id)
+                rows = await conn.fetch(query, tenant_id, hari_ini)
                 trends = []
                 for r in rows:
                     d = r["date"]
@@ -2223,8 +2255,8 @@ async def get_sales_daily(
                 query = """
                     WITH days AS (
                         SELECT generate_series(
-                            CURRENT_DATE - ($2 - 1) * INTERVAL '1 day',
-                            CURRENT_DATE,
+                            $3::date - ($2 - 1) * INTERVAL '1 day',
+                            $3::date,
                             '1 day'::interval
                         )::date AS day
                     ),
@@ -2242,7 +2274,7 @@ async def get_sales_daily(
                           AND coa.account_type = 'REVENUE'
                           AND je.status = 'POSTED'
                           AND is_effective_journal(je.id)
-                          AND je.journal_date >= CURRENT_DATE - ($2 - 1) * INTERVAL '1 day'
+                          AND je.journal_date >= $3::date - ($2 - 1) * INTERVAL '1 day'
                         GROUP BY 1
                     )
                     SELECT
@@ -2253,7 +2285,7 @@ async def get_sales_daily(
                     LEFT JOIN sales s ON s.day = d.day
                     ORDER BY d.day
                 """
-                rows = await conn.fetch(query, tenant_id, days)
+                rows = await conn.fetch(query, tenant_id, days, hari_ini)
                 trends = []
                 for r in rows:
                     d = r["date"]

@@ -333,21 +333,33 @@ async def get_expenses_summary(
         async with pool.acquire() as conn:
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC (00-07 WIB
+            # CURRENT_DATE = kemarin -> tgl 1 "bulan ini" menjumlah bulan lalu).
+            # Fragmen memakai penanda {h}; tiap kueri mengisinya dengan nomor
+            # parameter bebas BERIKUTNYA miliknya sendiri (lihat _jf/_ef).
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+
             # Date filter based on period (applied to journal_date)
-            date_filter_journal = {
-                "week": "je.journal_date >= CURRENT_DATE - INTERVAL '7 days'",
-                "month": "je.journal_date >= DATE_TRUNC('month', CURRENT_DATE)",
-                "quarter": "je.journal_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
-                "year": "je.journal_date >= DATE_TRUNC('year', CURRENT_DATE)",
+            _tpl_journal = {
+                "week": "je.journal_date >= {h} - INTERVAL '7 days'",
+                "month": "je.journal_date >= DATE_TRUNC('month', {h})",
+                "quarter": "je.journal_date >= DATE_TRUNC('quarter', {h})",
+                "year": "je.journal_date >= DATE_TRUNC('year', {h})",
             }[period]
 
             # Same date filter for expenses table (metadata queries)
-            date_filter_expense = {
-                "week": "e.expense_date >= CURRENT_DATE - INTERVAL '7 days'",
-                "month": "e.expense_date >= DATE_TRUNC('month', CURRENT_DATE)",
-                "quarter": "e.expense_date >= DATE_TRUNC('quarter', CURRENT_DATE)",
-                "year": "e.expense_date >= DATE_TRUNC('year', CURRENT_DATE)",
+            _tpl_expense = {
+                "week": "e.expense_date >= {h} - INTERVAL '7 days'",
+                "month": "e.expense_date >= DATE_TRUNC('month', {h})",
+                "quarter": "e.expense_date >= DATE_TRUNC('quarter', {h})",
+                "year": "e.expense_date >= DATE_TRUNC('year', {h})",
             }[period]
+
+            def _jf(n: int) -> str:
+                return _tpl_journal.replace("{h}", f"${n}::date")
+
+            def _ef(n: int) -> str:
+                return _tpl_expense.replace("{h}", f"${n}::date")
 
             # Iron Law 1: Financial amounts from journal_lines
             journal_summary = await conn.fetchrow(
@@ -360,7 +372,7 @@ async def get_expenses_summary(
                       AND je.source_type = 'EXPENSE'
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
-                      AND {date_filter_journal}
+                      AND {_jf(2)}
                 )
                 SELECT
                     COUNT(DISTINCT ej.source_id) as total_count,
@@ -372,6 +384,7 @@ async def get_expenses_summary(
                   AND jl.debit > 0
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Tax total from journal_lines (VAT_INPUT role).
@@ -391,7 +404,7 @@ async def get_expenses_summary(
                           AND je.source_type = 'EXPENSE'
                           AND je.reversal_of_id IS NULL
                           AND je.reversed_by_id IS NULL
-                          AND {date_filter_journal}
+                          AND {_jf(3)}
                     )
                     SELECT COALESCE(SUM(jl.debit), 0)
                     FROM expense_journals ej
@@ -401,6 +414,7 @@ async def get_expenses_summary(
                 """,
                         ctx["tenant_id"],
                         vat_input_id_summary,
+                        hari_ini,
                     )
                     or 0
                 )
@@ -414,9 +428,10 @@ async def get_expenses_summary(
                     COUNT(DISTINCT vendor_id) as vendor_count,
                     COUNT(CASE WHEN is_billable THEN 1 END) as billable_count
                 FROM expenses e
-                WHERE e.tenant_id = $1 AND e.status = 'posted' AND {date_filter_expense}
+                WHERE e.tenant_id = $1 AND e.status = 'posted' AND {_ef(2)}
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Billable amount from journal_lines (only EXPENSE source_type, billable)
@@ -433,7 +448,7 @@ async def get_expenses_summary(
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
                       AND e.is_billable = true
-                      AND {date_filter_journal}
+                      AND {_jf(2)}
                 )
                 SELECT COALESCE(SUM(jl.debit), 0)
                 FROM billable_journals bj
@@ -443,6 +458,7 @@ async def get_expenses_summary(
                   AND jl.debit > 0
             """,
                     ctx["tenant_id"],
+                    hari_ini,
                 )
                 or 0
             )
@@ -458,7 +474,7 @@ async def get_expenses_summary(
                       AND je.source_type = 'EXPENSE'
                       AND je.reversal_of_id IS NULL
                       AND je.reversed_by_id IS NULL
-                      AND {date_filter_journal}
+                      AND {_jf(2)}
                 )
                 SELECT
                     coa.id as account_id,
@@ -475,6 +491,7 @@ async def get_expenses_summary(
                 LIMIT 5
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             return {

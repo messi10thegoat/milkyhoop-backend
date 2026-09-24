@@ -11,6 +11,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.customers import (
     CreateCustomerRequest,
     UpdateCustomerRequest,
@@ -538,11 +539,15 @@ async def get_customer_balance(request: Request, customer_id: str):
                     COALESCE(SUM(outstanding), 0) as total_balance,
                     COUNT(*) FILTER (WHERE invoice_status IN ('posted', 'OPEN')) as open_count,
                     COUNT(*) FILTER (WHERE invoice_status IN ('partial', 'PARTIAL')) as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < CURRENT_DATE AND outstanding > 0) as overdue_count
+                    COUNT(*) FILTER (WHERE due_date < $3::date AND outstanding > 0) as overdue_count
                 FROM compute_customer_ar($1, $2)
                 WHERE outstanding > 0
             """
-            balance = await conn.fetchrow(balance_query, ctx["tenant_id"], customer_id)
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            balance = await conn.fetchrow(
+                balance_query, ctx["tenant_id"], customer_id, hari_ini
+            )
 
             return {
                 "success": True,
@@ -1058,6 +1063,9 @@ async def get_customer_open_invoices(
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+
             # Phase 3: Open invoices from compute_customer_ar() DB function (Law 16)
             rows = await conn.fetch(
                 """
@@ -1065,14 +1073,15 @@ async def get_customer_open_invoices(
                     invoice_id as id, invoice_number, invoice_date, due_date,
                     invoice_total as total_amount,
                     outstanding as remaining_amount,
-                    CASE WHEN due_date < CURRENT_DATE THEN true ELSE false END as is_overdue,
-                    GREATEST(0, CURRENT_DATE - due_date) as overdue_days
+                    CASE WHEN due_date < $3::date THEN true ELSE false END as is_overdue,
+                    GREATEST(0, $3::date - due_date) as overdue_days
                 FROM compute_customer_ar($1, $2)
                 WHERE outstanding > 0
                 ORDER BY due_date ASC, invoice_date ASC
             """,
                 ctx["tenant_id"],
                 customer_id,
+                hari_ini,
             )
 
             # Filter to only invoices with positive remaining

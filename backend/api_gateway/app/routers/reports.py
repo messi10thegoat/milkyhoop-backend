@@ -6,6 +6,7 @@ Supports both Cash and Accrual accounting basis.
 """
 from fastapi import Depends, APIRouter, HTTPException, Request, Query
 from ..services.fitur_parkir import fitur_belum_tersedia
+from ..utils.tanggal_tenant import tanggal_dokumen
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
@@ -1397,7 +1398,8 @@ async def get_trial_balance_full(
 
             if not period_row:
                 # Fallback to current month if no period found
-                today = date.today()
+                # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+                today = await tanggal_dokumen(conn, tenant_id)
                 period_start = date(today.year, today.month, 1)
                 _, last_day = monthrange(today.year, today.month)
                 period_end = date(today.year, today.month, last_day)
@@ -2284,10 +2286,11 @@ async def get_timing_differences(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
         conn = await get_db_connection()
 
         try:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            as_of_date = as_of or await tanggal_dokumen(conn, tenant_id)
 
             # Get unpaid invoices (journal-based via compute_ar_outstanding)
             unpaid_invoices = await conn.fetch(
@@ -2422,10 +2425,10 @@ from ..schemas.aging_reports import (  # noqa: E402
 )
 
 
-def _tolak_as_of_lampau(as_of_date: date) -> None:
+def _tolak_as_of_lampau(as_of_date: date, hari_ini: date) -> None:
     """Umur piutang = saldo JURNAL hari ini (compute_ar_outstanding tak punya tanggal as-of, V298).
     Tanggal lampau ditolak jujur, bukan menampilkan saldo hari ini seolah-olah saldo masa lalu."""
-    if as_of_date < date.today():
+    if as_of_date < hari_ini:  # #10b-3a: hari_ini = tanggal bisnis tenant, bukan UTC
         raise HTTPException(
             status_code=422,
             detail="Umur piutang per tanggal lampau belum tersedia; saldo dihitung dari jurnal per hari ini.",
@@ -2458,14 +2461,16 @@ async def get_ar_aging_summary(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
-        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            as_of_date = as_of or hari_ini
+            _tolak_as_of_lampau(as_of_date, hari_ini)
 
             row = await conn.fetchrow(
                 "SELECT * FROM get_ar_aging_summary($1, $2)", tenant_id, as_of_date
@@ -2512,14 +2517,16 @@ async def get_ar_aging_detail(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
-        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            as_of_date = as_of or hari_ini
+            _tolak_as_of_lampau(as_of_date, hari_ini)
 
             rows = await conn.fetch(
                 "SELECT * FROM get_ar_aging_detail($1, $2)", tenant_id, as_of_date
@@ -2590,14 +2597,16 @@ async def get_ar_aging_for_customer(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
-        _tolak_as_of_lampau(as_of_date)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            as_of_date = as_of or hari_ini
+            _tolak_as_of_lampau(as_of_date, hari_ini)
 
             customer = await conn.fetchrow(
                 "SELECT id, nama as name FROM customers WHERE id = $1 AND tenant_id = $2",
@@ -2663,13 +2672,14 @@ async def get_ap_aging_summary(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            as_of_date = as_of or await tanggal_dokumen(conn, tenant_id)
 
             row = await conn.fetchrow(
                 "SELECT * FROM get_ap_aging_summary($1, $2)", tenant_id, as_of_date
@@ -2716,13 +2726,14 @@ async def get_ap_aging_detail(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            as_of_date = as_of or await tanggal_dokumen(conn, tenant_id)
 
             rows = await conn.fetch(
                 "SELECT * FROM get_ap_aging_detail($1, $2)", tenant_id, as_of_date
@@ -2793,13 +2804,14 @@ async def get_ap_aging_for_vendor(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        as_of_date = as_of or date.today()
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            as_of_date = as_of or await tanggal_dokumen(conn, tenant_id)
 
             vendor = await conn.fetchrow(
                 "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
@@ -3524,6 +3536,8 @@ async def get_aging_receivable(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             # Journal-based AR aging via compute_ar_outstanding (Law 16)
             rows = await conn.fetch(
                 """
@@ -3537,18 +3551,19 @@ async def get_aging_receivable(request: Request):
                     a.invoice_total as total_amount,
                     a.paid_amount as amount_paid,
                     a.outstanding as balance,
-                    GREATEST(0, CURRENT_DATE - a.due_date) as days_overdue,
+                    GREATEST(0, $2::date - a.due_date) as days_overdue,
                     CASE
-                        WHEN CURRENT_DATE <= a.due_date THEN 'current'
-                        WHEN CURRENT_DATE - a.due_date <= 30 THEN '1-30'
-                        WHEN CURRENT_DATE - a.due_date <= 60 THEN '31-60'
-                        WHEN CURRENT_DATE - a.due_date <= 90 THEN '61-90'
+                        WHEN $2::date <= a.due_date THEN 'current'
+                        WHEN $2::date - a.due_date <= 30 THEN '1-30'
+                        WHEN $2::date - a.due_date <= 60 THEN '31-60'
+                        WHEN $2::date - a.due_date <= 90 THEN '61-90'
                         ELSE '90+'
                     END as aging_bucket
                 FROM compute_ar_outstanding($1) a
                 ORDER BY a.due_date ASC
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Group by customer
@@ -3613,6 +3628,8 @@ async def get_customer_aging_invoices(request: Request, customer_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             # Journal-based per-invoice outstanding via compute_ar_outstanding (Law 16)
             rows = await conn.fetch(
                 """
@@ -3624,13 +3641,14 @@ async def get_customer_aging_invoices(request: Request, customer_id: str):
                     a.invoice_total as total_amount,
                     a.paid_amount as amount_paid,
                     a.outstanding as balance,
-                    GREATEST(0, CURRENT_DATE - a.due_date) as days_overdue
+                    GREATEST(0, $3::date - a.due_date) as days_overdue
                 FROM compute_ar_outstanding($1) a
                 WHERE a.customer_id = $2
                 ORDER BY a.due_date ASC
             """,
                 ctx["tenant_id"],
                 customer_id,
+                hari_ini,
             )
 
             invoices = [
@@ -3668,6 +3686,8 @@ async def get_aging_payable(request: Request):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             # Journal-based AP aging via compute_ap_outstanding (Law 16)
             rows = await conn.fetch(
                 """
@@ -3681,18 +3701,19 @@ async def get_aging_payable(request: Request):
                     a.bill_total as total_amount,
                     a.paid_amount as amount_paid,
                     a.outstanding as balance,
-                    GREATEST(0, CURRENT_DATE - a.due_date) as days_overdue,
+                    GREATEST(0, $2::date - a.due_date) as days_overdue,
                     CASE
-                        WHEN CURRENT_DATE <= a.due_date THEN 'current'
-                        WHEN CURRENT_DATE - a.due_date <= 30 THEN '1-30'
-                        WHEN CURRENT_DATE - a.due_date <= 60 THEN '31-60'
-                        WHEN CURRENT_DATE - a.due_date <= 90 THEN '61-90'
+                        WHEN $2::date <= a.due_date THEN 'current'
+                        WHEN $2::date - a.due_date <= 30 THEN '1-30'
+                        WHEN $2::date - a.due_date <= 60 THEN '31-60'
+                        WHEN $2::date - a.due_date <= 90 THEN '61-90'
                         ELSE '90+'
                     END AS aging_bucket
                 FROM compute_ap_outstanding($1) a
                 ORDER BY a.due_date ASC
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Group by vendor
@@ -3757,6 +3778,8 @@ async def get_vendor_aging_bills(request: Request, vendor_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             # Journal-based per-bill outstanding via compute_ap_outstanding (Law 16)
             rows = await conn.fetch(
                 """
@@ -3768,13 +3791,14 @@ async def get_vendor_aging_bills(request: Request, vendor_id: str):
                     a.bill_total as total_amount,
                     a.paid_amount as amount_paid,
                     a.outstanding as balance,
-                    GREATEST(0, CURRENT_DATE - a.due_date) as days_overdue
+                    GREATEST(0, $3::date - a.due_date) as days_overdue
                 FROM compute_ap_outstanding($1) a
                 WHERE a.vendor_id = $2::UUID
                 ORDER BY a.due_date ASC
             """,
                 ctx["tenant_id"],
                 vendor_id,
+                hari_ini,
             )
 
             bills = [

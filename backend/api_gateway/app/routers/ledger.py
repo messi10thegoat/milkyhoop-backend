@@ -13,6 +13,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.ledger import (
     LedgerEntryResponse,
     AccountInfoResponse,
@@ -70,13 +71,14 @@ async def list_ledger_accounts(
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        if not as_of_date:
-            as_of_date = date.today()
-
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
             )
+
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            if not as_of_date:
+                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             conditions = ["coa.tenant_id = $1", "coa.is_active = TRUE"]
             params = [ctx["tenant_id"], as_of_date]
@@ -166,13 +168,14 @@ async def get_ledger_summary(
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        if not as_of_date:
-            as_of_date = date.today()
-
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
             )
+
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            if not as_of_date:
+                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             rows = await conn.fetch(
                 """
@@ -462,13 +465,14 @@ async def get_account_balance(
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        if not as_of_date:
-            as_of_date = date.today()
-
         async with pool.acquire() as conn:
             await conn.execute(
                 "SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"])
             )
+
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+            if not as_of_date:
+                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             row = await conn.fetchrow(
                 """
