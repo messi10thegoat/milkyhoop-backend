@@ -27,7 +27,12 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
     Allows:
     - Public endpoints (no auth required)
     - Endpoints without tenant_id in URL
-    - ADMIN role users (can access any tenant)
+
+    TIDAK ada lagi pengecualian "ADMIN ke tenant mana pun" (dicabut 25 Sep 2026,
+    audit izin usul A): `user["role"]` = PLAN TIER dari JWT, dan signup/undangan
+    selalu menulis ADMIN -> pengecualian itu mematikan validasi ini untuk SEMUA
+    pengguna nyata. Tak ada konsep admin-platform di token; bila kelak dibutuhkan,
+    ia harus klaim tersendiri, bukan tier langganan.
     """
 
     # Pattern to extract tenant_id from URL
@@ -81,14 +86,6 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         user_tenant_id = user.get("tenant_id")
-        user_role = user.get("role", "").upper()
-
-        # ADMIN can access any tenant
-        if user_role == "ADMIN":
-            logger.info(
-                f"Admin access granted: user={user.get('user_id')} accessing tenant={url_tenant_id}"
-            )
-            return await call_next(request)
 
         # Validate tenant_id matches
         if url_tenant_id != user_tenant_id:
