@@ -250,6 +250,8 @@ def _apply_relative_dates(
     payload: Dict[str, Any],
     user_text: str,
     invoice_date_key: str = "invoice_date",
+    *,
+    hari_ini,
 ) -> Dict[str, Any]:
     """Post-process payload to override invoice_date / due_date when user_text
     contains Indonesian relative-date phrases. FIX_AQUA_RELATIVE_DATE 2026-05-19.
@@ -259,7 +261,8 @@ def _apply_relative_dates(
     # Q3B: normalisasi di sini juga, supaya _n_hari (pemilih basis + penyimpan
     # _due_offset_days) ikut mengenali "tempo tiga hari", bukan hanya "3 hari".
     txt = _normalize_word_numerals(user_text.lower())
-    today = _date_cls.today()
+    # P2 26 Sep 2026: 'hari ini/besok/kemarin' relatif ke tanggal BISNIS tenant (dulu UTC server).
+    today = hari_ini
 
     inv_match = re.search(
         r"(?:per\s+)?tanggal\s+(hari\s+ini|sekarang|besok|lusa|kemarin|esok(?:\s+hari)?)",
@@ -304,7 +307,7 @@ def _apply_relative_dates(
             # Parser absolut sudah ada dan murni — dipakai sebagai lapis kedua
             # supaya membuang due_date LLM (di _enrich_sales_invoice) tidak
             # mengorbankan kasus ini.
-            computed = _parse_absolute_date_id(phrase)
+            computed = _parse_absolute_date_id(phrase, hari_ini=hari_ini)
         if computed:
             payload["due_date"] = computed.isoformat()
             # FIX_BILL_RELDATE_PERSIST (2026-06-18): when the user states an
@@ -384,7 +387,7 @@ _ABS_DATE_NUMERIC_RE = re.compile(
 _ABS_DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 
-def _parse_absolute_date_id(text: str):
+def _parse_absolute_date_id(text: str, *, hari_ini):
     """Parse an explicit absolute invoice date out of Indonesian free text.
 
     Recognized forms (first match wins, ISO -> month-name -> numeric):
@@ -400,7 +403,7 @@ def _parse_absolute_date_id(text: str):
     if not text:
         return None
     try:
-        cur_year = _date_cls.today().year
+        cur_year = hari_ini.year  # P2: tahun menurut tanggal bisnis tenant (1 Jan 00-07 WIB)
         # 1) ISO first (unambiguous)
         m = _ABS_DATE_ISO_RE.search(text)
         if m:
@@ -3776,8 +3779,9 @@ class ToolExecutor:
             logger.warning(f"Check existing session failed (non-critical): {e}")
 
         # --- Step 2: Create new session ---
-        today = date_type.today().isoformat()
-        first_of_month = date_type.today().replace(day=1).isoformat()
+        _hari = await self._hari_ini_date()  # P2: tanggal bisnis tenant
+        today = _hari.isoformat()
+        first_of_month = _hari.replace(day=1).isoformat()
 
         body = {
             "account_id": account_id,
@@ -4850,7 +4854,7 @@ class ToolExecutor:
         # "tanggal faktur 15 februari" on turn 1 is not clobbered to today when
         # the card is built on a later text-only converge turn. The sales path
         # keys on invoice_date (not issue_date) and accepts the LLM "date" alias.
-        _parsed_abs = _parse_absolute_date_id(_ut_raw)
+        _parsed_abs = _parse_absolute_date_id(_ut_raw, hari_ini=await self._hari_ini_date())
         _persisted_issue_iso = payload.get("_user_issue_date")
         _persisted_issue_flag = bool(payload.get("_user_stated_issue_date"))
 
@@ -4967,6 +4971,7 @@ class ToolExecutor:
             payload,
             getattr(self, "user_text", "") or "",
             invoice_date_key="invoice_date",
+            hari_ini=await self._hari_ini_date(),
         )
         _po = payload.get("_due_offset_days")
         if _po is not None:
@@ -5224,6 +5229,7 @@ class ToolExecutor:
             payload,
             getattr(self, "user_text", "") or "",
             invoice_date_key="invoice_date",
+            hari_ini=await self._hari_ini_date(),
         )
 
         # FIX_BILL_DECIMAL_NONE (2026-06-15): mirror of the bill path. Stage-2 LLM
@@ -5467,7 +5473,7 @@ class ToolExecutor:
         # 2026", "tgl 15/02", ISO). This kills the Stage-2 LLM year hallucination
         # (bare "15 februari" -> 2023/2024). When found it overrides the
         # LLM-extracted (possibly mis-yeared) date below.
-        _parsed_abs = _parse_absolute_date_id(_ut_raw)
+        _parsed_abs = _parse_absolute_date_id(_ut_raw, hari_ini=await self._hari_ini_date())
 
         # FIX_BILL_ABSDATE_PERSIST 2026-06-18: a date stated on an EARLIER turn is
         # persisted as _user_issue_date (resolved ISO) / _user_stated_issue_date
@@ -5601,6 +5607,7 @@ class ToolExecutor:
             payload,
             getattr(self, "user_text", "") or "",
             invoice_date_key="issue_date",
+            hari_ini=await self._hari_ini_date(),
         )
 
         # FIX_BILL_RELDATE_PERSIST (2026-06-18): re-apply a persisted explicit
@@ -5896,7 +5903,8 @@ class ToolExecutor:
 
         # FIX_AQUA_RELATIVE_DATE 2026-05-19: parse Indonesian relative dates from user_text
         _apply_relative_dates(
-            payload, getattr(self, "user_text", "") or "", invoice_date_key="issue_date"
+            payload, getattr(self, "user_text", "") or "", invoice_date_key="issue_date",
+            hari_ini=await self._hari_ini_date(),
         )
 
         return payload

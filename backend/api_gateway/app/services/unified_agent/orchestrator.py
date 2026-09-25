@@ -1137,6 +1137,8 @@ def _kalimat_tanya_item(m: dict) -> str:
     ) + _hint
 
 
+from datetime import date as _date_tgl  # noqa: E402  (P2 26 Sep 2026)
+
 async def _hari_ini_tenant(tenant_id: str) -> str:
     """Hari ini menurut zona tenant, untuk DISUNTIKKAN KE PROMPT LLM.
 
@@ -2634,7 +2636,9 @@ class UnifiedAgent:
                     "create_sales_invoice",
                     "create_quote",
                 ) and not merged_for_wf.get("_user_issue_date"):
-                    _abs_d = _parse_absolute_date_id(user_text or "")
+                    _abs_d = _parse_absolute_date_id(
+                    user_text or "", hari_ini=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
+                )
                     if _abs_d is not None:
                         merged_for_wf["_user_issue_date"] = _abs_d.isoformat()
                         merged_for_wf["_user_stated_issue_date"] = True
@@ -3348,7 +3352,9 @@ class UnifiedAgent:
                             except (ValueError, TypeError):
                                 pass
                     if not _ep_payload.get("_user_issue_date"):
-                        _epd_abs = _parse_absolute_date_id(user_text or "")
+                        _epd_abs = _parse_absolute_date_id(
+                    user_text or "", hari_ini=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
+                )
                         if _epd_abs is not None:
                             _ep_payload["_user_issue_date"] = _epd_abs.isoformat()
                             _ep_payload["_user_stated_issue_date"] = True
@@ -3672,7 +3678,9 @@ class UnifiedAgent:
                 "create_sales_invoice",
                 "create_quote",
             ) and not save_payload.get("_user_issue_date"):
-                _abs_dp = _parse_absolute_date_id(user_text or "")
+                _abs_dp = _parse_absolute_date_id(
+                    user_text or "", hari_ini=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
+                )
                 if _abs_dp is not None:
                     save_payload["_user_issue_date"] = _abs_dp.isoformat()
                     save_payload["_user_stated_issue_date"] = True
@@ -4692,7 +4700,9 @@ class UnifiedAgent:
                 "create_sales_invoice",
                 "create_quote",
             ) and not save_payload.get("_user_issue_date"):
-                _abs_dv = _parse_absolute_date_id(user_text or "")
+                _abs_dv = _parse_absolute_date_id(
+                    user_text or "", hari_ini=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
+                )
                 if _abs_dv is not None:
                     save_payload["_user_issue_date"] = _abs_dv.isoformat()
                     save_payload["_user_stated_issue_date"] = True

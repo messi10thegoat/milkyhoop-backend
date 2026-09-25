@@ -125,6 +125,19 @@ class WorkflowContext:
     auth_token: str = ""
 
 
+async def _hari_ini_wf(ctx) -> "date_type":
+    """Tanggal BISNIS tenant untuk tanggal dokumen/sesi yang dibuat workflow (P2 26 Sep 2026).
+
+    Dulu date.today() server (UTC) -> faktur/pembayaran/sesi rekonsiliasi 00:00-07:00 WIB bertanggal KEMARIN.
+    """
+    from ..db_pool import get_db_pool  # Law 32: singleton pool
+    from ...utils.tanggal_tenant import tanggal_dokumen
+
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        return await tanggal_dokumen(conn, ctx.tenant_id)
+
+
 # ─── Check Functions (Gate) ───────────────────────────────────────────────
 
 async def check_account_identified(ctx: WorkflowContext, user_data: dict) -> Tuple[bool, str]:
@@ -388,8 +401,9 @@ async def auto_create_session_and_import(ctx: WorkflowContext, call_internal) ->
     no_file = ctx.data.get("no_file", False)
     save_fn = getattr(ctx, '_save_fn', None)
 
-    today = date_type.today().isoformat()
-    first_of_month = date_type.today().replace(day=1).isoformat()
+    _hari = await _hari_ini_wf(ctx)  # P2 26 Sep 2026: tanggal bisnis tenant, bukan UTC
+    today = _hari.isoformat()
+    first_of_month = _hari.replace(day=1).isoformat()
 
     try:
         # ── Sub-op 1: Create session (idempotent — skip if recon_session_id exists) ──
@@ -1165,7 +1179,7 @@ async def auto_create_invoice_proposal(ctx: WorkflowContext, call_internal) -> D
     customer_name = ctx.data.get("customer_name", "")
     items = ctx.data.get("items", [])
     tax_rate = ctx.data.get("tax_rate", 0)
-    invoice_date = ctx.data.get("date", date_type.today().isoformat())
+    invoice_date = ctx.data.get("date") or (await _hari_ini_wf(ctx)).isoformat()
 
     return {
         "confirm_suggestion": {
@@ -1205,7 +1219,7 @@ async def auto_create_payment_proposal(ctx: WorkflowContext, call_internal) -> D
                 "allocations": [{"invoice_id": invoice_id, "amount_applied": total_amount}],
                 "bank_account_id": bank_account_id,
                 "bank_account_name": bank_account_name,
-                "payment_date": date_type.today().isoformat(),
+                "payment_date": (await _hari_ini_wf(ctx)).isoformat(),
                 "payment_method": "bank_transfer",
             },
         },
