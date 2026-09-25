@@ -274,10 +274,10 @@ async def test_si_daftar_url_relatif_bukan_presign(monkeypatch):
     att = out["attachments"][0]
     url_sah(att["url"], "sales-invoices")
     assert storage.presign_calls == []
-    # medan lain dipertahankan
+    # medan lain dipertahankan (+ `tersedia` sejak #22, 25 Sep)
     assert set(att) == {
         "id", "filename", "url", "size", "mime_type", "uploaded_at",
-        "uploaded_by_name",
+        "uploaded_by_name", "tersedia",
     }
 
 

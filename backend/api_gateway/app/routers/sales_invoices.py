@@ -6011,6 +6011,43 @@ _SI_ATT_SQL_UNDUH = """
       AND si.tenant_id = $3
 """
 
+# #22 (25 Sep 2026): sumber KEDUA = documents yang tertaut lewat
+# document_attachments entity_type='sales_invoice' (hub /api/documents attach,
+# form lama). Dulu daftar SI hanya membaca sales_invoice_attachments -> baris
+# ini tak terlihat di mana pun (kaos INV-2609-0005: 1 baris local), sementara
+# beban menampilkannya sebagai `tersedia: false`. Pola sama dengan bills
+# (_BILL_ATT_SQL_UNDUH_DOKUMEN): memaku faktur INI + tenant JWT di ketiga
+# tabel; tak cocok -> 404.
+_SI_ATT_SQL_UNDUH_DOKUMEN = """
+    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    JOIN sales_invoices si ON si.id = da.entity_id
+    WHERE d.id = $1
+      AND da.entity_id = $2
+      AND da.entity_type = 'sales_invoice'
+      AND si.tenant_id = $3
+      AND da.tenant_id = $3
+      AND d.tenant_id = $3
+      AND d.deleted_at IS NULL
+"""
+_SI_ATT_SQL_DAFTAR_DOKUMEN = """
+    SELECT d.id, d.file_name, d.file_size, d.file_type, d.storage_type,
+           d.uploaded_at
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    WHERE da.tenant_id = $1 AND da.entity_type = 'sales_invoice'
+      AND da.entity_id = $2 AND d.tenant_id = $1 AND d.deleted_at IS NULL
+    ORDER BY da.display_order, da.attached_at DESC
+"""
+
+
+def _si_lampiran_tersedia(storage_type) -> bool:
+    """Berkasnya bisa diunduh? Hanya baris s3; baris local lama berkasnya
+    hilang saat gateway di-recreate (23 Sep) -> FE memberi label, bukan
+    tautan mati. Sama dengan `tersedia` beban."""
+    return (storage_type or "").lower() == "s3"
+
 
 @router.post("/{invoice_id}/attachments", status_code=201)
 async def upload_invoice_attachment(
@@ -6132,6 +6169,31 @@ async def list_invoice_attachments(
                     if r["uploaded_at"]
                     else None,
                     "uploaded_by_name": r["uploaded_by_name"],
+                    # sales_invoice_attachments = MinIO secara konstruksi.
+                    "tersedia": True,
+                }
+            )
+
+        # #22: sumber kedua. Galat TIDAK ditelan (beda dengan bills): daftar
+        # separuh yang tampak lengkap lebih buruk daripada gagal-muat.
+        _seen_ids = {a["id"] for a in attachments}
+        for r in await conn.fetch(_SI_ATT_SQL_DAFTAR_DOKUMEN, tenant_id, invoice_id):
+            if str(r["id"]) in _seen_ids:
+                continue
+            attachments.append(
+                {
+                    "id": str(r["id"]),
+                    "filename": r["file_name"],
+                    "url": url_unduh_lampiran(
+                        _SI_ATT_MODUL_URL, invoice_id, r["id"]
+                    ),
+                    "size": r["file_size"],
+                    "mime_type": r["file_type"],
+                    "uploaded_at": r["uploaded_at"].isoformat()
+                    if r["uploaded_at"]
+                    else None,
+                    "uploaded_by_name": None,
+                    "tersedia": _si_lampiran_tersedia(r["storage_type"]),
                 }
             )
 
@@ -6161,7 +6223,25 @@ async def delete_invoice_attachment(
             tenant_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Attachment not found")
+            # #22: lampiran sumber kedua (document_attachments) -> LEPAS
+            # TAUTAN saja (pola beban): baris `documents` + objek tetap, karena
+            # dokumen hub bisa tertaut ke entitas lain. Pagar: faktur INI +
+            # tenant di kedua tabel.
+            lepas = await conn.fetchval(
+                """DELETE FROM document_attachments da
+                   USING sales_invoices si
+                   WHERE da.document_id = $1 AND da.entity_id = $2
+                     AND da.entity_type = 'sales_invoice'
+                     AND si.id = da.entity_id AND si.tenant_id = $3
+                     AND da.tenant_id = $3
+                   RETURNING da.id""",
+                attachment_id,
+                invoice_id,
+                tenant_id,
+            )
+            if not lepas:
+                raise HTTPException(status_code=404, detail="Attachment not found")
+            return {"success": True, "message": "Attachment unlinked"}
 
         storage = get_storage_service()
         try:
@@ -6199,6 +6279,12 @@ async def download_invoice_attachment(
             row = await conn.fetchrow(
                 _SI_ATT_SQL_UNDUH, attachment_id, invoice_id, tenant_id
             )
+            if not row:
+                # #22: sumber kedua; baris local -> stream_lampiran 404
+                # "Berkas tidak tersedia".
+                row = await conn.fetchrow(
+                    _SI_ATT_SQL_UNDUH_DOKUMEN, attachment_id, invoice_id, tenant_id
+                )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
