@@ -265,7 +265,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             raise
         except Exception as e:
             import traceback
+            import uuid as _uuid
 
+            # hub-authz (3): teks exception TIDAK dikirim ke klien (dulu
+            # `detail: str(e)` membocorkan pesan pydantic/botocore/SQL). Log
+            # lengkap tetap di server; klien menerima kode korelasi.
+            error_id = _uuid.uuid4().hex[:12]
             if entered_downstream:
                 # The exception came from a DOWNSTREAM handler, not from auth logic.
                 # Log it as such so a reader can tell WHICH subsystem failed: an
@@ -273,15 +278,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # mislabelled "Auth middleware error" and hid real outages. The
                 # client-facing 500 below is intentionally IDENTICAL either way.
                 logger.error(
-                    "Downstream handler error (not auth): %s\n%s",
+                    "Downstream handler error (not auth) [error_id=%s]: %s\n%s",
+                    error_id,
                     str(e),
                     traceback.format_exc(),
                 )
             else:
                 logger.error(
-                    "Auth middleware error: %s\n%s", str(e), traceback.format_exc()
+                    "Auth middleware error [error_id=%s]: %s\n%s",
+                    error_id,
+                    str(e),
+                    traceback.format_exc(),
                 )
             return JSONResponse(
                 status_code=500,
-                content={"error": "Internal server error", "detail": str(e)},
+                content={
+                    "error": "Internal server error",
+                    "detail": f"Terjadi kesalahan di server. Kode: {error_id}",
+                    "error_id": error_id,
+                },
             )

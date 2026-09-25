@@ -424,12 +424,19 @@ def test_hub_download_sajian_aman(monkeypatch):
 
         async def fetchrow(self, sql, *a):
             return {"file_name": 'x"\r\nSet-Cookie: a=b.svg', "file_path": "k", "file_type": "image/svg+xml",
-                    "storage_type": "s3"}  # #25: kueri unduh hub memilih storage_type
+                    "storage_type": "s3",  # #25: kueri unduh hub memilih storage_type
+                    "uploaded_by": None}
+
+        def transaction(self):  # hub-authz: izin dibaca di dalam transaksi
+            return _Acq(None)
 
     async def _pool():
         return SimpleNamespace(acquire=lambda: _Acq(C2()))
 
     monkeypatch.setattr(DOC, "get_pool", _pool)
+    from app.services import policy_engine_client as pec
+
+    monkeypatch.setattr(pec, "get_policy_engine", lambda: Eng("OWNER"))  # hub-authz
     monkeypatch.setattr(DOC, "get_storage_service", lambda: SimpleNamespace(
         client=SimpleNamespace(get_object=lambda **k: {"Body": Body()}), config=SimpleNamespace(bucket="b")))
     r = asyncio.run(DOC.download_document(req(), DOKID))

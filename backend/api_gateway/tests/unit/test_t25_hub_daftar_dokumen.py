@@ -167,17 +167,8 @@ async def test_staf_dengan_izin_baca_lolos(monkeypatch):
     assert r.total == 2
 
 
-@pytest.mark.asyncio
-async def test_karyawan_hanya_owner(monkeypatch):
-    modul_kar = DOC._izin_modul("employees", INDUK)
-    izin = [(modul_kar[0], "R")] if modul_kar else []
-    pasang(monkeypatch, Conn(), Eng("ADMIN", izin=izin))
-    with pytest.raises(HTTPException) as e:
-        await DOC.get_entity_documents(req(), "employee", INDUK)
-    assert e.value.status_code == 403
-    pasang(monkeypatch, Conn(), Eng("OWNER"))
-    r = await DOC.get_entity_documents(req(), "employee", INDUK)
-    assert r.total == 2
+# Karyawan: #25 memakai OWNER-saja; hub-authz menggantinya dengan pay-group
+# (test_hub_authz.py::test_daftar_karyawan_pay_group).
 
 
 @pytest.mark.asyncio

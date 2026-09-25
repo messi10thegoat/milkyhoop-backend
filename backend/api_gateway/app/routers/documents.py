@@ -597,9 +597,22 @@ async def _cari_entitas_hub(conn, entity_type: str, entity_id, tenant_id: str) -
     raise HTTPException(status_code=404, detail="Entitas tujuan tidak ditemukan")
 
 
-async def _wajib_izin_entitas(request: Request, segmen: str, entity_id) -> None:
-    """Anggota aktif + izin modul entitas (OWNER lolos; tak terpetakan ->
-    hanya OWNER, sama dengan default-tertutup middleware)."""
+# hub-authz (25 Sep 2026): SATU penentu izin hub untuk attach/detach (C|U),
+# daftar per entitas & unduh by-id (R). Entitas `employee` WAJIB lolos
+# pay-group (RULE: setiap endpoint ber-employee_id memfilter pay-group) --
+# dulu attach employee cukup izin modul, dan unduh by-id tanpa izin apa pun.
+PENANDA_HUB_AUTHZ = "hub-authz-izin-bersama"
+
+# Peta BACA = peta attach + entitas yang lampirannya ditulis rute modulnya
+# sendiri (DP) tetapi dokumennya bisa diunduh lewat hub.
+_ENTITAS_BACA = {
+    **_ENTITAS_HUB,
+    "customer_deposit": (("customer_deposits", "customer-deposits"),),
+}
+
+
+async def _konteks_izin(request: Request):
+    """(engine, konteks) anggota AKTIF; tak aktif -> 403."""
     from ..services.policy_engine_client import get_policy_engine
 
     u = getattr(request.state, "user", {}) or {}
@@ -607,14 +620,36 @@ async def _wajib_izin_entitas(request: Request, segmen: str, entity_id) -> None:
     c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
     if not c.membership_active:
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    return eng, c
+
+
+async def _boleh_entitas(conn, request: Request, eng, c, entity_type: str,
+                         segmen: str, entity_id, aksi: tuple) -> bool:
+    """OWNER lolos; selain itu salah satu `aksi` pada modul entitas (dari
+    ROUTE_PERMISSIONS PATCH rute modulnya) DAN -- untuk employee -- pay-group."""
     if c.business_role_code == "OWNER":
-        return
+        return True
     izin = _izin_modul(segmen, entity_id)
-    # C ATAU U pada modul entitas: FE melampirkan TEPAT SESUDAH membuat dokumen
-    # (quote, penerimaan), jadi staf yang boleh membuat harus boleh melampirkan.
-    if izin is None or not (
-        await eng.can(c, "U", izin[0]) or await eng.can(c, "C", izin[0])
-    ):
+    if izin is None:
+        return False
+    ok = False
+    for a in aksi:
+        if await eng.can(c, a, izin[0]):
+            ok = True
+            break
+    if ok and entity_type == "employee":
+        from ..services.pay_group_access import employee_in_scope
+
+        u = getattr(request.state, "user", {}) or {}
+        ok = await employee_in_scope(conn, u.get("tenant_id"), u.get("user_id"), entity_id)
+    return ok
+
+
+async def _wajib_izin_entitas(request: Request, conn, entity_type: str, segmen: str, entity_id) -> None:
+    """Attach/detach: C ATAU U pada modul entitas (FE melampirkan TEPAT SESUDAH
+    membuat dokumen, jadi staf yang boleh membuat harus boleh melampirkan)."""
+    eng, c = await _konteks_izin(request)
+    if not await _boleh_entitas(conn, request, eng, c, entity_type, segmen, entity_id, ("U", "C")):
         raise HTTPException(
             status_code=403, detail="Anda tidak punya izin mengubah dokumen ini."
         )
@@ -636,7 +671,7 @@ async def attach_document(
             segmen = await _cari_entitas_hub(
                 conn, body.entity_type, body.entity_id, ctx["tenant_id"]
             )
-            await _wajib_izin_entitas(request, segmen, body.entity_id)
+            await _wajib_izin_entitas(request, conn, body.entity_type, segmen, body.entity_id)
 
             doc = await conn.fetchval(
                 "SELECT id FROM documents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
@@ -706,7 +741,7 @@ async def detach_document(
         segmen = await _cari_entitas_hub(
             conn, body.entity_type, body.entity_id, ctx["tenant_id"]
         )
-        await _wajib_izin_entitas(request, segmen, body.entity_id)
+        await _wajib_izin_entitas(request, conn, body.entity_type, segmen, body.entity_id)
 
         deleted = await conn.fetchval(
             """
@@ -749,25 +784,10 @@ _SQL_DOKUMEN_ENTITAS = """
     ORDER BY da.display_order ASC, d.uploaded_at DESC
 """
 
-# Dokumen karyawan: aturan pay-group (setiap endpoint ber-employee_id WAJIB
-# memfilter pay-group) -- hub tak punya filter itu, jadi hanya OWNER.
-_ENTITAS_BACA_OWNER_SAJA = frozenset({"employee"})
-
-
-async def _wajib_izin_baca_entitas(request: Request, entity_type: str, segmen: str, entity_id) -> None:
-    """Anggota aktif + izin R modul entitas (OWNER lolos; tak terpetakan atau
-    entitas OWNER-saja -> hanya OWNER)."""
-    from ..services.policy_engine_client import get_policy_engine
-
-    u = getattr(request.state, "user", {}) or {}
-    eng = get_policy_engine()
-    c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
-    if not c.membership_active:
-        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
-    if c.business_role_code == "OWNER":
-        return
-    izin = None if entity_type in _ENTITAS_BACA_OWNER_SAJA else _izin_modul(segmen, entity_id)
-    if izin is None or not await eng.can(c, "R", izin[0]):
+async def _wajib_izin_baca_entitas(request: Request, conn, entity_type: str, segmen: str, entity_id) -> None:
+    """Anggota aktif + R modul entitas (OWNER lolos; employee + pay-group)."""
+    eng, c = await _konteks_izin(request)
+    if not await _boleh_entitas(conn, request, eng, c, entity_type, segmen, entity_id, ("R",)):
         raise HTTPException(
             status_code=403, detail="Anda tidak punya izin melihat dokumen ini."
         )
@@ -793,7 +813,7 @@ async def get_entity_documents(
             segmen = await _cari_entitas_hub(
                 conn, entity_type, entity_id, ctx["tenant_id"]
             )
-            await _wajib_izin_baca_entitas(request, entity_type, segmen, entity_id)
+            await _wajib_izin_baca_entitas(request, conn, entity_type, segmen, entity_id)
             rows = await conn.fetch(
                 _SQL_DOKUMEN_ENTITAS, ctx["tenant_id"], entity_type, entity_id
             )
@@ -817,22 +837,67 @@ async def get_entity_documents(
 
 @router.get("/{document_id}/download")
 async def download_document(request: Request, document_id: UUID):
-    """Proxy-stream a document file from storage (S3/MinIO)."""
+    """Proxy-stream satu dokumen dari storage (S3/MinIO).
+
+    hub-authz: dulu cukup satu tenant (READ /api/documents default-open) ->
+    staf mana pun bisa mengunduh dokumen modul apa pun, termasuk karyawan,
+    asal tahu id-nya. Kini: OWNER; atau izin R pada SALAH SATU entitas yang
+    ditautkan dokumen ini (employee + pay-group); dokumen tanpa tautan hanya
+    untuk pengunggahnya.
+    """
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-        row = await conn.fetchrow(
-            "SELECT file_name, file_path, file_type, storage_type FROM documents "
-            "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
-            document_id,
-            ctx["tenant_id"],
-        )
-    if not row:
-        raise HTTPException(status_code=404, detail="Document not found")
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
+            row = await conn.fetchrow(
+                "SELECT file_name, file_path, file_type, storage_type, uploaded_by FROM documents "
+                "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+                document_id,
+                ctx["tenant_id"],
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Document not found")
+            eng, c = await _konteks_izin(request)
+            boleh = c.business_role_code == "OWNER"
+            if not boleh:
+                tautan = await conn.fetch(
+                    "SELECT entity_type, entity_id FROM document_attachments "
+                    "WHERE document_id = $1 AND tenant_id = $2",
+                    document_id,
+                    ctx["tenant_id"],
+                )
+                if not tautan:
+                    boleh = row["uploaded_by"] is not None and str(row["uploaded_by"]) == str(ctx.get("user_id"))
+                for t in tautan:
+                    segmen = await _segmen_entitas(conn, t["entity_type"], t["entity_id"], ctx["tenant_id"])
+                    if segmen and await _boleh_entitas(
+                        conn, request, eng, c, t["entity_type"], segmen, t["entity_id"], ("R",)
+                    ):
+                        boleh = True
+                        break
+            if not boleh:
+                raise HTTPException(
+                    status_code=403, detail="Anda tidak punya izin melihat dokumen ini."
+                )
     # #25: satu jalur sajian dengan rute /download modul -- baris local / tanpa
     # file_path / objek hilang -> 404 "Berkas tidak tersedia" (dulu 500:
     # get_object dengan kunci baris local). Sajian aman (L2) tetap sama.
     return stream_lampiran(row, get_storage_service())
+
+
+async def _segmen_entitas(conn, entity_type: str, entity_id, tenant_id: str):
+    """Segmen URL modul entitas yang ADA & milik tenant, atau None (tanpa
+    raise: satu tautan basi/tak didukung tak boleh menggagalkan unduhan yang
+    sah lewat tautan lain)."""
+    for tabel, segmen in _ENTITAS_BACA.get(entity_type, ()):
+        ada = await conn.fetchval(
+            f"SELECT 1 FROM {tabel} WHERE id = $1 AND tenant_id = $2",  # nosec B608 - tabel dari peta tetap
+            entity_id,
+            tenant_id,
+        )
+        if ada:
+            return segmen
+    return None
