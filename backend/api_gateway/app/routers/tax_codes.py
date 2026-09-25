@@ -97,7 +97,8 @@ async def get_tax_dropdown(
             where_clause = " AND ".join(conditions)
 
             query = f"""
-                SELECT id, code, name, rate, tax_type, direction, is_default
+                SELECT id, code, name, rate, tax_type, direction, is_default,
+                       dpp_factor_num, dpp_factor_den
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY is_default DESC, rate ASC, name ASC
@@ -113,6 +114,9 @@ async def get_tax_dropdown(
                     "tax_type": row["tax_type"],
                     "direction": row["direction"],
                     "is_default": row["is_default"],
+                    # Faktor DPP (V289, PMK 131/2024): pratinjau lokal FE = angka server.
+                    "dpp_factor_num": row["dpp_factor_num"],
+                    "dpp_factor_den": row["dpp_factor_den"],
                 }
                 for row in rows
             ]

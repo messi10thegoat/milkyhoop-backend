@@ -170,7 +170,12 @@ class TaxCodeDropdownItem(BaseModel):
     name: str
     rate: float
     tax_type: str = "custom"
+    # Dulu router mengirim direction tapi medan ini tak dideklarasikan -> dibuang diam-diam.
+    direction: Optional[str] = None
     is_default: bool = False
+    # Faktor DPP kode pajak (V289): DPP dikenai tarif = DPP x num/den (mis. 12% -> 11/12).
+    dpp_factor_num: int = 1
+    dpp_factor_den: int = 1
 
 
 class TaxCodeDropdownResponse(BaseModel):
