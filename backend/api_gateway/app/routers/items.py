@@ -25,6 +25,7 @@ from uuid import UUID
 from datetime import date as dateclass
 from decimal import Decimal
 
+from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.items import (
     CreateItemRequest,
@@ -1411,7 +1412,7 @@ async def list_sales_accounts(request: Request):
     try:
         conn = await get_db_connection()
 
-        query = """
+        query = f"""
             SELECT id, account_code, name, account_type
             FROM chart_of_accounts
             WHERE tenant_id = $1
@@ -2403,13 +2404,13 @@ async def get_item_history(
                 il.created_at,
                 il.created_by,
                 CASE
-                    WHEN il.source_type = 'SALES_INVOICE' THEN si.customer_name
+                    WHEN il.source_type IN {sql_daftar(KELUAR_JUAL_FAKTUR)} THEN si.customer_name
                     WHEN il.source_type IN ('BILL', 'PURCHASE_INVOICE') THEN b.vendor_name
                     ELSE NULL
                 END AS counterparty
             FROM inventory_ledger il
             LEFT JOIN sales_invoices si
-                ON il.source_type = 'SALES_INVOICE'
+                ON il.source_type IN {sql_daftar(KELUAR_JUAL_FAKTUR)}
                 AND il.source_id::text = si.id::text
                 AND si.tenant_id = $2
             LEFT JOIN bills b
@@ -2682,15 +2683,15 @@ async def get_item_transactions(
             raise HTTPException(status_code=404, detail="Item not found")
 
         # Query transaction history from inventory_ledger (Pure Ledger)
-        tx_query = """
+        tx_query = f"""
             SELECT
                 il.id::text,
                 to_char(il.movement_date, 'YYYY-MM-DD') as date,
                 CASE
                     WHEN il.source_type = 'BILL' THEN 'pembelian'
-                    WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN 'penjualan'
+                    WHEN il.source_type IN {sql_daftar(KELUAR_JUAL)} THEN 'penjualan'
                     WHEN il.source_type = 'OPENING_BALANCE' THEN 'saldo_awal'
-                    WHEN il.source_type = 'SALES_INVOICE_VOID' THEN 'void_penjualan'
+                    WHEN il.source_type IN {sql_daftar(BATAL_JUAL)} THEN 'void_penjualan'
                     WHEN il.source_type = 'STOCK_ADJUSTMENT' THEN 'penyesuaian'
                     ELSE LOWER(il.source_type)
                 END as transaction_type,

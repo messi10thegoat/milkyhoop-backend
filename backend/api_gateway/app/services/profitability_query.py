@@ -17,6 +17,9 @@ Join path for COGS:
    to sales_invoices.id despite the naming)
 """
 
+from .kosakata_ledger import KELUAR_JUAL_FAKTUR, sql_daftar
+
+
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Tuple
 
@@ -62,7 +65,7 @@ cogs AS (
     JOIN sales_invoices si ON si.id = il.source_id
     WHERE il.tenant_id = $1
       AND il.movement_type = 'SALE'
-      AND il.source_type IN ('SALES_INVOICE', 'INVOICE_FULFILLMENT')
+      AND il.source_type IN __KELUAR_JUAL_FAKTUR__
       AND si.accounting_status = 'POSTED'
       AND si.status != 'void'
       AND si.invoice_date >= $2
@@ -97,7 +100,7 @@ LEFT JOIN cogs c ON c.product_id = r.product_id
 WHERE p.deleted_at IS NULL
 ORDER BY {sort_clause}
 LIMIT $4 OFFSET $5
-""".replace("{filter}", _BASE_INVOICE_FILTER)
+""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
 
 
 ITEMS_COUNT_QUERY = """
@@ -135,7 +138,7 @@ cogs AS (
     JOIN sales_invoices si ON si.id = il.source_id
     WHERE il.tenant_id = $1
       AND il.movement_type = 'SALE'
-      AND il.source_type IN ('SALES_INVOICE', 'INVOICE_FULFILLMENT')
+      AND il.source_type IN __KELUAR_JUAL_FAKTUR__
       AND si.accounting_status = 'POSTED'
       AND si.status != 'void'
       AND si.invoice_date >= $2
@@ -155,7 +158,7 @@ SELECT
     r.unique_items,
     r.unique_invoices
 FROM revenue r, cogs c
-""".replace("{filter}", _BASE_INVOICE_FILTER)
+""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
 
 
 # ---------------------------------------------------------------------------

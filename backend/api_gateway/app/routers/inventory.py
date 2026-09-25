@@ -10,6 +10,7 @@ import logging
 import asyncpg
 
 # Import centralized config
+from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..services.periode_laporan import rentang_periode
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..config import settings
@@ -898,15 +899,15 @@ async def get_product_stock_card(request: Request, product_id: str):
             ]
 
             # 3. Get transaction history from inventory_ledger (Pure Ledger)
-            history_query = """
+            history_query = f"""
                 SELECT
                     il.id::text,
                     TO_CHAR(il.movement_date, 'YYYY-MM-DD') as tanggal,
                     CASE
                         WHEN il.source_type = 'BILL' THEN 'pembelian'
-                        WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN 'penjualan'
+                        WHEN il.source_type IN {sql_daftar(KELUAR_JUAL)} THEN 'penjualan'
                         WHEN il.source_type = 'OPENING_BALANCE' THEN 'saldo_awal'
-                        WHEN il.source_type = 'SALES_INVOICE_VOID' THEN 'void_penjualan'
+                        WHEN il.source_type IN {sql_daftar(BATAL_JUAL)} THEN 'void_penjualan'
                         ELSE LOWER(il.source_type)
                     END as jenis_transaksi,
                     COALESCE(il.quantity_in, 0) + COALESCE(il.quantity_out, 0) as jumlah,
@@ -914,7 +915,7 @@ async def get_product_stock_card(request: Request, product_id: str):
                     il.total_cost as subtotal,
                     CASE
                         WHEN il.source_type = 'BILL' THEN (SELECT b.vendor_name FROM bills b WHERE b.id = il.source_id LIMIT 1)
-                        WHEN il.source_type IN ('SALES_INVOICE', 'SALE') THEN (SELECT s.customer_name FROM sales_invoices s WHERE s.id = il.source_id LIMIT 1)
+                        WHEN il.source_type IN {sql_daftar(KELUAR_JUAL_FAKTUR)} THEN (SELECT s.customer_name FROM sales_invoices s WHERE s.id = il.source_id LIMIT 1)
                         ELSE NULL
                     END as nama_pihak
                 FROM inventory_ledger il
@@ -1052,18 +1053,21 @@ async def get_top_products(
                     p.nama_produk AS product_name,
                     p.sku,
                     COALESCE(p.base_unit, p.satuan, 'pcs') AS unit,
-                    SUM(il.quantity_out) AS total_qty_sold,
-                    COUNT(DISTINCT il.source_id) AS transaction_count,
-                    MIN(il.created_at) AS first_sale,
-                    MAX(il.created_at) AS last_sale
+                    -- kosakata SATU sumber (services/kosakata_ledger); BERSIH dari pembatalan jual (*_VOID)
+                    COALESCE(SUM(il.quantity_out) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}), 0)
+                      - COALESCE(SUM(il.quantity_in) FILTER (WHERE il.source_type IN {sql_daftar(BATAL_JUAL)}), 0) AS total_qty_sold,
+                    COUNT(DISTINCT il.source_id) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)} AND il.quantity_out > 0) AS transaction_count,
+                    MIN(il.created_at) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}) AS first_sale,
+                    MAX(il.created_at) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}) AS last_sale
                 FROM inventory_ledger il
                 JOIN products p ON p.id = il.product_id AND p.tenant_id = il.tenant_id
                     AND p.status = 'active' AND p.deleted_at IS NULL
                 WHERE il.tenant_id = $1
-                    AND il.quantity_out > 0
-                    AND il.source_type IN ('SALES_INVOICE', 'POS_SALE', 'CASH_SALE', 'SALES_RECEIPT_COGS')
+                    AND ((il.source_type IN {sql_daftar(KELUAR_JUAL)} AND il.quantity_out > 0) OR (il.source_type IN {sql_daftar(BATAL_JUAL)} AND il.quantity_in > 0))
                     {date_filter}
                 GROUP BY il.product_id, p.nama_produk, p.sku, p.base_unit, p.satuan
+                HAVING COALESCE(SUM(il.quantity_out) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}), 0)
+                       - COALESCE(SUM(il.quantity_in) FILTER (WHERE il.source_type IN {sql_daftar(BATAL_JUAL)}), 0) > 0
                 ORDER BY total_qty_sold DESC
                 LIMIT $2
             """,
@@ -1151,15 +1155,16 @@ async def get_slow_moving_products(
                     p.nama_produk AS product_name,
                     p.sku,
                     COALESCE(p.base_unit, p.satuan, 'pcs') AS unit,
-                    COALESCE(SUM(il.quantity_out), 0) AS total_qty_sold,
-                    COUNT(DISTINCT il.source_id) FILTER (WHERE il.source_id IS NOT NULL) AS transaction_count,
-                    MAX(il.created_at) AS last_sale
+                    -- kosakata SATU sumber (services/kosakata_ledger); BERSIH dari pembatalan jual (*_VOID)
+                    COALESCE(SUM(il.quantity_out) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}), 0)
+                      - COALESCE(SUM(il.quantity_in) FILTER (WHERE il.source_type IN {sql_daftar(BATAL_JUAL)}), 0) AS total_qty_sold,
+                    COUNT(DISTINCT il.source_id) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)} AND il.quantity_out > 0) AS transaction_count,
+                    MAX(il.created_at) FILTER (WHERE il.source_type IN {sql_daftar(KELUAR_JUAL)}) AS last_sale
                 FROM products p
                 LEFT JOIN inventory_ledger il
                     ON il.product_id = p.id
                     AND il.tenant_id = p.tenant_id
-                    AND il.quantity_out > 0
-                    AND il.source_type IN ('SALES_INVOICE', 'POS_SALE', 'CASH_SALE', 'SALES_RECEIPT_COGS')
+                    AND ((il.source_type IN {sql_daftar(KELUAR_JUAL)} AND il.quantity_out > 0) OR (il.source_type IN {sql_daftar(BATAL_JUAL)} AND il.quantity_in > 0))
                     {date_filter}
                 WHERE p.tenant_id = $1
                     AND p.status = 'active'

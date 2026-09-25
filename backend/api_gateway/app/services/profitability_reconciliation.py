@@ -16,6 +16,9 @@ Two-tier drift:
   - major_drift: drift > 1000 IDR (non-blocking in v1, logged)
 """
 
+from .kosakata_ledger import KELUAR_JUAL_FAKTUR, sql_daftar
+
+
 from decimal import Decimal, ROUND_HALF_UP
 import logging
 
@@ -65,11 +68,11 @@ FROM inventory_ledger il
 JOIN sales_invoices si ON si.id = il.source_id
 WHERE il.tenant_id = $1
   AND il.movement_type = 'SALE'
-  AND il.source_type IN ('SALES_INVOICE', 'INVOICE_FULFILLMENT')
+  AND il.source_type IN __KELUAR_JUAL_FAKTUR__
   AND si.accounting_status = 'POSTED'
   AND si.status != 'void'
   AND si.invoice_date BETWEEN $2 AND $3
-"""
+""".replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
 
 
 def _s(v: Decimal) -> str:
