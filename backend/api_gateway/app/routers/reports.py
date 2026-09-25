@@ -7,6 +7,7 @@ Supports both Cash and Accrual accounting basis.
 from fastapi import Depends, APIRouter, HTTPException, Request, Query
 from ..services.fitur_parkir import fitur_belum_tersedia
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..utils.periode import periode_laporan
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
@@ -98,50 +99,8 @@ def get_user_context(request: Request) -> dict:
 # ========================================
 
 
-def parse_periode(periode: str) -> tuple:
-    """
-    Parse periode string to date range.
-    Supports: YYYY-MM (month), YYYY-Qn (quarter), YYYY (year)
-    Returns: (start_date, end_date) as datetime
-    """
-    try:
-        if "-Q" in periode:
-            # Quarterly: 2024-Q4
-            year, quarter = periode.split("-Q")
-            year = int(year)
-            quarter = int(quarter)
-            start_month = (quarter - 1) * 3 + 1
-            end_month = quarter * 3
-            start_date = datetime(year, start_month, 1)
-            _, last_day = monthrange(year, end_month)
-            end_date = datetime(year, end_month, last_day, 23, 59, 59)
-        elif len(periode) == 7:
-            # Monthly: 2024-12
-            year, month = map(int, periode.split("-"))
-            start_date = datetime(year, month, 1)
-            _, last_day = monthrange(year, month)
-            end_date = datetime(year, month, last_day, 23, 59, 59)
-        elif len(periode) == 4:
-            # Yearly: 2024
-            year = int(periode)
-            start_date = datetime(year, 1, 1)
-            end_date = datetime(year, 12, 31, 23, 59, 59)
-        else:
-            # Default to current month
-            now = datetime.now()
-            start_date = datetime(now.year, now.month, 1)
-            _, last_day = monthrange(now.year, now.month)
-            end_date = datetime(now.year, now.month, last_day, 23, 59, 59)
-
-        return start_date, end_date
-    except Exception as e:
-        logger.error(f"Failed to parse periode '{periode}': {e}")
-        # Default to current month
-        now = datetime.now()
-        start_date = datetime(now.year, now.month, 1)
-        _, last_day = monthrange(now.year, now.month)
-        end_date = datetime(now.year, now.month, last_day, 23, 59, 59)
-        return start_date, end_date
+# parse_periode: satu parser ketat bersama (utils/periode.py) — input tak dikenal = 400,
+# BUKAN diam-diam "bulan ini" dari jam UTC.
 
 
 # ========================================
@@ -343,7 +302,7 @@ async def get_neraca(request: Request, periode: str):
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
         as_of = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -616,7 +575,7 @@ async def get_arus_kas(request: Request, periode: str):
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
         sd = start_date.date() if hasattr(start_date, "date") else start_date
         ed = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
@@ -938,7 +897,7 @@ async def get_laba_rugi(
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
         sd = start_date.date() if hasattr(start_date, "date") else start_date
         ed = end_date.date() if hasattr(end_date, "date") else end_date
         conn = await get_db_connection()
@@ -1856,7 +1815,7 @@ async def get_profit_loss_by_basis(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
         # Convert to unix timestamp (milliseconds) for bigint column
         start_ts = int(start_date.timestamp() * 1000)  # noqa: F841
         end_ts = int(end_date.timestamp() * 1000)  # noqa: F841
@@ -2051,7 +2010,7 @@ async def get_cash_accrual_comparison(request: Request, periode: str):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
         # Convert to unix timestamp (milliseconds) for bigint column
         start_ts = int(start_date.timestamp() * 1000)  # noqa: F841
         end_ts = int(end_date.timestamp() * 1000)  # noqa: F841

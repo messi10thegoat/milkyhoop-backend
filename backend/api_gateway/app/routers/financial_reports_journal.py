@@ -4,6 +4,7 @@ Iron Laws Compliant Financial Reports - Journal-Based Implementations
 These endpoints derive all financial data from journal_entries (Law 1 compliance).
 """
 from fastapi import APIRouter, HTTPException, Request
+from ..utils.periode import periode_laporan
 from pydantic import BaseModel
 import logging
 import asyncpg
@@ -77,30 +78,7 @@ async def get_db_connection():
     return await asyncpg.connect(**db_config)
 
 
-def parse_periode(periode: str):
-    """Parse period string into start and end dates."""
-    from datetime import datetime
-    import calendar
-
-    if "-Q" in periode:
-        year, quarter = periode.split("-Q")
-        quarter = int(quarter)
-        start_month = (quarter - 1) * 3 + 1
-        end_month = quarter * 3
-        start_date = datetime(int(year), start_month, 1)
-        last_day = calendar.monthrange(int(year), end_month)[1]
-        end_date = datetime(int(year), end_month, last_day, 23, 59, 59)
-    elif len(periode) == 7:
-        year, month = periode.split("-")
-        start_date = datetime(int(year), int(month), 1)
-        last_day = calendar.monthrange(int(year), int(month))[1]
-        end_date = datetime(int(year), int(month), last_day, 23, 59, 59)
-    else:
-        year = int(periode)
-        start_date = datetime(year, 1, 1)
-        end_date = datetime(year, 12, 31, 23, 59, 59)
-
-    return start_date, end_date
+# parse_periode: parser ketat bersama (utils/periode.py) — dulu input tak dikenal = ValueError -> 500.
 
 
 @router.get("/neraca-journal/{periode}", response_model=NeracaJournalResponse)
@@ -116,7 +94,7 @@ async def get_neraca_journal(request: Request, periode: str):
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid user context")
 
-        start_date, end_date = parse_periode(periode)
+        start_date, end_date = await periode_laporan(periode, tenant_id)
 
         conn = await get_db_connection()
         try:
