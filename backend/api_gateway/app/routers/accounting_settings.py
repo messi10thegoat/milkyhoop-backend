@@ -41,8 +41,26 @@ async def get_db_connection():
 # ============================================================
 
 
+# #38: nilai bawaan = DEFAULT kolom tabel accounting_settings (diukur information_schema 25 Sep),
+# jadi GET tenant tanpa baris == baris yang lahir dari POST/PATCH pertama.
+BAWAAN = {
+    "default_report_basis": "accrual",
+    "fiscal_year_start_month": 1,
+    "base_currency_code": "IDR",
+    "decimal_places": 0,
+    "thousand_separator": ".",
+    "decimal_separator": ",",
+    "date_format": "DD/MM/YYYY",
+    "default_dp_percent": None,
+    "default_uang_muka_account_id": None,
+    "default_quote_opening_text": None,
+    "default_quote_closing_text": None,
+}
+
+
 class AccountingSettingsResponse(BaseModel):
-    id: str
+    id: Optional[str] = None  # None = belum tersimpan (is_default)
+    is_default: bool = False  # #38: true = tenant belum punya baris, nilai = BAWAAN
     tenant_id: str
     default_report_basis: str
     fiscal_year_start_month: int
@@ -128,9 +146,14 @@ async def get_accounting_settings(request: Request):
             )
 
             if not row:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Accounting settings not found. Use POST to create.",
+                # #38 (BUG-003): 5/6 tenant tak punya baris -> dulu 404 (form penawaran grapgrap).
+                # Kini 200 + nilai bawaan, bentuk sama, TANPA INSERT (GET tetap baca-saja).
+                return AccountingSettingsDetailResponse(
+                    success=True,
+                    data=AccountingSettingsResponse(
+                        tenant_id=tenant_id, is_default=True, created_at="", updated_at="",
+                        **BAWAAN,
+                    ),
                 )
 
             return AccountingSettingsDetailResponse(
@@ -278,9 +301,15 @@ async def update_accounting_settings(
             )
 
             if not existing:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Accounting settings not found. Use POST to create.",
+                # #38: dulu 404 -> "Default Penawaran" 5/6 tenant gagal disimpan DIAM-DIAM (FE tak
+                # menampilkan galat). Baris dibuat dengan DEFAULT kolom lalu diperbarui. Netral bagi
+                # pembaca lain: periods/journals/dashboard/reports memperlakukan "tanpa baris" =
+                # nilai bawaan yang sama (reopen boleh, tanpa approval, basis accrual).
+                await conn.execute(
+                    "INSERT INTO accounting_settings (id, tenant_id) VALUES ($1, $2) "
+                    "ON CONFLICT (tenant_id) DO NOTHING",
+                    str(uuid.uuid4()),
+                    tenant_id,
                 )
 
             updates = []
