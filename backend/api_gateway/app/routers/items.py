@@ -466,7 +466,9 @@ async def create_item(request: Request, body: CreateItemRequest):
         # Check for duplicate barcode
         if body.barcode:
             existing_barcode = await conn.fetchrow(
-                "SELECT id FROM products WHERE barcode = $1", body.barcode
+                # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
+                "SELECT id FROM products WHERE barcode = $1 AND tenant_id = $2",
+                body.barcode, tenant_id,
             )
             if existing_barcode:
                 raise HTTPException(
@@ -843,9 +845,11 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
         # Check for duplicate barcode (if changing)
         if body.barcode:
             duplicate_barcode = await conn.fetchrow(
-                "SELECT id FROM products WHERE barcode = $1 AND id != $2",
+                # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
+                "SELECT id FROM products WHERE barcode = $1 AND id != $2 AND tenant_id = $3",
                 body.barcode,
                 str(item_id),
+                tenant_id,
             )
             if duplicate_barcode:
                 raise HTTPException(

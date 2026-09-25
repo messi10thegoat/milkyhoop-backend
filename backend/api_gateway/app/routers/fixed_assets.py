@@ -261,18 +261,30 @@ async def delete_asset_category(request: Request, category_id: UUID):
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
+        # Sapuan tenant 26 Sep 2026: peran app = BYPASSRLS, set_config BUKAN pagar -> predikat tenant EKSPLISIT.
+        ada = await conn.fetchval(
+            "SELECT 1 FROM asset_categories WHERE id = $1 AND tenant_id = $2",
+            category_id, ctx["tenant_id"],
+        )
+        if not ada:
+            raise HTTPException(status_code=404, detail="Category not found")
+
         # Check for assets using this category
         count = await conn.fetchval(
-            "SELECT COUNT(*) FROM fixed_assets WHERE category_id = $1", category_id
+            "SELECT COUNT(*) FROM fixed_assets WHERE category_id = $1 AND tenant_id = $2",
+            category_id, ctx["tenant_id"],
         )
         if count > 0:
             await conn.execute(
-                "UPDATE asset_categories SET is_active = false, updated_at = NOW() WHERE id = $1",
-                category_id,
+                "UPDATE asset_categories SET is_active = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+                category_id, ctx["tenant_id"],
             )
             return {"message": "Category deactivated (has assets)"}
 
-        await conn.execute("DELETE FROM asset_categories WHERE id = $1", category_id)
+        await conn.execute(
+            "DELETE FROM asset_categories WHERE id = $1 AND tenant_id = $2",
+            category_id, ctx["tenant_id"],
+        )
         return {"message": "Category deleted"}
 
 
@@ -1478,15 +1490,18 @@ async def get_asset_maintenance(request: Request, asset_id: UUID):
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
+        # Sapuan tenant 26 Sep 2026: peran app = BYPASSRLS, set_config BUKAN pagar -> predikat tenant EKSPLISIT.
+        # asset_maintenance TAK punya tenant_id -> pagar lewat aset induk.
         rows = await conn.fetch(
             """
             SELECT am.*, v.name as vendor_name
             FROM asset_maintenance am
-            LEFT JOIN vendors v ON am.vendor_id = v.id
+            JOIN fixed_assets fa ON fa.id = am.asset_id AND fa.tenant_id = $2
+            LEFT JOIN vendors v ON am.vendor_id = v.id AND v.tenant_id = $2
             WHERE am.asset_id = $1
             ORDER BY am.maintenance_date DESC
             """,
-            asset_id,
+            asset_id, ctx["tenant_id"],
         )
 
         return [AssetMaintenanceResponse(**dict(row)) for row in rows]

@@ -855,9 +855,10 @@ async def import_statement(
 
                 wf_row = await conn.fetchrow(
                     """SELECT id, data FROM chat_workflow_state
-                       WHERE status = 'active'
+                       WHERE status = 'active' AND tenant_id = $2
                          AND data::text LIKE '%' || $1::text || '%'""",
                     str(session_id),
+                    tenant_id,  # sapuan tenant 26 Sep 2026
                 )
                 if wf_row:
                     wf_data = (
@@ -872,9 +873,10 @@ async def import_statement(
                     await conn.execute(
                         """UPDATE chat_workflow_state
                            SET current_state = 'MATCHING', data = $1, updated_at = NOW()
-                           WHERE id = $2""",
+                           WHERE id = $2 AND tenant_id = $3""",
                         _json.dumps(wf_data),
                         wf_row["id"],
+                        tenant_id,
                     )
                     logger.info(
                         f"Re-import: reset workflow {wf_row['id']} to MATCHING state"

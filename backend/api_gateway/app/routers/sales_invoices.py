@@ -5213,11 +5213,13 @@ async def get_invoice_history(
                 FROM audit_logs
                 WHERE metadata->>'entity_type' = 'SALES_INVOICE'
                   AND metadata->>'entity_id' = $1::text
+                  AND tenant_id = $3  -- sapuan tenant 26 Sep 2026 (pengerasan)
                 ORDER BY "createdAt" DESC
                 LIMIT $2
             """,
                 str(invoice_id),
                 limit,
+                ctx["tenant_id"],
             )
 
             history = []

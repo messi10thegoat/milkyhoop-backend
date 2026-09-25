@@ -1141,8 +1141,10 @@ async def get_my_permissions(request: Request):
                 FROM role_permissions rp
                 JOIN roles r ON r.id = rp.role_id
                 WHERE r.code = $1 AND r.is_active = TRUE
+                  AND r.tenant_id IN ('__SYSTEM__', $2)  -- sapuan tenant 26 Sep 2026
             """,
                 role_code,
+                tenant_id,
             )
             effective = {
                 row["module"]: {
