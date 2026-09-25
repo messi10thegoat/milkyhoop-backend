@@ -2384,13 +2384,15 @@ from ..schemas.aging_reports import (  # noqa: E402
 )
 
 
-def _tolak_as_of_lampau(as_of_date: date, hari_ini: date) -> None:
-    """Umur piutang = saldo JURNAL hari ini (compute_ar_outstanding tak punya tanggal as-of, V298).
-    Tanggal lampau ditolak jujur, bukan menampilkan saldo hari ini seolah-olah saldo masa lalu."""
+def _tolak_as_of_lampau(as_of_date: date, hari_ini: date, jenis: str = "piutang") -> None:
+    """Umur piutang/utang = saldo JURNAL hari ini (compute_ar_outstanding / compute_ap_outstanding tak
+    punya tanggal as-of; V298 untuk AR). Tanggal lampau ditolak jujur, bukan menampilkan saldo hari ini
+    seolah-olah saldo masa lalu. AP ikut 25 Sep 2026 (#10b-3a (b)): get_ap_aging_summary hanya
+    menyaring bill_date <= as_of, sedangkan sisa tagihannya tetap sisa HARI INI."""
     if as_of_date < hari_ini:  # #10b-3a: hari_ini = tanggal bisnis tenant, bukan UTC
         raise HTTPException(
             status_code=422,
-            detail="Umur piutang per tanggal lampau belum tersedia; saldo dihitung dari jurnal per hari ini.",
+            detail=f"Umur {jenis} per tanggal lampau belum tersedia; saldo dihitung dari jurnal per hari ini.",
         )
 
 
@@ -2638,7 +2640,9 @@ async def get_ap_aging_summary(
                 "SELECT set_config('app.tenant_id', $1, true)", tenant_id
             )
             # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
-            as_of_date = as_of or await tanggal_dokumen(conn, tenant_id)
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
+            as_of_date = as_of or hari_ini
+            _tolak_as_of_lampau(as_of_date, hari_ini, "utang")
 
             row = await conn.fetchrow(
                 "SELECT * FROM get_ap_aging_summary($1, $2)", tenant_id, as_of_date
