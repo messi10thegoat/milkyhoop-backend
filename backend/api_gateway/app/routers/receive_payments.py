@@ -63,6 +63,15 @@ from ..utils.idempotency import (  # Law 14
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.rp_periode import (
+    SQL_PER_METODE,
+    SQL_RINGKASAN,
+    argumen_kueri,
+    batas_periode,
+    medan_periode,
+    rincian_metode,
+)
+from ..utils.metode_pembayaran import METODE_SAH
 from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
@@ -697,7 +706,13 @@ async def list_receive_payments(
 
 @router.get("/summary", response_model=ReceivePaymentSummaryResponse)
 async def get_receive_payments_summary(request: Request):
-    """Get summary statistics for receive payments."""
+    """Ringkasan penerimaan pembayaran + periode HARI INI / MINGGU INI / BULAN INI.
+
+    amount_today/amount_this_week/amount_this_month (+ count_*) — tanggal BISNIS tenant
+    (bukan UTC); minggu = SENIN s/d MINGGU; bulan = kalender; hanya status posted, uang dari
+    jurnal (sama dengan total_received). Batas dikirim di `period`. `by_method` = rincian
+    per payment_method untuk total + tiap periode (Σ-nya == angka induk). Definisi: services/rp_periode.py.
+    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -705,35 +720,13 @@ async def get_receive_payments_summary(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
-            # Law 16: Counts from table (metadata), amounts from journal (truth)
-            query = """
-                WITH journal_amounts AS (
-                    SELECT rp.id as payment_id,
-                           COALESCE(SUM(jl.credit), 0) as journal_amount
-                    FROM receive_payments rp
-                    JOIN journal_entries je ON je.id = rp.journal_id
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE rp.tenant_id = $1
-                      AND rp.status = 'posted'
-                      AND je.status = 'POSTED'
-                      AND je.reversed_by_id IS NULL
-                      AND coa.account_type = 'RECEIVABLE'
-                      AND jl.credit > 0
-                    GROUP BY rp.id
-                )
-                SELECT
-                    COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE rp.status = 'draft') as draft_count,
-                    COUNT(*) FILTER (WHERE rp.status = 'posted') as posted_count,
-                    COUNT(*) FILTER (WHERE rp.status = 'voided') as voided_count,
-                    COALESCE((SELECT SUM(journal_amount) FROM journal_amounts), 0) as total_received,
-                    COALESCE(SUM(rp.allocated_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_allocated,
-                    COALESCE(SUM(rp.unapplied_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_unapplied
-                FROM receive_payments rp
-                WHERE rp.tenant_id = $1
-            """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            # Law 16: hitungan dari tabel, uang dari jurnal. Periode HARI INI / MINGGU INI /
+            # BULAN INI (25 Sep 2026): tanggal BISNIS tenant, minggu Senin–Minggu — definisi di
+            # services/rp_periode.py. Satu kueri.
+            batas = batas_periode(await tanggal_dokumen(conn, ctx["tenant_id"]))
+            argumen = argumen_kueri(ctx["tenant_id"], batas)
+            row = await conn.fetchrow(SQL_RINGKASAN, *argumen)
+            per_metode = await conn.fetch(SQL_PER_METODE, *argumen)
 
             # PELUNASAN NON-KAS -- supaya ringkasan dan daftar bisa dicocokkan.
             # Daftar (Law 29) memuat setiap kredit Piutang; `total_received`
@@ -771,6 +764,8 @@ async def get_receive_payments_summary(request: Request):
                     "total_received": float(row["total_received"] or 0),
                     "total_allocated": float(row["total_allocated"] or 0),
                     "total_unapplied": float(row["total_unapplied"] or 0),
+                    **medan_periode(row, batas),
+                    "by_method": rincian_metode(per_metode, METODE_SAH),
                 },
             }
 
