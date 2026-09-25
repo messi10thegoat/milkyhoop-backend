@@ -156,6 +156,13 @@ async def tertutup_pesanan(conn, tenant_id: str, so_ids: list) -> dict:
             for s, o in r.items()}
 
 
+def belum_ditagih(order_total, r: dict) -> Decimal:
+    """SATU definisi "belum ditagih" SO (payment_summary Q-011 DAN agregat Q-012): total SO − Σ debit
+    PIUTANG jurnal INVOICE efektif, min 0. Faktur DRAF belum berjurnal -> tetap "belum ditagih"
+    (putusan MASTER 25 Sep)."""
+    return max(NOL, _d(order_total) - r["invoiced"])
+
+
 def ringkasan_pembayaran_so(order_total, r: dict) -> dict:
     """Medan payment_summary GET /api/sales-orders/{id} (Q-011). Murni; float untuk JSON.
     paid_amount      = tertutup SO (SAMA dengan dasar terbayar proforma)
@@ -166,7 +173,7 @@ def ringkasan_pembayaran_so(order_total, r: dict) -> dict:
     return {
         "order_total": float(total),
         "invoiced_amount": float(r["invoiced"]),
-        "uninvoiced_amount": float(max(NOL, total - r["invoiced"])),
+        "uninvoiced_amount": float(belum_ditagih(total, r)),
         "invoice_settled_amount": float(r["invoice_settled"]),
         "invoice_outstanding_amount": float(r["invoice_outstanding"]),
         "credit_note_amount": float(r["credit_note"]),

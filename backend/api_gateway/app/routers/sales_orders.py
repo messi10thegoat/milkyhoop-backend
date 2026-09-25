@@ -24,6 +24,7 @@ from ..services.tax_factor import (
     attach_dpp_factors, resolve_shipping_tax, effective_shipping_code, turunkan_tarif_baris,
 )
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
+from ..services import so_agregat
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -292,7 +293,9 @@ async def get_pending_orders(
 
 @router.get("/summary", response_model=SalesOrderSummaryResponse)
 async def get_sales_order_summary(request: Request):
-    """Get sales order statistics summary."""
+    """Get sales order statistics summary.
+    pending_shipment_value / pending_invoice_value = Σ total SO per STATUS (definisi lama, dibiarkan);
+    uninvoiced_value = belum ditagih NYATA (turunan jurnal, Q-012) — pakai ini untuk "belum ditagih"."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -316,6 +319,7 @@ async def get_sales_order_summary(request: Request):
                 WHERE tenant_id = $1
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
+            belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
 
             return SalesOrderSummaryResponse(
                 success=True,
@@ -332,6 +336,7 @@ async def get_sales_order_summary(request: Request):
                     "total_value": row["total_value"],
                     "pending_shipment_value": row["pending_shipment_value"],
                     "pending_invoice_value": row["pending_invoice_value"],
+                    "uninvoiced_value": belum["total"],
                 },
             )
 
@@ -340,6 +345,29 @@ async def get_sales_order_summary(request: Request):
     except Exception as e:
         logger.error(f"Error getting sales order summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get sales order summary")
+
+
+@router.get("/aggregate")
+async def get_sales_order_aggregate(
+    request: Request,
+    q: Optional[str] = Query(None),
+    dari: Optional[str] = Query(None, alias="from"),
+    sampai: Optional[str] = Query(None, alias="to"),
+    customer_id: Optional[str] = Query(None),
+    limit: Optional[str] = Query(None),
+):
+    """Q-012: agregat SERVER untuk jawaban Workspace (FE tak menjumlah daftar). Parameter salah -> 400.
+    Definisi di services/so_agregat.py; uang "belum ditagih" = turunan jurnal (sama dengan payment_summary)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await so_agregat.agregat(conn, ctx["tenant_id"], q, dari, sampai, customer_id, limit)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sales order aggregate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get sales order aggregate")
 
 
 @router.get("/{order_id}", response_model=SalesOrderDetailResponse)
