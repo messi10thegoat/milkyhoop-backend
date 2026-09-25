@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import uuid
@@ -17,6 +17,13 @@ from backend.api_gateway.app.services.setup_orchestrator_client import (
     SetupOrchestratorClient,
 )
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+from backend.api_gateway.app.services.fitur_parkir import fitur_belum_tersedia_dengan
+
+# Audit izin usul E (25 Sep 2026): dua rute lama mengambil tenant dari PATH tanpa
+# mencocokkannya ke tenant pemanggil (TenantValidation hanya memeriksa /api/tenant/{id}/).
+# FE 0 pemanggil, access log 209 arsip = 0 panggilan; /profile membaca
+# data/tenant_profiles yang TAK ADA (selalu 404). Diparkir 409, bukan diperbaiki.
+PARKIR_ONBOARDING = [Depends(fitur_belum_tersedia_dengan("Fitur ini belum tersedia."))]
 
 
 router = APIRouter()
@@ -296,7 +303,7 @@ async def conversational_setup(data: ConversationalSetupRequest):
 
 
 # 🤖 CUSTOMER CHAT ENDPOINT: Full Pipeline for Customer Queries
-@router.post("/chat/{tenant_id}")
+@router.post("/chat/{tenant_id}", dependencies=PARKIR_ONBOARDING)
 async def chat_with_assistant(tenant_id: str, data: ChatRequest):
     """
     Customer chat with deployed AI assistant - Full 8-service pipeline
@@ -418,7 +425,7 @@ async def clear_conversation_history(session_id: str):
     return {"message": f"Conversation history cleared for session {session_id}"}
 
 
-@router.get("/profile/{tenant_id}")
+@router.get("/profile/{tenant_id}", dependencies=PARKIR_ONBOARDING)
 async def get_tenant_profile(tenant_id: str):
     """Get saved tenant profile"""
     profile_path = f"data/tenant_profiles/{tenant_id}.json"
