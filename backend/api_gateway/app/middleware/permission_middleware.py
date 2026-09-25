@@ -93,6 +93,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/[^/]+$", ["PATCH", "PUT"], "supplier", "U"),
     (r"^/api/vendors/[^/]+$", ["DELETE"], "supplier", "D"),
     # Items / Products
+    # W3/U4 alias item per tenant (Q-009) -- eksplisit di atas /api/items/[^/]+ (tanpa ini
+    # PUT jatuh ke item U). PUT = sales_order C: satu-satunya penulis kini form SO;
+    # saat Faktur/Tagihan ikut memakai, perluas dengan tes sendiri.
+    (r"^/api/items/aliases$", ["GET"], "item", "R"),
+    (r"^/api/items/aliases$", ["PUT"], "sales_order", "C"),
     (r"^/api/items/summary$", ["GET"], "item", "R"),
     (r"^/api/items$", ["GET"], "item", "R"),
     (r"^/api/items$", ["POST"], "item", "C"),

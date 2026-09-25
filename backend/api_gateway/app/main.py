@@ -29,6 +29,7 @@ from .routers import products
 from .routers import suppliers
 from .routers import inventory
 from .routers import items
+from .routers import item_aliases  # W3/U4 — WAJIB di-include SEBELUM items.router
 from .routers import members
 from .routers import team_members
 from .routers import pay_groups
@@ -460,6 +461,9 @@ app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"]
 # Inventory management router
 app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"])
 
+# Alias item per tenant (W3/U4, Q-009) — SEBELUM items.router: kalau tidak,
+# GET/PUT /api/items/aliases ditangkap /items/{item_id}.
+app.include_router(item_aliases.router, prefix="/api", tags=["items"])
 # Items master data router
 app.include_router(items.router, prefix="/api", tags=["items"])
 
