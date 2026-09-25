@@ -1244,6 +1244,22 @@ async def complete_order(request: Request, order_id: UUID):
                         )
 
                         today_var = hari_ini  # #10b-3b: tanggal bisnis tenant, bukan UTC
+                        # Backlog 3b (25 Sep 2026): pra-cek periode SEBELUM jurnal JV-VAR. Dulu periode
+                        # CLOSED/LOCKED baru ditolak trigger prevent_closed_period_journal -> galat DB mentah
+                        # (500). Fungsi yang SAMA dengan trigger (is_period_closed: CLOSED/LOCKED = tertutup;
+                        # tanpa periode = boleh, persis trigger) -> 400 bersih; transaksi di-rollback, status
+                        # WO tidak jadi 'completed'.
+                        if await conn.fetchval(
+                            "SELECT is_period_closed($1, $2)", ctx["tenant_id"], today_var
+                        ):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Tidak bisa menyelesaikan produksi: jurnal selisih (JV-VAR) bertanggal "
+                                    f"{today_var} jatuh di periode yang sudah ditutup/dikunci. Buka periodenya "
+                                    f"dulu atau selesaikan di periode yang masih OPEN."
+                                ),
+                            )
                         var_id = _uuid_var.uuid4()
                         ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
                         # Self-healing canonical generator (V176): emits JV-VAR
