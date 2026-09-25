@@ -10,6 +10,7 @@ import logging
 import asyncpg
 
 # Import centralized config
+from ..services.periode_laporan import rentang_periode
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..config import settings
 
@@ -640,7 +641,7 @@ async def get_low_stock_alerts(
                     COALESCE(stock.current_stock, 0) as current_stock,
                     COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) as minimum_stock,
                     COALESCE(NULLIF(p.reorder_level, 0)::double precision, 0) - COALESCE(stock.current_stock, 0) as shortfall,
-                    (CURRENT_DATE - stock.last_movement::date)::int as days_since_movement
+                    ($4::date - stock.last_movement::date)::int as days_since_movement  -- tanggal bisnis (sapuan B)
                 FROM public.products p
                 LEFT JOIN LATERAL (
                     SELECT
@@ -660,7 +661,7 @@ async def get_low_stock_alerts(
                 ORDER BY shortfall DESC
                 LIMIT $2
             """
-            rows = await conn.fetch(query, tenant_id, limit, include_zero_stock)
+            rows = await conn.fetch(query, tenant_id, limit, include_zero_stock, await tanggal_dokumen(conn, tenant_id))
 
             alerts = [
                 LowStockAlertItem(
@@ -1025,6 +1026,10 @@ async def get_top_products(
     """
     Top-selling products by quantity sold.
     Source: inventory_ledger outbound movements (Iron Law 16 compliant).
+
+    Sapuan tanggal bisnis B (26 Sep 2026): period dibagi per tanggal DOKUMEN (il.movement_date) dengan batas tanggal BISNIS
+    tenant (services/periode_laporan) — dulu created_at (waktu INPUT) vs CURRENT_DATE UTC; dokumen bertanggal mundur
+    kini masuk bulan dokumennya.
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -1035,20 +1040,11 @@ async def get_top_products(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Date filter (parameterized via SQL, not string interpolation)
-        date_filter = ""
-        if period == "this_month":
-            date_filter = "AND il.created_at >= date_trunc('month', CURRENT_DATE)"
-        elif period == "last_month":
-            date_filter = (
-                "AND il.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
-                "AND il.created_at < date_trunc('month', CURRENT_DATE)"
-            )
-        elif period == "this_year":
-            date_filter = "AND il.created_at >= date_trunc('year', CURRENT_DATE)"
-        # "all" = no date filter
 
         conn = await get_db_connection()
         try:
+            rentang = rentang_periode(period, await tanggal_dokumen(conn, tenant_id))
+            date_filter = "AND il.movement_date BETWEEN $3::date AND $4::date" if rentang else ""
             rows = await conn.fetch(
                 f"""
                 SELECT
@@ -1073,6 +1069,7 @@ async def get_top_products(
             """,
                 tenant_id,
                 limit,
+                *(rentang or ()),
             )
 
             products = []
@@ -1128,6 +1125,10 @@ async def get_slow_moving_products(
     """
     Slow-moving products — includes products with ZERO sales.
     Source: products LEFT JOIN inventory_ledger (Iron Law 16 compliant).
+
+    Sapuan tanggal bisnis B (26 Sep 2026): period dibagi per tanggal DOKUMEN (il.movement_date) dengan batas tanggal BISNIS
+    tenant (services/periode_laporan) — dulu created_at (waktu INPUT) vs CURRENT_DATE UTC; dokumen bertanggal mundur
+    kini masuk bulan dokumennya.
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -1138,19 +1139,11 @@ async def get_slow_moving_products(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Date filter for LEFT JOIN condition (server-generated, safe)
-        date_filter = ""
-        if period == "this_month":
-            date_filter = "AND il.created_at >= date_trunc('month', CURRENT_DATE)"
-        elif period == "last_month":
-            date_filter = (
-                "AND il.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
-                "AND il.created_at < date_trunc('month', CURRENT_DATE)"
-            )
-        elif period == "this_year":
-            date_filter = "AND il.created_at >= date_trunc('year', CURRENT_DATE)"
 
         conn = await get_db_connection()
         try:
+            rentang = rentang_periode(period, await tanggal_dokumen(conn, tenant_id))
+            date_filter = "AND il.movement_date BETWEEN $3::date AND $4::date" if rentang else ""
             rows = await conn.fetch(
                 f"""
                 SELECT
@@ -1178,6 +1171,7 @@ async def get_slow_moving_products(
             """,
                 tenant_id,
                 limit,
+                *(rentang or ()),
             )
 
             products = []
@@ -1238,6 +1232,10 @@ async def get_product_margins(
     Uses sales_invoice_items for actual revenue and unit_cost for COGS.
     Iron Law compliant: no catalog price fallbacks for margin/COGS calculations.
     Catalog sell_price and buy_price retained as reference/display fields only.
+
+    Sapuan tanggal bisnis B (26 Sep 2026): period dibagi per tanggal DOKUMEN (si.invoice_date) dengan batas tanggal BISNIS
+    tenant (services/periode_laporan) — dulu created_at (waktu INPUT) vs CURRENT_DATE UTC; dokumen bertanggal mundur
+    kini masuk bulan dokumennya.
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -1248,16 +1246,6 @@ async def get_product_margins(
             raise HTTPException(status_code=401, detail="Invalid user context")
 
         # Date filter for sales subquery (server-generated, safe)
-        date_filter = ""
-        if period == "this_month":
-            date_filter = "AND si.created_at >= date_trunc('month', CURRENT_DATE)"
-        elif period == "last_month":
-            date_filter = (
-                "AND si.created_at >= date_trunc('month', CURRENT_DATE - interval '1 month') "
-                "AND si.created_at < date_trunc('month', CURRENT_DATE)"
-            )
-        elif period == "this_year":
-            date_filter = "AND si.created_at >= date_trunc('year', CURRENT_DATE)"
 
         # Sort mapping (server-generated, safe)
         sort_map = {
@@ -1270,6 +1258,8 @@ async def get_product_margins(
 
         conn = await get_db_connection()
         try:
+            rentang = rentang_periode(period, await tanggal_dokumen(conn, tenant_id))
+            date_filter = "AND si.invoice_date BETWEEN $3::date AND $4::date" if rentang else ""
             rows = await conn.fetch(
                 f"""
                 SELECT
@@ -1314,6 +1304,7 @@ async def get_product_margins(
             """,
                 tenant_id,
                 limit,
+                *(rentang or ()),
             )
 
             products = []
