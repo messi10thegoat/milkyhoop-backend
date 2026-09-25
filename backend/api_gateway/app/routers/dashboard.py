@@ -320,13 +320,20 @@ def get_prev_period_date_range(period: str, hari_ini: date) -> tuple:
     return start_date, end_date
 
 
-def calc_change_pct(current: int, prev: int) -> float:
-    """Calculate percentage change from previous to current period."""
-    if prev > 0:
-        return round((current - prev) / prev * 100, 1)
-    elif current > 0:
-        return 100.0  # Went from 0 to something = 100% increase
-    return 0.0
+def calc_change_pct(current: int, prev: int) -> Optional[float]:
+    """Persen perubahan dari periode lalu ke sekarang (#42, 25 Sep 2026).
+
+    Dulu: prev 0 -> 100.0 (angka karangan: 0 -> 5 juta tampil "+100%"),
+    0/0 -> 0.0, dan prev NEGATIF (laba rugi) membalik tanda (rugi -100 -> laba
+    50 tampil "-150%"). Kini: sama -> 0.0; prev 0 dan sekarang tidak 0 -> None
+    ("baru", tak ada dasar persen); lainnya dibagi |prev| sehingga tanda =
+    arah perubahan.
+    """
+    if current == prev:
+        return 0.0
+    if prev == 0:
+        return None
+    return round((current - prev) / abs(prev) * 100, 1)
 
 
 # ========================================
