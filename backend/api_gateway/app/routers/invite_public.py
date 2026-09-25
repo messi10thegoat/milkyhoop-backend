@@ -295,13 +295,22 @@ async def accept_invite(token: str, request: Request):
                     )
 
                     if existing_user:
-                        user_id = existing_user["id"]
-                        await conn.execute(
-                            """UPDATE "User" SET "passwordHash" = $1, name = COALESCE(NULLIF(name, ''), $2),
-                            "isVerified" = true, "updatedAt" = NOW() WHERE id = $3""",
-                            _hash_password(password),
-                            name,
-                            user_id,
+                        # PENGAMBILALIHAN AKUN DITUTUP (26 Sep 2026, audit WRITE_EXEMPT).
+                        # Dulu: mode B atas email yang SUDAH punya akun MENIMPA
+                        # passwordHash-nya. Pengundang (siapa pun yang mendaftar
+                        # sendiri = OWNER tenantnya) menerima invite_link di respons
+                        # POST /api/team-members/invite -> bisa mengundang email
+                        # korban, menerima dengan sandi pilihannya, lalu masuk
+                        # sebagai korban ke SEMUA tenant korban. Token undangan
+                        # membuktikan UNDANGAN, bukan kepemilikan email.
+                        # Akun lama WAJIB mode A (email + sandi lamanya).
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "ACCOUNT_EXISTS",
+                                "message": "Email ini sudah punya akun MilkyHoop. "
+                                "Masuk dengan email dan sandi akun Anda untuk menerima undangan.",
+                            },
                         )
                     else:
                         # User.role = 'ADMIN'::"Role" is Prisma plan-tier enum, NOT team role
