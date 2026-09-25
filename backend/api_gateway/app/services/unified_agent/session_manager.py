@@ -330,10 +330,15 @@ class SessionManager:
                 """SELECT id,
                           updated_at < now() - ($3 || ' hours')::interval AS basi
                      FROM chat_sessions
-                    WHERE id = $1::uuid AND tenant_id = $2""",
+                    WHERE id = $1::uuid AND tenant_id = $2
+                      AND ($4::text IS NULL OR user_id::text = $4)""",
                 session_id,
                 self.tenant_id,
                 str(UMUR_SESI_MAKS_JAM),
+                # Audit chat 26 Sep 2026: dulu tenant saja -> session_id orang lain
+                # dipakai = riwayatnya jadi konteks LLM pemanggil. None = pemanggil
+                # internal (orchestrator) yang sesinya sudah divalidasi di hulu.
+                str(self.user_id) if self.user_id else None,
             )
             if row and not row["basi"]:
                 return str(row["id"])

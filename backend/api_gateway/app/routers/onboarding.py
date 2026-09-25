@@ -207,7 +207,7 @@ async def send_notification(
 
 
 # 🎯 MAIN ENDPOINT: Setup Mode with Setup Orchestrator Integration
-@router.post("/conversational-setup")
+@router.post("/conversational-setup", dependencies=PARKIR_ONBOARDING)
 async def conversational_setup(data: ConversationalSetupRequest):
     """
     Setup Mode - Business Owner Conversational Setup
@@ -406,7 +406,7 @@ async def chat_with_assistant(tenant_id: str, data: ChatRequest):
 
 
 # 🔍 DEBUG ENDPOINTS
-@router.get("/conversation/{session_id}")
+@router.get("/conversation/{session_id}", dependencies=PARKIR_ONBOARDING)
 async def get_conversation_history_endpoint(session_id: str):
     """Get conversation history for debugging"""
     history = get_conversation_history(session_id)
@@ -417,7 +417,7 @@ async def get_conversation_history_endpoint(session_id: str):
     }
 
 
-@router.delete("/conversation/{session_id}")
+@router.delete("/conversation/{session_id}", dependencies=PARKIR_ONBOARDING)
 async def clear_conversation_history(session_id: str):
     """Clear conversation history for session"""
     if session_id in conversation_memory:

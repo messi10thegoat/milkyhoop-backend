@@ -49,4 +49,8 @@ def test_hanya_dua_rute_diparkir():
                      for x in d.dependencies):
             for m in r.methods:
                 diparkir.add((m, r.path))
-    assert diparkir == {("POST", "/chat/{tenant_id}"), ("GET", "/profile/{tenant_id}")}
+    # + audit chat 26 Sep 2026: percakapan onboarding (dict dalam proses TANPA pemilik:
+    # siapa pun baca/timpa/hapus session_id siapa pun; tenant/user dari BODY) + setup.
+    assert diparkir == {("POST", "/chat/{tenant_id}"), ("GET", "/profile/{tenant_id}"),
+                        ("POST", "/conversational-setup"), ("GET", "/conversation/{session_id}"),
+                        ("DELETE", "/conversation/{session_id}")}

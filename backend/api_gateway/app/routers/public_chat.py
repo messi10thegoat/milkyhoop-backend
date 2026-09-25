@@ -114,5 +114,5 @@ async def customer_mode_chat(tenant_id: str, request: PublicChatRequest):
         logger.error(f"[Customer] Unexpected error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Internal server error: {str(e)}"
+            detail="Layanan chat sedang tidak tersedia",  # dulu str(e): bocor host internal
         )

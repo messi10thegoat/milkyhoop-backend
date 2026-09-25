@@ -23,7 +23,7 @@ from io import BytesIO
 import uuid as uuid_mod
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Dict, Any, List
@@ -285,7 +285,41 @@ async def _build_lane_c_result(
     return resp
 
 
-router = APIRouter()
+async def _wajib_anggota_aktif_chat(request: Request):
+    """Audit WRITE_EXEMPT chat (26 Sep 2026): seluruh rute chat exempt izin modul,
+    jadi PermissionMiddleware tak pernah memeriksa keanggotaan untuknya ->
+    anggota yang DIHAPUS/nonaktif (token lama) masih bisa chat + unggah ke
+    Dokumen lewat /message/upload. Kini wajib anggota aktif (baris peran ada)."""
+    from ..services.policy_engine_client import anggota_aktif, get_policy_engine
+
+    u = getattr(request.state, "user", None) or {}
+    if not u.get("user_id") or not u.get("tenant_id"):
+        return  # tanpa identitas: lapisan auth yang menjawab
+    c = await get_policy_engine().get_user_context(
+        str(u["user_id"]), u["tenant_id"], u.get("role", "USER")
+    )
+    if not anggota_aktif(c):
+        raise HTTPException(
+            status_code=403,
+            detail={"error_code": "MEMBERSHIP_INACTIVE", "message": "Keanggotaan tenant tidak aktif"},
+        )
+
+
+async def _pending_milik_pemanggil(pool, pending_action_id, tenant_id, user_id) -> bool:
+    """Kartu aksi milik PEMANGGIL (bukan sekadar se-tenant). Audit chat 26 Sep 2026:
+    dulu confirm/cancel/edit menyaring tenant saja -> rekan se-tenant yang tahu
+    id bisa membatalkan/MENGUBAH kartu orang lain (lalu pemiliknya mengonfirmasi
+    dengan izinnya sendiri = confused deputy). Id rusak -> bukan milik."""
+    try:
+        return bool(await pool.fetchval(
+            "SELECT 1 FROM pending_actions WHERE id = $1::uuid AND tenant_id = $2 AND user_id = $3",
+            str(pending_action_id), tenant_id, str(user_id),
+        ))
+    except Exception:
+        return False
+
+
+router = APIRouter(dependencies=[Depends(_wajib_anggota_aktif_chat)])
 
 # Singleton agent instance (stateless, safe to reuse)
 _agent = SessionAwareAgent()
@@ -7609,6 +7643,11 @@ async def confirm_action(request: Request, body: ConfirmActionRequest):
     """
     ctx = _get_user_context(request)
 
+    if not await _pending_milik_pemanggil(
+        await get_session_db_pool(), body.pending_action_id, ctx["tenant_id"], ctx["user_id"]
+    ):
+        raise HTTPException(status_code=404, detail="Aksi tidak ditemukan")
+
     try:
         # Check if this is a direct action
         try:
@@ -7828,9 +7867,10 @@ async def cancel_action(request: Request, body: CancelActionRequest):
         _pool_batal = await get_session_db_pool()
         _hasil_batal = await _pool_batal.execute(
             "UPDATE pending_actions SET status = 'CANCELLED' "
-            "WHERE id = $1::uuid AND tenant_id = $2 AND status = 'PENDING'",
+            "WHERE id = $1::uuid AND tenant_id = $2 AND user_id = $3 AND status = 'PENDING'",
             str(body.pending_action_id),
             ctx["tenant_id"],
+            str(ctx["user_id"]),
         )
         _batal_ok = _hasil_batal.strip().split()[-1] == "1"
 
@@ -7966,8 +8006,11 @@ async def cancel_action(request: Request, body: CancelActionRequest):
                     """UPDATE chat_session_state
                        SET fsm_state = 'IDLE'
                        WHERE tenant_id = $1
-                         AND fsm_state = 'AWAITING_CONFIRMATION'""",
+                         AND fsm_state = 'AWAITING_CONFIRMATION'
+                         AND session_id IN (SELECT id FROM chat_sessions
+                                             WHERE tenant_id = $1 AND user_id::text = $2)""",
                     ctx["tenant_id"],
+                    str(ctx["user_id"]),
                 )
                 logger.warning(
                     "[Cancel] No session_id — cleared all AWAITING_CONFIRMATION for user %s",
@@ -8287,7 +8330,10 @@ async def edit_action(request: Request, body: EditActionRequest):
     """
     ctx = _get_user_context(request)
     tenant_id = ctx["tenant_id"]
-    _ = ctx.get("user_id")  # reserved for future audit logging
+    if not await _pending_milik_pemanggil(
+        await get_session_db_pool(), body.pending_action_id, tenant_id, ctx.get("user_id")
+    ):
+        raise HTTPException(status_code=404, detail="Aksi tidak ditemukan")
 
     try:
         # 1. Load pending envelope from Redis
