@@ -6,6 +6,7 @@ Additional endpoints for the expense module.
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
+from ..utils.tanggal_tenant import tanggal_dokumen
 import logging
 import asyncpg
 
@@ -289,12 +290,13 @@ async def get_approval_stats(request: Request):
                 """
                 SELECT
                     COUNT(*) FILTER (WHERE status = 'pending') as awaiting_approval,
-                    COUNT(*) FILTER (WHERE status = 'approved' AND approved_at > CURRENT_DATE - INTERVAL '30 days') as recently_approved,
-                    COUNT(*) FILTER (WHERE status = 'rejected' AND updated_at > CURRENT_DATE - INTERVAL '30 days') as recently_rejected
+                    COUNT(*) FILTER (WHERE status = 'approved' AND approved_at > $2::date - INTERVAL '30 days') as recently_approved,
+                    COUNT(*) FILTER (WHERE status = 'rejected' AND updated_at > $2::date - INTERVAL '30 days') as recently_rejected
                 FROM expense_claims
                 WHERE tenant_id = $1
             """,
                 ctx["tenant_id"],
+                await tanggal_dokumen(conn, ctx["tenant_id"]),  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             )
 
             return {
@@ -1091,6 +1093,8 @@ async def get_insight(
                 "month": "30 days",
                 "year": "365 days",
             }.get(period, "30 days")
+            # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             # Revenue
             revenue = await conn.fetchval(
@@ -1098,10 +1102,11 @@ async def get_insight(
                 SELECT COALESCE(SUM(total_amount), 0)
                 FROM sales_invoices
                 WHERE tenant_id = $1
-                  AND invoice_date >= CURRENT_DATE - INTERVAL '{interval}'
+                  AND invoice_date >= $2::date - INTERVAL '{interval}'
                   AND status IN ('posted', 'paid', 'partial')
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Expenses
@@ -1110,10 +1115,11 @@ async def get_insight(
                 SELECT COALESCE(SUM(total_amount), 0)
                 FROM expenses
                 WHERE tenant_id = $1
-                  AND expense_date >= CURRENT_DATE - INTERVAL '{interval}'
+                  AND expense_date >= $2::date - INTERVAL '{interval}'
                   AND status = 'posted'
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             # Pure Ledger: AR outstanding from journal (Law 16)

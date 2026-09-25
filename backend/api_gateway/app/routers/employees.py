@@ -9,6 +9,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.employees import (
     CreateEmployeeRequest,
     UpdateEmployeeRequest,
@@ -349,10 +350,11 @@ async def get_salary_config(request: Request, employee_id: UUID):
                FROM employee_salary_config esc
                JOIN salary_components sc ON sc.id = esc.component_id
                WHERE esc.tenant_id = $1 AND esc.employee_id = $2
-                 AND (esc.end_date IS NULL OR esc.end_date >= CURRENT_DATE)
+                 AND (esc.end_date IS NULL OR esc.end_date >= $3::date)
                ORDER BY sc.sort_order""",
             ctx["tenant_id"],
             employee_id,
+            await tanggal_dokumen(conn, ctx["tenant_id"]),  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
         )
         return {"success": True, "data": [dict(r) for r in rows]}
 

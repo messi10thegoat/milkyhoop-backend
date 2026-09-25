@@ -11,6 +11,7 @@ Balance = SUM(debit - credit) from journal_lines for that account.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
 from pydantic import BaseModel
+from ..utils.tanggal_tenant import tanggal_dokumen
 import logging
 import asyncpg
 
@@ -320,6 +321,8 @@ async def get_account_summary(
 
             # Iron Law 1: Derive inflows/outflows from journal_lines
             coa_id = account["coa_id"]
+            # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             inflows = await conn.fetchval(
                 f"""
                 SELECT COALESCE(SUM(jl.debit), 0)
@@ -329,11 +332,12 @@ async def get_account_summary(
                     AND je.tenant_id = $2
                     AND je.status = 'POSTED'
                     AND je.reversed_by_id IS NULL
-                    AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
+                    AND je.journal_date >= $3::date - INTERVAL '{period_filter}'
                     AND jl.debit > 0
                 """,
                 coa_id,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             outflows = await conn.fetchval(
@@ -345,11 +349,12 @@ async def get_account_summary(
                     AND je.tenant_id = $2
                     AND je.status = 'POSTED'
                     AND je.reversed_by_id IS NULL
-                    AND je.journal_date >= CURRENT_DATE - INTERVAL '{period_filter}'
+                    AND je.journal_date >= $3::date - INTERVAL '{period_filter}'
                     AND jl.credit > 0
                 """,
                 coa_id,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             return {

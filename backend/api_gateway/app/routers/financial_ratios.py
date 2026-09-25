@@ -41,6 +41,7 @@ import logging
 import asyncpg
 from datetime import date
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.financial_ratios import (
     SaveSnapshotRequest,
     CreateAlertRequest,
@@ -139,10 +140,9 @@ async def get_current_ratios(
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        if not as_of_date:
-            as_of_date = date.today()
-
         async with pool.acquire() as conn:
+            if not as_of_date:
+                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             result = await conn.fetchval(
                 """
                 SELECT calculate_financial_ratios($1, $2, NULL, NULL)
@@ -242,7 +242,7 @@ async def get_current_ratios(
         return {
             "success": True,
             "data": {
-                "as_of_date": as_of_date if "as_of_date" in dir() else date.today(),
+                "as_of_date": as_of_date if "as_of_date" in dir() else None,  # jalur galat: tanpa tebakan tanggal server
                 "period_start": None,
                 "period_end": None,
                 "ratios": {},
@@ -733,11 +733,13 @@ async def get_ratio_dashboard(request: Request):
 
         async with pool.acquire() as conn:
             # Get current ratios
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             result = await conn.fetchval(
                 """
-                SELECT calculate_financial_ratios($1, CURRENT_DATE, NULL, NULL)
+                SELECT calculate_financial_ratios($1, $2::date, NULL, NULL)
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             ratios = result.get("ratios", {}) if result else {}
@@ -843,7 +845,7 @@ async def get_ratio_dashboard(request: Request):
             return {
                 "success": True,
                 "data": {
-                    "as_of_date": date.today(),
+                    "as_of_date": hari_ini,
                     "key_ratios": key_ratios,
                     "alerts": alerts,
                     "trends": trends,
@@ -942,11 +944,13 @@ async def compare_to_benchmark(
 
         async with pool.acquire() as conn:
             # Get current ratios
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             result = await conn.fetchval(
                 """
-                SELECT calculate_financial_ratios($1, CURRENT_DATE, NULL, NULL)
+                SELECT calculate_financial_ratios($1, $2::date, NULL, NULL)
             """,
                 ctx["tenant_id"],
+                hari_ini,
             )
 
             ratios = result.get("ratios", {}) if result else {}

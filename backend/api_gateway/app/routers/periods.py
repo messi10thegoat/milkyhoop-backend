@@ -12,6 +12,7 @@ import asyncpg
 from datetime import datetime
 import json
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.periods import (
     UpdatePeriodRequest,
     ClosePeriodRequest,
@@ -163,11 +164,12 @@ async def get_current_period(request: Request):
                 LEFT JOIN fiscal_years fy ON fy.id = fp.fiscal_year_id
                 WHERE fp.tenant_id = $1
                   AND fp.status = 'OPEN'
-                  AND CURRENT_DATE BETWEEN fp.start_date AND fp.end_date
+                  AND $2::date BETWEEN fp.start_date AND fp.end_date
                 ORDER BY fp.start_date DESC
                 LIMIT 1
             """,
                 ctx["tenant_id"],
+                await tanggal_dokumen(conn, ctx["tenant_id"]),  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             )
 
             if not row:

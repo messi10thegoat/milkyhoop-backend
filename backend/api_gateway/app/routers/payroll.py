@@ -590,9 +590,10 @@ async def get_payroll_summary(request: Request):
                 FROM payroll_runs
                 WHERE tenant_id = $1
                     AND status = 'posted'
-                    AND DATE_TRUNC('month', period_start) = DATE_TRUNC('month', CURRENT_DATE)
+                    AND DATE_TRUNC('month', period_start) = DATE_TRUNC('month', $2::date)
                 """,
                 ctx["tenant_id"],
+                await tanggal_dokumen(conn, ctx["tenant_id"]),  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             )
 
             return {

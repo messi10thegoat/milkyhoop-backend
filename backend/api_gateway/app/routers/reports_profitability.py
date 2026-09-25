@@ -4,6 +4,7 @@ Endpoints: /api/reports/profitability/items, /services, /reconciliation
 """
 from datetime import date
 from fastapi import APIRouter, HTTPException, Request, Query
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.db_pool import get_db_pool
 from ..services.profitability_query import get_item_profitability, get_service_revenue
 from ..services.profitability_reconciliation import check_reconciliation
@@ -27,8 +28,9 @@ async def _set_rls(conn, tenant_id: str):
     await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
 
 
-def _parse_dates(start_date, end_date):
-    today = date.today()
+def _parse_dates(start_date, end_date, hari_ini: date):
+    # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
+    today = hari_ini
     if not start_date:
         start_date = today.replace(day=1).isoformat()
     if not end_date:
@@ -59,11 +61,10 @@ async def profitability_items(
 ):
     """Realized gross margin per product (goods only)."""
     tenant_id = _get_tenant_id(request)
-    sd, ed = _parse_dates(start_date, end_date)
-
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await _set_rls(conn, tenant_id)
+        sd, ed = _parse_dates(start_date, end_date, await tanggal_dokumen(conn, tenant_id))
         items, summary, total_count = await get_item_profitability(
             conn,
             tenant_id,
@@ -121,11 +122,10 @@ async def profitability_services(
 ):
     """Service item revenue (no COGS)."""
     tenant_id = _get_tenant_id(request)
-    sd, ed = _parse_dates(start_date, end_date)
-
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await _set_rls(conn, tenant_id)
+        sd, ed = _parse_dates(start_date, end_date, await tanggal_dokumen(conn, tenant_id))
         items, summary = await get_service_revenue(
             conn, tenant_id, sd, ed, limit, offset
         )
@@ -148,11 +148,10 @@ async def profitability_reconciliation(
 ):
     """Health check: report vs P&L consistency."""
     tenant_id = _get_tenant_id(request)
-    sd, ed = _parse_dates(start_date, end_date)
-
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await _set_rls(conn, tenant_id)
+        sd, ed = _parse_dates(start_date, end_date, await tanggal_dokumen(conn, tenant_id))
         result = await check_reconciliation(conn, tenant_id, sd, ed)
 
     return {"success": True, "data": result}

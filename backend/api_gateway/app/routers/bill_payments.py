@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.rp_periode import batas_periode, argumen_kueri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
@@ -773,6 +774,9 @@ async def get_bill_payments_summary(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+            # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
+            # Periode = services/rp_periode.batas_periode (SAMA dengan Penerimaan): hari ini, Senin–Minggu, tgl 1–akhir bulan.
+            _b = batas_periode(await tanggal_dokumen(conn, ctx["tenant_id"]))
             # Journal-derived summary (Rule 6)
             summary = await conn.fetchrow(
                 """
@@ -803,13 +807,13 @@ async def get_bill_payments_summary(request: Request):
                     COUNT(CASE WHEN status = 'draft' THEN 1 END) AS draft_count,
                     COALESCE(SUM(CASE WHEN status = 'posted' THEN settlement_amount ELSE 0 END), 0) AS posted_amount,
                     COUNT(CASE WHEN status = 'posted' THEN 1 END) AS posted_count,
-                    COALESCE(SUM(CASE WHEN payment_date = CURRENT_DATE THEN settlement_amount ELSE 0 END), 0) AS today_amount,
-                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('week', CURRENT_DATE) THEN settlement_amount ELSE 0 END), 0) AS week_amount,
-                    COALESCE(SUM(CASE WHEN payment_date >= date_trunc('month', CURRENT_DATE) THEN settlement_amount ELSE 0 END), 0) AS month_amount
+                    COALESCE(SUM(CASE WHEN payment_date = $2::date THEN settlement_amount ELSE 0 END), 0) AS today_amount,
+                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $3::date AND $4::date THEN settlement_amount ELSE 0 END), 0) AS week_amount,
+                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $5::date AND $6::date THEN settlement_amount ELSE 0 END), 0) AS month_amount
                 FROM joined
                 WHERE status != 'voided'
                 """,
-                ctx["tenant_id"],
+                *argumen_kueri(ctx["tenant_id"], _b),
             )
 
             # Journal-derived method breakdown (Rule 6)
@@ -1963,8 +1967,8 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                 """
                 SELECT b.id, b.invoice_number, b.issue_date as bill_date, b.due_date,
                     b.amount as total_amount,
-                    b.due_date < CURRENT_DATE as is_overdue,
-                    GREATEST(0, CURRENT_DATE - b.due_date) as overdue_days,
+                    b.due_date < $3::date as is_overdue,  -- tanggal bisnis (sapuan A)
+                    GREATEST(0, $3::date - b.due_date) as overdue_days,
                     COALESCE((
                         SELECT SUM(jl.credit) - SUM(jl.debit)
                         FROM journal_lines jl
@@ -1998,6 +2002,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                 ORDER BY b.due_date ASC, b.issue_date ASC""",
                 ctx["tenant_id"],
                 vendor_id,
+                await tanggal_dokumen(conn, ctx["tenant_id"]),  # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             )
 
             # Filter to only bills with remaining > 0
