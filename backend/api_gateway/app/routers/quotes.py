@@ -1863,7 +1863,7 @@ async def get_quote_pdf(
     quote_id: str,
     format: Literal["url", "inline"] = Query(
         "inline",
-        description="Response format: 'inline' returns PDF bytes, 'url' returns presigned URL",
+        description="Response format: 'inline' returns PDF bytes, 'url' returns gateway path to the inline PDF (Unit 2)",
     ),
 ):
     """
@@ -1871,7 +1871,7 @@ async def get_quote_pdf(
 
     Format options:
     - inline (default): Returns PDF bytes directly for browser preview
-    - url: Returns presigned URL for download/share (expires in 1 hour)
+    - url: Returns gateway path (?format=inline) for download/share; needs Bearer auth, no expiry (Unit 2)
     """
     try:
         ctx = get_user_context(request)
@@ -2022,31 +2022,10 @@ async def get_quote_pdf(
                 },
             )
 
-        # Upload to storage and return presigned URL
-        from ..services.storage_service import get_storage_service
-        from datetime import timedelta
-
-        storage = get_storage_service()
-        file_path = f"{ctx['tenant_id']}/quotes/{quote_id}.pdf"
-
-        url = await storage.upload_bytes(
-            content=pdf_bytes,
-            file_path=file_path,
-            content_type="application/pdf",
-            metadata={"quote_id": str(quote_id), "quote_number": quote_num},
-        )
-
-        expires_at = datetime.utcnow() + timedelta(seconds=storage.config.url_expiry)
-
-        return {
-            "success": True,
-            "data": {
-                "status": "ok",
-                "url": url,
-                "expires_at": expires_at.isoformat() + "Z",
-                "filename": filename,
-            },
-        }
+        # Unit 2: path relatif gateway, BUKAN presign MinIO (mati sejak port
+        # publik ditutup 23 Sep) dan tanpa salinan PDF di bucket.
+        from ..utils.pdf_url import respons_pdf_url
+        return respons_pdf_url("quotes", quote_id, filename)
 
     except HTTPException:
         raise

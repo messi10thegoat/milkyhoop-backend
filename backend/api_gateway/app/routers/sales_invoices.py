@@ -5388,7 +5388,7 @@ async def get_invoice_pdf(
     invoice_id: UUID,
     format: Literal["url", "inline"] = Query(
         "url",
-        description="Response format: 'url' returns presigned URL, 'inline' returns PDF bytes",
+        description="Response format: 'url' returns gateway path to the inline PDF (Unit 2), 'inline' returns PDF bytes",
     ),
     template: Optional[str] = Query(
         None,
@@ -5404,7 +5404,7 @@ async def get_invoice_pdf(
     Generate PDF for a sales invoice.
 
     **Format options:**
-    - url (default): Returns presigned URL for download/share (expires in 1 hour)
+    - url (default): Returns gateway path (?format=inline) for download/share; needs Bearer auth, no expiry (Unit 2)
     - inline: Returns PDF bytes directly for browser preview
 
     **Usage:**
@@ -5689,29 +5689,10 @@ async def get_invoice_pdf(
                 },
             )
 
-        # Upload to storage and return presigned URL
-        storage = get_storage_service()
-        file_path = f"{ctx['tenant_id']}/invoices/{invoice_id}.pdf"
-
-        url = await storage.upload_bytes(
-            content=pdf_bytes,
-            file_path=file_path,
-            content_type="application/pdf",
-            metadata={"invoice_id": str(invoice_id), "invoice_number": invoice_num},
-        )
-
-        # Calculate expiry
-        expires_at = datetime.utcnow() + timedelta(seconds=storage.config.url_expiry)
-
-        return {
-            "success": True,
-            "data": {
-                "status": "draft",
-                "url": url,
-                "expires_at": expires_at.isoformat() + "Z",
-                "filename": filename,
-            },
-        }
+        # Unit 2: path relatif gateway, BUKAN presign MinIO (mati sejak port
+        # publik ditutup 23 Sep) dan tanpa salinan PDF di bucket.
+        from ..utils.pdf_url import respons_pdf_url
+        return respons_pdf_url("sales-invoices", invoice_id, filename, template)
 
     except HTTPException:
         raise
