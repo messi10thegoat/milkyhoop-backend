@@ -776,8 +776,53 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
         )
 
 
+def _pengguna_jwt(http_request: Request) -> str:
+    """user_id dari JWT (AuthMiddleware), BUKAN dari query. 26 Sep 2026: dulu
+    /sessions GET/DELETE memakai ?user_id= -> login mana pun bertindak atas sesi
+    pengguna LAIN."""
+    u = getattr(http_request.state, "user", None) or {}
+    if not u.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    return str(u["user_id"])
+
+
+async def _identitas_logout(http_request: Request, refresh_token: Optional[str]) -> Optional[str]:
+    """Identitas logout yang TERBUKTI (26 Sep 2026, audit sesi).
+
+    /api/auth/logout ada di public_paths (FE memanggil TANPA Authorization, hanya
+    ?user_id + refresh_token) dan dulu mempercayai ?user_id -> siapa pun tanpa token
+    memaksa-keluar pengguna mana pun dan (logout_all_devices) mencabut SEMUA
+    refresh token-nya. Kini identitas = (a) Bearer JWT sah, atau (b) refresh
+    token HIDUP di DB (hash SHA-256 sama dengan auth_service). ?user_id diabaikan.
+    """
+    auth = http_request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            v = await auth_client.validate_token(auth[7:].strip())
+            if v.get("valid") and v.get("user_id"):
+                return str(v["user_id"])
+        except Exception:
+            pass
+    if refresh_token:
+        import hashlib
+
+        h = hashlib.sha256(refresh_token.encode()).hexdigest()
+        try:
+            pool = await get_pool()
+            uid = await pool.fetchval(
+                "SELECT user_id FROM refresh_tokens WHERE token_hash = $1 "
+                "AND revoked_at IS NULL AND expires_at > now()",
+                h,
+            )
+            if uid:
+                return str(uid)
+        except Exception as e:
+            logger.error(f"[logout] cek refresh token gagal: {type(e).__name__}")
+    return None
+
+
 @router.get("/sessions")
-async def list_user_sessions(user_id: str):
+async def list_user_sessions(http_request: Request, user_id: Optional[str] = None):
     """
     List all active sessions for authenticated user
 
@@ -789,6 +834,7 @@ async def list_user_sessions(user_id: str):
         - sessions: List of active sessions
         - total: Total session count
     """
+    user_id = _pengguna_jwt(http_request)  # ?user_id diabaikan
     try:
         logger.info(f"Listing sessions for user: {user_id}")
 
@@ -819,7 +865,7 @@ async def list_user_sessions(user_id: str):
 
 
 @router.delete("/sessions/{session_id}")
-async def revoke_user_session(session_id: str, user_id: str, http_request: Request):
+async def revoke_user_session(session_id: str, http_request: Request, user_id: Optional[str] = None):
     """
     Revoke a specific user session (logout from device)
 
@@ -833,6 +879,7 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
         - success: Boolean
         - message: Success message
     """
+    user_id = _pengguna_jwt(http_request)  # ?user_id diabaikan
     try:
         logger.info(f"Revoking session {session_id} for user {user_id}")
 
@@ -844,7 +891,9 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
 
             # Log session revocation
             await log_auth_event(
-                event_type=AuditEventType.SESSION_REVOKED,
+                # SESSION_REVOKED tak ada di enum -> dulu rute ini SELALU 500 sesudah
+                # mencabut (ditemukan tes 26 Sep 2026). TOKEN_REVOKE = anggota yang ada.
+                event_type=AuditEventType.TOKEN_REVOKE,
                 user_id=user_id,
                 ip_address=get_client_ip(http_request),
                 user_agent=http_request.headers.get("user-agent"),
@@ -874,7 +923,7 @@ async def revoke_user_session(session_id: str, user_id: str, http_request: Reque
 
 
 @router.post("/logout", response_model=AuthResponse)
-async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
+async def logout_user(data: LogoutRequest, http_request: Request, user_id: Optional[str] = None):
     """
     Logout user - revoke refresh token(s) + session
 
@@ -890,6 +939,13 @@ async def logout_user(data: LogoutRequest, user_id: str, http_request: Request):
         - message: Success message
         - revoked_tokens: Number of tokens revoked
     """
+    # ?user_id TIDAK dipercaya (lihat _identitas_logout). Tanpa bukti -> 401, NOL pencabutan.
+    user_id = await _identitas_logout(http_request, data.refresh_token)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "LOGOUT_UNPROVEN", "message": "Sesi tidak dapat diverifikasi"},
+        )
     try:
         logger.info(f"Logout request for user: {user_id}")
 

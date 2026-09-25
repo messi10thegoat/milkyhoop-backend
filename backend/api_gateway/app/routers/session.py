@@ -57,60 +57,41 @@ async def list_sessions(request: Request):
 
 
 @router.post("/logout")
-async def logout_session(request: Request, session_id: str):
-    """
-    Logout specific session (requires authentication)
-    """
-    try:
-        if not hasattr(request.state, 'user'):
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication required"
-            )
-        
-        user = request.state.user
-        user_id = user["user_id"]
-        
-        logger.info(f"Logout session {session_id} for user {user_id}")
-        
-        # TODO: Implement session revocation in auth service
-        return {
-            "success": True,
-            "message": f"Session {session_id} logged out"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Logout error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Logout failed")
+async def logout_session(request: Request, session_id: str = None):
+    """DIPARKIR (26 Sep 2026, audit sesi): dulu stub TODO yang membalas sukses tanpa
+    mencabut apa pun -> rasa aman palsu. Tak ada konsep "sesi" terpisah dari
+    perangkat: cabut per perangkat lewat DELETE /api/devices/{id}. FE 0 pemanggil."""
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "FEATURE_NOT_AVAILABLE",
+                "message": "Gunakan pengelolaan perangkat untuk keluar dari satu perangkat."},
+    )
 
 
 @router.post("/logout-all")
 async def logout_all_sessions(request: Request):
+    """Keluar dari SEMUA perangkat — sungguhan (26 Sep 2026, audit sesi).
+
+    Dulu stub TODO yang membalas sukses tanpa mencabut apa pun. Kini, untuk
+    pengguna dari JWT (bukan dari parameter): sesi Redis semua perangkat
+    dicabut (AuthMiddleware menolak token perangkat itu seketika) DAN semua
+    refresh token dicabut di auth_service.
     """
-    Logout all sessions for current user (requires authentication)
-    """
-    try:
-        if not hasattr(request.state, 'user'):
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication required"
-            )
-        
-        user = request.state.user
-        user_id = user["user_id"]
-        
-        logger.info(f"Logout all sessions for user {user_id}")
-        
-        # TODO: Implement revoke all sessions in auth service
-        return {
-            "success": True,
-            "message": "All sessions logged out"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Logout all error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Logout all failed")
+    from backend.api_gateway.app.services.session_manager import session_manager
+
+    user = getattr(request.state, "user", None) or {}
+    user_id = user.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    ok_redis = session_manager.revoke_all(str(user_id))
+    hasil = await auth_client.logout(
+        user_id=str(user_id), refresh_token=None, logout_all_devices=True
+    )
+    if not ok_redis or not hasil.get("success"):
+        logger.error(f"[logout-all] pencabutan tak lengkap user={str(user_id)[:8]} redis={ok_redis}")
+        raise HTTPException(status_code=503, detail="Pencabutan sesi belum lengkap; coba lagi.")
+    return {
+        "success": True,
+        "message": "Semua perangkat telah dikeluarkan",
+        "revoked_tokens": hasil.get("revoked_tokens", 0),
+    }
