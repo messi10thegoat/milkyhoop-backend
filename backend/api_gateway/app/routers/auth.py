@@ -426,13 +426,23 @@ async def validate_token(request: ValidateTokenRequest):
         await auth_client.disconnect()
 
 
-@router.get("/profile/{user_id}", response_model=AuthResponse)
-async def get_user_profile(user_id: str):
-    """Get user profile endpoint"""
-    try:
-        logger.info(f"Get profile request for user: {user_id}")
+# Audit izin usul B (25 Sep 2026): profil HANYA milik diri sendiri. Dulu login
+# apa pun membaca email/nama/role pengguna LAIN (tenant mana pun) asal tahu
+# UUID-nya (rute SKIP izin; FE 0 pemakai). Jawaban untuk "orang lain" SAMA
+# PERSIS dengan "tak ada" -- dan layanan auth tak dipanggil untuk orang lain --
+# supaya rute ini tak bisa dipakai sebagai oracle keberadaan pengguna.
+PROFIL_TAK_DITEMUKAN = "Profil tidak ditemukan"
 
-        # Connect to auth service
+
+@router.get("/profile/{user_id}", response_model=AuthResponse)
+async def get_user_profile(user_id: str, request: Request):
+    """Profil pengguna yang sedang login (hanya diri sendiri)."""
+    try:
+        pemanggil = (getattr(request.state, "user", None) or {}).get("user_id")
+        if not pemanggil or str(user_id) != str(pemanggil):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=PROFIL_TAK_DITEMUKAN
+            )
 
         # Call profile service
         result = await auth_client.get_user_profile(user_id)
@@ -451,7 +461,7 @@ async def get_user_profile(user_id: str):
             )
         else:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=result["message"]
+                status_code=status.HTTP_404_NOT_FOUND, detail=PROFIL_TAK_DITEMUKAN
             )
 
     except HTTPException:
