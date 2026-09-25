@@ -66,7 +66,7 @@ _RESTOCK_SQL = """
         JOIN sales_invoices si ON si.id = sii.invoice_id
         WHERE si.tenant_id = $1
           AND si.status NOT IN ('draft', 'void')
-          AND si.invoice_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND si.invoice_date >= tanggal_bisnis($1) - INTERVAL '90 days'
         GROUP BY sii.item_id
         HAVING SUM(sii.quantity) > 0
     ),

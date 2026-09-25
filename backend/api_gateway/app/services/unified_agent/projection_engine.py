@@ -92,14 +92,12 @@ def _fmt_pct(val: Decimal) -> str:
 
 
 def _last_two_complete_months(
-    today: Optional[date] = None,
+    today: date,
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """
     Return ((y1, m1), (y2, m2)) = the two COMPLETE calendar months before the
     current month, oldest first. e.g. today=2026-06-04 -> ((2026,4),(2026,5)).
     """
-    if today is None:
-        today = date.today()
     y, m = today.year, today.month
     # most recent complete month = previous month
     m2 = m - 1
@@ -192,7 +190,7 @@ async def execute_gross_profit_projection(
     user_text: str,
     auth_token: str,
     tenant_id: str,
-    today: Optional[date] = None,
+    today: date,  # P3 26 Sep 2026: WAJIB, tanggal bisnis tenant dari pemanggil
 ) -> dict:
     """
     Compute a deterministic gross-profit projection and render Bahasa Indonesia

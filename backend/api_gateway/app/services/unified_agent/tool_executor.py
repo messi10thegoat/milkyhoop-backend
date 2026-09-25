@@ -2321,9 +2321,8 @@ class ToolExecutor:
                 req_params[key] = value
 
         # Auto-fill date defaults for current month if not provided
-        import datetime  # noqa: E402
-
-        today = datetime.date.today()
+        # P3 26 Sep 2026: bulan berjalan menurut tanggal BISNIS tenant (dulu UTC server).
+        today = await self._hari_ini_date()
         if any(qp.param_type == "date" for qp in config.query_params):
             if "start_date" not in req_params and "start_date" in [
                 qp.name for qp in config.query_params
@@ -2362,7 +2361,7 @@ class ToolExecutor:
 
         # ─── CHART QUERY: return CHART message_type directly ───
         if isinstance(config, ChartQueryConfig):
-            chart_spec = self._build_chart_spec(config, data, query_params)
+            chart_spec = self._build_chart_spec(config, data, query_params, hari_ini=today)
             return {
                 "message_type": "CHART",
                 "content": f"Berikut grafik {config.display_name}:",
@@ -7074,7 +7073,7 @@ class ToolExecutor:
 
     # ═══════════════ CHART SPEC BUILDERS ═══════════════
 
-    def _build_chart_spec(self, config: "ChartQueryConfig", data, params: dict) -> dict:
+    def _build_chart_spec(self, config: "ChartQueryConfig", data, params: dict, *, hari_ini) -> dict:
         """Build a ChartSpec from API response data."""
         import datetime  # noqa: E402
 
@@ -7084,7 +7083,7 @@ class ToolExecutor:
             if config.complexity_hint == "complex"
             else "inline",
             "title": config.display_name,
-            "subtitle": params.get("periode", datetime.date.today().strftime("%Y-%m")),
+            "subtitle": params.get("periode", hari_ini.strftime("%Y-%m")),
             "datasets": [],
             "labels": [],
             "slices": [],

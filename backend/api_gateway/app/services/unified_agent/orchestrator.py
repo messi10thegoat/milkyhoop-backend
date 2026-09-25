@@ -5324,6 +5324,7 @@ class UnifiedAgent:
                 user_text=user_text,
                 auth_token=getattr(context, "auth_token", "") or "",
                 tenant_id=context.tenant_id,
+                today=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id)),
             )
         except Exception as _proj_err:
             import traceback as _tb_proj
@@ -5839,7 +5840,7 @@ class UnifiedAgent:
         try:
             from .period_resolver import resolve_period as _resolve_period
 
-            _period = _resolve_period(user_text or "")
+            _period = _resolve_period(user_text or "", today=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id)))
         except Exception:
             _period = None
 
@@ -5848,7 +5849,7 @@ class UnifiedAgent:
             _end_date = _period["end_date"]
             _label = _period.get("label") or "periode ini"
         else:
-            _today = _date2.today()
+            _today = _date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
             _start_date, _end_date = _month_bounds_local(_today.year, _today.month)
             _label = "bulan ini"
 
@@ -6180,7 +6181,7 @@ class UnifiedAgent:
         try:
             from .period_resolver import resolve_period as _resolve_period
 
-            _period = _resolve_period(user_text or "")
+            _period = _resolve_period(user_text or "", today=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id)))
         except Exception:
             _period = None
 
@@ -6189,7 +6190,7 @@ class UnifiedAgent:
             _end_date = _period["end_date"]
             _label = _period.get("label") or "periode ini"
         else:
-            _today = _date2.today()
+            _today = _date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
             _start_date, _end_date = _month_bounds_local(_today.year, _today.month)
             _label = "bulan ini"
 
@@ -7114,7 +7115,7 @@ class UnifiedAgent:
             if not _resolved_id and _placeholder == "periode":
                 import datetime
 
-                _now = datetime.date.today()
+                _now = _date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))
                 _resolved_id = f"{_now.year}-{_now.month:02d}"
 
             if _resolved_id:
@@ -7732,10 +7733,10 @@ class UnifiedAgent:
                     """
                     SELECT customer_name AS party, invoice_number AS doc_number,
                            due_date, outstanding,
-                           (CURRENT_DATE - due_date) AS days_overdue
+                           (tanggal_bisnis($1) - due_date) AS days_overdue
                     FROM compute_ar_outstanding($1)
                     WHERE outstanding > 0 AND due_date IS NOT NULL
-                      AND due_date < CURRENT_DATE
+                      AND due_date < tanggal_bisnis($1)
                     ORDER BY due_date ASC, outstanding DESC
                     """,
                     context.tenant_id,
@@ -7745,10 +7746,10 @@ class UnifiedAgent:
                     """
                     SELECT vendor_name AS party, bill_number AS doc_number,
                            due_date, outstanding,
-                           (CURRENT_DATE - due_date) AS days_overdue
+                           (tanggal_bisnis($1) - due_date) AS days_overdue
                     FROM compute_ap_outstanding($1)
                     WHERE outstanding > 0 AND due_date IS NOT NULL
-                      AND due_date < CURRENT_DATE
+                      AND due_date < tanggal_bisnis($1)
                     ORDER BY due_date ASC, outstanding DESC
                     """,
                     context.tenant_id,
@@ -10224,7 +10225,7 @@ class UnifiedAgent:
 
                                 _wf_user_data[
                                     "period"
-                                ] = f"{_date_type.today().year}-{_mnum}"
+                                ] = f"{(_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id))).year}-{_mnum}"
                                 break
 
                     wf_result = await tool_executor.execute(
@@ -10513,7 +10514,7 @@ class UnifiedAgent:
                             _clar_event = "slot_abandoned_switch"
                             _pending_clar = None
                         else:
-                            _fill = try_fill_period_slot(user_text)
+                            _fill = try_fill_period_slot(user_text, today=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id)))
                             if _fill.filled and not _fill.has_residue:
                                 await clear_pending_clarification(
                                     _clar_db, _sess_id_for_clar
@@ -10693,7 +10694,7 @@ class UnifiedAgent:
                     # period is detectable inline (no residue beyond threshold).
                     from .clarification_slots import try_fill_period_slot
 
-                    _inline_fill = try_fill_period_slot(user_text)
+                    _inline_fill = try_fill_period_slot(user_text, today=_date_tgl.fromisoformat(await _hari_ini_tenant(context.tenant_id)))
 
                     # P4.1 (ADR addendum): sticky read.
                     # If user_text doesn't mention a period (inline-fill missed),
