@@ -8,6 +8,7 @@ from typing import Optional, Literal
 from datetime import date, datetime, timedelta
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.sales_doc_calc import (
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
@@ -315,14 +316,12 @@ async def list_quotes(
             """
             params.extend([limit, eff_offset])
             rows = await conn.fetch(list_query, *params)
+            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             items = []
             for row in rows:
-                is_expired = (
-                    row["expiry_date"] is not None
-                    and row["expiry_date"] < date.today()
-                    and row["status"] == "sent"
-                )
+                is_expired = kedaluwarsa(row["status"], row["expiry_date"], hari_ini)
                 items.append(
                     QuoteListItem(
                         id=str(row["id"]),
@@ -380,21 +379,22 @@ async def get_expiring_quotes(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            query = """
+            # Q-017: menunggu jawaban (sent/viewed), BELUM kedaluwarsa, habis dalam `days` hari — tanggal BISNIS
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            query = f"""
                 SELECT id, quote_number, customer_name, expiry_date, total_amount
                 FROM quotes
                 WHERE tenant_id = $1
-                AND status = 'sent'
+                AND {sql_menunggu_aktif("$3")}
                 AND expiry_date IS NOT NULL
-                AND expiry_date <= CURRENT_DATE + ($2::INTEGER)
-                AND expiry_date >= CURRENT_DATE
+                AND expiry_date <= $3::date + ($2::INTEGER)
                 ORDER BY expiry_date ASC
             """
-            rows = await conn.fetch(query, ctx["tenant_id"], days)
+            rows = await conn.fetch(query, ctx["tenant_id"], days, hari_ini)
 
             items = []
             for row in rows:
-                days_until = (row["expiry_date"] - date.today()).days
+                days_until = (row["expiry_date"] - hari_ini).days
                 items.append(
                     {
                         "id": str(row["id"]),
@@ -438,11 +438,16 @@ async def get_quote_summary(request: Request):
                     COALESCE(SUM(total_amount) FILTER (WHERE status = 'accepted'), 0) as accepted_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status = 'sent'), 0) as pending_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) as active_value,
-                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'void'), 0) as void_value
+                    COALESCE(SUM(total_amount) FILTER (WHERE status = 'void'), 0) as void_value,
+                    -- Q-017: medan BARU dengan SATU aturan (services/penawaran_kedaluwarsa); medan lama tetap artinya
+                    COUNT(*) FILTER (WHERE {aktif}) as pending_active_count,
+                    COALESCE(SUM(total_amount) FILTER (WHERE {aktif}), 0) as pending_active_value,
+                    COUNT(*) FILTER (WHERE {lewat}) as expired_pending_count,
+                    COALESCE(SUM(total_amount) FILTER (WHERE {lewat}), 0) as expired_pending_value
                 FROM quotes
                 WHERE tenant_id = $1
-            """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            """.format(aktif=sql_menunggu_aktif("$2"), lewat=sql_kedaluwarsa("$2"))
+            row = await conn.fetchrow(query, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]))
 
             return QuoteSummaryResponse(
                 success=True,
@@ -461,6 +466,10 @@ async def get_quote_summary(request: Request):
                     "pending_value": row["pending_value"],
                     "active_value": row["active_value"],
                     "void_value": row["void_value"],
+                    "pending_active_count": row["pending_active_count"],
+                    "pending_active_value": row["pending_active_value"],
+                    "expired_pending_count": row["expired_pending_count"],
+                    "expired_pending_value": row["expired_pending_value"],
                 },
             )
 
@@ -501,11 +510,8 @@ async def get_quote_detail(request: Request, quote_id: str):
             """
             items = await conn.fetch(items_query, uuid_module.UUID(quote_id), ctx["tenant_id"])
 
-            is_expired = (
-                quote["expiry_date"] is not None
-                and quote["expiry_date"] < date.today()
-                and quote["status"] == "sent"
-            )
+            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
+            is_expired = kedaluwarsa(quote["status"], quote["expiry_date"], await tanggal_dokumen(conn, ctx["tenant_id"]))
 
             return QuoteDetailResponse(
                 success=True,

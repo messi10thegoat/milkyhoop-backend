@@ -326,6 +326,11 @@ class QuoteSummary(BaseModel):
     void_value: int  # Sum quote void
     accepted_value: int  # Sum of accepted quotes
     pending_value: int  # Sum of sent quotes
+    # Q-017 (26 Sep 2026): SATU aturan kedaluwarsa (sent/viewed, expiry_date < tanggal bisnis). Medan lama tetap.
+    pending_active_count: int = 0   # sent+viewed BELUM kedaluwarsa (= pill "Terkirim")
+    pending_active_value: int = 0
+    expired_pending_count: int = 0  # sent+viewed SUDAH kedaluwarsa (is_expired)
+    expired_pending_value: int = 0
 
 
 class QuoteSummaryResponse(BaseModel):
