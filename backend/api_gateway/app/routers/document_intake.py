@@ -175,6 +175,29 @@ async def _require_doc_create_perm(request, tenant_id, doc_id):
         raise HTTPException(status_code=403, detail="Jenis dokumen tak dikenal — tidak dapat dieksekusi")
     if not await eng.can(ctx, "C", modul):
         raise HTTPException(status_code=403, detail="Anda tidak punya izin membuat dokumen jenis ini")
+    await _require_legacy_journal_perm(eng, ctx, tenant_id, _did)
+
+
+# Audit WRITE_EXEMPT intake (26 Sep 2026). Eksekutor merutekan dari
+# draft_plan.action_type: yang TAK punya rute REST jatuh ke _execute_legacy =
+# INSERT journal_entries/lines LANGSUNG dari journal_draft (tanpa lewat modul
+# mana pun). Izin doc_type saja tak cukup: jalur itu menulis JURNAL -> wajib
+# izin C journal juga. Kunci ditolak = 403 fail-closed.
+async def _require_legacy_journal_perm(eng, ctx, tenant_id, doc_uuid):
+    from ..services.payload_transformers import get_route
+
+    _pool = await get_pool()
+    async with _pool.acquire() as _c:
+        aksi = await _c.fetchval(
+            "SELECT draft_plan->>'action_type' FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
+            doc_uuid, tenant_id,
+        )
+    if get_route(aksi) is None and not await eng.can(ctx, "C", "journal"):
+        logger.warning(f"[intake-izin] jalur legacy (action_type={aksi!r}) tanpa izin jurnal doc={doc_uuid} -> 403")
+        raise HTTPException(
+            status_code=403,
+            detail="Dokumen ini dibukukan langsung sebagai jurnal — butuh izin membuat jurnal",
+        )
 
 
 @router.post("/upload", response_model=UploadDocumentIntakeResponse)
@@ -293,6 +316,18 @@ async def confirm_document(
     Phase 8: Immediately executes (creates journal + bank + inventory).
     """
     ctx = get_user_context(request)
+    # Audit WRITE_EXEMPT intake (26 Sep 2026): overrides dulu di-merge ke
+    # draft_plan TANPA batas -> klien bisa mengganti action_type/journal_draft
+    # (jurnal sembarang lewat jalur legacy). FE mengirim badan kosong {}; daftar
+    # kunci yang boleh = KOSONG sampai ada layar yang butuh (tambahkan eksplisit).
+    if body is not None and body.overrides:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "OVERRIDES_NOT_ALLOWED",
+                "message": "Perubahan draf lewat konfirmasi tidak diizinkan.",
+            },
+        )
     await _require_doc_create_perm(request, ctx["tenant_id"], doc_id)
     svc = await _get_service()
 
@@ -494,6 +529,11 @@ async def execute_batch(
             elif not await _eng.can(_uctx, "C", _modul):
                 _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": f"Tak punya izin membuat {_modul}"})
             else:
+                try:
+                    await _require_legacy_journal_perm(_eng, _uctx, ctx["tenant_id"], UUID(str(_did)))
+                except HTTPException:
+                    _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Tak punya izin membuat jurnal"})
+                    continue
                 _permitted.append(_did)
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
@@ -611,7 +651,10 @@ async def retry_document(
 ):
     """Retry a posting_failed document. Resets to confirmed and re-executes."""
     ctx = get_user_context(request)
-    await _require_active_member(request)
+    # Audit WRITE_EXEMPT intake: dulu hanya "anggota aktif" -> staf tanpa izin
+    # modul mana pun bisa mengeksekusi ulang (termasuk jalur jurnal legacy).
+    # Kini syarat yang SAMA dengan /execute.
+    await _require_doc_create_perm(request, ctx["tenant_id"], doc_id)
     pool = await get_pool()
 
     doc_uuid = UUID(doc_id)
