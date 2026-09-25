@@ -17,7 +17,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.routers import quotes as Q
 from app.routers import sales_orders as SO
@@ -139,6 +139,11 @@ def pasang(monkeypatch):
     return _p
 
 
+def _buat_so(body):
+    # W0: create_sales_order menerima `response` (header X-Idempotent-Replay).
+    return SO.create_sales_order(_req(), body, Response())
+
+
 def _baris(**kw):
     b = {"description": "Kaos", "quantity": 1, "unit_price": 100000}
     b.update(kw)
@@ -171,7 +176,7 @@ async def _gagal(coro, kode):
 @pytest.mark.asyncio
 async def test_nonpkp_create_ber_ppn_422_tanpa_tulis(pasang):
     db = pasang(DB(is_pkp=False))
-    d = await _gagal(SO.create_sales_order(_req(), _buat(_baris(tax_id=PPN11, tax_rate=11))), 422)
+    d = await _gagal(_buat_so(_buat(_baris(tax_id=PPN11, tax_rate=11))), 422)
     assert d == PESAN_NON_PKP
     assert db.tulis == []
 
@@ -194,7 +199,7 @@ async def test_nonpkp_ppn_ongkir_saja_422(pasang):
 @pytest.mark.asyncio
 async def test_nonpkp_tanpa_pajak_jalan(pasang):
     db = pasang(DB(is_pkp=False))
-    r = await SO.create_sales_order(_req(), _buat(_baris(), shipping_amount=10000))
+    r = await _buat_so(_buat(_baris(), shipping_amount=10000))
     assert r.success
     (h,) = _header_tersimpan(db)
     assert h[13] == Decimal("0")  # tax_amount ($14)
@@ -223,7 +228,7 @@ async def test_nonpkp_patch_diskon_atas_baris_tersimpan_ber_ppn_422(pasang):
 @pytest.mark.asyncio
 async def test_pkp_ber_ppn_jalan(pasang):
     db = pasang(DB(is_pkp=True))
-    r = await SO.create_sales_order(_req(), _buat(_baris(tax_id=PPN11, tax_rate=11)))
+    r = await _buat_so(_buat(_baris(tax_id=PPN11, tax_rate=11)))
     assert r.success
     (h,) = _header_tersimpan(db)
     assert h[13] == Decimal("11000.00")
@@ -247,7 +252,7 @@ async def test_kode_ppn11_tarif_klien_nol_jadi_11(pasang):
     c = await SO.calculate_sales_order(_req(), _buat(_baris(tax_id=PPN11, tax_rate=0)))
     assert c["data"]["items"][0]["tax_rate"] == 11.0
     assert c["data"]["tax_amount"] == 11000.0
-    await SO.create_sales_order(_req(), _buat(_baris(tax_id=PPN11, tax_rate=0)))
+    await _buat_so(_buat(_baris(tax_id=PPN11, tax_rate=0)))
     (b,) = _baris_tersimpan(db)
     assert b[9] == Decimal("11") and b[10] == Decimal("11000.00")  # tax_rate, tax_amount
 
@@ -279,7 +284,7 @@ async def test_patch_baris_tarif_dari_kode(pasang):
 @pytest.mark.parametrize("kode", [KODE_ASING, "bukan-uuid"])
 async def test_kode_asing_atau_rusak_400(pasang, kode):
     db = pasang(DB(is_pkp=True))
-    await _gagal(SO.create_sales_order(_req(), _buat(_baris(tax_id=kode, tax_rate=11))), 400)
+    await _gagal(_buat_so(_buat(_baris(tax_id=kode, tax_rate=11))), 400)
     assert db.tulis == []
 
 
