@@ -6,6 +6,12 @@ Injected into system prompt at session start.
 
 IRON LAW 3.1: NO financial amounts. Only counts, names, dates, ratios.
 """
+# KEBOCORAN LINTAS-TENANT (26 Sep 2026): kedelapan kueri dulu TANPA predikat tenant_id dan bersandar
+# pada set_config('app.tenant_id') -- gateway = BYPASSRLS (Law 24), jadi RLS tak menyaring apa pun:
+# konteks bot SETIAP tenant memuat nama pelanggan/vendor/produk & hitungan milik SEMUA tenant.
+# Kini tiap kueri memfilter tenant_id = $1 EKSPLISIT (tabel utama + master yang di-join).
+# Penjaga: tests/unit/test_tier1_tenant.py.
+
 
 import asyncio
 import logging
@@ -36,24 +42,28 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT c.nama as name, COUNT(*) as cnt
                 FROM sales_invoices si
-                JOIN customers c ON c.id = si.customer_id
-                WHERE COALESCE(si.status, 'draft') NOT IN ('draft', 'void')
+                JOIN customers c ON c.id = si.customer_id AND c.tenant_id = $1
+                WHERE si.tenant_id = $1
+                  AND COALESCE(si.status, 'draft') NOT IN ('draft', 'void')
                 GROUP BY c.id, c.nama
                 HAVING COUNT(*) >= 1
                 ORDER BY cnt DESC LIMIT 5
-            """
+            """,
+                tenant_id,
             )
 
             vendors = await conn.fetch(
                 """
                 SELECT v.name, COUNT(*) as cnt
                 FROM bills b
-                JOIN vendors v ON v.id = b.vendor_id
-                WHERE COALESCE(b.status_v2, 'draft') NOT IN ('draft', 'void')
+                JOIN vendors v ON v.id = b.vendor_id AND v.tenant_id = $1
+                WHERE b.tenant_id = $1
+                  AND COALESCE(b.status_v2, 'draft') NOT IN ('draft', 'void')
                 GROUP BY v.id, v.name
                 HAVING COUNT(*) >= 1
                 ORDER BY cnt DESC LIMIT 5
-            """
+            """,
+                tenant_id,
             )
 
             items = await conn.fetch(
@@ -61,11 +71,13 @@ async def _query_top_entities(pool, tenant_id: str) -> Optional[str]:
                 SELECT p.nama_produk as name, COUNT(*) as cnt
                 FROM sales_invoice_items sii
                 JOIN sales_invoices si ON si.id = sii.invoice_id
-                JOIN products p ON p.id = sii.item_id
-                WHERE COALESCE(si.status, 'draft') NOT IN ('draft', 'void') AND sii.item_id IS NOT NULL
+                JOIN products p ON p.id = sii.item_id AND p.tenant_id = $1
+                WHERE si.tenant_id = $1
+                  AND COALESCE(si.status, 'draft') NOT IN ('draft', 'void') AND sii.item_id IS NOT NULL
                 GROUP BY p.id, p.nama_produk
                 ORDER BY cnt DESC LIMIT 10
-            """
+            """,
+                tenant_id,
             )
 
     total_unique = len(customers) + len(vendors)
@@ -112,12 +124,14 @@ async def _query_payment_patterns(pool, tenant_id: str) -> Optional[str]:
                 FROM receive_payments rp
                 JOIN receive_payment_allocations rpa ON rpa.payment_id = rp.id
                 JOIN sales_invoices si ON si.id = rpa.invoice_id
-                JOIN customers c ON c.id = si.customer_id
-                WHERE rp.status = 'posted'
+                JOIN customers c ON c.id = si.customer_id AND c.tenant_id = $1
+                WHERE rp.tenant_id = $1 AND si.tenant_id = $1
+                  AND rp.status = 'posted'
                 GROUP BY c.id, c.nama
-                HAVING COUNT(*) >= $1
+                HAVING COUNT(*) >= $2
                 ORDER BY cnt DESC LIMIT 5
             """,
+                tenant_id,
                 MIN_PAID_INVOICES_FOR_PATTERN,
             )
 
@@ -143,21 +157,25 @@ async def _query_warehouse_defaults(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT w.name, COUNT(*) as cnt
                 FROM inventory_ledger il
-                JOIN warehouses w ON w.id = il.warehouse_id
+                JOIN warehouses w ON w.id = il.warehouse_id AND w.tenant_id = $1
+                WHERE il.tenant_id = $1
                 GROUP BY w.id, w.name
                 ORDER BY cnt DESC LIMIT 1
-            """
+            """,
+                tenant_id,
             )
 
             tax_rate = await conn.fetchrow(
                 """
                 SELECT tax_rate, COUNT(*) as cnt
                 FROM sales_invoices
-                WHERE COALESCE(status, 'draft') NOT IN ('draft', 'void')
+                WHERE tenant_id = $1
+                  AND COALESCE(status, 'draft') NOT IN ('draft', 'void')
                   AND tax_rate IS NOT NULL AND tax_rate > 0
                 GROUP BY tax_rate
                 ORDER BY cnt DESC LIMIT 1
-            """
+            """,
+                tenant_id,
             )
 
     parts = []
@@ -180,20 +198,24 @@ async def _query_overdue_counts(pool, tenant_id: str) -> Optional[str]:
                 """
                 SELECT COUNT(*) as cnt
                 FROM sales_invoices
-                WHERE COALESCE(status, 'draft') NOT IN ('draft', 'void')
-                  AND due_date < CURRENT_DATE
+                WHERE tenant_id = $1
+                  AND COALESCE(status, 'draft') NOT IN ('draft', 'void')
+                  AND due_date < tanggal_bisnis($1)
                   AND (total_amount - COALESCE(amount_paid, 0)) > 0
-            """
+            """,
+                tenant_id,
             )
 
             bill_row = await conn.fetchrow(
                 """
                 SELECT COUNT(*) as cnt
                 FROM bills
-                WHERE COALESCE(status_v2, 'draft') NOT IN ('draft', 'void')
-                  AND due_date < CURRENT_DATE
+                WHERE tenant_id = $1
+                  AND COALESCE(status_v2, 'draft') NOT IN ('draft', 'void')
+                  AND due_date < tanggal_bisnis($1)
                   AND (amount - COALESCE(amount_paid, 0)) > 0
-            """
+            """,
+                tenant_id,
             )
 
     inv_count = inv_row["cnt"] if inv_row else 0
