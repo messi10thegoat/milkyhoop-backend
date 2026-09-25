@@ -566,15 +566,20 @@ async def get_dashboard_all(
         # masuk `omitted`. summary disaring per bagian di get_dashboard_summary.
         # upcomingDue disaring per baris di _get_upcoming_due (invoice/bill).
         omitted: list = []
+        # #10b-3a (f), 26 Sep 2026: fungsi rute dipanggil LANGSUNG, jadi default `Query(...)` TIDAK
+        # di-resolve FastAPI -> `period` = objek Query. Dulu: bot (query_dashboard_summary /
+        # query_overdue_all memanggil /all TANPA parameter) mendapat cashFlow & expenses 1-hari-ini
+        # (`period != "month"` benar untuk objek Query) bukan bulan penuh seperti dashboard FE.
+        # Semua parameter ber-default Query WAJIB dioper eksplisit (tes AST test_dashboard_all_period).
         tugas = {
             "summary": lambda: get_dashboard_summary(
-                request, start_date=start_date, end_date=end_date, basis=basis
+                request, period="month", start_date=start_date, end_date=end_date, basis=basis
             ),
             "cashFlow": lambda: get_cash_flow_trends(
-                request, start_date=cf_sd, end_date=cf_ed
+                request, period="month", start_date=cf_sd, end_date=cf_ed
             ),
             "expenses": lambda: get_top_expenses(
-                request, start_date=exp_sd, end_date=exp_ed, limit=expense_limit
+                request, period="month", start_date=exp_sd, end_date=exp_ed, limit=expense_limit
             ),
             "overdueInvoices": lambda: get_overdue_invoices(request),
             "overdueBills": lambda: get_overdue_bills(request),
