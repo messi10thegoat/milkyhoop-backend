@@ -11,3 +11,15 @@ PESAN = "Fitur ini belum tersedia."
 async def fitur_belum_tersedia():
     """Dependensi FastAPI: 409 SEBELUM badan handler berjalan."""
     raise HTTPException(status_code=409, detail={"code": "FEATURE_NOT_AVAILABLE", "message": PESAN})
+
+
+def fitur_belum_tersedia_dengan(pesan: str):
+    """Dependensi parkir dengan pesan KHUSUS (arah pengganti untuk pengguna).
+
+    Dipakai bila layar FE MASIH punya tombolnya (beda dengan rute di atas yang
+    0 pemanggil): pengguna perlu tahu harus ke mana, bukan sekadar "belum ada".
+    """
+    async def _dep():
+        raise HTTPException(status_code=409, detail={"code": "FEATURE_NOT_AVAILABLE", "message": pesan})
+
+    return _dep

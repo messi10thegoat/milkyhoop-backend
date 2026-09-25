@@ -8,7 +8,8 @@ IRON LAW COMPLIANCE:
 """
 import logging
 from typing import Optional
-from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi import APIRouter, Depends, Request, Query, HTTPException
+from ..services.fitur_parkir import fitur_belum_tersedia_dengan
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -217,7 +218,24 @@ async def cancel_payment_request(request: Request, request_id: str):
     return result
 
 
-@router.post("/{request_id}/mark-paid")
+# PARKIR (25 Sep 2026, putusan MASTER): mark-paid menulis jurnal ber-kolom
+# hantu (journal_entries.journal_type/posting_date/created_by_name/
+# confidentiality_level; journal_lines.journal_entry_id/description) -> gagal
+# pada SETIAP panggilan; akun dicari lewat LIKE '2100%'/'5999%'/'1100%' (bukan
+# peran, Law 27); akun tak ketemu -> status POSTED TANPA jurnal; PURCHASE_INVOICE
+# mendebit Hutang tanpa melunasi tagihan (sub-ledger AP pecah). 0 baris
+# payment_requests di semua tenant. Layar FE masih punya tombolnya -> 409 dengan
+# arah pengganti. Bangun ulang hanya bila pemilik memakai fitur ini.
+PENANDA_PARKIR_MARK_PAID = "parkir-mark-paid-payment-request"
+PESAN_PARKIR_MARK_PAID = (
+    "Fitur pelunasan permintaan pembayaran belum tersedia — catat lewat Pembayaran Tagihan."
+)
+
+
+@router.post(
+    "/{request_id}/mark-paid",
+    dependencies=[Depends(fitur_belum_tersedia_dengan(PESAN_PARKIR_MARK_PAID))],
+)
 async def mark_payment_request_paid(
     request: Request, request_id: str, data: MarkPaidDTO
 ):
