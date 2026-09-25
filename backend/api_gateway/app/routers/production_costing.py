@@ -69,7 +69,6 @@ async def list_standard_costs(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         where_clauses = ["sc.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -155,7 +154,6 @@ async def create_standard_cost(request: Request, data: CreateStandardCostRequest
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         async with conn.transaction():
             # Verify product exists
@@ -220,7 +218,6 @@ async def calculate_standard_cost_from_bom(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         if effective_date is None:
             # #10b-3b: tanggal bisnis tenant, bukan UTC
@@ -330,7 +327,6 @@ async def list_cost_pools(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         where_clauses = ["cp.tenant_id = $1"]
         params = [ctx["tenant_id"]]
@@ -393,7 +389,6 @@ async def create_cost_pool(request: Request, data: CreateCostPoolRequest):
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         # Check duplicate code
         exists = await conn.fetchval(
@@ -453,7 +448,6 @@ async def record_actual_cost(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         async with conn.transaction():
             # Get cost pool
@@ -475,10 +469,11 @@ async def record_actual_cost(
                 """
                 UPDATE cost_pools
                 SET actual_amount = $1, updated_at = NOW()
-                WHERE id = $2
+                WHERE id = $2 AND tenant_id = $3
             """,
                 new_actual,
                 pool_id,
+                ctx["tenant_id"],
             )
 
             return CostingResponse(
@@ -509,7 +504,6 @@ async def get_variance_analysis(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         # Get product info
         product = await conn.fetchrow(
@@ -684,7 +678,6 @@ async def allocate_overhead(
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
         async with conn.transaction():
             # Get active cost pools for the fiscal year
