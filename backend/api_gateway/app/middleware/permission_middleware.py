@@ -162,6 +162,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/fiscal-years/[^/]+/close$", ["POST"], "period", "P"),
     (r"^/api/purchase-orders/[^/]+/close$", ["POST"], "purchase_order", "U"),
     (r"^/api/approval-requests/[^/]+/approve$", ["POST"], "approval_inbox", "A"),
+    # Audit izin usul D (25 Sep 2026): TOLAK = izin yang sama dengan SETUJU. Dulu tanpa
+    # pola -> default-tertutup: approver staf bisa menyetujui tapi TAK bisa menolak.
+    # Handler tetap memeriksa bahwa pemanggil approver level ini.
+    (r"^/api/approval-requests/[^/]+/reject$", ["POST"], "approval_inbox", "A"),
     (r"^/api/expense-claims/[^/]+/approve$", ["POST"], "expense", "A"),
     (r"^/api/budgets/[^/]+/approve$", ["POST"], "budget", "A"),  # (baru)
     (r"^/api/budgets/[^/]+/close$", ["POST"], "budget", "U"),  # (baru)
@@ -970,6 +974,10 @@ WRITE_EXEMPT = [
     (r"^/api/invite/[^/]+/(accept|decline)$", "pengguna yang diundang bertindak sebelum punya peran"),
     (r"^/api/devices?($|/)", "manajemen perangkat/sesi milik sendiri"),
     (r"^/api/uploads/", "unggah berkas mentah; aksi bisnis hasilnya dicek di rute-nya sendiri"),
+    # Audit izin usul D (25 Sep 2026): pengaju staf membatalkan pengajuannya SENDIRI. Bukan izin
+    # modul -- pengaju belum tentu punya approval_inbox. Handler: status pending + tenant
+    # pemanggil + requested_by == pemanggil (lain -> 403). Dulu default-tertutup -> staf tak bisa batal.
+    (r"^/api/approval-requests/[^/]+/cancel$", "batal pengajuan: handler hanya mengizinkan PENGAJU (requested_by) di tenant-nya"),
     # Chat: endpoint chat TIDAK menulis data istimewa sendiri. Aksi keuangan dieksekusi dengan MENERUSKAN JWT
     # pengguna ke endpoint kernel (is_direct), tempat izin modul TUJUAN ditegakkan. Lihat TIKET-sweep-izin (c).
     (r"^/api/v3/chat/", "chat v3: aksi diteruskan ber-JWT ke modul tujuan (dicek di sana)"),

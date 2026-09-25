@@ -26,8 +26,6 @@ PATCH /api/documents/{document_id}
 PATCH /api/team-members/{member_id}/deactivate
 PATCH /api/team-members/{member_id}/reactivate
 POST /api/approval-delegates
-POST /api/approval-requests/{request_id}/cancel
-POST /api/approval-requests/{request_id}/reject
 POST /api/approval-workflows
 POST /api/approval-workflows/{workflow_id}/levels
 POST /api/audit/cleanup
