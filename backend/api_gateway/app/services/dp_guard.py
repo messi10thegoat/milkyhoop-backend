@@ -74,3 +74,34 @@ async def tolak_bila_ada_uang_muka_aktif(
             "Batalkan atau refund uang muka itu lebih dulu."
         ),
     )
+
+
+async def tolak_bila_ada_uang_muka_aktif_pesanan(conn, order_id, tenant_id: str, aksi: str):
+    """400 bila SO ini memegang uang muka aktif — tertaut LANGSUNG (sales_order_id) ATAU lewat
+    salah satu PROFORMA-nya (proforma_id; Q-011, 25 Sep 2026: dulu jalur proforma lolos).
+    Predikat "aktif" sama persis dengan tolak_bila_ada_uang_muka_aktif."""
+    baris = await conn.fetch(
+        """
+        SELECT cd.deposit_number
+        FROM customer_deposits cd
+        WHERE cd.tenant_id = $2
+          AND (cd.sales_order_id = $1
+               OR cd.proforma_id IN (SELECT p.id FROM proformas p
+                                     WHERE p.tenant_id = $2 AND p.sales_order_id = $1))
+          AND cd.status <> 'void'
+          AND (cd.amount - COALESCE(cd.amount_refunded, 0)) > 0
+        ORDER BY cd.deposit_number
+        """,
+        order_id,
+        tenant_id,
+    )
+    if not baris:
+        return
+    nomor = ", ".join(r["deposit_number"] for r in baris)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Pesanan penjualan memiliki uang muka aktif ({nomor}) dan tidak bisa {aksi}. "
+            "Batalkan atau refund uang muka itu lebih dulu."
+        ),
+    )

@@ -81,29 +81,39 @@ def test_kolam_berlebih_tak_menggelembungkan_proforma():
 # ---------- tertutup_pesanan: journal-derived, tanpa hitung ganda ----------
 
 class DB:
-    def __init__(self, fakturs, outstanding, deps):
-        self.fakturs, self.outstanding, self.deps = fakturs, outstanding, deps
+    """Tiruan: faktur {id, sales_order_id, tagih}; outstanding {inv: x}; cn {inv: x};
+    deps [{id, so_id, terima, terap, lain}]."""
+    def __init__(self, fakturs, outstanding, deps, cn=None):
+        self.fakturs, self.outstanding, self.deps, self.cn = fakturs, outstanding, deps, cn or {}
         self.sql = []
 
     async def fetch(self, sql, *a):
         self.sql.append(sql)
-        if "FROM sales_invoices" in sql:
-            return self.fakturs
+        if "FROM sales_invoices si" in sql:
+            return [{"id": f["id"], "sales_order_id": f["sales_order_id"], "tagih": f["tagih"]} for f in self.fakturs]
         if "compute_ar_outstanding" in sql:
             return [{"invoice_id": k, "outstanding": v} for k, v in self.outstanding.items()]
+        if "FROM credit_notes cn" in sql:
+            return [{"inv": k, "kredit": v} for k, v in self.cn.items()]
         if "FROM customer_deposits cd" in sql:
-            return [{"id": d["id"], "so_id": d["so_id"]} for d in self.deps]
+            return [{"id": d["id"], "so_id": d["so_id"], "terima": d.get("terima", 0), "terap": d.get("terap", 0),
+                     "lain": d.get("lain", 0)} for d in self.deps]
         raise AssertionError(sql)
 
 
 @pytest.fixture
 def sisa_jurnal(monkeypatch):
     from app.routers import customer_deposits as CD
+    from app.services import role_resolver as RR
     tabel = {}
 
     async def palsu(conn, tenant_id, ids):
         return {str(i): tabel[str(i)] for i in ids}
+
+    async def akun(conn, tenant_id, peran):
+        return "akun-dp"
     monkeypatch.setattr(CD, "compute_deposit_remaining_many", palsu)
+    monkeypatch.setattr(RR, "resolve_account_id_by_role", akun)
     return tabel
 
 
@@ -111,7 +121,7 @@ def sisa_jurnal(monkeypatch):
 async def test_dp_diterapkan_plus_pelunasan_6_3_bukan_9_72(sisa_jurnal):
     inv, dep = uuid.uuid4(), uuid.uuid4()
     sisa_jurnal[str(dep)] = D("0")                      # DP sudah diterapkan -> sisa jurnal 0
-    db = DB([{"id": inv, "sales_order_id": SO, "total_amount": D("6300000"), "status": "paid"}], {}, [{"id": dep, "so_id": SO}])
+    db = DB([{"id": inv, "sales_order_id": SO, "tagih": D("6300000"), "status": "paid"}], {}, [{"id": dep, "so_id": SO}])
     t = await PT.tertutup_pesanan(db, TENANT, [SO])
     assert t[SO] == {"faktur": D("6300000"), "uang_muka_sisa": D("0"), "total": D("6300000")}
 
@@ -128,19 +138,20 @@ async def test_dp_belum_diterapkan_dihitung_sekali(sisa_jurnal):
 @pytest.mark.asyncio
 async def test_faktur_sebagian_dibayar_pakai_outstanding(sisa_jurnal):
     inv = uuid.uuid4()
-    db = DB([{"id": inv, "sales_order_id": SO, "total_amount": D("6300000"), "status": "partial"}], {inv: D("2880000")}, [])
+    db = DB([{"id": inv, "sales_order_id": SO, "tagih": D("6300000"), "status": "partial"}], {inv: D("2880000")}, [])
     t = await PT.tertutup_pesanan(db, TENANT, [SO])
     assert t[SO]["total"] == D("3420000")
 
 
 @pytest.mark.asyncio
 async def test_sql_sumber_journal_derived_dan_saringan(sisa_jurnal):
-    db = DB([{"id": uuid.uuid4(), "sales_order_id": SO, "total_amount": D("1"), "status": "paid"}], {}, [])
+    db = DB([{"id": uuid.uuid4(), "sales_order_id": SO, "tagih": D("1"), "status": "paid"}], {}, [])
     await PT.tertutup_pesanan(db, TENANT, [SO])
     semua = "\n".join(db.sql)
     assert "amount_applied" not in semua                     # bukan cache
-    faktur = next(s for s in db.sql if "FROM sales_invoices" in s)
-    assert "status NOT IN ('void', 'draft')" in faktur and "tenant_id = $1" in faktur
+    faktur = next(s for s in db.sql if "FROM sales_invoices si" in s)
+    assert "si.status NOT IN ('void', 'draft')" in faktur and "si.tenant_id = $1" in faktur
+    assert "je.source_type = 'INVOICE'" in faktur and "coa.account_type = 'RECEIVABLE'" in faktur
     dep = next(s for s in db.sql if "FROM customer_deposits cd" in s)
     # deposit TANPA sales_order_id/proforma_id (OVP/LPS kelebihan bayar) tak bisa lolos saringan ini
     assert "cd.sales_order_id = ANY($2::uuid[]) OR p.sales_order_id = ANY($2::uuid[])" in dep

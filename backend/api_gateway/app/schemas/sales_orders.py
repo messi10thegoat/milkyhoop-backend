@@ -337,6 +337,8 @@ class SalesOrderDetail(BaseModel):
     shipments: List[ShipmentDetail] = []
     invoices: List[Dict[str, Any]] = []  # List of related invoices
     deposits: List[SalesOrderDepositSummary] = []  # G2: linked customer deposits
+    # Q-011: ringkasan pembayaran TURUNAN JURNAL (services/proforma_terbayar.ringkasan_pembayaran_so)
+    payment_summary: Optional[Dict[str, float]] = None
     created_at: str
     updated_at: str
     created_by: Optional[str] = None

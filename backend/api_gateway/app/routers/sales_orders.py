@@ -445,6 +445,10 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 ctx["tenant_id"],
             )
 
+            # Q-011: angka "Dibayar" dari SERVER, journal-derived (bukan Σ deposits[]/invoices[] di FE).
+            ringkas = await ringkasan_pesanan(conn, ctx["tenant_id"], [order["id"]])
+            payment_summary = ringkasan_pembayaran_so(order["total_amount"], ringkas[order["id"]])
+
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
@@ -517,6 +521,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                         for item in items
                     ],
                     shipments=shipment_details,
+                    payment_summary=payment_summary,
                     invoices=[
                         {
                             "id": str(inv["id"]),
@@ -1040,13 +1045,13 @@ async def update_sales_order(
 # hanya muncul untuk SO yang sebetulnya masih boleh dibatalkan.
 # ═════════════════════════════════════════════════════════════════════════
 
-from ..services.dp_guard import tolak_bila_ada_uang_muka_aktif
+from ..services.dp_guard import tolak_bila_ada_uang_muka_aktif_pesanan
+from ..services.proforma_terbayar import ringkasan_pembayaran_so, ringkasan_pesanan
 
 
 async def _tolak_bila_ada_uang_muka_aktif(conn, order_id, tenant_id, aksi: str):
-    await tolak_bila_ada_uang_muka_aktif(
-        conn, "sales_order_id", order_id, tenant_id, aksi, "Pesanan penjualan"
-    )
+    # Q-011: dulu hanya customer_deposits.sales_order_id -> DP yang menunjuk proforma SO ini saja lolos.
+    await tolak_bila_ada_uang_muka_aktif_pesanan(conn, order_id, tenant_id, aksi)
 
 
 @router.delete("/{order_id}", response_model=SalesOrderResponse)
