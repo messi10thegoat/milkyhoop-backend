@@ -181,6 +181,7 @@ def baris_dok(**kw):
         "uploaded_by_name": "Pemilik",
         "attachment_type": "receipt",
         "display_order": 0,
+        "storage_type": "s3",  # kueri daftar/detail memilih d.storage_type (tersedia, 25 Sep)
     }
     r.update(kw)
     return r

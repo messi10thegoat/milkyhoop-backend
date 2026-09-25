@@ -155,6 +155,7 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 from ..services.storage_service import get_storage_service  # noqa: E402
 from ..utils.lampiran_unduh import (  # noqa: E402
+    lampiran_tersedia,
     stream_lampiran,
     url_unduh_lampiran,
 )
@@ -164,7 +165,8 @@ _RP_ATT_MODUL_URL = "receive-payments"
 _RP_ATT_SQL_DAFTAR = """
     SELECT d.id, d.file_name, d.file_size, d.file_type AS mime_type,
            d.thumbnail_path AS thumbnail_url,
-           d.uploaded_at, da.attachment_type, da.display_order
+           d.uploaded_at, da.attachment_type, da.display_order,
+           d.storage_type
     FROM document_attachments da
     JOIN documents d ON d.id = da.document_id
     JOIN receive_payments rp ON rp.id = da.entity_id
@@ -218,6 +220,8 @@ def _rp_lampiran_ke_respons(rows, payment_id) -> list:
             if r["uploaded_at"]
             else None,
             "attachment_type": r["attachment_type"],
+            # 25 Sep 2026: baris 'local' lama = berkas musnah -> FE label, bukan tautan mati.
+            "tersedia": lampiran_tersedia(r["storage_type"]),
         }
         for r in rows
     ]
@@ -920,7 +924,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     jo_attachment_rows = await conn.fetch(
                         """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
                           d.thumbnail_path as thumbnail_url,
-                          d.uploaded_at, da.attachment_type
+                          d.uploaded_at, da.attachment_type, d.storage_type
                    FROM document_attachments da
                    JOIN documents d ON da.document_id = d.id
                    WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid
@@ -1025,7 +1029,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             attachment_rows = await conn.fetch(
                 """SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
                           d.thumbnail_path as thumbnail_url,
-                          d.uploaded_at, da.attachment_type
+                          d.uploaded_at, da.attachment_type, d.storage_type
                    FROM document_attachments da
                    JOIN documents d ON da.document_id = d.id
                    WHERE da.tenant_id = $1 AND da.entity_type = 'payment' AND da.entity_id = $2::uuid

@@ -31,6 +31,16 @@ PENANDA_LAMPIRAN_1A = "lampiran-1a-unduh-lewat-gateway"
 PESAN_BERKAS_TAK_TERSEDIA = "Berkas tidak tersedia"
 
 
+def lampiran_tersedia(storage_type) -> bool:
+    """Berkas lampiran bisa diunduh? Hanya baris `documents` storage_type='s3'.
+
+    Baris 'local' (23 Agt–17 Sep 2026) ditulis ke /tmp kontainer gateway dan MUSNAH saat
+    recreate 23 Sep -- diukur 25 Sep: 30 baris, tak ada salinan. FE memberi label
+    "Berkas hilang", bukan tautan yang pasti 404. Aturan sama dengan `tersedia` beban/faktur.
+    """
+    return (storage_type or "").lower() == "s3"
+
+
 def url_unduh_lampiran(modul: str, induk_id, lampiran_id) -> str:
     """Path relatif gateway untuk mengunduh satu lampiran.
 

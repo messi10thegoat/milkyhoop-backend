@@ -3094,6 +3094,7 @@ _DEP_ATT_ENTITY = "customer_deposit"
 _DEP_ATT_MODUL_URL = "customer-deposits"
 
 from ..utils.lampiran_unduh import (  # noqa: E402
+    lampiran_tersedia,
     stream_lampiran,
     url_unduh_lampiran,
 )
@@ -3262,7 +3263,7 @@ async def list_deposit_attachments(
             rows = await conn.fetch(
                 """
                 SELECT d.id, d.file_name, d.file_path, d.file_size,
-                       d.file_type, d.uploaded_at, d.uploaded_by,
+                       d.file_type, d.uploaded_at, d.uploaded_by, d.storage_type,
                        COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name
                 FROM document_attachments da
                 JOIN documents d ON d.id = da.document_id
@@ -3293,6 +3294,8 @@ async def list_deposit_attachments(
                 if r["uploaded_at"]
                 else None,
                 "uploaded_by_name": r["uploaded_by_name"],
+                # 25 Sep 2026: baris 'local' lama = berkas musnah -> FE label, bukan tautan mati.
+                "tersedia": lampiran_tersedia(r["storage_type"]),
             }
         )
 
