@@ -1,7 +1,7 @@
 #!/bin/bash
 # Uji kering mh-rotasi-postgres.sh DUA ARAH di postgres scratch (tak menyentuh prod).
 set -uo pipefail
-D=/tmp/rotdry-pg; S=$(dirname "$0")/mh-rotasi-postgres.sh
+D=/tmp/rotdry-pg; S=$(cd "$(dirname "$0")" && pwd)/mh-rotasi-postgres.sh
 docker rm -f rotdry-pg >/dev/null 2>&1; docker network rm rotdry-net >/dev/null 2>&1
 rm -rf $D; mkdir -p $D/bk; chmod 700 $D; cd $D
 P0=$(openssl rand -hex 6)   # 12 karakter, seperti prod
