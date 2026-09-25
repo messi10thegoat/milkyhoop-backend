@@ -13,6 +13,7 @@ import logging
 import asyncpg
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
     CreateInvoiceRequest,
     UpdateInvoiceRequest,
@@ -5171,10 +5172,14 @@ async def delete_invoice(request: Request, invoice_id: UUID):
                     "WHERE soi.id = v.soi_id",
                     invoice_id,
                 )
+                # #30: berkas MILIK faktur (sales_invoice_attachments tanpa FK) ikut dihapus
+                # barisnya di transaksi ini; objeknya SESUDAH commit. Tautan hub -> trigger V308.
+                berkas = await lepas_berkas_milik(conn, "sales_invoices", invoice_id)
                 await conn.execute(
                     "DELETE FROM sales_invoices WHERE id = $1", invoice_id
                 )
 
+            await hapus_objek_sesudah_commit(berkas, f"hapus draf faktur {invoice_id}")
             logger.info(f"Invoice deleted: {invoice_id}")
 
             return {

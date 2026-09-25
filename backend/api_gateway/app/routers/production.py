@@ -37,6 +37,7 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1694,6 +1695,7 @@ async def cancel_order(request: Request, order_id: UUID):
                     order_id,
                     ctx["tenant_id"],
                 )
+                berkas_sub = []  # #30: objek lampiran tagihan draf subkontrak -> dihapus sesudah commit
                 for sc in subcontracts:
                     if sc["bill_id"]:
                         bill = await conn.fetchrow(
@@ -1706,6 +1708,7 @@ async def cancel_order(request: Request, order_id: UUID):
                                 "UPDATE production_subcontracts SET bill_id = NULL, status = 'voided', updated_at = NOW() WHERE id = $1",
                                 sc["id"],
                             )
+                            berkas_sub += await lepas_berkas_milik(conn, "bills", sc["bill_id"])
                             await conn.execute(
                                 "DELETE FROM bill_items WHERE bill_id = $1",
                                 sc["bill_id"],
@@ -1719,7 +1722,8 @@ async def cancel_order(request: Request, order_id: UUID):
                         sc["id"],
                     )
 
-                return {"success": True, "message": "Production order cancelled"}
+        await hapus_objek_sesudah_commit(berkas_sub, f"batal produksi {order_id}")
+        return {"success": True, "message": "Production order cancelled"}
 
     except HTTPException:
         raise

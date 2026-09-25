@@ -18,6 +18,7 @@ from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
+from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from decimal import Decimal, ROUND_HALF_UP
 from .tax_factor import resolve_dpp_factor
 
@@ -1441,6 +1442,9 @@ class BillsService:
                         "SELECT set_config('app.user_id', $1, true)",
                         str(user_id or ""),
                     )
+                    # #30: bill_attachments CASCADE menghapus BARIS tapi objeknya
+                    # tertinggal -> kumpulkan path di sini, hapus objek SESUDAH commit.
+                    berkas = await lepas_berkas_milik(conn, "bills", bill_id)
                     await conn.execute(
                         "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
                         bill_id,
@@ -1455,7 +1459,9 @@ class BillsService:
                         ),
                     }
 
-                return {"success": True, "message": "Bill deleted successfully"}
+        # Transaksi sudah COMMIT di sini (jalur gagal di atas sudah return lebih dulu).
+        await hapus_objek_sesudah_commit(berkas, f"hapus draf tagihan {bill_id}")
+        return {"success": True, "message": "Bill deleted successfully"}
 
     # =========================================================================
     # RECORD PAYMENT
