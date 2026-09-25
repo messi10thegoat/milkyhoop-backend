@@ -510,6 +510,78 @@ async def get_customer(request: Request, customer_id: str):
 
 
 # =============================================================================
+# RENAME IMPACT (25 Sep 2026)
+# =============================================================================
+# Kasus pemilik SO-2609-0013: pelanggan di-rename 2 hari sesudah dokumen terbit
+# -> dokumen tetap mencetak nama LAMA (customer_name = snapshot; PATCH
+# /api/customers/{id} tak menyebarkan nama, dan memang tak boleh mengubah
+# dokumen terbit). FE butuh angka untuk memperingatkan SEBELUM menyimpan nama
+# baru. Daftar tabel = dokumen ber-snapshot `customer_name` yang merujuk
+# customer_id (diukur information_schema 25 Sep; accounts_receivable turunan
+# faktur -> tak dihitung dua kali).
+PENANDA_RENAME_IMPACT = "rename-impact-jumlah-dokumen"
+RENAME_TABEL = (
+    ("sales_invoices", "faktur_penjualan"),
+    ("sales_orders", "pesanan_penjualan"),
+    ("quotes", "penawaran"),
+    ("proformas", "proforma"),
+    ("customer_deposits", "uang_muka"),
+    ("receive_payments", "penerimaan"),
+    ("credit_notes", "nota_kredit"),
+    ("sales_receipts", "kwitansi_penjualan"),
+)
+
+
+@router.get("/{customer_id}/rename-impact")
+async def get_customer_rename_impact(request: Request, customer_id: UUID):
+    """Jumlah dokumen yang menyimpan nama pelanggan ini sebagai snapshot.
+
+    `per_jenis[k].total` = semua dokumen (termasuk draf/void: semuanya tetap
+    mencetak nama yang tersimpan); `per_jenis[k].nama_berbeda` = yang namanya
+    SUDAH berbeda dari nama sekarang (sisa rename sebelumnya). Hanya baca.
+    """
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            cust = await conn.fetchrow(
+                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
+                customer_id,
+                tenant_id,
+            )
+            if not cust:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            per_jenis = {}
+            for tabel, kunci in RENAME_TABEL:
+                r = await conn.fetchrow(
+                    f"SELECT count(*) AS total, "  # nosec B608 - tabel dari konstanta
+                    f"count(*) FILTER (WHERE customer_name IS DISTINCT FROM $3) AS nama_berbeda "
+                    f"FROM {tabel} WHERE tenant_id = $1 AND customer_id = $2",
+                    tenant_id,
+                    customer_id,
+                    cust["nama"],
+                )
+                per_jenis[kunci] = {"total": r["total"], "nama_berbeda": r["nama_berbeda"]}
+    total = sum(v["total"] for v in per_jenis.values())
+    return {
+        "success": True,
+        "data": {
+            "customer_id": str(customer_id),
+            "nama": cust["nama"],
+            "total_dokumen": total,
+            "nama_berbeda": sum(v["nama_berbeda"] for v in per_jenis.values()),
+            "per_jenis": per_jenis,
+            "pesan": (
+                f"Nama baru hanya dipakai dokumen baru. {total} dokumen yang sudah ada "
+                "tetap memakai nama saat dokumen itu dibuat."
+            ) if total else None,
+        },
+    }
+
+
+# =============================================================================
 # GET CUSTOMER BALANCE (AR Balance)
 # =============================================================================
 @router.get("/{customer_id}/balance", response_model=CustomerBalanceResponse)
