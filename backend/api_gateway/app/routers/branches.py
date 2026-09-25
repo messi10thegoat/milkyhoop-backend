@@ -9,7 +9,8 @@ Journal Entries (Branch Transfer):
 - To Branch: Dr. Inventory / Cr. Branch Payable
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from ..services.fitur_parkir import fitur_belum_tersedia_dengan
 from typing import Optional, Literal
 from uuid import UUID
 from datetime import date
@@ -37,6 +38,13 @@ from ..schemas.branches import (
 from ..services.resolve_account import resolve_account_id
 
 logger = logging.getLogger(__name__)
+# PARKIR (25 Sep 2026, putusan MASTER): enam rute ini menjalankan SQL ber-kolom hantu
+# `journal_entries.entry_date` (tak ada di tabel mana pun; tanggal jurnal = journal_date) -> 500 pada
+# SETIAP panggilan, dan POST /transfers + /receive MENULIS jurnal lewat SQL itu (risiko uang bila kelak
+# dipanggil). Terukur: tabel branches 0 baris prod, nginx 14 hari 0 panggilan /api/branches, FE 0
+# pemanggil. 409 SEBELUM badan handler; bangun ulang bila pemilik memakai cabang.
+PARKIR_CABANG = [Depends(fitur_belum_tersedia_dengan("Fitur cabang belum tersedia."))]
+
 router = APIRouter()
 
 
@@ -382,7 +390,7 @@ async def list_branch_transfers(
         logger.error(f"Error listing branch transfers: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list branch transfers")
 
-@router.get("/comparison", response_model=BranchComparisonResponse)
+@router.get("/comparison", response_model=BranchComparisonResponse, dependencies=PARKIR_CABANG)
 async def compare_branches(
     request: Request,
     start_date: date = Query(...),
@@ -455,7 +463,7 @@ async def compare_branches(
         logger.error(f"Error comparing branches: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to compare branches")
 
-@router.get("/ranking", response_model=BranchRankingResponse)
+@router.get("/ranking", response_model=BranchRankingResponse, dependencies=PARKIR_CABANG)
 async def rank_branches(
     request: Request,
     ranking_by: Literal["revenue", "profit", "transactions"] = Query("revenue"),
@@ -896,7 +904,7 @@ async def get_user_branches(request: Request, user_id: UUID):
 # BRANCH TRANSFERS
 # =============================================================================
 
-@router.post("/transfers", response_model=BranchResponse, status_code=201)
+@router.post("/transfers", response_model=BranchResponse, status_code=201, dependencies=PARKIR_CABANG)
 async def create_branch_transfer(request: Request, body: CreateBranchTransferRequest):
     """Create branch transfer with journal entries."""
     try:
@@ -1185,7 +1193,7 @@ async def ship_transfer(request: Request, transfer_id: UUID):
         raise HTTPException(status_code=500, detail="Failed to ship transfer")
 
 
-@router.post("/transfers/{transfer_id}/receive", response_model=BranchResponse)
+@router.post("/transfers/{transfer_id}/receive", response_model=BranchResponse, dependencies=PARKIR_CABANG)
 async def receive_transfer(request: Request, transfer_id: UUID):
     """Receive transfer at destination branch."""
     try:
@@ -1343,7 +1351,7 @@ async def settle_transfer(request: Request, transfer_id: UUID):
 # =============================================================================
 # REPORTS
 # =============================================================================
-@router.get("/{branch_id}/summary", response_model=BranchSummaryResponse)
+@router.get("/{branch_id}/summary", response_model=BranchSummaryResponse, dependencies=PARKIR_CABANG)
 async def get_branch_summary(
     request: Request,
     branch_id: UUID,
@@ -1407,7 +1415,7 @@ async def get_branch_summary(
         raise HTTPException(status_code=500, detail="Failed to get branch summary")
 
 
-@router.get("/{branch_id}/trial-balance", response_model=BranchTrialBalanceResponse)
+@router.get("/{branch_id}/trial-balance", response_model=BranchTrialBalanceResponse, dependencies=PARKIR_CABANG)
 async def get_branch_trial_balance(
     request: Request,
     branch_id: UUID,
