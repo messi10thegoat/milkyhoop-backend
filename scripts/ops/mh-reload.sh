@@ -38,14 +38,16 @@ done
 proses() { docker top "$MH_CTR" -eo pid,ppid,args 2>/dev/null | tail -n +2; }
 induk_uvicorn() { proses | awk '$3 ~ /python/ && / -m uvicorn / {print $1}' | head -1; }
 pekerja() { local p; p=$(induk_uvicorn); [ -n "$p" ] && proses | awk -v p="$p" '$2==p && /multiprocessing\.spawn/ {print $1}' | sort; }
-# yatim: anak-cucu worker (mis. query-engine) yang parent-nya BUKAN worker hidup / bukan parent / bukan tini
+# yatim SUNGGUHAN = proses yang di-REPARENT ke tini (PID 1 kontainer) karena induknya (worker lama) mati,
+# selain parent uvicorn itu sendiri. Proses `docker exec` (PPID = containerd-shim di LUAR kontainer) dan
+# healthcheck BUKAN yatim. 26 Sep 2026: definisi lama ("PPID bukan worker hidup") menghitung proses ukur
+# `docker exec python -X importtime` sebagai yatim -> LIVE-RED palsu -> restart nyata (jendela tInv).
 yatim() {
-    local w p t
-    w=" $(pekerja | tr '\n' ' ') "; p=$(induk_uvicorn)
-    t=$(proses | awk '/tini/ {print $1}' | head -1)
-    proses | awk -v w="$w" -v p="$p" -v t="$t" '
-        $1==p || $1==t || /tini/ || /multiprocessing\.(spawn|resource_tracker)/ || /healthz/ {next}
-        index(w, " " $2 " ") == 0 && $2 != p {print}'
+    local p t
+    p=$(induk_uvicorn)
+    t=$(proses | awk '$3 ~ /tini/ {print $1}' | head -1)
+    [ -n "$t" ] || return 0
+    proses | awk -v p="$p" -v t="$t" '$2==t && $1!=p {print}'
 }
 merah() {
     echo "LIVE-RED: $*" >&2

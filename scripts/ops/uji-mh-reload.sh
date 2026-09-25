@@ -28,6 +28,9 @@ from fastapi import FastAPI
 import rute
 @asynccontextmanager
 async def lifespan(app):
+    import os, subprocess
+    if os.path.exists("/uji/anak"):          # kasus (6): worker punya proses anak (tiruan prisma query-engine)
+        subprocess.Popen(["sleep", "600"])
     await asyncio.sleep(8)
     yield
 app = FastAPI(lifespan=lifespan)
@@ -82,5 +85,18 @@ for i in $(seq 1 40); do curl -s -m 5 http://127.0.0.1:18011/versi; echo; done >
 cek "$(grep -vc '"v":"V9"' "$D.v")" 0 "respons BUKAN V9 dari 40"
 pids=$(grep -o '"pid":[0-9]*' "$D.v" | cut -d: -f2 | sort -u | wc -l)
 cek "$pids" 2 "kedua worker melayani (pid berbeda)"
-echo; [ $gagal -eq 0 ] && echo "LULUS: uji kering mh-reload 5 kasus" || echo "GAGAL: uji kering mh-reload"
+
+echo "== (5) proses docker exec yang sedang jalan BUKAN yatim (insiden tInv 26 Sep)"
+( sleep 3; docker exec -d $C sleep 90 ) &   # DIMULAI SESUDAH reload berjalan (seperti tInv), bukan sebelum
+jalan "$R" $C --probe $URL --batas 30; wait
+cek "$RC" 0 "rc LULUS walau ada proses docker exec (${DET}s)"; grep -q "YATIM" "$D.out"; cek $? 1 "tak ada vonis YATIM"
+
+echo "== (6) yatim SUNGGUHAN: anak worker lama tertinggal -> LIVE-RED"
+touch "$D/anak"
+jalan "$R" $C --probe $URL --batas 30; cek "$RC" 0 "reload pertama (worker baru punya anak) LULUS"
+jalan "$R" $C --probe $URL --batas 30
+cek "$RC" 8 "reload kedua: anak worker lama di-reparent ke tini -> LIVE-RED"; grep -q "YATIM" "$D.out"; cek $? 0 "pesan YATIM"
+rm -f "$D/anak"
+
+echo; [ $gagal -eq 0 ] && echo "LULUS: uji kering mh-reload 7 kasus" || echo "GAGAL: uji kering mh-reload"
 exit $gagal
