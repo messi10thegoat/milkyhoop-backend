@@ -35,7 +35,7 @@ Endpoints:
 - GET    /approval-requests/turnaround-time     - Average approval time
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
 import json
@@ -63,7 +63,14 @@ from ..schemas.approvals import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+from ..services.role_resolution import require_active_membership
+
+# Sisa audit izin usul D (26 Sep 2026): POST .../cancel = WRITE_EXEMPT (pengaju
+# belum tentu punya approval_inbox), jadi PermissionMiddleware TIDAK memeriksa
+# keanggotaan aktif untuknya -> anggota SUSPENDED (token lama) masih bisa
+# membatalkan pengajuannya sendiri. Pagar keanggotaan dipasang di level ROUTER:
+# berlaku untuk cancel DAN setiap rute exempt/baru di router ini kelak.
+router = APIRouter(dependencies=[Depends(require_active_membership)])
 
 # Connection pool
 
