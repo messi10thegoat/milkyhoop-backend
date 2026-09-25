@@ -21,7 +21,7 @@ BERKAS = sorted(UA.rglob("*.py")) + [APP / "services/financial_intelligence.py"]
 # Situs tanggal-server yang SENGAJA tersisa (cadangan berjaga, semuanya dipanggil dengan tanggal tenant):
 DIIZINKAN = {
     ("system_prompt.py", "build_system_messages"),  # `today or ...`; satu-satunya pemanggil hidup (orchestrator) mengoper _hari_ini_tenant
-    ("system_prompt.py", "build_system_prompt"),    # DEPRECATED; hanya dipakai routers/streaming_chat (tak dipasang)
+    ("system_prompt.py", "build_system_prompt"),    # DEPRECATED; 0 pemanggil sejak streaming_chat dihapus (26 Sep)
     ("tool_executor.py", "_dasar_jatuh_tempo"),     # cadangan ber-log [K0_ZONA] bila hari_ini hilang
 }
 
