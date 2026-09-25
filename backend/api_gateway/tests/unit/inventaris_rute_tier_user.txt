@@ -1,0 +1,29 @@
+# Rute yang dulu ber-tier USER di RBACMiddleware (dilepas 25 Sep 2026, #50).
+# Dihasilkan dari app.routes (bukan parse statis) pada master 3f7459e8; format: METODE JALUR
+GET /api/customers/autocomplete
+GET /api/customers/health
+POST /api/customers/merge
+POST /api/customers/merge/preview
+GET /api/customers/next-code
+DELETE /api/customers/{customer_id}
+GET /api/customers/{customer_id}
+PATCH /api/customers/{customer_id}
+GET /api/customers/{customer_id}/activity
+GET /api/customers/{customer_id}/available-deposits
+GET /api/customers/{customer_id}/balance
+GET /api/customers/{customer_id}/credit
+GET /api/customers/{customer_id}/journal-entries
+GET /api/customers/{customer_id}/open-invoices
+POST /api/customers/{customer_id}/opening-balance
+POST /api/customers/{customer_id}/opening-balance/reverse
+PATCH /api/customers/{customer_id}/reactivate
+GET /api/customers/{customer_id}/rename-impact
+GET /api/customers/{customer_id}/transactions
+GET /api/kasbank/accounts
+GET /api/kasbank/accounts/{account_id}/summary
+GET /api/kasbank/accounts/{account_id}/transactions
+GET /api/kasbank/health
+GET /api/kasbank/stats
+GET /api/products/health
+GET /api/products/recent-sales
+GET /api/products/search

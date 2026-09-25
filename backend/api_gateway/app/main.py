@@ -155,7 +155,6 @@ from .routers import reports_profitability
 # Import middleware
 from .middleware.auth_middleware import AuthMiddleware
 from .middleware.rate_limit_middleware import RateLimitMiddleware
-from .middleware.rbac_middleware import RBACMiddleware
 from .middleware.security_headers_middleware import SecurityHeadersMiddleware
 from .middleware.cache_control import CacheControlMiddleware
 from .middleware.etag import ETagMiddleware
@@ -360,8 +359,9 @@ app.add_middleware(TenantValidationMiddleware)
 # 6b. Permission-based RBAC (business role + user overrides)
 app.add_middleware(PermissionMiddleware)
 
-# 7. RBAC (role-based access control)
-app.add_middleware(RBACMiddleware)
+# 7. (dulu RBACMiddleware tier-langganan) DILEPAS 25 Sep 2026 (#50): izin = SATU sumber,
+#    PermissionMiddleware. Tier JWT (User.role) bukan izin; signup/undangan selalu ADMIN
+#    sehingga ia hanya pernah menolak akun uji FREE. Bukti banding: tests/unit/test_t50_rbac_dilepas.py.
 
 # 8. Authentication (validates tokens)
 app.add_middleware(AuthMiddleware)

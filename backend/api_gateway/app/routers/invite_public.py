@@ -62,7 +62,8 @@ async def _generate_jwt_tokens(
     """Generate JWT tokens using the auth_client singleton.
 
     NOTE: JWT 'role' field must be Prisma plan-tier enum (FREE/USER/OWNER/ADMIN),
-    NOT team role code (BENDAHARA etc). RBACMiddleware checks this field.
+    NOT team role code (BENDAHARA etc). (RBACMiddleware yang dulu membacanya dilepas
+    25 Sep 2026, #50; policy_engine_client masih memakainya utk visibility cadangan.)
     Team RBAC is handled by PermissionMiddleware via user_tenant_roles.
     """
     from backend.api_gateway.app.services.auth_instance import auth_client
