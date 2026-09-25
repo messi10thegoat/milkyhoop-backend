@@ -6,6 +6,7 @@ Tes DB dilewati bila postgres tak terjangkau — jalankan dengan
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -36,7 +37,7 @@ async def _pool():
             asyncpg.create_pool(
                 host="milkyhoop-dev-postgres-1",
                 user="postgres",
-                password="Proyek771977",
+                password=os.environ.get("DB_PASSWORD", ""),
                 database="milkydb",
                 min_size=1,
                 max_size=2,

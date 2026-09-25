@@ -13,6 +13,8 @@ from typing import Dict, Optional, Set
 
 import asyncpg
 
+from ..config import settings
+
 logger = logging.getLogger(__name__)
 
 # tbl -> modul autz. SATU SUMBER; harus cocok PROTECTED_ROUTES (permission_middleware).
@@ -55,13 +57,8 @@ TBL_MODULE: Dict[str, str] = {
     "payment_requests": "payment_request",
 }
 
-_DB = dict(
-    host="postgres",
-    port=5432,
-    user="postgres",
-    password="Proyek771977",  # pragma: allowlist secret
-    database="milkydb",
-)
+# #41: kredensial dari env (DB_PASSWORD via config.settings) -- sama dengan pool utama.
+_DB = settings.get_db_config()
 
 COALESCE_S = 0.15
 KEEPALIVE_S = 25

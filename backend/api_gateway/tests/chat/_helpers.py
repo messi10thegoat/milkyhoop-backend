@@ -13,6 +13,7 @@ BEFORE the main response stream (chitchat short-circuit or full classify).
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import List, Optional
@@ -287,7 +288,7 @@ async def make_db_pool():
         host=host,
         port=port,
         user="postgres",
-        password="Proyek771977",  # pragma: allowlist secret (dev DB, not prod)
+        password=os.environ.get("DB_PASSWORD", ""),  # pragma: allowlist secret (dev DB, not prod)
         database="milkydb",
         min_size=1,
         max_size=3,

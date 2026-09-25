@@ -7,11 +7,11 @@ set -uo pipefail
 P=milkyhoop-dev-postgres-1
 DB=milkydb_t10b3a
 DIR="$(cd "$(dirname "$0")" && pwd)"
-q() { docker exec -e PGPASSWORD=Proyek771977 "$P" psql -U postgres "$@"; }
+q() { docker exec "$P" psql -U postgres "$@"; }
 
 q -d postgres -qc "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB" || exit 2
-docker exec -e PGPASSWORD=Proyek771977 "$P" sh -c "pg_dump -U postgres -s milkydb | psql -U postgres -d $DB -q -o /dev/null" 2>/dev/null
-docker exec -e PGPASSWORD=Proyek771977 "$P" sh -c "pg_dump -U postgres --data-only -t 'public.\"Tenant\"' milkydb | psql -U postgres -d $DB -q -o /dev/null" || exit 2
+docker exec "$P" sh -c "pg_dump -U postgres -s milkydb | psql -U postgres -d $DB -q -o /dev/null" 2>/dev/null
+docker exec "$P" sh -c "pg_dump -U postgres --data-only -t 'public.\"Tenant\"' milkydb | psql -U postgres -d $DB -q -o /dev/null" || exit 2
 if [ "${1:-}" = "--migrasi" ]; then
   docker cp "$2" "$P:/tmp/t10b3a_mig.sql" && q -d "$DB" -v ON_ERROR_STOP=1 -q -1 -f /tmp/t10b3a_mig.sql || { echo "migrasi GAGAL"; exit 2; }
 fi

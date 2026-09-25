@@ -220,13 +220,10 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Init PolicyEngine with db pool for RBAC
     try:
         import asyncpg as _apg
+        from .config import settings as _cfg_db
 
         _pe_pool = await _apg.create_pool(
-            host="postgres",
-            port=5432,
-            user="postgres",
-            password="Proyek771977",  # pragma: allowlist secret
-            database="milkydb",
+            **_cfg_db.get_db_config(),  # #41: sandi dari env (DB_PASSWORD), bukan literal
             min_size=2,
             max_size=5,
             command_timeout=30,

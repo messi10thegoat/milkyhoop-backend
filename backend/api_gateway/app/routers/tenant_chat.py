@@ -11,6 +11,7 @@ import time
 from typing import Dict, Optional, Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from ..config import settings
 
 from backend.api_gateway.libs.milkyhoop_protos import (
     tenant_orchestrator_pb2,
@@ -357,11 +358,7 @@ async def get_tenant_info(tenant_id: str):
     try:
         # Connect to local PostgreSQL
         conn = await asyncpg.connect(
-            host="postgres",  # Docker service name
-            port=5432,
-            user="postgres",
-            password="Proyek771977",
-            database="milkydb",
+            **settings.get_db_config(),  # #41: sandi dari env, bukan literal
         )
 
         # Query tenant data
