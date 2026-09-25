@@ -186,7 +186,7 @@ async def list_purchase_orders(
                         params.append(f"%{word}%")
                         param_idx += 1
                     conditions.append(f"({' AND '.join(word_conds)})")
-                param_idx += 1
+                # 26 Sep 2026: TANPA param_idx += 1 tambahan di sini — tiap cabang di atas sudah menaikkan (dulu ganda -> placeholder melompat -> 500 saat ?search)
 
             if date_from:
                 conditions.append(f"po_date >= ${param_idx}")
