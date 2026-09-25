@@ -11,7 +11,7 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.sales_doc_calc import (
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
-from ..services.tax_factor import attach_dpp_factors
+from ..services.tax_factor import attach_dpp_factors, turunkan_tarif_baris
 from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
 import logging
@@ -71,7 +71,10 @@ async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fix
     """3h -- SATU jalan hitung Penawaran: create, update, dan konversi (3g) semuanya lewat
     kalkulator bersama (sama dengan Faktur/SO). Arti kolom Penawaran dipertahankan:
     subtotal = SIGMA neto baris (sesudah diskon baris), line_total = neto baris + PPN baris.
-    percentage -> persen atas neto; fixed -> nilainya (atau `fixed_amount` bila diberikan)."""
+    percentage -> persen atas neto; fixed -> nilainya (atau `fixed_amount` bila diberikan).
+    #39: tarif baris diturunkan SERVER dari kode pajak (sama dengan SO #34) -- di sini, jadi
+    create, PATCH (termasuk hitung-ulang baris tersimpan), dan konversi ikut semuanya."""
+    await turunkan_tarif_baris(conn, tenant_id, lines, "tax_id")
     await attach_dpp_factors(conn, tenant_id, lines, "tax_id")
     dval = Decimal(str(discount_value or 0))
     amt, pct = Decimal("0"), Decimal("0")
