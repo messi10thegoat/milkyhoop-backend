@@ -31,6 +31,12 @@
                 <td class="meta-label">Jatuh tempo</td>
                 <td class="meta-value">{{ invoice.due_date | date_id }}</td>
             </tr>
+            {% if invoice.sales_order_number %}
+            <tr>
+                <td class="meta-label">No. Pesanan</td>
+                <td class="meta-value">{{ invoice.sales_order_number }}</td>
+            </tr>
+            {% endif %}
             {% if invoice.ref_no %}
             <tr>
                 <td class="meta-label">Referensi</td>

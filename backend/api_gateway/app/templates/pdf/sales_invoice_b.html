@@ -56,6 +56,7 @@
   <table class="meta">
     <tr><td class="meta-k">Invoice No.</td><td class="meta-v">{{ invoice.invoice_number or '' }}</td></tr>
     <tr><td class="meta-k">Invoice Date</td><td class="meta-v">{{ invoice.invoice_date | date_full }}</td></tr>
+    {% if invoice.sales_order_number %}<tr><td class="meta-k">Sales Order No.</td><td class="meta-v">{{ invoice.sales_order_number }}</td></tr>{% endif %}
     <tr><td class="meta-k">Delivery Order No.</td><td class="meta-v">{{ invoice.delivery_order_no or '' }}</td></tr>
     {# purchase_order_no, BUKAN ref_no: ref_no adalah "No. Order" MILIK KITA
        (nomor SO yang diketik manual, dipakai jalur chat). Mencetaknya di baris

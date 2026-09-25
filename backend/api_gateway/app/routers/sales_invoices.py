@@ -931,7 +931,7 @@ async def list_invoices(
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR si.sales_order_id IN (SELECT so2.id FROM sales_orders so2 WHERE so2.tenant_id = $1 AND so2.order_number ILIKE ${param_idx}))"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -939,7 +939,7 @@ async def list_invoices(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR si.sales_order_id IN (SELECT so2.id FROM sales_orders so2 WHERE so2.tenant_id = $1 AND so2.order_number ILIKE ${param_idx}))"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1
@@ -1038,9 +1038,12 @@ async def list_invoices(
                             ELSE si.total_amount - COALESCE(ar_fn.outstanding, 0)
                        END as journal_paid,
                        si.status, si.operational_status, si.accounting_status,
-                       si.fulfillment_status, si.revenue_status, si.created_at
+                       si.fulfillment_status, si.revenue_status, si.created_at,
+                       -- nomor pesanan (permintaan pemilik 25 Sep): JOIN berpagar tenant, NULL bila lepas
+                       si.sales_order_id, so.order_number AS sales_order_number
                 FROM sales_invoices si
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
+                LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -1072,6 +1075,8 @@ async def list_invoices(
                     "fulfillment_status": row.get("fulfillment_status"),
                     "revenue_status": row.get("revenue_status"),
                     "created_at": row["created_at"].isoformat(),
+                    "sales_order_id": str(row["sales_order_id"]) if row["sales_order_id"] else None,
+                    "sales_order_number": row["sales_order_number"],
                 }
                 for row in rows
             ]
@@ -1104,7 +1109,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                        c.telepon AS pelanggan_telepon,
                        c.tax_id  AS pelanggan_npwp
                   FROM sales_invoices si
-                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
                   LEFT JOIN customers c ON c.id = si.customer_id
                  WHERE si.id = $1 AND si.tenant_id = $2
             """,
@@ -5424,7 +5429,7 @@ async def get_invoice_pdf(
                        c.telepon AS pelanggan_telepon,
                        c.tax_id  AS pelanggan_npwp
                   FROM sales_invoices si
-                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id
+                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
                   LEFT JOIN customers c ON c.id = si.customer_id
                  WHERE si.id = $1 AND si.tenant_id = $2
             """,
@@ -5578,6 +5583,9 @@ async def get_invoice_pdf(
                 else None,
                 "ref_no": invoice["ref_no"],
                 "purchase_order_no": invoice["purchase_order_no"],
+                # Nomor pesanan milik KITA (SO tertaut) -- beda dari ref_no (ketikan) dan
+                # purchase_order_no (PO pelanggan). Dicetak hanya bila tertaut.
+                "sales_order_number": invoice["sales_order_number"],
                 # Alamat/telepon/NPWP pelanggan diambil dari kartu pelanggan
                 # kalau faktur tidak menyimpannya sendiri.
                 #

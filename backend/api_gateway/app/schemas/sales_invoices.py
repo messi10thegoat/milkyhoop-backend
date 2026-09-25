@@ -376,6 +376,9 @@ class InvoiceListItem(BaseModel):
     fulfillment_status: Optional[str] = None
     revenue_status: Optional[str] = None
     created_at: str
+    # Nomor pesanan tertaut (25 Sep 2026) -- dideklarasikan, kalau tidak response_model membuangnya.
+    sales_order_id: Optional[str] = None
+    sales_order_number: Optional[str] = None
 
 
 class InvoiceListResponse(BaseModel):
