@@ -282,6 +282,10 @@ class SalesOrderListItem(BaseModel):
     status: str
     shipped_qty: float = 0
     invoiced_qty: float = 0
+    # Q-016 (a): penanda faktur DRAF (status SO tetap; sumber = tautan per baris seperti quantity_invoiced)
+    has_draft_invoice: bool = False
+    draft_invoice_count: int = 0
+    posted_invoiced_qty: float = 0
     created_at: str
 
 
@@ -320,6 +324,10 @@ class SalesOrderDetail(BaseModel):
     status: str
     shipped_qty: float = 0
     invoiced_qty: float = 0
+    # Q-016 (a): penanda faktur DRAF (status SO tetap; sumber = tautan per baris seperti quantity_invoiced)
+    has_draft_invoice: bool = False
+    draft_invoice_count: int = 0
+    posted_invoiced_qty: float = 0
     notes: Optional[str] = None
     internal_notes: Optional[str] = None
     # T199: syarat DP dibawa dari Penawaran (V224). Aditif + opsional:

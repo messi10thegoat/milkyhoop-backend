@@ -10,6 +10,7 @@ from decimal import Decimal
 import asyncpg
 import logging
 import uuid as uuid_module
+from ..services.so_faktur_draf import penanda_faktur_so
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..utils.idempotency import (
     ambil_replay_klien,
@@ -187,6 +188,8 @@ async def list_sales_orders(
             """
             params.extend([limit, skip])
             rows = await conn.fetch(list_query, *params)
+            # Q-016 (a): penanda faktur DRAF per SO (status tetap) — satu kueri, sumber = quantity_invoiced
+            penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
 
             items = [
                 SalesOrderListItem(
@@ -206,6 +209,7 @@ async def list_sales_orders(
                     status=row["status"],
                     shipped_qty=float(row["shipped_qty"] or 0),
                     invoiced_qty=float(row["invoiced_qty"] or 0),
+                    **penanda[str(row["id"])],
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
@@ -478,6 +482,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             # Q-011: angka "Dibayar" dari SERVER, journal-derived (bukan Σ deposits[]/invoices[] di FE).
             ringkas = await ringkasan_pesanan(conn, ctx["tenant_id"], [order["id"]])
             payment_summary = ringkasan_pembayaran_so(order["total_amount"], ringkas[order["id"]])
+            penanda = (await penanda_faktur_so(conn, ctx["tenant_id"], [order["id"]]))[str(order["id"])]
 
             return SalesOrderDetailResponse(
                 success=True,
@@ -515,6 +520,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     status=order["status"],
                     shipped_qty=float(order["shipped_qty"] or 0),
                     invoiced_qty=float(order["invoiced_qty"] or 0),
+                    **penanda,
                     notes=order["notes"],
                     internal_notes=order["internal_notes"],
                     # T199: syarat DP yang dibawa dari Penawaran (V224).
