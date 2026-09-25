@@ -14,6 +14,14 @@ from datetime import datetime, timedelta, date, timezone
 from ..services.db_pool import get_db_pool
 from ..services.role_resolution import require_active_membership
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.dashboard_izin import (
+    JENIS_MODUL,
+    boleh_baca,
+    catat_omitted,
+    saring_bagian_summary,
+    wajib_baca_rute,
+    widget_boleh,
+)
 
 logger = logging.getLogger(__name__)
 # Pagar keanggotaan dipasang di level ROUTER: berlaku untuk KE-15 endpoint
@@ -117,12 +125,16 @@ class KPIMetrics(BaseModel):
 class DashboardSummaryResponse(BaseModel):
     """Combined dashboard summary response"""
 
-    laba_rugi: LabaRugiSummary
-    piutang: PiutangSummary
-    hutang: HutangSummary
-    kas_bank: KasBankSummary
+    # Audit izin usul C (25 Sep 2026): bagian tanpa izin baca = null DI SINI dan
+    # tercantum di `omitted` (di /all kuncinya DIHAPUS). null != 0: FE membaca
+    # `omitted` untuk menulis "tidak ada akses". Lihat services/dashboard_izin.py.
+    laba_rugi: Optional[LabaRugiSummary] = None
+    piutang: Optional[PiutangSummary] = None
+    hutang: Optional[HutangSummary] = None
+    kas_bank: Optional[KasBankSummary] = None
     kpi: Optional[KPIMetrics] = None  # DSO/DPO metrics
     generated_at: str
+    omitted: List[dict] = []
 
 
 # ========================================
@@ -356,6 +368,11 @@ def calc_change_pct(current: int, prev: int) -> Optional[float]:
 async def _get_upcoming_due(request: Request):
     """Tagihan Terdekat - invoices & bills due within 14 days, not yet overdue."""
     tenant_id = request.state.user.get("tenant_id")
+    # Audit izin usul C: baris disaring per jenis DI SQL (sebelum LIMIT), supaya
+    # total & jumlah hanya dari dokumen yang boleh dibaca pemanggil.
+    jenis_boleh = [
+        j for j in ("invoice", "bill") if await boleh_baca(request, JENIS_MODUL[j])
+    ]
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
@@ -390,11 +407,13 @@ async def _get_upcoming_due(request: Request):
                   AND due_date <= $2::date + 14
             )
             SELECT * FROM (SELECT * FROM ar UNION ALL SELECT * FROM ap) combined
+            WHERE type = ANY($3::text[])
             ORDER BY due_date ASC
             LIMIT 10
         """,
             tenant_id,
             hari_ini,
+            jenis_boleh,
         )
 
         items = []
@@ -478,7 +497,10 @@ async def _get_sales_today(
         }
 
 
-@router.get("/sales-today")
+@router.get(
+    "/sales-today",
+    dependencies=[Depends(wajib_baca_rute("/sales-today"))],
+)
 async def get_sales_today_endpoint(
     request: Request,
     start_date: Optional[str] = Query(None),
@@ -539,36 +561,56 @@ async def get_dashboard_all(
         exp_sd = exp_start_date or start_date
         exp_ed = exp_end_date or end_date
 
-        # Run all 5 queries concurrently using asyncio.gather
-        # Each gets its own pool connection — with warm pool this is ~0ms acquire
-        results = await asyncio.gather(
-            get_dashboard_summary(
+        # Audit izin usul C (25 Sep 2026): izin DIHITUNG DULU; widget tanpa izin
+        # tidak dijalankan sama sekali, kuncinya tak ada di respons, dan namanya
+        # masuk `omitted`. summary disaring per bagian di get_dashboard_summary.
+        # upcomingDue disaring per baris di _get_upcoming_due (invoice/bill).
+        omitted: list = []
+        tugas = {
+            "summary": lambda: get_dashboard_summary(
                 request, start_date=start_date, end_date=end_date, basis=basis
             ),
-            get_cash_flow_trends(request, start_date=cf_sd, end_date=cf_ed),
-            get_top_expenses(
+            "cashFlow": lambda: get_cash_flow_trends(
+                request, start_date=cf_sd, end_date=cf_ed
+            ),
+            "expenses": lambda: get_top_expenses(
                 request, start_date=exp_sd, end_date=exp_ed, limit=expense_limit
             ),
-            get_overdue_invoices(request),
-            get_overdue_bills(request),
-            _get_upcoming_due(request),
-            _get_sales_today(
+            "overdueInvoices": lambda: get_overdue_invoices(request),
+            "overdueBills": lambda: get_overdue_bills(request),
+            "upcomingDue": lambda: _get_upcoming_due(request),
+            "salesToday": lambda: _get_sales_today(
                 request, sales_start=sales_start_date, sales_end=sales_end_date
             ),
+        }
+        labels = []
+        for label in tugas:
+            if label == "summary":
+                boleh = True  # per bagian di dalam
+            elif label == "upcomingDue":
+                boleh = await boleh_baca(request, JENIS_MODUL["invoice"]) or await boleh_baca(
+                    request, JENIS_MODUL["bill"]
+                )
+                if not boleh:
+                    omitted.append(
+                        {"widget": "upcomingDue", "modules": [JENIS_MODUL["invoice"], JENIS_MODUL["bill"]]}
+                    )
+            else:
+                boleh = await widget_boleh(request, label)
+                if not boleh:
+                    catat_omitted(omitted, label)
+            if boleh:
+                labels.append(label)
+
+        # Run allowed queries concurrently using asyncio.gather
+        # Each gets its own pool connection — with warm pool this is ~0ms acquire
+        results = await asyncio.gather(
+            *(tugas[label]() for label in labels),
             return_exceptions=True,
         )
 
         # Build combined response
         response = {}
-        labels = [
-            "summary",
-            "cashFlow",
-            "expenses",
-            "overdueInvoices",
-            "overdueBills",
-            "upcomingDue",
-            "salesToday",
-        ]
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
                 logger.error(
@@ -580,6 +622,13 @@ async def get_dashboard_all(
                 # Pydantic models — convert to dict
                 response[label] = result.dict() if hasattr(result, "dict") else result
 
+        # Bagian summary tanpa izin: kunci DIHAPUS (bukan null) + naik ke `omitted` atas.
+        ringkas = response.get("summary")
+        if isinstance(ringkas, dict):
+            for o in ringkas.pop("omitted", None) or []:
+                ringkas.pop(o["widget"].split(".", 1)[1], None)
+                omitted.append(o)
+        response["omitted"] = omitted
         return response
 
     except HTTPException:
@@ -981,14 +1030,20 @@ async def get_dashboard_summary(
                 f"Dashboard summary generated: tenant={tenant_id}, period={period}, dso={dso}, dpo={dpo}"
             )
 
+            bagian = {
+                "laba_rugi": laba_rugi,
+                "piutang": piutang,
+                "hutang": hutang,
+                "kas_bank": kas_bank,
+                "kpi": kpi,
+            }
+            omitted = await saring_bagian_summary(request, bagian)
+
             return DashboardSummaryResponse(
-                laba_rugi=laba_rugi,
-                piutang=piutang,
-                hutang=hutang,
-                kas_bank=kas_bank,
-                kpi=kpi,
+                **bagian,
                 # waktu sistem (bukan tanggal bisnis) — UTC eksplisit
                 generated_at=datetime.now(timezone.utc).isoformat(),
+                omitted=omitted,
             )
 
     except HTTPException:
@@ -1000,7 +1055,10 @@ async def get_dashboard_summary(
         )
 
 
-@router.get("/piutang", response_model=PiutangSummary)
+@router.get(
+    "/piutang", response_model=PiutangSummary,
+    dependencies=[Depends(wajib_baca_rute("/piutang"))],
+)
 async def get_piutang_detail(
     request: Request, filter: str = Query("all", regex="^(all|overdue)$")
 ):
@@ -1073,7 +1131,10 @@ async def get_piutang_detail(
         raise HTTPException(status_code=500, detail="Failed to get piutang detail")
 
 
-@router.get("/hutang", response_model=HutangSummary)
+@router.get(
+    "/hutang", response_model=HutangSummary,
+    dependencies=[Depends(wajib_baca_rute("/hutang"))],
+)
 async def get_hutang_detail(
     request: Request, filter: str = Query("all", regex="^(all|overdue)$")
 ):
@@ -1190,7 +1251,10 @@ async def get_hutang_detail(
         raise HTTPException(status_code=500, detail="Failed to get hutang detail")
 
 
-@router.get("/kas-bank", response_model=KasBankSummary)
+@router.get(
+    "/kas-bank", response_model=KasBankSummary,
+    dependencies=[Depends(wajib_baca_rute("/kas-bank"))],
+)
 async def get_kas_bank_detail(request: Request):
     """
     Get detailed Kas & Bank data with individual account balances.
@@ -1280,7 +1344,10 @@ async def health_check():
 # ========================================
 
 
-@router.get("/cash-flow-trends", response_model=CashFlowTrendsResponse)
+@router.get(
+    "/cash-flow-trends", response_model=CashFlowTrendsResponse,
+    dependencies=[Depends(wajib_baca_rute("/cash-flow-trends"))],
+)
 async def get_cash_flow_trends(
     request: Request,
     period: str = Query("month", regex="^(7d|30d|month)$"),
@@ -1526,7 +1593,10 @@ async def get_cash_flow_trends(
 # ========================================
 
 
-@router.get("/top-expenses", response_model=TopExpensesResponse)
+@router.get(
+    "/top-expenses", response_model=TopExpensesResponse,
+    dependencies=[Depends(wajib_baca_rute("/top-expenses"))],
+)
 async def get_top_expenses(
     request: Request,
     period: str = Query("month", regex="^(7d|30d|month)$"),
@@ -1632,7 +1702,10 @@ async def get_top_expenses(
 # ========================================
 
 
-@router.get("/overdue-invoices", response_model=OverdueInvoicesResponse)
+@router.get(
+    "/overdue-invoices", response_model=OverdueInvoicesResponse,
+    dependencies=[Depends(wajib_baca_rute("/overdue-invoices"))],
+)
 async def get_overdue_invoices(request: Request):
     """
     Get list of overdue AR invoices (due_date < today, status != PAID).
@@ -1700,7 +1773,10 @@ async def get_overdue_invoices(request: Request):
 # ========================================
 
 
-@router.get("/overdue-bills", response_model=OverdueBillsResponse)
+@router.get(
+    "/overdue-bills", response_model=OverdueBillsResponse,
+    dependencies=[Depends(wajib_baca_rute("/overdue-bills"))],
+)
 async def get_overdue_bills(request: Request):
     """
     Get list of overdue AP bills (due_date < today, status != PAID).
@@ -1766,7 +1842,10 @@ async def get_overdue_bills(request: Request):
 # ========================================
 
 
-@router.get("/reconciliation-status", response_model=APReconciliationResponse)
+@router.get(
+    "/reconciliation-status", response_model=APReconciliationResponse,
+    dependencies=[Depends(wajib_baca_rute("/reconciliation-status"))],
+)
 async def get_reconciliation_status(request: Request):
     """
     Get AP reconciliation status.
@@ -1975,7 +2054,10 @@ class CashProjectionResponse(BaseModel):
 # ========================================
 
 
-@router.get("/cash-flow-projection", response_model=CashProjectionResponse)
+@router.get(
+    "/cash-flow-projection", response_model=CashProjectionResponse,
+    dependencies=[Depends(wajib_baca_rute("/cash-flow-projection"))],
+)
 async def get_cash_flow_projection(request: Request):
     """
     Project cash position for next 7 days.
@@ -2183,7 +2265,10 @@ class SalesDailyResponse(BaseModel):
     trends: list[SalesDailyTrend]
 
 
-@router.get("/sales-daily", response_model=SalesDailyResponse)
+@router.get(
+    "/sales-daily", response_model=SalesDailyResponse,
+    dependencies=[Depends(wajib_baca_rute("/sales-daily"))],
+)
 async def get_sales_daily(
     request: Request,
     days: int = Query(30, ge=7, le=365),
@@ -2419,7 +2504,33 @@ async def get_daily_transactions(request: Request, date: str = Query(...)):
                 )
             return out
 
-        return {
+        # Audit izin usul C: jenis tanpa izin baca -> barisnya dikosongkan SEBELUM
+        # dijumlah, kuncinya (daftar + total) DIHAPUS, dan tercantum di `omitted`.
+        omitted = []
+        total_kunci = {
+            "sales_invoices": "total_invoice_amount",
+            "bills": "total_bill_amount",
+            "expenses": "total_expense_amount",
+            "receive_payments": "total_received_amount",
+            "bill_payments": "total_paid_amount",
+        }
+        ditolak = set()
+        for jenis in total_kunci:
+            if not await boleh_baca(request, JENIS_MODUL[jenis]):
+                ditolak.add(jenis)
+                omitted.append({"widget": jenis, "modules": [JENIS_MODUL[jenis]]})
+        if "sales_invoices" in ditolak:
+            invoices = []
+        if "bills" in ditolak:
+            bills = []
+        if "expenses" in ditolak:
+            expenses = []
+        if "receive_payments" in ditolak:
+            recv = []
+        if "bill_payments" in ditolak:
+            bp = []
+
+        hasil = {
             "success": True,
             "date": date,
             "sales_invoices": _fmt(invoices),
@@ -2446,3 +2557,8 @@ async def get_daily_transactions(request: Request, date: str = Query(...)):
                 "total_paid_amount": sum(float(r["total_amount"] or 0) for r in bp),
             },
         }
+        for jenis in ditolak:
+            hasil.pop(jenis, None)
+            hasil["summary"].pop(total_kunci[jenis], None)
+        hasil["omitted"] = omitted
+        return hasil
