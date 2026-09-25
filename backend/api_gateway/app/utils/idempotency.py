@@ -208,11 +208,20 @@ def hash_payload(payload) -> str:
     ).hexdigest()
 
 
+class KunciIdempotensiDipakai(LookupError):
+    """Kunci sama + isi beda. `respons` = respons ASLI tersimpan untuk kunci itu (ruang kunci
+    tenant x pengguna x kunci -> selalu milik pemanggil yang sama; tak bisa bocor lintas tenant)."""
+
+    def __init__(self, respons=None):
+        super().__init__("Idempotency-Key sudah dipakai untuk permintaan dengan isi berbeda")
+        self.respons = respons or {}
+
+
 async def ambil_replay_klien(conn, tenant_id: str, kunci_penuh: str, sidik: str):
     """Cari respons SUKSES tersimpan untuk kunci ini. WAJIB di dalam transaksi, SESUDAH
     advisory lock per kunci (dua permintaan identik bersamaan tak boleh sama-sama MISS).
 
-    Kembali: dict respons asli, atau None. Isi beda -> LookupError (pemanggil -> 409).
+    Kembali: dict respons asli, atau None. Isi beda -> KunciIdempotensiDipakai (LookupError; pemanggil -> 409).
     """
     baris = await conn.fetchrow(
         "SELECT result FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
@@ -224,7 +233,7 @@ async def ambil_replay_klien(conn, tenant_id: str, kunci_penuh: str, sidik: str)
     if isinstance(simpan, str):
         simpan = json.loads(simpan)
     if simpan.get("payload_hash") != sidik:
-        raise LookupError("Idempotency-Key sudah dipakai untuk permintaan dengan isi berbeda")
+        raise KunciIdempotensiDipakai(simpan.get("response"))
     return simpan.get("response")
 
 

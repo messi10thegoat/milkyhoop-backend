@@ -126,6 +126,23 @@ async def main():
         s5 == 200 and await jumlah_so(KAOS) - n1 == 1 and "X-Idempotent-Replay" not in h5, f"{s5}")
     n2 = await jumlah_so(KAOS)
 
+    # 4b. Q-006: 409 membawa order_id + order_number SO MILIK ruang kunci pemanggil
+    def _d(b):
+        return b.get("detail") if isinstance(b.get("detail"), dict) else {}
+    cek("409 memuat order_id + order_number SO asli",
+        s3 == 409 and _d(b3).get("order_id") == (b1.get("data") or {}).get("id")
+        and _d(b3).get("order_number") == (b1.get("data") or {}).get("order_number")
+        and _d(b3).get("order_id") is not None, f"{_d(b3)}")
+    s9, b9, _ = await post(GRAP, UA, "k-satu", badan(GRAP, harga=77777))
+    cek("409 beda tenant -> SO tenant itu sendiri, bukan milik kaos",
+        s9 == 409 and _d(b9).get("order_id") == (b4.get("data") or {}).get("id")
+        and _d(b9).get("order_id") != (b1.get("data") or {}).get("id"), f"{_d(b9)}")
+    s10, b10, _ = await post(KAOS, UB, "k-satu", badan(KAOS, harga=77777))
+    cek("409 beda pengguna -> SO pengguna itu sendiri, bukan milik pengguna A",
+        s10 == 409 and _d(b10).get("order_id") == (b5.get("data") or {}).get("id")
+        and _d(b10).get("order_id") != (b1.get("data") or {}).get("id"), f"{_d(b10)}")
+    cek("409 tetap tanpa SO baru", await jumlah_so(KAOS) == n2)
+
     # 5. gagal dulu (409 nomor manual dipakai) lalu sah dengan kunci sama -> 1 SO
     nomor_dipakai = (b1.get("data") or {}).get("order_number") or "TAK-ADA"
     s6, b6, _ = await post(KAOS, UA, "k-dua", badan(KAOS, nomor=nomor_dipakai))
@@ -175,6 +192,17 @@ async def main():
             out = await tm.get_my_permissions(_Req(t, UA))
             cek(f"/me {jalur} {t} features", out.get("features") == harap[t] and out.get("success") is True,
                 f"{out.get('features')}")
+
+    # 10. SO asli sudah dihapus -> 409 tetap, order_id/order_number null (tanpa tautan mati)
+    _id_b = (b5.get("data") or {}).get("id")
+    async with pool.acquire() as c:
+        async with c.transaction():
+            await c.execute("DELETE FROM sales_order_items WHERE sales_order_id = $1::uuid", _id_b)
+            await c.execute("DELETE FROM sales_orders WHERE id = $1::uuid", _id_b)
+    s11, b11, _ = await post(KAOS, UB, "k-satu", badan(KAOS, harga=66666))
+    cek("409 sesudah SO asli dihapus -> id & nomor null",
+        s11 == 409 and _d(b11).get("code") == "IDEMPOTENCY_KEY_REUSED"
+        and _d(b11).get("order_id") is None and _d(b11).get("order_number") is None, f"{_d(b11)}")
 
     await pool.close()
     return 0 if all(hasil) else 1

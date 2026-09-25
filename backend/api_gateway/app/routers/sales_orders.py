@@ -597,14 +597,26 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         _lama = await ambil_replay_klien(
                             conn, ctx["tenant_id"], _kunci_penuh, _sidik
                         )
-                    except LookupError:
+                    except LookupError as _e:
                         # Kode TETAP supaya FE membedakan dari 409 "nomor dipakai" tanpa
                         # mencocokkan teks; bentuk {code, message} = konvensi rute lain.
+                        # Q-006 (Anton): + order_id/order_number SO yang tersimpan untuk kunci ini
+                        # (FE: "Buka pesanan yang tersimpan"). Dibaca ULANG dari sales_orders milik
+                        # tenant pemanggil: nomor terkini; SO sudah dihapus -> keduanya null.
+                        _asli = (getattr(_e, "respons", None) or {}).get("data") or {}
+                        _so = None
+                        if _asli.get("id"):
+                            _so = await conn.fetchrow(
+                                "SELECT id, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                uuid_module.UUID(str(_asli["id"])), ctx["tenant_id"],
+                            )
                         raise HTTPException(
                             status_code=409,
                             detail={
                                 "code": "IDEMPOTENCY_KEY_REUSED",
                                 "message": "Idempotency-Key sudah dipakai untuk pesanan lain",
+                                "order_id": str(_so["id"]) if _so else None,
+                                "order_number": _so["order_number"] if _so else None,
                             },
                         )
                     if _lama is not None:
