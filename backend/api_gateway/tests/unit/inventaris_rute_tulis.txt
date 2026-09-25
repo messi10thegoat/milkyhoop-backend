@@ -299,6 +299,7 @@ POST /api/inventory/products
 POST /api/inventory/products/{product_id}/adjust
 POST /api/invite/{token}/accept
 POST /api/invite/{token}/decline
+POST /api/invite/{token}/request-code
 POST /api/item-batches
 POST /api/item-batches/{batch_id}/adjust
 POST /api/item-serials

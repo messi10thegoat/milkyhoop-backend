@@ -971,7 +971,7 @@ WRITE_EXEMPT = [
     (r"^/api/session/logout", "sesi: pengguna mana pun boleh keluar (bukan tulis bisnis)"),
     (r"^/api/user/", "layanan-diri atas akun sendiri (profil, favorit)"),
     (r"^/api/onboarding/", "penyiapan tenant SEBELUM peran diprovisikan"),
-    (r"^/api/invite/[^/]+/(accept|decline)$", "pengguna yang diundang bertindak sebelum punya peran"),
+    (r"^/api/invite/[^/]+/(accept|decline|request-code)$", "pengguna yang diundang bertindak sebelum punya peran"),
     (r"^/api/devices?($|/)", "manajemen perangkat/sesi milik sendiri"),
     (r"^/api/uploads/", "unggah berkas mentah; aksi bisnis hasilnya dicek di rute-nya sendiri"),
     # Audit izin usul D (25 Sep 2026): pengaju staf membatalkan pengajuannya SENDIRI. Bukan izin

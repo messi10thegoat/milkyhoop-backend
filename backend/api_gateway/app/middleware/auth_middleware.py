@@ -121,6 +121,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             (method == "GET" and re.match(r"^/api/invite/[^/]+/?$", path))
             or (method == "POST" and re.match(r"^/api/invite/[^/]+/accept/?$", path))
             or (method == "POST" and re.match(r"^/api/invite/[^/]+/decline/?$", path))
+            # V311: minta kode verifikasi ke email UNDANGAN (orangnya belum punya akun).
+            or (method == "POST" and re.match(r"^/api/invite/[^/]+/request-code/?$", path))
         )
 
     async def dispatch(self, request: Request, call_next):

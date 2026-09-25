@@ -248,3 +248,39 @@ async def send_invitation_email(email: str, invite_link: str, role_name: str = N
     except Exception as e:
         logger.error(f"Gagal mengirim email undangan ke {email}: {e}")
         raise EmailDeliveryUnavailable(f"Layanan email menolak permintaan: {e}")
+
+
+async def send_invite_code_email(email: str, code: str) -> bool:
+    """Kode 6 digit untuk MEMBUAT AKUN dari undangan (26 Sep 2026, V311).
+
+    Dikirim ke email UNDANGAN, bukan ke pemanggil: token undangan membuktikan
+    undangan, kode ini membuktikan kepemilikan email. Kunci Resend kosong ->
+    EmailDeliveryUnavailable (bukan sukses palsu; kode TIDAK ditulis ke log).
+    """
+    import resend
+    resend.api_key = RESEND_API_KEY
+    if not RESEND_API_KEY:
+        raise EmailDeliveryUnavailable(
+            "RESEND_API_KEY tidak terpasang — kode undangan tidak dapat dikirim."
+        )
+    html_content = f"""
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; color: #1A1A1A;">
+  <h1 style="font-size: 24px; font-weight: 700; text-align: center;">MilkyHoop</h1>
+  <h2 style="font-size: 20px; font-weight: 600;">Kode untuk menerima undangan tim</h2>
+  <p style="font-size: 15px; color: #4A4A4A;">Masukkan kode ini untuk membuat akun dan bergabung:</p>
+  <div style="background: #F7F6F3; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0;">
+    <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px;">{code}</span>
+  </div>
+  <p style="font-size: 13px; color: #9A9A9A;">Kode berlaku 15 menit. Jika Anda tidak meminta kode ini, abaikan email ini — tidak ada akun yang dibuat tanpa kode.</p>
+</body></html>
+"""
+    resend.Emails.send({
+        "from": FROM_EMAIL,
+        "to": email,
+        "subject": "Kode undangan MilkyHoop: " + code,
+        "html": html_content,
+    })
+    logger.info("Invite code email sent")
+    return True

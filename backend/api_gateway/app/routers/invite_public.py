@@ -6,7 +6,8 @@ Law 32: Uses shared pool from services.db_pool (NOT per-router pool).
 """
 import logging
 import uuid as uuid_module
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import APIRouter, HTTPException, Request
@@ -48,6 +49,57 @@ def _hash_password(password: str) -> str:
 
 def _verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+
+# --- Kode verifikasi email untuk AKUN BARU dari undangan (V311, 26 Sep 2026) ---
+# Token undangan membuktikan UNDANGAN (pengundang pun memegangnya lewat
+# invite_link), bukan kepemilikan email. Membuat akun untuk email itu kini
+# menuntut kode 6 digit yang dikirim KE email undangan.
+KODE_BERLAKU = timedelta(minutes=15)
+KODE_JEDA = timedelta(seconds=60)
+KODE_JENDELA = timedelta(hours=1)
+KODE_MAKS_PER_JENDELA = 5
+KODE_MAKS_SALAH = 5
+
+
+def _galat_kode(kode: str, pesan: str, status_code: int = 400):
+    return HTTPException(status_code=status_code, detail={"code": kode, "message": pesan})
+
+
+async def _periksa_kode_undangan(pool, token: str, kode: str) -> None:
+    """Transaksi TERSENDIRI: kode salah menaikkan hitungan dan TETAP ter-commit
+    (di dalam transaksi utama, raise akan membatalkan kenaikan itu)."""
+    salah = False
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """SELECT id, email, status, expires_at, verify_code_hash,
+                          verify_code_expires_at, verify_attempts
+                   FROM team_invitations WHERE invite_token = $1 FOR UPDATE""",
+                token,
+            )
+            if not row or row["status"] != "pending":
+                return  # transaksi utama memberi jawaban yang semestinya
+            ada_akun = await conn.fetchval(
+                'SELECT 1 FROM "User" WHERE lower(email) = lower($1)', row["email"]
+            )
+            if ada_akun:
+                return  # transaksi utama menjawab 409 ACCOUNT_EXISTS
+            now = datetime.now(timezone.utc)
+            if not row["verify_code_hash"]:
+                raise _galat_kode("CODE_REQUIRED", "Minta kode verifikasi ke email undangan terlebih dahulu.")
+            if (row["verify_attempts"] or 0) >= KODE_MAKS_SALAH:
+                raise _galat_kode("CODE_LOCKED", "Terlalu banyak kode salah. Minta kode baru.")
+            if row["verify_code_expires_at"] is None or row["verify_code_expires_at"] < now:
+                raise _galat_kode("CODE_EXPIRED", "Kode sudah kedaluwarsa. Minta kode baru.")
+            if not kode or not bcrypt.checkpw(kode.encode("utf-8"), row["verify_code_hash"].encode("utf-8")):
+                await conn.execute(
+                    "UPDATE team_invitations SET verify_attempts = verify_attempts + 1 WHERE id = $1",
+                    row["id"],
+                )
+                salah = True
+    if salah:
+        raise _galat_kode("CODE_INVALID", "Kode verifikasi salah.")
 
 
 def _safe_set_tenant(tenant_id: str) -> str:
@@ -213,12 +265,84 @@ async def validate_invite(token: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/{token}/request-code")
+async def request_invite_code(token: str):
+    """Kirim kode 6 digit ke email UNDANGAN untuk membuat akun baru (V311).
+
+    Kode TIDAK PERNAH dikembalikan di respons. Batas: 1 kali / 60 detik dan
+    maksimal 5 kali / jam per token (token tak bisa dipakai menyepam email).
+    """
+    from ..services.email_service import EmailDeliveryUnavailable, send_invite_code_email
+
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """SELECT id, email, status, expires_at, verify_sent_at,
+                              verify_sent_window_at, verify_sent_count
+                       FROM team_invitations WHERE invite_token = $1 FOR UPDATE""",
+                    token,
+                )
+                if not row:
+                    raise HTTPException(status_code=400, detail="Token tidak valid")
+                now = datetime.now(timezone.utc)
+                if row["status"] != "pending":
+                    raise HTTPException(status_code=400, detail="Undangan sudah tidak berlaku")
+                if row["expires_at"] < now:
+                    raise HTTPException(status_code=400, detail="Undangan sudah kedaluwarsa")
+                ada_akun = await conn.fetchval(
+                    'SELECT 1 FROM "User" WHERE lower(email) = lower($1)', row["email"]
+                )
+                if ada_akun:
+                    raise _galat_kode(
+                        "ACCOUNT_EXISTS",
+                        "Email ini sudah punya akun MilkyHoop. Masuk dengan email dan sandi akun Anda untuk menerima undangan.",
+                        409,
+                    )
+                if row["verify_sent_at"] and now - row["verify_sent_at"] < KODE_JEDA:
+                    raise _galat_kode("CODE_TOO_SOON", "Tunggu sebentar sebelum meminta kode lagi.", 429)
+                jendela = row["verify_sent_window_at"]
+                hitung = row["verify_sent_count"] or 0
+                if jendela is None or now - jendela >= KODE_JENDELA:
+                    jendela, hitung = now, 0
+                if hitung >= KODE_MAKS_PER_JENDELA:
+                    raise _galat_kode("CODE_TOO_MANY", "Terlalu banyak permintaan kode. Coba lagi nanti.", 429)
+                kode = f"{secrets.randbelow(10**6):06d}"
+                await conn.execute(
+                    """UPDATE team_invitations
+                       SET verify_code_hash = $2, verify_code_expires_at = $3, verify_attempts = 0,
+                           verify_sent_at = $4, verify_sent_window_at = $5, verify_sent_count = $6
+                       WHERE id = $1""",
+                    row["id"],
+                    bcrypt.hashpw(kode.encode("utf-8"), bcrypt.gensalt(rounds=10)).decode("utf-8"),
+                    now + KODE_BERLAKU,
+                    now,
+                    jendela,
+                    hitung + 1,
+                )
+                # Kirim DI DALAM transaksi: gagal kirim -> batal, jatah tak terpakai.
+                await send_invite_code_email(row["email"], kode)
+        return {"success": True, "sent": True}
+    except HTTPException:
+        raise
+    except EmailDeliveryUnavailable:
+        raise HTTPException(status_code=503, detail="Email tidak dapat dikirim saat ini")
+    except Exception as e:
+        logger.error(f"Error request invite code: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/{token}/accept")
 async def accept_invite(token: str, request: Request):
     """Accept invitation. Mode A: email+password (existing). Mode B: name+password+password_confirm (new)."""
     try:
         data = await request.json()
         pool = await get_db_pool()
+        # V311: AKUN BARU (mode B) wajib kode yang dikirim ke email undangan.
+        # Dicek di transaksi TERSENDIRI supaya hitungan kode salah ter-commit.
+        if not ("email" in data and "password" in data and "password_confirm" not in data):
+            await _periksa_kode_undangan(pool, token, str(data.get("code") or "").strip())
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -385,7 +509,7 @@ async def accept_invite(token: str, request: Request):
                         )
 
                 await conn.execute(
-                    "UPDATE team_invitations SET status = 'accepted', accepted_at = NOW() WHERE id = $1",
+                    "UPDATE team_invitations SET status = 'accepted', accepted_at = NOW(), verify_code_hash = NULL WHERE id = $1",
                     row["id"],
                 )
 

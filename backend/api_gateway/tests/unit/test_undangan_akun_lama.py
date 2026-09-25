@@ -48,7 +48,8 @@ class _Conn:
             return {"id": "inv-1", "email": KORBAN, "name": None, "status": "pending",
                     "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
                     "tenant_id": TENANT, "role_id": "r-1", "module_overrides": None,
-                    "invited_by": "u-penyerang", "role_code": "STAFF", "role_name": "Staf"}
+                    "invited_by": "u-penyerang", "role_code": "STAFF", "role_name": "Staf",
+                    "verify_code_hash": None, "verify_code_expires_at": None, "verify_attempts": 0}
         if 'FROM "User"' in sql:
             u = self.users.get(a[0])
             if not u:
@@ -57,6 +58,8 @@ class _Conn:
         raise AssertionError("fetchrow tak terduga: " + sql[:60])
 
     async def fetchval(self, sql, *a):
+        if 'FROM "User"' in sql:
+            return 1 if a[0].lower() in self.users else None
         return None  # belum anggota
 
     async def execute(self, sql, *a):
@@ -147,10 +150,12 @@ def test_mode_a_sandi_salah_ditolak(monkeypatch):
     assert conn.tulis == []
 
 
-def test_mode_b_email_baru_tetap_membuat_akun(monkeypatch):
+def test_mode_b_email_baru_tanpa_kode_ditolak(monkeypatch):
+    # V311: akun baru dari undangan wajib kode ke email undangan (alur lengkap:
+    # tests/unit/test_undangan_kode_verifikasi.py).
     conn = _Conn(email_ada=False)
     r = _klien(monkeypatch, conn).post(f"/api/invite/{TOKEN}/accept", json=MODE_B)
-    assert r.status_code == 200, r.text
-    assert KORBAN in conn.users
-    assert any(s.startswith('INSERT INTO "User"') for s in conn.tulis)
-    assert not any(s.startswith('UPDATE "User"') for s in conn.tulis)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "CODE_REQUIRED"
+    assert KORBAN not in conn.users
+    assert conn.tulis == []
