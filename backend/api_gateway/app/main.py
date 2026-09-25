@@ -51,6 +51,7 @@ from .routers import (
 )
 from .routers import accounts
 from .routers import sales_invoices
+from .routers import sales_invoice_link_order  # BUG-006 tautkan faktur ke pesanan
 from .routers import credit_notes
 from .routers import vendor_credits
 from .routers import storage_locations
@@ -521,6 +522,9 @@ app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 # Sales Invoices router (Faktur Penjualan)
 app.include_router(
     sales_invoices.router, prefix="/api/sales-invoices", tags=["sales-invoices"]
+)
+app.include_router(
+    sales_invoice_link_order.router, prefix="/api/sales-invoices", tags=["sales-invoices"]
 )
 
 # Credit Notes router (Nota Kredit / Sales Returns)

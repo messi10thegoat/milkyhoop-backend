@@ -42,6 +42,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-invoices/[^/]+$", ["DELETE"], "sales_invoice", "D"),
     (r"^/api/sales-invoices/[^/]+/post$", ["POST"], "sales_invoice", "P"),
     (r"^/api/sales-invoices/[^/]+/void$", ["POST"], "sales_invoice", "V"),
+    # BUG-006: tautkan faktur lepas ke pesanan (tautan + hitung ulang qty SO, nol jurnal)
+    (r"^/api/sales-invoices/[^/]+/link-order$", ["POST"], "sales_invoice", "U"),
     (r"^/api/sales-invoices/[^/]+/payments$", ["POST"], "receive_payment", "C"),
     (r"^/api/sales-invoices/[^/]+/pdf$", ["GET"], "sales_invoice", "E"),
     (r"^/api/sales-invoices/[^/]+/history$", ["GET"], "sales_invoice", "R"),
