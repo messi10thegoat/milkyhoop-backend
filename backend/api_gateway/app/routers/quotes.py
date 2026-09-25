@@ -12,6 +12,7 @@ from ..services.sales_doc_calc import (
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
 from ..services.tax_factor import attach_dpp_factors, turunkan_tarif_baris
+from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
 import logging
@@ -625,6 +626,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
                     body.discount_type, body.discount_value,
                 )
+                # #39: tenant non-PKP tak boleh menawarkan PPN (sama dengan SO #34 / faktur).
+                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
                 calculated_items = _doc["items"]
                 totals = {
                     "subtotal": _doc["net_subtotal"],
@@ -867,6 +870,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                         )
 
                     _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value)
+                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #39
                     calculated_items = _doc["items"]
                     totals = {
                         "subtotal": _doc["net_subtotal"],

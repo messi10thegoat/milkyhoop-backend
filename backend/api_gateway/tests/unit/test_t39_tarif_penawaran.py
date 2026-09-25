@@ -168,3 +168,40 @@ async def test_konversi_menurunkan_tarif_baris_tersimpan():
     }]
     doc = await Q._quote_converted_doc(db, TENANT, quote, rows)
     assert doc["tax_amount"] == Decimal("11000.00")
+
+
+# --- non-PKP: Penawaran ber-PPN ditolak 422 (perluasan putusan pemilik #34 SO) -------------
+
+from app.services.pkp_guard import PESAN_NON_PKP  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_nonpkp_create_ber_ppn_422_tanpa_tulis(pasang):
+    db = pasang(DBQ(is_pkp=False))
+    with pytest.raises(HTTPException) as e:
+        await Q.create_quote(_req(), _buat(_baris(tax_id=PPN11)))
+    assert (e.value.status_code, e.value.detail) == (422, PESAN_NON_PKP)
+    assert db.header_pajak() == [] and db.baris_ditulis() == []
+
+
+@pytest.mark.asyncio
+async def test_nonpkp_create_tanpa_pajak_jalan(pasang):
+    db = pasang(DBQ(is_pkp=False))
+    await Q.create_quote(_req(), _buat(_baris()))
+    assert db.header_pajak() == [Decimal("0.00")]
+
+
+@pytest.mark.asyncio
+async def test_nonpkp_patch_baris_ber_ppn_422(pasang):
+    db = pasang(DBQ(is_pkp=False))
+    with pytest.raises(HTTPException) as e:
+        await Q.update_quote(_req(), QUOTE_ID, UpdateQuoteRequest(items=[_baris(tax_id=PPN11)]))
+    assert (e.value.status_code, e.value.detail) == (422, PESAN_NON_PKP)
+    assert db.baris_ditulis() == []
+
+
+@pytest.mark.asyncio
+async def test_pkp_create_ber_ppn_jalan(pasang):
+    db = pasang(DBQ(is_pkp=True))
+    await Q.create_quote(_req(), _buat(_baris(tax_id=PPN11)))
+    assert db.header_pajak() == [Decimal("11000.00")]
