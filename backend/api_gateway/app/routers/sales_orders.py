@@ -295,7 +295,8 @@ async def get_pending_orders(
 async def get_sales_order_summary(request: Request):
     """Get sales order statistics summary.
     pending_shipment_value / pending_invoice_value = Σ total SO per STATUS (definisi lama, dibiarkan);
-    uninvoiced_value = belum ditagih NYATA (turunan jurnal, Q-012) — pakai ini untuk "belum ditagih"."""
+    uninvoiced_value = belum ditagih NYATA (turunan jurnal, Q-012) — pakai ini untuk "belum ditagih";
+    uninvoiced_count = jumlah SO dengan sisa belum ditagih > 0 (sumber sama, aggregate?q=uninvoiced.count)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -337,6 +338,7 @@ async def get_sales_order_summary(request: Request):
                     "pending_shipment_value": row["pending_shipment_value"],
                     "pending_invoice_value": row["pending_invoice_value"],
                     "uninvoiced_value": belum["total"],
+                    "uninvoiced_count": belum["count"],   # jumlah SO bersisa (SEMUA, bukan baris terpotong 50)
                 },
             )
 

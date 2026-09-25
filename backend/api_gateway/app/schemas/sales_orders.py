@@ -384,6 +384,7 @@ class SalesOrderSummary(BaseModel):
     # Belum ditagih NYATA: Σ (total SO − tagihan berjurnal) SO selain draft/cancelled/completed;
     # faktur DRAF dihitung belum ditagih. = GET /api/sales-orders/aggregate?q=uninvoiced -> data.total
     uninvoiced_value: float
+    uninvoiced_count: int  # jumlah SO dengan sisa belum ditagih > 0 (= aggregate?q=uninvoiced -> data.count)
 
 
 class SalesOrderSummaryResponse(BaseModel):

@@ -289,3 +289,34 @@ def test_http_summary_uninvoiced_value_sama_dengan_aggregate(klien, monkeypatch)
     agg = klien.get("/api/sales-orders/aggregate?q=uninvoiced").json()["data"]["total"]
     assert r.json()["data"]["uninvoiced_value"] == agg == 250000.0
     assert r.json()["data"]["pending_invoice_value"] == 0          # medan lama tetap ada, definisi lama
+
+
+def test_http_summary_uninvoiced_count_semua_bukan_baris_terpotong(klien, monkeypatch):
+    # 51 SO bersisa + 1 lunas: count = 51 (bukan 50 baris yang dikirim aggregate, bukan 52 semua SO)
+    ringkas = {k: 0 for k in ("total_orders", "draft_count", "confirmed_count", "partial_shipped_count",
+                              "shipped_count", "partial_invoiced_count", "invoiced_count", "completed_count",
+                              "cancelled_count", "total_value", "pending_shipment_value", "pending_invoice_value")}
+    lunas = _so(900000, status="invoiced", nomor="SO-LUNAS")
+    rows = [_so(1000 + i, nomor=f"SO-{i:03d}") for i in range(51)] + [lunas]
+
+    async def fetch(self, sql, *a):
+        return rows
+
+    async def fetchrow(self, sql, *a):
+        return ringkas
+    monkeypatch.setattr(DB, "fetch", fetch)
+    monkeypatch.setattr(DB, "fetchrow", fetchrow)
+    tagihan_lunas = {lunas["id"]: 900000}
+
+    async def ring(conn, tenant_id, so_ids):
+        out = {}
+        for s in so_ids:
+            r = {k: D(0) for k in PT._KOSONG}
+            r["invoiced"], r["tertutup"] = D(tagihan_lunas.get(s, 0)), D(0)
+            out[s] = r
+        return out
+    monkeypatch.setattr(SA, "ringkasan_pesanan", ring)
+    d = klien.get("/api/sales-orders/summary").json()["data"]
+    agg = klien.get("/api/sales-orders/aggregate?q=uninvoiced").json()["data"]
+    assert d["uninvoiced_count"] == agg["count"] == 51 and len(agg["rows"]) == 50
+    assert "uninvoiced_count" in SalesOrderSummary.model_fields
