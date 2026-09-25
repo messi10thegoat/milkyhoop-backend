@@ -437,7 +437,7 @@ async def decline_invite(token: str):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    """SELECT id, email, tenant_id, invited_by, status
+                    """SELECT id, email, tenant_id, invited_by, status, expires_at
                     FROM team_invitations WHERE invite_token = $1 FOR UPDATE""",
                     token,
                 )
@@ -448,25 +448,37 @@ async def decline_invite(token: str):
                     raise HTTPException(
                         status_code=400, detail="Undangan sudah tidak berlaku"
                     )
-
-                await conn.execute(
-                    "UPDATE team_invitations SET status = 'declined', declined_at = NOW() WHERE id = $1",
-                    row["id"],
-                )
-
-                try:
+                # Audit WRITE_EXEMPT sisa (26 Sep 2026): dulu undangan KEDALUWARSA
+                # masih bisa ditolak (status berubah jadi 'declined', jejak salah).
+                # Penandaan 'expired' harus TER-COMMIT -> jangan raise di dalam
+                # transaksi; lempar 400 sesudahnya.
+                kedaluwarsa = row["expires_at"] < datetime.now(timezone.utc)
+                if kedaluwarsa:
                     await conn.execute(
-                        """INSERT INTO audit_logs (id, "userId", "eventType", entity_type, entity_id, tenant_id, metadata, success, "createdAt")
-                        VALUES ($1, $2, 'TEAM_INVITE_DECLINED', 'team_invitation', $3, $4, $5, true, NOW())""",
-                        str(uuid_module.uuid4()),
-                        row["invited_by"],
-                        str(row["id"]),
-                        row["tenant_id"],
-                        f'{{"email": "{row["email"]}"}}',
+                        "UPDATE team_invitations SET status = 'expired' WHERE id = $1",
+                        row["id"],
                     )
-                except Exception:
-                    pass
+                else:
+                    await conn.execute(
+                        "UPDATE team_invitations SET status = 'declined', declined_at = NOW() WHERE id = $1",
+                        row["id"],
+                    )
 
+                    try:
+                        await conn.execute(
+                            """INSERT INTO audit_logs (id, "userId", "eventType", entity_type, entity_id, tenant_id, metadata, success, "createdAt")
+                            VALUES ($1, $2, 'TEAM_INVITE_DECLINED', 'team_invitation', $3, $4, $5, true, NOW())""",
+                            str(uuid_module.uuid4()),
+                            row["invited_by"],
+                            str(row["id"]),
+                            row["tenant_id"],
+                            f'{{"email": "{row["email"]}"}}',
+                        )
+                    except Exception:
+                        pass
+
+        if kedaluwarsa:
+            raise HTTPException(status_code=400, detail="Undangan sudah kedaluwarsa")
         return {"success": True, "message": "Undangan ditolak"}
 
     except HTTPException:

@@ -568,6 +568,7 @@ async def request_remote_scan(request: Request, body: RemoteScanRequest):
             desktop_device_id=desktop_device_id,
             desktop_tab_id=body.tab_id,
             tenant_id=user["tenant_id"],
+            user_id=user["user_id"],
         )
 
         if not sent:
@@ -606,7 +607,7 @@ async def send_remote_scan_result(request: Request, body: RemoteScanResultReques
 
         # ATOMIC: Pop session and validate tenant in one operation (RACE-SAFE)
         # This prevents duplicate calls from both succeeding
-        session = websocket_hub.pop_and_validate_session(body.scan_id, user_tenant)
+        session = websocket_hub.pop_and_validate_session(body.scan_id, user_tenant, user["user_id"])
         if not session:
             # Session not found, expired, or tenant mismatch
             # (pop_and_validate_session already logged the reason)
@@ -660,8 +661,10 @@ async def cancel_remote_scan(request: Request, body: RemoteScanCancelRequest):
     try:
         _user = get_user_from_request(request)  # Auth check
 
-        # Cancel the scan session
-        cancelled = await websocket_hub.cancel_remote_scan(body.scan_id)
+        # Cancel the scan session — hanya milik pemanggil (tenant + pengguna)
+        cancelled = await websocket_hub.cancel_remote_scan(
+            body.scan_id, _user["tenant_id"], _user["user_id"]
+        )
 
         if not cancelled:
             return RemoteScanResultResponse(

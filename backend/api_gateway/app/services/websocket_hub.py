@@ -246,6 +246,7 @@ class WebSocketHub:
         desktop_device_id: str,
         desktop_tab_id: str,
         tenant_id: str,
+        user_id: Optional[str] = None,
     ) -> bool:
         """
         Send remote scan request from desktop to mobile
@@ -275,6 +276,10 @@ class WebSocketHub:
             # Store scan session for result routing (with tenant for isolation)
             self.remote_scan_sessions[scan_id] = {
                 "tenant_id": tenant_id,
+                # Audit WRITE_EXEMPT sisa (26 Sep 2026): pemilik sesi -> cancel/result
+                # hanya oleh PENGGUNA yang sama (dulu cancel tanpa cek apa pun, result
+                # tenant saja dan meng-pop SEBELUM memvalidasi = siapa pun menghabiskan sesi).
+                "user_id": str(user_id) if user_id else None,
                 "mobile_device_id": mobile_device_id,
                 "desktop_device_id": desktop_device_id,
                 "desktop_tab_id": desktop_tab_id,
@@ -384,15 +389,17 @@ class WebSocketHub:
             logger.error(f"📸 Remote scan result FAILED: {e}")
             return False
 
-    async def cancel_remote_scan(self, scan_id: str) -> bool:
+    async def cancel_remote_scan(
+        self, scan_id: str, tenant_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> bool:
         """
         Cancel an active remote scan session (desktop cancelled)
 
         Sends cancel event to mobile to close scanner UI
         """
         async with self._lock:
-            if scan_id not in self.remote_scan_sessions:
-                return False
+            if not self._sesi_milik(self.remote_scan_sessions.get(scan_id), tenant_id, user_id):
+                return False  # tak ada / bukan milik pemanggil: sesi TIDAK disentuh
 
             session = self.remote_scan_sessions.pop(scan_id)
             mobile_device_id = session["mobile_device_id"]
@@ -490,37 +497,26 @@ class WebSocketHub:
         session = self.remote_scan_sessions.get(scan_id)
         return session.get("tenant_id") if session else None
 
+    def _sesi_milik(self, session: Optional[dict], tenant_id: Optional[str], user_id: Optional[str]) -> bool:
+        if not session or session.get("tenant_id") != tenant_id:
+            return False
+        pemilik = session.get("user_id")
+        return pemilik is None or (user_id is not None and str(user_id) == pemilik)
+
     def pop_and_validate_session(
-        self, scan_id: str, user_tenant: str
+        self, scan_id: str, user_tenant: str, user_id: Optional[str] = None
     ) -> Optional[dict]:
+        """Validasi DULU (tenant + pengguna pemilik), baru pop (26 Sep 2026).
+
+        Dulu pop lebih dulu lalu cek tenant -> pemanggil dari tenant lain yang
+        tahu scan_id MENGHABISKAN sesi korban walau ditolak. Kini sesi hanya
+        diambil oleh pemiliknya; selain itu None tanpa menyentuh sesi.
         """
-        Atomically pop session and validate tenant (RACE-SAFE)
-
-        This method combines pop + validation in one operation to prevent
-        race conditions with duplicate result calls.
-
-        Args:
-            scan_id: The scan session ID
-            user_tenant: Tenant ID from the request (to validate ownership)
-
-        Returns:
-            Session dict if valid, None if not found or tenant mismatch
-        """
-        session = self.remote_scan_sessions.pop(scan_id, None)
-        if not session:
-            logger.warning(
-                f"📸 Session not found or already consumed: {scan_id[:8]}..."
-            )
+        session = self.remote_scan_sessions.get(scan_id)
+        if not self._sesi_milik(session, user_tenant, user_id):
+            logger.warning(f"📸 Session tak ditemukan / bukan milik pemanggil: {scan_id[:8]}...")
             return None
-
-        if session.get("tenant_id") != user_tenant:
-            logger.warning(
-                f"🔒 TENANT MISMATCH: {user_tenant} tried to access scan from {session.get('tenant_id')}"
-            )
-            return None
-
-        logger.info(f"📸 Session claimed: {scan_id[:8]}... by tenant {user_tenant}")
-        return session
+        return self.remote_scan_sessions.pop(scan_id, None)
 
     async def send_scan_result_to_desktop(
         self,
