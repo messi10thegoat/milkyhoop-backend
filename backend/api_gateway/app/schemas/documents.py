@@ -137,11 +137,14 @@ class EntityDocument(BaseModel):
     file_size: Optional[int] = None
     file_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
-    category: Optional[DocumentCategory] = None
+    # #25: str, bukan DocumentCategory -- DB juga mengizinkan 'unclassified'.
+    category: Optional[str] = None
     title: Optional[str] = None
     uploaded_at: datetime
-    attachment_type: AttachmentType
+    attachment_type: str
     display_order: int
+    # #25: hanya baris s3 yang bisa diunduh (baris local lama berkasnya hilang).
+    tersedia: bool = True
 
 
 class DocumentListResponse(BaseModel):
@@ -194,7 +197,9 @@ class DetachDocumentResponse(BaseModel):
 class EntityDocumentsResponse(BaseModel):
     """Response for documents attached to an entity"""
     success: bool = True
-    entity_type: EntityType
+    # #25: str -- divalidasi handler lewat peta entitas hub (Literal lama tanpa
+    # customer_deposit membuat respons 500 walau datanya kosong).
+    entity_type: str
     entity_id: UUID
     data: List[EntityDocument]
     total: int

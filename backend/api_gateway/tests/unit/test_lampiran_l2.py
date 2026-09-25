@@ -423,7 +423,8 @@ def test_hub_download_sajian_aman(monkeypatch):
             pass
 
         async def fetchrow(self, sql, *a):
-            return {"file_name": 'x"\r\nSet-Cookie: a=b.svg', "file_path": "k", "file_type": "image/svg+xml"}
+            return {"file_name": 'x"\r\nSet-Cookie: a=b.svg', "file_path": "k", "file_type": "image/svg+xml",
+                    "storage_type": "s3"}  # #25: kueri unduh hub memilih storage_type
 
     async def _pool():
         return SimpleNamespace(acquire=lambda: _Acq(C2()))

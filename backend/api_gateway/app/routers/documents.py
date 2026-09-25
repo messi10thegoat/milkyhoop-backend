@@ -49,7 +49,11 @@ from ..attachment_limits import (  # noqa: E402
     http_400_lampiran,
     kunci_kuota_lampiran,
 )
-from ..utils.lampiran_unduh import content_disposition_lampiran, sajian_lampiran  # noqa: E402
+from ..utils.lampiran_unduh import (  # noqa: E402
+    content_disposition_lampiran,
+    sajian_lampiran,
+    stream_lampiran,
+)
 
 MAX_FILE_SIZE = ATTACHMENT_MAX_BYTES  # alias untuk referensi lain (storage-usage dsb.)
 ALLOWED_CONTENT_TYPES = ATTACHMENT_ALLOWED_TYPES
@@ -722,6 +726,53 @@ async def detach_document(
         return DetachDocumentResponse()
 
 
+# #25 (25 Sep 2026): daftar dokumen per entitas.
+# Dulu: memanggil fungsi DB get_entity_documents yang TIDAK mengembalikan
+# display_order (EntityDocument mewajibkannya) -> 500 untuk SETIAP entitas
+# berlampiran; respons entity_type ber-Literal tanpa customer_deposit -> 500
+# walau kosong; file_url = nilai mentah DB (baris local = path berkas-chat
+# mati); dan TANPA izin per-doctype (READ /api/documents default-open) --
+# memperbaiki 500 saja = membuka dokumen modul mana pun ke semua anggota.
+# Kini: SQL langsung (tanpa migrasi), entitas harus didukung + ada + milik
+# tenant (_cari_entitas_hub), izin BACA modul entitas, url = rute unduh hub.
+PENANDA_T25_DAFTAR = "t25-hub-daftar-dokumen-entitas"
+
+_SQL_DOKUMEN_ENTITAS = """
+    SELECT d.id AS document_id, d.file_name, d.file_type, d.file_size,
+           d.category, d.title, d.uploaded_at, d.storage_type,
+           da.attachment_type, da.display_order
+    FROM document_attachments da
+    JOIN documents d ON d.id = da.document_id
+    WHERE da.tenant_id = $1 AND d.tenant_id = $1
+      AND da.entity_type = $2 AND da.entity_id = $3
+      AND d.deleted_at IS NULL
+    ORDER BY da.display_order ASC, d.uploaded_at DESC
+"""
+
+# Dokumen karyawan: aturan pay-group (setiap endpoint ber-employee_id WAJIB
+# memfilter pay-group) -- hub tak punya filter itu, jadi hanya OWNER.
+_ENTITAS_BACA_OWNER_SAJA = frozenset({"employee"})
+
+
+async def _wajib_izin_baca_entitas(request: Request, entity_type: str, segmen: str, entity_id) -> None:
+    """Anggota aktif + izin R modul entitas (OWNER lolos; tak terpetakan atau
+    entitas OWNER-saja -> hanya OWNER)."""
+    from ..services.policy_engine_client import get_policy_engine
+
+    u = getattr(request.state, "user", {}) or {}
+    eng = get_policy_engine()
+    c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
+    if not c.membership_active:
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    if c.business_role_code == "OWNER":
+        return
+    izin = None if entity_type in _ENTITAS_BACA_OWNER_SAJA else _izin_modul(segmen, entity_id)
+    if izin is None or not await eng.can(c, "R", izin[0]):
+        raise HTTPException(
+            status_code=403, detail="Anda tidak punya izin melihat dokumen ini."
+        )
+
+
 @router.get(
     "/{entity_type}/{entity_id}/documents", response_model=EntityDocumentsResponse
 )
@@ -730,28 +781,38 @@ async def get_entity_documents(
     entity_type: str,
     entity_id: UUID,
 ):
-    """Get all documents attached to an entity"""
+    """Dokumen yang tertaut ke satu entitas (#25: entitas + izin baca)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
+            )
+            segmen = await _cari_entitas_hub(
+                conn, entity_type, entity_id, ctx["tenant_id"]
+            )
+            await _wajib_izin_baca_entitas(request, entity_type, segmen, entity_id)
+            rows = await conn.fetch(
+                _SQL_DOKUMEN_ENTITAS, ctx["tenant_id"], entity_type, entity_id
+            )
 
-        rows = await conn.fetch(
-            "SELECT * FROM get_entity_documents($1, $2, $3)",
-            ctx["tenant_id"],
-            entity_type,
-            entity_id,
-        )
-
-        return EntityDocumentsResponse(
-            entity_type=entity_type,
-            entity_id=entity_id,
-            data=[EntityDocument(**dict(row)) for row in rows],
-            total=len(rows),
-        )
+    data = []
+    for r in rows:
+        d = dict(r)
+        storage_type = d.pop("storage_type", None)
+        d["file_url"] = f"/api/documents/{d['document_id']}/download"
+        d["tersedia"] = (storage_type or "").lower() == "s3"
+        d["display_order"] = d["display_order"] or 0
+        d["attachment_type"] = d["attachment_type"] or "attachment"
+        data.append(EntityDocument(**d))
+    return EntityDocumentsResponse(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        data=data,
+        total=len(data),
+    )
 
 
 @router.get("/{document_id}/download")
@@ -764,33 +825,14 @@ async def download_document(request: Request, document_id: UUID):
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
         row = await conn.fetchrow(
-            "SELECT file_name, file_path, file_type FROM documents "
+            "SELECT file_name, file_path, file_type, storage_type FROM documents "
             "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
             document_id,
             ctx["tenant_id"],
         )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
-    storage = get_storage_service()
-    obj = storage.client.get_object(Bucket=storage.config.bucket, Key=row["file_path"])
-    body = obj["Body"]
-
-    def iter_body():
-        while chunk := body.read(65536):
-            yield chunk
-        body.close()
-
-    # L2: sajian aman sama dengan rute /download modul (lampiran_unduh):
-    # inline hanya jpeg/png/webp/gif/pdf; lainnya octet-stream + attachment;
-    # nosniff; nama berkas lewat content_disposition_lampiran (tak bisa
-    # memutus header -- dulu nama mentah di f-string).
-    media_type, inline = sajian_lampiran(row["file_type"])
-    return StreamingResponse(
-        iter_body(),
-        media_type=media_type,
-        headers={
-            "Content-Disposition": content_disposition_lampiran(row["file_name"], inline),
-            "Cache-Control": "private, max-age=3600",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    # #25: satu jalur sajian dengan rute /download modul -- baris local / tanpa
+    # file_path / objek hilang -> 404 "Berkas tidak tersedia" (dulu 500:
+    # get_object dengan kunci baris local). Sajian aman (L2) tetap sama.
+    return stream_lampiran(row, get_storage_service())
