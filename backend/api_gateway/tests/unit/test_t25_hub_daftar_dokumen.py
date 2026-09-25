@@ -80,7 +80,7 @@ class Eng:
         self.peran, self.izin, self.aktif = peran, set(izin), aktif
 
     async def get_user_context(self, uid, tid, role):
-        return SimpleNamespace(business_role_code=self.peran, membership_active=self.aktif)
+        return SimpleNamespace(business_role_id="peran-uji", business_role_code=self.peran, membership_active=self.aktif)
 
     async def can(self, c, aksi, modul):
         return (modul, aksi) in self.izin

@@ -56,6 +56,16 @@ async def upload_document_for_form(
     tenant_id = ctx["tenant_id"]
     user_id = ctx.get("user_id")
 
+    # Audit WRITE_EXEMPT I4 (26 Sep 2026): rute ini exempt izin modul dan dulu
+    # tak memeriksa keanggotaan sama sekali -> anggota nonaktif/dihapus (token
+    # lama) masih bisa menulis objek + baris documents di tenant. Kini wajib aktif.
+    from ..services.policy_engine_client import anggota_aktif, get_policy_engine
+
+    _u = getattr(request.state, "user", {}) or {}
+    _c = await get_policy_engine().get_user_context(str(_u.get("user_id")), tenant_id, _u.get("role", "USER"))
+    if not anggota_aktif(_c):
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+
     # Validate
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"File type {file.content_type} not allowed")

@@ -208,6 +208,14 @@ def form(monkeypatch, tmp_path):
     monkeypatch.setattr(UP, "get_storage_service", lambda: storage)
     # kode lama menulis ke UP.UPLOAD_BASE_DIR -> arahkan ke tmp lalu assert kosong
     monkeypatch.setattr(UP, "UPLOAD_BASE_DIR", str(tmp_path), raising=False)
+    # I4 (26 Sep 2026): /api/uploads/document kini menuntut anggota AKTIF (baris peran ada).
+    import app.services.policy_engine_client as _PEC
+
+    class _EngAktif:
+        async def get_user_context(self, *a, **k):
+            return SimpleNamespace(membership_active=True, business_role_id="peran-uji", business_role_code="STAFF")
+
+    monkeypatch.setattr(_PEC, "get_policy_engine", lambda: _EngAktif())
     return SimpleNamespace(db=db, storage=storage, tmp=tmp_path)
 
 

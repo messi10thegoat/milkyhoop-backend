@@ -36,6 +36,18 @@ class UserContext:
     membership_active: bool = True
 
 
+def anggota_aktif(ctx) -> bool:
+    """Anggota AKTIF = baris peran ADA dan statusnya aktif (26 Sep 2026, audit WRITE_EXEMPT I4).
+
+    `membership_active` saja TIDAK cukup: bawaannya True dan hanya menjadi False
+    bila baris peran ADA tapi nonaktif. Anggota yang DIHAPUS dari tim (DELETE
+    user_tenant_roles; tokennya masih hidup s/d 7 hari) tak punya baris ->
+    business_role_id None -> dulu lolos sebagai "aktif". Galat DB di
+    get_user_context juga meninggalkan business_role_id None -> kini gagal TERTUTUP.
+    """
+    return bool(getattr(ctx, "membership_active", False)) and getattr(ctx, "business_role_id", None) is not None
+
+
 # Module name mapping (frontend/API -> database)
 MODULE_NAME_MAPPING = {
     # Sales/AR Cycle

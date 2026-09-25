@@ -26,6 +26,7 @@ from ..schemas.document_intake import (
     UploadDocumentIntakeResponse,
 )
 from ..services.document_intake import DocumentIntakeService
+from ..services.policy_engine_client import anggota_aktif
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ async def _intake_ctx(request):
 
 async def _require_active_member(request):
     _eng, ctx = await _intake_ctx(request)
-    if not ctx.membership_active:
+    if not anggota_aktif(ctx):
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
     return ctx
 
@@ -167,7 +168,7 @@ async def _require_doc_create_perm(request, tenant_id, doc_id):
     async with _pool.acquire() as _c:
         dt = await _c.fetchval("SELECT doc_type FROM uploaded_documents WHERE id = $1 AND tenant_id = $2", _did, tenant_id)
     eng, ctx = await _intake_ctx(request)
-    if not ctx.membership_active:
+    if not anggota_aktif(ctx):
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
     modul = _DOCTYPE_MODULE.get((dt or "").strip().lower())
     if not modul:
@@ -515,7 +516,7 @@ async def execute_batch(
 
     # kondisi 3: izin PER ITEM dari doc_type tersimpan. Item tanpa izin -> 403 item, bukan batch diam-diam.
     _eng, _uctx = await _intake_ctx(request)
-    if not _uctx.membership_active:
+    if not anggota_aktif(_uctx):
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
     _permitted, _denied = [], []
     async with pool.acquire() as _c:

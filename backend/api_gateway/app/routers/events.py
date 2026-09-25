@@ -62,10 +62,11 @@ async def _allowed_from_ctx(ctx) -> Set[str]:
 def _revocation_from_ctx(ctx, role: str) -> Optional[str]:
     if getattr(ctx, "membership_active", True) is False:
         return "MEMBERSHIP_INACTIVE"
+    # I4 (26 Sep 2026): `role` = TIER JWT (semua pengguna nyata ADMIN) -> dulu
+    # pengecualian tier membuat anggota yang DIHAPUS tetap dianggap aktif.
     if (
         not getattr(ctx, "business_role_id", None)
         and getattr(ctx, "business_role_code", None) != "OWNER"
-        and role not in ("OWNER", "ADMIN")
     ):
         return "MEMBERSHIP_INACTIVE"
     return None

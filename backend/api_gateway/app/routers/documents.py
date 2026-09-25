@@ -33,6 +33,8 @@ from ..schemas.documents import (
     UploadDocumentResponse,
 )
 
+from ..services.policy_engine_client import anggota_aktif
+
 router = APIRouter()
 
 from ..services.storage_service import get_storage_service  # noqa: E402
@@ -352,7 +354,7 @@ async def _require_active_member_docs(request):
     u = getattr(request.state, "user", {}) or {}
     eng = get_policy_engine()
     c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
-    if not c.membership_active:
+    if not anggota_aktif(c):
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
 
 
@@ -618,7 +620,7 @@ async def _konteks_izin(request: Request):
     u = getattr(request.state, "user", {}) or {}
     eng = get_policy_engine()
     c = await eng.get_user_context(str(u.get("user_id")), u.get("tenant_id"), u.get("role", "USER"))
-    if not c.membership_active:
+    if not anggota_aktif(c):
         raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
     return eng, c
 
