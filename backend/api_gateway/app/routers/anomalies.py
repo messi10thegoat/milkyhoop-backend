@@ -64,6 +64,12 @@ def _n(v) -> str:
     return f"{d.quantize(Decimal('1')) if d == d.to_integral_value() else d.normalize()}".replace(".", ",")
 
 
+def _qty(v, unit) -> str:
+    """BUG-002: jumlah bersatuan ("63 pcs"), bukan angka telanjang. Satuan = kolom baris SO;
+    kosong -> angka saja (tak menebak satuan)."""
+    return f"{_n(v)} {unit}" if unit else _n(v)
+
+
 async def _check_so_invoiced_mismatch(conn, tid, today, tz):
     rows = await conn.fetch(
         """
@@ -77,7 +83,7 @@ async def _check_so_invoiced_mismatch(conn, tid, today, tz):
         )
         SELECT so.id, so.order_number, so.customer_name, so.status,
                ($2::date - so.order_date) AS age_days,
-               soi.description, soi.quantity, soi.quantity_invoiced,
+               soi.description, soi.quantity, soi.quantity_invoiced, soi.unit,
                COALESCE(l.q, 0) AS linked_q, soi.unit_price,
                COALESCE(soi.discount_percent, 0) AS discount_percent
         FROM sales_order_items soi
@@ -99,6 +105,7 @@ async def _check_so_invoiced_mismatch(conn, tid, today, tz):
             "quantity_ordered": float(r["quantity"]),
             "quantity_invoiced_recorded": float(r["quantity_invoiced"]),
             "quantity_on_invoices": float(r["linked_q"]),
+            "unit": (r["unit"] or "").strip() or None,
         })
         f["amount"] += abs(gap) * Decimal(r["unit_price"]) * (1 - Decimal(r["discount_percent"]) / 100)
     out = []
@@ -116,8 +123,8 @@ async def _check_so_invoiced_mismatch(conn, tid, today, tz):
             "amount": float(round(f["amount"], 2)),
             "age_days": int(r["age_days"] or 0),
             "message": (
-                f"SO {r['order_number']}: {_n(ln['quantity_invoiced_recorded'])} tercatat sudah "
-                f"difakturkan, tetapi faktur yang ada hanya {_n(ln['quantity_on_invoices'])}."
+                f"SO {r['order_number']}: {_qty(ln['quantity_invoiced_recorded'], ln['unit'])} tercatat "
+                f"sudah difakturkan, tetapi faktur yang ada hanya {_qty(ln['quantity_on_invoices'], ln['unit'])}."
                 + (f" (+{len(f['lines']) - 1} baris lain)" if len(f["lines"]) > 1 else "")
             ),
             "suggested_action": (
@@ -250,6 +257,53 @@ CHECKS = {
 }
 
 
+_SEV = {"high": 3, "medium": 2, "low": 1}
+
+
+def _gabung_per_dokumen(findings: list) -> list:
+    """BUG-002: SATU kartu per dokumen. SO 001-09-26 (grapgrap) muncul dua kali -- "63 tercatat
+    difakturkan, faktur 0" DAN "selesai tanpa faktur" -- padahal akarnya satu. Temuan untuk
+    (document_type, document_id) yang sama digabung: `check`/`severity` = yang terberat,
+    `checks` = semua kunci, `reasons` = tiap temuan asli (check, message, suggested_action,
+    details), `message` = satu kalimat "<SO x>: isi-1; isi-2." Urutan kartu = kemunculan pertama.
+    `checks[].count` di tingkat pemeriksaan TIDAK berubah (tetap per pemeriksaan)."""
+    grup = {}
+    for f in findings:
+        grup.setdefault((f["document_type"], f["document_id"]), []).append(f)
+    out = []
+    for fs in grup.values():
+        for f in fs:
+            f["checks"] = [f["check"]]
+            f["reasons"] = [{k: f[k] for k in ("check", "message", "suggested_action", "details")}]
+        if len(fs) == 1:
+            out.append(fs[0])
+            continue
+        utama = max(fs, key=lambda f: _SEV.get(f["severity"], 0))  # seri -> yang pertama
+        num = utama["document_number"] or ""
+        i = utama["message"].find(num) if num else -1
+        awalan = utama["message"][: i + len(num)] if i >= 0 else ""
+        isi = []
+        for f in fs:
+            m = f["message"]
+            if awalan and m.startswith(awalan):
+                m = m[len(awalan):].lstrip(": ")
+            isi.append(m.rstrip(". "))
+        saran = []
+        for f in fs:
+            if f["suggested_action"] and f["suggested_action"] not in saran:
+                saran.append(f["suggested_action"])
+        out.append({
+            **utama,
+            "amount": max(f["amount"] for f in fs),
+            "age_days": max(f["age_days"] for f in fs),
+            "message": (f"{awalan}: " if awalan else "") + "; ".join(isi) + ".",
+            "suggested_action": " ".join(saran),
+            "checks": [f["check"] for f in fs],
+            "reasons": [r for f in fs for r in f["reasons"]],
+        })
+    return out
+
+
 async def _readable_modules(user: dict) -> set:
     """Modul yang boleh DIBACA pemanggil -- engine can() yang SAMA dengan middleware.
     Gagal menilai izin = modul itu TIDAK dianggap boleh (fail-closed)."""
@@ -305,6 +359,6 @@ async def list_anomalies(request: Request):
             "as_of_date": today.isoformat(),  # "hari ini" menurut zona tenant
             "thresholds": {"deposit_idle_days": DEPOSIT_IDLE_DAYS, "stale_draft_days": STALE_DRAFT_DAYS},
             "checks": checks,
-            "findings": findings,
+            "findings": _gabung_per_dokumen(findings),
         },
     }
