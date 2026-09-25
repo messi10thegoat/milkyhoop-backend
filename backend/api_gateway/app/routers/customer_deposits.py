@@ -46,7 +46,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
-from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
+from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
 from ..services.pihak_helpers import pelanggan_kanonik_tenant
@@ -1794,42 +1794,10 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
             ctx["user_id"],
         )
 
-        # Update invoice (derive amount_paid from journal-based remaining)
-        new_amount_paid = (
-            invoice["total_amount"] - invoice_remaining + Decimal(str(app.amount))
-        )
-        new_status = (
-            "paid"
-            if new_amount_paid >= invoice["total_amount"]
-            else invoice["status"]
-        )
-
-        await conn.execute(
-            """
-            UPDATE sales_invoices
-            SET amount_paid = $2, status = $3, updated_at = NOW()
-            WHERE id = $1
-        """,
-            UUID(app.invoice_id),
-            new_amount_paid,
-            new_status,
-        )
-
-        # Update AR if exists
-        await conn.execute(
-            """
-            UPDATE accounts_receivable
-            SET amount_paid = amount_paid + $2,
-                status = CASE
-                    WHEN amount_paid + $2 >= amount THEN 'PAID'
-                    ELSE 'PARTIAL'
-                END,
-                updated_at = NOW()
-            WHERE source_id = $1 AND source_type = 'INVOICE'
-        """,
-            UUID(app.invoice_id),
-            app.amount,
-        )
+        # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+        # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+        # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], UUID(app.invoice_id))
 
         applications_created.append(
             {
@@ -2107,55 +2075,10 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     # invoice outstanding rises again. Re-derive amount_paid from
     # the journal-based remaining (Law 16) after the reversal.
     inv_id = app_row["invoice_id"]
-    invoice = await conn.fetchrow(
-        "SELECT id, total_amount, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-        inv_id,
-        ctx["tenant_id"],
-    )
-    if invoice:
-        invoice_remaining = await get_invoice_remaining_from_journal(
-            conn, ctx["tenant_id"], inv_id
-        )
-        new_amount_paid = invoice["total_amount"] - invoice_remaining
-        if new_amount_paid < 0:
-            new_amount_paid = 0
-        # Revert: if no longer fully paid, demote 'paid' back to
-        # 'posted' (posted-unsettled). Other states unchanged.
-        new_status = (
-            "paid"
-            if new_amount_paid >= invoice["total_amount"]
-            else (
-                "posted"
-                if invoice["status"] == "paid"
-                else invoice["status"]
-            )
-        )
-        await conn.execute(
-            """
-            UPDATE sales_invoices
-            SET amount_paid = $2, status = $3, updated_at = NOW()
-            WHERE id = $1
-            """,
-            inv_id,
-            new_amount_paid,
-            new_status,
-        )
-        # Mirror accounts_receivable cache if a row exists.
-        await conn.execute(
-            """
-            UPDATE accounts_receivable
-            SET amount_paid = GREATEST(amount_paid - $2, 0),
-                status = CASE
-                    WHEN GREATEST(amount_paid - $2, 0) >= amount THEN 'PAID'
-                    WHEN GREATEST(amount_paid - $2, 0) > 0 THEN 'PARTIAL'
-                    ELSE 'OPEN'
-                END,
-                updated_at = NOW()
-            WHERE source_id = $1 AND source_type = 'INVOICE'
-            """,
-            inv_id,
-            reversal_amount,
-        )
+    # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+    # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+    # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], inv_id)
 
     logger.info(
         f"Customer deposit application reversed: deposit={deposit_id}, "

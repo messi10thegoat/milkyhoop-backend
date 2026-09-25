@@ -40,7 +40,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
-from ..services.pihak_helpers import rupiah
+from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur
 
 from ..schemas.receive_payments import (
     UnapplyAllocationRequest,
@@ -2015,55 +2015,10 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     )
 
     for alloc in allocations:
-        # Law 16: compute new amount_paid from journal-based remaining
-        invoice_total = await conn.fetchval(
-            "SELECT total_amount FROM sales_invoices WHERE id = $1", alloc["invoice_id"]
-        )
-        # FIX_AR_CACHE_SYNC (2026-06-15): recompute the cache from ledger truth
-        # (compute_ar_outstanding) instead of the bespoke helper. The payment journal
-        # is already POSTED (above), so the function reflects THIS payment plus any
-        # credit note / retur that credits AR directly. The previous code (a) double-
-        # subtracted amount_applied after the journal was already POSTED (stale comment),
-        # and (b) used get_invoice_remaining_from_journal which ignores credit notes
-        # lacking a credit_note_applications row — together desyncing amount_paid/status
-        # from the ledger (e.g. INV-2604-0029: cache 100k/partial vs ledger fully paid).
-        _outstanding = await conn.fetchval(
-            "SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
-            ctx["tenant_id"],
-            alloc["invoice_id"],
-        )
-        # No row from the function = fully settled (outstanding 0).
-        new_outstanding = float(_outstanding) if _outstanding is not None else 0.0
-        new_amount_paid = float(invoice_total) - max(0.0, new_outstanding)
-
-        new_status = "paid" if new_outstanding < 0.01 else "partial"
-
-        await conn.execute(
-            """
-            UPDATE sales_invoices
-            SET amount_paid = $2, status = $3, updated_at = NOW()
-            WHERE id = $1
-        """,
-            alloc["invoice_id"],
-            new_amount_paid,
-            new_status,
-        )
-
-        # Update AR if exists
-        await conn.execute(
-            """
-            UPDATE accounts_receivable
-            SET amount_paid = amount_paid + $2,
-                status = CASE
-                    WHEN amount_paid + $2 >= amount THEN 'PAID'
-                    ELSE 'PARTIAL'
-                END,
-                updated_at = NOW()
-            WHERE source_id = $1 AND source_type = 'INVOICE'
-        """,
-            alloc["invoice_id"],
-            alloc["amount_applied"],
-        )
+        # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+        # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+        # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], alloc["invoice_id"])
 
     # If payment from deposit, reduce deposit balance
     if payment["source_type"] == "deposit" and payment["source_deposit_id"]:
@@ -2366,23 +2321,11 @@ async def unapply_receive_payment_allocation(
             )
             # caches (Law 21, write-side only): invoice amount_paid/status from the canonical outstanding
             outstanding = await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], alloc["invoice_id"])
-            invoice_total = Decimal(str(inv["total_amount"] or 0))
-            new_paid = max(Decimal("0"), invoice_total - max(Decimal("0"), outstanding))
-            new_status = "posted" if new_paid <= 0 else ("paid" if outstanding <= 0 else "partial")
-            await conn.execute(
-                "UPDATE sales_invoices SET amount_paid = $2, status = $3, updated_at = NOW() WHERE id = $1 AND status <> 'void'",
-                alloc["invoice_id"], new_paid, new_status,
-            )
-            await conn.execute(
-                """
-                UPDATE accounts_receivable
-                SET amount_paid = GREATEST(0, amount_paid - $2),
-                    status = CASE WHEN GREATEST(0, amount_paid - $2) = 0 THEN 'OPEN' ELSE 'PARTIAL' END,
-                    updated_at = NOW()
-                WHERE source_id = $1 AND source_type = 'INVOICE'
-                """,
-                alloc["invoice_id"], share,
-            )
+            # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+            # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+            # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+            await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], alloc["invoice_id"])
+            new_status = await conn.fetchval("SELECT status FROM sales_invoices WHERE id = $1", alloc["invoice_id"])
             # server figures for the screen: the customer's available credit (same derivation as the deposit list)
             from .customer_deposits import compute_deposit_remaining_many
             _deps = await conn.fetch(
@@ -2670,52 +2613,10 @@ async def void_receive_payment(
                     # its invoice may even be void by now -- never rewrite it here.
                     if alloc["status"] == "reversed":
                         continue
-                    # Law 16: compute new amount_paid from journal-based remaining
-                    # At this point the reversal journal is already created and the
-                    # original journal is marked VOID, so get_invoice_remaining_from_journal
-                    # will no longer count this payment's allocation (the EXISTS check
-                    # on je.status='POSTED' fails because the journal is now VOID).
-                    # journal_remaining is therefore correct for the post-void state.
-                    invoice_total = await conn.fetchval(
-                        "SELECT total_amount FROM sales_invoices WHERE id = $1",
-                        alloc["invoice_id"],
-                    )
-                    journal_remaining = await get_invoice_remaining_from_journal(
-                        conn, ctx["tenant_id"], alloc["invoice_id"]
-                    )
-                    # The helper checks rp.status='posted' AND je.status='POSTED'.
-                    # The original journal is now VOID, so this payment's allocation
-                    # is already excluded. journal_remaining is correct post-void.
-                    new_amount_paid = max(0, invoice_total - journal_remaining)
-
-                    new_status = "posted" if new_amount_paid == 0 else "partial"
-
-                    await conn.execute(
-                        """
-                        UPDATE sales_invoices
-                        SET amount_paid = $2, status = $3, updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        alloc["invoice_id"],
-                        new_amount_paid,
-                        new_status,
-                    )
-
-                    # Update AR
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET amount_paid = GREATEST(0, amount_paid - $2),
-                            status = CASE
-                                WHEN GREATEST(0, amount_paid - $2) = 0 THEN 'OPEN'
-                                ELSE 'PARTIAL'
-                            END,
-                            updated_at = NOW()
-                        WHERE source_id = $1 AND source_type = 'INVOICE'
-                    """,
-                        alloc["invoice_id"],
-                        alloc["amount_applied"],
-                    )
+                    # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+                    # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+                    # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+                    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], alloc["invoice_id"])
 
                 # Void auto-created deposit if exists
                 if payment["created_deposit_id"]:

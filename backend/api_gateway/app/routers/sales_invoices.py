@@ -12,6 +12,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.pihak_helpers import segarkan_cache_piutang_faktur
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
@@ -4088,33 +4089,10 @@ async def record_payment(
                     rp_id,
                 )
 
-                # Update invoice cache (Law 21: write-side only)
-                await conn.execute(
-                    """
-                    UPDATE sales_invoices
-                    SET amount_paid = amount_paid + $1,
-                        status = CASE WHEN total_amount <= (amount_paid + $1) THEN 'paid' ELSE 'partial' END,
-                        updated_at = NOW()
-                    WHERE id = $2 AND tenant_id = $3
-                """,
-                    pay_amount,
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-
-                # Update AR cache if exists
-                if invoice["ar_id"]:
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET amount_paid = amount_paid + $2,
-                            status = CASE WHEN amount - (amount_paid + $2) <= 0 THEN 'PAID' ELSE 'PARTIAL' END,
-                            updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        invoice["ar_id"],
-                        pay_amount,
-                    )
+                # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+                # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+                # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+                await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], invoice_id)
 
                 # Bank transaction (BankSync Rule 1: atomic journal + bank_txn)
                 if bank_account_uuid:
