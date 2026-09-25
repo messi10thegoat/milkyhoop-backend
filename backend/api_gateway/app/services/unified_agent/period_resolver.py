@@ -39,12 +39,14 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
     return start, end
 
 
-def resolve_period(text: str) -> Optional[Dict[str, Any]]:
-    """Return {kind, start_date, end_date, label} or None if no period matched."""
+def resolve_period(text: str, *, today: date) -> Optional[Dict[str, Any]]:
+    """Return {kind, start_date, end_date, label} or None if no period matched.
+
+    `today` = tanggal BISNIS tenant dari pemanggil (P3 26 Sep 2026; dulu jam UTC server ->
+    "bulan ini" pada tgl 1 pukul 00-07 WIB = bulan LALU)."""
     if not text:
         return None
     s = text.lower()
-    today = date.today()
 
     if re.search(r"\bbulan\s+ini\b", s):
         start, end = _month_bounds(today.year, today.month)

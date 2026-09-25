@@ -309,7 +309,7 @@ def _is_in_progress_month(cur_start: date, cur_end: date, today: date) -> bool:
     )
 
 
-def _resolve_periods(period_text: str, today: Optional[date] = None) -> Dict[str, Any]:
+def _resolve_periods(period_text: str, today: date) -> Dict[str, Any]:
     """Resolve current period P and prior period P-1 from a phrase ("Option A").
 
     Uses the shared `resolve_period()` (unified_agent.period_resolver) to get
@@ -333,8 +333,7 @@ def _resolve_periods(period_text: str, today: Optional[date] = None) -> Dict[str
     `date.today()` (real server clock — this is backend code, not a workflow
     script). Defaults to "bulan ini" when the phrase is unrecognized.
     """
-    if today is None:
-        today = date.today()
+    # P3 26 Sep 2026: `today` WAJIB (tanggal bisnis tenant dari compute_driver_deltas).
 
     # `resolve_period()` always uses the global clock for RELATIVE phrases
     # ("bulan ini" / "current month") and for the unrecognized fallback. That
@@ -346,13 +345,13 @@ def _resolve_periods(period_text: str, today: Optional[date] = None) -> Dict[str
     _is_relative_current = (
         (not _txt)
         or bool(_re_search_current_month(_txt))
-        or (resolve_period(period_text) is None)  # unrecognized -> current month
+        or (resolve_period(period_text, today=today) is None)  # unrecognized -> current month
     )
     if _is_relative_current:
         cur_month_start = date(today.year, today.month, 1)
         cur_month_end = _month_last_day(today.year, today.month)
     else:
-        resolved = resolve_period(period_text) or resolve_period("bulan ini")
+        resolved = resolve_period(period_text, today=today) or resolve_period("bulan ini", today=today)
         cur_month_start = date.fromisoformat(resolved["start_date"])
         cur_month_end = date.fromisoformat(resolved["end_date"])
 
@@ -522,7 +521,13 @@ async def compute_driver_deltas(
     """
     from ..db_pool import get_db_pool  # Law 32: singleton pool
 
-    periods = _resolve_periods(period_text)
+    # P3 26 Sep 2026: "bulan ini"/MTD menurut tanggal BISNIS tenant (dulu jam UTC server).
+    from ...utils.tanggal_tenant import tanggal_dokumen
+
+    _pool_tgl = await get_db_pool()
+    async with _pool_tgl.acquire() as _c_tgl:
+        _hari_ini = await tanggal_dokumen(_c_tgl, tenant_id)
+    periods = _resolve_periods(period_text, today=_hari_ini)
     cur_start = periods["current_start"]
     cur_end = periods["current_end"]
     prior_start = periods["prior_start"]

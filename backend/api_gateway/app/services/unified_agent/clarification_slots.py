@@ -71,8 +71,8 @@ def load_pending_clarification(
     )
 
 
-def try_fill_period_slot(user_text: str) -> SlotFillResult:
-    resolved = resolve_period(user_text)
+def try_fill_period_slot(user_text: str, *, today) -> SlotFillResult:
+    resolved = resolve_period(user_text, today=today)
     if resolved is None:
         return SlotFillResult(
             filled=False,

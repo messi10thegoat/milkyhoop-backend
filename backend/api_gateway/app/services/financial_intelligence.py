@@ -987,7 +987,7 @@ class FinancialIntelligence:
                   AND je.status = 'POSTED'
                   AND coa.account_type = 'PAYABLE'
                   AND similarity(COALESCE(je.description, ''), $2) > 0.3
-                  AND je.journal_date >= CURRENT_DATE - INTERVAL '7 days'
+                  AND je.journal_date >= tanggal_bisnis($1) - INTERVAL '7 days'
                   AND jl.credit BETWEEN $3 * 0.95 AND $3 * 1.05
                 LIMIT 5
                 """,
