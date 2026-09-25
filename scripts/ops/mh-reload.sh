@@ -63,11 +63,14 @@ echo "kontainer: $MH_CTR   probe: $PROBE   batas: ${BATAS}s   worker dikonfigura
 LAMA=$(pekerja); NL=$(echo "$LAMA" | grep -c . || true)
 echo "worker lama ($NL): $(echo $LAMA)"
 
-# Keadaan RUSAK (worker mati berulang karena impor gagal): parent me-respawn worker dengan impor
-# SEGAR tiap 0,5 dtk -> kode yang sudah diperbaiki di berkas termuat SENDIRI. HUP tak perlu (dan
-# tak bisa dibuktikan lewat PID lama). Mode PULIH: tunggu N worker stabil + healthz + 5 dtk tanpa "died".
-if [ "$NL" != "$N" ] || docker logs --since 20s "$MH_CTR" 2>&1 | grep -qE "Child process \[[0-9]+\] died|Application startup failed"; then
-    echo "KEADAAN RUSAK terdeteksi (worker hidup $NL/$N atau worker mati <20 dtk) -> mode PULIH tanpa HUP"
+# Keadaan RUSAK = TIDAK sehat SEKARANG (worker hidup != N ATAU healthz != 200 dalam 5 dtk). Parent
+# me-respawn worker yang mati dengan impor SEGAR -> kode yang sudah diperbaiki termuat SENDIRI; HUP tak
+# perlu. Mode PULIH: tunggu N worker + healthz + 5 dtk tanpa "died".
+# 26 Sep: heuristik lama "ada died <20 dtk" memberi HIJAU PALSU — gateway SEHAT (worker lama) dengan
+# berkas rusak masuk PULIH, lolos tanpa HUP. Bila SEHAT sekarang -> SELALU jalur HUP + bukti PID.
+H0=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "$PROBE" 2>/dev/null) || H0=000
+if [ "$NL" != "$N" ] || [ "$H0" != "200" ]; then
+    echo "KEADAAN RUSAK terdeteksi (worker hidup $NL/$N, healthz $H0) -> mode PULIH tanpa HUP"
     T0=$(date -u +%Y-%m-%dT%H:%M:%S); AKHIR=$(( $(date +%s) + BATAS ))
     while :; do
         NB=$(pekerja | grep -c . || true)

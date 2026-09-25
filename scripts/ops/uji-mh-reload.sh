@@ -3,7 +3,7 @@
 # startup 8 dtk tiruan, port 127.0.0.1:18011, TANPA DB/env). Tak menyentuh kontainer produksi.
 # Kasus: (0) kontrol merah: sinyal yang diabaikan -> LIVE-RED; (1) perubahan normal di bawah beban ->
 # LULUS + 0 permintaan gagal; (2) impor CRASH -> LIVE-RED <=30 dtk + saran; (3) galat sintaks ->
-# LIVE-RED; (4) modul yang diimpor HANYA oleh router berubah -> SEMUA worker menyajikan kode baru.
+# LIVE-RED -- dijalankan TEPAT sesudah pemulihan kasus 2 = regresi hijau-palsu PULIH 26 Sep; (4) modul yang diimpor HANYA oleh router berubah -> SEMUA worker menyajikan kode baru.
 # Keluar 0 hanya bila semua kasus sesuai harapan.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,7 +63,7 @@ cek "$RC" 8 "rc LIVE-RED"; [ "$DET" -le 30 ]; cek $? 0 "LIVE-RED dalam ${DET}s (
 grep -q "SARAN:.*mh-restart" "$D.out"; cek $? 0 "saran fallback mh-restart"
 grep -q "uji crash impor" "$D.out"; cek $? 0 "traceback penyebab ikut dicetak"
 echo 'VERSI = "V1c"' > "$D/modul_x.py"; jalan "$R" $C --probe $URL --batas 30; cek "$RC" 0 "pulih sesudah kode diperbaiki (${DET}s)"
-grep -qE "^(PULIH|RELOAD)\|" "$D.out"; cek $? 0 "pulih lewat PULIH atau RELOAD ($(grep -oE '^(PULIH|RELOAD)' "$D.out"); jalur bergantung waktu deteksi 'died' 20 dtk)"
+grep -q "^PULIH|" "$D.out"; cek $? 0 "pulih lewat PULIH (gateway TIDAK sehat -> tanpa HUP)"
 
 echo "== (3) galat SINTAKS"
 echo 'VERSI = ("V2"' > "$D/modul_x.py"
@@ -72,7 +72,6 @@ cek "$RC" 8 "rc LIVE-RED"; [ "$DET" -le 30 ]; cek $? 0 "LIVE-RED dalam ${DET}s (
 grep -q "SyntaxError" "$D.out"; cek $? 0 "SyntaxError dicetak"
 echo 'VERSI = "V1d"' > "$D/modul_x.py"; jalan "$R" $C --probe $URL --batas 30; cek "$RC" 0 "pulih (${DET}s)"
 grep -qE "^(PULIH|RELOAD)\|" "$D.out"; cek $? 0 "pulih lewat $(grep -oE '^(PULIH|RELOAD)' "$D.out")"
-sleep 21   # keluar dari jendela deteksi "died" 20 dtk -> kasus berikut = reload normal lewat HUP
 
 echo "== (4) modul yang diimpor HANYA oleh router"
 echo 'VERSI = "V9"' > "$D/modul_x.py"
