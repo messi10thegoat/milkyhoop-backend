@@ -1058,6 +1058,72 @@ def _cn_memulihkan_stok(reason) -> bool:
     return reason in ALASAN_RESTOCK
 
 
+# CN HPP asli (25 Sep 2026, lanjutan #37 C/D). Retur yang MENUNJUK faktur asal
+# dipulihkan pada biaya dan gudang KELUARNYA barang itu dari faktur tsb, bukan
+# WAC hari ini + gudang pertama tenant. Dulu: HPP pembalik = WAC saat NK
+# diposting (bisa jauh dari HPP yang dibebankan saat faktur dikirim), dan
+# retur atas faktur yang barangnya BELUM PERNAH keluar tetap menambah stok +
+# mengkredit HPP yang tak pernah didebit (stok hantu). Tanpa faktur asal ->
+# perilaku lama (WAC + gudang pertama).
+PENANDA_CN_HPP_ASLI = "cn-hpp-asli-dari-keluar-faktur"
+_SUMBER_KELUAR_FAKTUR = ("SALES_INVOICE", "INVOICE_FULFILLMENT")
+
+
+async def _keluar_faktur_untuk_retur(conn, tenant_id, invoice_id, product_id, credit_note_id):
+    """(sisa_qty, unit_cost, warehouse_id) keluarnya barang dari faktur asal.
+
+    sisa = keluar bersih (keluar - pembalik pengiriman) - yang SUDAH dipulihkan
+    NK lain (non-void) atas faktur yang sama. unit_cost = rata-rata tertimbang
+    biaya keluar. warehouse = gudang dengan kuantitas keluar terbesar.
+    None bila barang ini tak pernah keluar lewat faktur itu.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT warehouse_id, quantity_in, quantity_out, unit_cost
+        FROM inventory_ledger
+        WHERE tenant_id = $1 AND source_id = $2 AND product_id = $3
+          AND source_type = ANY($4::text[])
+        """,
+        tenant_id,
+        invoice_id,
+        product_id,
+        list(_SUMBER_KELUAR_FAKTUR),
+    )
+    keluar_qty = Decimal("0")
+    keluar_biaya = Decimal("0")
+    balik_qty = Decimal("0")
+    per_gudang = {}
+    for r in rows:
+        q_out = Decimal(str(r["quantity_out"] or 0))
+        q_in = Decimal(str(r["quantity_in"] or 0))
+        if q_out > 0:
+            keluar_qty += q_out
+            keluar_biaya += q_out * Decimal(str(r["unit_cost"] or 0))
+            per_gudang[r["warehouse_id"]] = per_gudang.get(r["warehouse_id"], Decimal("0")) + q_out
+        if q_in > 0:
+            balik_qty += q_in
+    if keluar_qty <= 0:
+        return None
+    sudah_retur = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(il.quantity_in), 0)
+        FROM inventory_ledger il
+        JOIN credit_notes c ON c.id = il.source_id
+        WHERE il.tenant_id = $1 AND il.product_id = $2 AND il.source_type = 'CREDIT_NOTE'
+          AND c.tenant_id = $1 AND c.original_invoice_id = $3
+          AND c.status <> 'void' AND c.id <> $4
+        """,
+        tenant_id,
+        product_id,
+        invoice_id,
+        credit_note_id,
+    )
+    sisa = keluar_qty - balik_qty - Decimal(str(sudah_retur or 0))
+    unit_cost = (keluar_biaya / keluar_qty).quantize(Decimal("0.01"))
+    gudang = max(per_gudang.items(), key=lambda kv: kv[1])[0]
+    return sisa, unit_cost, gudang
+
+
 @router.post("/{credit_note_id}/post", response_model=CreditNoteResponse)
 async def post_credit_note(request: Request, credit_note_id: UUID):
     """
@@ -1274,6 +1340,13 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 # baris barang ber-track_inventory di-restock apa pun alasannya -> CN koreksi
                 # harga yang memilih barang katalog menambah stok fiktif dan mengurangi HPP.
                 # Rusak: putusan pemilik 25 Sep -- tanpa restock; kerugian lewat penyesuaian stok.
+                if cn["original_invoice_id"] and _cn_memulihkan_stok(cn["reason"]):
+                    # Serialkan NK retur atas faktur yang sama: batas "sisa terkirim"
+                    # dihitung di bawah dan tak boleh dilewati dua posting bersamaan.
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"CN_RETUR_FAKTUR:{ctx['tenant_id']}:{cn['original_invoice_id']}",
+                    )
                 for item in (cn_items if _cn_memulihkan_stok(cn["reason"]) else []):
                     if not item["item_id"]:
                         continue
@@ -1285,23 +1358,47 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     if not product or not product["track_inventory"]:
                         continue
 
-                    # Get WAC for unit_cost
-                    avg_cost = await conn.fetchval(
-                        "SELECT get_weighted_average_cost($1, $2)",
-                        ctx["tenant_id"],
-                        product["id"],
-                    )
-                    unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
-
-                    # Resolve warehouse (CN has no warehouse_id, use tenant default)
-                    wh_id = await conn.fetchval(
-                        "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                        ctx["tenant_id"],
-                    )
-                    if not wh_id:
-                        continue
-
                     qty_dec = Decimal(str(item["quantity"]))
+                    if cn["original_invoice_id"]:
+                        # HPP + gudang ASLI dari keluarnya barang lewat faktur asal.
+                        asal = await _keluar_faktur_untuk_retur(
+                            conn, ctx["tenant_id"], cn["original_invoice_id"],
+                            product["id"], credit_note_id,
+                        )
+                        nama_brg = product["nama_produk"] or product["item_code"]
+                        if asal is None:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Barang {nama_brg} belum pernah dikirim lewat faktur "
+                                    f"{cn['original_invoice_number'] or ''}".rstrip()
+                                    + ", jadi tidak bisa diretur ke stok. Pilih alasan selain "
+                                    "'Retur barang' bila ini koreksi nilai."
+                                ),
+                            )
+                        sisa, unit_cost_val, wh_id = asal
+                        if qty_dec > sisa:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Retur {nama_brg} {qty_dec.normalize():f} melebihi yang "
+                                    f"terkirim dan belum diretur ({max(sisa, Decimal('0')).normalize():f})."
+                                ),
+                            )
+                    else:
+                        # Tanpa faktur asal: WAC hari ini + gudang pertama tenant (lama).
+                        avg_cost = await conn.fetchval(
+                            "SELECT get_weighted_average_cost($1, $2)",
+                            ctx["tenant_id"],
+                            product["id"],
+                        )
+                        unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
+                        wh_id = await conn.fetchval(
+                            "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                            ctx["tenant_id"],
+                        )
+                        if not wh_id:
+                            continue
                     line_cost = qty_dec * unit_cost_val
 
                     inb_result = await record_inventory_inbound(
