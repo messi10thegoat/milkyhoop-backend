@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 import uuid as uuid_module
@@ -1361,18 +1362,6 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             remaining_after,
                         )
 
-                        if not payload.save_as_draft:
-                            await conn.execute(
-                                """
-                                UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
-                                    status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
-                                                  WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
-                                    updated_at = NOW()
-                                WHERE id = $2::uuid""",
-                                alloc.amount_applied,
-                                alloc.bill_id,
-                            )
-
                     # Create journal entry for posted payments
                     journal_id = None
                     journal_number = None
@@ -1407,6 +1396,10 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             journal_number,
                             payment_id,
                         )
+                        # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+                        # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+                        for alloc in payload.allocations:
+                            await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(str(alloc.bill_id)))
 
                         # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
                         if (payload.pph_amount or 0) > 0 and payload.pph_tax_code_id:
@@ -1624,16 +1617,6 @@ async def post_bill_payment(request: Request, payment_id: str):
                         alloc["bill_id"],
                         ctx["tenant_id"],
                     )
-                    await conn.execute(
-                        """
-                        UPDATE bills SET amount_paid = COALESCE(amount_paid, 0) + $1,
-                            status = CASE WHEN COALESCE(amount_paid, 0) + $1 >= amount THEN 'paid'
-                                          WHEN COALESCE(amount_paid, 0) + $1 > 0 THEN 'partial' ELSE status END,
-                            updated_at = NOW()
-                        WHERE id = $2""",
-                        alloc["amount_applied"],
-                        alloc["bill_id"],
-                    )
 
                 # Get full payment details for journal creation
                 full_payment = await conn.fetchrow(
@@ -1675,6 +1658,10 @@ async def post_bill_payment(request: Request, payment_id: str):
                     journal_number,
                     payment_id,
                 )
+                # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+                # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+                for alloc in allocations:
+                    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
 
                 return BillPaymentResponse(
                     success=True,
@@ -1908,17 +1895,9 @@ async def void_bill_payment(
                         alloc["bill_id"],
                         ctx["tenant_id"],
                     )
-                    await conn.execute(
-                        """
-                        UPDATE bills SET amount_paid = GREATEST(0, COALESCE(amount_paid, 0) - $1),
-                            status = CASE WHEN GREATEST(0, COALESCE(amount_paid, 0) - $1) = 0 THEN 'posted'
-                                          WHEN GREATEST(0, COALESCE(amount_paid, 0) - $1) < amount THEN 'partial'
-                                          ELSE status END,
-                            updated_at = NOW()
-                        WHERE id = $2""",
-                        alloc["amount_applied"],
-                        alloc["bill_id"],
-                    )
+                    # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+                    # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+                    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
 
                 # Fase 2.3: Void withholding_tax_records linked to this payment
             await conn.execute(

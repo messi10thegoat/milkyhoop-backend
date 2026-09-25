@@ -31,6 +31,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendor_credits import (
     CreateVendorCreditRequest,
@@ -1390,39 +1391,9 @@ async def apply_vendor_credit(
                         ctx["user_id"],
                     )
 
-                    # Update bill (cache write: derive amount_paid from journal remaining)
-                    journal_paid = (
-                        bill_total - bill_remaining
-                    )  # current paid from journal
-                    new_amount_paid = journal_paid + app.amount
-                    new_status = "paid" if new_amount_paid >= bill_total else "posted"
-
-                    await conn.execute(
-                        """
-                        UPDATE bills
-                        SET amount_paid = $2, status_v2 = $3, updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        UUID(app.bill_id),
-                        new_amount_paid,
-                        new_status,
-                    )
-
-                    # Update AP if exists
-                    await conn.execute(
-                        """
-                        UPDATE accounts_payable
-                        SET amount_paid = amount_paid + $2,
-                            status = CASE
-                                WHEN amount_paid + $2 >= amount THEN 'PAID'
-                                ELSE 'PARTIAL'
-                            END,
-                            updated_at = NOW()
-                        WHERE source_id = $1 AND source_type = 'BILL'
-                    """,
-                        UUID(app.bill_id),
-                        app.amount,
-                    )
+                    # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+                    # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+                    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(app.bill_id))
 
                     applications_created.append(
                         {

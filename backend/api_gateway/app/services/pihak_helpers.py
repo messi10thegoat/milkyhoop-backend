@@ -148,3 +148,39 @@ async def segarkan_cache_piutang_faktur(conn, tenant_id: str, invoice_id) -> Non
            WHERE source_id = $3 AND source_type = 'INVOICE' AND tenant_id = $4 AND status <> 'VOID'""",
         dibayar, out, invoice_id, tenant_id,
     )
+
+
+async def segarkan_cache_hutang_tagihan(conn, tenant_id: str, bill_id) -> None:
+    """Cache amount_paid/status TAGIHAN + accounts_payable dihitung ULANG dari compute_ap_outstanding.
+
+    Kembaran segarkan_cache_piutang_faktur (26 Sep 2026, antrean 4b): dulu 6 penulis (pembayaran buat/post/void,
+    uang muka vendor, nota kredit vendor, record_payment) masing-masing beraritmetika sendiri. Layar tagihan
+    memang menurunkan status dari jurnal, tapi cache dibaca guard (void ditolak bila 'paid') dan laporan.
+    Baris hilang dari fungsi = sisa 0. HANYA kolom status bayar (`status`) + amount_paid; `status_v2`
+    (siklus hidup draft/posted/void, dibaca derive_doc_status & guard edit) TIDAK disentuh.
+    WAJIB dipanggil SESUDAH jurnal POSTED dan bill_payments_v2.journal_id terisi (fungsi membaca lewat itu).
+    """
+    b = await conn.fetchrow(
+        "SELECT amount, status, status_v2 FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tenant_id
+    )
+    if not b or b["status"] in ("draft", "void") or (b["status_v2"] or "") in ("draft", "void"):
+        return
+    out = await conn.fetchval(
+        "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding($1) WHERE bill_id = $2",
+        tenant_id, bill_id,
+    )
+    out = max(Decimal("0"), Decimal(str(out)))
+    dibayar = max(Decimal("0"), Decimal(str(b["amount"])) - out)
+    status = "paid" if out < Decimal("0.01") else ("partial" if dibayar > Decimal("0.005") else "posted")
+    await conn.execute(
+        "UPDATE bills SET amount_paid = $1, status = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4",
+        dibayar, status, bill_id, tenant_id,
+    )
+    await conn.execute(
+        """UPDATE accounts_payable
+           SET amount_paid = $1,
+               status = CASE WHEN $2::numeric < 0.01 THEN 'PAID' WHEN $1::numeric > 0.005 THEN 'PARTIAL' ELSE 'OPEN' END,
+               updated_at = NOW()
+           WHERE source_id = $3 AND source_type = 'BILL' AND tenant_id = $4 AND status <> 'VOID'""",
+        dibayar, out, bill_id, tenant_id,
+    )

@@ -18,6 +18,7 @@ from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
+from .pihak_helpers import segarkan_cache_hutang_tagihan
 from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from decimal import Decimal, ROUND_HALF_UP
 from .tax_factor import resolve_dpp_factor
@@ -1894,39 +1895,11 @@ class BillsService:
                         pph_amount,
                     )
 
-                # 10. Update bill cache (Law 21 — write-side only)
-                new_paid = int(bill["amount_paid"]) + payment_amount
-                new_status = "paid" if new_paid >= int(bill["amount"]) else "partial"
-
-                await conn.execute(
-                    """
-                    UPDATE bills SET amount_paid = $1, status = $2
-                    WHERE id = $3 AND tenant_id = $4
-                    """,
-                    new_paid,
-                    new_status,
-                    bill_id,
-                    tenant_id,
-                )
-
-                # 11. Update AP cache (if exists)
-                if bill["ap_id"]:
-                    await conn.execute(
-                        """
-                        UPDATE accounts_payable
-                        SET amount_paid = amount_paid + $1,
-                            status = CASE
-                                WHEN amount_paid + $1 >= amount THEN 'PAID'
-                                WHEN amount_paid + $1 > 0 THEN 'PARTIAL'
-                                ELSE status
-                            END,
-                            updated_at = NOW()
-                        WHERE id = $2 AND tenant_id = $3
-                        """,
-                        payment_amount,
-                        bill["ap_id"],
-                        tenant_id,
-                    )
+                # 10–11. # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+                # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+                await segarkan_cache_hutang_tagihan(conn, tenant_id, bill_id)
+                _cache = await conn.fetchrow("SELECT amount_paid, status FROM bills WHERE id = $1", bill_id)
+                new_paid, new_status = int(_cache["amount_paid"] or 0), _cache["status"]
 
                 logger.info(
                     f"Bill payment recorded: bill={bill_id}, amount={payment_amount}, "

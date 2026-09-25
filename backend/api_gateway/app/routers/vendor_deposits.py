@@ -10,6 +10,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.fitur_parkir import fitur_belum_tersedia
 
@@ -753,22 +754,9 @@ async def apply_vendor_deposit(
                 ctx.get("user_id"),
             )
 
-            # Update bill amount_paid (14 Sep 2026: dulu kolom hantu paid_amount/total_amount -> jalur ini tak pernah
-            # jalan; bentuk sama dengan bill_payments.py)
-            await conn.execute(
-                """
-                UPDATE bills SET
-                    amount_paid = COALESCE(amount_paid, 0) + $2,
-                    status = CASE
-                        WHEN COALESCE(amount_paid, 0) + $2 >= amount THEN 'paid'
-                        ELSE 'partial'
-                    END,
-                    updated_at = NOW()
-                WHERE id = $1
-                """,
-                data.bill_id,
-                data.amount,
-            )
+            # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+            # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+            await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], data.bill_id)
 
             # Fetch updated values
             updated_vd = await conn.fetchrow(
