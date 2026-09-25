@@ -27,6 +27,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.proforma_terbayar import terbayar_proforma
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -171,6 +172,14 @@ async def compute_paid_amount(conn, tenant_id: str, proforma_id) -> float:
     return float(row["paid"] or 0)
 
 
+async def terbayar_satu(conn, tenant_id: str, row) -> tuple:
+    """(paid float, paid_breakdown) untuk TAMPILAN — turunan dari SO (services/proforma_terbayar).
+    Pagar batal TIDAK memakai ini (tetap compute_paid_amount = uang muka eksplisit)."""
+    tb = await terbayar_proforma(conn, tenant_id, [row["sales_order_id"]])
+    t = tb.get(row["id"])
+    return (float(t["paid"]), t["paid_breakdown"]) if t else (0.0, None)
+
+
 async def issued_total_for_order(
     conn, tenant_id: str, sales_order_id, exclude_id=None
 ) -> float:
@@ -259,7 +268,7 @@ async def fetch_order_or_404(conn, tenant_id: str, sales_order_id):
     return order
 
 
-def serialize_proforma(row, order_number=None, paid_amount=None) -> dict:
+def serialize_proforma(row, order_number=None, paid_amount=None, paid_breakdown=None) -> dict:
     amount = _f(row["amount"]) or 0.0
     data = {
         "id": str(row["id"]),
@@ -290,6 +299,8 @@ def serialize_proforma(row, order_number=None, paid_amount=None) -> dict:
         data["paid_amount"] = float(paid_amount)
         data["outstanding_amount"] = round(amount - float(paid_amount), 2)
         data["is_fully_paid"] = float(paid_amount) + 0.005 >= amount
+    if paid_breakdown is not None:
+        data["paid_breakdown"] = paid_breakdown
     return data
 
 
@@ -360,13 +371,7 @@ async def list_proformas(
 
             rows = await conn.fetch(
                 f"""
-                SELECT p.*, so.order_number,
-                       COALESCE((
-                           SELECT SUM(cd.amount) FROM customer_deposits cd
-                           WHERE cd.proforma_id = p.id
-                             AND cd.tenant_id = p.tenant_id
-                             AND cd.status <> 'void'
-                       ), 0) AS paid_amount
+                SELECT p.*, so.order_number
                 FROM proformas p
                 LEFT JOIN sales_orders so
                        ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
@@ -379,8 +384,10 @@ async def list_proformas(
                 skip,
             )
 
+            tb = await terbayar_proforma(conn, ctx["tenant_id"], [r["sales_order_id"] for r in rows])
             items = [
-                serialize_proforma(r, r["order_number"], _f(r["paid_amount"]) or 0.0)
+                serialize_proforma(r, r["order_number"], float(tb[r["id"]]["paid"]) if r["id"] in tb else 0.0,
+                                   tb[r["id"]]["paid_breakdown"] if r["id"] in tb else None)
                 for r in rows
             ]
 
@@ -426,7 +433,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
             if not row:
                 raise HTTPException(status_code=404, detail="Proforma not found")
 
-            paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
+            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
             deposits = await conn.fetch(
                 """
                 SELECT id, deposit_number, deposit_date, amount, status
@@ -438,7 +445,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
                 ctx["tenant_id"],
             )
 
-            data = serialize_proforma(row, row["order_number"], paid)
+            data = serialize_proforma(row, row["order_number"], paid, paid_breakdown)
             data["order_total_amount"] = _f(row["order_total_amount"])
             data["deposits"] = [
                 {
@@ -475,13 +482,7 @@ async def list_proformas_for_order(request: Request, order_id: str):
 
             rows = await conn.fetch(
                 """
-                SELECT p.*,
-                       COALESCE((
-                           SELECT SUM(cd.amount) FROM customer_deposits cd
-                           WHERE cd.proforma_id = p.id
-                             AND cd.tenant_id = p.tenant_id
-                             AND cd.status <> 'void'
-                       ), 0) AS paid_amount
+                SELECT p.*
                 FROM proformas p
                 WHERE p.tenant_id = $1 AND p.sales_order_id = $2
                 ORDER BY p.proforma_date, p.created_at
@@ -490,9 +491,11 @@ async def list_proformas_for_order(request: Request, order_id: str):
                 oid,
             )
 
+            tb = await terbayar_proforma(conn, ctx["tenant_id"], [oid])
             items = [
                 serialize_proforma(
-                    r, order["order_number"], _f(r["paid_amount"]) or 0.0
+                    r, order["order_number"], float(tb[r["id"]]["paid"]) if r["id"] in tb else 0.0,
+                    tb[r["id"]]["paid_breakdown"] if r["id"] in tb else None,
                 )
                 for r in rows
             ]
@@ -709,10 +712,10 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
                 body.payment_account_holder,
             )
 
-            paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
+            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
             return {
                 "success": True,
-                "data": serialize_proforma(row, order["order_number"], paid),
+                "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
             }
 
     except HTTPException:
@@ -772,10 +775,10 @@ async def issue_proforma(request: Request, proforma_id: str):
             if not row:
                 raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
 
-            paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
+            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
             return {
                 "success": True,
-                "data": serialize_proforma(row, order["order_number"], paid),
+                "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
             }
 
     except HTTPException:
@@ -867,7 +870,7 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
             if not row:
                 raise HTTPException(status_code=404, detail="Proforma not found")
 
-            paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
+            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
 
             # Rincian item Sales Order untuk tabel Keterangan.
             # `sales_order_items` TIDAK punya kolom `deleted_at` (diukur
