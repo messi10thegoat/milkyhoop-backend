@@ -887,6 +887,17 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         }
 
 
+# Q-014 (25 Sep 2026): SATU aturan "jatuh tempo" untuk filter ?status=overdue DAN penanda per baris
+# `is_overdue` di daftar. Kolom status tak pernah berisi 'overdue' (prod 25 Sep: 0 baris) -- tanpa
+# penanda ini baris daftar tak bisa membedakan jatuh tempo dari belum, dan FE terpaksa memanggil dua kali.
+# Hari ini = tanggal bisnis tenant (#10b-3a), sisa = compute_ar_outstanding (turunan jurnal).
+_SISA_AR_POSITIF = "si.id IN (SELECT invoice_id FROM compute_ar_outstanding($1) WHERE outstanding > 0)"
+
+
+def _syarat_jatuh_tempo(p_hari: str) -> str:
+    return f"(si.status IN ('posted', 'partial') AND si.due_date < {p_hari}::date AND {_SISA_AR_POSITIF})"
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     request: Request,
@@ -926,6 +937,8 @@ async def list_invoices(
             conditions = ["si.tenant_id = $1"]
             params = [ctx["tenant_id"]]
             param_idx = 2
+            # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC (filter overdue DAN is_overdue per baris)
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             if search:
                 words = search.strip().split()
@@ -969,13 +982,8 @@ async def list_invoices(
                     # Exclude draft & void
                     conditions.append("si.status NOT IN ('draft', 'void')")
                 elif status == "overdue":
-                    # Overdue = posted/partial + past due + has outstanding via DB function
-                    # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
-                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-                    conditions.append(
-                        f"(si.status IN ('posted', 'partial') AND si.due_date < ${param_idx}::date"
-                        " AND si.id IN (SELECT invoice_id FROM compute_ar_outstanding($1) WHERE outstanding > 0))"
-                    )
+                    # Overdue = posted/partial + past due + has outstanding via DB function (Q-014: aturan bersama)
+                    conditions.append(_syarat_jatuh_tempo(f"${param_idx}"))
                     params.append(hari_ini)
                     param_idx += 1
                 else:
@@ -1027,6 +1035,11 @@ async def list_invoices(
                 f"SELECT COUNT(*) FROM sales_invoices si WHERE {where_clause}", *params
             )
 
+            # Q-014: penanda jatuh tempo per baris, aturan SAMA dengan filter ?status=overdue
+            p_hari = param_idx
+            params.append(hari_ini)
+            param_idx += 1
+
             # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
             query = f"""
                 SELECT si.id, si.invoice_number, si.customer_id, si.customer_name,
@@ -1040,7 +1053,8 @@ async def list_invoices(
                        si.status, si.operational_status, si.accounting_status,
                        si.fulfillment_status, si.revenue_status, si.created_at,
                        -- nomor pesanan (permintaan pemilik 25 Sep): JOIN berpagar tenant, NULL bila lepas
-                       si.sales_order_id, so.order_number AS sales_order_number
+                       si.sales_order_id, so.order_number AS sales_order_number,
+                       {_syarat_jatuh_tempo(f"${p_hari}")} AS is_overdue
                 FROM sales_invoices si
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
                 LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
@@ -1077,6 +1091,7 @@ async def list_invoices(
                     "created_at": row["created_at"].isoformat(),
                     "sales_order_id": str(row["sales_order_id"]) if row["sales_order_id"] else None,
                     "sales_order_number": row["sales_order_number"],
+                    "is_overdue": bool(row["is_overdue"]),
                 }
                 for row in rows
             ]

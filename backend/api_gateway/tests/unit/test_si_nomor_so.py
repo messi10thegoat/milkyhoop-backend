@@ -114,7 +114,7 @@ def _baris(so_id, so_no):
             "invoice_date": date(2026, 9, 10), "due_date": date(2026, 9, 17), "total_amount": 100,
             "journal_paid": 100, "status": "paid", "operational_status": "PAID", "accounting_status": "POSTED",
             "fulfillment_status": None, "revenue_status": None, "created_at": datetime(2026, 9, 10),
-            "sales_order_id": so_id, "sales_order_number": so_no}
+            "sales_order_id": so_id, "sales_order_number": so_no, "is_overdue": False}
 
 
 async def _daftar(monkeypatch, rows, search=None):
@@ -123,6 +123,10 @@ async def _daftar(monkeypatch, rows, search=None):
     async def _pool():
         return Pool(db)
     monkeypatch.setattr(SI, "get_pool", _pool)
+
+    async def _hari(conn, tid):          # Q-014: daftar kini selalu membaca tanggal bisnis -> tanpa kueri zona
+        return date(2026, 9, 25)
+    monkeypatch.setattr(SI, "tanggal_dokumen", _hari)
     req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": None}), headers={})
     out = await SI.list_invoices(req, skip=0, limit=20, search=search, status=None, customer_id=None,
                                  start_date=None, end_date=None, sort_by="created_at", sort_order="desc",

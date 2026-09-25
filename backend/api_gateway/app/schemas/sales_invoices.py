@@ -379,6 +379,9 @@ class InvoiceListItem(BaseModel):
     # Nomor pesanan tertaut (25 Sep 2026) -- dideklarasikan, kalau tidak response_model membuangnya.
     sales_order_id: Optional[str] = None
     sales_order_number: Optional[str] = None
+    # Q-014: jatuh tempo per baris (aturan SAMA dengan ?status=overdue; tanggal bisnis tenant).
+    # `status` tetap nilai kolom (posted/partial/...) -- 'overdue' tak pernah tersimpan.
+    is_overdue: bool = False
 
 
 class InvoiceListResponse(BaseModel):
