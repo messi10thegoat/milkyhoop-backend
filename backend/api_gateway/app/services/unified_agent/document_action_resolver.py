@@ -57,6 +57,13 @@ class DocumentActionResolver:
         self.pool = pool
         self.tenant_id = tenant_id
 
+    async def _hari_ini(self):
+        """Tanggal BISNIS tenant untuk dokumen tanpa tanggal OCR (P1 26 Sep 2026; dulu tanggal UTC server)."""
+        from ...utils.tanggal_tenant import tanggal_dokumen
+
+        async with self.pool.acquire() as conn:
+            return await tanggal_dokumen(conn, self.tenant_id)
+
     async def resolve(self, match_result, ocr_data: dict) -> Optional[ResolvedAction]:
         """
         Main entry. Returns ResolvedAction or None if no action possible.
@@ -228,9 +235,7 @@ class DocumentActionResolver:
 
         # Default payment_date to today if OCR did not extract (prevents schema fail -> TEXT fallback)
         if not payment_date or payment_date in ("-", "null", "None", "none"):
-            from datetime import date as _date_today
-
-            payment_date = _date_today.today().isoformat()
+            payment_date = (await self._hari_ini()).isoformat()
 
         # For incoming payments: match destination_account_number (our account that receives money)
         bank_name = (
@@ -332,9 +337,7 @@ class DocumentActionResolver:
 
         # Default expense_date to today if OCR didn't extract
         if not expense_date or expense_date in ("-", "null", "None", "none"):
-            from datetime import date as _date_today
-
-            expense_date = _date_today.today().isoformat()
+            expense_date = (await self._hari_ini()).isoformat()
 
         needs_clarification = not bank_id or not account_id
         clarification_options = []

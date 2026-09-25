@@ -101,7 +101,7 @@ def _extract_invoice_ref(draft_plan: dict, document: dict) -> Optional[str]:
     return None
 
 
-def _extract_due_date(draft_plan: dict, document: dict, issue_date_str: str) -> str:
+def _extract_due_date(draft_plan: dict, document: dict, issue_date_str: str, hari_ini: date) -> str:
     """Extract due date or default issue_date + 30 days."""
     ar = document.get("analysis_result") or {}
     if isinstance(ar, dict):
@@ -113,7 +113,7 @@ def _extract_due_date(draft_plan: dict, document: dict, issue_date_str: str) -> 
         issue = date.fromisoformat(issue_date_str)
         return (issue + timedelta(days=30)).isoformat()
     except (ValueError, TypeError):
-        return (date.today() + timedelta(days=30)).isoformat()
+        return (hari_ini + timedelta(days=30)).isoformat()
 
 
 def _detect_tax_rate(draft_plan: dict) -> int:
@@ -171,13 +171,13 @@ def _build_bill_items_from_journal(draft_plan: dict) -> List[dict]:
 
 # ─── Main Transformer Functions ────────────────────────────────────────
 
-def transform_to_bill_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_bill_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/bills/v2 payload (CreateBillRequestV2).
     For action_type: create_purchase_invoice, create_bill
     """
     journal_draft = draft_plan.get("journal_draft") or {}
-    issue_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    issue_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
 
     items = _build_bill_items_from_movements(draft_plan)
     if not items:
@@ -188,7 +188,7 @@ def transform_to_bill_payload(draft_plan: dict, document: dict) -> dict:
     payload = {
         "vendor_name": _extract_counterparty_name(draft_plan, document) or "Unknown Vendor",
         "issue_date": issue_date,
-        "due_date": _extract_due_date(draft_plan, document, issue_date),
+        "due_date": _extract_due_date(draft_plan, document, issue_date, hari_ini),
         "items": items,
         "notes": journal_draft.get("description", ""),
         "tax_rate": _detect_tax_rate(draft_plan),
@@ -202,13 +202,13 @@ def transform_to_bill_payload(draft_plan: dict, document: dict) -> dict:
     return payload
 
 
-def transform_to_sales_invoice_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_sales_invoice_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/sales-invoices payload (CreateInvoiceRequest).
     For action_type: create_sales_invoice
     """
     journal_draft = draft_plan.get("journal_draft") or {}
-    invoice_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    invoice_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
 
     items = []
     for mov in (draft_plan.get("inventory_movements") or []):
@@ -242,7 +242,7 @@ def transform_to_sales_invoice_payload(draft_plan: dict, document: dict) -> dict
     payload = {
         "customer_name": _extract_counterparty_name(draft_plan, document) or "Unknown Customer",
         "invoice_date": invoice_date,
-        "due_date": _extract_due_date(draft_plan, document, invoice_date),
+        "due_date": _extract_due_date(draft_plan, document, invoice_date, hari_ini),
         "items": items,
         "notes": journal_draft.get("description", ""),
         "tax_rate": float(_detect_tax_rate(draft_plan)),
@@ -256,14 +256,14 @@ def transform_to_sales_invoice_payload(draft_plan: dict, document: dict) -> dict
     return payload
 
 
-def transform_to_expense_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_expense_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/expenses payload (CreateExpenseRequest).
     For action_type: record_expense
     """
     journal_draft = draft_plan.get("journal_draft") or {}
     bank_draft = draft_plan.get("bank_draft")
-    expense_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    expense_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
 
     if not bank_draft or not bank_draft.get("bank_account_id"):
         raise ValueError("Expense requires bank_draft.bank_account_id (paid_through)")
@@ -330,7 +330,7 @@ def transform_to_expense_payload(draft_plan: dict, document: dict) -> dict:
     return payload
 
 
-def transform_to_bill_payment_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_bill_payment_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/bill-payments payload.
     For action_type: record_payment_made
@@ -345,7 +345,7 @@ def transform_to_bill_payment_payload(draft_plan: dict, document: dict) -> dict:
     if not matched_to or not matched_to.get("source_id"):
         raise ValueError("Bill payment requires matched_to with bill reference")
 
-    payment_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    payment_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
     amount = _decimal_to_int(bank_draft.get("amount", "0"))
     if amount <= 0:
         raise ValueError("Bill payment amount must be > 0")
@@ -374,7 +374,7 @@ def transform_to_bill_payment_payload(draft_plan: dict, document: dict) -> dict:
     }
 
 
-def transform_to_receive_payment_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_receive_payment_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/receive-payments payload.
     For action_type: record_payment_received
@@ -389,7 +389,7 @@ def transform_to_receive_payment_payload(draft_plan: dict, document: dict) -> di
     if not matched_to or not matched_to.get("source_id"):
         raise ValueError("Receive payment requires matched_to with invoice reference")
 
-    payment_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    payment_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
     amount = _decimal_to_int(bank_draft.get("amount", "0"))
     if amount <= 0:
         raise ValueError("Receive payment amount must be > 0")
@@ -417,7 +417,7 @@ def transform_to_receive_payment_payload(draft_plan: dict, document: dict) -> di
     }
 
 
-def transform_to_journal_payload(draft_plan: dict, document: dict) -> dict:
+def transform_to_journal_payload(draft_plan: dict, document: dict, *, hari_ini: date) -> dict:
     """
     Transform draft_plan → POST /api/journals payload (CreateJournalRequest).
     Fallback for action_types without a specific endpoint.
@@ -426,7 +426,7 @@ def transform_to_journal_payload(draft_plan: dict, document: dict) -> dict:
     if not journal_draft.get("lines"):
         raise ValueError("Journal requires at least 2 lines")
 
-    entry_date = _parse_date(journal_draft.get("journal_date")) or date.today().isoformat()
+    entry_date = _parse_date(journal_draft.get("journal_date")) or hari_ini.isoformat()
 
     lines = []
     for line in journal_draft["lines"]:
@@ -467,5 +467,9 @@ ACTION_ROUTES = {
 
 
 def get_route(action_type: str):
-    """Get route for action_type. Returns (endpoint, method, transformer, tx_type) or None."""
+    """Get route for action_type. Returns (endpoint, method, transformer, tx_type) or None.
+
+    transformer(draft_plan, document, *, hari_ini) — hari_ini = tanggal BISNIS tenant
+    (tanggal_tenant.tanggal_dokumen) dari pemanggil; dipakai hanya bila draf tak membawa tanggal.
+    26 Sep 2026 (P1): dulu tanggal UTC server -> unggahan 00:00-07:00 WIB bertanggal KEMARIN."""
     return ACTION_ROUTES.get(action_type)

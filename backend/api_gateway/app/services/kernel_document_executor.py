@@ -19,6 +19,7 @@ Iron Laws enforced:
   Law 25: Decimal precision (int amounts in payloads)
 """
 
+from ..utils.tanggal_tenant import tanggal_dokumen
 import json
 import logging
 import uuid
@@ -162,6 +163,8 @@ class KernelDocumentExecutor:
 
         async with self.pool.acquire() as conn:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            # P1 26 Sep 2026: tanggal BISNIS tenant untuk draf tanpa tanggal (bukan UTC).
+            hari_ini_rest = await tanggal_dokumen(conn, tenant_id)
 
             async with conn.transaction():
                 # Advisory lock (Law 13)
@@ -237,7 +240,7 @@ class KernelDocumentExecutor:
 
         # ── Phase 2: Transform ────────────────────────────────────
         try:
-            payload = transformer(draft_plan, doc_snapshot)
+            payload = transformer(draft_plan, doc_snapshot, hari_ini=hari_ini_rest)
             logger.info(f"[KDE] Payload transformed for doc {document_id}")
         except Exception as e:
             logger.error(f"[KDE] Transformer error for doc {document_id}: {e}")
@@ -484,7 +487,7 @@ class KernelDocumentExecutor:
                     )
 
                 # Period lock check (Law 5)
-                journal_date = self._parse_date(draft_plan)
+                journal_date = await self._parse_date(conn, tenant_id, draft_plan)
                 period_ok = await self._check_period(conn, tenant_id, journal_date)
                 if not period_ok:
                     return await self._mark_failed(
@@ -708,8 +711,11 @@ class KernelDocumentExecutor:
             batch_stats["total"], new_status,
         )
 
-    def _parse_date(self, draft_plan: dict) -> date:
-        """Extract journal date from draft_plan or OCR result."""
+    async def _parse_date(self, conn, tenant_id: str, draft_plan: dict) -> date:
+        """Extract journal date from draft_plan or OCR result.
+
+        Tanpa tanggal -> tanggal BISNIS tenant (tanggal_dokumen), bukan tanggal UTC server
+        (P1 26 Sep 2026: unggahan 00:00-07:00 WIB dulu terjurnal KEMARIN / bulan lalu tgl 1)."""
         date_str = draft_plan.get("date") or draft_plan.get("journal_date")
         if not date_str:
             journal_draft = draft_plan.get("journal_draft", {})
@@ -722,7 +728,7 @@ class KernelDocumentExecutor:
                 return datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
             except (ValueError, TypeError):
                 pass
-        return date.today()
+        return await tanggal_dokumen(conn, tenant_id)
 
     async def _check_period(self, conn, tenant_id: str, journal_date: date) -> bool:
         """Check if accounting period is open (Law 5)."""
@@ -738,7 +744,7 @@ class KernelDocumentExecutor:
         return row["status"] == "OPEN"
 
     async def _next_journal_number(
-        self, conn, tenant_id: str, prefix: str = "DI", p_date=None
+        self, conn, tenant_id: str, prefix: str, p_date: date
     ) -> str:
         """Generate next journal number via the canonical self-healing DB fn.
 
@@ -747,8 +753,6 @@ class KernelDocumentExecutor:
         max (drift-proof, concurrency-safe). p_date defaults to today; callers
         should pass journal_date so the YYMM segment tracks the document date.
         """
-        if p_date is None:
-            p_date = date.today()
         return await conn.fetchval(
             "SELECT get_next_journal_number($1, $2, $3)",
             tenant_id, prefix, p_date,
@@ -820,7 +824,7 @@ class KernelDocumentExecutor:
             journal_draft.get("description", "")
             or str(doc["original_filename"] or "")
         )
-        journal_date = self._parse_date(draft_plan)
+        journal_date = await self._parse_date(conn, tenant_id, draft_plan)
         tx_number = f"DI-{journal_number}"
 
         await conn.execute(
@@ -888,7 +892,7 @@ class KernelDocumentExecutor:
             new_balance = current_balance + quantity_in - quantity_out
 
             movement_type = "PURCHASE" if direction == "IN" else "SALE"
-            movement_date = self._parse_date({"date": mv.get("date")})
+            movement_date = await self._parse_date(conn, tenant_id, {"date": mv.get("date")})
 
             row = await conn.fetchrow(
                 """INSERT INTO inventory_ledger (
