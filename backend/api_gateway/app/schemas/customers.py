@@ -166,6 +166,10 @@ class CustomerListItem(BaseModel):
     total_transactions: Optional[int] = 0
     total_value: Optional[int] = 0
     outstanding_balance: Optional[int] = 0
+    # Q-015: dari sales_orders non-draf non-batal (lihat services/pelanggan_ringkas_so.py)
+    order_count: int = 0
+    last_order_date: Optional[str] = None
+    last_dp_percent: Optional[float] = None
     is_active: bool = True
     created_at: Optional[str] = None
 

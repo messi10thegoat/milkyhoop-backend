@@ -11,6 +11,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.customers import (
     CreateCustomerRequest,
@@ -295,6 +296,10 @@ async def list_customers(
                 )
                 ar_balances = {row["cid"]: int(row["balance"]) for row in ar_rows}
 
+            # Q-015: ringkasan SO per pelanggan (jumlah pesanan non-draf non-batal, SO terakhir, DP% terakhir)
+            # — SATU kueri untuk seluruh halaman, berpagar tenant (services/pelanggan_ringkas_so.py).
+            ringkas_so = await ringkas_so_pelanggan(conn, ctx["tenant_id"], customer_ids)
+
             items = [
                 {
                     "id": str(row["id"]),
@@ -312,6 +317,7 @@ async def list_customers(
                     "total_transactions": row["total_transaksi"],
                     "total_value": row["total_nilai"],
                     "outstanding_balance": ar_balances.get(str(row["id"]), 0),
+                    **ringkas_so.get(str(row["id"]), KOSONG_RINGKAS_SO),
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat()
                     if row["created_at"]
