@@ -8,6 +8,7 @@ import logging
 import asyncpg
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.pay_group_access import run_dalam_cakupan
 from ..schemas.payroll import CreatePayrollPaymentRequest, VoidPayrollRequest
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 
@@ -45,6 +46,9 @@ async def create_payment(request: Request, body: CreatePayrollPaymentRequest):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG2 (26 Sep 2026): pembayaran gaji mengikuti cakupan run-nya.
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), body.payroll_id):
+            raise HTTPException(404, detail="Payroll run not found")
 
         run = await conn.fetchrow(
             "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2 AND status = 'posted'",
@@ -138,6 +142,13 @@ async def post_payment(request: Request, payment_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        _run_pay = await conn.fetchval(
+            "SELECT payroll_id FROM payroll_payments WHERE id = $1 AND tenant_id = $2",
+            payment_id, ctx["tenant_id"],
+        )
+        if _run_pay is None or not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), _run_pay):
+            # Audit pay-group PG2 (26 Sep 2026): pembayaran gaji mengikuti cakupan run-nya.
+            raise HTTPException(404, detail="Payment not found")
 
         async with conn.transaction():
             await conn.execute(
@@ -334,6 +345,13 @@ async def void_payment(request: Request, payment_id: UUID, body: VoidPayrollRequ
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        _run_pay = await conn.fetchval(
+            "SELECT payroll_id FROM payroll_payments WHERE id = $1 AND tenant_id = $2",
+            payment_id, ctx["tenant_id"],
+        )
+        if _run_pay is None or not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), _run_pay):
+            # Audit pay-group PG2 (26 Sep 2026): pembayaran gaji mengikuti cakupan run-nya.
+            raise HTTPException(404, detail="Payment not found")
 
         payment = await conn.fetchrow(
             "SELECT * FROM payroll_payments WHERE id = $1 AND tenant_id = $2",
@@ -421,6 +439,9 @@ async def list_payments(request: Request, payroll_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG2 (26 Sep 2026): pembayaran gaji mengikuti cakupan run-nya.
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), payroll_id):
+            raise HTTPException(404, detail="Payroll run not found")
         rows = await conn.fetch(
             "SELECT * FROM payroll_payments WHERE payroll_id = $1 AND tenant_id = $2 ORDER BY created_at",
             payroll_id,

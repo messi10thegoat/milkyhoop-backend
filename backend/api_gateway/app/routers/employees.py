@@ -135,6 +135,15 @@ async def create_employee(request: Request, body: CreateEmployeeRequest):
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+        # Audit pay-group PG3 (26 Sep 2026): pengguna ber-cakupan terbatas hanya boleh
+        # membuat karyawan di grup yang dapat ia akses (tanpa grup = khusus OWNER/ADMIN,
+        # sama dengan aturan baca: karyawan tanpa grup tertutup untuk staf).
+        _role = await get_user_role_code(str(ctx["user_id"]), str(ctx["tenant_id"]), conn)
+        if _role not in ("OWNER", "ADMIN"):
+            _boleh = set(await get_accessible_pay_group_ids(str(ctx["user_id"]), str(ctx["tenant_id"]), _role, conn))
+            if not body.pay_group_id or str(body.pay_group_id) not in _boleh:
+                raise HTTPException(status_code=404, detail="Pay group not found")
+
         # Generate employee code if not provided
         code = body.employee_code
         if not code:

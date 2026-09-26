@@ -25,7 +25,7 @@ from ..services.payroll_calc import (
     PayrollInputError,
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role, AccountRoleUnmappedError
-from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code
+from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code, run_dalam_cakupan
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -666,6 +666,10 @@ async def calculate_payroll(request: Request, run_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
 
         run = await conn.fetchrow(
             "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
@@ -937,6 +941,10 @@ async def submit_payroll(request: Request, run_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
         run = await conn.fetchrow(
             "SELECT id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
             run_id,
@@ -965,6 +973,10 @@ async def approve_payroll(request: Request, run_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
         run = await conn.fetchrow(
             "SELECT id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
             run_id,
@@ -995,6 +1007,10 @@ async def reject_payroll(
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
         run = await conn.fetchrow(
             "SELECT id, status FROM payroll_runs WHERE id = $1 AND tenant_id = $2",
             run_id,
@@ -1027,6 +1043,10 @@ async def post_payroll(request: Request, run_id: UUID):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
 
         async with conn.transaction():
             # Law 13: Advisory lock
@@ -1490,6 +1510,10 @@ async def void_payroll(request: Request, run_id: UUID, body: VoidPayrollRequest)
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # Audit pay-group PG1 (26 Sep 2026): aksi atas run wajib SELURUH karyawannya
+        # dalam cakupan (lain 404 = sama dengan GET run; tanpa membocorkan total).
+        if not await run_dalam_cakupan(conn, ctx["tenant_id"], ctx.get("user_id"), run_id):
+            raise HTTPException(status_code=404, detail="Payroll run not found")
 
         run = await conn.fetchrow(
             "SELECT * FROM payroll_runs WHERE id = $1 AND tenant_id = $2",

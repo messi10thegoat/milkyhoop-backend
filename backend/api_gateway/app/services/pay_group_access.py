@@ -73,3 +73,40 @@ async def accessible_pay_group_filter(conn, tenant_id: str, user_id):
     if role in ("OWNER", "ADMIN"):
         return True, None
     return False, await get_accessible_pay_group_ids(str(user_id), tenant_id, role, conn)
+
+
+async def run_dalam_cakupan(conn, tenant_id: str, user_id, run_id) -> bool:
+    """Run gaji SELURUHNYA dalam cakupan pay-group pemanggil (26 Sep 2026, audit pay-group PG1/PG2).
+
+    OWNER/ADMIN -> ya. Selain itu SETIAP karyawan run (payroll_run_employees UNION
+    payroll_slip_lines) wajib ada, ber-grup, dan grupnya dapat diakses. Sengaja
+    gagal TERTUTUP:
+      - run KOSONG (0 karyawan/slip) -> TIDAK: tak bisa dibuktikan dalam cakupan
+        (run tak menyimpan pay_group_id; "kosong = boleh" = pintas).
+      - karyawan run yang barisnya tak ditemukan / tanpa grup -> TIDAK.
+    Grup = grup karyawan SAAT INI (run/slip tak menyimpan snapshot grup) -- sama
+    dengan GET /payroll/{id} dan /slips yang sudah tayang.
+    """
+    uid = str(user_id) if user_id else None
+    if not uid:
+        return False
+    role = await get_user_role_code(uid, str(tenant_id), conn)
+    if role in ("OWNER", "ADMIN"):
+        return True
+    boleh = set(await get_accessible_pay_group_ids(uid, str(tenant_id), role, conn))
+    if not boleh:
+        return False
+    ids = await conn.fetch(
+        """SELECT employee_id FROM payroll_run_employees WHERE payroll_id = $1
+           UNION SELECT employee_id FROM payroll_slip_lines WHERE payroll_id = $1""",
+        run_id,
+    )
+    ids = [r["employee_id"] for r in ids if r["employee_id"] is not None]
+    if not ids:
+        return False
+    rows = await conn.fetch(
+        "SELECT id, pay_group_id FROM employees WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        str(tenant_id), ids,
+    )
+    grup = {str(r["id"]): r["pay_group_id"] for r in rows}
+    return all(grup.get(str(e)) is not None and str(grup[str(e)]) in boleh for e in ids)
