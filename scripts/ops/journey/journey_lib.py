@@ -20,7 +20,8 @@ BARANG, GUDANG, KAS = ("35175eb3-143e-456f-a3b1-1c68bf13c683", "ba2a8f6d-fc58-44
                        "28ec7814-f10e-4688-af93-ef82f1b6f71f")
 ROUTER_A = (("sales_orders", "/api/sales-orders"), ("sales_invoices", "/api/sales-invoices"),
             ("customer_deposits", "/api/customer-deposits"), ("receive_payments", "/api/receive-payments"),
-            ("customers", "/api/customers"), ("tenant_profile", "/api/tenant"), ("proformas", "/api/proformas"))
+            ("customers", "/api/customers"), ("tenant_profile", "/api/tenant"), ("proformas", "/api/proformas"),
+            ("credit_notes", "/api/credit-notes"))
 
 
 class Journey:

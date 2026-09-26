@@ -58,6 +58,7 @@ from ..services.role_resolver import (
     resolve_account_id_by_role_if_pkp,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services import cn_tertunda
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1227,6 +1228,23 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 tax_amount = cn["tax_amount"] or 0
                 subtotal = total_amount - tax_amount
 
+                # V312 (26 Sep 2026): porsi NK atas kewajiban yang BELUM dipenuhi (pendapatan masih di Dimuka) ->
+                # Dr Dimuka + allocated_amount turun; sisanya Dr Retur. Dulu seluruhnya Dr Retur -> Dimuka terdampar
+                # bila barang tak pernah dikirim (Check 16 buta). Lihat services/cn_tertunda.py.
+                porsi_tertunda, baris_faktur_nk = await cn_tertunda.hitung_untuk_nk(
+                    conn, ctx["tenant_id"], cn, subtotal
+                )
+                u_tertunda = sum(porsi_tertunda.values(), Decimal("0"))
+                dimuka_account_id = None
+                if u_tertunda > 0:
+                    dimuka_account_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.REVENUE_DEFERRED
+                    )
+                    if not dimuka_account_id:
+                        raise HTTPException(
+                            status_code=500, detail="Akun Pendapatan Diterima Dimuka (REVENUE_DEFERRED) tak ditemukan"
+                        )
+
                 # Create journal entry
                 await conn.execute(
                     """
@@ -1250,21 +1268,39 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                 # Journal lines
                 line_number = 1
 
-                # Dr. Sales Returns (subtotal)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    sales_return_account_id,
-                    subtotal,
-                    f"Retur Penjualan - {cn['credit_note_number']}",
-                )
-                line_number += 1
+                # V312: Dr. Pendapatan Diterima Dimuka (porsi kewajiban yang belum dipenuhi)
+                if u_tertunda > 0:
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                    """,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        dimuka_account_id,
+                        u_tertunda,
+                        f"Pengurangan Pendapatan Diterima Dimuka - {cn['credit_note_number']}",
+                    )
+                    line_number += 1
+
+                # Dr. Sales Returns (subtotal - porsi tertunda)
+                if subtotal - u_tertunda > 0:
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                    """,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        line_number,
+                        sales_return_account_id,
+                        subtotal - u_tertunda,
+                        f"Retur Penjualan - {cn['credit_note_number']}",
+                    )
+                    line_number += 1
 
                 # Dr. VAT Payable (if tax)
                 # Fase D2-wrap C4: PKP-guarded VAT_OUTPUT role resolution.
@@ -1318,6 +1354,12 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
                     "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                     journal_id,
                 )
+
+                # V312: allocated_amount baris faktur turun sebesar porsi + catat porsi (untuk void cermin)
+                if porsi_tertunda:
+                    await cn_tertunda.catat_porsi(
+                        conn, ctx["tenant_id"], cn, journal_id, porsi_tertunda, baris_faktur_nk
+                    )
 
                 # ── Inventory restock for returned goods + COGS companion journal ──
                 # Fase 4 fix (V164): emit companion journal Dr INVENTORY / Cr COGS @ WAC×qty
@@ -2232,6 +2274,9 @@ async def void_credit_note(
                         detail=f"Periode akuntansi sudah {period_row['status']}",
                     )
 
+                # V312: porsi tertunda NK ini bisa dikembalikan? (409 bila barang terkirim sesudah NK)
+                await cn_tertunda.pulihkan_saat_void(conn, ctx["tenant_id"], cn, periksa_saja=True)
+
                 # Create reversal journal if original was posted
                 if cn["journal_id"]:
                     import uuid as uuid_module
@@ -2294,6 +2339,11 @@ async def void_credit_note(
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                         reversal_journal_id,
+                    )
+
+                    # V312: jurnal pembalik sudah membalik baris Dimuka; allocated_amount dikembalikan (Law 31 G5)
+                    await cn_tertunda.pulihkan_saat_void(
+                        conn, ctx["tenant_id"], cn, reversal_journal_id=reversal_journal_id
                     )
 
                     # Mark original journal as reversed

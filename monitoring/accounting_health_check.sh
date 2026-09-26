@@ -699,6 +699,46 @@ check_17_bill_inventory_reconciliation() {
 # == GL net (Dr-Cr) of the EMPLOYEE_ADVANCE role account (POSTED, is_effective). Balance is
 # DERIVED from movements, so this GL-vs-ledger check is the invariant that can drift (a movement
 # without its journal leg, or vice versa). HIGH severity (value integrity).
+# CN_DEFERRAL_V312 -- Check 19: nota kredit atas pendapatan TERTUNDA (26 Sep 2026). Check 16 BUTA terhadap NK yang
+# mendebit Retur untuk kewajiban yang belum dipenuhi (Σ(allocated−recognized) & GL Dimuka sama-sama tak berubah).
+# verify_cn_deferral_all() (V312): NK posted ber-faktur-asal (bukan return/damaged) yang fakturnya masih tertunda
+# tapi tanpa porsi tertunda aktif, ATAU Σ porsi != debit Dimuka di jurnal NK -> FAIL. Dua sisi dibuktikan di harness
+# journey skenario_cn_tertunda (kode lama FAIL cn_tanpa_porsi_tertunda=1, kode baru PASS). HIGH (nilai).
+check_19_cn_deferral() {
+    local tenant="$1"
+    local verdict
+    verdict=$(psql_cmd "SELECT verdict FROM verify_cn_deferral_all() WHERE tenant_id = '$tenant';")
+    if [ "$verdict" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$verdict" = "PASS" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    elif [ -z "$verdict" ]; then
+        # KOSONG: fungsi hanya memulangkan tenant ber-NK posted. Tanpa NK posted = no-data SAH; ada NK posted
+        # tapi kosong = alat tak mencakup tenant ini (BROKEN, Law 33).
+        local has_data
+        has_data=$(psql_cmd "SELECT EXISTS(SELECT 1 FROM credit_notes WHERE tenant_id = '$tenant' AND status = 'posted' AND journal_id IS NOT NULL)::text;")
+        if [ "$has_data" = "__GAGAL__" ]; then
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__"
+        elif [ "$has_data" = "false" ]; then
+            CHK_PASS=1
+            CHK_DETAIL="__NODATA__ tak ada nota kredit posted"
+        else
+            CHK_PASS=0
+            CHK_DETAIL="__GAGAL__ cn-deferral verdikt KOSONG padahal tenant punya NK posted"
+            detail "[CHECK 19] $tenant: $CHK_DETAIL"
+        fi
+    else
+        local rinci
+        rinci=$(psql_cmd "SELECT 'tanpa_porsi=' || cn_tanpa_porsi_tertunda || ',selisih_dimuka=' || cn_selisih_dimuka FROM verify_cn_deferral_all() WHERE tenant_id = '$tenant';")
+        CHK_PASS=0
+        CHK_DETAIL="cn deferral $verdict ($rinci)"
+        detail "[CHECK 19] $tenant: $CHK_DETAIL"
+    fi
+}
+
 check_18_employee_advance_reconciliation() {
     local tenant="$1"
     local verdict
@@ -1147,6 +1187,22 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         VALUE_FAILS="${VALUE_FAILS}emp advance recon: $CHK_DETAIL; "
         log "  HIGH [18] Employee Advance Reconciliation: $CHK_DETAIL"
+    fi
+
+    # Check 19: Credit Note Deferral (V312)
+    check_19_cn_deferral "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ] && is_nodata "$CHK_DETAIL"; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+        note_nodata 19 "Credit Note Deferral" "$TENANT"
+    elif [ "$CHK_PASS" = "1" ]; then
+        VALUE_PASS=$((VALUE_PASS + 1)); PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 19 "Credit Note Deferral" "$CHK_DETAIL"
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        VALUE_FAILS="${VALUE_FAILS}cn deferral: $CHK_DETAIL; "
+        log "  HIGH [19] Credit Note Deferral: $CHK_DETAIL"
     fi
 
     # Check 10: COGS Orphans
