@@ -166,6 +166,10 @@ class CustomerListItem(BaseModel):
     total_transactions: Optional[int] = 0
     total_value: Optional[int] = 0
     outstanding_balance: Optional[int] = 0
+    # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan)
+    total_penjualan: float = 0
+    jumlah_faktur: int = 0
+    last_invoice_date: Optional[str] = None
     # Q-015: dari sales_orders non-draf non-batal (lihat services/pelanggan_ringkas_so.py)
     order_count: int = 0
     last_order_date: Optional[str] = None
@@ -233,6 +237,10 @@ class CustomerDetail(BaseModel):
     points_per_50k: Optional[int] = 0
     total_transactions: Optional[int] = 0
     total_value: Optional[int] = 0
+    # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan)
+    total_penjualan: float = 0
+    jumlah_faktur: int = 0
+    last_invoice_date: Optional[str] = None
     outstanding_balance: Optional[int] = 0
     last_transaction_at: Optional[str] = None
     

@@ -34,6 +34,8 @@ class Conn:
             return self.ringkas
         if "compute_ar_outstanding" in sql:
             return []
+        if "FROM credit_notes" in sql:       # penjualan per pelanggan (26 Sep) — di luar lingkup tes ini
+            return []
         return self.pelanggan
 
     async def fetchval(self, sql, *a):

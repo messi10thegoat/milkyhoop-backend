@@ -11,6 +11,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.customers import (
@@ -299,6 +300,9 @@ async def list_customers(
             # Q-015: ringkasan SO per pelanggan (jumlah pesanan non-draf non-batal, SO terakhir, DP% terakhir)
             # — SATU kueri untuk seluruh halaman, berpagar tenant (services/pelanggan_ringkas_so.py).
             ringkas_so = await ringkas_so_pelanggan(conn, ctx["tenant_id"], customer_ids)
+            # 26 Sep 2026: penjualan per pelanggan TURUNAN JURNAL (services/pelanggan_penjualan) — cache kolom
+            # total_nilai/total_transaksi mati (0 di semua tenant) sehingga total_value/total_transactions -> null.
+            penjualan = await penjualan_pelanggan(conn, ctx["tenant_id"], customer_ids)
 
             items = [
                 {
@@ -314,8 +318,9 @@ async def list_customers(
                     "community": row["community"],
                     "address": row["alamat"],
                     "points": row["points"],
-                    "total_transactions": row["total_transaksi"],
-                    "total_value": row["total_nilai"],
+                    "total_transactions": None,  # cache mati (26 Sep 2026) -> pakai jumlah_faktur
+                    "total_value": None,  # cache mati (26 Sep 2026) -> pakai total_penjualan
+                    **penjualan.get(str(row["id"]), KOSONG_PENJUALAN),
                     "outstanding_balance": ar_balances.get(str(row["id"]), 0),
                     **ringkas_so.get(str(row["id"]), KOSONG_RINGKAS_SO),
                     "is_active": row["is_active"],
@@ -427,6 +432,10 @@ async def get_customer(request: Request, customer_id: str):
                 ctx["tenant_id"],
             )
 
+            # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan); fallback lama total_value tetap
+            # sementara (putusan MASTER b — halaman detail FE lama masih membacanya).
+            _penjualan = (await penjualan_pelanggan(conn, ctx["tenant_id"], [customer_id]))[str(customer_id)]
+
             # Phase 3: AR balance from compute_customer_ar() DB function (Law 16)
             ar_balance = await conn.fetchrow(
                 """
@@ -482,6 +491,7 @@ async def get_customer(request: Request, customer_id: str):
                     "total_value": int(stats["total_nilai"] or 0)
                     if stats
                     else int(row["total_nilai"] or 0),
+                    **_penjualan,
                     "outstanding_balance": int(ar_balance["saldo"] or 0)
                     if ar_balance
                     else 0,
