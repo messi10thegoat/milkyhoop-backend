@@ -14,6 +14,7 @@ import asyncpg
 
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
+from ..services.so_riwayat import catat_riwayat
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
@@ -4544,6 +4545,13 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                         f["id"],
                         body.reason,
                     )
+                    # Riwayat SO: invoice_fulfillments tak punya kolom voided_by -> audit_logs, tx yang sama (Law 12)
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "invoice_fulfillments", f["id"], f["fulfillment_number"],
+                        "FULFILLMENT_VOIDED", ctx.get("user_id"),
+                        f"Surat Jalan {f['fulfillment_number'] or ''} dibatalkan: {body.reason}".replace("  ", " "),
+                        {"reason": body.reason, "invoice_id": str(invoice_id)}, source="api:sales_invoices.void",
+                    )
 
                 # Inventory reversal for ALL fulfillments (single call since same source_id)
                 if fulfillments:
@@ -4934,6 +4942,14 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                     "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
                     invoice_id,
                     ctx["tenant_id"],
+                )
+
+                # Riwayat SO: sales_invoices tak menyimpan voided_by -> audit_logs, tx yang sama (Law 12)
+                await catat_riwayat(
+                    conn, ctx["tenant_id"], "sales_invoices", invoice_id, invoice["invoice_number"],
+                    "SALES_INVOICE_VOIDED", ctx.get("user_id"),
+                    f"Faktur {invoice['invoice_number'] or ''} dibatalkan (void): {body.reason}".replace("  ", " "),
+                    {"reason": body.reason}, source="api:sales_invoices.void",
                 )
 
                 logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")
