@@ -66,6 +66,9 @@ class CreateItemRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Item name")
     item_type: Literal['goods', 'service', 'non_inventory'] = Field('goods', description="Type of item")
     track_inventory: bool = Field(True, description="Whether to track stock levels (goods only)")
+    # V318 (27 Sep 2026): barang NON-STOK yang tetap dikirim lewat Surat Jalan (pola NetSuite "Can be Fulfilled").
+    # Jasa tak pernah bisa dikirim (422). Berlaku untuk dokumen BARU (snapshot per baris), bukan dokumen lama.
+    bisa_dikirim: bool = Field(False, description="Barang non-stok yang dikirim lewat Surat Jalan (tanpa jurnal/stok)")
     base_unit: str = Field(..., min_length=1, max_length=50, description="Base unit of measure")
     barcode: Optional[str] = Field(None, max_length=100, description="Product barcode")
     kategori: Optional[str] = Field(None, max_length=100, description="Category")
@@ -132,6 +135,14 @@ class CreateItemRequest(BaseModel):
             return False
         return v
 
+    @field_validator('bisa_dikirim')
+    @classmethod
+    def validate_bisa_dikirim(cls, v, info):
+        """Jasa tak pernah dikirim (V318 CHECK chk_products_bisa_dikirim_bukan_jasa)."""
+        if v and info.data.get('item_type') == 'service':
+            raise ValueError("Jasa tidak bisa ditandai 'bisa dikirim'")
+        return v
+
     @field_validator('is_returnable')
     @classmethod
     def validate_is_returnable(cls, v, info):
@@ -154,6 +165,7 @@ class UpdateItemRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     item_type: Optional[Literal['goods', 'service', 'non_inventory']] = None
     track_inventory: Optional[bool] = None
+    bisa_dikirim: Optional[bool] = None
     base_unit: Optional[str] = Field(None, min_length=1, max_length=50)
     barcode: Optional[str] = Field(None, max_length=100)
     kategori: Optional[str] = Field(None, max_length=100)
@@ -255,6 +267,7 @@ class ItemListItem(BaseModel):
     name: str
     item_type: str
     track_inventory: bool
+    bisa_dikirim: bool = False
     base_unit: str
     barcode: Optional[str] = None
     kategori: Optional[str] = None

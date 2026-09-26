@@ -84,7 +84,7 @@ async def test_akui_membuat_jurnal_benar(pasang):
     assert _sql(conn, "UPDATE sales_invoice_items SET recognized_amount = allocated_amount")[0][1][0] == [L1]
     assert _sql(conn, "INSERT INTO audit_logs")[0][1][4] == T
     na = _sql(conn, "UPDATE sales_invoices SET fulfillment_status = 'not_applicable'")
-    assert na and "COALESCE(p.track_inventory, false) = true" in na[0][0]
+    assert na and "COALESCE(sii.perlu_kirim, p.track_inventory, false) = true" in na[0][0]
     assert pasang == [(INV, T)]
     assert r["amount"] == 1500000.0 and r["journal_number"] == "RECOG-2609-0001"
 

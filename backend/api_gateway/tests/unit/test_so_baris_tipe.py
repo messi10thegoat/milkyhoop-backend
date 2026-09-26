@@ -11,7 +11,7 @@ from app.schemas.sales_orders import SalesOrderItemResponse  # noqa: E402
 def test_kueri_detail_membaca_jenis_dan_lacak_stok_bertenant():
     s = " ".join(inspect.getsource(SO.get_sales_order_detail).split())
     assert "p.item_type AS product_item_type" in s
-    assert "COALESCE(p.track_inventory, false) AS requires_fulfillment" in s
+    assert "COALESCE(soi.perlu_kirim, p.track_inventory, false) AS requires_fulfillment" in s
     assert "LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2" in s
     assert 'item_type=item["product_item_type"]' in s and 'requires_fulfillment=bool(item["requires_fulfillment"])' in s
 

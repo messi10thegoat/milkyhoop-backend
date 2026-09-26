@@ -412,7 +412,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             items = await conn.fetch(
                 """
                 SELECT soi.*, p.nama_produk AS product_name, p.item_type AS product_item_type,
-                       COALESCE(p.track_inventory, false) AS requires_fulfillment
+                       COALESCE(soi.perlu_kirim, p.track_inventory, false) AS requires_fulfillment
                 FROM sales_order_items soi
                 LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2
                 WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order, soi.id

@@ -1542,13 +1542,19 @@ async def _resolve_unearned_revenue(conn, tenant_id: str):
 
 async def _update_invoice_fulfillment_status(conn, invoice_id, tenant_id):
     """Recompute fulfillment_status and revenue_status from line items."""
+    # V318: status PENGIRIMAN dihitung atas baris yang PERLU DIKIRIM saja (snapshot perlu_kirim; baris lama =
+    # track_inventory). Dulu semua baris -> faktur campuran (barang+jasa) tak pernah 'fulfilled'.
     stats = await conn.fetchrow(
         """
-        SELECT SUM(quantity) AS total_qty, SUM(fulfilled_qty) AS total_fulfilled,
-               SUM(allocated_amount) AS total_allocated, SUM(recognized_amount) AS total_recognized
-        FROM sales_invoice_items WHERE invoice_id = $1
+        SELECT SUM(sii.quantity) FILTER (WHERE COALESCE(sii.perlu_kirim, p.track_inventory, false)) AS total_qty,
+               SUM(sii.fulfilled_qty) FILTER (WHERE COALESCE(sii.perlu_kirim, p.track_inventory, false)) AS total_fulfilled,
+               SUM(sii.allocated_amount) AS total_allocated, SUM(sii.recognized_amount) AS total_recognized
+        FROM sales_invoice_items sii
+        LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+        WHERE sii.invoice_id = $1
     """,
         invoice_id,
+        tenant_id,
     )
     total_qty = Decimal(str(stats["total_qty"] or 0))
     total_fulfilled = Decimal(str(stats["total_fulfilled"] or 0))
@@ -1629,7 +1635,7 @@ async def _execute_fulfillment(
         inv_item = await conn.fetchrow(
             """
             SELECT id, item_id, description, quantity, fulfilled_qty,
-                   allocated_amount, recognized_amount
+                   allocated_amount, recognized_amount, perlu_kirim
             FROM sales_invoice_items WHERE id=$1 AND invoice_id=$2 FOR UPDATE
         """,
             inv_item_id,
@@ -1678,6 +1684,33 @@ async def _execute_fulfillment(
                     "invoice_item_id": str(inv_item_id),
                     "credit_notes": nomor_nk,
                 })
+
+        # V318 (27 Sep 2026) KIRIM NON-STOK: baris produk TAK dilacak stok dikirim HANYA bila snapshot baris
+        # perlu_kirim = true (barang ber-flag bisa_dikirim saat dokumen dibuat). Pola NetSuite/SAP NLAG: NOL jurnal,
+        # NOL inventory_ledger, NOL HPP; pendapatannya SUDAH diakui saat faktur diposting -> pendapatan 0 di sini.
+        # Tanpa flag = ditolak jelas (dulu jatuh ke "Stok tidak cukup").
+        _dilacak = await conn.fetchval(
+            "SELECT COALESCE(track_inventory, false) FROM products WHERE id = $1 AND tenant_id = $2",
+            product_id, tenant_id,
+        ) if product_id else False
+        if not _dilacak:
+            if not inv_item["perlu_kirim"]:
+                raise HTTPException(409, detail={
+                    "code": "FULFILL_LINE_NOT_SHIPPABLE",
+                    "message": (f"Baris '{description}' bukan barang yang dikirim (non-stok tanpa tanda "
+                                "'bisa dikirim' saat dokumen dibuat)."),
+                    "invoice_item_id": str(inv_item_id),
+                })
+            fulfillment_item_ids.append({
+                "id": uuid.uuid4(), "invoice_item_id": inv_item_id, "product_id": product_id,
+                "quantity": req_qty, "unit_cost": Decimal("0"), "total_cost": Decimal("0"),
+                "batch_id": None, "notes": notes,
+            })
+            await conn.execute(
+                "UPDATE sales_invoice_items SET fulfilled_qty = fulfilled_qty + $2 WHERE id = $1 AND invoice_id = $3",
+                inv_item_id, str(req_qty), invoice["id"],
+            )
+            continue
 
         # 3. Availability gate ONLY (read-only).
         # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger
@@ -2882,6 +2915,24 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     "UPDATE sales_invoice_items SET recognized_amount = allocated_amount WHERE id = $1",
                     _itm["id"],
                 )
+
+    # V318: faktur memuat baris NON-STOK yang perlu dikirim -> status pengiriman menunggu Surat Jalan untuk baris
+    # itu (kirim-otomatis posting TIDAK menyertakannya; pola NetSuite Item Fulfillment terpisah). Faktur tanpa
+    # baris seperti itu (semua data sebelum V318, grapgrap tanpa flag) -> status TIDAK disentuh.
+    if await conn.fetchval(
+        """SELECT EXISTS (SELECT 1 FROM sales_invoice_items sii
+               LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+               WHERE sii.invoice_id = $1 AND sii.perlu_kirim AND NOT COALESCE(p.track_inventory, false))""",
+        invoice_id, ctx["tenant_id"],
+    ):
+        _k = await conn.fetchrow(
+            """SELECT SUM(sii.quantity) AS q, SUM(sii.fulfilled_qty) AS f FROM sales_invoice_items sii
+               LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+               WHERE sii.invoice_id = $1 AND COALESCE(sii.perlu_kirim, p.track_inventory, false)""",
+            invoice_id, ctx["tenant_id"],
+        )
+        _q, _f = _d(_k["q"] or 0), _d(_k["f"] or 0)
+        fulfillment_status = "fulfilled" if _f >= _q else ("partial" if _f > 0 else "pending")
 
     # Query totals from items
     totals = await conn.fetchrow(
@@ -6433,8 +6484,8 @@ async def _akui_pendapatan_nonstok(conn, tenant_id: str, invoice_id, user_id, jo
     await conn.execute(
         """UPDATE sales_invoices SET fulfillment_status = 'not_applicable'
            WHERE id = $1 AND tenant_id = $2 AND NOT EXISTS (
-               SELECT 1 FROM sales_invoice_items sii JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
-               WHERE sii.invoice_id = $1 AND COALESCE(p.track_inventory, false) = true)""",
+               SELECT 1 FROM sales_invoice_items sii LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+               WHERE sii.invoice_id = $1 AND COALESCE(sii.perlu_kirim, p.track_inventory, false) = true)""",
         invoice_id, tenant_id,
     )
     await conn.execute(
@@ -6713,12 +6764,16 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
                 SELECT si.id, si.description, si.quantity, si.fulfilled_qty,
                        si.allocated_amount, si.recognized_amount,
                        (si.quantity - COALESCE(si.fulfilled_qty, 0)) AS remaining_qty,
-                       (COALESCE(si.allocated_amount, 0) - COALESCE(si.recognized_amount, 0)) AS deferred_amount
+                       (COALESCE(si.allocated_amount, 0) - COALESCE(si.recognized_amount, 0)) AS deferred_amount,
+                       COALESCE(si.perlu_kirim, p.track_inventory, false) AS requires_fulfillment,
+                       COALESCE(p.track_inventory, false) AS dilacak_stok
                 FROM sales_invoice_items si
+                LEFT JOIN products p ON p.id = si.item_id AND p.tenant_id = $2
                 WHERE si.invoice_id = $1
                 ORDER BY si.id
             """,
                 invoice_id,
+                ctx["tenant_id"],
             )
 
             return {
@@ -6742,6 +6797,10 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
                             "allocated_amount": float(s["allocated_amount"] or 0),
                             "recognized_amount": float(s["recognized_amount"] or 0),
                             "deferred_amount": float(s["deferred_amount"] or 0),
+                            # V318: baris ini dikirim lewat Surat Jalan? (stok ATAU non-stok ber-flag saat dibuat)
+                            "requires_fulfillment": bool(s["requires_fulfillment"]),
+                            # false + requires_fulfillment = kirim TANPA jurnal/stok (non-stok)
+                            "tracks_inventory": bool(s["dilacak_stok"]),
                         }
                         for s in item_summary
                     ],

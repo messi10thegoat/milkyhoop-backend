@@ -381,6 +381,7 @@ async def list_items(
                     name=row["nama_produk"],
                     item_type=row.get("item_type", "goods"),
                     track_inventory=row.get("track_inventory", True),
+                    bisa_dikirim=bool(row.get("bisa_dikirim") or False),
                     base_unit=row.get("base_unit") or row["satuan"],
                     barcode=row.get("barcode"),
                     kategori=row.get("kategori"),
@@ -631,6 +632,12 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.track_expiry,
                 body.default_expiry_days,
             )
+            # V318: flag non-stok bisa dikirim (tenant eksplisit; CHECK DB menolak jasa)
+            if body.bisa_dikirim:
+                await conn.execute(
+                    "UPDATE products SET bisa_dikirim = true WHERE id = $1 AND tenant_id = $2",
+                    item_id, ctx["tenant_id"],
+                )
 
             # Insert unit conversions (goods only)
             if body.item_type == "goods" and body.conversions:
@@ -771,6 +778,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                 "name": body.name,
                 "item_type": body.item_type,
                 "track_inventory": body.track_inventory,
+                "bisa_dikirim": body.bisa_dikirim,
             },
         )
 
@@ -880,7 +888,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
         # Fetch old values for change tracking
         old_item = await conn.fetchrow(
             """SELECT nama_produk, sales_price, harga_jual, purchase_price,
-                      base_unit, satuan, reorder_level, item_type, track_inventory,
+                      base_unit, satuan, reorder_level, item_type, track_inventory, bisa_dikirim,
                       kategori, deskripsi, barcode, is_returnable,
                       sales_tax, purchase_tax, image_url,
                       inventory_account_id, cogs_account_id
@@ -920,6 +928,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 "name": "nama_produk",
                 "item_type": "item_type",
                 "track_inventory": "track_inventory",
+                "bisa_dikirim": "bisa_dikirim",
                 "base_unit": "base_unit",
                 "barcode": "barcode",
                 "kategori": "kategori",
@@ -954,6 +963,15 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             }
 
             body_dict = body.model_dump(exclude_unset=True, exclude={"conversions"})
+            # V318: jasa tak pernah bisa dikirim. Mengubah tipe ke jasa MEMATIKAN flag; menyalakan flag pada jasa = 422.
+            _eff_tipe = body_dict.get("item_type", old_item["item_type"] if old_item else None)
+            if _eff_tipe == "service":
+                if body_dict.get("bisa_dikirim"):
+                    raise HTTPException(status_code=422, detail="Jasa tidak bisa ditandai 'bisa dikirim'")
+                if old_item and old_item["bisa_dikirim"]:
+                    body_dict["bisa_dikirim"] = False
+            if "bisa_dikirim" in body_dict and body_dict["bisa_dikirim"] is None:
+                body_dict.pop("bisa_dikirim")
 
             # Auto-default inventory/COGS accounts for stockable goods. Compute the
             # effective type/flags + account ids (post-update if changed, else current
@@ -2601,6 +2619,7 @@ async def get_item(request: Request, item_id: UUID):
                 "name": row["nama_produk"],
                 "item_type": row.get("item_type", "goods"),
                 "track_inventory": row.get("track_inventory", True),
+                "bisa_dikirim": bool(row.get("bisa_dikirim") or False),
                 "base_unit": row.get("base_unit") or row["satuan"],
                 "barcode": row.get("barcode"),
                 "kategori": row.get("kategori"),

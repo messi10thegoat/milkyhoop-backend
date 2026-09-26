@@ -43,6 +43,8 @@ class Conn:
 
     async def fetchval(self, sql, *a):
         self.q.append((sql, a))
+        if "track_inventory" in sql and "FROM products" in sql:
+            return True   # V318: baris berstok -> jalur stok (bukan kirim non-stok)
         if "FROM warehouse_stock" in sql:
             return Decimal("0")   # stok nol -> bukti MAJU melewati penjaga P4
         raise AssertionError(sql[:60])
