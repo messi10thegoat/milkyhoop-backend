@@ -28,6 +28,10 @@ async def get_pool() -> asyncpg.Pool:
 PAT = "'%' || lower(unaccent($2)) || '%'"
 SIM = "similarity(coalesce(search_text,''), lower(unaccent($2)))"
 
+# 26 Sep 2026 (audit izin): modul otorisasi per grup WAJIB = modul rute daftarnya
+# di PermissionMiddleware (dulu quotes/proformas/deliveries/customer_deposits/
+# credit_notes memakai modul induk -> pencarian menampilkan dokumen yang daftarnya
+# 403, mis. VIEWER melihat nota kredit). Dijaga tests/unit/test_search_modul_selaras.py.
 # type -> (authz module, url prefix, SQL). All queries take $1 tenant, $2 q,
 # $3 customer ids (text[]), $4 limit — uniform param list.
 GROUPS = {
@@ -76,7 +80,7 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, order_date DESC NULLS LAST
         LIMIT $4"""),
-    "quotes": ("sales_order", "/penjualan/penawaran/", f"""
+    "quotes": ("quote", "/penjualan/penawaran/", f"""
         SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
           NULLIF(subject,'') AS subtitle, quote_number AS number, total_amount AS amount,
           status, expiry_date AS due_date,
@@ -87,7 +91,7 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, quote_date DESC NULLS LAST
         LIMIT $4"""),
-    "proformas": ("sales_order", "/penjualan/proforma/", f"""
+    "proformas": ("proforma", "/penjualan/proforma/", f"""
         SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
           NULLIF(purpose,'') AS subtitle, proforma_number AS number, amount AS amount,
           status, due_date,
@@ -98,7 +102,7 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, proforma_date DESC NULLS LAST
         LIMIT $4"""),
-    "deliveries": ("sales_order", "/penjualan/pengiriman/", f"""
+    "deliveries": ("sales_invoice", "/penjualan/pengiriman/", f"""
         SELECT id::text AS id, shipment_number AS title,
           NULLIF(concat_ws(' · ', NULLIF(carrier,''), NULLIF(tracking_number,'')),'') AS subtitle,
           shipment_number AS number, NULL::numeric AS amount, status, shipment_date AS due_date,
@@ -119,7 +123,7 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, payment_date DESC NULLS LAST
         LIMIT $4"""),
-    "customer_deposits": ("receive_payment", "/penjualan/uang-muka/", f"""
+    "customer_deposits": ("customer_deposit", "/penjualan/uang-muka/", f"""
         SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
           deposit_number AS subtitle, deposit_number AS number, amount AS amount,
           status, deposit_date AS due_date,
@@ -130,7 +134,7 @@ GROUPS = {
         WHERE tenant_id=$1 AND (search_text LIKE {PAT} OR customer_id::text = ANY($3::text[]))
         ORDER BY {SIM} DESC, deposit_date DESC NULLS LAST
         LIMIT $4"""),
-    "credit_notes": ("sales_invoice", "/penjualan/nota-kredit/", f"""
+    "credit_notes": ("credit_note", "/penjualan/nota-kredit/", f"""
         SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
           credit_note_number AS subtitle, credit_note_number AS number, total_amount AS amount,
           status, credit_note_date AS due_date,
