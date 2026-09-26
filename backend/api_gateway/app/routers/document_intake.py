@@ -154,6 +154,24 @@ async def _intake_ctx(request):
     return eng, ctx
 
 
+async def _penyaring_baca_intake(request):
+    """Audit READ_OPEN R2 (26 Sep 2026): GET intake dulu tenant saja -> anggota
+    mana pun membaca ocr_result (rekanan, NPWP, nominal, rincian) & draft_plan
+    dokumen modul yang tak boleh ia lihat. Kini: anggota AKTIF wajib; OWNER
+    semua; lainnya hanya doc_type yang modulnya ber-izin R (doc_type tak
+    dikenal -> tersembunyi). Mengembalikan predikat doc_type -> bool."""
+    eng, ctx = await _intake_ctx(request)
+    if not anggota_aktif(ctx):
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    if ctx.business_role_code == "OWNER":
+        return lambda dt: True
+    boleh = set()
+    for modul in set(_DOCTYPE_MODULE.values()):
+        if await eng.can(ctx, "R", modul):
+            boleh.add(modul)
+    return lambda dt: _DOCTYPE_MODULE.get((dt or "").strip().lower()) in boleh
+
+
 async def _require_active_member(request):
     _eng, ctx = await _intake_ctx(request)
     if not anggota_aktif(ctx):
@@ -249,11 +267,13 @@ async def get_batch_status(
 ):
     """Get batch processing status with all documents."""
     ctx = get_user_context(request)
+    boleh = await _penyaring_baca_intake(request)
     svc = await _get_service()
 
     batch, docs = await svc.get_batch_status(ctx["tenant_id"], batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
+    docs = [d for d in docs if boleh(d.get("doc_type"))]
 
     return BatchStatusResponse(
         batch=_batch_summary(batch),
@@ -268,10 +288,11 @@ async def get_document_detail(
 ):
     """Get full document detail including OCR results and draft plan."""
     ctx = get_user_context(request)
+    boleh = await _penyaring_baca_intake(request)
     svc = await _get_service()
 
     doc = await svc.get_document_detail(ctx["tenant_id"], doc_id)
-    if not doc:
+    if not doc or not boleh(doc.get("doc_type")):
         raise HTTPException(status_code=404, detail="Document not found")
 
     return DocumentIntakeDetailResponse(data=_doc_detail(doc))
@@ -289,14 +310,19 @@ async def get_review_queue(
     Default: shows draft_ready + reviewing.
     """
     ctx = get_user_context(request)
+    boleh = await _penyaring_baca_intake(request)
     svc = await _get_service()
 
-    docs, total = await svc.get_review_queue(
+    semua, _total_mentah = await svc.get_review_queue(
         ctx["tenant_id"],
         status_filter=status,
-        limit=limit,
-        offset=offset,
+        limit=1000,
+        offset=0,
     )
+    # Saring DULU, paginasi kemudian -> total & has_more jujur untuk yang boleh dilihat.
+    semua = [d for d in semua if boleh(d.get("doc_type"))]
+    total = len(semua)
+    docs = semua[offset:offset + limit]
 
     return ReviewQueueResponse(
         data=[_doc_data(d) for d in docs],
@@ -564,6 +590,7 @@ async def get_batch_progress(
 ):
     """Real-time progress for a batch upload. Poll every 3s while processing."""
     ctx = get_user_context(request)
+    boleh = await _penyaring_baca_intake(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -638,7 +665,8 @@ async def get_batch_progress(
                     "doc_type": d["doc_type"],
                     "confidence": d["confidence"],
                 }
-                for d in documents
+                # R2: rincian per dokumen hanya yang boleh dibaca (hitungan agregat tetap)
+                for d in documents if boleh(d["doc_type"])
             ],
             "is_complete": is_complete,
             "percent_complete": round((done_count / total) * 100) if total > 0 else 0,
@@ -754,6 +782,7 @@ async def get_document_stats(
 ):
     """Dashboard stats for document intelligence. Used by banner + bell badge."""
     ctx = get_user_context(request)
+    await _penyaring_baca_intake(request)  # hitungan saja; anggota AKTIF wajib
     pool = await get_pool()
 
     async with pool.acquire() as conn:

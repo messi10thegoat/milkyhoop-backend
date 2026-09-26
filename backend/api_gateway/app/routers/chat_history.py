@@ -25,7 +25,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+from fastapi import Depends as _Depends
+from ..services.role_resolution import require_active_membership as _wajib_anggota
+
+# Audit READ_OPEN R4 (26 Sep 2026): router terpisah dari unified_chat -> dulu tanpa pagar anggota aktif.
+router = APIRouter(dependencies=[_Depends(_wajib_anggota)])
 
 
 # ─── Auth Helper ───────────────────────────────────────────────────────────────

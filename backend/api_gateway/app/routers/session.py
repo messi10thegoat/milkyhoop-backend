@@ -4,7 +4,8 @@ Handles user session operations with proper authentication
 """
 import logging
 from typing import Dict
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from ..services.fitur_parkir import fitur_belum_tersedia
 
 from backend.api_gateway.app.services.auth_instance import auth_client
 
@@ -16,7 +17,7 @@ router = APIRouter(
 )
 
 
-@router.get("/list")
+@router.get("/list", dependencies=[Depends(fitur_belum_tersedia)])  # R5: stub data palsu -> diparkir
 async def list_sessions(request: Request):
     """
     List all active sessions for current user (requires authentication)

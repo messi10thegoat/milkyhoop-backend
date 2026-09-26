@@ -8227,9 +8227,11 @@ async def get_action_status(request: Request, pending_action_id: str):
     try:
         pool = await get_session_db_pool()
         row = await pool.fetchrow(
-            "SELECT status FROM pending_actions WHERE id = $1 AND tenant_id = $2",
+            # Audit READ_OPEN R4: status kartu aksi hanya untuk PEMILIKNYA.
+            "SELECT status FROM pending_actions WHERE id = $1 AND tenant_id = $2 AND user_id = $3",
             uuid_mod.UUID(pending_action_id),
             ctx["tenant_id"],
+            str(ctx["user_id"]),
         )
         if not row:
             return ActionStatusResponse(

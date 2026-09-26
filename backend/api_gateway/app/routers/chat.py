@@ -1,7 +1,12 @@
 import json
 import time
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from ..services.fitur_parkir import fitur_belum_tersedia
+
+# Audit READ_OPEN R5 (26 Sep 2026): rute chat lama diparkir -- /history mengambil
+# user_id+tenant_id dari QUERY (bukan JWT; backend gRPC-nya mati), / & /test stub.
+_PARKIR_R5 = [Depends(fitur_belum_tersedia)]
 from pydantic import BaseModel
 from typing import Dict, Optional, Any
 
@@ -1032,7 +1037,7 @@ def extract_answer_from_faq(content: str) -> str:
 # =====================================================
 # CHAT HISTORY ENDPOINT - GOAL 1 COMPLETION
 # =====================================================
-@router.get("/history")
+@router.get("/history", dependencies=_PARKIR_R5)
 async def get_chat_history(
     user_id: str, tenant_id: str, limit: int = 30, offset: int = 0
 ):
@@ -1095,7 +1100,7 @@ async def get_chat_history(
 
 
 # Phase 2 Authentication Testing - GET Endpoints
-@router.get("/")
+@router.get("/", dependencies=_PARKIR_R5)
 async def chat_get_test():
     """
     GET endpoint for chat - Phase 2 authentication testing
@@ -1110,7 +1115,7 @@ async def chat_get_test():
     }
 
 
-@router.get("/test")
+@router.get("/test", dependencies=_PARKIR_R5)
 async def chat_test_endpoint():
     """Additional GET test endpoint"""
     return {

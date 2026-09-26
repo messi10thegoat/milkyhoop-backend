@@ -4,13 +4,18 @@ Aggregates from chat_messages.token_count (populated by session_orchestrator).
 """
 import logging
 from datetime import date, timedelta
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 
 from ..services.unified_agent.db_utils import get_session_db_pool
 
 logger = logging.getLogger("chat_usage")
-router = APIRouter()
+from ..services.role_resolution import require_active_membership
+
+# Audit READ_OPEN R4 (26 Sep 2026): router terpisah dari unified_chat -> dulu TANPA
+# pagar anggota aktif. Dan pemakaian dihitung per PENGGUNA (dulu se-tenant: sesi,
+# waktu aktif & volume rekan kerja terlihat).
+router = APIRouter(dependencies=[Depends(require_active_membership)])
 
 
 def _get_user_context(request: Request):
@@ -18,7 +23,7 @@ def _get_user_context(request: Request):
     user = getattr(request.state, "user", None)
     if not user:
         return None, None
-    return user.get("tenant_id"), user.get("id")
+    return user.get("tenant_id"), user.get("user_id")  # dulu "id" -> selalu None
 
 
 @router.get("/usage")
@@ -28,7 +33,7 @@ async def get_token_usage(
 ):
     """Get aggregated token usage for the current tenant."""
     tenant_id, user_id = _get_user_context(request)
-    if not tenant_id:
+    if not tenant_id or not user_id:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     pool = await get_session_db_pool()
@@ -46,9 +51,10 @@ async def get_token_usage(
           AND created_at >= $2::date
           AND role = 'assistant'
           AND token_count IS NOT NULL
+          AND session_id IN (SELECT id FROM chat_sessions WHERE tenant_id = $1 AND user_id::text = $3)
         GROUP BY DATE(created_at)
         ORDER BY day DESC
-    """, tenant_id, start_date)
+    """, tenant_id, start_date, str(user_id))
 
     # Per-session breakdown
     session_rows = await pool.fetch("""
@@ -62,9 +68,10 @@ async def get_token_usage(
           AND created_at >= $2::date
           AND role = 'assistant'
           AND token_count IS NOT NULL
+          AND session_id IN (SELECT id FROM chat_sessions WHERE tenant_id = $1 AND user_id::text = $3)
         GROUP BY session_id
         ORDER BY MAX(created_at) DESC
-    """, tenant_id, start_date)
+    """, tenant_id, start_date, str(user_id))
 
     total_tokens = sum(r["tokens"] for r in daily_rows)
     total_messages = sum(r["messages"] for r in daily_rows)

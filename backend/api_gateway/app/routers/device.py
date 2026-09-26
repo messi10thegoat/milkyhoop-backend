@@ -19,7 +19,7 @@ import os
 import uuid
 import asyncpg
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
@@ -27,6 +27,8 @@ from backend.api_gateway.app.services.device_service import DeviceService
 from backend.api_gateway.app.services.websocket_hub import websocket_hub
 
 logger = logging.getLogger(__name__)
+
+from ..services.fitur_parkir import fitur_belum_tersedia  # R5: /stats = hitungan platform, dulu tier JWT
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -438,7 +440,7 @@ async def logout_all_web_devices(request: Request):
         raise HTTPException(status_code=500, detail="Gagal logout semua perangkat web")
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(fitur_belum_tersedia)])
 async def get_device_stats(request: Request):
     """
     Get device statistics for monitoring (admin only)
