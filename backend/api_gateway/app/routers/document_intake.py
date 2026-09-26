@@ -762,7 +762,7 @@ async def get_document_stats(
                 COUNT(*) FILTER (WHERE status = 'draft_ready') as pending_review,
                 COUNT(*) FILTER (WHERE status = 'posting_failed') as posting_failed,
                 COUNT(*) FILTER (WHERE status IN ('extracting', 'classifying', 'analyzing', 'draft_generating')) as processing,
-                COUNT(*) FILTER (WHERE status = 'posted' AND updated_at::date = CURRENT_DATE) as posted_today,
+                COUNT(*) FILTER (WHERE status = 'posted' AND tanggal_bisnis($1, updated_at) = tanggal_bisnis($1)) as posted_today,
                 COUNT(*) FILTER (WHERE status = 'posted') as total_processed
                FROM uploaded_documents
                WHERE tenant_id = $1""",

@@ -231,13 +231,12 @@ async def get_daily_summary(
     ctx = get_user_context(request)
     pool = await get_pool()
 
-    if summary_date is None:
-        summary_date = date.today()
-
     async with pool.acquire() as conn:
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
+        if summary_date is None:  # kelompok C 26 Sep: tanggal bisnis tenant, bukan UTC
+            summary_date = await tanggal_dokumen(conn, ctx["tenant_id"])
 
         row = await conn.fetchrow(
             "SELECT * FROM get_daily_sales_summary($1, $2, $3)",

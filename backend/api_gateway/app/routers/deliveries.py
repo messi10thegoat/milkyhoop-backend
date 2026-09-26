@@ -45,7 +45,7 @@ async def get_deliveries_summary(request: Request):
             SELECT
                 COUNT(*) FILTER (WHERE status = 'posted') AS total_posted,
                 COUNT(*) FILTER (WHERE status = 'voided') AS total_voided,
-                COUNT(*) FILTER (WHERE fulfillment_date = CURRENT_DATE) AS today_count,
+                COUNT(*) FILTER (WHERE fulfillment_date = tanggal_bisnis($1)) AS today_count,  -- kelompok C 26 Sep: hari ini = tanggal bisnis tenant
                 COUNT(*) AS total_all
             FROM invoice_fulfillments
             WHERE tenant_id = $1

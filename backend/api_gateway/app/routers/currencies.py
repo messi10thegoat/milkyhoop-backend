@@ -5,6 +5,8 @@ Multi-currency support with forex gain/loss tracking.
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
 from datetime import date
+
+from ..utils.tanggal_tenant import tanggal_dokumen  # kelompok C 26 Sep 2026
 from decimal import Decimal
 import asyncpg
 import logging
@@ -380,7 +382,7 @@ async def get_latest_rates(request: Request):
                     )
                     for r in rows
                 ],
-                as_of=date.today().isoformat(),
+                as_of=(await tanggal_dokumen(conn, ctx["tenant_id"])).isoformat(),
             )
     except HTTPException:
         raise
@@ -462,7 +464,7 @@ async def convert_amount(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            rate_date = as_of_date or date.today()
+            rate_date = as_of_date or await tanggal_dokumen(conn, ctx["tenant_id"])
 
             # Get currency codes
             from_c = await conn.fetchrow(
