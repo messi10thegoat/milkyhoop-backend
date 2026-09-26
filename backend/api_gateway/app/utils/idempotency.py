@@ -28,6 +28,10 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
+# Medan sidik isi di dalam idempotency_keys.result (execute_idempotent); dibuang sebelum replay.
+_KUNCI_SIDIK = "_idem_payload_hash"
+
+
 @dataclass
 class IdempotencyResult:
     """Result of an idempotent operation."""
@@ -43,6 +47,7 @@ async def execute_idempotent(
     source_type: str,
     operation: Callable[[], Awaitable[dict]],
     ttl_hours: int = 24,
+    payload_hash: Optional[str] = None,
 ) -> IdempotencyResult:
     """
     Execute an operation with idempotency guarantee.
@@ -89,8 +94,17 @@ async def execute_idempotent(
 
     if existing and existing['result']:
         logger.info(f"Idempotency hit: {source_type} key={idempotency_key}")
+        data = json.loads(existing['result'])
+        # C2 (26 Sep 2026): sidik isi disimpan di dalam result. Kunci sama + isi BEDA
+        # = 409 (KunciIdempotensiDipakai), BUKAN replay diam respons lama — dulu
+        # pengguna membetulkan nominal lalu kirim ulang: "sukses" dengan pembayaran
+        # PERTAMA, nominal baru tak pernah tercatat. Baris tanpa sidik (lama / pemanggil
+        # tanpa payload_hash) = perilaku lama (replay).
+        tersimpan = data.pop(_KUNCI_SIDIK, None) if isinstance(data, dict) else None
+        if payload_hash is not None and tersimpan is not None and tersimpan != payload_hash:
+            raise KunciIdempotensiDipakai(data)
         return IdempotencyResult(
-            data=json.loads(existing['result']),
+            data=data,
             was_cached=True,
             idempotency_key=idempotency_key,
         )
@@ -117,7 +131,8 @@ async def execute_idempotent(
         ON CONFLICT (tenant_id, key) DO NOTHING
         """,
         idempotency_key, tenant_id, source_type,
-        json.dumps(result, default=str),
+        json.dumps({**result, _KUNCI_SIDIK: payload_hash}
+                   if payload_hash is not None and isinstance(result, dict) else result, default=str),
         result_id,
         ttl_hours,
     )

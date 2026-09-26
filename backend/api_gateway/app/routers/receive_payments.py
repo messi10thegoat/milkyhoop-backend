@@ -59,6 +59,8 @@ from ..utils.idempotency import (  # Law 14
     build_idempotency_default,
     execute_idempotent,
     get_idempotency_key,
+    hash_payload,
+    KunciIdempotensiDipakai,
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
@@ -1135,6 +1137,18 @@ async def get_receive_payment(request: Request, payment_id: UUID):
 # =============================================================================
 
 
+def _sidik_penerimaan(body) -> str:
+    """Sidik isi penerimaan untuk kunci klien (C2). Nominal lewat _norm_amount: 100000 dan
+    100000.00 = maksud SAMA (Law 14) -> sidik sama; urutan alokasi tak mengubah sidik."""
+    d = body.model_dump(mode="json")
+    d["total_amount"] = _norm_amount(body.total_amount)
+    d["discount_amount"] = _norm_amount(body.discount_amount)
+    d["allocations"] = sorted(
+        f"{a.invoice_id}:{_norm_amount(a.amount_applied)}" for a in body.allocations
+    )
+    return hash_payload(d)
+
+
 @router.post("", response_model=ReceivePaymentResponse, status_code=201)
 async def create_receive_payment(request: Request, body: CreateReceivePaymentRequest):
     """
@@ -1459,9 +1473,27 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
 
                     return result
 
-                _res = await execute_idempotent(
-                    conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _op
-                )
+                # C2 (26 Sep 2026): kunci KIRIMAN KLIEN mengikat ISI permintaan -> kunci sama
+                # + isi beda = 409 IDEMPOTENCY_KEY_REUSED (seperti uang muka). Kunci default
+                # server sudah memuat nominal+alokasi -> tanpa sidik (perilaku lama).
+                sidik = _sidik_penerimaan(body) if request.headers.get("X-Idempotency-Key") else None
+                try:
+                    _res = await execute_idempotent(
+                        conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _op,
+                        payload_hash=sidik,
+                    )
+                except KunciIdempotensiDipakai as e:
+                    lama = (e.respons or {}).get("data") or {}
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Kunci idempotensi sudah dipakai untuk penerimaan lain dengan isi berbeda. "
+                                       "Muat ulang formulir untuk mencatat penerimaan baru.",
+                            "payment_id": lama.get("id"),
+                            "payment_number": lama.get("payment_number"),
+                        },
+                    )
                 return {**_res.data, "was_cached": _res.was_cached}
 
     except HTTPException:
