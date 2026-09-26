@@ -122,14 +122,20 @@ async def pulihkan_saat_void(conn, tenant_id: str, cn, reversal_journal_id=None,
     periksa_saja=True: hanya penjagaan (dipanggil SEBELUM jurnal pembalik ditulis)."""
     porsi = await conn.fetch(
         """SELECT d.id, d.invoice_item_id, d.amount, d.recognized_at_cn, d.invoice_id,
-                  COALESCE(sii.recognized_amount, 0) AS recognized_now
+                  COALESCE(sii.recognized_amount, 0) AS recognized_now,
+                  -- temuan BACKEND (26 Sep): NK batal PENUH -> allocated 0 -> kirim mengakui 0 -> recognized TAK naik.
+                  -- Maka penjaga juga memakai PENGIRIMAN aktif baris ini yang terjadi SESUDAH porsi NK dicatat.
+                  EXISTS (SELECT 1 FROM invoice_fulfillment_items fi
+                          JOIN invoice_fulfillments f ON f.id = fi.fulfillment_id AND f.tenant_id = d.tenant_id
+                           AND f.voided_at IS NULL AND f.status <> 'voided'
+                          WHERE fi.invoice_item_id = d.invoice_item_id AND f.created_at > d.created_at) AS terkirim_sesudah
            FROM credit_note_deferral_lines d JOIN sales_invoice_items sii ON sii.id = d.invoice_item_id
            WHERE d.credit_note_id = $1 AND d.tenant_id = $2 AND d.reversed_at IS NULL""",
         cn["id"], tenant_id)
     if not porsi:
         return NOL
     await kunci_faktur(conn, tenant_id, porsi[0]["invoice_id"])
-    bergeser = [p for p in porsi if _q(p["recognized_now"]) > _q(p["recognized_at_cn"])]
+    bergeser = [p for p in porsi if _q(p["recognized_now"]) > _q(p["recognized_at_cn"]) or p["terkirim_sesudah"]]
     if bergeser:
         raise HTTPException(status_code=409, detail={
             "code": "CN_VOID_AFTER_DELIVERY",

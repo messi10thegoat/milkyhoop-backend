@@ -93,9 +93,9 @@ class _ConnVoid:
         return "OK"
 
 
-def _porsi(akui_saat_nk, akui_kini):
+def _porsi(akui_saat_nk, akui_kini, terkirim_sesudah=False):
     return [{"id": uuid.uuid4(), "invoice_item_id": A, "amount": D("500000"), "recognized_at_cn": D(akui_saat_nk),
-             "invoice_id": uuid.uuid4(), "recognized_now": D(akui_kini)}]
+             "invoice_id": uuid.uuid4(), "recognized_now": D(akui_kini), "terkirim_sesudah": terkirim_sesudah}]
 
 
 @pytest.mark.asyncio
@@ -130,3 +130,13 @@ def test_router_menyambung_post_dan_void():
     assert "cn_tertunda.hitung_untuk_nk(" in src and "cn_tertunda.catat_porsi(" in src
     assert src.count("cn_tertunda.pulihkan_saat_void(") == 2        # penjagaan sebelum + pemulihan sesudah pembalik
     assert "AccountRole.REVENUE_DEFERRED" in src                      # Law 27: akun Dimuka lewat peran
+
+
+@pytest.mark.asyncio
+async def test_void_ditolak_bila_terkirim_sesudah_nk_penuh_walau_recognized_tetap_nol():
+    # temuan BACKEND 26 Sep: NK batal penuh -> allocated 0 -> kirim mengakui 0 -> recognized tak naik; tetap 409
+    c = _ConnVoid(_porsi("0", "0", terkirim_sesudah=True))
+    with pytest.raises(HTTPException) as e:
+        await C.pulihkan_saat_void(c, "kaos", {"id": uuid.uuid4()}, periksa_saja=True)
+    assert e.value.status_code == 409 and e.value.detail["code"] == "CN_VOID_AFTER_DELIVERY"
+    assert not any("UPDATE" in q for q, _ in c.tulis)
