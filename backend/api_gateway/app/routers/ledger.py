@@ -291,6 +291,7 @@ async def get_account_ledger(
     end_date: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    offset: Optional[int] = Query(None, ge=0, description="Bila diisi, menang atas `page` (kontrak FE)"),
 ):
     """Get detailed ledger for a single account with running balance."""
     try:
@@ -365,46 +366,61 @@ async def get_account_ledger(
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)
-            offset = (page - 1) * limit
-            params.extend([limit, offset])
+            # LEDGER-HALAMAN (26 Sep 2026): dulu total_debit/total_credit/closing_balance dijumlah dari
+            # HALAMAN INI saja (LIMIT 50) dan running_balance halaman >1 mulai lagi dari opening_balance;
+            # `offset` dari FE diabaikan (selalu halaman 1). Kini: total dari agregat SELURUH filter,
+            # saldo berjalan = jendela kumulatif atas SELURUH filter lalu dipotong halaman; urutan
+            # deterministik (tie-break je.id, jl.id) supaya LIMIT/OFFSET tak melompati/mengulang baris.
+            eff_offset = offset if isinstance(offset, int) else (page - 1) * limit
+            sign = Decimal("1") if account["normal_balance"] == "DEBIT" else Decimal("-1")
 
-            # Query uses parameterized placeholders ($1, $2, etc.) - safe from SQL injection
-            entries_query = f"""
-                SELECT
-                    je.journal_date as date,
-                    je.journal_number,
-                    je.id as journal_id,
-                    je.description,
-                    jl.debit,
-                    jl.credit,
-                    je.source_type
+            agg = await conn.fetchrow(
+                f"""
+                SELECT COALESCE(SUM(jl.debit), 0) AS total_debit,
+                       COALESCE(SUM(jl.credit), 0) AS total_credit,
+                       COUNT(*) AS total_count
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE {where_clause}
-                ORDER BY je.journal_date, je.created_at
+            """,  # nosec B608 - where_clause hanya placeholder $N
+                *params,
+            )
+            total_debit = agg["total_debit"] or Decimal("0")
+            total_credit = agg["total_credit"] or Decimal("0")
+            total_count = int(agg["total_count"] or 0)
+
+            # Query uses parameterized placeholders ($1, $2, etc.) - safe from SQL injection
+            entries_query = f"""
+                SELECT * FROM (
+                    SELECT
+                        je.journal_date as date,
+                        je.journal_number,
+                        je.id as journal_id,
+                        je.description,
+                        jl.debit,
+                        jl.credit,
+                        je.source_type,
+                        je.created_at AS _urut_created,
+                        jl.id AS _urut_line,
+                        SUM(COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0)) OVER (
+                            ORDER BY je.journal_date, je.created_at, je.id, jl.id
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                        ) AS kumulatif_dc
+                    FROM journal_lines jl
+                    JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE {where_clause}
+                ) x
+                ORDER BY x.date, x._urut_created, x.journal_id, x._urut_line
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """  # nosec B608
 
-            rows = await conn.fetch(entries_query, *params)
+            rows = await conn.fetch(entries_query, *params, limit, eff_offset)
 
-            # Calculate running balance
-            running_balance = opening_balance
             entries = []
-            total_debit = Decimal("0")
-            total_credit = Decimal("0")
-
             for row in rows:
                 debit = row["debit"] or Decimal("0")
                 credit = row["credit"] or Decimal("0")
-
-                if account["normal_balance"] == "DEBIT":
-                    running_balance = running_balance + debit - credit
-                else:
-                    running_balance = running_balance + credit - debit
-
-                total_debit += debit
-                total_credit += credit
-
+                running_balance = opening_balance + sign * (row["kumulatif_dc"] or Decimal("0"))
                 entries.append(
                     LedgerEntryResponse(
                         date=row["date"],
@@ -420,11 +436,7 @@ async def get_account_ledger(
                     )
                 )
 
-            closing_balance = opening_balance
-            if account["normal_balance"] == "DEBIT":
-                closing_balance = opening_balance + total_debit - total_credit
-            else:
-                closing_balance = opening_balance + total_credit - total_debit
+            closing_balance = opening_balance + sign * (total_debit - total_credit)
 
             return AccountLedgerResponse(
                 data={
@@ -441,6 +453,10 @@ async def get_account_ledger(
                     "total_credit": total_credit,
                     "closing_balance": closing_balance,
                     "net_movement": total_debit - total_credit,
+                    "total_count": total_count,
+                    "offset": eff_offset,
+                    "limit": limit,
+                    "has_more": eff_offset + len(entries) < total_count,
                 }
             )
 
@@ -540,6 +556,7 @@ async def get_account_transactions(
     end_date: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    offset: Optional[int] = Query(None, ge=0),
 ):
     """Get transactions for an account (alias for GET /{account_id})."""
     return await get_account_ledger(
@@ -549,4 +566,5 @@ async def get_account_transactions(
         end_date=end_date,
         page=page,
         limit=limit,
+        offset=offset,
     )

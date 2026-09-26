@@ -56,6 +56,10 @@ class AccountLedgerData(BaseModel):
     total_credit: Decimal
     closing_balance: Decimal
     net_movement: Decimal
+    total_count: int = 0
+    offset: int = 0
+    limit: int = 50
+    has_more: bool = False
 
 
 class AccountBalanceResponse(BaseModel):
