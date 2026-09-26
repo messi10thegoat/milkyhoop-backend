@@ -411,7 +411,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
             # Get items
             items = await conn.fetch(
                 """
-                SELECT soi.*, p.nama_produk AS product_name
+                SELECT soi.*, p.nama_produk AS product_name, p.item_type AS product_item_type,
+                       COALESCE(p.track_inventory, false) AS requires_fulfillment
                 FROM sales_order_items soi
                 LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2
                 WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order, soi.id
@@ -569,6 +570,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             if item["warehouse_id"]
                             else None,
                             sort_order=item["sort_order"],
+                            item_type=item["product_item_type"],
+                            requires_fulfillment=bool(item["requires_fulfillment"]),
                             fulfilled_qty=float(terkirim.get(item["id"], 0)),
                             unfulfilled_qty=float(so_kirim.belum_dikirim(item["quantity"], terkirim.get(item["id"]))),
                             unfulfilled_value=float(so_kirim.nilai_belum_dikirim(
