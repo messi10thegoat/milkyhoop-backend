@@ -89,6 +89,8 @@ async def jalankan(J):
     if not inv1:
         return J.gagal("04_faktur_1", "to-invoice tak menghasilkan faktur")
     await J.potret("04_sesudah_to_invoice_draf", so_id, inv1)
+    # FE: rencana DP yang diterapkan saat posting (faktur masih DRAF) -- dulu fixture FE disintesis
+    await J.langkah("04a_deposit_plan_faktur_1_draf", "GET", f"/api/sales-invoices/{inv1[0]}/deposit-plan")
     await J.langkah("04b_post_faktur_1", "POST", f"/api/sales-invoices/{inv1[0]}/post", {})
     await J.potret("04_sesudah_post", so_id, inv1)
     await kirim(J, inv1[0], "05")
@@ -100,7 +102,10 @@ async def jalankan(J):
     if not inv2:
         return J.gagal("06_faktur_2", "to-invoice sisa tak menghasilkan faktur")
     inv = inv1 + inv2
+    await J.potret("06a_sesudah_to_invoice_sisa_draf", so_id, inv)
+    await J.langkah("06a_deposit_plan_faktur_2_draf", "GET", f"/api/sales-invoices/{inv2[0]}/deposit-plan")
     await J.langkah("06b_post_faktur_2", "POST", f"/api/sales-invoices/{inv2[0]}/post", {})
+    await J.potret("06b_sesudah_post_faktur_2_sebelum_kirim", so_id, inv)
     await kirim(J, inv2[0], "06c")
     await J.potret("06_sesudah_sisa", so_id, inv)
     await bayar_semua(J, inv, "07")
