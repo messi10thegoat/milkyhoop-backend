@@ -230,6 +230,35 @@ def chat(monkeypatch, tmp_path):
     return SimpleNamespace(db=db, pool=FakePool(db), storage=storage, tmp=tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _izin_berkas_lolos(monkeypatch):
+    """Audit READ_OPEN R3 (26 Sep 2026): get_chat_file kini memeriksa PEMILIK
+    rekaman berkas (DB) sesudah bentuk kunci. Tes di berkas ini menguji
+    PENYAJIAN storage/bentuk kunci, bukan otorisasi -> cek pemilik diloloskan di
+    sini; otorisasinya diuji di tests/unit/test_dokumen_baca_berizin.py."""
+    import app.routers.documents as _DOC
+
+    async def _boleh(*a, **k):
+        return True
+
+    class _Acq:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acq()
+
+    async def _pool():
+        return _Pool()
+
+    monkeypatch.setattr(_DOC, "boleh_baca_berkas", _boleh)
+    monkeypatch.setattr(UC, "get_session_db_pool", _pool)
+
+
 def kunci(sub, sha=SHA_PNG, ext=".png", tenant=TENANT):
     return f"{tenant}/uploads/{sub}/{sha}{ext}"
 

@@ -107,6 +107,7 @@ async def list_documents(
     """List all documents. entity_type/entity_id filter to docs attached to that entity
     (via document_attachments); dulu diam-diam diabaikan -> hasil salah."""
     ctx = get_user_context(request)
+    eng, c = await _konteks_izin(request)  # READ_OPEN: anggota AKTIF wajib (audit 26 Sep)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -147,27 +148,44 @@ async def list_documents(
 
         where_sql = " AND ".join(where_clauses)
 
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM documents d WHERE {where_sql}", *params
-        )
-
-        rows = await conn.fetch(
-            f"""
-            SELECT d.*,
-                   (SELECT COUNT(*) FROM document_attachments WHERE document_id = d.id) as attachment_count
-            FROM documents d
-            WHERE {where_sql}
-            ORDER BY d.uploaded_at DESC
-            LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """,
-            *params,
-            limit,
-            skip,
-        )
+        if c.business_role_code == "OWNER":
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM documents d WHERE {where_sql}", *params
+            )
+            rows = await conn.fetch(
+                f"""
+                SELECT d.*,
+                       (SELECT COUNT(*) FROM document_attachments WHERE document_id = d.id) as attachment_count
+                FROM documents d
+                WHERE {where_sql}
+                ORDER BY d.uploaded_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """,
+                *params,
+                limit,
+                skip,
+            )
+        else:
+            # Non-OWNER: saring per dokumen dengan aturan /download, LALU paginasi
+            # (total & has_more jujur untuk yang boleh dilihat). Batas 2000 baris.
+            semua = await conn.fetch(
+                f"""
+                SELECT d.*,
+                       (SELECT COUNT(*) FROM document_attachments WHERE document_id = d.id) as attachment_count
+                FROM documents d
+                WHERE {where_sql}
+                ORDER BY d.uploaded_at DESC
+                LIMIT 2000
+                """,
+                *params,
+            )
+            boleh = await _saring_dokumen(conn, request, eng, c, ctx, semua)
+            total = len(boleh)
+            rows = boleh[skip:skip + limit]
 
         data = []
         for row in rows:
-            doc = dict(row)
+            doc = _url_unduh(dict(row))
             doc["file_size_formatted"] = (
                 format_file_size(doc["file_size"]) if doc["file_size"] else None
             )
@@ -185,6 +203,7 @@ async def get_recent_documents(
 ):
     """Get recently uploaded documents"""
     ctx = get_user_context(request)
+    eng, c = await _konteks_izin(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -202,12 +221,14 @@ async def get_recent_documents(
             LIMIT $2
             """,
             ctx["tenant_id"],
-            limit,
+            limit if c.business_role_code == "OWNER" else 2000,
         )
+        if c.business_role_code != "OWNER":
+            rows = (await _saring_dokumen(conn, request, eng, c, ctx, rows))[:limit]
 
         data = []
         for row in rows:
-            doc = dict(row)
+            doc = _url_unduh(dict(row))
             doc["file_size_formatted"] = (
                 format_file_size(doc["file_size"]) if doc["file_size"] else None
             )
@@ -227,6 +248,7 @@ async def search_documents(
 ):
     """Search documents"""
     ctx = get_user_context(request)
+    eng, c = await _konteks_izin(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -243,10 +265,17 @@ async def search_documents(
             limit,
             offset,
         )
+        if c.business_role_code != "OWNER":
+            # Catatan: saring SESUDAH halaman fungsi DB -> halaman bisa kurang dari
+            # `limit`; has_more tetap dari jumlah baris mentah (tak menyiratkan jumlah).
+            mentah = len(rows)
+            rows = await _saring_dokumen(conn, request, eng, c, ctx, rows)
+        else:
+            mentah = len(rows)
 
         data = []
         for row in rows:
-            doc = dict(row)
+            doc = _url_unduh(dict(row))
             doc["file_size_formatted"] = (
                 format_file_size(doc["file_size"]) if doc.get("file_size") else None
             )
@@ -258,7 +287,7 @@ async def search_documents(
             tags=tags,
             data=data,
             total=len(data),
-            has_more=len(data) >= limit,
+            has_more=mentah >= limit,
         )
 
 
@@ -266,6 +295,7 @@ async def search_documents(
 async def get_storage_usage(request: Request):
     """Get storage usage statistics"""
     ctx = get_user_context(request)
+    await _konteks_izin(request)  # agregat saja; anggota AKTIF wajib
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -311,6 +341,7 @@ async def get_storage_usage(request: Request):
 async def get_document(request: Request, document_id: UUID):
     """Get document details with attachments"""
     ctx = get_user_context(request)
+    eng, c = await _konteks_izin(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -329,14 +360,18 @@ async def get_document(request: Request, document_id: UUID):
             ctx["tenant_id"],
         )
 
-        if not row:
+        if not row or not await _boleh_baca_dokumen(
+            conn, request, eng, c, row["id"], row.get("uploaded_by"), ctx["tenant_id"], ctx.get("user_id")
+        ):
+            # tak boleh = sama dengan tak ada (tanpa oracle keberadaan)
             raise HTTPException(status_code=404, detail="Document not found")
 
         attachments = await conn.fetch(
-            "SELECT * FROM document_attachments WHERE document_id = $1", document_id
+            "SELECT * FROM document_attachments WHERE document_id = $1 AND tenant_id = $2",
+            document_id, ctx["tenant_id"],
         )
 
-        doc = dict(row)
+        doc = _url_unduh(dict(row))
         doc["file_size_formatted"] = (
             format_file_size(doc["file_size"]) if doc["file_size"] else None
         )
@@ -863,23 +898,9 @@ async def download_document(request: Request, document_id: UUID):
             if not row:
                 raise HTTPException(status_code=404, detail="Document not found")
             eng, c = await _konteks_izin(request)
-            boleh = c.business_role_code == "OWNER"
-            if not boleh:
-                tautan = await conn.fetch(
-                    "SELECT entity_type, entity_id FROM document_attachments "
-                    "WHERE document_id = $1 AND tenant_id = $2",
-                    document_id,
-                    ctx["tenant_id"],
-                )
-                if not tautan:
-                    boleh = row["uploaded_by"] is not None and str(row["uploaded_by"]) == str(ctx.get("user_id"))
-                for t in tautan:
-                    segmen = await _segmen_entitas(conn, t["entity_type"], t["entity_id"], ctx["tenant_id"])
-                    if segmen and await _boleh_entitas(
-                        conn, request, eng, c, t["entity_type"], segmen, t["entity_id"], ("R",)
-                    ):
-                        boleh = True
-                        break
+            boleh = await _boleh_baca_dokumen(
+                conn, request, eng, c, document_id, row.get("uploaded_by"), ctx["tenant_id"], ctx.get("user_id")
+            )
             if not boleh:
                 raise HTTPException(
                     status_code=403, detail="Anda tidak punya izin melihat dokumen ini."
@@ -888,6 +909,50 @@ async def download_document(request: Request, document_id: UUID):
     # file_path / objek hilang -> 404 "Berkas tidak tersedia" (dulu 500:
     # get_object dengan kunci baris local). Sajian aman (L2) tetap sama.
     return stream_lampiran(row, get_storage_service())
+
+
+# Audit READ_OPEN R1 (26 Sep 2026): SATU aturan baca dokumen untuk unduh, detail,
+# daftar, terbaru, cari, DAN berkas /api/v3/chat/files (R3). Dulu daftar/detail
+# = tenant saja + `file_url` lama (/api/v3/chat/files/<kunci>) -> anggota tanpa
+# izin modul entitas bisa mengambil kunci lalu mengunduh isinya.
+async def _boleh_baca_dokumen(conn, request, eng, c, doc_id, uploaded_by, tenant_id, user_id) -> bool:
+    """OWNER; atau izin R pada SALAH SATU entitas tertaut (employee + pay-group);
+    dokumen tanpa tautan hanya untuk pengunggahnya."""
+    if c.business_role_code == "OWNER":
+        return True
+    tautan = await conn.fetch(
+        "SELECT entity_type, entity_id FROM document_attachments "
+        "WHERE document_id = $1 AND tenant_id = $2",
+        doc_id,
+        tenant_id,
+    )
+    if not tautan:
+        return uploaded_by is not None and str(uploaded_by) == str(user_id)
+    for t in tautan:
+        segmen = await _segmen_entitas(conn, t["entity_type"], t["entity_id"], tenant_id)
+        if segmen and await _boleh_entitas(
+            conn, request, eng, c, t["entity_type"], segmen, t["entity_id"], ("R",)
+        ):
+            return True
+    return False
+
+
+async def _saring_dokumen(conn, request, eng, c, ctx, rows) -> list:
+    return [
+        r for r in rows
+        if await _boleh_baca_dokumen(
+            conn, request, eng, c, r["id"], r.get("uploaded_by") if hasattr(r, "get") else r["uploaded_by"],
+            ctx["tenant_id"], ctx.get("user_id"),
+        )
+    ]
+
+
+def _url_unduh(doc: dict) -> dict:
+    """file_url SELALU jalur /download ber-otorisasi -- tak pernah kunci objek
+    atau URL lama (/api/v3/chat/files/<kunci>, presigned) yang melewati otorisasi."""
+    if doc.get("id") is not None:
+        doc["file_url"] = f"/api/documents/{doc['id']}/download"
+    return doc
 
 
 async def _segmen_entitas(conn, entity_type: str, entity_id, tenant_id: str):
@@ -903,3 +968,48 @@ async def _segmen_entitas(conn, entity_type: str, entity_id, tenant_id: str):
         if ada:
             return segmen
     return None
+
+
+async def boleh_baca_berkas(request, conn, tenant_id: str, user_id, storage_key: str) -> bool:
+    """Audit READ_OPEN R3 (26 Sep 2026): GET /api/v3/chat/files/{kunci} dulu cukup
+    tenant + anggota -> anggota mana pun yang memegang kunci (bocor lewat
+    `file_url` lama daftar dokumen) mengunduh berkas modul yang tak boleh ia lihat.
+
+    Pemilik rekaman dicari lewat nama akhir kunci (`<sha256><ext>`, unik per isi):
+      - OWNER -> ya;
+      - lampiran chat -> hanya pemilik sesi chat-nya;
+      - dokumen (forms/lampiran/documents) -> _boleh_baca_dokumen (aturan /download);
+      - unggahan intake -> hanya pengunggahnya;
+      - tak ditemukan di rekaman mana pun -> TIDAK (gagal tertutup).
+    """
+    eng, c = await _konteks_izin(request)
+    if c.business_role_code == "OWNER":
+        return True
+    nama = (storage_key or "").rsplit("/", 1)[-1]
+    if not nama or "%" in nama or "_" in nama.replace(".", ""):
+        return False
+    pola = "%/" + nama
+    if await conn.fetchval(
+        """SELECT 1 FROM chat_attachments ca
+             JOIN chat_messages m ON m.id = ca.message_id::text
+             JOIN chat_sessions s ON s.id = m.session_id
+            WHERE ca.tenant_id = $1 AND ca.storage_key LIKE $2
+              AND s.tenant_id = $1 AND s.user_id::text = $3
+            LIMIT 1""",
+        tenant_id, pola, str(user_id),
+    ):
+        return True
+    docs = await conn.fetch(
+        """SELECT id, uploaded_by FROM documents
+            WHERE tenant_id = $1 AND deleted_at IS NULL
+              AND (file_path LIKE $2 OR file_url LIKE $2)""",
+        tenant_id, pola,
+    )
+    for d in docs:
+        if await _boleh_baca_dokumen(conn, request, eng, c, d["id"], d["uploaded_by"], tenant_id, user_id):
+            return True
+    return bool(await conn.fetchval(
+        """SELECT 1 FROM uploaded_documents
+            WHERE tenant_id = $1 AND file_path LIKE $2 AND user_id::text = $3 LIMIT 1""",
+        tenant_id, pola, str(user_id),
+    ))

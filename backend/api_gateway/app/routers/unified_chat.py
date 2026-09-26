@@ -6289,6 +6289,21 @@ async def get_chat_file(request: Request, storage_key: str):
     app/utils/chat_file_path.py.
     """
     ctx = _get_user_context(request)
+    # Audit READ_OPEN R3 (26 Sep 2026): tenant + anggota BUKAN cukup -- kunci bisa
+    # bocor. Pemilik rekaman berkas (lampiran chat / dokumen / intake) menentukan;
+    # tak boleh = 404 yang sama dengan tak ada (tanpa oracle).
+    from .documents import boleh_baca_berkas
+    from ..utils.chat_file_path import kunci_sah_milik_tenant
+
+    # Bentuk kunci dulu (murah, tanpa DB): kunci tak sah -> 404 seperti sebelumnya.
+    if not kunci_sah_milik_tenant(ctx["tenant_id"], storage_key):
+        raise HTTPException(status_code=404, detail="File not found")
+    _pool_berkas = await get_session_db_pool()
+    async with _pool_berkas.acquire() as _conn_berkas:
+        if not await boleh_baca_berkas(
+            request, _conn_berkas, ctx["tenant_id"], ctx.get("user_id"), storage_key
+        ):
+            raise HTTPException(status_code=404, detail="File not found")
     return await sajikan_objek_unggahan(
         get_storage_service(), ctx["tenant_id"], storage_key
     )
