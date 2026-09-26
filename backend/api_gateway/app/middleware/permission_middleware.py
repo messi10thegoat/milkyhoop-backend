@@ -930,6 +930,8 @@ READ_DEFAULT_OPEN_ALLOWLIST = [
     # Tenant branding/info: broadly read (logo shown to everyone).
     r"^/api/tenant/profile",
     r"^/api/tenant/[^/]+/info",
+    # 26 Sep 2026: hari ini zona tenant (tanggal bawaan dokumen) -- bukan data bisnis, dipakai semua peran.
+    r"^/api/tenant/today$",
     # Cross-module surfaces that enforce per-module READ authz IN THE HANDLER (policy.can per
     # module, OWNER bypass, fail-closed) -- same shape as documents. Verified enforced
     # 2026-09-21: search (routers/search.py per-group _allowed) + SSE stream

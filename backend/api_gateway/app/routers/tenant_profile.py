@@ -114,6 +114,26 @@ async def get_tenant_profile(request: Request):
         await conn.close()
 
 
+@router.get("/today")
+async def get_tenant_today(request: Request):
+    """Hari ini menurut zona tenant (tanggal_dokumen) -- bawaan tanggal dokumen di FE (audit SO, 26 Sep 2026).
+
+    Dulu FE memakai jam PERANGKAT: perangkat berzona lain / jam salah -> tanggal dokumen bawaan beda dari yang
+    ditulis server. Sumber tunggal = utils.tanggal_tenant (sama dengan penulisan dokumen & tanggal_bisnis() DB).
+    Dibaca tiap permintaan (tanpa cache FE jangka panjang): nilainya berganti tengah malam zona tenant."""
+    from ..services.db_pool import get_db_pool
+    from ..utils.tanggal_tenant import tanggal_dokumen, zona_tenant
+
+    tenant_id = _get_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="No tenant context")
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        hari = await tanggal_dokumen(conn, tenant_id)
+        zona = await zona_tenant(conn, tenant_id)
+    return {"success": True, "data": {"date": hari.isoformat(), "timezone": str(zona)}}
+
+
 @router.put("/profile", response_model=TenantProfileResponse)
 @router.patch("/profile", response_model=TenantProfileResponse)
 async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Request):

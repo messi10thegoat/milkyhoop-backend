@@ -26,6 +26,7 @@ from ..services.tax_factor import (
 )
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
+from ..services import so_kirim
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -325,6 +326,7 @@ async def get_sales_order_summary(request: Request):
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
+            kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
 
             return SalesOrderSummaryResponse(
                 success=True,
@@ -343,6 +345,8 @@ async def get_sales_order_summary(request: Request):
                     "pending_invoice_value": row["pending_invoice_value"],
                     "uninvoiced_value": belum["total"],
                     "uninvoiced_count": belum["count"],   # jumlah SO bersisa (SEMUA, bukan baris terpotong 50)
+                    "unshipped_value": float(kirim["total"]),
+                    "unshipped_count": kirim["count"],
                 },
             )
 
@@ -483,6 +487,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             ringkas = await ringkasan_pesanan(conn, ctx["tenant_id"], [order["id"]])
             payment_summary = ringkasan_pembayaran_so(order["total_amount"], ringkas[order["id"]])
             penanda = (await penanda_faktur_so(conn, ctx["tenant_id"], [order["id"]]))[str(order["id"])]
+            terkirim, tanpa_tautan = await so_kirim.terkirim_per_baris(conn, ctx["tenant_id"], [order["id"]])
 
             return SalesOrderDetailResponse(
                 success=True,
@@ -519,6 +524,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     total_amount=order["total_amount"],
                     status=order["status"],
                     shipped_qty=float(order["shipped_qty"] or 0),
+                    fulfilled_qty_unlinked=float(tanpa_tautan.get(order["id"], 0)),
                     invoiced_qty=float(order["invoiced_qty"] or 0),
                     **penanda,
                     notes=order["notes"],
@@ -553,6 +559,10 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             if item["warehouse_id"]
                             else None,
                             sort_order=item["sort_order"],
+                            fulfilled_qty=float(terkirim.get(item["id"], 0)),
+                            unfulfilled_qty=float(so_kirim.belum_dikirim(item["quantity"], terkirim.get(item["id"]))),
+                            unfulfilled_value=float(so_kirim.nilai_belum_dikirim(
+                                item["quantity"], item["line_total"], terkirim.get(item["id"]))),
                         )
                         for item in items
                     ],

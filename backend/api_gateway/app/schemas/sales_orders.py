@@ -60,6 +60,11 @@ class SalesOrderItemResponse(BaseModel):
     quantity_shipped: float = 0
     quantity_invoiced: float = 0
     quantity_remaining: float = 0  # quantity - shipped
+    # quantity_shipped/quantity_remaining di atas MATI sejak V264 (selalu 0 / = quantity). Terkirim NYATA per baris
+    # (Surat Jalan aktif, sumber = header shipped_qty) — services/so_kirim.py:
+    fulfilled_qty: float = 0
+    unfulfilled_qty: float = 0
+    unfulfilled_value: float = 0  # (qty - terkirim) x line_total/qty; NETO sebelum pajak, tanpa diskon header/ongkir
     unit: Optional[str] = None
     unit_price: int
     discount_percent: float = 0
@@ -323,6 +328,7 @@ class SalesOrderDetail(BaseModel):
     total_amount: float
     status: str
     shipped_qty: float = 0
+    fulfilled_qty_unlinked: float = 0  # terkirim dari baris faktur TANPA tautan baris SO
     invoiced_qty: float = 0
     # Q-016 (a): penanda faktur DRAF (status SO tetap; sumber = tautan per baris seperti quantity_invoiced)
     has_draft_invoice: bool = False
@@ -393,6 +399,10 @@ class SalesOrderSummary(BaseModel):
     # faktur DRAF dihitung belum ditagih. = GET /api/sales-orders/aggregate?q=uninvoiced -> data.total
     uninvoiced_value: float
     uninvoiced_count: int  # jumlah SO dengan sisa belum ditagih > 0 (= aggregate?q=uninvoiced -> data.count)
+    # Belum dikirim NYATA (26 Sep): Σ per baris (qty - terkirim Surat Jalan) x line_total/qty, SO selain
+    # draft/cancelled/completed; NETO sebelum pajak, tanpa diskon header/ongkir. Definisi = detail unfulfilled_value.
+    unshipped_value: float = 0
+    unshipped_count: int = 0
 
 
 class SalesOrderSummaryResponse(BaseModel):

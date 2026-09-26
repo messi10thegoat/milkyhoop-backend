@@ -887,6 +887,52 @@ async def assert_deposit_within_order_total(
         )
 
 
+def _uuid_teks(v):
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        return str(UUID(str(v)))
+    except ValueError:
+        return str(v)          # bukan UUID -> dibandingkan mentah (pasti beda dari UUID tersimpan)
+
+
+def _beda_maksud_dp(lama, body) -> list:
+    """Medan MAKSUD uang (siapa, berapa, kapan, ke akun mana, untuk dokumen apa) yang berbeda antara uang muka
+    tersimpan untuk kunci ini dan permintaan sekarang. reference/notes/auto_post tak dibandingkan (bukan maksud uang)."""
+    beda = []
+    if Decimal(str(lama["amount"])) != Decimal(str(body.amount)):
+        beda.append("amount")
+    if lama["deposit_date"] != body.deposit_date:
+        beda.append("deposit_date")
+    if (lama["payment_method"] or None) != (body.payment_method or None):
+        beda.append("payment_method")
+    for kol in ("customer_id", "account_id", "bank_account_id", "quote_id", "sales_order_id", "proforma_id"):
+        if _uuid_teks(lama[kol]) != _uuid_teks(getattr(body, kol)):
+            beda.append(kol)
+    if lama["customer_id"] is None and not body.customer_id:
+        if (lama["customer_name"] or "").strip() != (body.customer_name or "").strip():
+            beda.append("customer_name")
+    return beda
+
+
+def _tolak_bila_maksud_beda(lama, body):
+    """Audit SO FE (26 Sep 2026): kunci idempotensi SAMA + isi BEDA dulu dijawab success:true dengan uang muka LAMA
+    -> uang yang diketik pengguna (mis. Rp 2 jt) diam-diam tak tercatat, layar bilang berhasil. Kini 409
+    ber-kode tetap (pola W0 sales_orders), menunjuk uang muka yang sudah tersimpan untuk kunci itu."""
+    beda = _beda_maksud_dp(lama, body)
+    if beda:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "IDEMPOTENCY_KEY_REUSED",
+                "message": "Idempotency key sudah dipakai untuk uang muka lain dengan isi berbeda",
+                "deposit_id": str(lama["id"]),
+                "deposit_number": lama["deposit_number"],
+                "fields": beda,
+            },
+        )
+
+
 @router.post("", response_model=CustomerDepositResponse, status_code=201)
 async def create_customer_deposit(request: Request, body: CreateCustomerDepositRequest):
     """
@@ -923,7 +969,9 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                     )
                     existing = await conn.fetchrow(
                         """
-                        SELECT id, deposit_number, amount, status
+                        SELECT id, deposit_number, amount, status, customer_id, customer_name,
+                               deposit_date, payment_method, account_id, bank_account_id,
+                               quote_id, sales_order_id, proforma_id
                         FROM customer_deposits
                         WHERE tenant_id = $1 AND idempotency_key = $2
                         """,
@@ -931,6 +979,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         body.idempotency_key,
                     )
                     if existing:
+                        _tolak_bila_maksud_beda(existing, body)
                         logger.info(
                             f"Customer deposit idempotent hit: key={body.idempotency_key} "
                             f"-> existing {existing['deposit_number']} ({existing['id']})"
@@ -1034,7 +1083,9 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                     # reaching here, but the index is the hard guarantee.
                     winner = await conn.fetchrow(
                         """
-                        SELECT id, deposit_number, amount, status
+                        SELECT id, deposit_number, amount, status, customer_id, customer_name,
+                               deposit_date, payment_method, account_id, bank_account_id,
+                               quote_id, sales_order_id, proforma_id
                         FROM customer_deposits
                         WHERE tenant_id = $1 AND idempotency_key = $2
                         """,
@@ -1042,6 +1093,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         body.idempotency_key,
                     )
                     if winner:
+                        _tolak_bila_maksud_beda(winner, body)
                         return {
                             "success": True,
                             "message": (
