@@ -74,6 +74,11 @@ class SalesOrderItemResponse(BaseModel):
     line_total: float
     warehouse_id: Optional[str] = None
     sort_order: int = 0
+    # Jenis baris (26 Sep 2026, CW): item_type dari master produk (null = baris teks bebas tanpa produk);
+    # requires_fulfillment = produk dilacak stok (track_inventory). Non-stok/jasa/teks bebas -> false: tak ada
+    # "Kirim barang" (dianggap terpenuhi saat difakturkan; pendapatannya lewat "akui pendapatan non-stok").
+    item_type: Optional[str] = None
+    requires_fulfillment: bool = False
 
 
 # ============================================================================
