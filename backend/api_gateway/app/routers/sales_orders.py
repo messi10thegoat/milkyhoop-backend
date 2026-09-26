@@ -1383,7 +1383,7 @@ async def close_sales_order(
                     JOIN sales_invoices si ON si.id = sii.invoice_id AND si.tenant_id = $2
                     WHERE si.sales_order_id = $1 AND si.status NOT IN ('draft', 'void')
                       AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005
-                    ORDER BY si.invoice_number, sii.sort_order NULLS LAST
+                    ORDER BY si.invoice_number, sii.line_number NULLS LAST
                 """,
                     order["id"],
                     ctx["tenant_id"],
