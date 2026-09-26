@@ -1168,12 +1168,21 @@ async def get_customer_open_invoices(
                     CASE WHEN due_date < $3::date THEN true ELSE false END as is_overdue,
                     GREATEST(0, $3::date - due_date) as overdue_days
                 FROM compute_customer_ar($1, $2)
-                WHERE outstanding > 0
+                WHERE outstanding > 0 AND invoice_id IS NOT NULL
                 ORDER BY due_date ASC, invoice_date ASC
             """,
                 ctx["tenant_id"],
                 customer_id,
                 hari_ini,
+            )
+            # V314 (26 Sep 2026): baris sintetis 'CREDIT-NOTE' (invoice_id NULL = kredit NK tanpa faktur asal) BUKAN
+            # faktur -> tak pernah masuk invoices[] (dulu keluar ber-id "None" -> form terima bayar mengalokasikan ke
+            # "None"). Kreditnya dilaporkan terpisah di summary.unapplied_credits (positif, medan TAMBAHAN).
+            kredit_nk = await conn.fetchval(
+                """SELECT COALESCE(-SUM(outstanding), 0) FROM compute_customer_ar($1, $2)
+                   WHERE invoice_id IS NULL AND outstanding < 0""",
+                ctx["tenant_id"],
+                customer_id,
             )
 
             # Filter to only invoices with positive remaining
@@ -1190,7 +1199,7 @@ async def get_customer_open_invoices(
                     "overdue_days": row["overdue_days"],
                 }
                 for row in rows
-                if row["remaining_amount"] > 0
+                if row["remaining_amount"] > 0 and row["id"] is not None
             ]
 
             total_outstanding = sum(inv["remaining_amount"] for inv in invoices)
@@ -1204,6 +1213,7 @@ async def get_customer_open_invoices(
                     "total_outstanding": total_outstanding,
                     "total_overdue": total_overdue,
                     "invoice_count": len(invoices),
+                    "unapplied_credits": float(kredit_nk or 0),
                 },
             }
 
