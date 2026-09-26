@@ -810,6 +810,27 @@ async def _item_has_transactions(conn, tenant_id, item_id):
     ))
 
 
+async def _item_jebakan_ubah_tipe(conn, tenant_id, item_id):
+    """Q-018 (26 Sep 2026): alasan NYATA menolak ubah tipe/pelacakan lewat impor massal, atau None.
+
+    Pemilik SENGAJA menjadikan barang non_inventory (jual+beli dulu) -> tak boleh diblok umum. Jebakan nyata hanya:
+    (a) baris faktur terbit yang pendapatannya masih DITUNDA (INV-2609-0009: pindah tipe -> pendapatan terkunci),
+    (b) riwayat inventory_ledger (valuasi persediaan/HPP).
+    """
+    tunda = await conn.fetchval(
+        """SELECT string_agg(DISTINCT si.invoice_number, , ) FROM sales_invoice_items sii
+           JOIN sales_invoices si ON si.id = sii.invoice_id
+           WHERE sii.item_id = $1 AND si.tenant_id = $2 AND si.status IN (posted, partial, paid)
+             AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005""",
+        item_id, tenant_id,
+    )
+    if tunda:
+        return f"pendapatan faktur {tunda} masih ditunda — akui dulu lewat aksi Akui pendapatan baris non-stok di faktur itu"
+    if await conn.fetchval("SELECT EXISTS(SELECT 1 FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2)", item_id, tenant_id):
+        return "barang punya riwayat ledger stok (valuasi persediaan/HPP)"
+    return None
+
+
 @router.put("/items/{item_id}", response_model=UpdateItemResponse)
 async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     """Update an existing item."""
@@ -2085,6 +2106,19 @@ async def bulk_import_items(request: Request):
                             )
 
                         if existing:
+                            # Q-018 (26 Sep 2026): impor massal tak boleh diam-diam mengubah tipe barang yang punya
+                            # JEBAKAN nyata (pendapatan tertunda / riwayat ledger). Ubah tipe lain (niat sah pemilik:
+                            # semua barang non_inventory) tetap boleh. Field lain tetap diperbarui; barisnya dilaporkan.
+                            tipe_baru = item.get("type")
+                            if tipe_baru is not None:
+                                tipe_lama = await conn.fetchval(
+                                    "SELECT item_type FROM products WHERE id = $1 AND tenant_id = $2", existing["id"], ctx["tenant_id"]
+                                )
+                                if tipe_baru != tipe_lama:
+                                    alasan = await _item_jebakan_ubah_tipe(conn, ctx["tenant_id"], existing["id"])
+                                    if alasan:
+                                        errors.append({"row": idx + 1, "error": f"Tipe {tipe_lama} tidak diubah ke {tipe_baru}: {alasan} (field lain diperbarui)"})
+                                        tipe_baru = None
                             # Update existing
                             await conn.execute(
                                 """
@@ -2098,7 +2132,7 @@ async def bulk_import_items(request: Request):
                             WHERE id = $6 AND tenant_id = $7
                         """,
                                 name,
-                                item.get("type"),
+                                tipe_baru,
                                 item.get("unit"),
                                 item.get("selling_price"),
                                 item.get("purchase_price"),

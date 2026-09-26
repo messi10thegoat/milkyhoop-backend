@@ -6299,6 +6299,118 @@ async def download_invoice_attachment(
     return stream_lampiran(row, get_storage_service())
 
 
+async def _akui_pendapatan_nonstok(conn, tenant_id: str, invoice_id, user_id, journal_date=None) -> dict:
+    """Q-018 (26 Sep 2026): akui pendapatan TERTUNDA untuk baris yang produknya kini NON-STOK.
+
+    Latar terukur: INV-2609-0009 grapgrap di-post saat produknya dilacak stok dengan WAC=0 -> cabang
+    "WAC=0 -> revenue deferred"; produk lalu diubah ke non-stok (sebelum penjaga E2b 20 Sep) -> tak ada jalur
+    pengiriman -> Rp 1,5 jt terkunci di Pendapatan Diterima Dimuka selamanya.
+    Aksi: untuk baris (allocated_amount - recognized_amount) > 0 yang produknya TIDAK dilacak stok, satu jurnal
+    INVOICE_REVENUE Dr Pendapatan Diterima Dimuka / Cr Penjualan (akun & nomor RECOG sama dengan jalur /fulfill),
+    DRAFT->POSTED (Law 20), cek periode (400), kunci sama dengan /fulfill (Law 13), idempoten (klik kedua 409),
+    tercatat di audit_logs. Baris BERSTOK tak disentuh (tetap lewat pengiriman). Pemanggil wajib di dalam transaksi.
+    """
+    import json
+    import uuid
+
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", tenant_id, f"INVOICE_FULFILL:{str(invoice_id)}"
+    )
+    inv = await conn.fetchrow(
+        """SELECT id, invoice_number, invoice_date, status, revenue_status, customer_name
+           FROM sales_invoices WHERE id = $1 AND tenant_id = $2""",
+        invoice_id, tenant_id,
+    )
+    if not inv:
+        raise HTTPException(404, "Faktur tidak ditemukan")
+    if inv["status"] not in ("posted", "partial", "paid"):
+        raise HTTPException(409, f"Faktur berstatus {inv['status']} — hanya faktur terbit yang bisa diakui pendapatannya")
+    baris = await conn.fetch(
+        """SELECT sii.id, sii.allocated_amount, sii.recognized_amount, sii.description
+           FROM sales_invoice_items sii
+           LEFT JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+           WHERE sii.invoice_id = $1
+             AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005
+             AND COALESCE(p.track_inventory, false) = false""",
+        invoice_id, tenant_id,
+    )
+    if not baris:
+        raise HTTPException(409, "Tidak ada baris non-stok yang pendapatannya masih tertunda (sudah diakui atau barisnya berstok)")
+    jumlah = sum((Decimal(str(b["allocated_amount"])) - Decimal(str(b["recognized_amount"] or 0)) for b in baris), Decimal("0"))
+    tgl = journal_date or inv["invoice_date"]
+    if await conn.fetchval("SELECT is_period_closed($1, $2)", tenant_id, tgl):
+        raise HTTPException(400, f"Periode tanggal {tgl} sudah ditutup/dikunci — pilih tanggal di periode yang masih OPEN")
+    deferred_rev_account_id = await _resolve_unearned_revenue(conn, tenant_id)
+    sales_account_id = await resolve_account_id_by_role(conn, tenant_id, AccountRole.REVENUE_SALES_GOODS)
+    jid = uuid.uuid4()
+    nomor = await conn.fetchval("SELECT get_next_journal_number($1, $2, $3)", tenant_id, "RECOG", tgl)
+    await conn.execute(
+        """INSERT INTO journal_entries (
+               id, tenant_id, journal_number, journal_date, description, source_type, source_id, trace_id,
+               total_debit, total_credit, status, created_by
+           ) VALUES ($1, $2, $3, $4, $5, 'INVOICE_REVENUE', $6, $7, $8, $8, 'DRAFT', $9)""",
+        jid, tenant_id, nomor, tgl,
+        f"Pengakuan pendapatan baris non-stok {inv['invoice_number']} - {inv['customer_name']}",
+        invoice_id, str(uuid.uuid4()), str(jumlah), user_id,
+    )
+    await conn.execute(
+        """INSERT INTO journal_lines (id, journal_id, account_id, memo, debit, credit, line_number) VALUES
+           ($1, $2, $3, 'Pendapatan Diterima Dimuka', $5, 0, 1),
+           ($4, $2, $6, 'Penjualan', 0, $5, 2)""",
+        uuid.uuid4(), jid, deferred_rev_account_id, uuid.uuid4(), str(jumlah), sales_account_id,
+    )
+    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", jid)
+    await conn.execute(
+        "UPDATE sales_invoice_items SET recognized_amount = allocated_amount WHERE id = ANY($1::uuid[])",
+        [b["id"] for b in baris],
+    )
+    await _update_invoice_fulfillment_status(conn, invoice_id, tenant_id)
+    # Tanpa baris BERSTOK tersisa = tak ada yang perlu dikirim -> not_applicable (sama dengan faktur non-stok
+    # yang di-post normal); kalau tidak, hitungan qty membuatnya tampil "menunggu pengiriman" selamanya.
+    await conn.execute(
+        """UPDATE sales_invoices SET fulfillment_status = 'not_applicable'
+           WHERE id = $1 AND tenant_id = $2 AND NOT EXISTS (
+               SELECT 1 FROM sales_invoice_items sii JOIN products p ON p.id = sii.item_id AND p.tenant_id = $2
+               WHERE sii.invoice_id = $1 AND COALESCE(p.track_inventory, false) = true)""",
+        invoice_id, tenant_id,
+    )
+    await conn.execute(
+        """INSERT INTO audit_logs (id, "userId", "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+           VALUES ($1, $2, 'REVENUE_RECOGNIZED_NON_STOCK', 'sales_invoice', $3, $4, $5, 'api', $6::jsonb, true, NOW())""",
+        str(uuid.uuid4()), str(user_id) if user_id else None, str(invoice_id), inv["invoice_number"], tenant_id,
+        json.dumps({"journal_id": str(jid), "journal_number": nomor, "amount": str(jumlah), "journal_date": str(tgl),
+                    "lines": [str(b["id"]) for b in baris]}),
+    )
+    return {"invoice_number": inv["invoice_number"], "journal_id": str(jid), "journal_number": nomor,
+            "journal_date": str(tgl), "amount": float(jumlah), "lines": len(baris)}
+
+
+@router.post("/{invoice_id}/recognize-non-stock-revenue")
+async def recognize_non_stock_revenue(request: Request, invoice_id: UUID):
+    """Q-018: akui pendapatan tertunda baris NON-STOK (lihat _akui_pendapatan_nonstok). Body opsional
+    {"journal_date": "YYYY-MM-DD"}; bawaan = tanggal faktur."""
+    try:
+        from datetime import date as dt_date
+        ctx = get_user_context(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        tgl = dt_date.fromisoformat(body["journal_date"]) if (body or {}).get("journal_date") else None
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                hasil = await _akui_pendapatan_nonstok(conn, ctx["tenant_id"], invoice_id, ctx.get("user_id"), tgl)
+        return {"success": True, "data": hasil}
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(400, "journal_date harus YYYY-MM-DD")
+    except Exception as e:
+        logger.error(f"Error recognize non-stock revenue: {e}", exc_info=True)
+        raise HTTPException(500, "Gagal mengakui pendapatan")
+
+
 @router.post("/{invoice_id}/fulfill")
 async def fulfill_invoice(request: Request, invoice_id: UUID):
     """
