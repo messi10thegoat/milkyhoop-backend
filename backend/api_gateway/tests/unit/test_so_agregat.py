@@ -30,6 +30,11 @@ def _so(total, status="confirmed", nomor=None, draf=0, nama="Rahayu", tgl=date(2
             "total_amount": D(str(total)), "draft_invoice_amount": D(str(draf)), "expected_ship_date": kirim}
 
 
+def _kueri_kirim(sql):
+    """Kueri services/so_kirim (terkirim per baris / baris SO untuk unshipped_value) -- tanpa Surat Jalan."""
+    return "invoice_fulfillment_items" in sql or "JOIN sales_order_items soi" in sql
+
+
 class DB:
     """Kueri dicatat; jawaban per penanda SQL."""
     def __init__(self, rows=(), pelanggan=None, tanpa_kirim=0, agregat=()):
@@ -39,6 +44,8 @@ class DB:
     async def fetch(self, sql, *a):
         self.sql.append(sql)
         self.args.append(a)
+        if _kueri_kirim(sql):
+            return []
         if "GROUP BY so.customer_id" in sql:
             return self.agregat
         return self.rows
@@ -300,7 +307,7 @@ def test_http_summary_uninvoiced_count_semua_bukan_baris_terpotong(klien, monkey
     rows = [_so(1000 + i, nomor=f"SO-{i:03d}") for i in range(51)] + [lunas]
 
     async def fetch(self, sql, *a):
-        return rows
+        return [] if _kueri_kirim(sql) else rows
 
     async def fetchrow(self, sql, *a):
         return ringkas
