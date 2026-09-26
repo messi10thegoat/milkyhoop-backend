@@ -2422,7 +2422,8 @@ async def get_item_history(
         )
 
         # Get stock movements from inventory_ledger with counterparty info
-        query = """
+        # f-string: kosakata ledger disisipkan (dulu string BIASA -> "{sql_daftar(...)}" terkirim mentah -> 500)
+        query = f"""
             SELECT
                 il.id,
                 il.movement_type,
