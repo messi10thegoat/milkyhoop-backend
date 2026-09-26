@@ -18,6 +18,7 @@ from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .status_helpers import derive_doc_status
+from .jatuh_tempo import hari_terlambat
 from .pihak_helpers import segarkan_cache_hutang_tagihan
 from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from decimal import Decimal, ROUND_HALF_UP
@@ -795,6 +796,10 @@ class BillsService:
                 "status": bill["calculated_status"],
                 "issue_date": bill["issue_date"].isoformat(),
                 "due_date": bill["due_date"].isoformat(),
+                # Detail == daftar (26 Sep 2026): jatuh tempo = calculated_status 'overdue' (CASE yang sama dgn daftar,
+                # tanggal bisnis hari_ini); hari = services/jatuh_tempo.hari_terlambat
+                "is_overdue": bill["calculated_status"] == "overdue",
+                "overdue_days": hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini),
                 "ref_no": bill.get("ref_no"),
                 "tax_rate": float(bill["tax_rate"]) if bill.get("tax_rate") else 0,
                 "tax_inclusive": bool(bill.get("tax_inclusive", False)),
@@ -4440,6 +4445,8 @@ class BillsService:
                     "initials": initials,
                 },
                 "status": bill["calculated_status"],
+                "is_overdue": bill["calculated_status"] == "overdue",  # detail == daftar (26 Sep 2026)
+                "overdue_days": hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini),
                 # tanggal + alasan pembatalan -> baris tanda DIBATALKAN di PDF tagihan (pdf_service._tanda_batal)
                 "voided_at": bill["voided_at"],
                 "voided_reason": bill["voided_reason"],

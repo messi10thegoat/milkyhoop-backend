@@ -12,6 +12,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
@@ -1247,6 +1248,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 ar_row["outstanding"] if ar_row else None,
             )
 
+            # Detail == daftar (26 Sep 2026): SATU aturan jatuh tempo (_syarat_jatuh_tempo, Q-014) di tanggal BISNIS
+            # tenant — FE tak lagi menghitung dari tanggal klien di header detail.
+            _hari_jt = await tanggal_dokumen(conn, ctx["tenant_id"])
+            _jt = bool(await conn.fetchval(
+                f"SELECT {_syarat_jatuh_tempo('$3')} FROM sales_invoices si WHERE si.id = $2 AND si.tenant_id = $1",
+                ctx["tenant_id"], invoice_id, _hari_jt,
+            ))
             return {
                 "success": True,
                 "data": {
@@ -1259,6 +1267,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "customer_name": invoice["customer_name"],
                     "invoice_date": invoice["invoice_date"].isoformat(),
                     "due_date": invoice["due_date"].isoformat(),
+                    "is_overdue": _jt,
+                    "overdue_days": hari_terlambat(_jt, invoice["due_date"], _hari_jt),
                     "ref_no": invoice["ref_no"],
                     "purchase_order_no": invoice["purchase_order_no"],
                     "delivery_order_no": invoice["delivery_order_no"],
