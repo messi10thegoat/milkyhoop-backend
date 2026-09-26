@@ -506,6 +506,7 @@ class PDFService:
             status_label=status_label,
             generated_at=datetime.now(),
             batal=self._tanda_batal(proforma_data),
+            draf=str(status).lower() == "draft",  # 26 Sep 2026: tanda DRAF (_partials/tanda_draf.html)
         )
 
         css_path = TEMPLATE_DIR / "invoice.css"

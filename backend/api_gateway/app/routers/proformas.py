@@ -867,8 +867,15 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
 
 
 @router.get("/{proforma_id}/pdf")
-async def get_proforma_pdf(request: Request, proforma_id: str):
-    """PDF tagihan uang muka. BUKAN faktur pajak."""
+async def get_proforma_pdf(
+    request: Request,
+    proforma_id: str,
+    format: Literal["url", "inline"] = Query(
+        "inline",
+        description="'inline' (bawaan, perilaku lama) = byte PDF; 'url' = path relatif gateway ke PDF ini (pola Unit 2 faktur)",
+    ),
+):
+    """PDF tagihan uang muka. BUKAN faktur pajak. Draf bertanda DRAF, batal bertanda DIBATALKAN (26 Sep 2026)."""
     try:
         ctx = get_user_context(request)
         pid = _uuid_or_404(proforma_id)
@@ -888,6 +895,11 @@ async def get_proforma_pdf(request: Request, proforma_id: str):
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Proforma not found")
+            if format == "url":
+                # Pola Unit 2 (utils/pdf_url): path relatif gateway, dirender saat diunduh (izin + pagar tenant
+                # berlaku tiap unduhan), tanpa salinan di MinIO, tanpa kedaluwarsa.
+                from ..utils.pdf_url import respons_pdf_url
+                return respons_pdf_url("proformas", pid, f"{row['proforma_number'] or 'proforma'}.pdf")
 
             paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
 

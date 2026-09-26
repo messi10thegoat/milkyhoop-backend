@@ -1,0 +1,12 @@
+{#
+  Tanda DRAF untuk proforma yang BELUM diterbitkan (26 Sep 2026): PDF draf dulu tampil persis seperti dokumen
+  terbit -> bila terkirim ke pelanggan (CW/WA) terlihat seperti tagihan sah. Pola sama dengan tanda_batal.html:
+  SATU blok position:fixed (diulang tiap halaman, tak mengambil ruang alur -> tata letak tak bergeser).
+  Tampil hanya bila `draf` diisi pdf_service. Warna gelap transparan (stempel, bukan teks isi).
+#}
+{% if draf %}
+<div style="position: fixed; top: 34%; left: 0; right: 0; text-align: center; transform: rotate(-24deg); z-index: 0;">
+  <div style="font-size: 64pt; font-weight: 700; letter-spacing: 6pt; color: rgba(26, 26, 26, 0.16);">DRAF</div>
+  <div style="font-size: 11pt; font-weight: 600; color: rgba(26, 26, 26, 0.55);">Belum diterbitkan &mdash; bukan tagihan yang berlaku</div>
+</div>
+{% endif %}
