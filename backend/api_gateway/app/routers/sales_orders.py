@@ -27,6 +27,8 @@ from ..services.tax_factor import (
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
+from ..services.so_riwayat import catat_riwayat, riwayat_so
+from ..services.dashboard_izin import boleh_baca
 
 from ..schemas.sales_orders import (
     CreateSalesOrderRequest,
@@ -1063,6 +1065,14 @@ async def update_sales_order(
                         *params,
                     )
 
+                _ubah = sorted(set(update_data) | ({"items"} if body.items is not None else set()))
+                if _ubah:
+                    # Riwayat SO: 'diubah' tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "sales_orders", order["id"], None, "SALES_ORDER_UPDATED",
+                        ctx["user_id"], "Pesanan diubah (" + ", ".join(_ubah) + ")", {"fields": _ubah},
+                        source="api:sales_orders.update",
+                    )
                 return SalesOrderResponse(
                     success=True, message="Sales order updated", data={"id": order_id}
                 )
@@ -1190,15 +1200,20 @@ async def confirm_sales_order(request: Request, order_id: str):
                     detail=f"Cannot confirm order with status '{order['status']}'",
                 )
 
-            await conn.execute(
+            # UPDATE BERSYARAT status='draft': status dibaca di atas tanpa kunci -> tanpa syarat
+            # ini dua permintaan bersamaan sama-sama 'berhasil' (konfirmasi menimpa aktor/waktu).
+            ok = await conn.fetchval(
                 """
                 UPDATE sales_orders SET status = 'confirmed', confirmed_at = NOW(), confirmed_by = $3
-                WHERE id = $1 AND tenant_id = $2
+                WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+                RETURNING id
             """,
                 uuid_module.UUID(order_id),
                 ctx["tenant_id"],
                 ctx["user_id"],
             )
+            if not ok:
+                raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
 
             return SalesOrderResponse(
                 success=True,
@@ -1251,14 +1266,29 @@ async def cancel_sales_order(
                 conn, uuid_module.UUID(order_id), ctx["tenant_id"], "dibatalkan"
             )
 
-            await conn.execute(
-                """
-                UPDATE sales_orders SET status = 'cancelled'
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(order_id),
-                ctx["tenant_id"],
-            )
+            alasan_batal = ((body.reason if body else None) or "").strip() or None
+            async with conn.transaction():
+                # UPDATE BERSYARAT: status & pencacah dibaca di atas tanpa kunci; faktur/kirim yang
+                # masuk di antaranya membuat syarat gagal -> 409, bukan SO batal berfaktur hidup.
+                ok = await conn.fetchval(
+                    """
+                    UPDATE sales_orders SET status = 'cancelled'
+                    WHERE id = $1 AND tenant_id = $2
+                      AND status NOT IN ('cancelled', 'completed', 'invoiced')
+                      AND COALESCE(shipped_qty, 0) = 0 AND COALESCE(invoiced_qty, 0) = 0
+                    RETURNING id
+                """,
+                    uuid_module.UUID(order_id),
+                    ctx["tenant_id"],
+                )
+                if not ok:
+                    raise HTTPException(status_code=409, detail="Pesanan sudah berubah (dikirim/difakturkan/diubah). Muat ulang halaman.")
+                await catat_riwayat(
+                    conn, ctx["tenant_id"], "sales_orders", order["id"], order["order_number"],
+                    "SALES_ORDER_CANCELLED", ctx["user_id"],
+                    f"Pesanan {order['order_number']} dibatalkan" + (f": {alasan_batal}" if alasan_batal else ""),
+                    {"reason": alasan_batal}, source="api:sales_orders.cancel",
+                )
 
             return SalesOrderResponse(
                 success=True,
@@ -1310,7 +1340,9 @@ async def close_sales_order(
                 if not order:
                     raise HTTPException(status_code=404, detail="Sales order not found")
 
-                if order["status"] not in ("invoiced", "shipped", "partial_invoiced", "partial_shipped"):
+                # F1 (putusan pemilik 26 Sep): 'confirmed' (0 kirim/0 faktur) boleh ditutup = short close
+                # SELURUH baris, alasan WAJIB (jatuh ke SO_NOT_FULLY_INVOICED tanpa alasan).
+                if order["status"] not in ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped"):
                     raise HTTPException(
                         status_code=400,
                         detail=f"Cannot close order with status '{order['status']}'",
@@ -1335,6 +1367,43 @@ async def close_sales_order(
                                 + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
                             ),
                             "deposits": sisa_dp,
+                        },
+                    )
+
+                # (c) F1: faktur SUDAH ditagih tapi pendapatan BELUM diakui (barang belum dikirim /
+                # non-stok belum diakui) -> DITOLAK tanpa pengecualian: menutup di atasnya membuat
+                # Pendapatan Diterima Dimuka tertahan selamanya. Kriteria = allocated - recognized
+                # > 0.005 per baris (definisi SAMA dengan Check 16 & q018). Law 16.
+                # (Nota kredit belum membuka ini: CN kini Dr Retur, tak menyentuh Dimuka -> BACKEND2.)
+                tertahan = await conn.fetch(
+                    """
+                    SELECT si.invoice_number, sii.description,
+                           COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) AS sisa
+                    FROM sales_invoice_items sii
+                    JOIN sales_invoices si ON si.id = sii.invoice_id AND si.tenant_id = $2
+                    WHERE si.sales_order_id = $1 AND si.status NOT IN ('draft', 'void')
+                      AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005
+                    ORDER BY si.invoice_number, sii.sort_order NULLS LAST
+                """,
+                    order["id"],
+                    ctx["tenant_id"],
+                )
+                if tertahan:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "SO_REVENUE_NOT_RECOGNIZED",
+                            "message": (
+                                f"SO {order['order_number']} tidak bisa ditutup: "
+                                + "; ".join(f"{t['invoice_number']} {t['description']}" for t in tertahan)
+                                + " sudah ditagih tetapi barangnya belum dikirim. "
+                                "Kirim barangnya / akui pendapatan non-stok dulu."
+                            ),
+                            "lines": [
+                                {"invoice_number": t["invoice_number"], "description": t["description"],
+                                 "unrecognized_amount": float(t["sisa"])}
+                                for t in tertahan
+                            ],
                         },
                     )
 
@@ -1376,20 +1445,26 @@ async def close_sales_order(
                     order["id"],
                     ctx["tenant_id"],
                 )
-                if kurang:
-                    await conn.execute(
-                        """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
-                           VALUES (gen_random_uuid()::text, 'SALES_ORDER_FORCE_CLOSED', 'sales_order', $1, $2, $3, 'api:sales_orders.close',
-                                   jsonb_build_object('reason', $4::text, 'user_id', $5::text, 'lines', $6::jsonb), true, now())""",
-                        str(order["id"]), order["order_number"], ctx["tenant_id"], reason,
-                        str(ctx["user_id"]), __import__("json").dumps(kurang),
-                    )
+                # sisa per baris yang DIBATALKAN oleh short close (keluar dari belum-dikirim/
+                # belum-ditagih karena SO 'completed' tak lagi dihitung: so_agregat.AKTIF_TIDAK)
+                for k_ in kurang:
+                    k_["quantity_cancelled"] = k_["quantity_ordered"] - k_["quantity_on_invoices"]
+                await catat_riwayat(
+                    conn, ctx["tenant_id"], "sales_orders", order["id"], order["order_number"],
+                    "SALES_ORDER_FORCE_CLOSED" if kurang else "SALES_ORDER_CLOSED", ctx["user_id"],
+                    (f"Pesanan {order['order_number']} ditutup; sisa dibatalkan: "
+                     + "; ".join(f"{k_['description']} {k_['quantity_cancelled']:g}" for k_ in kurang)
+                     + f" — {reason}") if kurang else f"Pesanan {order['order_number']} ditutup",
+                    {"reason": reason if kurang else None, "lines": kurang, "forced": bool(kurang)},
+                    source="api:sales_orders.close",
+                )
 
                 return SalesOrderResponse(
                     success=True,
                     message="Sales order closed",
                     data={"order_number": order["order_number"], "status": "completed",
-                          "forced": bool(kurang), "reason": reason if kurang else None},
+                          "forced": bool(kurang), "reason": reason if kurang else None,
+                          "cancelled_lines": kurang},
                 )
 
     except HTTPException:
@@ -1797,3 +1872,27 @@ async def convert_to_invoice(
     except Exception as e:
         logger.error(f"Error converting to invoice: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to convert to invoice")
+
+
+@router.get("/{order_id}/history")
+async def get_sales_order_history(request: Request, order_id: str, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat SO + dokumen turunannya (uang muka, proforma, faktur, Surat Jalan, pembayaran),
+    terbaru dulu. Dokumen terkait disaring per izin BACA pemanggil; yang tersaring -> `omitted`
+    (daftar modul). Lihat services/so_riwayat.py."""
+    try:
+        so_id = uuid_module.UUID(order_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Sales order not found")
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            data = await riwayat_so(conn, ctx["tenant_id"], so_id, lambda m: boleh_baca(request, m), limit)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Sales order not found")
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting sales order history {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat pesanan")

@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.proforma_terbayar import terbayar_proforma
+from ..services.so_riwayat import catat_riwayat
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -763,17 +764,24 @@ async def issue_proforma(request: Request, proforma_id: str):
                 exclude_id=pid,
             )
 
-            row = await conn.fetchrow(
-                """
-                UPDATE proformas SET status = 'issued', issued_at = NOW()
-                WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
-                RETURNING *
-                """,
-                pid,
-                ctx["tenant_id"],
-            )
-            if not row:
-                raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE proformas SET status = 'issued', issued_at = NOW()
+                    WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+                    RETURNING *
+                    """,
+                    pid,
+                    ctx["tenant_id"],
+                )
+                if not row:
+                    raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+                # Riwayat SO: issued_at tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
+                await catat_riwayat(
+                    conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_ISSUED",
+                    ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diterbitkan".replace("  ", " "),
+                    {"sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.issue",
+                )
 
             paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
             return {
@@ -819,17 +827,28 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
 
             order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
 
-            row = await conn.fetchrow(
-                """
-                UPDATE proformas
-                SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = $3
-                WHERE id = $1 AND tenant_id = $2
-                RETURNING *
-                """,
-                pid,
-                ctx["tenant_id"],
-                body.reason,
-            )
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE proformas
+                    SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = $3
+                    WHERE id = $1 AND tenant_id = $2 AND status <> 'cancelled'
+                    RETURNING *
+                    """,
+                    pid,
+                    ctx["tenant_id"],
+                    body.reason,
+                )
+                if not row:
+                    raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+                await catat_riwayat(
+                    conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_CANCELLED",
+                    ctx.get("user_id"),
+                    f"Proforma {row['proforma_number'] or ''} dibatalkan".replace("  ", " ")
+                    + (f": {body.reason}" if body.reason else ""),
+                    {"reason": body.reason, "sales_order_id": str(cur["sales_order_id"])},
+                    source="api:proformas.cancel",
+                )
             return {
                 "success": True,
                 "data": serialize_proforma(row, order["order_number"], 0.0),
