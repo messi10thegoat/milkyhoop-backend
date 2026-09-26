@@ -1653,6 +1653,31 @@ async def _execute_fulfillment(
                 409, f"Sisa qty {description} hanya {remaining_qty}, diminta {req_qty}"
             )
 
+        # P4 (26 Sep 2026): nilai baris SUDAH habis dikreditkan nota kredit atas pendapatan tertunda (V312:
+        # allocated_amount turun) -> kirim = HPP + stok keluar dengan pendapatan 0. Tolak dengan jelas. Syaratnya
+        # porsi NK AKTIF di baris ini — baris harga-nol (bonus) tanpa NK tetap boleh dikirim. Law 13: di bawah kunci
+        # INVOICE_FULFILL yang sama dengan pemecahan NK (cn_tertunda.kunci_faktur) -> allocated tak bergeser.
+        if allocated - recognized_so_far <= Decimal("0.005"):
+            nk_penuh = await conn.fetch(
+                """SELECT DISTINCT c.credit_note_number
+                   FROM credit_note_deferral_lines d
+                   JOIN credit_notes c ON c.id = d.credit_note_id AND c.tenant_id = d.tenant_id
+                   WHERE d.invoice_item_id = $1 AND d.tenant_id = $2 AND d.reversed_at IS NULL
+                   ORDER BY 1""",
+                inv_item_id,
+                tenant_id,
+            )
+            if nk_penuh:
+                nomor_nk = [r["credit_note_number"] for r in nk_penuh]
+                raise HTTPException(409, detail={
+                    "code": "FULFILL_LINE_FULLY_CREDITED",
+                    "message": (f"Baris '{description}' sudah dikreditkan penuh lewat nota kredit "
+                                f"{', '.join(n or '-' for n in nomor_nk)}; tak ada nilai tersisa untuk dikirim. "
+                                "Batalkan nota kredit itu dulu, atau buat faktur baru bila barang tetap dikirim."),
+                    "invoice_item_id": str(inv_item_id),
+                    "credit_notes": nomor_nk,
+                })
+
         # 3. Availability gate ONLY (read-only).
         # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger
         # on inventory_ledger (trg_update_warehouse_stock). The ledger insert in
