@@ -76,8 +76,11 @@
 
     <!-- 4. Hero Amount -->
     {% set bill_total = bill.amount or bill.grand_total or 0 %}
+    {# Hero = SISA TAGIHAN (pola faktur penjualan). 26 Sep 2026: dulu total -> tagihan LUNAS tampil
+       "Rp <total> / Jatuh tempo" di kepala walau Sisa tagihan Rp 0. #}
+    {% set bill_hero = bill.amount_due if bill.amount_due is defined and bill.amount_due is not none else bill_total %}
     <div class="hero">
-        <div class="hero-amount">Rp {{ bill_total | currency }}</div>
+        <div class="hero-amount">Rp {{ bill_hero | currency }}</div>
         {% if bill.due_date %}
         <div class="hero-due">Jatuh tempo {{ bill.due_date | date_id }}</div>
         {% endif %}

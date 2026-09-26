@@ -77,7 +77,9 @@
 
     <!-- 4. Hero Amount -->
     <div class="hero">
-        <div class="hero-amount">Rp {{ proforma.amount | currency }}</div>
+        {# Hero = SISA yang masih diminta (26 Sep 2026; dulu nominal penuh walau sudah dibayar). #}
+        {% set proforma_hero = proforma.outstanding_amount if proforma.outstanding_amount is defined and proforma.outstanding_amount is not none else proforma.amount %}
+        <div class="hero-amount">Rp {{ proforma_hero | currency }}</div>
         {% if proforma.due_date %}
         <div class="hero-due">Mohon dibayar sebelum {{ proforma.due_date | date_id }}</div>
         {% endif %}
