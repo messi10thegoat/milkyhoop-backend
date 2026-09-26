@@ -23,6 +23,7 @@ async def _faktur(J, awal, termin, body_inv):
     await J.langkah(f"{awal}_confirm", "POST", f"/api/sales-orders/{so_id}/confirm")
     _, det = await J.langkah(f"{awal}_detail", "GET", f"/api/sales-orders/{so_id}")
     soi = det["data"]["items"][0]["id"]
+    J.termin_detail = (det["data"].get("payment_terms_days"), det["data"].get("payment_terms_source"))
     _, r = await J.langkah(f"{awal}_to_invoice", "POST", f"/api/sales-orders/{so_id}/to-invoice",
                            {**body_inv, "items": [{"so_item_id": soi, "quantity": 10}]})
     d = (r or {}).get("data") or {}
@@ -43,6 +44,8 @@ async def jalankan(J):
             J.gagal("X_respons", f"harap so_terms {harap}, dapat {d}")
         if _tgl(s.get("due_date")) != harap:
             J.gagal("X_tersimpan", f"faktur tersimpan due_date {s.get('due_date')} != {harap}")
+        if J.termin_detail != (30, "so_terms"):
+            J.gagal("X_detail_termin", f"detail SO payment_terms_days/source {J.termin_detail}")
 
     async with J.pool.acquire() as c:  # salinan TERISOLASI (pagar harness), baca saja
         hari_pel = await c.fetchval("SELECT payment_terms_days FROM customers WHERE id = $1::uuid", PELANGGAN_ID)

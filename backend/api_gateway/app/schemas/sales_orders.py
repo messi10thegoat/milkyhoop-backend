@@ -358,6 +358,9 @@ class SalesOrderDetail(BaseModel):
     created_by: Optional[str] = None
     confirmed_at: Optional[str] = None
     confirmed_by: Optional[str] = None
+    # F3: termin TERURAI (NET <n> SO -> termin pelanggan -> 0) = bawaan jatuh tempo faktur dari SO ini
+    payment_terms_days: Optional[int] = None
+    payment_terms_source: Optional[str] = None  # so_terms | customer_terms | default
 
 
 class SalesOrderListResponse(BaseModel):

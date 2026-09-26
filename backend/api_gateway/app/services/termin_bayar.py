@@ -34,19 +34,26 @@ def hari_dari_termin(teks: Optional[str]) -> Optional[int]:
     return n if 0 <= n <= HARI_MAKS else None
 
 
-async def tentukan_jatuh_tempo(conn, tenant_id: str, invoice_date: date, due_date_body: Optional[date] = None,
-                               termin_so: Optional[str] = None, customer_id=None) -> Tuple[date, str]:
-    """(due_date, due_date_source)."""
-    if due_date_body:
-        return due_date_body, "body"
+async def termin_hari(conn, tenant_id: str, termin_so: Optional[str] = None, customer_id=None) -> Tuple[int, str]:
+    """(jumlah hari, sumber) TANPA tanggal — dipakai detail SO supaya FE menampilkan bawaan dari aturan YANG SAMA
+    (FE tak punya pengurai sendiri). sumber: so_terms | customer_terms | default."""
     n = hari_dari_termin(termin_so)
     if n is not None:
-        return invoice_date + timedelta(days=n), "so_terms"
+        return n, "so_terms"
     if customer_id:
         hari = await conn.fetchval(
             "SELECT payment_terms_days FROM customers WHERE id = $1::uuid AND tenant_id = $2",
             str(customer_id), tenant_id,
         )
         if hari and 0 < int(hari) <= HARI_MAKS:
-            return invoice_date + timedelta(days=int(hari)), "customer_terms"
-    return invoice_date, "default"
+            return int(hari), "customer_terms"
+    return 0, "default"
+
+
+async def tentukan_jatuh_tempo(conn, tenant_id: str, invoice_date: date, due_date_body: Optional[date] = None,
+                               termin_so: Optional[str] = None, customer_id=None) -> Tuple[date, str]:
+    """(due_date, due_date_source)."""
+    if due_date_body:
+        return due_date_body, "body"
+    n, sumber = await termin_hari(conn, tenant_id, termin_so, customer_id)
+    return invoice_date + timedelta(days=n), sumber

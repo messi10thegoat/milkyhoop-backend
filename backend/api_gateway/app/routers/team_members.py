@@ -1132,6 +1132,10 @@ async def get_my_permissions(request: Request):
         # Fallback memakai resolusi KANONIK yang sama (menghormati status +
         # roles.is_active), dan TIDAK lagi mengembalikan izin kosong sebagai
         # keberhasilan: izin diambil sungguhan dari role_permissions.
+        # impor LOKAL (pola sama dengan _peran_pengguna di atas). Dulu nama ini TAK diimpor sejak c3a27416 ->
+        # NameError -> 500 TEPAT di keadaan terdegradasi yang ingin ditolong fallback ini (temuan BACKEND 26 Sep).
+        from ..services.role_resolution import resolve_business_role
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             role_code = await resolve_business_role(conn, user_id, tenant_id)

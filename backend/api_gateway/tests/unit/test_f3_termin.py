@@ -64,3 +64,18 @@ def test_to_invoice_memakai_layanan_dan_melaporkan_sumber():
     assert "else invoice_date" not in src
     assert "await tentukan_jatuh_tempo(" in src and '"due_date_source": due_date_source' in src
     assert src.index("tentukan_jatuh_tempo(") < src.index("INSERT INTO sales_invoices")
+
+
+@pytest.mark.asyncio
+async def test_termin_hari_tanpa_tanggal():
+    assert await TB.termin_hari(_K(10), "t", "NET 45", CUST) == (45, "so_terms")
+    assert await TB.termin_hari(_K(10), "t", "DP 30% di muka", CUST) == (10, "customer_terms")
+    assert await TB.termin_hari(_K(0), "t", None, CUST) == (0, "default")
+
+
+def test_detail_so_membawa_termin_dari_aturan_yang_sama():
+    src = " ".join(inspect.getsource(SO.get_sales_order_detail).split())
+    assert "await termin_hari(" in src
+    assert "payment_terms_days=termin_n" in src and "payment_terms_source=termin_sumber" in src
+    from app.schemas.sales_orders import SalesOrderDetail
+    assert {"payment_terms_days", "payment_terms_source"} <= set(SalesOrderDetail.model_fields)

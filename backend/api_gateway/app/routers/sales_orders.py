@@ -28,7 +28,7 @@ from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
 from ..services.so_riwayat import catat_riwayat, riwayat_so
-from ..services.termin_bayar import tentukan_jatuh_tempo
+from ..services.termin_bayar import tentukan_jatuh_tempo, termin_hari
 from ..services.dashboard_izin import boleh_baca
 
 from ..schemas.sales_orders import (
@@ -493,9 +493,14 @@ async def get_sales_order_detail(request: Request, order_id: str):
             penanda = (await penanda_faktur_so(conn, ctx["tenant_id"], [order["id"]]))[str(order["id"])]
             terkirim, tanpa_tautan = await so_kirim.terkirim_per_baris(conn, ctx["tenant_id"], [order["id"]])
 
+            termin_n, termin_sumber = await termin_hari(
+                conn, ctx["tenant_id"], order.get("payment_terms"), order.get("customer_id"))
+
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
+                    payment_terms_days=termin_n,
+                    payment_terms_source=termin_sumber,
                     id=str(order["id"]),
                     order_number=order["order_number"],
                     order_date=order["order_date"].isoformat(),
