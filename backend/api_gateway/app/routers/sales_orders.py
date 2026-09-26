@@ -28,6 +28,7 @@ from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
 from ..services.so_riwayat import catat_riwayat, riwayat_so
+from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.dashboard_izin import boleh_baca
 
 from ..schemas.sales_orders import (
@@ -1689,7 +1690,12 @@ async def convert_to_invoice(
                 invoice_date = (
                     body.invoice_date if body and body.invoice_date else await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 )
-                due_date = body.due_date if body and body.due_date else invoice_date
+                # F3: tanpa due_date -> termin (NET <n> SO -> termin pelanggan -> 0); dulu SELALU = invoice_date
+                # (termin 0 -> terlambat sejak besok). Isian pengguna tetap menang.
+                due_date, due_date_source = await tentukan_jatuh_tempo(
+                    conn, ctx["tenant_id"], invoice_date, body.due_date if body else None,
+                    order.get("payment_terms"), order.get("customer_id"),
+                )
 
                 # Satu kalkulator bersama: diskon & ongkir SO DIBAWA ke faktur (dulu
                 # HILANG -- pelanggan ditagih lebih besar sebesar diskonnya, ongkir tak
@@ -1864,6 +1870,8 @@ async def convert_to_invoice(
                         "invoice_id": str(invoice_id),
                         "invoice_number": invoice_number,
                         "order_number": order["order_number"],
+                        "due_date": due_date.isoformat(),
+                        "due_date_source": due_date_source,
                     },
                 )
 
