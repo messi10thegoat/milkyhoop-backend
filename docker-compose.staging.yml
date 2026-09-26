@@ -108,7 +108,7 @@ services:
       - RAGLLM_GRPC_HOST=ragllm_service
       - INTENT_PARSER_GRPC_HOST=intent_parser
       - FLOW_EXECUTOR_HOST=http://flow-executor:8088
-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+      - JWT_SECRET=${JWT_SECRET}
     env_file:
       - .env
     volumes:
@@ -537,7 +537,7 @@ services:
       - GRPC_PORT=5004
       - HTTP_PORT=8000
       - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+      - JWT_SECRET=${JWT_SECRET}
       - REDIS_URL=redis://redis:6379
     env_file:
       - .env

@@ -601,9 +601,9 @@ class AuthClient:
         from datetime import datetime, timedelta, timezone
         import hashlib
 
-        jwt_secret = os.getenv("JWT_SECRET")
-        if not jwt_secret:
-            raise ValueError("JWT_SECRET not configured for local token generation")
+        from backend.api_gateway.app.utils.rahasia_jwt import jwt_secret_wajib
+
+        jwt_secret = jwt_secret_wajib()  # F4: juga menolak nilai yang pernah tertanam di repo
 
         now = datetime.now(timezone.utc)
 

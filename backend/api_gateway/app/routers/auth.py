@@ -17,6 +17,11 @@ from backend.api_gateway.app.services.role_resolution import (
 )
 import os
 import asyncpg
+import hashlib
+import secrets
+from fastapi import Depends
+from backend.api_gateway.app.utils.rahasia_jwt import jwt_secret_wajib
+from backend.api_gateway.app.services.fitur_parkir import fitur_belum_tersedia
 from datetime import datetime, timedelta
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
@@ -88,7 +93,7 @@ class SwitchTenantRequest(BaseModel):
 # =====================================================
 
 
-@router.post("/register", response_model=AuthResponse)
+@router.post("/register", response_model=AuthResponse, dependencies=[Depends(fitur_belum_tersedia)])  # F4: diparkir
 async def register_user(request: RegisterRequest, http_request: Request):
     """User registration endpoint"""
     try:
@@ -292,10 +297,11 @@ async def login_user(request: LoginRequest, http_request: Request):
 
             # Re-generate tokens if tenant changed
             if resolved_tenant_id != raw_tenant_id:
-                _js = os.getenv(
-                    "JWT_SECRET",
-                    "bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40",
-                )
+                # F4: dulu AKSES dan REFRESH diganti JWT gateway; refresh itu TAK tersimpan di refresh_tokens dan
+                # TAK tertaut user_devices -> pengguna multi-tenant TAK PERNAH bisa refresh. Kini hanya AKSES yang
+                # ditandatangani ulang (tenant hasil resolusi + klaim perangkat); refresh gRPC dipertahankan dan
+                # tenant tersimpannya disamakan (refresh berikutnya tetap di tenant ini).
+                _js = jwt_secret_wajib()
                 now = datetime.utcnow()
                 ap = {
                     "user_id": result["user_id"],
@@ -310,19 +316,15 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "exp": now + timedelta(days=7),
                     "nbf": now,
                 }
-                rp = {
-                    "user_id": result["user_id"],
-                    "session_id": result["user_id"],
-                    "tenant_id": resolved_tenant_id,
-                    "token_type": "refresh",
-                    "device_id": device_id,
-                    "device_type": device_type,
-                    "iat": now,
-                    "exp": now + timedelta(days=30),
-                    "nbf": now,
-                }
                 result["access_token"] = jwt.encode(ap, _js, algorithm="HS256")
-                result["refresh_token"] = jwt.encode(rp, _js, algorithm="HS256")
+                _tp = await get_pool()
+                async with _tp.acquire() as _c:
+                    await _c.execute(
+                        "UPDATE refresh_tokens SET tenant_id = $1 WHERE token_hash = $2 AND user_id = $3",
+                        resolved_tenant_id,
+                        hashlib.sha256(result["refresh_token"].encode()).hexdigest(),
+                        result["user_id"],
+                    )
 
             return AuthResponse(
                 success=True,
@@ -514,9 +516,6 @@ async def verify_session(request: Request):
 # MULTI-TENANT ENDPOINTS
 # =====================================================
 
-_JWT_SECRET = os.getenv(
-    "JWT_SECRET", "bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40"
-)
 
 
 @router.get("/tenants")
@@ -601,6 +600,15 @@ async def switch_tenant(request: Request, body: SwitchTenantRequest):
             user_id,
         )
 
+    # F4: dulu token AKSES tanpa klaim perangkat (lolos kill switch) + refresh JWT yang TAK tersimpan (refresh
+    # sesudah ganti tenant SELALU gagal). Kini: klaim perangkat dari sesi pemanggil; refresh DIPUTAR — token opak
+    # baru tersimpan (tenant tujuan), user_devices menunjuk ke hash-nya, token lama dicabut. FE tak berubah
+    # (setTokens(access, refresh) menerima pasangan baru seperti dulu).
+    device_id = user_data.get("device_id")
+    device_type = user_data.get("device_type")
+    if not device_id or not device_type:
+        raise HTTPException(status_code=401, detail={"code": "SESSION_INVALID",
+                                                     "message": "Sesi tidak dikenal. Silakan masuk lagi."})
     now = datetime.utcnow()
     access_payload = {
         "user_id": user_id,
@@ -609,28 +617,52 @@ async def switch_tenant(request: Request, body: SwitchTenantRequest):
         "email": user_email,
         "username": user_name,
         "token_type": "access",
+        "device_id": device_id,
+        "device_type": device_type,
         "iat": now,
         "exp": now + timedelta(days=7),
         "nbf": now,
     }
-    refresh_payload = {
-        "user_id": user_id,
-        "session_id": user_id,
-        "tenant_id": target_tenant_id,
-        "token_type": "refresh",
-        "iat": now,
-        "exp": now + timedelta(days=30),
-        "nbf": now,
-    }
-    access_token = jwt.encode(access_payload, _JWT_SECRET, algorithm="HS256")
-    refresh_token = jwt.encode(refresh_payload, _JWT_SECRET, algorithm="HS256")
-
+    access_token = jwt.encode(access_payload, jwt_secret_wajib(), algorithm="HS256")
+    refresh_token = await _putar_refresh_perangkat(user_id, target_tenant_id, device_id)
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "tenant_id": target_tenant_id,
         "role_code": role_code,
     }
+
+
+async def _putar_refresh_perangkat(user_id: str, tenant_id: str, device_id: str) -> str:
+    """Refresh token opak BARU untuk perangkat ini (format sama dengan auth_service: disimpan sebagai sha256).
+    Satu transaksi: sisip baru -> cabut yang lama milik perangkat -> user_devices menunjuk yang baru."""
+    baru = secrets.token_urlsafe(48)
+    h = hashlib.sha256(baru.encode()).hexdigest()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            dev = await conn.fetchrow(
+                "SELECT refresh_token_hash FROM user_devices WHERE id = $1 AND user_id = $2 AND is_active FOR UPDATE",
+                device_id, user_id,
+            )
+            if not dev:
+                raise HTTPException(status_code=401, detail={"code": "SESSION_INVALID",
+                                                             "message": "Sesi tidak dikenal. Silakan masuk lagi."})
+            await conn.execute(
+                """INSERT INTO refresh_tokens (user_id, tenant_id, token_hash, expires_at, device_info)
+                   VALUES ($1, $2, $3, now() + interval '30 days', 'switch-tenant')""",
+                user_id, tenant_id, h,
+            )
+            if dev["refresh_token_hash"]:
+                await conn.execute(
+                    "UPDATE refresh_tokens SET revoked_at = now() WHERE token_hash = $1 AND user_id = $2 AND revoked_at IS NULL",
+                    dev["refresh_token_hash"], user_id,
+                )
+            await conn.execute(
+                "UPDATE user_devices SET refresh_token_hash = $1, tenant_id = $2 WHERE id = $3 AND user_id = $4",
+                h, tenant_id, device_id, user_id,
+            )
+    return baru
 
 
 # =====================================================
@@ -655,6 +687,19 @@ class SessionResponse(BaseModel):
     last_active: Optional[str] = None
 
 
+def _tanda_ulang_dengan_perangkat(akses: str, user_id: str, device_id: str, device_type: str) -> str:
+    """F4: token akses dari gRPC RefreshToken tak membawa klaim perangkat. Diverifikasi (tanda tangan + exp), dipastikan
+    milik pengguna perangkat itu, lalu ditandatangani ulang dengan device_id/device_type."""
+    rahasia = jwt_secret_wajib()
+    muatan = jwt.decode(akses, rahasia, algorithms=["HS256"])
+    if str(muatan.get("user_id")) != str(user_id):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail={"code": "SESSION_INVALID", "message": "Sesi tidak dikenal. Silakan masuk lagi."})
+    muatan["device_id"] = device_id
+    muatan["device_type"] = device_type
+    return jwt.encode(muatan, rahasia, algorithm="HS256")
+
+
 @router.post("/refresh", response_model=AuthResponse)
 async def refresh_access_token(data: RefreshTokenRequest, http_request: Request):
     """
@@ -676,64 +721,33 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
     try:
         logger.info("Token refresh request received")
 
-        # ===== SESSION AUTHORITY CHECK (KRITIS) =====
-        # Decode refresh token to get device info (unsafe decode, signature verified by auth_service)
+        # ===== SESSION AUTHORITY CHECK (KRITIS) — F4 =====
+        # Refresh token dari login gRPC itu OPAK (bukan JWT): dekode lama selalu gagal ("Could not decode") dan
+        # cek sesi DILEWATI; akses baru dari gRPC pun TANPA klaim perangkat (lolos kill switch). Kini perangkat
+        # dicari lewat sha256(refresh) di user_devices (tautan yang ditulis login/ganti tenant).
+        _h = hashlib.sha256(data.refresh_token.encode()).hexdigest()
         try:
-            decoded = jwt.decode(
-                data.refresh_token, options={"verify_signature": False}
-            )
-            user_id = decoded.get("user_id")
-            device_id = decoded.get("device_id")
-            device_type = decoded.get("device_type")
-
-            # If token has device claims, verify session is still valid
-            if device_id and device_type and user_id:
-                if not session_manager.is_session_valid(
-                    user_id, device_type, device_id
-                ):
-                    logger.warning(
-                        f"🚫 Refresh blocked: session replaced for user {user_id[:8]}..., type={device_type}"
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Session telah digantikan di perangkat lain",
-                    )
-            # poin (d): refresh token milik user TERHAPUS tak boleh diperbarui.
-            if user_id:
-                _uid_valid = True
-                try:
-                    import uuid as _uuid_r
-
-                    _uuid_r.UUID(str(user_id))
-                except Exception:
-                    _uid_valid = False
-                if not _uid_valid:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="User tidak ditemukan",
-                    )
-                try:
-                    from backend.api_gateway.app.services.db_pool import get_db_pool
-
-                    _pool = await get_db_pool()
-                    async with _pool.acquire() as _c:
-                        _ex = await _c.fetchval(
-                            'SELECT 1 FROM "User" WHERE id = $1', user_id
-                        )
-                except Exception as _dbe:
-                    logger.warning(f"[refresh] cek eksistensi gagal (503): {_dbe}")
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="Layanan autentikasi sementara tidak tersedia",
-                    )
-                if _ex is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="User tidak ditemukan",
-                    )
-        except jwt.DecodeError:
-            logger.warning("Could not decode refresh token for session check")
-            # Continue - let auth_service validate the token
+            _pool = await get_pool()
+            async with _pool.acquire() as _c:
+                dev = await _c.fetchrow(
+                    "SELECT id, user_id, device_type FROM user_devices WHERE refresh_token_hash = $1 AND is_active",
+                    _h,
+                )
+                _ada_user = await _c.fetchval('SELECT 1 FROM "User" WHERE id = $1', dev["user_id"]) if dev else None
+        except Exception as _dbe:
+            logger.warning(f"[refresh] cek perangkat gagal (503): {type(_dbe).__name__}")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="Layanan autentikasi sementara tidak tersedia")
+        if not dev:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail={"code": "SESSION_INVALID", "message": "Sesi tidak dikenal. Silakan masuk lagi."})
+        user_id, device_id, device_type = dev["user_id"], dev["id"], dev["device_type"]
+        if not session_manager.is_session_valid(user_id, device_type, device_id):
+            logger.warning(f"🚫 Refresh blocked: session replaced for user {user_id[:8]}..., type={device_type}")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Session telah digantikan di perangkat lain")
+        if _ada_user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User tidak ditemukan")
 
         # Call auth service
         result = await auth_client.refresh_token(data.refresh_token)
@@ -754,7 +768,7 @@ async def refresh_access_token(data: RefreshTokenRequest, http_request: Request)
                 success=True,
                 message="Token refreshed successfully",
                 data={
-                    "access_token": result["access_token"],
+                    "access_token": _tanda_ulang_dengan_perangkat(result["access_token"], user_id, device_id, device_type),
                     "refresh_token": result["refresh_token"],
                     "expires_at": result.get("expires_at"),
                 },

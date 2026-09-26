@@ -207,6 +207,9 @@ prisma = Prisma()
 # Prisma lifecycle (startup & shutdown)
 @asynccontextmanager
 async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # F4: tanpa JWT_SECRET yang sah gateway MENOLAK jalan (dulu jatuh ke nilai tertanam / kunci kosong)
+    from .utils.rahasia_jwt import jwt_secret_wajib as _jwt_wajib
+    _jwt_wajib()
     retries = 5
     for attempt in range(1, retries + 1):
         try:

@@ -7,9 +7,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 # JWT Configuration
-JWT_SECRET = os.getenv(
-    "JWT_SECRET", "bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40"
-)
+# F4: dulu cadangan 64-hex TERTANAM (menandatangani DAN memverifikasi). Kini gagal keras saat impor.
+from .rahasia_jwt import jwt_secret_wajib
+
+JWT_SECRET = jwt_secret_wajib()
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080  # 7 days (7 * 24 * 60)
 REFRESH_TOKEN_EXPIRE_DAYS = 30  # 30 days

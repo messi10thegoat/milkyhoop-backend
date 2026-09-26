@@ -201,7 +201,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # ===== SESSION AUTHORITY CHECK (KILL SWITCH) =====
                 # FAIL-CLOSED: Missing device claims = invalid session
                 # This prevents legacy JWTs (without device_id) from bypassing session enforcement
-                if device_id and device_type:  # 21 Sep 2026: ENABLED (instant session revocation)
+                if not (device_id and device_type):
+                    # F4 (26 Sep 2026): dulu `if device_id and device_type:` -> token TANPA klaim (refresh gRPC,
+                    # ganti tenant, /register lama) MELEWATI kill switch. Kini gagal tertutup, sesuai docstring.
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": "Sesi tidak dikenal. Silakan masuk lagi.",
+                            "code": "SESSION_INVALID",
+                            "force_logout": True,
+                        },
+                    )
+                if True:  # kill switch berlaku untuk SEMUA token (klaim dijamin ada di atas)
                     # Check Redis session authority
                     if not session_manager.is_session_valid(
                         user_id, device_type, device_id

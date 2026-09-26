@@ -30,7 +30,7 @@ from ..services.onboarding_service import create_tenant_and_user
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-JWT_SECRET = os.getenv("JWT_SECRET", "")
+from ..utils.rahasia_jwt import jwt_secret_wajib  # F4: dulu cadangan "" = HS256 berkunci kosong
 MAX_VERIFICATION_ATTEMPTS = 5
 CODE_EXPIRY_MINUTES = 15
 SETUP_TOKEN_EXPIRY_MINUTES = 30
@@ -87,13 +87,13 @@ def create_setup_token(email: str, registration_id: str) -> str:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=SETUP_TOKEN_EXPIRY_MINUTES)).timestamp()),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return jwt.encode(payload, jwt_secret_wajib(), algorithm="HS256")
 
 
 def decode_setup_token(token: str) -> dict:
     """Decode and validate setup token."""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, jwt_secret_wajib(), algorithms=["HS256"])
         if payload.get("purpose") != "signup_setup":
             raise ValueError("Invalid token purpose")
         return payload

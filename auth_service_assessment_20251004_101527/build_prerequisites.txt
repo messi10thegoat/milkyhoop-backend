@@ -42,7 +42,7 @@ docker-compose.staging.yml-    environment:
 docker-compose.staging.yml-      - GRPC_PORT=5004
 docker-compose.staging.yml-      - HTTP_PORT=8000
 docker-compose.staging.yml-      - DATABASE_URL=${DATABASE_URL}
-docker-compose.staging.yml-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+docker-compose.staging.yml-      - JWT_SECRET=<DISENSOR-F4>
 docker-compose.staging.yml-      - REDIS_URL=redis://redis:6379
 docker-compose.staging.yml-    env_file:
 --
@@ -76,7 +76,7 @@ docker-compose.yml-    environment:
 docker-compose.yml-      - GRPC_PORT=5004
 docker-compose.yml-      - HTTP_PORT=8000
 docker-compose.yml-      - DATABASE_URL=${DATABASE_URL}
-docker-compose.yml-      - JWT_SECRET=bb599073be39674d540ba07d77967282d4fa26247f6d17d8a60b093002d70d40
+docker-compose.yml-      - JWT_SECRET=<DISENSOR-F4>
 docker-compose.yml-      - REDIS_URL=redis://redis:6379
 docker-compose.yml-    env_file:
 --
