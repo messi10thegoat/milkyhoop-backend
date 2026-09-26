@@ -72,10 +72,16 @@ async def jalankan(J):
     if _kode(b) != "SO_REVENUE_NOT_RECOGNIZED":
         J.gagal("A07_kode", f"harap SO_REVENUE_NOT_RECOGNIZED, dapat {str(b)[:200]}")
     await kirim(J, inv[0], "A08", kenal=None)
-    await J.langkah("A09_close_sesudah_kirim", "POST", f"/api/sales-orders/{a}/close", {})
+    # V315: sesudah tertagih penuh + terkirim + pendapatan diakui, SO SELESAI OTOMATIS (tak perlu /close);
+    # /close atas SO completed = 400 (status terminal), CW menyembunyikan tombolnya.
+    _, dd = await J.langkah("A09_selesai_otomatis_sesudah_kirim", "GET", f"/api/sales-orders/{a}")
+    d9 = (dd or {}).get("data") or {}
+    if (d9.get("status"), d9.get("completed_source")) != ("completed", "auto"):
+        J.gagal("A09_status", f"harap completed/auto, dapat {d9.get('status')}/{d9.get('completed_source')}")
+    await J.langkah("A09b_close_sesudah_selesai_400", "POST", f"/api/sales-orders/{a}/close", {}, harap=(400,))
     await J.potret("A_akhir", a, inv)
     await _riwayat(J, "A10_riwayat", a, ["SO_DIBUAT", "SO_DIKONFIRMASI", "SALES_ORDER_UPDATED", "FAKTUR_DIBUAT",
-                                          "FAKTUR_DITERBITKAN", "SURAT_JALAN_DIBUAT", "SALES_ORDER_CLOSED"])
+                                          "FAKTUR_DITERBITKAN", "SURAT_JALAN_DIBUAT", "SALES_ORDER_AUTO_COMPLETED"])
     if J.lengan == "B":
         _, r = await J.langkah("A11_riwayat_kolaborator", "GET", f"/api/sales-orders/{a}/history", user=KOLAB)
         om = ((r or {}).get("data") or {}).get("omitted")

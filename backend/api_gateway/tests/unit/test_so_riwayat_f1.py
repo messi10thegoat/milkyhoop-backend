@@ -355,3 +355,16 @@ async def test_waktu_sama_yang_belakangan_di_atas():
     j = [e["jenis"] for e in d["events"]]
     assert j.index("UANG_MUKA_DITERIMA") < j.index("UANG_MUKA_DIBUAT")
     assert j.index("PROFORMA_DITERBITKAN") < j.index("PROFORMA_DIBUAT")
+
+
+@pytest.mark.asyncio
+async def test_kejadian_fungsi_db_beraktor_sistem():
+    k = _RConn(audit=[{"id": "c", "createdAt": _t(9), "eventType": "SALES_ORDER_AUTO_COMPLETED", "userId": None,
+                       "entity_type": "sales_orders", "entity_id": SOID, "entity_number": "SO-1",
+                       "metadata": {"ringkas": "Pesanan SO-1 selesai otomatis"}, "source": "db:terapkan_selesai_so"},
+                      {"id": "d", "createdAt": _t(8), "eventType": "X_LAMA", "userId": None, "entity_type": "sales_orders",
+                       "entity_id": SOID, "entity_number": "SO-1", "metadata": {}, "source": "api"}])
+    d = await SR.riwayat_so(k, T, SOID, SEMUA)
+    e = {x["jenis"]: x for x in d["events"]}
+    assert e["SALES_ORDER_AUTO_COMPLETED"]["aktor"] == {"id": None, "nama": "Sistem"}
+    assert e["X_LAMA"]["aktor"] is None  # tanpa aktor + bukan fungsi DB = tak diketahui (tetap null)

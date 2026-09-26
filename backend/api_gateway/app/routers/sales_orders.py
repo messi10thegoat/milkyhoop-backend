@@ -501,6 +501,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
+                    completed_source=order.get("completed_source"),  # V315 (.get: kode aman sebelum migrasi)
                     payment_terms_days=termin_n,
                     payment_terms_source=termin_sumber,
                     id=str(order["id"]),
@@ -1471,12 +1472,13 @@ async def close_sales_order(
 
                 await conn.execute(
                     """
-                    UPDATE sales_orders SET status = 'completed'
+                    UPDATE sales_orders SET status = 'completed', completed_source = 'manual'
                     WHERE id = $1 AND tenant_id = $2
                 """,
                     order["id"],
                     ctx["tenant_id"],
                 )
+                # V315: 'manual' = TERMINAL (aturan selesai-otomatis tak membukanya kembali)
                 # sisa per baris yang DIBATALKAN oleh short close (keluar dari belum-dikirim/
                 # belum-ditagih karena SO 'completed' tak lagi dihitung: so_agregat.AKTIF_TIDAK)
                 for k_ in kurang:

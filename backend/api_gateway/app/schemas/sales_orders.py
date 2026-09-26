@@ -364,6 +364,9 @@ class SalesOrderDetail(BaseModel):
     confirmed_at: Optional[str] = None
     confirmed_by: Optional[str] = None
     # F3: termin TERURAI (NET <n> SO -> termin pelanggan -> 0) = bawaan jatuh tempo faktur dari SO ini
+    # V315: 'auto' (selesai otomatis: tertagih penuh + stok terkirim + pendapatan diakui; dibuka kembali bila
+    # faktur/Surat Jalan dibatalkan) | 'manual' (/close, terminal) | null (belum selesai)
+    completed_source: Optional[str] = None
     payment_terms_days: Optional[int] = None
     payment_terms_source: Optional[str] = None  # so_terms | customer_terms | default
 

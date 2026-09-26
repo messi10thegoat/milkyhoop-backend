@@ -45,11 +45,16 @@ ENTITAS_AUDIT = {
     "receive_payments": "receive_payment",
 }
 
+# Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).
+AKTOR_SISTEM = "__sistem__"
+
 RINGKAS_AUDIT = {
     "SALES_ORDER_UPDATED": "Pesanan diubah",
     "SALES_ORDER_CANCELLED": "Pesanan dibatalkan",
     "SALES_ORDER_CLOSED": "Pesanan ditutup",
     "SALES_ORDER_FORCE_CLOSED": "Pesanan ditutup (sisa dibatalkan)",
+    "SALES_ORDER_AUTO_COMPLETED": "Pesanan selesai otomatis",
+    "SALES_ORDER_REOPENED": "Pesanan dibuka kembali",
     "PROFORMA_ISSUED": "Proforma diterbitkan",
     "PROFORMA_CANCELLED": "Proforma dibatalkan",
     "PROFORMA_UPDATED": "Proforma diubah",
@@ -242,7 +247,7 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
     if kueri_ent:
         for r in await conn.fetch(
             """SELECT a.id, a."createdAt", a."eventType", a."userId", a.entity_type, a.entity_id,
-                      a.entity_number, a.metadata
+                      a.entity_number, a.metadata, a.source
                FROM audit_logs a
                JOIN unnest($2::text[], $3::uuid[]) AS x(et, eid) ON a.entity_type = x.et AND a.entity_id = x.eid
                WHERE a.tenant_id = $1""",
@@ -254,6 +259,8 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
             jenis = ENTITAS_AUDIT.get(r["entity_type"])
             ringkas = meta.get("ringkas") or RINGKAS_AUDIT.get(r["eventType"], r["eventType"])
             aktor = r["userId"] or meta.get("user_id")
+            if not aktor and str(r["source"] or "").startswith("db:"):
+                aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)
             k.tambah(r["createdAt"], r["eventType"], ringkas, aktor, jenis, r["entity_id"], r["entity_number"], sumber="audit")
             audit_ada.add((r["eventType"], str(r["entity_id"])))
 
@@ -264,7 +271,7 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
                                   and (PADANAN[e["jenis"]], e["dokumen"]["id"]) in audit_ada)]
 
     # nama aktor (satu kueri)
-    ids = sorted({e["aktor_id"] for e in ev if e["aktor_id"]})
+    ids = sorted({e["aktor_id"] for e in ev if e["aktor_id"] and e["aktor_id"] != AKTOR_SISTEM})
     nama = {}
     if ids:
         for u in await conn.fetch(
@@ -283,7 +290,8 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
             "at": at.astimezone(zona).isoformat(),
             "jenis": e["jenis"],
             "ringkas": e["ringkas"],
-            "aktor": ({"id": e["aktor_id"], "nama": nama.get(e["aktor_id"])} if e["aktor_id"] else None),
+            "aktor": ({"id": None, "nama": "Sistem"} if e["aktor_id"] == AKTOR_SISTEM
+                      else {"id": e["aktor_id"], "nama": nama.get(e["aktor_id"])} if e["aktor_id"] else None),
             "dokumen": e["dokumen"],
             "sumber": e["sumber"],
         })
