@@ -347,6 +347,7 @@ async def get_sales_order_summary(request: Request):
                     "uninvoiced_count": belum["count"],   # jumlah SO bersisa (SEMUA, bukan baris terpotong 50)
                     "unshipped_value": float(kirim["total"]),
                     "unshipped_count": kirim["count"],
+                    "fulfillment_count": await so_kirim.jumlah_surat_jalan(conn, ctx["tenant_id"]),
                 },
             )
 

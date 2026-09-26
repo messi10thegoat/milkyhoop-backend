@@ -231,9 +231,24 @@ async def test_ringkasan_so_mengirim_unshipped(monkeypatch):
     monkeypatch.setattr(SO, "get_user_context", lambda r: {"tenant_id": TENANT})
     monkeypatch.setattr(SO.so_agregat, "uninvoiced", belum)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", kirim)
+
+    async def sj(conn, t):
+        assert t == TENANT
+        return 0
+    monkeypatch.setattr(SO.so_kirim, "jumlah_surat_jalan", sj)
     d = (await SO.get_sales_order_summary(None)).data
     d = d if isinstance(d, dict) else d.model_dump()
-    assert d["unshipped_value"] == 900.0 and d["unshipped_count"] == 1
+    assert d["unshipped_value"] == 900.0 and d["unshipped_count"] == 1 and d["fulfillment_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_jumlah_surat_jalan_aktif_per_tenant():
+    class _C:
+        async def fetchval(self, q, *a):
+            assert a == (TENANT,) and "f.tenant_id = $1" in q
+            assert "f.voided_at IS NULL AND f.status <> 'voided'" in q
+            return 3
+    assert await K.jumlah_surat_jalan(_C(), TENANT) == 3
 
 
 # ------------------------------------------------------------------ 4. hari ini tenant

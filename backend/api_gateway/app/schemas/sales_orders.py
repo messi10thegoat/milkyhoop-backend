@@ -403,6 +403,7 @@ class SalesOrderSummary(BaseModel):
     # draft/cancelled/completed; NETO sebelum pajak, tanpa diskon header/ongkir. Definisi = detail unfulfilled_value.
     unshipped_value: float = 0
     unshipped_count: int = 0
+    fulfillment_count: int = 0  # Surat Jalan aktif tenant; 0 = pengiriman tak dicatat -> unshipped_value tak bermakna
 
 
 class SalesOrderSummaryResponse(BaseModel):

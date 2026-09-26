@@ -61,6 +61,14 @@ def nilai_belum_dikirim(quantity, line_total, terkirim) -> Decimal:
     return (belum_dikirim(q, terkirim) * _d(line_total) / q).quantize(SEN, rounding=ROUND_HALF_UP)
 
 
+async def jumlah_surat_jalan(conn, tenant_id: str) -> int:
+    """Surat Jalan AKTIF tenant (filter aktif = V264). 0 -> unshipped_value = seluruh sisa SO karena pengiriman tak
+    pernah DICATAT, bukan bukti barang belum keluar (grapgrap 26 Sep). FE: tampilkan unshipped hanya bila > 0
+    sampai pemilik memutuskan (MASTER 26 Sep)."""
+    return int(await conn.fetchval(
+        f"SELECT COUNT(*) FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND {_AKTIF}", tenant_id) or 0)
+
+
 async def ringkasan_belum_dikirim(conn, tenant_id: str, status_tidak: tuple) -> dict:
     """Σ nilai belum dikirim SO selain status_tidak (satu definisi dengan detail per baris)."""
     baris = await conn.fetch(
