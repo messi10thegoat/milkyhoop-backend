@@ -11,6 +11,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.termin_bayar import termin_hari
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -445,6 +446,8 @@ async def get_customer(request: Request, customer_id: str):
                 ctx["tenant_id"],
                 customer_id,
             )
+            # F3: sumber termin menurut aturan YANG SAMA dengan pembuat faktur (termin_bayar)
+            _, _termin_sumber = await termin_hari(conn, ctx["tenant_id"], None, customer_id)
 
             return {
                 "success": True,
@@ -475,6 +478,7 @@ async def get_customer(request: Request, customer_id: str):
                     # Financial
                     "currency": row["currency"] or "IDR",
                     "payment_terms_days": row["payment_terms_days"] or 0,
+                    "payment_terms_source": _termin_sumber,
                     "credit_limit": row["credit_limit"],
                     # Opening balance
                     "ar_opening_balance": row["ar_opening_balance"] or 0,

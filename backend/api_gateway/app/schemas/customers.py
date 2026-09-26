@@ -225,6 +225,8 @@ class CustomerDetail(BaseModel):
     # Financial
     currency: Optional[str] = "IDR"
     payment_terms_days: int = 0
+    # F3: sumber termin menurut aturan faktur (customer_terms | default) — FE: jatuh tempo = tgl faktur + hari
+    payment_terms_source: str = "default"
     credit_limit: Optional[int] = None
     
     # Opening balance

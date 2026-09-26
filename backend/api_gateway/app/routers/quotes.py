@@ -5,9 +5,10 @@ NO journal entries - accounting impact happens on conversion.
 """
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.sales_doc_calc import (
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
@@ -1535,10 +1536,11 @@ async def convert_to_invoice(
                     if body and body.invoice_date
                     else await tanggal_dokumen(conn, ctx["tenant_id"])
                 )
-                due_date = (
-                    body.due_date
-                    if body and body.due_date
-                    else (invoice_date + timedelta(days=30))
+                # F3 (26 Sep 2026, putusan pemilik via MASTER): SATU aturan termin untuk semua faktur — isian
+                # menang; "NET <n>" di syarat penawaran; termin pelanggan; selain itu tanggal faktur. Dulu +30 hardcode.
+                due_date, due_date_source = await tentukan_jatuh_tempo(
+                    conn, ctx["tenant_id"], invoice_date, body.due_date if body else None,
+                    quote["terms"], quote["customer_id"],
                 )
 
                 # 3g: kalkulator bersama (lihat _quote_converted_doc), bukan salinan angka Penawaran.
@@ -1641,6 +1643,8 @@ async def convert_to_invoice(
                         "quote_id": quote_id,
                         "invoice_id": str(invoice_id),
                         "invoice_number": invoice_number,
+                        "due_date": due_date.isoformat(),
+                        "due_date_source": due_date_source,
                     },
                 )
 

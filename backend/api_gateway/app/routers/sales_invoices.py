@@ -15,6 +15,7 @@ import asyncpg
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
 from ..services.so_riwayat import catat_riwayat
+from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
@@ -3026,6 +3027,12 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         ),
                     )
 
+                # F3: jatuh tempo = isian pengguna, atau termin pelanggan, atau tanggal faktur (aturan SAMA
+                # dengan faktur dari SO; tenant eksplisit di kueri pelanggan, Law 24)
+                due_date, due_date_source = await tentukan_jatuh_tempo(
+                    conn, ctx["tenant_id"], body.invoice_date, body.due_date, None, customer_id_str,
+                )
+
                 # Insert invoice
                 invoice_id = await conn.fetchval(
                     """
@@ -3047,7 +3054,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     customer_id_str,
                     body.customer_name,
                     body.invoice_date,
-                    body.due_date,
+                    due_date,
                     body.ref_no,
                     body.notes,
                     subtotal,
@@ -3256,7 +3263,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         "customer_id": body.customer_id,
                         "customer_name": body.customer_name,
                         "invoice_date": str(body.invoice_date),
-                        "due_date": str(body.due_date),
+                        "due_date": str(due_date),
+                        "due_date_source": due_date_source,
                         "created_at": None,
                     },
                 }

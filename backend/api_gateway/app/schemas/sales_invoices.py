@@ -131,7 +131,8 @@ class CreateInvoiceRequest(BaseModel):
     customer_id: Optional[str] = None
     customer_name: str = Field(..., min_length=1, max_length=255)
     invoice_date: date
-    due_date: date
+    # F3 (26 Sep 2026): kosong -> jatuh tempo dari termin pelanggan (services/termin_bayar), isian menang
+    due_date: Optional[date] = None
     ref_no: Optional[str] = Field(None, max_length=100)
     # Nomor PO PELANGGAN dan nomor surat jalan. Teks bebas, TERPISAH dari
     # `ref_no` ("No. Order" yang sudah dipakai jalur chat) -- memakai ulang
