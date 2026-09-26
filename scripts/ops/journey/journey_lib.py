@@ -82,6 +82,8 @@ class Journey:
                 app.include_router(self.mod(f"routers.{nama}").router, prefix=prefiks)
             except ModuleNotFoundError:
                 print("lengan A: router tak ada, dilewati:", nama)
+        # main.py juga memasang router KEDUA proformas di bawah /api/sales-orders ({order_id}/proformas)
+        app.include_router(self.mod("routers.proformas").so_router, prefix="/api/sales-orders")
         return app
 
     def _hdr(self, user):
