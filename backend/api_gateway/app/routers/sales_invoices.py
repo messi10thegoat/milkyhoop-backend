@@ -1628,12 +1628,15 @@ async def _execute_fulfillment(
             """
             SELECT id, item_id, description, quantity, fulfilled_qty,
                    allocated_amount, recognized_amount
-            FROM sales_invoice_items WHERE id=$1 FOR UPDATE
+            FROM sales_invoice_items WHERE id=$1 AND invoice_id=$2 FOR UPDATE
         """,
             inv_item_id,
+            invoice["id"],
         )
         if not inv_item:
-            raise HTTPException(404, f"Invoice item {inv_item_id} not found")
+            # C1 (26 Sep 2026): baris faktur LAIN tak boleh ikut dikunci/diubah sementara jurnal dibukukan ke
+            # faktur ini. Galat = rollback transaksi -> nol tulisan.
+            raise HTTPException(404, f"Baris {inv_item_id} bukan milik faktur {invoice['invoice_number']}")
 
         product_id = inv_item["item_id"]
         description = inv_item["description"] or ""
@@ -1837,11 +1840,12 @@ async def _execute_fulfillment(
             UPDATE sales_invoice_items
             SET fulfilled_qty = fulfilled_qty + $2,
                 recognized_amount = recognized_amount + $3
-            WHERE id = $1
+            WHERE id = $1 AND invoice_id = $4
         """,
             inv_item_id,
             str(req_qty),
             str(item_revenue),
+            invoice["id"],
         )
 
     # -- After item loop -------------------------------------------------------
@@ -6477,17 +6481,9 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 )
                 if not invoice:
                     raise HTTPException(404, "Invoice not found")
-                if invoice["status"] != "posted":
-                    raise HTTPException(400, "Hanya faktur posted yang bisa dikirim")
-                if invoice["fulfillment_status"] not in ("pending", "partial"):
-                    raise HTTPException(
-                        400,
-                        f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
-                    )
 
-                # Period check
-                await check_period_is_open(conn, ctx["tenant_id"], fulfillment_date)
-
+                # C5 (26 Sep 2026): hash + idempotensi SEBELUM guard status — replay sesudah terkirim penuh
+                # (fulfillment_status 'fulfilled') mengembalikan hasil lama, bukan 400.
                 # Compute payload hash
                 payload_for_hash = canonical_json(
                     {
@@ -6513,10 +6509,14 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 if client_idempotency_key:
                     idem_key = f"MANUAL_FULFILL:{client_idempotency_key}"
                     existing = await conn.fetchrow(
-                        "SELECT id, payload_hash, status FROM invoice_fulfillments WHERE tenant_id=$1 AND idempotency_key=$2 AND status='posted'",
+                        "SELECT id, payload_hash, status, invoice_id FROM invoice_fulfillments WHERE tenant_id=$1 AND idempotency_key=$2 AND status='posted'",
                         ctx["tenant_id"],
                         idem_key,
                     )
+                    # C5 (26 Sep 2026): kunci TERIKAT ke faktur — dipakai ulang di faktur lain = 409, bukan
+                    # "sudah dikirim" palsu milik faktur lain.
+                    if existing and str(existing["invoice_id"]) != str(invoice_id):
+                        raise HTTPException(409, "Kunci idempotensi sudah dipakai untuk pengiriman faktur lain")
                     if existing:
                         if existing["payload_hash"] != p_hash:
                             raise HTTPException(
@@ -6529,6 +6529,20 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                                 "message": "Already fulfilled (idempotent)",
                             },
                         }
+
+                # 26 Sep 2026: faktur yang sudah dibayar sebagian/lunas (DP/pelunasan -> partial/paid) TETAP harus
+                # bisa dikirim — pembayaran tak mengubah kewajiban menyerahkan barang (PSAK 72: pendapatan diakui saat
+                # serah terima). Dulu hanya 'posted' -> faktur ber-DP tak pernah bisa dikirim.
+                if invoice["status"] not in ("posted", "partial", "paid"):
+                    raise HTTPException(400, "Hanya faktur terbit (posted/sebagian/lunas) yang bisa dikirim")
+                if invoice["fulfillment_status"] not in ("pending", "partial"):
+                    raise HTTPException(
+                        400,
+                        f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
+                    )
+
+                # Period check
+                await check_period_is_open(conn, ctx["tenant_id"], fulfillment_date)
 
                 # Build items list
                 items_to_fulfill = [
