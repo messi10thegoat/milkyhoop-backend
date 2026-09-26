@@ -853,6 +853,39 @@ async def resolve_order_id_for_deposit(
     return row["sales_order_id"] if row else None
 
 
+async def validasi_proforma_dp(conn, tenant_id: str, proforma_id, sales_order_id, customer_id) -> None:
+    """Uang muka yang MENUNJUK proforma (26 Sep 2026, tiket BACKEND; prasyarat CW Terima DP).
+    Dulu hanya FK (baris ada, di tenant MANA PUN): proforma SO lain / pelanggan lain / draf / batal diterima dan
+    diatribusikan eksplisit; proforma tenant lain membuat resolve SO = None -> pagar plafon dilewati.
+    Kini 422 kecuali proforma: tenant SAMA (filter SQL eksplisit — set_config bukan pagar, BYPASSRLS),
+    SO sama (bila sales_order_id dikirim), pelanggan sama, status 'issued'. Pesan tak membedakan
+    "tak ada" dari "tenant lain" (tak membocorkan keberadaan lintas tenant)."""
+    if not proforma_id:
+        return
+    try:
+        pid = UUID(str(proforma_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail={"code": "PROFORMA_TIDAK_VALID",
+                                                     "message": "Proforma tidak ditemukan"})
+    p = await conn.fetchrow(
+        "SELECT sales_order_id, customer_id, status FROM proformas WHERE id = $1 AND tenant_id = $2",
+        pid, tenant_id,
+    )
+    if not p:
+        raise HTTPException(status_code=422, detail={"code": "PROFORMA_TIDAK_VALID",
+                                                     "message": "Proforma tidak ditemukan"})
+    if p["status"] != "issued":
+        raise HTTPException(status_code=422, detail={
+            "code": "PROFORMA_BUKAN_TERBIT",
+            "message": f"Proforma berstatus '{p['status']}'; uang muka hanya untuk proforma yang sudah diterbitkan"})
+    if sales_order_id and str(p["sales_order_id"]) != str(sales_order_id):
+        raise HTTPException(status_code=422, detail={"code": "PROFORMA_BEDA_PESANAN",
+                                                     "message": "Proforma bukan milik pesanan ini"})
+    if str(p["customer_id"] or "").lower() != str(customer_id or "").lower():
+        raise HTTPException(status_code=422, detail={"code": "PROFORMA_BEDA_PELANGGAN",
+                                                     "message": "Proforma bukan milik pelanggan ini"})
+
+
 # Uang muka hanya untuk SO yang MASIH berjalan (sama dengan proforma: 'confirmed' ke atas, belum ditutup/batal).
 SO_TAK_TERIMA_DP = ("draft", "cancelled", "completed")
 
@@ -1054,6 +1087,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                 # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
                 # dulu body mentah tanpa validasi -- sumber data kotor yang sama dgn nota kredit).
                 pelanggan_dp = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+                # proforma yang ditunjuk: tenant + SO + pelanggan sama, status issued (422 bila tidak)
+                await validasi_proforma_dp(conn, ctx["tenant_id"], body.proforma_id, body.sales_order_id, pelanggan_dp)
 
                 # Generate deposit number
                 dep_number = await conn.fetchval(
