@@ -62,7 +62,7 @@ def _conn_so(order_total, sudah):
     """fetchrow #1 = baris sales_orders, #2 = akumulasi deposit."""
     return _FakeConn(
         [
-            {"order_number": "SO-2608-0001", "total_amount": order_total},
+            {"order_number": "SO-2608-0001", "total_amount": order_total, "status": "confirmed"},  # C7: pagar kini membaca status SO
             {"total": sudah},
         ]
     )

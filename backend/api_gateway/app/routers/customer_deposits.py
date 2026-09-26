@@ -853,6 +853,10 @@ async def resolve_order_id_for_deposit(
     return row["sales_order_id"] if row else None
 
 
+# Uang muka hanya untuk SO yang MASIH berjalan (sama dengan proforma: 'confirmed' ke atas, belum ditutup/batal).
+SO_TAK_TERIMA_DP = ("draft", "cancelled", "completed")
+
+
 async def assert_deposit_within_order_total(
     conn, tenant_id: str, sales_order_id, amount: float, exclude_id=None
 ) -> None:
@@ -860,16 +864,31 @@ async def assert_deposit_within_order_total(
     acuan) — itu perilaku sah hari ini dan sengaja dibiarkan lolos."""
     if not sales_order_id:
         return
+    # C7 (26 Sep 2026): kunci BARIS SO = mutex bersama dengan batal/hapus SO dan to-invoice. Dulu tanpa kunci:
+    # dua uang muka bersamaan (kunci idempotensi berbeda) sama-sama lolos plafon; SO dibatalkan bersamaan
+    # berakhir 'cancelled' dengan uang muka hidup. Pemanggil WAJIB di dalam transaksi (keduanya).
     order = await conn.fetchrow(
         """
-        SELECT order_number, total_amount FROM sales_orders
+        SELECT order_number, total_amount, status FROM sales_orders
         WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
         """,
         sales_order_id,
         tenant_id,
     )
     if not order:
         raise HTTPException(status_code=400, detail="Sales Order not found")
+    if order["status"] in SO_TAK_TERIMA_DP:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "SO_NOT_ACCEPTING_DEPOSIT",
+                "message": (
+                    f"Uang muka tidak bisa dicatat untuk Sales Order {order['order_number']} berstatus "
+                    f"'{order['status']}'. Konfirmasi pesanannya dulu (draf), atau catat tanpa pesanan."
+                ),
+            },
+        )
 
     order_total = float(order["total_amount"] or 0)
     already = await received_total_for_order(
