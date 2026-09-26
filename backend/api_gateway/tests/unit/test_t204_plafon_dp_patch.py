@@ -99,7 +99,7 @@ def _rows(order_total, sudah_lain, sales_order_id=SO):
             "sales_order_id": sales_order_id,
             "proforma_id": None,
         },
-        {"order_number": "SO-2608-0001", "total_amount": order_total},
+        {"order_number": "SO-2608-0001", "total_amount": order_total, "status": "confirmed"},  # C7: pagar kini membaca status SO
         {"total": sudah_lain},
     ]
 

@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.proforma_terbayar import terbayar_proforma
 from ..services.so_riwayat import catat_riwayat
+from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -546,82 +547,112 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
             )
 
+        try:
+            kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         pool = await get_pool()
         async with pool.acquire() as conn:
-            order = await fetch_order_or_404(conn, ctx["tenant_id"], oid)
+            async with conn.transaction():
+                # C3 (26 Sep 2026): dulu tanpa transaksi/kunci/kunci-idempotensi -> klik ganda = DUA draf DP,
+                # dan keduanya bisa diterbitkan (plafon hanya menghitung 'issued'). Kini: (1) kunci SO yang SAMA
+                # dengan terbit (serialkan plafon per SO); (2) X-Idempotency-Key klien -> replay / 409 bila isi beda.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PROFORMA_SO:{ctx['tenant_id']}:{oid}")
+                kunci_penuh = sidik = None
+                if kunci_klien:
+                    kunci_penuh = f"PROFORMA_CREATE:{ctx['user_id']}:{kunci_klien}"
+                    sidik = hash_payload(body.model_dump(mode="json"))
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
+                    try:
+                        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
+                    except LookupError as e:
+                        asli = ((getattr(e, "respons", None) or {}).get("data") or {})
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Idempotency-Key sudah dipakai untuk proforma lain dengan isi berbeda",
+                            "proforma_id": asli.get("id"), "proforma_number": asli.get("proforma_number"),
+                        })
+                    if lama is not None:
+                        return lama
+                order = await fetch_order_or_404(conn, ctx["tenant_id"], oid)
 
-            if order["status"] not in SO_BILLABLE_STATUSES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Sales Order berstatus '{order['status']}' tidak bisa ditagih "
-                        f"dengan proforma. Harus 'confirmed' ke atas."
-                    ),
-                )
-
-            order_total = _f(order["total_amount"]) or 0.0
-
-            percent = _f(body.percent_of_order)
-            amount = _f(body.amount)
-            if percent is None and amount is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Wajib mengisi salah satu: percent_of_order atau amount.",
-                )
-            if percent is not None:
-                if percent <= 0 or percent > 100:
+                if order["status"] not in SO_BILLABLE_STATUSES:
                     raise HTTPException(
-                        status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                        status_code=400,
+                        detail=(
+                            f"Sales Order berstatus '{order['status']}' tidak bisa ditagih "
+                            f"dengan proforma. Harus 'confirmed' ke atas."
+                        ),
                     )
-                amount = round(order_total * percent / 100.0, 2)
-            if amount is None or amount <= 0:
-                raise HTTPException(status_code=400, detail="amount harus lebih besar dari 0.")
 
-            await assert_within_order_total(
-                conn, ctx["tenant_id"], oid, order_total, amount
-            )
+                order_total = _f(order["total_amount"]) or 0.0
 
-            number = await conn.fetchval(
-                "SELECT generate_proforma_number($1)", ctx["tenant_id"]
-            )
+                percent = _f(body.percent_of_order)
+                amount = _f(body.amount)
+                if percent is None and amount is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Wajib mengisi salah satu: percent_of_order atau amount.",
+                    )
+                if percent is not None:
+                    if percent <= 0 or percent > 100:
+                        raise HTTPException(
+                            status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                        )
+                    amount = round(order_total * percent / 100.0, 2)
+                if amount is None or amount <= 0:
+                    raise HTTPException(status_code=400, detail="amount harus lebih besar dari 0.")
 
-            row = await conn.fetchrow(
-                """
-                INSERT INTO proformas (
-                    tenant_id, proforma_number, proforma_date, due_date,
-                    sales_order_id, customer_id, customer_name,
-                    purpose, percent_of_order, amount, currency, terms, notes,
-                    payment_bank_name, payment_account_number, payment_account_holder,
-                    status, created_by
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                    $14, $15, $16, 'draft', $17
+                await assert_within_order_total(
+                    conn, ctx["tenant_id"], oid, order_total, amount
                 )
-                RETURNING *
-                """,
-                ctx["tenant_id"],
-                number,
-                body.proforma_date or await tanggal_dokumen(conn, ctx["tenant_id"]),  # t10-tanggal-bisnis
-                body.due_date,
-                oid,
-                order["customer_id"],
-                order["customer_name"],
-                _purpose,
-                Decimal(str(percent)) if percent is not None else None,
-                Decimal(str(amount)),
-                body.currency or "IDR",
-                body.terms,
-                body.notes,
-                body.payment_bank_name or order["payment_bank_name"],
-                body.payment_account_number or order["payment_account_number"],
-                body.payment_account_holder or order["payment_account_holder"],
-                ctx["user_id"],
-            )
 
-            return {
-                "success": True,
-                "data": serialize_proforma(row, order["order_number"], 0.0),
-            }
+                number = await conn.fetchval(
+                    "SELECT generate_proforma_number($1)", ctx["tenant_id"]
+                )
+
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO proformas (
+                        tenant_id, proforma_number, proforma_date, due_date,
+                        sales_order_id, customer_id, customer_name,
+                        purpose, percent_of_order, amount, currency, terms, notes,
+                        payment_bank_name, payment_account_number, payment_account_holder,
+                        status, created_by
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                        $14, $15, $16, 'draft', $17
+                    )
+                    RETURNING *
+                    """,
+                    ctx["tenant_id"],
+                    number,
+                    body.proforma_date or await tanggal_dokumen(conn, ctx["tenant_id"]),  # t10-tanggal-bisnis
+                    body.due_date,
+                    oid,
+                    order["customer_id"],
+                    order["customer_name"],
+                    _purpose,
+                    Decimal(str(percent)) if percent is not None else None,
+                    Decimal(str(amount)),
+                    body.currency or "IDR",
+                    body.terms,
+                    body.notes,
+                    body.payment_bank_name or order["payment_bank_name"],
+                    body.payment_account_number or order["payment_account_number"],
+                    body.payment_account_holder or order["payment_account_holder"],
+                    ctx["user_id"],
+                )
+
+                hasil = {
+                    "success": True,
+                    "data": serialize_proforma(row, order["order_number"], 0.0),
+                }
+                if kunci_penuh:
+                    await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "PROFORMA_CREATE", sidik,
+                                              hasil, row["id"])
+                return hasil
 
     except HTTPException:
         raise
@@ -735,59 +766,65 @@ async def issue_proforma(request: Request, proforma_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            cur = await conn.fetchrow(
-                "SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2",
-                pid,
-                ctx["tenant_id"],
-            )
-            if not cur:
-                raise HTTPException(status_code=404, detail="Proforma not found")
-            if cur["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Hanya proforma 'draft' yang bisa diterbitkan (sekarang '{cur['status']}').",
-                )
-
-            order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
-            if order["status"] not in SO_BILLABLE_STATUSES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Sales Order berstatus '{order['status']}' tidak bisa ditagih.",
-                )
-
-            await assert_within_order_total(
-                conn,
-                ctx["tenant_id"],
-                cur["sales_order_id"],
-                _f(order["total_amount"]) or 0.0,
-                _f(cur["amount"]) or 0.0,
-                exclude_id=pid,
-            )
-
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    """
-                    UPDATE proformas SET status = 'issued', issued_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
-                    RETURNING *
-                    """,
+                cur = await conn.fetchrow(
+                    "SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2",
                     pid,
                     ctx["tenant_id"],
                 )
-                if not row:
-                    raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
-                # Riwayat SO: issued_at tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
-                await catat_riwayat(
-                    conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_ISSUED",
-                    ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diterbitkan".replace("  ", " "),
-                    {"sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.issue",
+                if not cur:
+                    raise HTTPException(status_code=404, detail="Proforma not found")
+                # C3: kunci SO yang SAMA dengan create -> dua terbit bersamaan tak bisa sama-sama lolos plafon
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"PROFORMA_SO:{ctx['tenant_id']}:{cur['sales_order_id']}",
+                )
+                if cur["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Hanya proforma 'draft' yang bisa diterbitkan (sekarang '{cur['status']}').",
+                    )
+
+                order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
+                if order["status"] not in SO_BILLABLE_STATUSES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Sales Order berstatus '{order['status']}' tidak bisa ditagih.",
+                    )
+
+                await assert_within_order_total(
+                    conn,
+                    ctx["tenant_id"],
+                    cur["sales_order_id"],
+                    _f(order["total_amount"]) or 0.0,
+                    _f(cur["amount"]) or 0.0,
+                    exclude_id=pid,
                 )
 
-            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
-            return {
-                "success": True,
-                "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
-            }
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE proformas SET status = 'issued', issued_at = NOW()
+                        WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+                        RETURNING *
+                        """,
+                        pid,
+                        ctx["tenant_id"],
+                    )
+                    if not row:
+                        raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+                    # Riwayat SO: issued_at tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_ISSUED",
+                        ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diterbitkan".replace("  ", " "),
+                        {"sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.issue",
+                    )
+
+                paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
+                return {
+                    "success": True,
+                    "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
+                }
 
     except HTTPException:
         raise

@@ -389,6 +389,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
     """Get sales order detail with items and shipments."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -400,7 +401,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 LEFT JOIN quotes q ON q.id = so.quote_id
                 WHERE so.id = $1 AND so.tenant_id = $2
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -415,7 +416,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2
                 WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order, soi.id
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -424,7 +425,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 """
                 SELECT * FROM sales_order_shipments WHERE sales_order_id = $1 ORDER BY shipment_date DESC
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
             )
 
             shipment_details = []
@@ -472,7 +473,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 SELECT id, invoice_number, invoice_date, total_amount, status
                 FROM sales_invoices WHERE sales_order_id = $1
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
             )
 
             # G2: linked customer deposits (exclude void)
@@ -483,7 +484,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 WHERE sales_order_id = $1 AND tenant_id = $2 AND status <> 'void'
                 ORDER BY created_at
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -635,6 +636,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
     """
     try:
         ctx = get_user_context(request)
+        _cek_uuid_badan_so(body)
         try:
             _kunci_klien = kunci_idempotensi_klien(request)
         except ValueError as e:
@@ -878,6 +880,7 @@ async def update_sales_order(
     """Update a sales order (draft only)."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
         # Optimistic concurrency (opt-in If-Match): reject a stale write.
         from ..services.optimistic_concurrency import assert_if_match_row
@@ -887,9 +890,9 @@ async def update_sales_order(
             async with conn.transaction():
                 order = await conn.fetchrow(
                     """
-                    SELECT id, status FROM sales_orders WHERE id = $1 AND tenant_id = $2
+                    SELECT id, status FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                     ctx["tenant_id"],
                 )
 
@@ -905,7 +908,7 @@ async def update_sales_order(
                         raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
                     if await conn.fetchval(
                         "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
-                        ctx["tenant_id"], _new_num, uuid_module.UUID(order_id)):
+                        ctx["tenant_id"], _new_num, _so_uuid(order_id)):
                         raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
                     body.order_number = _new_num
 
@@ -960,7 +963,7 @@ async def update_sales_order(
                 if _recalc:
                     current = await conn.fetchrow(
                         "SELECT discount_amount, shipping_amount, shipping_tax_code_id FROM sales_orders WHERE id = $1",
-                        uuid_module.UUID(order_id),
+                        _so_uuid(order_id),
                     )
                     discount_amt = (
                         body.discount_amount
@@ -982,7 +985,7 @@ async def update_sales_order(
                                 """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id
                                    FROM sales_order_items WHERE sales_order_id = $1
                                    ORDER BY sort_order, id""",
-                                uuid_module.UUID(order_id),
+                                _so_uuid(order_id),
                             )
                         ]
                     await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_id")
@@ -1024,7 +1027,7 @@ async def update_sales_order(
                 if body.items is not None:
                     await conn.execute(
                         "DELETE FROM sales_order_items WHERE sales_order_id = $1",
-                        uuid_module.UUID(order_id),
+                        _so_uuid(order_id),
                     )
 
                     for idx, item in enumerate(calculated_items):
@@ -1038,7 +1041,7 @@ async def update_sales_order(
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         """,
                             uuid_module.uuid4(),
-                            uuid_module.UUID(order_id),
+                            _so_uuid(order_id),
                             uuid_module.UUID(item["item_id"])
                             if item.get("item_id")
                             else None,
@@ -1061,7 +1064,7 @@ async def update_sales_order(
                         )
 
                 if updates:
-                    params.append(uuid_module.UUID(order_id))
+                    params.append(_so_uuid(order_id))
                     params.append(ctx["tenant_id"])
                     await conn.execute(
                         f"""
@@ -1122,6 +1125,7 @@ async def delete_sales_order(request: Request, order_id: str):
     """Delete a sales order (draft only)."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1129,7 +1133,7 @@ async def delete_sales_order(request: Request, order_id: str):
                 """
                 SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -1142,7 +1146,7 @@ async def delete_sales_order(request: Request, order_id: str):
                 )
 
             await _tolak_bila_ada_uang_muka_aktif(
-                conn, uuid_module.UUID(order_id), ctx["tenant_id"], "dihapus"
+                conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus"
             )
 
             # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
@@ -1154,14 +1158,23 @@ async def delete_sales_order(request: Request, order_id: str):
             # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
             # sehingga tak ada interpolasi string ke dalam SQL.
             async with conn.transaction():
+                # RACE (audit CW SO 26 Sep): cek status + guard DP dulu DI LUAR transaksi -> SO yang
+                # dikonfirmasi / diberi DP di antaranya tetap terhapus. Kini baris SO DIKUNCI (mutex
+                # bersama dengan cancel & pembuatan uang muka), guard diulang, DELETE bersyarat draft.
+                await conn.execute(
+                    "SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                    _so_uuid(order_id), ctx["tenant_id"],
+                )
+                await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus")
                 await conn.execute(
                     "SELECT set_config('app.user_id', $1, true)",
                     str(ctx["user_id"] or ""),
                 )
-                await conn.execute(
-                    "DELETE FROM sales_orders WHERE id = $1",
-                    uuid_module.UUID(order_id),
-                )
+                if not await conn.fetchval(
+                    "DELETE FROM sales_orders WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+                    _so_uuid(order_id), ctx["tenant_id"],
+                ):
+                    raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
 
             return SalesOrderResponse(
                 success=True,
@@ -1186,6 +1199,7 @@ async def confirm_sales_order(request: Request, order_id: str):
     """Confirm a sales order."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1193,7 +1207,7 @@ async def confirm_sales_order(request: Request, order_id: str):
                 """
                 SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -1214,7 +1228,7 @@ async def confirm_sales_order(request: Request, order_id: str):
                 WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
                 RETURNING id
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
                 ctx["user_id"],
             )
@@ -1241,6 +1255,7 @@ async def cancel_sales_order(
     """Cancel a sales order."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1249,7 +1264,7 @@ async def cancel_sales_order(
                 SELECT id, status, order_number, shipped_qty, invoiced_qty FROM sales_orders
                 WHERE id = $1 AND tenant_id = $2
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -1269,11 +1284,18 @@ async def cancel_sales_order(
                 )
 
             await _tolak_bila_ada_uang_muka_aktif(
-                conn, uuid_module.UUID(order_id), ctx["tenant_id"], "dibatalkan"
+                conn, _so_uuid(order_id), ctx["tenant_id"], "dibatalkan"
             )
 
             alasan_batal = ((body.reason if body else None) or "").strip() or None
             async with conn.transaction():
+                # mutex baris SO (sama dengan DELETE & pembuatan uang muka) + guard DP DIULANG di dalamnya:
+                # DP yang dibuat sesudah cek di atas tak boleh berakhir menunjuk SO batal.
+                await conn.execute(
+                    "SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                    _so_uuid(order_id), ctx["tenant_id"],
+                )
+                await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dibatalkan")
                 # UPDATE BERSYARAT: status & pencacah dibaca di atas tanpa kunci; faktur/kirim yang
                 # masuk di antaranya membuat syarat gagal -> 409, bukan SO batal berfaktur hidup.
                 ok = await conn.fetchval(
@@ -1284,7 +1306,7 @@ async def cancel_sales_order(
                       AND COALESCE(shipped_qty, 0) = 0 AND COALESCE(invoiced_qty, 0) = 0
                     RETURNING id
                 """,
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                     ctx["tenant_id"],
                 )
                 if not ok:
@@ -1327,6 +1349,7 @@ async def close_sales_order(
     """
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
         reason = ((body.reason if body else None) or "").strip() or None
 
@@ -1339,7 +1362,7 @@ async def close_sales_order(
                     """
                     SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
                 """,
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                     ctx["tenant_id"],
                 )
 
@@ -1526,6 +1549,7 @@ async def get_order_shipments(request: Request, order_id: str):
     """Get all shipments for an order."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -1533,7 +1557,7 @@ async def get_order_shipments(request: Request, order_id: str):
                 """
                 SELECT id FROM sales_orders WHERE id = $1 AND tenant_id = $2
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
                 ctx["tenant_id"],
             )
 
@@ -1544,7 +1568,7 @@ async def get_order_shipments(request: Request, order_id: str):
                 """
                 SELECT * FROM sales_order_shipments WHERE sales_order_id = $1 ORDER BY shipment_date DESC
             """,
-                uuid_module.UUID(order_id),
+                _so_uuid(order_id),
             )
 
             result = []
@@ -1592,6 +1616,57 @@ async def get_order_shipments(request: Request, order_id: str):
 # ============================================================================
 
 
+def _so_uuid(order_id) -> uuid_module.UUID:
+    """C6 (26 Sep 2026): id SO di jalur yang bukan UUID -> 404 (dulu ValueError -> 500 "Failed to ...").
+    Sama dengan proformas._uuid_or_404. Dipakai SEBELUM kueri apa pun."""
+    try:
+        return uuid_module.UUID(str(order_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Sales order not found")
+
+
+def _baris_tagih(inv_item) -> tuple:
+    """C6: satu baris body to-invoice -> (so_item_id UUID, quantity float|None). Masukan buruk = 422 yang bisa
+    ditampilkan (dulu: so_item_id hilang -> KeyError 500; quantity teks -> TypeError 500; quantity <= 0 lolos
+    `qty > remaining` lalu faktur DRAF 0 baris tercipta)."""
+    if not isinstance(inv_item, dict) or not inv_item.get("so_item_id"):
+        raise HTTPException(status_code=422, detail="Setiap baris wajib memuat so_item_id.")
+    try:
+        sid = uuid_module.UUID(str(inv_item["so_item_id"]))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail=f"so_item_id tidak sah: {inv_item['so_item_id']}")
+    if inv_item.get("quantity") is None:
+        return sid, None
+    q = inv_item["quantity"]
+    try:
+        if isinstance(q, bool):
+            raise TypeError
+        qty = float(q)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail=f"quantity harus angka (baris {sid}).")
+    if not qty > 0:  # juga menolak NaN
+        raise HTTPException(status_code=422, detail=f"quantity harus lebih dari 0 (baris {sid}).")
+    return sid, qty
+
+
+def _cek_uuid_badan_so(body) -> None:
+    """C6: medan id di badan buat SO yang bukan UUID -> 422 bernama medan (dulu ValueError di tengah
+    transaksi -> 500 "Failed to create sales order"). Dicek SEBELUM kueri apa pun."""
+    def cek(nilai, medan):
+        if nilai in (None, ""):
+            return
+        try:
+            uuid_module.UUID(str(nilai))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail=f"{medan} tidak sah: {nilai}")
+    cek(body.customer_id, "customer_id")
+    cek(getattr(body, "quote_id", None), "quote_id")
+    cek(getattr(body, "shipping_tax_code_id", None), "shipping_tax_code_id")
+    for n, it in enumerate(getattr(body, "items", None) or [], start=1):
+        for medan in ("item_id", "warehouse_id"):  # tax_id: jalur kode pajak sudah 400 (kontrak t34)
+            cek(getattr(it, medan, None) if not isinstance(it, dict) else it.get(medan), f"items[{n}].{medan}")
+
+
 def _rek_eksplisit(body, nama: str):
     """Nilai rekening yang dikirim EKSPLISIT di body convert, kalau ada.
 
@@ -1613,15 +1688,19 @@ async def convert_to_invoice(
     """Convert sales order to invoice."""
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Kunci baris SO (mutex bersama cancel/DELETE/uang muka): dulu klik ganda to-invoice aman
+                # hanya KEBETULAN (kunci baris nomor faktur); cancel bersamaan bisa menghasilkan SO batal
+                # berfaktur hidup.
                 order = await conn.fetchrow(
                     """
-                    SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2
+                    SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                     ctx["tenant_id"],
                 )
 
@@ -1639,12 +1718,13 @@ async def convert_to_invoice(
                     # Partial invoice with specific quantities
                     items_to_invoice = []
                     for inv_item in body.items:
+                        so_item_id, qty_minta = _baris_tagih(inv_item)
                         soi = await conn.fetchrow(
                             """
                             SELECT * FROM sales_order_items WHERE id = $1 AND sales_order_id = $2
                         """,
-                            uuid_module.UUID(inv_item["so_item_id"]),
-                            uuid_module.UUID(order_id),
+                            so_item_id,
+                            _so_uuid(order_id),
                         )
 
                         if not soi:
@@ -1656,7 +1736,7 @@ async def convert_to_invoice(
                         remaining = float(soi["quantity"]) - float(
                             soi["quantity_invoiced"]
                         )
-                        qty = inv_item.get("quantity", remaining)
+                        qty = remaining if qty_minta is None else qty_minta
 
                         if qty > remaining:
                             raise HTTPException(
@@ -1671,7 +1751,7 @@ async def convert_to_invoice(
                         """
                         SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced
                     """,
-                        uuid_module.UUID(order_id),
+                        _so_uuid(order_id),
                     )
 
                     items_to_invoice = [
@@ -1711,7 +1791,7 @@ async def convert_to_invoice(
                 _all_so_items = await conn.fetch(
                     """SELECT * FROM sales_order_items WHERE sales_order_id = $1
                        ORDER BY sort_order, id""",
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                 )
                 _inv_qty = {}
                 for item in items_to_invoice:
@@ -1735,7 +1815,7 @@ async def convert_to_invoice(
                        FROM sales_invoices
                        WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'void'""",
                     ctx["tenant_id"],
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                 )
                 _so_rows = [dict(r) for r in _all_so_items]
                 await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
@@ -1800,7 +1880,7 @@ async def convert_to_invoice(
                     header_tax_rate,
                     tax_total,
                     total,
-                    uuid_module.UUID(order_id),
+                    _so_uuid(order_id),
                     ctx["user_id"],
                     _recognize_at,
                     _warehouse_id,
@@ -1893,11 +1973,12 @@ async def get_sales_order_history(request: Request, order_id: str, limit: int = 
     terbaru dulu. Dokumen terkait disaring per izin BACA pemanggil; yang tersaring -> `omitted`
     (daftar modul). Lihat services/so_riwayat.py."""
     try:
-        so_id = uuid_module.UUID(order_id)
+        so_id = _so_uuid(order_id)
     except (ValueError, TypeError):
         raise HTTPException(status_code=404, detail="Sales order not found")
     try:
         ctx = get_user_context(request)
+        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
         async with pool.acquire() as conn:
             data = await riwayat_so(conn, ctx["tenant_id"], so_id, lambda m: boleh_baca(request, m), limit)
