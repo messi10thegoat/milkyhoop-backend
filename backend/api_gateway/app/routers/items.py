@@ -839,6 +839,39 @@ async def _item_jebakan_ubah_tipe(conn, tenant_id, item_id):
     return None
 
 
+def _lacak_efektif(tipe_baru, lacak_diminta, tipe_lama, lacak_lama):
+    """Pelacakan stok yang KONSISTEN dengan tipe: jasa/non_inventory tak pernah dilacak; goods dari tipe tak-dilacak
+    = dilacak (bawaan goods) kecuali diminta lain; goods -> goods memakai permintaan/nilai lama."""
+    if tipe_baru in ("service", "non_inventory"):
+        return False
+    if lacak_diminta is not None:
+        return bool(lacak_diminta)
+    if tipe_lama != "goods":
+        return True
+    return bool(lacak_lama)
+
+
+async def _alasan_tolak_ubah_tipe(conn, tenant_id, item_id, tipe_lama, lacak_lama, tipe_baru, lacak_baru):
+    """SATU aturan ubah tipe/pelacakan untuk form (PUT) DAN impor massal (27 Sep 2026, putusan pemilik via MASTER).
+    Per ARAH (pola Xero/QuickBooks):
+      (1) dilacak -> tak dilacak (goods ber-stok -> non_inventory/jasa/goods tanpa lacak): penjaga SEMPIT Q-018 —
+          tolak hanya bila pendapatan faktur masih DITUNDA atau ada riwayat inventory_ledger (niat pemilik: barang
+          sengaja dijadikan non_inventory).
+      (2) tak dilacak -> dilacak (non_inventory/jasa -> goods ber-stok): KETAT E2b — tolak bila sudah ada faktur/
+          tagihan terbit atau ledger (penjualan lampau tanpa HPP/valuasi; opsi pemilik: buat barang BARU ber-stok).
+      (3) antar tak-dilacak (jasa <-> non_inventory): penjaga sempit yang sama dengan (1) (tak ada stok/HPP yang
+          terganggu; pendapatan tertunda tetap dijaga).
+    -> alasan (str) atau None. Tenant eksplisit di semua kueri (Law 24)."""
+    if tipe_baru == tipe_lama and bool(lacak_baru) == bool(lacak_lama):
+        return None
+    if lacak_baru and not lacak_lama:
+        if await _item_has_transactions(conn, tenant_id, item_id):
+            return ("barang sudah punya transaksi (faktur/tagihan/ledger stok) tanpa HPP/valuasi persediaan — "
+                    "buat barang BARU ber-stok untuk penjualan berikutnya")
+        return None
+    return await _item_jebakan_ubah_tipe(conn, tenant_id, item_id)
+
+
 @router.put("/items/{item_id}", response_model=UpdateItemResponse)
 async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     """Update an existing item."""
@@ -897,26 +930,23 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             tenant_id,
         )
 
-        # E2b: blokir perubahan item_type / track_inventory bila barang SUDAH
-        # bertransaksi (ledger stok / faktur / tagihan non-draft) -- mengubahnya
-        # merusak valuasi persediaan & HPP. Field lain tetap boleh diperbarui.
-        _type_change = body.item_type is not None and body.item_type != old_item["item_type"]
-        _track_change = (
-            body.track_inventory is not None
-            and body.track_inventory != old_item["track_inventory"]
-        )
-        if (_type_change or _track_change) and await _item_has_transactions(
-            conn, tenant_id, item_id
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Tipe barang/jasa atau pelacakan stok tidak bisa diubah karena "
-                    "barang ini sudah punya transaksi (ledger stok / faktur / tagihan). "
-                    "Mengubahnya akan merusak valuasi persediaan & HPP. Buat barang "
-                    "baru bila jenisnya memang berbeda."
-                ),
+        # Ubah tipe/pelacakan: SATU aturan per arah, sama dengan impor massal (_alasan_tolak_ubah_tipe).
+        # Pelacakan dinormalkan ke tipe (jasa/non_inventory tak pernah dilacak).
+        _tipe_lama = old_item["item_type"] if old_item else None
+        _lacak_lama = bool(old_item["track_inventory"]) if old_item else False
+        _tipe_baru = body.item_type if body.item_type is not None else _tipe_lama
+        _lacak_baru = _lacak_efektif(_tipe_baru, body.track_inventory, _tipe_lama, _lacak_lama)
+        if old_item:
+            _alasan = await _alasan_tolak_ubah_tipe(
+                conn, tenant_id, item_id, _tipe_lama, _lacak_lama, _tipe_baru, _lacak_baru
             )
+            if _alasan:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tipe barang/jasa atau pelacakan stok tidak bisa diubah: {_alasan}.",
+                )
+            if _lacak_baru != _lacak_lama or body.track_inventory is not None:
+                body.track_inventory = _lacak_baru
 
         async with conn.transaction():
             # Build update query dynamically
@@ -2127,16 +2157,23 @@ async def bulk_import_items(request: Request):
                             # Q-018 (26 Sep 2026): impor massal tak boleh diam-diam mengubah tipe barang yang punya
                             # JEBAKAN nyata (pendapatan tertunda / riwayat ledger). Ubah tipe lain (niat sah pemilik:
                             # semua barang non_inventory) tetap boleh. Field lain tetap diperbarui; barisnya dilaporkan.
+                            # 27 Sep: aturan per ARAH yang SAMA dengan form PUT (_alasan_tolak_ubah_tipe); pelacakan
+                            # ikut tipe (dulu impor hanya mengganti item_type -> non_inventory tetap dilacak).
                             tipe_baru = item.get("type")
+                            lacak_baru = None
                             if tipe_baru is not None:
-                                tipe_lama = await conn.fetchval(
-                                    "SELECT item_type FROM products WHERE id = $1 AND tenant_id = $2", existing["id"], ctx["tenant_id"]
+                                lama = await conn.fetchrow(
+                                    "SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2",
+                                    existing["id"], ctx["tenant_id"],
                                 )
-                                if tipe_baru != tipe_lama:
-                                    alasan = await _item_jebakan_ubah_tipe(conn, ctx["tenant_id"], existing["id"])
-                                    if alasan:
-                                        errors.append({"row": idx + 1, "error": f"Tipe {tipe_lama} tidak diubah ke {tipe_baru}: {alasan} (field lain diperbarui)"})
-                                        tipe_baru = None
+                                tipe_lama, lacak_lama = lama["item_type"], bool(lama["track_inventory"])
+                                lacak_baru = _lacak_efektif(tipe_baru, None, tipe_lama, lacak_lama)
+                                alasan = await _alasan_tolak_ubah_tipe(
+                                    conn, ctx["tenant_id"], existing["id"], tipe_lama, lacak_lama, tipe_baru, lacak_baru
+                                )
+                                if alasan:
+                                    errors.append({"row": idx + 1, "error": f"Tipe {tipe_lama} tidak diubah ke {tipe_baru}: {alasan} (field lain diperbarui)"})
+                                    tipe_baru, lacak_baru = None, None
                             # Update existing
                             await conn.execute(
                                 """
@@ -2146,6 +2183,8 @@ async def bulk_import_items(request: Request):
                                 base_unit = COALESCE($3, base_unit),
                                 sales_price = COALESCE($4, sales_price),
                                 purchase_price = COALESCE($5, purchase_price),
+                                track_inventory = COALESCE($8, track_inventory),
+                                bisa_dikirim = CASE WHEN COALESCE($2, item_type) = 'service' THEN false ELSE bisa_dikirim END,
                                 updated_at = NOW()
                             WHERE id = $6 AND tenant_id = $7
                         """,
@@ -2156,6 +2195,7 @@ async def bulk_import_items(request: Request):
                                 item.get("purchase_price"),
                                 existing["id"],
                                 ctx["tenant_id"],
+                                lacak_baru,
                             )
                             updated += 1
                         else:

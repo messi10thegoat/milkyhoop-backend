@@ -156,6 +156,7 @@ def test_impor_massal_memakai_penjaga_sempit():
     import inspect
     from app.routers import items as IT
     s = inspect.getsource(IT.bulk_import_items)
-    assert "alasan = await _item_jebakan_ubah_tipe(conn, ctx[\"tenant_id\"], existing[\"id\"])" in s
+    # 27 Sep: aturan per arah SAMA dengan form PUT (test_aturan_ubah_tipe.py); arah (1) tetap penjaga sempit Q-018
+    assert "alasan = await _alasan_tolak_ubah_tipe(" in s
     assert "_item_has_transactions" not in s                            # BUKAN blok umum (niat pemilik)
     assert "name, tipe_baru, item.get(\"unit\")," in " ".join(s.split())
