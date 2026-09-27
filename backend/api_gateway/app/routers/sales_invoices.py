@@ -3780,7 +3780,6 @@ async def update_invoice(
 # =============================================================================
 # POST INVOICE (Create AR + Journal Entry + COGS)
 # =============================================================================
-@router.post("/{invoice_id}/post", response_model=InvoiceResponse)
 async def terbitkan_faktur(conn, ctx, invoice_id, invoice_number, total_amount, invoice_date,
                           apply_deposits: bool = True, skip_deposit_ids=()) -> dict:
     """SATU jalur terbit (27 Sep 2026): cek periode (Law 5) -> _internal_post_invoice (jurnal billing/COGS/pendapatan)
@@ -3795,6 +3794,7 @@ async def terbitkan_faktur(conn, ctx, invoice_id, invoice_number, total_amount, 
     return post_result
 
 
+@router.post("/{invoice_id}/post", response_model=InvoiceResponse)
 async def post_invoice(
     request: Request, invoice_id: UUID, body: PostInvoiceRequest = None
 ):

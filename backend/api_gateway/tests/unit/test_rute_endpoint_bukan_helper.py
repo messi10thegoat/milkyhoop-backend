@@ -1,0 +1,78 @@
+"""Penjaga tabel rute (insiden 27 Sep 2026 23:00 WIB): helper `terbitkan_faktur(conn, ctx, ...)` disisipkan TEPAT di
+bawah `@router.post("/{invoice_id}/post")` -> dekorator menempel ke helper -> POST /sales-invoices/{id}/post = 422
+(conn/ctx/... dianggap query) untuk SEMUA faktur. Unit test memanggil fungsi langsung, journey memakai jalur lain.
+
+Statis (AST) atas SEMUA berkas routers/ — tak ada modul yang bisa lolos karena gagal diimpor:
+  1. endpoint ber-dekorator @router.<metode>(...) tak boleh punya parameter conn/ctx/pool (tanda helper internal);
+  2. rute yang disentuh 27 Sep -> nama endpoint yang diharapkan (literal)."""
+import ast
+import os
+
+import pytest
+
+ROUTERS = os.path.join(os.path.dirname(__file__), "..", "..", "app", "routers")
+METODE = {"get", "post", "put", "patch", "delete"}
+PARAM_HELPER = {"conn", "ctx", "pool"}
+
+
+def _pindai():
+    for nama in sorted(os.listdir(ROUTERS)):
+        if not nama.endswith(".py"):
+            continue
+        src = open(os.path.join(ROUTERS, nama)).read()
+        for fn in ast.walk(ast.parse(src)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for d in fn.decorator_list:
+                if (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr in METODE
+                        and isinstance(d.func.value, ast.Name) and d.func.value.id.endswith("router")):
+                    jalur = d.args[0].value if d.args and isinstance(d.args[0], ast.Constant) else None
+                    yield nama, d.func.attr.upper(), jalur, fn
+
+
+_SEMUA = None
+
+
+def _rute():
+    global _SEMUA
+    if _SEMUA is None:
+        _SEMUA = list(_pindai())
+    return _SEMUA
+
+
+def test_ada_banyak_rute_yang_dipindai():
+    assert len(list(_rute())) > 500   # alat bisa bicara: pemindai benar-benar melihat rute
+
+
+def test_endpoint_tak_berparameter_helper():
+    salah = [f"{b}:{m} {j} -> {fn.name}({', '.join(a.arg for a in fn.args.args)})"
+             for b, m, j, fn in _rute() if PARAM_HELPER & {a.arg for a in fn.args.args + fn.args.kwonlyargs}]
+    assert not salah, "endpoint berparameter helper (dekorator menempel ke fungsi yang salah?):\n" + "\n".join(salah)
+
+
+HARAP = [
+    ("sales_invoices.py", "POST", "/{invoice_id}/post", "post_invoice"),
+    ("sales_invoices.py", "POST", "/{invoice_id}/void", "void_invoice"),
+    ("sales_invoices.py", "GET", "/{invoice_id}/pdf", "get_invoice_pdf"),
+    ("sales_orders.py", "POST", "/{order_id}/to-invoice", "convert_to_invoice"),
+    ("sales_orders.py", "POST", "/{order_id}/to-invoice/preview", "preview_to_invoice"),
+    ("sales_orders.py", "GET", "/summary", "get_sales_order_summary"),
+    ("receive_payments.py", "POST", "/{payment_id}/void", "void_receive_payment"),
+    ("bill_payments.py", "POST", "/{payment_id}/void", None),
+    ("expenses.py", "POST", "/{expense_id}/void", None),
+    ("kasbank_v2.py", "POST", "/bank-transactions/{transaction_id}/void", "void_transaction"),
+    ("bank_transfers.py", "POST", "/{transfer_id}/void", None),
+    ("customer_deposits.py", "POST", "/{deposit_id}/void", "void_customer_deposit"),
+    ("vendor_deposits.py", "POST", "/{deposit_id}/void", "void_vendor_deposit"),
+    ("sales_receipts.py", "POST", "/{receipt_id}/void", None),
+]
+
+
+@pytest.mark.parametrize("berkas,metode,jalur,nama", HARAP)
+def test_rute_disentuh_27_sep_ke_endpoint_yang_benar(berkas, metode, jalur, nama):
+    cocok = [fn for b, m, j, fn in _rute() if b == berkas and m == metode and j == jalur]
+    assert len(cocok) == 1, f"{berkas} {metode} {jalur}: {len(cocok)} rute"
+    fn = cocok[0]
+    if nama:
+        assert fn.name == nama
+    assert fn.args.args and fn.args.args[0].arg == "request", f"{fn.name}: parameter pertama bukan request"
