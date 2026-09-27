@@ -258,3 +258,31 @@ body {
     font-size: 8pt;
     color: #1a1a1a;
 }
+
+
+/* ── Faktur per status pembayaran (pemilik 27 Sep 2026) ── */
+.hero-status { position: relative; }
+.hero-teks { max-width: 64%; }  /* ruang stempel: stempel tak boleh menimpa teks */
+.hero-label { font-size: 8pt; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #1a1a1a; margin-bottom: 2px; }
+/* Pengecualian warna DISENGAJA (spek pemilik): total faktur batal dicoret abu. */
+.hero-coret { text-decoration: line-through; color: #8a8a8a; }
+.stempel {
+    position: absolute; right: 6px; top: 6px;
+    transform: rotate(-8deg);
+    border: 2.2px solid; border-radius: 8px;
+    padding: 4px 14px 5px 14px; text-align: center; opacity: .85;
+}
+.stempel-teks { font-size: 18pt; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
+.stempel-kecil { font-size: 8pt; font-weight: 700; letter-spacing: 1px; }
+/* Stempel = satu-satunya teks berwarna (spek pemilik), selain tanda DIBATALKAN. */
+.stempel-lunas { color: #4F6B2E; border-color: #4F6B2E; }
+.stempel-terlambat { color: #A3402F; border-color: #A3402F; }
+.stempel-batal { color: #8E3B2E; border-color: #8E3B2E; }
+.riwayat-table { width: 100%; border-collapse: collapse; }
+.riwayat-table td { font-size: 9.5pt; padding: 5px 0; border-bottom: 1px solid #f3f4f6; }
+.riwayat-table .rw-tgl { width: 18%; }
+.riwayat-table .rw-jenis { width: 38%; }
+.riwayat-table .rw-nomor { width: 24%; font-family: 'DejaVu Sans Mono', monospace; font-size: 8.5pt; }
+.riwayat-table .rw-jumlah { width: 20%; text-align: right; }
+.catatan-batal { background: #f5f4f0; border-radius: 8px; padding: 10px 14px; }
+.notes-redup { color: #6b6b6b; }

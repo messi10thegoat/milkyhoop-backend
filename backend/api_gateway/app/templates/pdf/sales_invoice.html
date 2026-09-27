@@ -2,7 +2,9 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>Faktur {{ invoice.invoice_number or '-' }}</title></head>
 <body>
-{% include "_partials/tanda_batal.html" %}
+{# Faktur ber-keadaan cetak: stempel BATAL + total dicoret + Catatan alasan MENGGANTIKAN tanda diagonal (tanda itu
+   menimpa stempel & tabel; spek pemilik 27 Sep: stempel tak boleh menimpa teks). Tanpa `cetak` = perilaku lama. #}
+{% if not invoice.cetak %}{% include "_partials/tanda_batal.html" %}{% endif %}
 <div class="invoice">
 
     <!-- 1. Header -->
@@ -74,12 +76,41 @@
 
     <!-- 4. Hero Amount -->
     {% set due_amount = invoice.amount_due if invoice.amount_due is defined else (invoice.total_amount or invoice.amount or invoice.grand_total) %}
+    {% set c = invoice.cetak %}
+    {% set _total = invoice.total_amount or invoice.amount or invoice.grand_total %}
+    {% if c %}
+    {# Per status pembayaran (pemilik 27 Sep): angka besar + keterangan + stempel; stempel hanya di sini = halaman 1. #}
+    <div class="hero hero-status">
+        <div class="hero-teks">
+            <div class="hero-label">{{ 'Total' if c.jenis in ('lunas', 'batal') else 'Sisa tagihan' }}</div>
+            <div class="hero-amount{% if c.jenis == 'batal' %} hero-coret{% endif %}">Rp {{ (_total if c.jenis in ('lunas', 'batal') else due_amount) | rupiah(invoice.has_cents) }}</div>
+            {% if c.jenis == 'batal' %}
+            <div class="hero-due">Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %} &middot; faktur ini tidak berlaku</div>
+            {% elif c.jenis == 'lunas' %}
+            <div class="hero-due">Dibayar lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}</div>
+            {% elif c.jenis == 'terlambat' %}
+            <div class="hero-due">Lewat jatuh tempo {{ invoice.due_date | date_id }} &middot; terlambat {{ c.hari_terlambat }} hari</div>
+            {% elif c.jenis == 'sebagian' %}
+            <div class="hero-due">{% if invoice.due_date %}Jatuh tempo {{ invoice.due_date | date_id }} &middot; {% endif %}sudah dibayar Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}</div>
+            {% elif invoice.due_date %}
+            <div class="hero-due">Jatuh tempo {{ invoice.due_date | date_id }}{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}</div>
+            {% endif %}
+        </div>
+        {% if c.stempel %}
+        <div class="stempel stempel-{{ c.jenis }}">
+            <div class="stempel-teks">{{ c.stempel }}</div>
+            <div class="stempel-kecil">{% if c.jenis == 'lunas' %}{{ c.tanggal_lunas | date_id | upper }}{% elif c.jenis == 'terlambat' %}{{ c.hari_terlambat }} HARI{% elif c.tanggal_batal %}{{ c.tanggal_batal | date_id | upper }}{% endif %}</div>
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
     <div class="hero">
         <div class="hero-amount">Rp {{ due_amount | rupiah(invoice.has_cents) }}</div>
         {% if invoice.due_date %}
         <div class="hero-due">Jatuh tempo {{ invoice.due_date | date_id }}</div>
         {% endif %}
     </div>
+    {% endif %}
 
     <div style="height: 28px;"></div>
 
@@ -105,6 +136,12 @@
     .si-table .col-disc   { width: 8%; text-align: center; }
     .si-table .col-price  { width: 14%; text-align: right; }
     .si-table .col-amount { width: 13%; text-align: right; }
+    {% if not ns.has_batch and not ns.has_exp and not ns.has_disc %}
+    {# Kolom tetap (spek pemilik 27 Sep): Deskripsi 44 / Satuan 10 / Qty 8 / Harga 19 / Jumlah 19. #}
+    .si-table .col-desc { width: 44%; } .si-table .col-unit { width: 10%; } .si-table .col-qty { width: 8%; }
+    .si-table .col-price { width: 19%; } .si-table .col-amount { width: 19%; }
+    .si-table thead th.col-price, .si-table thead th.col-amount { text-align: right; }
+    {% endif %}
     </style>
     <table class="items-table si-table">
         <thead>
@@ -257,7 +294,12 @@
                 <td class="label">Total</td>
                 <td class="value">Rp {{ (invoice.total_amount or invoice.amount or invoice.grand_total) | rupiah(invoice.has_cents) }}</td>
             </tr>
-            {% if invoice.amount_paid and invoice.amount_paid|float > 0 %}
+            {% if c and c.jenis == 'batal' %}
+            <tr class="due-row">
+                <td class="label">Status</td>
+                <td class="value">Dibatalkan</td>
+            </tr>
+            {% elif (c and c.jenis != 'draf') or (invoice.amount_paid and invoice.amount_paid|float > 0) %}
             <tr class="paid-row">
                 <td class="label">Dibayar</td>
                 <td class="value">Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}</td>
@@ -270,7 +312,32 @@
         </table>
     </div>
 
+    {% if c and c.riwayat %}
+    <div class="notes-section riwayat">
+        <div class="notes-label">Riwayat Pembayaran</div>
+        <table class="riwayat-table">
+            {% for h in c.riwayat %}
+            <tr>
+                <td class="rw-tgl">{{ h.tanggal | date_id }}</td>
+                <td class="rw-jenis">{{ h.jenis }}{% if h.metode %} &middot; {{ h.metode }}{% endif %}</td>
+                <td class="rw-nomor">{{ h.nomor }}</td>
+                <td class="rw-jumlah">Rp {{ h.jumlah | rupiah(invoice.has_cents) }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+
+    {% if c and c.jenis == 'batal' %}
+    <div class="notes-section catatan-batal">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">Faktur ini telah dibatalkan dan tidak berlaku sebagai tagihan.{% if batal and batal.alasan %} Alasan: {{ batal.alasan }}{% endif %}</div>
+    </div>
+    {% endif %}
+
+    {% if not c or c.tampil_rekening %}
     {% with dok = invoice %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
+    {% endif %}
 
     {% if invoice.notes %}
     <div class="notes-section">
@@ -281,7 +348,7 @@
 
     <!-- 7. Footer -->
     <div class="footer-line">
-        Dicetak {{ generated_at | date_id }}
+        Dicetak {{ (c.tanggal_cetak if c else generated_at) | date_id }}
     </div>
 
 </div>

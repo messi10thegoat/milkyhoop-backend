@@ -5626,6 +5626,15 @@ async def get_invoice_pdf(
             else:
                 pdf_amount_paid = 0
 
+            # Cetak per status pembayaran (pemilik 27 Sep): riwayat = cabang compute_ar_outstanding yang sama;
+            # tanggal cetak = tanggal bisnis tenant (bukan jam server UTC).
+            from ..services import faktur_cetak as _fc
+            from ..utils.tanggal_tenant import tanggal_dokumen as _tanggal_dokumen
+            _riwayat_cetak = await _fc.riwayat_pembayaran(conn, ctx["tenant_id"], invoice_id)
+            _tanggal_cetak = await _tanggal_dokumen(conn, ctx["tenant_id"])
+            from ..utils.tanggal_tenant import zona_tenant as _zona_tenant
+            _zona_cetak = await _zona_tenant(conn, ctx["tenant_id"])
+
             # Fetch tenant info for PDF header
             tenant_row = await conn.fetchrow(
                 'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
@@ -5772,6 +5781,15 @@ async def get_invoice_pdf(
                     for item in items
                 ],
             }
+
+        invoice_data["cetak"] = _fc.keadaan_cetak(invoice_data, _tanggal_cetak, _riwayat_cetak, _zona_cetak)
+        if invoice_data["cetak"]["selisih_riwayat"] != 0:
+            logger.warning("[PDF] faktur %s: Σ riwayat != dibayar (selisih %s)", invoice_id, invoice_data["cetak"]["selisih_riwayat"])
+        invoice_data["rekening_pemilik_cetak"] = _fc.pemilik_rekening(
+            invoice_data["payment_bank_name"], invoice_data["payment_account_holder"])
+        invoice_data["catatan_transfer"] = (
+            f"Cantumkan nomor faktur {invoice_data['invoice_number']} pada berita transfer."
+            if invoice_data["invoice_number"] else None)
 
         # Generate PDF
         pdf_service = get_pdf_service()

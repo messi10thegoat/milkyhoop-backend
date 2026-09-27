@@ -28,7 +28,9 @@
         <div class="notes-text">
             {% if dok.get('payment_bank_name') %}{{ dok.get('payment_bank_name') }}<br>{% endif %}
             {% if dok.get('payment_account_number') %}{{ dok.get('payment_account_number') }}<br>{% endif %}
-            {% if dok.get('payment_account_holder') %}a.n. {{ dok.get('payment_account_holder') }}{% endif %}
+            {% set _pemilik = dok.get('rekening_pemilik_cetak') or dok.get('payment_account_holder') %}
+            {% if _pemilik %}a.n. {{ _pemilik }}{% endif %}
         </div>
+        {% if dok.get('catatan_transfer') %}<div class="notes-text notes-redup">{{ dok.get('catatan_transfer') }}</div>{% endif %}
     </div>
     {% endif %}
