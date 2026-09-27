@@ -27,6 +27,7 @@ import asyncpg
 from datetime import date
 import uuid as uuid_module
 
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_transfers import (
     CreateBankTransferRequest,
@@ -1000,6 +1001,7 @@ async def void_bank_transfer(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_TRANSFER_VOID:{transfer_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], transfer_id)  # rekon bank: 409 sebelum tulisan
 
                 # Get transfer
                 bt = await conn.fetchrow(

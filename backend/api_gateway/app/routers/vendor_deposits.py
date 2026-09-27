@@ -10,6 +10,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.fitur_parkir import fitur_belum_tersedia
@@ -1004,6 +1005,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"VENDOR_DEPOSIT_VOID:{deposit_id}",
             )
+            await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], deposit_id)  # rekon bank: 409 sebelum tulisan
 
             # Read AFTER lock with FOR UPDATE (fixes TOCTOU)
             vd = await conn.fetchrow(

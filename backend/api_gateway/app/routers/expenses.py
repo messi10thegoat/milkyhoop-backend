@@ -29,6 +29,7 @@ from ..schemas.expenses import (
     CalculateExpenseResponse,
     ExpenseAutocompleteResponse,
 )
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
@@ -2209,6 +2210,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"EXPENSE_VOID:{expense_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], expense_id)  # rekon bank: 409 sebelum tulisan
 
                 # Get expense
                 expense = await conn.fetchrow(

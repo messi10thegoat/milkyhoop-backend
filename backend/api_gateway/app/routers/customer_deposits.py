@@ -46,6 +46,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -2545,6 +2546,7 @@ async def void_customer_deposit(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"DEPOSIT:{deposit_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], deposit_id)  # rekon bank: 409 sebelum tulisan
 
                 # Get deposit
                 dep = await conn.fetchrow(

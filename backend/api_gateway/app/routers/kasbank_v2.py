@@ -31,6 +31,7 @@ import logging
 import asyncpg
 import uuid as uuid_module
 
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.kasbank_v2 import (
     CreateManualTransactionRequest,
@@ -265,6 +266,7 @@ async def void_transaction(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_TX_VOID:{transaction_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], transaction_id)  # rekon bank: 409 sebelum tulisan
                 # Lock the transaction
                 tx = await conn.fetchrow(
                     """

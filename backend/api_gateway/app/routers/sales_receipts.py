@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.sales_receipts import (
     CreateSalesReceiptRequest,
@@ -798,6 +799,7 @@ async def void_sales_receipt(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"SALES_RECEIPT_VOID:{receipt_id}",
             )
+            await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], receipt_id)  # rekon bank: 409 sebelum tulisan
 
             existing = await conn.fetchrow(
                 "SELECT * FROM sales_receipts WHERE id = $1 AND tenant_id = $2",

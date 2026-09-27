@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.rp_periode import batas_periode, argumen_kueri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -1715,6 +1716,7 @@ async def void_bill_payment(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BILL_PAYMENT_VOID:{payment_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], payment_id)  # rekon bank: 409 sebelum tulisan
 
                 # Get payment with FOR UPDATE to prevent TOCTOU
                 payment = await conn.fetchrow(

@@ -40,6 +40,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur
 
 from ..schemas.receive_payments import (
@@ -2416,6 +2417,7 @@ async def void_receive_payment(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"RECEIVE_PAYMENT_VOID:{payment_id}",
                 )
+                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], payment_id)  # rekon bank: 409 sebelum tulisan
 
                 # Law 5: periode tanggal bisnis HARI INI (tanggal jurnal pembalik) harus terbuka
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
