@@ -403,8 +403,12 @@ class SalesOrderSummary(BaseModel):
     completed_count: int
     cancelled_count: int
     total_value: int
-    # DEFINISI (Q-012, 25 Sep 2026) — dua medan di bawah BERBASIS STATUS SO, bukan keadaan nyata:
-    pending_shipment_value: int  # Σ total SO berstatus confirmed/partial_shipped (bukan dari pengiriman nyata)
+    # DEFINISI (Q-012, 25 Sep 2026) — pending_invoice_value BERBASIS STATUS SO, bukan keadaan nyata:
+    # MENUNGGU KIRIM NYATA (27 Sep 2026): Σ nilai sisa (NETO) baris PERLU DIKIRIM
+    # (COALESCE(perlu_kirim, track_inventory, false)) yang qty-nya belum habis dikirim Surat Jalan aktif,
+    # SO selain draft/cancelled/completed. Bukan lagi status SO -> tenant serba non-stok = 0.
+    pending_shipment_value: float
+    pending_shipment_count: int = 0  # SO yang punya >=1 baris itu (pakai INI untuk "N pesanan", bukan confirmed+partial)
     pending_invoice_value: int  # Σ total SO berstatus shipped/partial_invoiced — BUKAN "belum ditagih"
     # Belum ditagih NYATA: Σ (total SO − tagihan berjurnal) SO selain draft/cancelled/completed;
     # faktur DRAF dihitung belum ditagih. = GET /api/sales-orders/aggregate?q=uninvoiced -> data.total

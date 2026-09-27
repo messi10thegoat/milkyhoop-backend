@@ -302,7 +302,8 @@ async def get_pending_orders(
 @router.get("/summary", response_model=SalesOrderSummaryResponse)
 async def get_sales_order_summary(request: Request):
     """Get sales order statistics summary.
-    pending_shipment_value / pending_invoice_value = Σ total SO per STATUS (definisi lama, dibiarkan);
+    pending_shipment_value/_count = MENUNGGU KIRIM NYATA (27 Sep): baris PERLU DIKIRIM dgn sisa qty > 0
+    (so_kirim.ringkasan_menunggu_kirim), BUKAN status SO; pending_invoice_value = Σ total SO per STATUS (lama);
     uninvoiced_value = belum ditagih NYATA (turunan jurnal, Q-012) — pakai ini untuk "belum ditagih";
     uninvoiced_count = jumlah SO dengan sisa belum ditagih > 0 (sumber sama, aggregate?q=uninvoiced.count)."""
     try:
@@ -322,7 +323,6 @@ async def get_sales_order_summary(request: Request):
                     COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
                     COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_count,
                     COALESCE(SUM(total_amount), 0) as total_value,
-                    COALESCE(SUM(total_amount) FILTER (WHERE status IN ('confirmed', 'partial_shipped')), 0) as pending_shipment_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status IN ('shipped', 'partial_invoiced')), 0) as pending_invoice_value
                 FROM sales_orders
                 WHERE tenant_id = $1
@@ -330,6 +330,7 @@ async def get_sales_order_summary(request: Request):
             row = await conn.fetchrow(query, ctx["tenant_id"])
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
             kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
+            menunggu = await so_kirim.ringkasan_menunggu_kirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
 
             return SalesOrderSummaryResponse(
                 success=True,
@@ -344,7 +345,8 @@ async def get_sales_order_summary(request: Request):
                     "completed_count": row["completed_count"],
                     "cancelled_count": row["cancelled_count"],
                     "total_value": row["total_value"],
-                    "pending_shipment_value": row["pending_shipment_value"],
+                    "pending_shipment_value": float(menunggu["total"]),
+                    "pending_shipment_count": menunggu["count"],
                     "pending_invoice_value": row["pending_invoice_value"],
                     "uninvoiced_value": belum["total"],
                     "uninvoiced_count": belum["count"],   # jumlah SO bersisa (SEMUA, bukan baris terpotong 50)

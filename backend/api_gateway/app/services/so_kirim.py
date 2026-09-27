@@ -85,3 +85,30 @@ async def ringkasan_belum_dikirim(conn, tenant_id: str, status_tidak: tuple) -> 
             r["quantity"], r["line_total"], per_baris.get(r["soi_id"])
         )
     return {"total": sum(per_so.values(), NOL), "count": sum(1 for v in per_so.values() if v > NOL)}
+
+
+async def ringkasan_menunggu_kirim(conn, tenant_id: str, status_tidak: tuple) -> dict:
+    """MENUNGGU KIRIM NYATA (27 Sep 2026): hanya baris yang PERLU DIKIRIM
+    (COALESCE(perlu_kirim, products.track_inventory, false) — ekspresi sama dengan V318 so_memenuhi_selesai
+    dan detail requires_fulfillment) dengan sisa qty > 0 menurut Surat Jalan aktif.
+    total = Σ nilai sisa baris itu (NETO, definisi nilai_belum_dikirim); count = SO yang punya >=1 baris itu.
+    Dulu kartu memakai STATUS SO (confirmed/partial_shipped) -> tenant serba non-stok (grapgrap) melihat
+    Rp 56 jt / 21 pesanan "menunggu kirim" yang tak akan pernah dikirim (kelas "completed != lunas")."""
+    baris = await conn.fetch(
+        """SELECT so.id AS so_id, soi.id AS soi_id, soi.quantity, soi.line_total
+           FROM sales_orders so
+           JOIN sales_order_items soi ON soi.sales_order_id = so.id
+           LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = so.tenant_id
+           WHERE so.tenant_id = $1 AND so.status <> ALL($2::text[])
+             AND COALESCE(soi.perlu_kirim, p.track_inventory, false)""",
+        tenant_id, list(status_tidak),
+    )
+    so_ids = sorted({r["so_id"] for r in baris})
+    per_baris, _ = await terkirim_per_baris(conn, tenant_id, so_ids)
+    total, so_menunggu = NOL, set()
+    for r in baris:
+        terkirim = per_baris.get(r["soi_id"])
+        if belum_dikirim(r["quantity"], terkirim) > NOL:
+            so_menunggu.add(r["so_id"])
+            total += nilai_belum_dikirim(r["quantity"], r["line_total"], terkirim)
+    return {"total": total, "count": len(so_menunggu)}

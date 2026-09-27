@@ -232,6 +232,10 @@ async def test_ringkasan_so_mengirim_unshipped(monkeypatch):
     monkeypatch.setattr(SO.so_agregat, "uninvoiced", belum)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", kirim)
 
+    async def menunggu(conn, t, st):
+        return {"total": D("0"), "count": 0}
+    monkeypatch.setattr(SO.so_kirim, "ringkasan_menunggu_kirim", menunggu)
+
     async def sj(conn, t):
         assert t == TENANT
         return 0
