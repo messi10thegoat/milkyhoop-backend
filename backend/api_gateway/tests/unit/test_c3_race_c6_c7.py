@@ -176,7 +176,7 @@ def test_race_cancel_kunci_dan_guard_dp_di_dalam_tx():
 
 def test_race_patch_dan_to_invoice_mengunci_baris_so():
     assert "WHERE id = $1 AND tenant_id = $2 FOR UPDATE" in _src(SO.update_sales_order)
-    assert "SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE" in _src(SO.convert_to_invoice)
+    assert "SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE" in _src(SO._buat_faktur_dari_so)
 
 
 class _DConn:

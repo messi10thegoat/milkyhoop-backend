@@ -1688,290 +1688,459 @@ def _rek_eksplisit(body, nama: str):
 
 
 
+# WORKSPACE 27 Sep: 404 SO hilang dibedakan dari 404 rute FastAPI ({"detail":"Not Found"}).
+SO_TIDAK_ADA = {"code": "SO_TIDAK_ADA", "message": "Pesanan penjualan tidak ditemukan."}
+
+
+def _so_uuid_faktur(order_id):
+    try:
+        return uuid_module.UUID(str(order_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail=SO_TIDAK_ADA)
+
+
+async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
+    """Inti to-invoice (validasi + kalkulator + INSERT faktur DRAF + qty tertagih SO), di transaksi PEMANGGIL.
+    SATU-SATUNYA definisi: dipakai POST /to-invoice DAN /to-invoice/preview (yang selalu ROLLBACK) — pratinjau
+    tak punya rumus sendiri (kelas angka-palsu/tautologi)."""
+    order = await conn.fetchrow(
+        """
+        SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+    """,
+        _so_uuid_faktur(order_id),
+        ctx["tenant_id"],
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail=SO_TIDAK_ADA)
+
+    if order["status"] in ("draft", "cancelled", "invoiced", "completed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot invoice order with status '{order['status']}'",
+        )
+
+    # Get items to invoice
+    if body and body.items:
+        # Partial invoice with specific quantities
+        items_to_invoice = []
+        for inv_item in body.items:
+            so_item_id, qty_minta = _baris_tagih(inv_item)
+            soi = await conn.fetchrow(
+                """
+                SELECT * FROM sales_order_items WHERE id = $1 AND sales_order_id = $2
+            """,
+                so_item_id,
+                _so_uuid_faktur(order_id),
+            )
+
+            if not soi:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Item {inv_item['so_item_id']} not found",
+                )
+
+            remaining = float(soi["quantity"]) - float(
+                soi["quantity_invoiced"]
+            )
+            qty = remaining if qty_minta is None else qty_minta
+
+            if qty > remaining:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Quantity {qty} exceeds uninvoiced {remaining}",
+                )
+
+            items_to_invoice.append({**dict(soi), "invoice_qty": qty})
+    else:
+        # Invoice all uninvoiced quantities
+        all_items = await conn.fetch(
+            """
+            SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced
+        """,
+            _so_uuid_faktur(order_id),
+        )
+
+        items_to_invoice = [
+            {
+                **dict(i),
+                "invoice_qty": float(i["quantity"])
+                - float(i["quantity_invoiced"]),
+            }
+            for i in all_items
+        ]
+
+    if not items_to_invoice:
+        raise HTTPException(status_code=400, detail="No items to invoice")
+
+    invoice_number = await conn.fetchval(
+        "SELECT generate_sales_invoice_number($1::text, 'INV')",
+        ctx["tenant_id"],
+    )
+
+    invoice_id = uuid_module.uuid4()
+    invoice_date = (
+        body.invoice_date if body and body.invoice_date else await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    )
+    # F3: tanpa due_date -> termin (NET <n> SO -> termin pelanggan -> 0); dulu SELALU = invoice_date
+    # (termin 0 -> terlambat sejak besok). Isian pengguna tetap menang.
+    due_date, due_date_source = await tentukan_jatuh_tempo(
+        conn, ctx["tenant_id"], invoice_date, body.due_date if body else None,
+        order.get("payment_terms"), order.get("customer_id"),
+    )
+
+    # Satu kalkulator bersama: diskon & ongkir SO DIBAWA ke faktur (dulu
+    # HILANG -- pelanggan ditagih lebih besar sebesar diskonnya, ongkir tak
+    # tertagih). Pro-rata menurut neto yang ditagih; faktur yang MENUNTASKAN
+    # SO menyerap sisa (SO - yang sudah dibawa faktur lain yang tidak void),
+    # jadi SIGMA faktur parsial == total SO. PPN DIHITUNG ULANG dari DPP
+    # (dulu disalin pro-rata dengan int()).
+    _all_so_items = await conn.fetch(
+        """SELECT * FROM sales_order_items WHERE sales_order_id = $1
+           ORDER BY sort_order, id""",
+        _so_uuid_faktur(order_id),
+    )
+    _inv_qty = {}
+    for item in items_to_invoice:
+        _k = str(item["id"])
+        _inv_qty[_k] = _dd(_inv_qty.get(_k, 0)) + _dd(item["invoice_qty"])
+    for r in _all_so_items:
+        _rem = _dd(r["quantity"]) - _dd(r["quantity_invoiced"])
+        if _inv_qty.get(str(r["id"]), _dd(0)) > _rem:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity {_inv_qty[str(r['id'])]} exceeds uninvoiced {_rem}",
+            )
+    _is_last = all(
+        _dd(r["quantity_invoiced"]) + _inv_qty.get(str(r["id"]), _dd(0))
+        >= _dd(r["quantity"])
+        for r in _all_so_items
+    )
+    _prior = await conn.fetchrow(
+        """SELECT COALESCE(SUM(discount_amount), 0) AS disc,
+                  COALESCE(SUM(shipping_amount), 0) AS ship
+           FROM sales_invoices
+           WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'void'""",
+        ctx["tenant_id"],
+        _so_uuid_faktur(order_id),
+    )
+    _so_rows = [dict(r) for r in _all_so_items]
+    await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
+    # V290: pajak ongkir faktur = pilihan eksplisit SO, atau ikut kode barang SO.
+    _so_ship_code = (
+        str(order["shipping_tax_code_id"]) if order.get("shipping_tax_code_id") else None
+    )
+    _ship = await resolve_shipping_tax(
+        conn, ctx["tenant_id"], _so_ship_code, _so_rows,
+        order["shipping_amount"] or 0, "tax_id",
+    )
+    try:
+        _plan = plan_so_invoice(
+            _so_rows,
+            _inv_qty,
+            order["discount_amount"] or 0,
+            order["shipping_amount"] or 0,
+            prior_discount=_prior["disc"],
+            prior_shipping=_prior["ship"],
+            is_last=_is_last,
+            shipping_tax=_ship,
+        )
+    except DocumentDiscountError as _e:
+        raise HTTPException(status_code=400, detail=str(_e))
+    subtotal = _plan["gross_subtotal"]
+    tax_total = _plan["tax_amount"]
+    total = _plan["total_amount"]
+
+    header_tax_rate = (
+        float(items_to_invoice[0].get("tax_rate") or 0)
+        if items_to_invoice
+        else 0
+    )
+    # B2 (2026-06-19): pass recognize_at + warehouse_id from request so the
+    # caller can reach the canonical PSAK-72 defer path. Null -> existing
+    # post-time fallback (tenant_config policy -> 'invoice'), backward-safe.
+    _recognize_at = body.recognize_at if body else None
+    _warehouse_id = None
+    if body and getattr(body, "warehouse_id", None):
+        _warehouse_id = uuid_module.UUID(body.warehouse_id)
+    await conn.execute(
+        """
+        INSERT INTO sales_invoices (
+            id, tenant_id, invoice_number, invoice_date, due_date,
+            customer_id, customer_name,
+            subtotal, tax_rate, tax_amount, total_amount,
+            status, sales_order_id, created_by,
+            recognize_at, warehouse_id,
+            payment_bank_name, payment_account_number, payment_account_holder,
+            discount_percent, discount_amount, shipping_amount,
+            shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp, notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18, 0, $19, $20, $21, $22, $23, $24, $25)
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+        invoice_number,
+        invoice_date,
+        due_date,
+        str(order["customer_id"]),
+        order["customer_name"],
+        subtotal,
+        header_tax_rate,
+        tax_total,
+        total,
+        _so_uuid_faktur(order_id),
+        ctx["user_id"],
+        _recognize_at,
+        _warehouse_id,
+        # Pewarisan rekening tujuan cetak (tiket MASTER); eksplisit menang.
+        _rek_eksplisit(body, "payment_bank_name")
+        or order["payment_bank_name"],
+        _rek_eksplisit(body, "payment_account_number")
+        or order["payment_account_number"],
+        _rek_eksplisit(body, "payment_account_holder")
+        or order["payment_account_holder"],
+        _plan["doc_discount"],
+        _plan["shipping_amount"],
+        uuid_module.UUID(_so_ship_code) if _so_ship_code else None,
+        _plan["shipping_tax_rate"],
+        _plan["shipping_tax_amount"],
+        _plan["shipping_dpp"],
+        _rek_eksplisit(body, "notes"),  # WORKSPACE 27 Sep: catatan faktur dari body (dulu dibuang)
+    )
+
+    # item["quantity"] di _plan = qty yang DITAGIH faktur ini.
+    for line_idx, item in enumerate(_plan["items"], start=1):
+        # Resolve tax_code_id: prefer SO field, fallback to rate lookup
+        _item_tcid = item.get("tax_id")
+        if not _item_tcid and float(item.get("tax_rate") or 0) > 0:
+            _item_tcid = await conn.fetchval(
+                "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
+                ctx["tenant_id"],
+                item["tax_rate"],
+            )
+
+        await conn.execute(
+            """
+            INSERT INTO sales_invoice_items (
+                id, invoice_id, item_id, description,
+                quantity, unit, unit_price, discount_percent,
+                tax_code_id, tax_rate, tax_amount, subtotal, total, line_number,
+                sales_order_item_id, discount_amount, dpp, dpp_harga_jual
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        """,
+            uuid_module.uuid4(),
+            invoice_id,
+            item["item_id"],
+            item["description"],
+            item["quantity"],
+            item["unit"],
+            item["unit_price"],
+            item["discount_percent"],
+            _item_tcid,
+            item["tax_rate"],
+            item["tax_amount"],
+            item["subtotal"],
+            item["total"],
+            line_idx,
+            item["id"],  # V271: link invoice line -> SO line (void decrement)
+            item["discount_amount"],
+            item["dpp"],
+            item["dpp_harga_jual"],  # 3c
+        )
+
+        await conn.execute(
+            """
+            UPDATE sales_order_items SET quantity_invoiced = quantity_invoiced + $2
+            WHERE id = $1
+        """,
+            item["id"],
+            item["quantity"],
+        )
+
+    return {
+        "invoice_id": invoice_id, "invoice_number": invoice_number, "order_number": order["order_number"],
+        "invoice_date": invoice_date, "due_date": due_date, "due_date_source": due_date_source, "total": total,
+    }
+
+
+async def _to_invoice_dalam_tx(conn, ctx, order_id: str, body) -> dict:
+    """Buat (+ terbitkan bila body.post) dalam transaksi pemanggil. Terbit = sales_invoices.terbitkan_faktur,
+    jalur yang SAMA dengan POST /sales-invoices/{id}/post."""
+    hasil = await _buat_faktur_dari_so(conn, ctx, order_id, body)
+    hasil.update(posted=False, deposit_applications=[], post_result=None)
+    if body is not None and body.post:
+        from . import sales_invoices as _si
+        pr = await _si.terbitkan_faktur(
+            conn, ctx, hasil["invoice_id"], hasil["invoice_number"], hasil["total"], hasil["invoice_date"],
+            apply_deposits=body.apply_deposits, skip_deposit_ids=body.skip_deposit_ids,
+        )
+        hasil.update(posted=True, deposit_applications=pr["deposit_applications"], post_result=pr)
+    return hasil
+
+
+def _f(v):
+    return float(v) if v is not None else None
+
+
+async def _uang_muka_terterap(conn, tenant_id: str, invoice_id) -> list:
+    """Uang muka yang BENAR-BENAR tertulis untuk faktur ini (customer_deposit_applications aktif), bukan
+    salinan rencana — sumber applied_deposits (to-invoice) dan deposit_plan (pratinjau ber-post)."""
+    rows = await conn.fetch(
+        """SELECT cda.deposit_id, d.deposit_number, cda.amount_applied
+           FROM customer_deposit_applications cda
+           JOIN customer_deposits d ON d.id = cda.deposit_id AND d.tenant_id = cda.tenant_id
+           WHERE cda.tenant_id = $1 AND cda.invoice_id = $2 AND cda.status = 'active'
+           ORDER BY cda.created_at, d.deposit_number""",
+        tenant_id, invoice_id,
+    )
+    return [{"deposit_id": str(r["deposit_id"]), "deposit_number": r["deposit_number"],
+             "amount": r["amount_applied"]} for r in rows]
+
+
 @router.post("/{order_id}/to-invoice", response_model=SalesOrderResponse)
 async def convert_to_invoice(
-    request: Request, order_id: str, body: ConvertToInvoiceRequest = None
+    request: Request, response: Response, order_id: str, body: ConvertToInvoiceRequest = None
 ):
-    """Convert sales order to invoice."""
+    """Convert sales order to invoice. {post:true} = buat + terbitkan (+ uang muka SO) dalam SATU transaksi.
+    idempotency_key (body; header X-Idempotency-Key cadangan): kunci sama + isi sama = respons asli diulang
+    (X-Idempotent-Replay: true); kunci sama + isi beda = 409 IDEMPOTENCY_KEY_REUSED."""
     try:
         ctx = get_user_context(request)
-        _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
+        _so_uuid_faktur(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
+        try:
+            _kunci_klien = (body.idempotency_key.strip() if body is not None and body.idempotency_key
+                            and body.idempotency_key.strip() else None) or kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         pool = await get_pool()
+        if body is not None and body.post:
+            from . import sales_invoices as _si
+            await _si._ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan POST /{id}/post
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Kunci baris SO (mutex bersama cancel/DELETE/uang muka): dulu klik ganda to-invoice aman
-                # hanya KEBETULAN (kunci baris nomor faktur); cancel bersamaan bisa menghasilkan SO batal
-                # berfaktur hidup.
-                order = await conn.fetchrow(
-                    """
-                    SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                """,
-                    _so_uuid(order_id),
-                    ctx["tenant_id"],
-                )
+                _kunci_penuh = _sidik = None
+                if _kunci_klien:
+                    _kunci_penuh = f"SO_TO_INVOICE:{ctx['user_id']}:{order_id}:{_kunci_klien}"
+                    _sidik = hash_payload(body.model_dump(mode="json", exclude={"idempotency_key"}))
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
+                                       f"IDEM:{ctx['tenant_id']}:{_kunci_penuh}")
+                    try:
+                        _lama = await ambil_replay_klien(conn, ctx["tenant_id"], _kunci_penuh, _sidik)
+                    except LookupError as _e:
+                        _asli = (getattr(_e, "respons", None) or {}).get("data") or {}
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Idempotency-Key sudah dipakai untuk faktur dengan isi berbeda",
+                            "invoice_id": _asli.get("invoice_id"), "invoice_number": _asli.get("invoice_number"),
+                        })
+                    if _lama is not None:
+                        response.headers["X-Idempotent-Replay"] = "true"
+                        return SalesOrderResponse(**_lama)
 
-                if not order:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
-
-                if order["status"] in ("draft", "cancelled", "invoiced", "completed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot invoice order with status '{order['status']}'",
-                    )
-
-                # Get items to invoice
-                if body and body.items:
-                    # Partial invoice with specific quantities
-                    items_to_invoice = []
-                    for inv_item in body.items:
-                        so_item_id, qty_minta = _baris_tagih(inv_item)
-                        soi = await conn.fetchrow(
-                            """
-                            SELECT * FROM sales_order_items WHERE id = $1 AND sales_order_id = $2
-                        """,
-                            so_item_id,
-                            _so_uuid(order_id),
-                        )
-
-                        if not soi:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Item {inv_item['so_item_id']} not found",
-                            )
-
-                        remaining = float(soi["quantity"]) - float(
-                            soi["quantity_invoiced"]
-                        )
-                        qty = remaining if qty_minta is None else qty_minta
-
-                        if qty > remaining:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Quantity {qty} exceeds uninvoiced {remaining}",
-                            )
-
-                        items_to_invoice.append({**dict(soi), "invoice_qty": qty})
-                else:
-                    # Invoice all uninvoiced quantities
-                    all_items = await conn.fetch(
-                        """
-                        SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced
-                    """,
-                        _so_uuid(order_id),
-                    )
-
-                    items_to_invoice = [
-                        {
-                            **dict(i),
-                            "invoice_qty": float(i["quantity"])
-                            - float(i["quantity_invoiced"]),
-                        }
-                        for i in all_items
-                    ]
-
-                if not items_to_invoice:
-                    raise HTTPException(status_code=400, detail="No items to invoice")
-
-                invoice_number = await conn.fetchval(
-                    "SELECT generate_sales_invoice_number($1::text, 'INV')",
-                    ctx["tenant_id"],
-                )
-
-                invoice_id = uuid_module.uuid4()
-                invoice_date = (
-                    body.invoice_date if body and body.invoice_date else await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                )
-                # F3: tanpa due_date -> termin (NET <n> SO -> termin pelanggan -> 0); dulu SELALU = invoice_date
-                # (termin 0 -> terlambat sejak besok). Isian pengguna tetap menang.
-                due_date, due_date_source = await tentukan_jatuh_tempo(
-                    conn, ctx["tenant_id"], invoice_date, body.due_date if body else None,
-                    order.get("payment_terms"), order.get("customer_id"),
-                )
-
-                # Satu kalkulator bersama: diskon & ongkir SO DIBAWA ke faktur (dulu
-                # HILANG -- pelanggan ditagih lebih besar sebesar diskonnya, ongkir tak
-                # tertagih). Pro-rata menurut neto yang ditagih; faktur yang MENUNTASKAN
-                # SO menyerap sisa (SO - yang sudah dibawa faktur lain yang tidak void),
-                # jadi SIGMA faktur parsial == total SO. PPN DIHITUNG ULANG dari DPP
-                # (dulu disalin pro-rata dengan int()).
-                _all_so_items = await conn.fetch(
-                    """SELECT * FROM sales_order_items WHERE sales_order_id = $1
-                       ORDER BY sort_order, id""",
-                    _so_uuid(order_id),
-                )
-                _inv_qty = {}
-                for item in items_to_invoice:
-                    _k = str(item["id"])
-                    _inv_qty[_k] = _dd(_inv_qty.get(_k, 0)) + _dd(item["invoice_qty"])
-                for r in _all_so_items:
-                    _rem = _dd(r["quantity"]) - _dd(r["quantity_invoiced"])
-                    if _inv_qty.get(str(r["id"]), _dd(0)) > _rem:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Quantity {_inv_qty[str(r['id'])]} exceeds uninvoiced {_rem}",
-                        )
-                _is_last = all(
-                    _dd(r["quantity_invoiced"]) + _inv_qty.get(str(r["id"]), _dd(0))
-                    >= _dd(r["quantity"])
-                    for r in _all_so_items
-                )
-                _prior = await conn.fetchrow(
-                    """SELECT COALESCE(SUM(discount_amount), 0) AS disc,
-                              COALESCE(SUM(shipping_amount), 0) AS ship
-                       FROM sales_invoices
-                       WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'void'""",
-                    ctx["tenant_id"],
-                    _so_uuid(order_id),
-                )
-                _so_rows = [dict(r) for r in _all_so_items]
-                await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
-                # V290: pajak ongkir faktur = pilihan eksplisit SO, atau ikut kode barang SO.
-                _so_ship_code = (
-                    str(order["shipping_tax_code_id"]) if order.get("shipping_tax_code_id") else None
-                )
-                _ship = await resolve_shipping_tax(
-                    conn, ctx["tenant_id"], _so_ship_code, _so_rows,
-                    order["shipping_amount"] or 0, "tax_id",
-                )
-                try:
-                    _plan = plan_so_invoice(
-                        _so_rows,
-                        _inv_qty,
-                        order["discount_amount"] or 0,
-                        order["shipping_amount"] or 0,
-                        prior_discount=_prior["disc"],
-                        prior_shipping=_prior["ship"],
-                        is_last=_is_last,
-                        shipping_tax=_ship,
-                    )
-                except DocumentDiscountError as _e:
-                    raise HTTPException(status_code=400, detail=str(_e))
-                subtotal = _plan["gross_subtotal"]
-                tax_total = _plan["tax_amount"]
-                total = _plan["total_amount"]
-
-                header_tax_rate = (
-                    float(items_to_invoice[0].get("tax_rate") or 0)
-                    if items_to_invoice
-                    else 0
-                )
-                # B2 (2026-06-19): pass recognize_at + warehouse_id from request so the
-                # caller can reach the canonical PSAK-72 defer path. Null -> existing
-                # post-time fallback (tenant_config policy -> 'invoice'), backward-safe.
-                _recognize_at = body.recognize_at if body else None
-                _warehouse_id = None
-                if body and getattr(body, "warehouse_id", None):
-                    _warehouse_id = uuid_module.UUID(body.warehouse_id)
-                await conn.execute(
-                    """
-                    INSERT INTO sales_invoices (
-                        id, tenant_id, invoice_number, invoice_date, due_date,
-                        customer_id, customer_name,
-                        subtotal, tax_rate, tax_amount, total_amount,
-                        status, sales_order_id, created_by,
-                        recognize_at, warehouse_id,
-                        payment_bank_name, payment_account_number, payment_account_holder,
-                        discount_percent, discount_amount, shipping_amount,
-                        shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17, $18, 0, $19, $20, $21, $22, $23, $24)
-                """,
-                    invoice_id,
-                    ctx["tenant_id"],
-                    invoice_number,
-                    invoice_date,
-                    due_date,
-                    str(order["customer_id"]),
-                    order["customer_name"],
-                    subtotal,
-                    header_tax_rate,
-                    tax_total,
-                    total,
-                    _so_uuid(order_id),
-                    ctx["user_id"],
-                    _recognize_at,
-                    _warehouse_id,
-                    # Pewarisan rekening tujuan cetak (tiket MASTER); eksplisit menang.
-                    _rek_eksplisit(body, "payment_bank_name")
-                    or order["payment_bank_name"],
-                    _rek_eksplisit(body, "payment_account_number")
-                    or order["payment_account_number"],
-                    _rek_eksplisit(body, "payment_account_holder")
-                    or order["payment_account_holder"],
-                    _plan["doc_discount"],
-                    _plan["shipping_amount"],
-                    uuid_module.UUID(_so_ship_code) if _so_ship_code else None,
-                    _plan["shipping_tax_rate"],
-                    _plan["shipping_tax_amount"],
-                    _plan["shipping_dpp"],
-                )
-
-                # item["quantity"] di _plan = qty yang DITAGIH faktur ini.
-                for line_idx, item in enumerate(_plan["items"], start=1):
-                    # Resolve tax_code_id: prefer SO field, fallback to rate lookup
-                    _item_tcid = item.get("tax_id")
-                    if not _item_tcid and float(item.get("tax_rate") or 0) > 0:
-                        _item_tcid = await conn.fetchval(
-                            "SELECT id FROM tax_codes WHERE tenant_id=$1 AND tax_type='ppn' AND rate=$2 AND is_active=true ORDER BY (name ILIKE '%%Keluaran%%') DESC LIMIT 1",
-                            ctx["tenant_id"],
-                            item["tax_rate"],
-                        )
-
-                    await conn.execute(
-                        """
-                        INSERT INTO sales_invoice_items (
-                            id, invoice_id, item_id, description,
-                            quantity, unit, unit_price, discount_percent,
-                            tax_code_id, tax_rate, tax_amount, subtotal, total, line_number,
-                            sales_order_item_id, discount_amount, dpp, dpp_harga_jual
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                    """,
-                        uuid_module.uuid4(),
-                        invoice_id,
-                        item["item_id"],
-                        item["description"],
-                        item["quantity"],
-                        item["unit"],
-                        item["unit_price"],
-                        item["discount_percent"],
-                        _item_tcid,
-                        item["tax_rate"],
-                        item["tax_amount"],
-                        item["subtotal"],
-                        item["total"],
-                        line_idx,
-                        item["id"],  # V271: link invoice line -> SO line (void decrement)
-                        item["discount_amount"],
-                        item["dpp"],
-                        item["dpp_harga_jual"],  # 3c
-                    )
-
-                    await conn.execute(
-                        """
-                        UPDATE sales_order_items SET quantity_invoiced = quantity_invoiced + $2
-                        WHERE id = $1
-                    """,
-                        item["id"],
-                        item["quantity"],
-                    )
-
-                return SalesOrderResponse(
+                h = await _to_invoice_dalam_tx(conn, ctx, order_id, body)
+                pr = h["post_result"] or {}
+                # dibaca dari yang BENAR-BENAR tertulis (WORKSPACE 27 Sep), bukan dari rencana
+                st = await conn.fetchval("SELECT status FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                                         h["invoice_id"], ctx["tenant_id"])
+                dp = await _uang_muka_terterap(conn, ctx["tenant_id"], h["invoice_id"])
+                hasil = SalesOrderResponse(
                     success=True,
-                    message="Invoice created from sales order",
+                    message="Invoice created and posted from sales order" if h["posted"]
+                    else "Invoice created from sales order",
                     data={
-                        "invoice_id": str(invoice_id),
-                        "invoice_number": invoice_number,
-                        "order_number": order["order_number"],
-                        "due_date": due_date.isoformat(),
-                        "due_date_source": due_date_source,
+                        "invoice_id": str(h["invoice_id"]),
+                        "invoice_number": h["invoice_number"],
+                        "order_number": h["order_number"],
+                        "status": st,
+                        "due_date": h["due_date"].isoformat(),
+                        "due_date_source": h["due_date_source"],
+                        "posted": h["posted"],
+                        "journal_number": pr.get("journal_number"),
+                        "fulfillment_status": pr.get("fulfillment_status"),
+                        "revenue_status": pr.get("revenue_status"),
+                        "applied_deposits": [{**a, "amount": _f(a["amount"])} for a in dp],
+                        "total_applied": _f(sum((a["amount"] for a in dp), Decimal("0"))),
                     },
                 )
+                if _kunci_penuh:
+                    await simpan_replay_klien(conn, ctx["tenant_id"], _kunci_penuh, "SO_TO_INVOICE", _sidik,
+                                              hasil.model_dump(mode="json"), result_id=h["invoice_id"])
+                return hasil
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error converting to invoice: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to convert to invoice")
+
+
+@router.post("/{order_id}/to-invoice/preview")
+async def preview_to_invoice(request: Request, order_id: str, body: ConvertToInvoiceRequest = None):
+    """PRATINJAU to-invoice: body SAMA, NOL tulisan. Menjalankan jalur to-invoice yang SAMA (buat [+ terbit +
+    uang muka bila post]) di transaksi yang SELALU di-ROLLBACK, lalu membaca hasilnya sebelum rollback ->
+    angka = angka yang akan dibuat, dan validasi/galat 400/422 identik. Tanpa `post`: rencana uang muka dari
+    perencana yang sama (plan_so_deposit_application) atas total faktur."""
+    try:
+        ctx = get_user_context(request)
+        _so_uuid_faktur(order_id)
+        pool = await get_pool()
+        if body is not None and body.post:
+            from . import sales_invoices as _si
+            await _si._ensure_role_preconditions(pool, ctx["tenant_id"])
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                h = await _to_invoice_dalam_tx(conn, ctx, order_id, body)
+                data = await _baca_pratinjau(conn, ctx, h, body)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing invoice from order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview invoice")
+
+
+async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
+    inv = await conn.fetchrow(
+        """SELECT subtotal, discount_amount, shipping_amount, tax_amount, total_amount, due_date
+           FROM sales_invoices WHERE id = $1 AND tenant_id = $2""",
+        h["invoice_id"], ctx["tenant_id"],
+    )
+    items = await conn.fetch(
+        """SELECT sales_order_item_id, description, quantity, unit_price, subtotal, total
+           FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number""",
+        h["invoice_id"],
+    )
+    if h["posted"]:
+        rencana = await _uang_muka_terterap(conn, ctx["tenant_id"], h["invoice_id"])  # yang tertulis (lalu rollback)
+    elif body is None or body.apply_deposits:
+        from .customer_deposits import plan_so_deposit_application
+        rencana = [{"deposit_id": p["deposit_id"], "deposit_number": p["deposit_number"], "amount": p["planned_amount"]}
+                   for p in await plan_so_deposit_application(
+                       conn, ctx["tenant_id"], h["invoice_id"], inv["total_amount"],
+                       body.skip_deposit_ids if body else ())
+                   if p["planned_amount"] > 0]
+    else:
+        rencana = []
+    dp = sum((Decimal(str(r["amount"])) for r in rencana), Decimal("0"))
+    return {
+        "lines": [{"so_item_id": str(i["sales_order_item_id"]) if i["sales_order_item_id"] else None,
+                   "name": i["description"], "qty": _f(i["quantity"]), "unit_price": _f(i["unit_price"]),
+                   "line_total": _f(i["subtotal"])} for i in items],
+        "subtotal": _f(inv["subtotal"]),
+        "discount": _f(inv["discount_amount"] or 0),
+        "shipping": _f(inv["shipping_amount"] or 0),
+        "tax": _f(inv["tax_amount"]),
+        "total": _f(inv["total_amount"]),
+        "due_date": inv["due_date"].isoformat(),
+        "due_date_source": h["due_date_source"],
+        "posted": h["posted"],
+        "deposit_plan": [{**r, "amount": _f(r["amount"])} for r in rencana],
+        "remaining_after_dp": _f(Decimal(str(inv["total_amount"])) - dp),
+    }
 
 
 @router.get("/{order_id}/history")

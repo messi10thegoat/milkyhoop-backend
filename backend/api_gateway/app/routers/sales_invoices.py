@@ -3781,6 +3781,20 @@ async def update_invoice(
 # POST INVOICE (Create AR + Journal Entry + COGS)
 # =============================================================================
 @router.post("/{invoice_id}/post", response_model=InvoiceResponse)
+async def terbitkan_faktur(conn, ctx, invoice_id, invoice_number, total_amount, invoice_date,
+                          apply_deposits: bool = True, skip_deposit_ids=()) -> dict:
+    """SATU jalur terbit (27 Sep 2026): cek periode (Law 5) -> _internal_post_invoice (jurnal billing/COGS/pendapatan)
+    -> uang muka SO diterapkan (Unit 6) — di transaksi PEMANGGIL (Law 23). Dipakai POST /{id}/post DAN
+    to-invoice {post:true} (+ pratinjaunya), supaya "terbitkan" tak punya dua definisi."""
+    await check_period_is_open(conn, ctx["tenant_id"], invoice_date)
+    post_result = await _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_amount)
+    post_result["deposit_applications"] = (
+        await _auto_apply_so_deposits(conn, ctx, invoice_id, invoice_date, skip_deposit_ids or ())
+        if apply_deposits else []
+    )
+    return post_result
+
+
 async def post_invoice(
     request: Request, invoice_id: UUID, body: PostInvoiceRequest = None
 ):
@@ -3818,24 +3832,14 @@ async def post_invoice(
                     status_code=400, detail="Only draft invoices can be posted"
                 )
 
-            # Check if accounting period is open
-            await check_period_is_open(conn, ctx["tenant_id"], invoice["invoice_date"])
-
             async with conn.transaction():
-                post_result = await _internal_post_invoice(
-                    conn,
-                    ctx,
-                    invoice_id,
-                    invoice["invoice_number"],
-                    invoice["total_amount"],
+                post_result = await terbitkan_faktur(
+                    conn, ctx, invoice_id, invoice["invoice_number"], invoice["total_amount"],
+                    invoice["invoice_date"],
+                    apply_deposits=(body is None or body.apply_deposits),
+                    skip_deposit_ids=(body.skip_deposit_ids if body else ()),
                 )
-                # Unit 6: faktur dari SO -> terapkan uang muka SO di transaksi yang SAMA.
-                deposit_applications = []
-                if body is None or body.apply_deposits:
-                    deposit_applications = await _auto_apply_so_deposits(
-                        conn, ctx, invoice_id, invoice["invoice_date"],
-                        (body.skip_deposit_ids if body else ()),
-                    )
+                deposit_applications = post_result["deposit_applications"]
 
                 logger.info(
                     f"Invoice posted: {invoice_id}, AR: {post_result.get('ar_id')}"

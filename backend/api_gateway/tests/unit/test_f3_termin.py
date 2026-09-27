@@ -60,7 +60,7 @@ async def test_bawaan_termin_nol(hari, cust):
 
 
 def test_to_invoice_memakai_layanan_dan_melaporkan_sumber():
-    src = " ".join(inspect.getsource(SO.convert_to_invoice).split())
+    src = " ".join(inspect.getsource(SO._buat_faktur_dari_so).split())
     assert "else invoice_date" not in src
     assert "await tentukan_jatuh_tempo(" in src and '"due_date_source": due_date_source' in src
     assert src.index("tentukan_jatuh_tempo(") < src.index("INSERT INTO sales_invoices")

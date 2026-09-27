@@ -269,6 +269,16 @@ class ConvertToInvoiceRequest(BaseModel):
     payment_bank_name: Optional[str] = Field(None, max_length=100)
     payment_account_number: Optional[str] = Field(None, max_length=50)
     payment_account_holder: Optional[str] = Field(None, max_length=100)
+    # 27 Sep 2026 (CW "Buat faktur"): buat + TERBITKAN dalam SATU transaksi (gagal = tak ada yang tercipta,
+    # tak ada draf yatim). Tanpa `post` = perilaku lama (draf). apply_deposits/skip_deposit_ids = arti yang
+    # sama dengan POST /sales-invoices/{id}/post.
+    post: bool = False
+    apply_deposits: bool = True
+    skip_deposit_ids: List[str] = Field(default_factory=list)
+    # WORKSPACE 27 Sep: catatan faktur (dulu medan ekstra dibuang diam-diam) + kunci idempotensi per pembukaan
+    # halaman (pola uang muka; header X-Idempotency-Key = cadangan). Pratinjau MENGABAIKAN kunci (nol tulisan).
+    notes: Optional[str] = Field(None, max_length=2000)
+    idempotency_key: Optional[str] = Field(None, max_length=200)
 
 
 
