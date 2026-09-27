@@ -530,7 +530,9 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                         journal_id,
                     )
 
-            return await get_journal(request, journal_id)
+        # Law 32: koneksi pertama DILEPAS dulu (get_journal mengambil koneksi pool sendiri; dulu 10 permintaan
+        # jurnal bersamaan = pool 10 habis, semua menunggu koneksi kedua -> gateway beku, 28 Sep journey V323).
+        return await get_journal(request, journal_id)
 
     except HTTPException:
         raise
@@ -605,7 +607,9 @@ async def post_journal(request: Request, journal_id: UUID):
                     ctx["tenant_id"],
                 )
 
-            return await get_journal(request, journal_id)
+        # Law 32: koneksi pertama DILEPAS dulu (get_journal mengambil koneksi pool sendiri; dulu 10 permintaan
+        # jurnal bersamaan = pool 10 habis, semua menunggu koneksi kedua -> gateway beku, 28 Sep journey V323).
+        return await get_journal(request, journal_id)
 
     except HTTPException:
         raise
@@ -804,7 +808,9 @@ async def reverse_journal(
                     reversal_id,
                 )
 
-            return await get_journal(request, reversal_id)
+        # Law 32: koneksi pertama DILEPAS dulu (get_journal mengambil koneksi pool sendiri; dulu 10 permintaan
+        # jurnal bersamaan = pool 10 habis, semua menunggu koneksi kedua -> gateway beku, 28 Sep journey V323).
+        return await get_journal(request, reversal_id)
 
     except HTTPException:
         raise
@@ -921,7 +927,9 @@ async def get_journal_by_source(
             if not journal:
                 return {"success": True, "data": None}
 
-            return await get_journal(request, journal["id"])
+        # Law 32: koneksi pertama DILEPAS dulu (get_journal mengambil koneksi pool sendiri; dulu 10 permintaan
+        # jurnal bersamaan = pool 10 habis, semua menunggu koneksi kedua -> gateway beku, 28 Sep journey V323).
+        return await get_journal(request, journal["id"])
 
     except HTTPException:
         raise

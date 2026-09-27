@@ -201,3 +201,25 @@ di-`IMMEDIATE`-kan, dan di situlah gerbang mudah menipu dirinya sendiri.
 terhitung POSTED, bukan VOID. Itu **bukan** kehilangan data dan bukan regresi —
 `is_effective_journal()` menyaring lewat `reversed_by_id`, jadi **angka efektif
 tidak bergeser**. Yang berubah hanya ember tempat mereka dihitung.
+
+---
+
+## Status 28 Sep 2026 (BACKEND, diukur ulang — tiket MASTER "rantai kaos 595/597")
+
+- **Akar = data lama, bukan kode yang masih memproduksi.** Isi kedua jurnal UTUH: `compute_journal_hash(id,
+  previous_hash tersimpan) = content_hash`. `previous_hash`-nya menunjuk jurnal EXPENSE asli (seq 108 / 392) yang
+  berstatus VOID -> penelusur (hanya POSTED) melompatinya. 16 jurnal VOID, semuanya kaos, terakhir 2026-09-12 09:30 UTC;
+  nol VOID baru sejak itu; grapgrap 337/337 utuh.
+- **Lima jalur sudah diperbaiki** (expenses, bank_transfers, credit_notes x2, vendor_credits: asli tetap POSTED +
+  reversed_by_id). Nol penulis `status='VOID'` pada journal_entries di kode maupun fungsi DB.
+- **Pengecualian sudah terpasang (V241, 13 Sep):** `journal_chain_exemptions` kaos broken_count=2 + sidik jari ->
+  `verify_chain_integrity_all()` = PASS_EXEMPT; pecahan baru/pengganti = FAIL_*.
+- **Jangan "pulihkan" ke POSTED:** disimulasikan (ROLLBACK) -> 633/645 valid (12 pecah) karena 9 nomor urut sempat
+  DIPAKAI ULANG selama aslinya VOID. Menulis ulang hash = menyunting sejarah (Law 20). Data dibiarkan.
+- **Efek samping yang tercatat:** report_engine (Laba Rugi/Neraca, hanya POSTED) menghitung 16 pembalik tanpa aslinya ->
+  laporan kaos: beban -65.218, kas +65.218 vs kebenaran (dashboard/is_effective_journal benar). Kaos = tenant uji.
+- **Pagar DB V323:** `prevent_posted_journal_update` menolak status POSTED berubah ke APA PUN (dulu POSTED->VOID
+  diizinkan eksplisit, status lain lolos); `uq_je_chain_seq_posted` UNIQUE (tenant_id, chain_sequence) WHERE
+  status='POSTED' (0 duplikat POSTED; 9 duplikat lama VOID-vs-POSTED di luar predikat).
+- **Penjadwal SUDAH ada** sejak 12 Sep: `/etc/cron.d/milkyhoop-accounting` 06:00 UTC -> log harian di
+  /var/log/milkyhoop; keluar bukan-nol bila HIGH/CRITICAL. (Klaim "crontab kosong" di atas basi.)
