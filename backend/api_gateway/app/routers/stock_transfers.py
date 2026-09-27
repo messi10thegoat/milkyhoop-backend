@@ -444,7 +444,9 @@ async def update_stock_transfer(
                 )
 
             # Return updated
-            return await get_stock_transfer(request, transfer_id)
+    # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep). Dulu return ini
+    # di DALAM transaksi -> get_stock_transfer (koneksi lain) membaca keadaan SEBELUM commit (respons basi).
+    return await get_stock_transfer(request, transfer_id)
 
 
 @router.delete("/{transfer_id}", dependencies=_TAHAN)

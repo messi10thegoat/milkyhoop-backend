@@ -220,7 +220,8 @@ async def create_fiscal_year(request: Request, body: CreateFiscalYearRequest):
                 raise
 
             # Fetch the created fiscal year
-            return await get_fiscal_year(request, fiscal_year_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        return await get_fiscal_year(request, fiscal_year_id)
 
     except HTTPException:
         raise
@@ -288,7 +289,8 @@ async def close_fiscal_year(request: Request, fiscal_year_id: UUID):
                 ctx["user_id"],
             )
 
-            return await get_fiscal_year(request, fiscal_year_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        return await get_fiscal_year(request, fiscal_year_id)
 
     except HTTPException:
         raise

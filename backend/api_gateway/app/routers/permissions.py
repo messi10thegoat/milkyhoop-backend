@@ -256,7 +256,8 @@ async def update_role_permissions(request: Request, role_id: str, data: Permissi
                 updated_count += 1
 
             # Return updated permissions using resolved role_id
-            return await get_role_permissions(request, resolved_role_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        return await get_role_permissions(request, resolved_role_id)
 
     except HTTPException:
         raise

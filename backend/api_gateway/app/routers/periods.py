@@ -313,22 +313,21 @@ async def update_period(request: Request, period_id: UUID, body: UpdatePeriodReq
                 params.append(body.name)
                 param_idx += 1
 
-            if not updates:
-                return await get_period(request, period_id)
+            if updates:
+                params.extend([period_id, ctx["tenant_id"]])
+                update_clause = ", ".join(updates)
 
-            params.extend([period_id, ctx["tenant_id"]])
-            update_clause = ", ".join(updates)
+                await conn.execute(
+                    f"""
+                    UPDATE fiscal_periods
+                    SET {update_clause}
+                    WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+                """,
+                    *params,
+                )
 
-            await conn.execute(
-                f"""
-                UPDATE fiscal_periods
-                SET {update_clause}
-                WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            """,
-                *params,
-            )
-
-            return await get_period(request, period_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        return await get_period(request, period_id)
 
     except HTTPException:
         raise
@@ -935,23 +934,24 @@ async def close_period(request: Request, period_id: UUID, body: ClosePeriodReque
             )
 
             # Get updated period
-            period_response = await get_period(request, period_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        period_response = await get_period(request, period_id)
 
-            return ClosePeriodResponse(
-                success=True,
-                data={
-                    "period": period_response["data"],
-                    "trial_balance_snapshot": TrialBalanceSnapshotResponse(
-                        id=str(snapshot_id),
-                        as_of_date=period["end_date"],
-                        total_debit=total_debit,  # Law 25: numeric(18,2) — no float() conversion
-                        total_credit=total_credit,  # Law 25: numeric(18,2) — no float() conversion
-                        is_balanced=is_balanced,
-                        generated_at=datetime.now(),
-                    ),
-                },
-                warnings=warnings,
-            )
+        return ClosePeriodResponse(
+            success=True,
+            data={
+                "period": period_response["data"],
+                "trial_balance_snapshot": TrialBalanceSnapshotResponse(
+                    id=str(snapshot_id),
+                    as_of_date=period["end_date"],
+                    total_debit=total_debit,  # Law 25: numeric(18,2) — no float() conversion
+                    total_credit=total_credit,  # Law 25: numeric(18,2) — no float() conversion
+                    is_balanced=is_balanced,
+                    generated_at=datetime.now(),
+                ),
+            },
+            warnings=warnings,
+        )
 
     except HTTPException:
         raise
@@ -1029,7 +1029,8 @@ async def reopen_period(request: Request, period_id: UUID, body: ReopenPeriodReq
                 str(ctx["user_id"]) if ctx["user_id"] else None,
                 json.dumps({"period_id": str(period_id), "reason": body.reason}),
             )
-            return await get_period(request, period_id)
+        # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep)
+        return await get_period(request, period_id)
 
     except HTTPException:
         raise

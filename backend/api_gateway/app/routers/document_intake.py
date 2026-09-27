@@ -202,15 +202,16 @@ async def _require_doc_create_perm(request, tenant_id, doc_id):
 # INSERT journal_entries/lines LANGSUNG dari journal_draft (tanpa lewat modul
 # mana pun). Izin doc_type saja tak cukup: jalur itu menulis JURNAL -> wajib
 # izin C journal juga. Kunci ditolak = 403 fail-closed.
-async def _require_legacy_journal_perm(eng, ctx, tenant_id, doc_uuid):
+async def _require_legacy_journal_perm(eng, ctx, tenant_id, doc_uuid, conn=None):
     from ..services.payload_transformers import get_route
 
-    _pool = await get_pool()
-    async with _pool.acquire() as _c:
-        aksi = await _c.fetchval(
-            "SELECT draft_plan->>'action_type' FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
-            doc_uuid, tenant_id,
-        )
+    _SQL = "SELECT draft_plan->>'action_type' FROM uploaded_documents WHERE id = $1 AND tenant_id = $2"
+    if conn is not None:  # Law 32: pemanggil yang MEMEGANG koneksi meneruskannya (jangan ambil koneksi kedua)
+        aksi = await conn.fetchval(_SQL, doc_uuid, tenant_id)
+    else:
+        _pool = await get_pool()
+        async with _pool.acquire() as _c:
+            aksi = await _c.fetchval(_SQL, doc_uuid, tenant_id)
     if get_route(aksi) is None and not await eng.can(ctx, "C", "journal"):
         logger.warning(f"[intake-izin] jalur legacy (action_type={aksi!r}) tanpa izin jurnal doc={doc_uuid} -> 403")
         raise HTTPException(
@@ -557,7 +558,7 @@ async def execute_batch(
                 _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": f"Tak punya izin membuat {_modul}"})
             else:
                 try:
-                    await _require_legacy_journal_perm(_eng, _uctx, ctx["tenant_id"], UUID(str(_did)))
+                    await _require_legacy_journal_perm(_eng, _uctx, ctx["tenant_id"], UUID(str(_did)), conn=_c)
                 except HTTPException:
                     _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Tak punya izin membuat jurnal"})
                     continue

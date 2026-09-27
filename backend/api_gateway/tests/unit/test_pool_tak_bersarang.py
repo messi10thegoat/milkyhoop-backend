@@ -9,16 +9,7 @@ import os
 
 ROUTERS = os.path.join(os.path.dirname(__file__), "..", "..", "app", "routers")
 
-DIKENAL = {   # berkas:fungsi -> fungsi-peminjam; tiket: pool bersarang (laporan BACKEND 28 Sep)
-    "document_intake.py:execute_batch->_require_legacy_journal_perm",
-    "fiscal_years.py:create_fiscal_year->get_fiscal_year",
-    "fiscal_years.py:close_fiscal_year->get_fiscal_year",
-    "periods.py:update_period->get_period",
-    "periods.py:close_period->get_period",
-    "periods.py:reopen_period->get_period",
-    "permissions.py:update_role_permissions->get_role_permissions",
-    "stock_transfers.py:update_stock_transfer->get_stock_transfer",
-}
+DIKENAL: set = set()   # 28 Sep: SEMUA kasus lama diperbaiki (journals x4 + 9 titik lain) -> daftar KOSONG
 
 
 def _ambil_pool(fn) -> bool:
@@ -29,9 +20,15 @@ def _ambil_pool(fn) -> bool:
 def _pindai():
     temuan = set()
     for f in sorted(os.listdir(ROUTERS)):
-        if not f.endswith(".py"):
-            continue
-        t = ast.parse(open(os.path.join(ROUTERS, f)).read())
+        if f.endswith(".py"):
+            temuan |= _pindai_sumber(f, open(os.path.join(ROUTERS, f)).read())
+    return temuan
+
+
+def _pindai_sumber(f, sumber):
+    temuan = set()
+    if True:
+        t = ast.parse(sumber)
         fns = {n.name: n for n in t.body if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))}
         peminjam = {k for k, v in fns.items() if isinstance(v, ast.AsyncFunctionDef) and _ambil_pool(v)}
         for fn in fns.values():
@@ -40,7 +37,8 @@ def _pindai():
                     for n in ast.walk(ast.Module(body=w.body, type_ignores=[])):
                         if (isinstance(n, ast.Await) and isinstance(n.value, ast.Call)
                                 and isinstance(n.value.func, ast.Name) and n.value.func.id in peminjam
-                                and n.value.func.id != fn.name):
+                                and n.value.func.id != fn.name
+                                and not any(k.arg == "conn" for k in n.value.keywords)):   # koneksi pemanggil diteruskan
                             temuan.add(f"{f}:{fn.name}->{n.value.func.id}")
     return temuan
 
@@ -48,8 +46,28 @@ def _pindai():
 TEMUAN = _pindai()
 
 
+CONTOH = """
+async def baca(request):
+    pool = await get_pool()
+    async with pool.acquire() as c:
+        return 1
+
+async def tulis(request):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        x = 1
+        return await baca(request)
+
+async def aman(request):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await baca(request, conn=conn)
+"""
+
+
 def test_pemindai_bisa_bicara():
-    assert TEMUAN & DIKENAL, "pemindai tak melihat satu pun kasus lama yang diketahui ada -> alat buta"
+    # Law 33: DIKENAL kini kosong -> buktikan pemindai tetap MELIHAT pola ini (contoh sintetis), dan meloloskan conn=
+    assert _pindai_sumber("contoh.py", CONTOH) == {"contoh.py:tulis->baca"}
 
 
 def test_tak_ada_pool_bersarang_baru():
