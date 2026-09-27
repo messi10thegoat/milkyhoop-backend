@@ -199,3 +199,16 @@ def test_css_stempel_mengalir_bukan_fixed():
     assert "position: absolute" in blok and "fixed" not in blok
     assert "transform: rotate(-8deg)" in blok and "opacity: .85" in blok
     assert re.search(r"\.hero-status \{ position: relative; \}", css)
+
+
+PENANDA = '@page { @top-right { content: "DIBATALKAN";'
+
+
+def test_batal_penanda_kecil_kepala_halaman_2_dst():
+    h = _html(_inv(status="void", voided_reason="x"))
+    assert PENANDA in h and "@page :first { @top-right { content: none; } }" in h
+
+
+@pytest.mark.parametrize("inv", [_inv(), _inv(paid=2970000), _inv(paid=1500000), _inv(status="draft")])
+def test_penanda_batal_tak_muncul_di_faktur_hidup(inv):
+    assert "DIBATALKAN" not in _html(inv, [DP] if inv["amount_paid"] else [])

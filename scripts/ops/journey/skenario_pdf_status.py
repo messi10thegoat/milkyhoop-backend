@@ -92,3 +92,9 @@ async def jalankan(J):
     if f:
         await _bayar(J, "multi", f, 500000, h - timedelta(days=2))
         await _simpan(J, "multi", f)
+    f = await _faktur(J, "multibatal", pid, h, h + timedelta(days=14), baris=30, qty=2, harga=125000)
+    if f:
+        await J.langkah("multibatal_void", "POST", f"/api/sales-invoices/{f}/void",
+                        {"reason": "faktur multi-halaman dibatalkan (TES E2E)"})
+        await _simpan(J, "multibatal", f)
+

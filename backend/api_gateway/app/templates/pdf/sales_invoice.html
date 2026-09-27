@@ -5,6 +5,15 @@
 {# Faktur ber-keadaan cetak: stempel BATAL + total dicoret + Catatan alasan MENGGANTIKAN tanda diagonal (tanda itu
    menimpa stempel & tabel; spek pemilik 27 Sep: stempel tak boleh menimpa teks). Tanpa `cetak` = perilaku lama. #}
 {% if not invoice.cetak %}{% include "_partials/tanda_batal.html" %}{% endif %}
+{% if invoice.cetak and invoice.cetak.jenis == 'batal' %}
+{# Pemilik 27 Sep ~19:25: faktur batal multi-halaman -> penanda KECIL di kepala halaman 2+ (kotak margin @page:
+   di luar area isi, tak mungkin menimpa teks); halaman 1 memakai stempel BATAL. #}
+<style>
+@page { @top-right { content: "DIBATALKAN"; font-family: 'Inter', 'DejaVu Sans', sans-serif; font-size: 8pt;
+        font-weight: 700; letter-spacing: 1.5px; color: #8E3B2E; } }
+@page :first { @top-right { content: none; } }
+</style>
+{% endif %}
 <div class="invoice">
 
     <!-- 1. Header -->
