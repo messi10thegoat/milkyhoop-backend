@@ -39,6 +39,10 @@ def uji(monkeypatch):
             c.redis.append(("device", uid, dev))
             return True
 
+        def revoke_device_if_current(self, uid, dev, dev_id):
+            c.redis.append(("device", uid, dev, dev_id))
+            return True
+
         def revoke_all(self, uid):
             c.redis.append(("all", uid))
             return True
@@ -63,6 +67,12 @@ def uji(monkeypatch):
         async def fetchval(self, sql, h):
             assert "revoked_at IS NULL" in sql and "expires_at > now()" in sql
             return SAYA if h == hashlib.sha256(RT_SAYA.encode()).hexdigest() else None
+
+        async def fetchrow(self, sql, h, uid):   # dua sesi 28 Sep: perangkat logout dari user_devices
+            assert "user_devices" in sql
+            if h == hashlib.sha256(RT_SAYA.encode()).hexdigest() and uid == SAYA:
+                return {"id": "perangkat-hp-saya", "device_type": "mobile"}
+            return None
 
     async def pool():
         return _Pool()
@@ -112,7 +122,9 @@ def test_alur_fe_sekarang_tetap_logout(uji):
     r = _klien_publik().post(f"/api/auth/logout?user_id={SAYA}",
                              json={"refresh_token": RT_SAYA, "logout_all_devices": False})
     assert r.status_code == 200, r.text
-    assert uji.redis == [("device", SAYA, "web")]
+    # dua sesi (28 Sep): dulu ("device", SAYA, "web") APA PUN perangkatnya (state.user kosong di jalur publik) ->
+    # logout dari HP mencabut DESKTOP. Kini kelas + id perangkat pemilik refresh token itu.
+    assert uji.redis == [("device", SAYA, "mobile", "perangkat-hp-saya")]
     assert uji.auth == [(SAYA, RT_SAYA, False)]
 
 
