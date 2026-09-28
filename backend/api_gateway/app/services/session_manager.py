@@ -39,6 +39,20 @@ def detect_device_type(user_agent) -> DeviceType:
     return "web"
 
 
+# Dua sesi per akun (28 Sep 2026): SATU sesi aktif per kelas {web_desktop, web_mobile}. Kelas = pilihan KLIEN bila
+# sah (FE memakai deteksi sentuh yang sama dengan cangkang HP: pointer:coarse / hover:none), selain itu UA (perilaku
+# sejak 21 Sep). Kelas klien -> device_type tersimpan (user_devices CHECK 'mobile'|'web', Redis session:{uid}:{tipe}).
+# Klien yang berbohong paling jauh mendapat DUA sesi (satu per kelas) — batas itu tetap ditegakkan server.
+CLIENT_KIND_KE_TIPE = {"web_desktop": "web", "web_mobile": "mobile"}
+TIPE_KE_CLIENT_KIND = {v: k for k, v in CLIENT_KIND_KE_TIPE.items()}
+
+
+def resolve_device_type(client_kind, user_agent) -> DeviceType:
+    """client_kind sah menang; kosong/tak dikenal -> UA (detect_device_type)."""
+    tipe = CLIENT_KIND_KE_TIPE.get(str(client_kind).strip().lower()) if client_kind else None
+    return tipe or detect_device_type(user_agent)
+
+
 class SessionManager:
     """
     Redis session authority - single source of truth for active sessions.

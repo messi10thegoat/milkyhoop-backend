@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
-from backend.api_gateway.app.services.session_manager import session_manager, detect_device_type
+from backend.api_gateway.app.services.session_manager import (
+    session_manager, detect_device_type, resolve_device_type, TIPE_KE_CLIENT_KIND)
 from backend.api_gateway.app.services.role_resolution import (
     has_active_membership,
     list_active_tenant_roles,
@@ -60,6 +61,7 @@ class LoginRequest(BaseModel):
     password: str
     browser_id: Optional[str] = None  # Browser profile ID for device tracking
     device_fingerprint: Optional[str] = None  # Browser fingerprint
+    client_kind: Optional[str] = None  # 'web_desktop' | 'web_mobile' (dua sesi 28 Sep); kosong -> UA
 
 
 class ValidateTokenRequest(BaseModel):
@@ -164,7 +166,8 @@ async def login_user(request: LoginRequest, http_request: Request):
         # This ensures device_id is embedded in JWT
         device_id = str(uuid.uuid4())
         # 21 Sep 2026: detect device_type from User-Agent (was hardcoded "mobile"). Phone+desktop coexist.
-        device_type = detect_device_type(http_request.headers.get("User-Agent"))
+        # 28 Sep 2026: client_kind dari FE menang (HP "situs desktop"/iPadOS mengirim UA Mac -> dulu 'web').
+        device_type = resolve_device_type(request.client_kind, http_request.headers.get("User-Agent"))
 
         # Call login service with device claims
         result = await auth_client.login_user(
@@ -339,6 +342,7 @@ async def login_user(request: LoginRequest, http_request: Request):
                     "refresh_token": result["refresh_token"],
                     "device_id": device_id,
                     "device_type": device_type,
+                    "client_kind": TIPE_KE_CLIENT_KIND.get(device_type, "web_desktop"),  # kelas sesi (dua sesi 28 Sep)
                     "business_role_code": business_role_code,
                 },
             )
@@ -967,14 +971,14 @@ async def logout_user(data: LogoutRequest, http_request: Request, user_id: Optio
         device_type = getattr(http_request.state, "user", {}).get("device_type", "web")
 
         # ===== SESSION REVOCATION =====
-        if data.logout_all_devices or device_type == "mobile":
-            # CASCADE: Mobile logout or logout_all kills all sessions
+        if data.logout_all_devices:
             session_manager.revoke_all(user_id)
             logger.info(f"✅ All sessions revoked for user {user_id[:8]}...")
         else:
-            # Desktop logout only kills desktop session
-            session_manager.revoke_device(user_id, "web")
-            logger.info(f"✅ Web session revoked for user {user_id[:8]}...")
+            # Dua sesi (28 Sep 2026): keluar HANYA mencabut kelas sesi ini. Dulu logout HP = revoke_all -> desktop mati.
+            _kelas = "mobile" if device_type == "mobile" else "web"
+            session_manager.revoke_device(user_id, _kelas)
+            logger.info(f"✅ {_kelas} session revoked for user {user_id[:8]}...")
 
         # Call auth service to revoke refresh tokens
         result = await auth_client.logout(

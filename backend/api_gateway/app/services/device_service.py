@@ -216,17 +216,11 @@ class DeviceService:
                 }
             )
 
-            # 2) Find ALL active web sessions (for CASCADE logout)
-            existing_web = await self.prisma.userdevice.find_many(
-                where={
-                    "userId": user_id,
-                    "tenantId": tenant_id,
-                    "deviceType": "web",
-                    "isActive": True,
-                }
-            )
+            # 2) Dua sesi (28 Sep 2026): sesi web (desktop) TIDAK disentuh. Dulu kaskade menonaktifkan semua baris web
+            #    + mencabut refresh-nya + WS force_logout -> login HP menendang desktop (kaos 25 Sep 14:35).
+            existing_web = []
 
-            all_existing = existing_mobile + existing_web
+            all_existing = existing_mobile
 
             # 3) Notify ALL via WebSocket FIRST (side-effect OUTSIDE transaction)
             if all_existing:

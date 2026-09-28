@@ -22,7 +22,7 @@ from google.auth.transport import requests as google_requests
 from backend.api_gateway.app.services.auth_instance import auth_client
 from backend.api_gateway.app.services.audit_logger import log_auth_event, AuditEventType
 from backend.api_gateway.app.services.device_service import DeviceService
-from backend.api_gateway.app.services.session_manager import session_manager, detect_device_type
+from backend.api_gateway.app.services.session_manager import session_manager, detect_device_type, resolve_device_type
 from backend.api_gateway.app.services.db_pool import get_db_pool
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
 
@@ -38,6 +38,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 class GoogleAuthRequest(BaseModel):
     credential: str  # Google ID token from frontend
+    client_kind: Optional[str] = None  # 'web_desktop' | 'web_mobile' (dua sesi 28 Sep); kosong -> UA
 
 
 class AuthResponse(BaseModel):
@@ -129,13 +130,13 @@ async def google_auth(request: GoogleAuthRequest, http_request: Request):
 
     if user_row:
         # ===== EXISTING USER: LOGIN FLOW =====
-        return await _login_existing_user(user_row, http_request)
+        return await _login_existing_user(user_row, http_request, request.client_kind)
     else:
         # ===== NEW USER: SIGNUP FLOW =====
         return await _signup_new_user(email, name, http_request)
 
 
-async def _login_existing_user(user_row, http_request: Request) -> AuthResponse:
+async def _login_existing_user(user_row, http_request: Request, client_kind: Optional[str] = None) -> AuthResponse:
     """
     Login flow for existing user -- mirrors auth.py /login endpoint.
     Generates tokens, registers device, activates session.
@@ -146,7 +147,7 @@ async def _login_existing_user(user_row, http_request: Request) -> AuthResponse:
     role = user_row["role"]
     tenant_id = user_row["tenantId"]
     device_id = str(uuid.uuid4())
-    device_type = detect_device_type(http_request.headers.get("User-Agent"))
+    device_type = resolve_device_type(client_kind, http_request.headers.get("User-Agent"))
 
     # Generate JWT tokens with device claims (same as login endpoint)
     try:
