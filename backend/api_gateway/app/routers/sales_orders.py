@@ -1322,6 +1322,126 @@ async def cancel_sales_order(
         raise HTTPException(status_code=500, detail="Failed to cancel sales order")
 
 
+SO_BISA_DITUTUP = ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped")
+
+
+async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
+    """SATU-SATUNYA definisi aturan tutup SO: dipakai POST /close DAN /close/preview (tanpa tulisan).
+    Mengembalikan SEMUA penghalang (tidak berhenti di yang pertama), urut = urutan /close dulu:
+    status -> uang muka bersisa -> pendapatan tertahan -> belum terfakturkan penuh tanpa alasan.
+    /close menaikkan blocks[0]["detail"] APA ADANYA -> galatnya identik dengan sebelum refaktor.
+    Nol tulisan di sini (lock xact saja)."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"SO_CLOSE:{order_id}"
+    )
+    order = await conn.fetchrow(
+        """
+        SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
+    """,
+        _so_uuid(order_id),
+        ctx["tenant_id"],
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Sales order not found")
+
+    blocks = []
+    # F1 (putusan pemilik 26 Sep): 'confirmed' (0 kirim/0 faktur) boleh ditutup = short close
+    # SELURUH baris, alasan WAJIB (jatuh ke SO_NOT_FULLY_INVOICED tanpa alasan).
+    if order["status"] not in SO_BISA_DITUTUP:
+        blocks.append({
+            "code": "SO_STATUS_NOT_CLOSABLE",
+            "message": f"SO {order['order_number']} berstatus '{order['status']}' — tidak bisa ditutup.",
+            "detail": f"Cannot close order with status '{order['status']}'",
+        })
+
+    from .customer_deposits import compute_deposit_remaining, linked_so_deposits
+
+    # (b) uang muka bersisa -> tolak, tanpa pengecualian
+    uang_muka, sisa_dp = [], []
+    for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
+        rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
+        uang_muka.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
+        if rem > 0:
+            sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": float(rem)})
+    if sisa_dp:
+        detail = {
+            "code": "SO_DEPOSIT_REMAINING",
+            "message": (
+                f"SO {order['order_number']} tidak bisa ditutup: uang muka "
+                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
+                + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
+            ),
+            "deposits": sisa_dp,
+        }
+        blocks.append({**detail, "detail": detail})
+
+    # (c) F1: faktur SUDAH ditagih tapi pendapatan BELUM diakui (barang belum dikirim /
+    # non-stok belum diakui) -> DITOLAK tanpa pengecualian: menutup di atasnya membuat
+    # Pendapatan Diterima Dimuka tertahan selamanya. Kriteria = allocated - recognized
+    # > 0.005 per baris (definisi SAMA dengan Check 16 & q018). Law 16.
+    # (Nota kredit belum membuka ini: CN kini Dr Retur, tak menyentuh Dimuka -> BACKEND2.)
+    tertahan = await conn.fetch(
+        """
+        SELECT si.invoice_number, sii.description,
+               COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) AS sisa
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id AND si.tenant_id = $2
+        WHERE si.sales_order_id = $1 AND si.status NOT IN ('draft', 'void')
+          AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005
+        ORDER BY si.invoice_number, sii.line_number NULLS LAST
+    """,
+        order["id"],
+        ctx["tenant_id"],
+    )
+    if tertahan:
+        detail = {
+            "code": "SO_REVENUE_NOT_RECOGNIZED",
+            "message": (
+                f"SO {order['order_number']} tidak bisa ditutup: "
+                + "; ".join(f"{t['invoice_number']} {t['description']}" for t in tertahan)
+                + " sudah ditagih tetapi barangnya belum dikirim. "
+                "Kirim barangnya / akui pendapatan non-stok dulu."
+            ),
+            "lines": [
+                {"invoice_number": t["invoice_number"], "description": t["description"],
+                 "unrecognized_amount": float(t["sisa"])}
+                for t in tertahan
+            ],
+        }
+        blocks.append({**detail, "detail": detail})
+
+    # (a) qty pada faktur non-void yang TERTAUT, bukan pencacah quantity_invoiced
+    lines = await conn.fetch(
+        """
+        SELECT soi.*,
+               COALESCE((SELECT SUM(sii.quantity) FROM sales_invoice_items sii
+                         JOIN sales_invoices si ON si.id = sii.invoice_id
+                         WHERE sii.sales_order_item_id = soi.id AND si.status <> 'void'), 0) AS on_invoices
+        FROM sales_order_items soi WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order, soi.id
+    """,
+        order["id"],
+    )
+    kurang = [
+        {"description": r["description"], "quantity_ordered": float(r["quantity"]),
+         "quantity_on_invoices": float(r["on_invoices"])}
+        for r in lines if r["on_invoices"] < r["quantity"]
+    ]
+    if kurang and not reason:
+        detail = {
+            "code": "SO_NOT_FULLY_INVOICED",
+            "message": (
+                f"SO {order['order_number']} belum terfakturkan penuh: "
+                + "; ".join(f"{k['description']} {k['quantity_on_invoices']:g} dari {k['quantity_ordered']:g}" for k in kurang)
+                + ". Buat fakturnya dulu, atau bila pelanggan membatalkan sisanya, tutup dengan alasan."
+            ),
+            "lines": kurang,
+        }
+        blocks.append({**detail, "detail": detail})
+
+    return {"order": order, "blocks": blocks, "lines": lines, "kurang": kurang, "deposits": uang_muka}
+
+
 @router.post("/{order_id}/close", response_model=SalesOrderResponse)
 async def close_sales_order(
     request: Request, order_id: str, body: CloseSalesOrderRequest = None
@@ -1337,6 +1457,8 @@ async def close_sales_order(
           partial_invoiced / partial_shipped kini BISA ditutup, asal beralasan.
       (b) uang muka milik SO yang masih bersisa -> DITOLAK TANPA pengecualian: menutup di
           atasnya menelantarkan uang pelanggan. Terapkan ke faktur atau kembalikan dulu.
+    Aturannya hidup di _rencana_tutup_so (dipakai juga /close/preview); di sini: penghalang
+    pertama -> 400 dengan detail yang sama persis seperti sebelum pratinjau ada.
     """
     try:
         ctx = get_user_context(request)
@@ -1346,116 +1468,10 @@ async def close_sales_order(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"SO_CLOSE:{order_id}"
-                )
-                order = await conn.fetchrow(
-                    """
-                    SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
-                """,
-                    _so_uuid(order_id),
-                    ctx["tenant_id"],
-                )
-
-                if not order:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
-
-                # F1 (putusan pemilik 26 Sep): 'confirmed' (0 kirim/0 faktur) boleh ditutup = short close
-                # SELURUH baris, alasan WAJIB (jatuh ke SO_NOT_FULLY_INVOICED tanpa alasan).
-                if order["status"] not in ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot close order with status '{order['status']}'",
-                    )
-
-                from .customer_deposits import compute_deposit_remaining, linked_so_deposits
-
-                # (b) uang muka bersisa -> tolak, tanpa pengecualian
-                sisa_dp = []
-                for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
-                    rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
-                    if rem > 0:
-                        sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": float(rem)})
-                if sisa_dp:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "SO_DEPOSIT_REMAINING",
-                            "message": (
-                                f"SO {order['order_number']} tidak bisa ditutup: uang muka "
-                                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
-                                + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
-                            ),
-                            "deposits": sisa_dp,
-                        },
-                    )
-
-                # (c) F1: faktur SUDAH ditagih tapi pendapatan BELUM diakui (barang belum dikirim /
-                # non-stok belum diakui) -> DITOLAK tanpa pengecualian: menutup di atasnya membuat
-                # Pendapatan Diterima Dimuka tertahan selamanya. Kriteria = allocated - recognized
-                # > 0.005 per baris (definisi SAMA dengan Check 16 & q018). Law 16.
-                # (Nota kredit belum membuka ini: CN kini Dr Retur, tak menyentuh Dimuka -> BACKEND2.)
-                tertahan = await conn.fetch(
-                    """
-                    SELECT si.invoice_number, sii.description,
-                           COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) AS sisa
-                    FROM sales_invoice_items sii
-                    JOIN sales_invoices si ON si.id = sii.invoice_id AND si.tenant_id = $2
-                    WHERE si.sales_order_id = $1 AND si.status NOT IN ('draft', 'void')
-                      AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005
-                    ORDER BY si.invoice_number, sii.line_number NULLS LAST
-                """,
-                    order["id"],
-                    ctx["tenant_id"],
-                )
-                if tertahan:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "SO_REVENUE_NOT_RECOGNIZED",
-                            "message": (
-                                f"SO {order['order_number']} tidak bisa ditutup: "
-                                + "; ".join(f"{t['invoice_number']} {t['description']}" for t in tertahan)
-                                + " sudah ditagih tetapi barangnya belum dikirim. "
-                                "Kirim barangnya / akui pendapatan non-stok dulu."
-                            ),
-                            "lines": [
-                                {"invoice_number": t["invoice_number"], "description": t["description"],
-                                 "unrecognized_amount": float(t["sisa"])}
-                                for t in tertahan
-                            ],
-                        },
-                    )
-
-                # (a) qty pada faktur non-void yang TERTAUT, bukan pencacah quantity_invoiced
-                lines = await conn.fetch(
-                    """
-                    SELECT soi.description, soi.quantity,
-                           COALESCE((SELECT SUM(sii.quantity) FROM sales_invoice_items sii
-                                     JOIN sales_invoices si ON si.id = sii.invoice_id
-                                     WHERE sii.sales_order_item_id = soi.id AND si.status <> 'void'), 0) AS on_invoices
-                    FROM sales_order_items soi WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order
-                """,
-                    order["id"],
-                )
-                kurang = [
-                    {"description": r["description"], "quantity_ordered": float(r["quantity"]),
-                     "quantity_on_invoices": float(r["on_invoices"])}
-                    for r in lines if r["on_invoices"] < r["quantity"]
-                ]
-                if kurang and not reason:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "SO_NOT_FULLY_INVOICED",
-                            "message": (
-                                f"SO {order['order_number']} belum terfakturkan penuh: "
-                                + "; ".join(f"{k['description']} {k['quantity_on_invoices']:g} dari {k['quantity_ordered']:g}" for k in kurang)
-                                + ". Buat fakturnya dulu, atau bila pelanggan membatalkan sisanya, tutup dengan alasan."
-                            ),
-                            "lines": kurang,
-                        },
-                    )
+                rencana = await _rencana_tutup_so(conn, ctx, order_id, reason)
+                if rencana["blocks"]:
+                    raise HTTPException(status_code=400, detail=rencana["blocks"][0]["detail"])
+                order, kurang = rencana["order"], rencana["kurang"]
 
                 await conn.execute(
                     """
@@ -1475,8 +1491,10 @@ async def close_sales_order(
                     "SALES_ORDER_FORCE_CLOSED" if kurang else "SALES_ORDER_CLOSED", ctx["user_id"],
                     (f"Pesanan {order['order_number']} ditutup; sisa dibatalkan: "
                      + "; ".join(f"{k_['description']} {k_['quantity_cancelled']:g}" for k_ in kurang)
-                     + f" — {reason}") if kurang else f"Pesanan {order['order_number']} ditutup",
-                    {"reason": reason if kurang else None, "lines": kurang, "forced": bool(kurang)},
+                     + f" — {reason}") if kurang
+                    else f"Pesanan {order['order_number']} ditutup" + (f" — {reason}" if reason else ""),
+                    # alasan SELALU disimpan (MASTER/WORKSPACE 28 Sep), bukan hanya saat ada sisa
+                    {"reason": reason, "lines": kurang, "forced": bool(kurang)},
                     source="api:sales_orders.close",
                 )
 
@@ -1484,7 +1502,7 @@ async def close_sales_order(
                     success=True,
                     message="Sales order closed",
                     data={"order_number": order["order_number"], "status": "completed",
-                          "forced": bool(kurang), "reason": reason if kurang else None,
+                          "forced": bool(kurang), "reason": reason,
                           "cancelled_lines": kurang},
                 )
 
@@ -1493,6 +1511,87 @@ async def close_sales_order(
     except Exception as e:
         logger.error(f"Error closing sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to close sales order")
+
+
+async def _nilai_batal(conn, ctx, order_id, rows: list, qty_batal: dict) -> dict:
+    """Nilai sisa yang DIBATALKAN short close, di dasar yang SAMA dengan total SO: neto sesudah diskon
+    baris, dikurangi bagian diskon dokumen SO (pro-rata menurut neto, rumus faktur SO non-terakhir),
+    DITAMBAH PPN baris dihitung ulang dari DPP (faktor kode pajak, V289). Kalkulatornya = kalkulator
+    to-invoice (plan_so_invoice) -> sama dengan nilai faktur untuk qty itu. ONGKIR TIDAK termasuk
+    (ongkir bukan baris). Law 9: Decimal + HALF_UP 2dp."""
+    order = await conn.fetchrow(
+        "SELECT discount_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+        _so_uuid(order_id), ctx["tenant_id"],
+    )
+    so_rows = [dict(r) for r in rows]
+    if not any(_dd(q) > 0 for q in qty_batal.values()):
+        return {}
+    await attach_dpp_factors(conn, ctx["tenant_id"], so_rows, "tax_id")
+    plan = plan_so_invoice(so_rows, qty_batal, order["discount_amount"] or 0, 0, is_last=False)
+    return {str(ln["id"]): ln["dpp_harga_jual"] + ln["tax_amount"] for ln in plan["items"]}
+
+
+@router.post("/{order_id}/close/preview")
+async def preview_close_sales_order(
+    request: Request, order_id: str, body: CloseSalesOrderRequest = None
+):
+    """PRATINJAU tutup SO: body SAMA dengan /close, NOL tulisan. Aturan = _rencana_tutup_so (yang
+    dipakai /close), dijalankan di transaksi yang SELALU di-ROLLBACK. Berbeda dari /close: SEMUA
+    penghalang dilaporkan (tidak berhenti di yang pertama), 200 walau tak bisa ditutup."""
+    try:
+        ctx = get_user_context(request)
+        _so_uuid(order_id)  # id jalur tak sah -> 404 SEBELUM DB
+        pool = await get_pool()
+        reason = ((body.reason if body else None) or "").strip() or None
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                r = await _rencana_tutup_so(conn, ctx, order_id, reason)
+                qty_batal = {
+                    str(x["id"]): max(_dd(x["quantity"]) - _dd(x["on_invoices"]), _dd(0)) for x in r["lines"]
+                }
+                nilai = await _nilai_batal(conn, ctx, order_id, r["lines"], qty_batal)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        order = r["order"]
+        lines = [
+            {
+                "sales_order_item_id": str(x["id"]),
+                "description": x["description"],
+                "unit": x["unit"],
+                "quantity_ordered": _f(x["quantity"]),
+                "quantity_shipped": _f(x["quantity_shipped"] or 0),
+                "quantity_on_invoices": _f(x["on_invoices"]),
+                "quantity_cancelled": _f(qty_batal[str(x["id"])]),
+                "cancelled_amount": _f(nilai.get(str(x["id"]), _dd(0))),
+            }
+            for x in r["lines"]
+        ]
+        return {
+            "success": True,
+            "data": {
+                "order_number": order["order_number"],
+                "status": order["status"],
+                "can_close": not r["blocks"],
+                "requires_reason": bool(r["kurang"]),
+                "status_after": "completed",
+                "blocks": [{k: v for k, v in b.items() if k != "detail"} for b in r["blocks"]],
+                "lines": lines,
+                "cancelled_total": _f(sum(nilai.values(), _dd(0))),
+                "deposits": [
+                    {"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
+                     "remaining": _f(x["remaining"]), "after_close": _f(x["remaining"])}
+                    for x in r["deposits"]
+                ],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing close of sales order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview close")
+
 
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
 async def create_shipment(request: Request, order_id: str, body: CreateShipmentRequest):
