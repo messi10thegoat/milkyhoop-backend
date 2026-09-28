@@ -457,13 +457,16 @@ async def test_rute_dismiss_tulis_dan_hapus_milik_pengguna_sendiri(monkeypatch):
 
 def test_pesan_wa_rekening_faktur_dengan_pemilik_seperti_pdf():
     f = _inv("INV-W", H, 945000)
-    rek = {str(f["invoice_id"]): DV.teks_rekening("BCA", "1234567890", "BCA Anthonius Iwan Adhipraja")}
-    assert rek[str(f["invoice_id"])] == "BCA 1234567890 a.n. Anthonius Iwan Adhipraja"  # awalan bank dibuang
+    # 28 Sep 2026 (V329): pemilik = bank_accounts.account_holder_name; nama akun ('BCA Anthonius …') TAK dicetak lagi
+    data_rek = {"pemilik": {"1234567890": "Anthonius Iwan Adhipraja"}, "nama_akun": ["BCA Anthonius Iwan Adhipraja"]}
+    rek = {str(f["invoice_id"]): DV.teks_rekening("BCA", "1234567890", "BCA Anthonius Iwan Adhipraja", data_rek)}
+    assert rek[str(f["invoice_id"])] == "BCA 1234567890 a.n. Anthonius Iwan Adhipraja"
+    assert DV.teks_rekening("BCA", "1234567890", "BCA Anthonius Iwan Adhipraja") == "BCA 1234567890"
     pesan = _susun(ar_rows=[f], rek_faktur=rek)[0]["wa_targets"][0]["message"]
     assert "Pembayaran ke BCA 1234567890 a.n. Anthonius Iwan Adhipraja." in pesan
     # faktur tanpa rekening -> cadangan rekening tenant
     assert "Pembayaran ke BCA 1234567890." in _susun(ar_rows=[f])[0]["wa_targets"][0]["message"]
     assert DV.teks_rekening(None, None, "X") is None and DV.teks_rekening("BCA", "1", None) == "BCA 1"
     src = inspect.getsource(DV.teks_rekening)
-    assert "faktur_cetak.pemilik_rekening" in src  # SATU sumber dengan PDF faktur
+    assert "faktur_cetak.pemilik_dari" in src and "faktur_cetak.pemilik_rekening" in src  # SATU sumber dengan PDF
     assert "sales_invoices" in inspect.getsource(DV.rekening_per_faktur) and "tenant_id = $1" in inspect.getsource(DV.rekening_per_faktur)

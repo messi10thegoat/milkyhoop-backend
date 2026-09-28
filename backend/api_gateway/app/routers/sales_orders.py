@@ -10,6 +10,7 @@ from decimal import Decimal
 import asyncpg
 import logging
 import uuid as uuid_module
+from ..services import faktur_cetak as _fc_snap
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..utils.idempotency import (
@@ -775,7 +776,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     # Rekening tujuan cetak ($23-$25).
                     body.payment_bank_name,
                     body.payment_account_number,
-                    body.payment_account_holder,
+                    await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name, body.payment_account_number, body.payment_account_holder),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
                     # V290: hanya pilihan eksplisit (NULL = ikut kode pajak barang).
                     uuid_module.UUID(body.shipping_tax_code_id) if body.shipping_tax_code_id else None,
                     _doc["shipping_tax_rate"],

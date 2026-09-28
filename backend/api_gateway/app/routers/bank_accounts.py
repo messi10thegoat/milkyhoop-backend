@@ -268,6 +268,7 @@ async def list_bank_accounts(
             # Get items with CoA info
             query = f"""
                 SELECT ba.id, ba.account_name, ba.account_number, ba.bank_name,
+                       ba.account_holder_name,
                        ba.account_type, ba.coa_id,
                        ba.is_active, ba.is_default, ba.created_at,
                        coa.account_code as coa_code, coa.name as coa_name,
@@ -296,6 +297,7 @@ async def list_bank_accounts(
                     "account_name": row["account_name"],
                     "account_number": row["account_number"],
                     "bank_name": row["bank_name"],
+                    "account_holder_name": row["account_holder_name"],
                     "account_type": row["account_type"],
                     "coa_id": str(row["coa_id"]),
                     "coa_code": row["coa_code"],
@@ -336,6 +338,7 @@ async def get_bank_accounts_dropdown(request: Request):
             rows = await conn.fetch(
                 """
                 SELECT ba.id, ba.account_name, ba.account_number, ba.bank_name,
+                       ba.account_holder_name,
                        COALESCE(lb.ledger_balance, 0) as ledger_balance,
                        ba.currency
                 FROM bank_accounts ba
@@ -359,6 +362,7 @@ async def get_bank_accounts_dropdown(request: Request):
                     "name": row["account_name"],
                     "account_number": row["account_number"],
                     "bank_name": row["bank_name"],
+                    "account_holder_name": row["account_holder_name"],
                     "balance": float(
                         row["ledger_balance"] or 0
                     ),  # Law 21: journal-derived
@@ -429,6 +433,7 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     # V239. Dicetak di blok pembayaran faktur.
                     "bank_address": row["bank_address"],
                     "swift_code": row["swift_code"],
+                    "account_holder_name": row["account_holder_name"],   # V329
                     "account_type": row["account_type"],
                     "currency": row["currency"],
                     "coa_id": str(row["coa_id"]),
@@ -605,8 +610,8 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         id, tenant_id, account_name, account_number, bank_name, bank_branch,
                         bank_address,
                         swift_code, coa_id, opening_balance, current_balance,  -- Law 21: current_balance column retained but deprecated. Balance computed from journal.
-                        account_type, currency, is_default, notes, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $12, $13, $14, $15)
+                        account_type, currency, is_default, notes, created_by, account_holder_name
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $12, $13, $14, $15, $16)
                 """,
                     bank_account_id,
                     ctx["tenant_id"],
@@ -623,6 +628,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     body.is_default,
                     body.notes,
                     ctx["user_id"],
+                    (body.account_holder_name or "").strip() or None,   # V329
                 )
 
                 journal_id = None
@@ -890,6 +896,11 @@ async def update_bank_account(
                 if "swift_code" in _dikirim:
                     updates.append(f"swift_code = ${param_idx}")
                     params.append(_bersih("swift_code"))
+                    param_idx += 1
+
+                if "account_holder_name" in _dikirim:   # V329; kosong -> NULL (cetak tanpa "a.n.")
+                    updates.append(f"account_holder_name = ${param_idx}")
+                    params.append(_bersih("account_holder_name"))
                     param_idx += 1
 
                 # account_type: LABEL-only (tak sentuh jurnal/CoA). Larang transisi ke/dari

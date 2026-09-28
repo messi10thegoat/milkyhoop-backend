@@ -32,10 +32,11 @@ RP = {"sumber": "penerimaan", "tanggal": date(2026, 10, 3), "nomor": "PAY-2610-0
       "metode": "Transfer BCA", "jumlah": D("1470000")}
 
 
-def _html(inv, riwayat=(), cetak=CETAK):
+def _html(inv, riwayat=(), cetak=CETAK, pemilik_akun=None):
     inv = dict(inv)
     inv["cetak"] = FC.keadaan_cetak(inv, cetak, list(riwayat), ZoneInfo("Asia/Makassar"))
-    inv["rekening_pemilik_cetak"] = FC.pemilik_rekening(inv["payment_bank_name"], inv["payment_account_holder"])
+    inv["rekening_pemilik_cetak"] = FC.pemilik_rekening(inv["payment_bank_name"], inv["payment_account_holder"],
+                                                        pemilik_akun)
     inv["catatan_transfer"] = f"Cantumkan nomor faktur {inv['invoice_number']} pada berita transfer."
     svc = PDFService()
     return svc.jinja_env.get_template("sales_invoice.html").render(**svc._konteks_faktur(inv))
@@ -81,12 +82,15 @@ def test_tanggal_batal_zona_tenant():
     assert FC.keadaan_cetak(inv, CETAK, [], ZoneInfo("Asia/Makassar"))["tanggal_batal"] == date(2026, 9, 28)
 
 
+# 28 Sep 2026 (V329): dulu awalan bank DIBUANG -> "a.n. Operasional"/"a.n. Pemasukan" = nama akun internal tercetak.
+# Kini snapshot yang tampak nama akun (diawali nama bank) TIDAK dicetak; pemilik sebenarnya dari
+# bank_accounts.account_holder_name (tes lengkap: test_pemilik_rekening.py).
 @pytest.mark.parametrize("bank,pemilik,harap", [
-    ("BCA", "BCA Anthonius Iwan Adhipraja", "Anthonius Iwan Adhipraja"),
-    ("Bank BCA", "BCA Operasional", "Operasional"),
-    ("Bank BCA", "Bank BCA Operasional", "Operasional"),
+    ("BCA", "BCA Anthonius Iwan Adhipraja", None),
+    ("Bank BCA", "BCA Operasional", None),
+    ("Bank BCA", "Bank BCA Operasional", None),
     ("BCA", "Anthonius Iwan Adhipraja", "Anthonius Iwan Adhipraja"),
-    ("BCA", "BCA", "BCA"),
+    ("BCA", "BCA", None),
     ("Mandiri", "BCA Budi", "BCA Budi"),
 ])
 def test_pemilik_rekening_tanpa_duplikasi_bank(bank, pemilik, harap):
@@ -165,8 +169,11 @@ def test_stempel_sekali_di_blok_angka_sebelum_tabel_dan_riwayat_rekening_sesudah
 
 
 def test_rekening_tanpa_duplikasi_bank_dan_baris_transfer():
-    h = _html(_inv())
+    # 28 Sep (V329): pemilik dari Kas & Bank (account_holder_name) dicetak; snapshot nama akun TIDAK
+    h = _html(_inv(), pemilik_akun="Anthonius Iwan Adhipraja")
     assert "a.n. Anthonius Iwan Adhipraja" in h and "a.n. BCA" not in h
+    tanpa = _html(_inv())
+    assert "a.n." not in tanpa and "Anthonius" not in tanpa
     assert "Cantumkan nomor faktur INV-2609-0035 pada berita transfer." in h
 
 

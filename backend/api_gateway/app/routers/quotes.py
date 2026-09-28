@@ -8,6 +8,7 @@ from typing import Optional, Literal
 from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import faktur_cetak as _fc_snap
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.sales_doc_calc import (
@@ -705,7 +706,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     body.closing_text,
                     body.payment_bank_name,
                     body.payment_account_number,
-                    body.payment_account_holder,
+                    await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name, body.payment_account_number, body.payment_account_holder),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
                     ctx["user_id"],
                     # FIX_P2_QUOTEDP 2026-06-16 (NUMERIC columns expect Decimal/None)
                     Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
@@ -1945,6 +1946,8 @@ async def get_quote_pdf(
             tenant_info["logo_data"] = _logo_data
 
             # Build quote data dict for template
+            from ..services import faktur_cetak as _fc
+            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
             quote_data = {
                 "id": str(quote["id"]),
                 "quote_number": quote["quote_number"],
@@ -1988,6 +1991,9 @@ async def get_quote_pdf(
                 "payment_bank_name": quote.get("payment_bank_name"),
                 "payment_account_number": quote.get("payment_account_number"),
                 "payment_account_holder": quote.get("payment_account_holder"),
+                "rekening_pemilik_cetak": _fc.pemilik_dari(
+                    _rek_cetak, quote.get("payment_bank_name"), quote.get("payment_account_number"),
+                    quote.get("payment_account_holder")),
                 "items": [
                     {
                         "id": str(item["id"]),

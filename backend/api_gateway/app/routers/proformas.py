@@ -27,6 +27,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import faktur_cetak as _fc_snap
 from ..services.proforma_terbayar import terbayar_proforma
 from ..services.proforma_atribusi import muat_atribusi
 from ..services.so_riwayat import catat_riwayat
@@ -667,7 +668,7 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                     body.notes,
                     body.payment_bank_name or order["payment_bank_name"],
                     body.payment_account_number or order["payment_account_number"],
-                    body.payment_account_holder or order["payment_account_holder"],
+                    await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name or order["payment_bank_name"], body.payment_account_number or order["payment_account_number"], body.payment_account_holder or order["payment_account_holder"]),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
                     ctx["user_id"],
                 )
 
@@ -1038,6 +1039,8 @@ async def get_proforma_pdf(
             _received_before = float(_atr["diterima"] - _milik_ini.get("tertaut", 0) - _milik_ini.get("dicocokkan", 0)) \
                 if _atr else 0.0
             _tak_tertagih = float(_atr["tak_tertagih"]) if _atr else 0.0
+            from ..services import faktur_cetak as _fc
+            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
             proforma_data = {
                 "id": str(row["id"]),
                 "proforma_number": row["proforma_number"],
@@ -1081,6 +1084,8 @@ async def get_proforma_pdf(
                 "payment_bank_name": row["payment_bank_name"],
                 "payment_account_number": row["payment_account_number"],
                 "payment_account_holder": row["payment_account_holder"],
+                "rekening_pemilik_cetak": _fc.pemilik_dari(
+                    _rek_cetak, row["payment_bank_name"], row["payment_account_number"], row["payment_account_holder"]),
                 "status": row["status"],
                 # tanda DIBATALKAN pada proforma yang dibatalkan (pdf_service._tanda_batal)
                 "cancelled_at": row["cancelled_at"],

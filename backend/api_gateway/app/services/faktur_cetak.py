@@ -12,6 +12,7 @@ Riwayat = cabang-cabang compute_ar_outstanding yang SAMA (supaya Σ riwayat == "
 Alokasi yang DILEPAS (status reversed; cabang 4 fungsi AR) tidak ditampilkan — ledger menetralkannya.
 Tanggal cetak = tanggal bisnis TENANT (utils.tanggal_tenant), bukan jam server UTC.
 """
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -109,16 +110,71 @@ def label_metode(metode: Optional[str], bank: Optional[str]) -> str:
     return (metode or "").replace("_", " ").strip().capitalize()
 
 
-def pemilik_rekening(bank: Optional[str], pemilik: Optional[str]) -> Optional[str]:
-    """Perbaiki duplikasi nama bank: faktur menyimpan NAMA AKUN kas/bank ('BCA Anthonius Iwan Adhipraja') sebagai
-    pemilik rekening -> dulu tercetak 'BCA ... a.n. BCA Anthonius ...'. Awalan nama bank dibuang bila sama."""
-    p = (pemilik or "").strip()
+def _rapat(t: Optional[str]) -> str:
+    return " ".join((t or "").split()).lower()
+
+
+def nomor_rekening(n: Optional[str]) -> str:
+    """Kunci pencocokan faktur -> bank_accounts: digit saja ('123-456 7' == '1234567')."""
+    return re.sub(r"\D", "", n or "")
+
+
+def tampak_nama_akun(pemilik: Optional[str], bank: Optional[str], nama_akun=()) -> bool:
+    """Snapshot pemilik yang sebenarnya NAMA AKUN internal Kas & Bank: sama dengan salah satu account_name tenant,
+    atau diawali nama bank (konvensi penamaan akun: 'BCA Pemasukan', 'Bank BCA Operasional')."""
+    p = _rapat(pemilik)
     if not p:
+        return False
+    if p in {_rapat(n) for n in nama_akun if n}:
+        return True
+    for awalan in {_rapat(nama_bank(bank)), _rapat(bank)}:
+        if awalan and (p == awalan or p.startswith(awalan + " ")):
+            return True
+    return False
+
+
+def pemilik_rekening(bank: Optional[str], pemilik: Optional[str], pemilik_akun: Optional[str] = None,
+                     nama_akun=()) -> Optional[str]:
+    """SATU penentu "a.n." untuk PDF faktur, PDF proforma/penawaran, dan pesan WA (28 Sep 2026, pemilik).
+
+    Prioritas: (1) bank_accounts.account_holder_name rekening itu (diisi pemilik di Kas & Bank) -> (2) snapshot
+    dokumen bila TIDAK tampak nama akun internal -> (3) None = "a.n." tidak dicetak (tak mengarang).
+    Dulu snapshot = account_name ('BCA Pemasukan') -> tercetak "a.n. Pemasukan"."""
+    a = " ".join((pemilik_akun or "").split())
+    if a:
+        return a
+    p = " ".join((pemilik or "").split())
+    if not p or tampak_nama_akun(p, bank, nama_akun):
         return None
-    for awalan in {nama_bank(bank), (bank or "").strip()}:
-        if awalan and p.lower().startswith(awalan.lower() + " "):
-            return p[len(awalan):].strip() or p
     return p
+
+
+SQL_REKENING_TENANT = """
+SELECT account_number, account_name, account_holder_name, is_active
+FROM bank_accounts WHERE tenant_id = $1
+"""
+
+
+async def muat_rekening(conn, tenant_id: str) -> Dict[str, Any]:
+    """{'pemilik': {nomor digit: account_holder_name}, 'nama_akun': [account_name...]} — rekening aktif menang bila
+    nomornya kembar; nama akun NONAKTIF ikut (snapshot lama tetap dikenali sebagai nama internal)."""
+    rows = await conn.fetch(SQL_REKENING_TENANT, tenant_id)
+    pemilik: Dict[str, str] = {}
+    for r in sorted(rows, key=lambda r: bool(r["is_active"])):
+        n, h = nomor_rekening(r["account_number"]), (r["account_holder_name"] or "").strip()
+        if n and h:
+            pemilik[n] = h
+    return {"pemilik": pemilik, "nama_akun": [r["account_name"] for r in rows if r["account_name"]]}
+
+
+def pemilik_dari(rek: Dict[str, Any], bank: Optional[str], nomor: Optional[str], pemilik: Optional[str]) -> Optional[str]:
+    return pemilik_rekening(bank, pemilik, rek["pemilik"].get(nomor_rekening(nomor)), rek["nama_akun"])
+
+
+async def pemilik_cetak(conn, tenant_id: str, bank: Optional[str], nomor: Optional[str],
+                        pemilik: Optional[str]) -> Optional[str]:
+    """pemilik_rekening dengan data bank_accounts tenant; dipakai juga sebagai SNAPSHOT saat dokumen dibuat."""
+    return pemilik_dari(await muat_rekening(conn, tenant_id), bank, nomor, pemilik)
 
 
 async def riwayat_pembayaran(conn, tenant_id: str, invoice_id) -> List[Dict[str, Any]]:

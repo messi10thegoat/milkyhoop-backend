@@ -464,13 +464,13 @@ def _pesan_wa(nama, nomor_faktur, sisa, due, hari_ini, rekening, usaha) -> str:
     return "\n".join(baris)
 
 
-def teks_rekening(bank, nomor, pemilik) -> Optional[str]:
+def teks_rekening(bank, nomor, pemilik, rek=None) -> Optional[str]:
     """'BCA 123 a.n. Anthonius …' — pemilik lewat faktur_cetak.pemilik_rekening (SAMA dengan blok bayar PDF faktur:
     awalan nama bank dibuang). Tanpa bank & nomor -> None."""
     inti = " ".join(x.strip() for x in (bank, nomor) if x and x.strip())
     if not inti:
         return None
-    an = faktur_cetak.pemilik_rekening(bank, pemilik)
+    an = faktur_cetak.pemilik_dari(rek, bank, nomor, pemilik) if rek else faktur_cetak.pemilik_rekening(bank, pemilik)
     return f"{inti} a.n. {an}" if an else inti
 
 
@@ -764,8 +764,9 @@ async def rekening_per_faktur(conn, tenant_id: str, invoice_ids) -> dict:
         tenant_id, ids,
     )
     out = {}
+    rek = await faktur_cetak.muat_rekening(conn, tenant_id) if rows else None
     for r in rows:
-        t = teks_rekening(r["payment_bank_name"], r["payment_account_number"], r["payment_account_holder"])
+        t = teks_rekening(r["payment_bank_name"], r["payment_account_number"], r["payment_account_holder"], rek)
         if t:
             out[str(r["id"])] = t
     return out
@@ -775,14 +776,18 @@ async def rekening_tagih(conn, tenant_id: str) -> Optional[str]:
     """Cadangan bila faktur tak menulis rekening: rekening bank tenant (bawaan dulu). Pemilik = nama akun
     (sama dengan yang disalin ke faktur) lewat pemilik_rekening."""
     r = await conn.fetchrow(
-        """SELECT bank_name, account_number, account_name FROM bank_accounts
+        """SELECT bank_name, account_number, account_name, account_holder_name FROM bank_accounts
            WHERE tenant_id = $1 AND is_active = true AND account_type = 'bank'
            ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1""",
         tenant_id,
     )
     if not r:
         return None
-    return teks_rekening(r["bank_name"], r["account_number"], r["account_name"])
+    an = faktur_cetak.pemilik_rekening(r["bank_name"], None, r["account_holder_name"])   # nama akun BUKAN pemilik
+    inti = " ".join(x.strip() for x in (r["bank_name"], r["account_number"]) if x and x.strip())
+    if not inti:
+        return None
+    return f"{inti} a.n. {an}" if an else inti
 
 
 async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:

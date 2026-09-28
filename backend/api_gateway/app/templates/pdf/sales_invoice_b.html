@@ -129,7 +129,7 @@
         {# Label berkolom TETAP, bukan dirapikan dengan spasi: nama medannya
            tidak pernah berubah, jadi titik dua bisa disejajarkan sungguhan.
            Dengan &nbsp; titik duanya bergeser mengikuti lebar huruf. #}
-        {% if invoice.payment_account_holder %}<div><span class="lbl">Account name</span>: {{ invoice.payment_account_holder }}</div>{% endif %}
+        {% if invoice.rekening_pemilik_cetak %}<div><span class="lbl">Account name</span>: {{ invoice.rekening_pemilik_cetak }}</div>{% endif %}
         {% if invoice.payment_account_number %}<div><span class="lbl">Account no</span>: {{ invoice.payment_account_number }}</div>{% endif %}
       </div></td>
       <td class="c-harga">Subtotal</td>

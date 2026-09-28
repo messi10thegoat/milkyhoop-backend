@@ -28,7 +28,8 @@
         <div class="notes-text">
             {% if dok.get('payment_bank_name') %}{{ dok.get('payment_bank_name') }}<br>{% endif %}
             {% if dok.get('payment_account_number') %}{{ dok.get('payment_account_number') }}<br>{% endif %}
-            {% set _pemilik = dok.get('rekening_pemilik_cetak') or dok.get('payment_account_holder') %}
+            {# 28 Sep 2026: HANYA hasil faktur_cetak.pemilik_rekening — snapshot mentah bisa berisi nama akun internal. #}
+            {% set _pemilik = dok.get('rekening_pemilik_cetak') %}
             {% if _pemilik %}a.n. {{ _pemilik }}{% endif %}
         </div>
         {% if dok.get('catatan_transfer') %}<div class="notes-text notes-redup">{{ dok.get('catatan_transfer') }}</div>{% endif %}

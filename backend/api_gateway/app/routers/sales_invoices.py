@@ -12,6 +12,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services import faktur_cetak as _fc_snap
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
 from ..services.so_riwayat import catat_riwayat
@@ -3127,7 +3128,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                     body.recognize_at,
                     body.payment_bank_name,
                     body.payment_account_number,
-                    body.payment_account_holder,
+                    await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name, body.payment_account_number, body.payment_account_holder),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
                     body.purchase_order_no,
                     body.delivery_order_no,
                     _doc["shipping_amount"],
@@ -5635,6 +5636,7 @@ async def get_invoice_pdf(
             from ..services import faktur_cetak as _fc
             from ..utils.tanggal_tenant import tanggal_dokumen as _tanggal_dokumen
             _riwayat_cetak = await _fc.riwayat_pembayaran(conn, ctx["tenant_id"], invoice_id)
+            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
             _tanggal_cetak = await _tanggal_dokumen(conn, ctx["tenant_id"])
             from ..utils.tanggal_tenant import zona_tenant as _zona_tenant
             _zona_cetak = await _zona_tenant(conn, ctx["tenant_id"])
@@ -5789,8 +5791,9 @@ async def get_invoice_pdf(
         invoice_data["cetak"] = _fc.keadaan_cetak(invoice_data, _tanggal_cetak, _riwayat_cetak, _zona_cetak)
         if invoice_data["cetak"]["selisih_riwayat"] != 0:
             logger.warning("[PDF] faktur %s: Σ riwayat != dibayar (selisih %s)", invoice_id, invoice_data["cetak"]["selisih_riwayat"])
-        invoice_data["rekening_pemilik_cetak"] = _fc.pemilik_rekening(
-            invoice_data["payment_bank_name"], invoice_data["payment_account_holder"])
+        invoice_data["rekening_pemilik_cetak"] = _fc.pemilik_dari(
+            _rek_cetak, invoice_data["payment_bank_name"], invoice_data["payment_account_number"],
+            invoice_data["payment_account_holder"])
         invoice_data["catatan_transfer"] = (
             f"Cantumkan nomor faktur {invoice_data['invoice_number']} pada berita transfer."
             if invoice_data["invoice_number"] else None)
