@@ -73,7 +73,7 @@ class _FakeConn:
 
 async def test_pagar_total_menolak_dan_menyebut_sisa():
     """Melebihi sisa -> 400, dan pesannya MENYEBUT angka sisa."""
-    conn = _FakeConn([{"total": 6_000_000}])
+    conn = _FakeConn([{"total": 6_000_000}, {"total": 0}])  # issued, lalu diterima (plafon 28 Sep)
     with pytest.raises(HTTPException) as ex:
         await pf.assert_within_order_total(
             conn, "kaos-biru-konveksi", "so-1", 10_000_000.0, 5_000_000.0
@@ -84,7 +84,7 @@ async def test_pagar_total_menolak_dan_menyebut_sisa():
 
 async def test_pagar_total_meloloskan_tepat_sisa():
     """Persis sebesar sisa -> lolos (tidak boleh off-by-one menolak)."""
-    conn = _FakeConn([{"total": 6_000_000}])
+    conn = _FakeConn([{"total": 6_000_000}, {"total": 0}])  # issued, lalu diterima (plafon 28 Sep)
     await pf.assert_within_order_total(
         conn, "kaos-biru-konveksi", "so-1", 10_000_000.0, 4_000_000.0
     )

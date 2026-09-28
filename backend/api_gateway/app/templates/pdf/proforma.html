@@ -138,17 +138,29 @@
                 <td class="value">Rp {{ proforma.order_total_amount | currency }}</td>
             </tr>
             {% endif %}
+            {% set _judul = {'PELUNASAN': 'Pelunasan yang Ditagih', 'TERMIN': 'Termin yang Ditagih'}.get(proforma.get('purpose'), 'Uang Muka yang Ditagih') %}
+            {% if proforma.get('purpose') == 'PELUNASAN' and proforma.get('received_before') and proforma.received_before|float > 0 %}
+            <tr>
+                <td class="label">Uang muka sudah diterima</td>
+                <td class="value">-Rp {{ proforma.received_before | currency }}</td>
+            </tr>
+            {% endif %}
             <tr class="total-row">
-                <td class="label"><strong>Uang Muka yang Ditagih{% if proforma.get('dp_percent_display') is not none %} ({{ proforma.dp_percent_display }}%){% endif %}</strong></td>
+                <td class="label"><strong>{{ _judul }}{% if proforma.get('purpose') != 'PELUNASAN' and proforma.get('dp_percent_display') is not none %} ({{ proforma.dp_percent_display }}%){% endif %}</strong></td>
                 <td class="value"><strong>Rp {{ proforma.amount | currency }}</strong></td>
             </tr>
-            {% if proforma.get('remaining_after_dp') is not none %}
+            {% if proforma.get('purpose') == 'PELUNASAN' and proforma.get('remaining_after_this') is not none %}
+            <tr>
+                <td class="label">Sisa setelah tagihan ini</td>
+                <td class="value">Rp {{ proforma.remaining_after_this | currency }}</td>
+            </tr>
+            {% elif proforma.get('remaining_after_this') is not none and proforma.remaining_after_this|float > 0 %}
             <tr>
                 <td class="label">
-                    Pelunasan setelah uang muka
+                    Pelunasan setelah {{ 'termin ini' if proforma.get('purpose') == 'TERMIN' else 'uang muka' }}
                     <br><span class="text-muted">(ditagih terpisah saat barang siap)</span>
                 </td>
-                <td class="value">Rp {{ proforma.remaining_after_dp | currency }}</td>
+                <td class="value">Rp {{ proforma.remaining_after_this | currency }}</td>
             </tr>
             {% endif %}
             {# Baris sisa HANYA saat dibayar sebagian. Belum dibayar sama

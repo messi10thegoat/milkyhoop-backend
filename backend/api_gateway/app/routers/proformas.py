@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.proforma_terbayar import terbayar_proforma
+from ..services.proforma_atribusi import muat_atribusi
 from ..services.so_riwayat import catat_riwayat
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from fastapi.responses import StreamingResponse
@@ -234,22 +235,44 @@ async def deposit_totals_for_order(conn, tenant_id: str, sales_order_id) -> dict
     }
 
 
+def sisa_bisa_ditagih(order_total: float, issued_total: float, tak_tertagih: float) -> float:
+    """SATU rumus sisa yang boleh ditagih (MASTER 28 Sep 2026, celah 2):
+        max(0, order_total - issued_total - uang_muka_di_luar_tagihan)
+    uang_muka_di_luar_tagihan = services.proforma_atribusi (tautan menang; tanpa tautan -> pencocokan nominal ke proforma
+    issued yang terbuka; sisanya di luar tagihan). Uang muka yang MEMBAYAR proforma tak dikurangkan dua kali; uang muka
+    TANPA tagihan mengurangi plafon (dulu tidak -> PELUNASAN bisa menagih penuh = tagihan ganda)."""
+    return round(max(0.0, float(order_total) - float(issued_total) - float(tak_tertagih)), 2)
+
+
+async def rincian_tagih(conn, tenant_id: str, sales_order_id, order_total: float, exclude_id=None) -> dict:
+    """Rincian plafon tagihan SO -- dipakai pagar (buat/ubah/terbit) DAN GET /sales-orders/{id}/proformas."""
+    issued = await issued_total_for_order(conn, tenant_id, sales_order_id, exclude_id=exclude_id)
+    a = (await muat_atribusi(conn, tenant_id, [sales_order_id], exclude_proforma_id=exclude_id))[sales_order_id]
+    return {
+        "order_total": round(float(order_total), 2),
+        "issued_total": round(issued, 2),
+        "received_total": round(float(a["diterima"]), 2),
+        "received_not_billed": round(float(a["tak_tertagih"]), 2),
+        "billable_remaining": sisa_bisa_ditagih(order_total, issued, a["tak_tertagih"]),
+    }
+
+
 async def assert_within_order_total(
     conn, tenant_id: str, sales_order_id, order_total: float, amount: float, exclude_id=None
 ):
-    """Pagar total: issued yang sudah ada + amount ini tidak boleh melebihi
-    nilai Sales Order. Ditolak dengan pesan yang MENYEBUT sisa yang bisa ditagih."""
-    already = await issued_total_for_order(
-        conn, tenant_id, sales_order_id, exclude_id=exclude_id
-    )
-    sisa = round(order_total - already, 2)
+    """Pagar total: amount ini tidak boleh melebihi sisa_bisa_ditagih (issued lain + uang muka diterima).
+    Ditolak dengan pesan yang MENYEBUT komponennya."""
+    r = await rincian_tagih(conn, tenant_id, sales_order_id, order_total, exclude_id=exclude_id)
+    sisa = r["billable_remaining"]
     if round(amount, 2) > sisa + 0.005:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Nilai proforma {_rp2(amount)} melebihi sisa yang bisa ditagih. "
-                f"Nilai Sales Order {_rp2(order_total)}, sudah ditagih (issued) "
-                f"{_rp2(already)}, sisa yang bisa ditagih {_rp2(sisa)}."
+                f"Nilai Sales Order {_rp2(order_total)}, sudah ditagih (issued) {_rp2(r['issued_total'])}, "
+                f"uang muka diterima {_rp2(r['received_total'])} "
+                f"(di luar tagihan {_rp2(r['received_not_billed'])}), "
+                f"sisa yang bisa ditagih {_rp2(sisa)}."
             ),
         )
 
@@ -501,8 +524,9 @@ async def list_proformas_for_order(request: Request, order_id: str):
                 )
                 for r in rows
             ]
-            issued_total = await issued_total_for_order(conn, ctx["tenant_id"], oid)
             order_total = _f(order["total_amount"]) or 0.0
+            rincian = await rincian_tagih(conn, ctx["tenant_id"], oid, order_total)
+            issued_total = rincian["issued_total"]
             # T201: agregat "diterima". Dihitung, tidak disimpan — tak satu pun
             # kolom ringkasan ditambahkan ke tabel mana pun.
             diterima = await deposit_totals_for_order(conn, ctx["tenant_id"], oid)
@@ -516,7 +540,9 @@ async def list_proformas_for_order(request: Request, order_id: str):
                 "order_total_amount": order_total,
                 "order_total": order_total,
                 "issued_total": issued_total,
-                "billable_remaining": round(order_total - issued_total, 2),
+                "billable_remaining": rincian["billable_remaining"],
+                "billable_breakdown": {k: rincian[k] for k in (
+                    "order_total", "issued_total", "received_total", "received_not_billed")},
                 "received_total": diterima["received_total"],
                 "unbilled_received": diterima["unbilled_received"],
             }
@@ -1001,6 +1027,17 @@ async def get_proforma_pdf(
             tenant_info["logo_data"] = _logo_data
 
             amount = _f(row["amount"]) or 0.0
+            # Celah 1 (MASTER 28 Sep): angka ringkasan dari proforma LAIN & uang muka, rumus sama dengan plafon.
+            _total_so = _f(row["order_total_amount"]) or 0.0
+            _billed_before = await issued_total_for_order(conn, ctx["tenant_id"], row["sales_order_id"], exclude_id=row["id"]) \
+                if row["sales_order_id"] else 0.0
+            _atr = (await muat_atribusi(conn, ctx["tenant_id"], [row["sales_order_id"]]))[row["sales_order_id"]] \
+                if row["sales_order_id"] else None
+            _milik_ini = (_atr["per_proforma"].get(row["id"], {}) if _atr else {})
+            # diterima SEBELUM tagihan ini = semua uang muka SO kecuali yang diatribusikan ke proforma INI (tautan/cocok)
+            _received_before = float(_atr["diterima"] - _milik_ini.get("tertaut", 0) - _milik_ini.get("dicocokkan", 0)) \
+                if _atr else 0.0
+            _tak_tertagih = float(_atr["tak_tertagih"]) if _atr else 0.0
             proforma_data = {
                 "id": str(row["id"]),
                 "proforma_number": row["proforma_number"],
@@ -1028,11 +1065,12 @@ async def get_proforma_pdf(
                     if _f(row["order_total_amount"])
                     else None
                 ),
-                # Pelunasan = nilai pesanan - uang muka. Ditagih terpisah nanti.
-                "remaining_after_dp": (
-                    round(_f(row["order_total_amount"]) - amount, 2)
-                    if _f(row["order_total_amount"])
-                    else None
+                # Celah 1: sisa SESUDAH tagihan ini = max(0, total - max(ditagih_sebelum + ini, diterima_sebelum)).
+                # Dulu total - amount INI saja -> salah untuk PELUNASAN dan uang muka kedua.
+                "billed_before": round(_billed_before, 2),
+                "received_before": round(_received_before, 2),
+                "remaining_after_this": (
+                    sisa_bisa_ditagih(_total_so, _billed_before + amount, _tak_tertagih) if _total_so else None
                 ),
                 # Baris "Sudah Dibayar"/"Sisa Tagihan Ini" HANYA saat proforma
                 # dibayar SEBAGIAN. Belum dibayar sama sekali -> nol baris sisa.

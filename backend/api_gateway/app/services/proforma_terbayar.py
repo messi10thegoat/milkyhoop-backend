@@ -197,12 +197,12 @@ async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
            WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])""",
         tenant_id, so_ids,
     )
-    eks = {r["proforma_id"]: _d(r["jml"]) for r in await conn.fetch(
-        """SELECT proforma_id, SUM(amount) AS jml FROM customer_deposits
-           WHERE tenant_id = $1 AND status <> 'void'
-             AND proforma_id = ANY($2::uuid[]) GROUP BY 1""",
-        tenant_id, [p["id"] for p in pros],
-    )} if pros else {}
+    # 28 Sep 2026 (MASTER): SATU atribusi dengan plafon & PDF (services/proforma_atribusi) -- uang muka tertaut ATAU
+    # tercocok-nominal = eksplisit proforma itu; uang muka DI LUAR TAGIHAN dikeluarkan dari kolam, supaya proforma
+    # yang ditagih NETO darinya (PELUNASAN sesudah DP) tak tampil "Sudah Dibayar" oleh uang yang sama.
+    from .proforma_atribusi import muat_atribusi
+    atr = await muat_atribusi(conn, tenant_id, so_ids)
+    eks = {pid: v["tertaut"] + v["dicocokkan"] for a in atr.values() for pid, v in a["per_proforma"].items()}
     tertutup = await tertutup_pesanan(conn, tenant_id, so_ids)
     per_so = {}
     for p in pros:
@@ -210,7 +210,8 @@ async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
     hasil = {}
     for so_id, daftar in per_so.items():
         t = tertutup[so_id]
-        for pid, a in alokasikan(daftar, t["total"], eks).items():
+        di_luar = atr[so_id]["tak_tertagih"] if so_id in atr else NOL
+        for pid, a in alokasikan(daftar, max(NOL, t["total"] - di_luar), eks).items():
             hasil[pid] = {
                 "paid": a["paid"],
                 "paid_breakdown": {
@@ -219,6 +220,7 @@ async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
                     "pesanan_tertutup": float(t["total"]),
                     "pesanan_tertutup_faktur": float(t["faktur"]),
                     "pesanan_uang_muka_belum_diterapkan": float(t["uang_muka_sisa"]),
+                    "uang_muka_di_luar_tagihan": float(di_luar),
                 },
             }
     return hasil
