@@ -502,6 +502,10 @@ def _ref_faktur(f) -> dict:
     return {"kind": "sales_invoice", "id": str(f["invoice_id"]), "number": f["invoice_number"]}
 
 
+def _str_atau_none(v) -> Optional[str]:
+    return str(v) if v is not None else None
+
+
 def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, rekon_rows,
                 kontak: dict, rekening: Optional[str], usaha: str, rek_faktur: Optional[dict] = None) -> list:
     """Murni (tanpa DB) — diuji per jenis tugas dengan fixture."""
@@ -621,13 +625,19 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
         sub = ", ".join(nomor[:3]) + (f" +{len(nomor) - 3} lainnya" if len(nomor) > 3 else "")
         if n_telat:
             sub += f" · {n_telat} lewat tanggal kirim"
+        tuju = next((r for r in so if r.get("pending_invoice_id")), {})
         tugas.append({
             "key": f"so_to_ship:{len(so)}:{_sidik(*sorted(nomor))}",
             "type": "so_to_ship", "lane": "week",
             "title_html": f"<b>{len(so)} pesanan</b> harus dikirim", "subtitle": sub, "amount": None,
-            "refs": [{"kind": "sales_order", "id": str(r["id"]), "number": r["order_number"]} for r in so],
+            "refs": [{"kind": "sales_order", "id": str(r["id"]), "number": r["order_number"],
+                      "pending_invoice_id": _str_atau_none(r.get("pending_invoice_id")),
+                      "pending_invoice_number": r.get("pending_invoice_number")} for r in so],
             "actions": [{"kind": "prepare_shipment", "label": "Siapkan kirim", "primary": True,
-                         "payload": {"sales_order_ids": [str(r["id"]) for r in so]}}],
+                         "payload": {"sales_order_ids": [str(r["id"]) for r in so],
+                                     # D5: faktur tujuan "Buat Pengiriman" = milik SO PERTAMA (urutan kartu) yang punya
+                                     "pending_invoice_id": _str_atau_none(tuju.get("pending_invoice_id")),
+                                     "pending_invoice_number": tuju.get("pending_invoice_number")}}],
         })
 
     # so_dp_pending — satu kartu
@@ -688,6 +698,12 @@ async def so_harus_kirim(conn, tenant_id: str, akhir_minggu: date) -> list:
         if so_kirim.belum_dikirim(r["quantity"], per_baris.get(r["soi_id"])) > NOL:
             out[r["so_id"]] = {"id": r["so_id"], "order_number": r["order_number"],
                                "expected_ship_date": r["expected_ship_date"]}
+    # D5: faktur TERBIT tertua per SO dengan pengiriman terbuka (gerbang fulfill yang sama) -> tujuan "Siapkan kirim"
+    tertunda = await so_kirim.faktur_tertunda_per_so(conn, tenant_id, sorted(out))
+    for so_id, v in out.items():
+        f = tertunda.get(so_id)
+        v["pending_invoice_id"] = f["id"] if f else None
+        v["pending_invoice_number"] = f["invoice_number"] if f else None
     return list(out.values())
 
 

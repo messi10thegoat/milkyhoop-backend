@@ -17,10 +17,14 @@
         "title_html":{"type":"string","description":"Hanya tag <b> yang diizinkan"},
         "subtitle":{"type":"string"},
         "amount":{"type":["string","null"]},
-        "refs":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"number":{"type":"string"}}}},
+        "refs":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"number":{"type":"string"},
+          "pending_invoice_id":{"type":["string","null"],"pattern":"^[0-9a-f-]{36}$","description":"so_to_ship (kind sales_order): faktur TERBIT (posted/partial/paid) tertua SO ini dgn fulfillment_status pending/partial = gerbang Surat Jalan; null bila tak ada"},
+          "pending_invoice_number":{"type":["string","null"]}}}},
         "actions":{"type":"array","items":{"type":"object","required":["kind","label","primary"],"properties":{
           "kind":{"enum":["wa_remind","record_payment","open_list","prepare_shipment","start_recon","record_bill_payment"]},
-          "label":{"type":"string"},"primary":{"type":"boolean"},"payload":{"type":"object"}}}},
+          "label":{"type":"string"},"primary":{"type":"boolean"},"payload":{"type":"object","properties":{
+          "pending_invoice_id":{"type":["string","null"],"pattern":"^[0-9a-f-]{36}$","description":"prepare_shipment: pending_invoice_id SO PERTAMA (urutan refs) yang punya; null bila tak satu pun"},
+          "pending_invoice_number":{"type":["string","null"]}}}}}},
         "wa_targets":{"type":"array","items":{"type":"object","properties":{"customer_id":{"type":"string"},"name":{"type":"string"},"phone":{"type":["string","null"]},"message":{"type":"string"}}}}
       }}}
   }

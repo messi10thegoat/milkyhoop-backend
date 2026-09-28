@@ -123,6 +123,75 @@ def test_so_harus_kirim_dan_dp_belum_dan_rekon():
     assert rek["title_html"] == "<b>Rekonsiliasi bank</b> Agustus 2026"
 
 
+FK1, FK2 = UUID(int=11), UUID(int=12)
+
+
+def test_so_harus_kirim_faktur_tertunda_per_so_dan_tujuan_tombol():
+    """D5: tiap ref SO membawa faktur tertundanya (null bila tak ada); tombol "Siapkan kirim" menuju faktur SO
+    PERTAMA dalam urutan kartu yang punya — SO pertama tanpa faktur dilewati, bukan menghasilkan null."""
+    so = [{"id": UUID(int=1), "order_number": "SO-1", "expected_ship_date": H - timedelta(days=1),
+           "pending_invoice_id": None, "pending_invoice_number": None},
+          {"id": UUID(int=2), "order_number": "SO-2", "expected_ship_date": H,
+           "pending_invoice_id": FK1, "pending_invoice_number": "INV-2609-0007"},
+          {"id": UUID(int=5), "order_number": "SO-3", "expected_ship_date": H + timedelta(days=1),
+           "pending_invoice_id": FK2, "pending_invoice_number": "INV-2609-0009"}]
+    kirim, = _per_jenis(_susun(so_kirim_rows=list(reversed(so))), "so_to_ship")
+    assert [(r["number"], r["pending_invoice_id"], r["pending_invoice_number"]) for r in kirim["refs"]] == [
+        ("SO-1", None, None), ("SO-2", str(FK1), "INV-2609-0007"), ("SO-3", str(FK2), "INV-2609-0009")]
+    p = kirim["actions"][0]["payload"]
+    assert (p["pending_invoice_id"], p["pending_invoice_number"]) == (str(FK1), "INV-2609-0007")
+    assert p["sales_order_ids"] == [str(UUID(int=1)), str(UUID(int=2)), str(UUID(int=5))]
+    kosong, = _per_jenis(_susun(so_kirim_rows=[dict(so[0])]), "so_to_ship")
+    assert kosong["actions"][0]["payload"]["pending_invoice_id"] is None
+    assert kosong["refs"][0]["pending_invoice_id"] is None
+    badan = json.loads(json.dumps(DV.rangkum_tugas(_susun(so_kirim_rows=so), set(), 0, "2026-09-28T09:00:00+07:00")))
+    s = _skema("dashboard-tasks.schema.json")
+    assert _cocok(badan, s, s) == []
+    rusak = json.loads(json.dumps(badan))
+    rusak["tasks"][0]["refs"][1]["pending_invoice_id"] = 7
+    assert _cocok(rusak, s, s)  # kontrak menolak tipe salah (validator bisa merah pada medan baru)
+
+
+async def test_so_harus_kirim_menanyakan_faktur_terbit_tertua_dengan_kirim_terbuka():
+    """Stimulus MENCAPAI so_harus_kirim: definisi = gerbang POST /fulfill (literal spek, bukan konstanta modul)."""
+    SO_A, SO_B = UUID(int=21), UUID(int=22)
+    tanya = []
+
+    class C:
+        async def fetch(self, sql, *a):
+            if "FROM sales_orders so" in sql:
+                return [{"so_id": SO_A, "order_number": "SO-A", "expected_ship_date": H, "soi_id": UUID(int=31),
+                         "quantity": Decimal("2")},
+                        {"so_id": SO_B, "order_number": "SO-B", "expected_ship_date": H, "soi_id": UUID(int=32),
+                         "quantity": Decimal("1")}]
+            if "invoice_fulfillment_items" in sql:
+                return []
+            if "DISTINCT ON (si.sales_order_id)" in sql:
+                tanya.append((sql, a))
+                return [{"so_id": SO_A, "id": FK1, "invoice_number": "INV-A"}]
+            raise AssertionError(sql[:80])
+
+    hasil = {r["order_number"]: r for r in await DV.so_harus_kirim(C(), "tenant-x", H)}
+    assert (hasil["SO-A"]["pending_invoice_id"], hasil["SO-A"]["pending_invoice_number"]) == (FK1, "INV-A")
+    assert (hasil["SO-B"]["pending_invoice_id"], hasil["SO-B"]["pending_invoice_number"]) == (None, None)
+    (sql, a), = tanya
+    assert a[0] == "tenant-x" and sorted(a[1]) == sorted([SO_A, SO_B])
+    assert sorted(a[2]) == ["paid", "partial", "posted"]  # TERBIT; draft/void TIDAK
+    assert sorted(a[3]) == ["partial", "pending"]
+    assert "si.tenant_id = $1" in sql and "si.status = ANY($3::text[])" in sql
+    assert "si.fulfillment_status = ANY($4::text[])" in sql
+    assert re.search(r"ORDER BY si\.sales_order_id, si\.invoice_date, si\.created_at", sql)  # tertua
+
+
+def test_gerbang_fulfill_memakai_definisi_yang_sama():
+    from app.routers import sales_invoices as SI
+    from app.services import so_kirim as SK
+    src = Path(SI.__file__).read_text()
+    assert 'invoice["status"] not in _so_kirim.FAKTUR_TERBIT_KIRIM' in src
+    assert 'invoice["fulfillment_status"] not in _so_kirim.KIRIM_TERBUKA' in src
+    assert SI._so_kirim is SK
+
+
 def test_urutan_lajur_lalu_nominal_terbesar():
     t = _susun(ar_rows=[_inv("INV-S", H + timedelta(days=1), 9_000_000), _inv("INV-H", H, 1000),
                         _inv("INV-L", H - timedelta(days=1), 5000)],

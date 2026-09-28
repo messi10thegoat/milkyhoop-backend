@@ -31,6 +31,30 @@ SQL_TERKIRIM_PER_BARIS = f"""
 """
 
 
+# Faktur yang BISA dikirim (Surat Jalan) = gerbang POST /sales-invoices/{id}/fulfill — satu sumber, dipakai
+# gerbang itu DAN tugas dashboard so_to_ship (pending_invoice_id, D5 28 Sep 2026).
+FAKTUR_TERBIT_KIRIM = ("posted", "partial", "paid")
+KIRIM_TERBUKA = ("pending", "partial")
+
+SQL_FAKTUR_TERTUNDA_PER_SO = """
+    SELECT DISTINCT ON (si.sales_order_id) si.sales_order_id AS so_id, si.id, si.invoice_number
+    FROM sales_invoices si
+    WHERE si.tenant_id = $1 AND si.sales_order_id = ANY($2::uuid[])
+      AND si.status = ANY($3::text[]) AND si.fulfillment_status = ANY($4::text[])
+    ORDER BY si.sales_order_id, si.invoice_date, si.created_at, si.invoice_number
+"""
+
+
+async def faktur_tertunda_per_so(conn, tenant_id: str, so_ids: list) -> dict:
+    """-> {so_id: {"id", "invoice_number"}} — faktur TERBIT tertua per SO yang pengirimannya masih terbuka.
+    SO tanpa faktur seperti itu tidak ada di hasil (pemanggil -> null)."""
+    if not so_ids:
+        return {}
+    rows = await conn.fetch(SQL_FAKTUR_TERTUNDA_PER_SO, tenant_id, list(so_ids),
+                            list(FAKTUR_TERBIT_KIRIM), list(KIRIM_TERBUKA))
+    return {r["so_id"]: {"id": r["id"], "invoice_number": r["invoice_number"]} for r in rows}
+
+
 def _d(v) -> Decimal:
     return Decimal(str(v)) if v is not None else NOL
 

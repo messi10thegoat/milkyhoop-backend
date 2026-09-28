@@ -16,6 +16,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
 from ..services.so_riwayat import catat_riwayat
+from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
@@ -6658,9 +6659,9 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 # 26 Sep 2026: faktur yang sudah dibayar sebagian/lunas (DP/pelunasan -> partial/paid) TETAP harus
                 # bisa dikirim — pembayaran tak mengubah kewajiban menyerahkan barang (PSAK 72: pendapatan diakui saat
                 # serah terima). Dulu hanya 'posted' -> faktur ber-DP tak pernah bisa dikirim.
-                if invoice["status"] not in ("posted", "partial", "paid"):
+                if invoice["status"] not in _so_kirim.FAKTUR_TERBIT_KIRIM:
                     raise HTTPException(400, "Hanya faktur terbit (posted/sebagian/lunas) yang bisa dikirim")
-                if invoice["fulfillment_status"] not in ("pending", "partial"):
+                if invoice["fulfillment_status"] not in _so_kirim.KIRIM_TERBUKA:
                     raise HTTPException(
                         400,
                         f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
