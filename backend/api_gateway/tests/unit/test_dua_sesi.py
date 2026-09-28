@@ -204,6 +204,12 @@ def test_login_request_menerima_client_kind_opsional():
 
 # ---------------- logout: hanya kelas sendiri ----------------
 
+import hashlib  # noqa: E402
+
+# refresh token -> baris user_devices (id, device_type) di DB palsu; 'rt-usang' = desktop yang sudah digantikan
+PERANGKAT = {"rt-desk": ("desk-1", "web"), "rt-hp": ("hp-1", "mobile"), "rt-usang": ("desk-0", "web")}
+
+
 @pytest.fixture
 def keluar(monkeypatch, sm):
     async def ident(req, rt):
@@ -214,33 +220,73 @@ def keluar(monkeypatch, sm):
 
     async def audit(**kw):
         pass
+
+    class _Pool:
+        async def fetchrow(self, sql, h, uid):
+            assert "user_devices" in sql and uid == UID
+            for rt, (i, t) in PERANGKAT.items():
+                if hashlib.sha256(rt.encode()).hexdigest() == h:
+                    return {"id": i, "device_type": t}
+            return None
+
+    async def pool():
+        return _Pool()
+
+    async def validate(tok):
+        i, t = tok.split(":")
+        return {"valid": True, "user_id": UID, "device_id": i, "device_type": t}
     monkeypatch.setattr(A, "_identitas_logout", ident)
+    monkeypatch.setattr(A, "get_pool", pool)
     monkeypatch.setattr(A.auth_client, "logout", logout)
+    monkeypatch.setattr(A.auth_client, "validate_token", validate)
     monkeypatch.setattr(A, "log_auth_event", audit)
     monkeypatch.setattr(A, "session_manager", sm)
     sm.set_active_device(UID, "web", "desk-1")
     sm.set_active_device(UID, "mobile", "hp-1")
 
-    async def jalan(tipe, semua=False):
-        req = SimpleNamespace(state=SimpleNamespace(user={"device_type": tipe}), headers={},
+    async def jalan(rt, semua=False, bearer=None):
+        # FE memanggil /logout TANPA Authorization -> request.state.user TAK ada (jalur publik)
+        req = SimpleNamespace(state=SimpleNamespace(), headers={"Authorization": f"Bearer {bearer}"} if bearer else {},
                               client=SimpleNamespace(host="1.2.3.4"))
-        await A.logout_user(A.LogoutRequest(refresh_token="rt", logout_all_devices=semua), req)
+        await A.logout_user(A.LogoutRequest(refresh_token=rt, logout_all_devices=semua), req)
     return jalan
 
 
+def _hidup(sm):
+    return (sm.is_session_valid(UID, "web", "desk-1"), sm.is_session_valid(UID, "mobile", "hp-1"))
+
+
 @pytest.mark.asyncio
-async def test_logout_hp_tak_membunuh_desktop(keluar, sm):
-    await keluar("mobile")
-    assert sm.is_session_valid(UID, "web", "desk-1") and not sm.is_session_valid(UID, "mobile", "hp-1")
+async def test_logout_hp_tanpa_authorization_tak_membunuh_desktop(keluar, sm):
+    await keluar("rt-hp")
+    assert _hidup(sm) == (True, False)
 
 
 @pytest.mark.asyncio
 async def test_logout_desktop_tak_membunuh_hp(keluar, sm):
-    await keluar("web")
-    assert sm.is_session_valid(UID, "mobile", "hp-1") and not sm.is_session_valid(UID, "web", "desk-1")
+    await keluar("rt-desk")
+    assert _hidup(sm) == (False, True)
+
+
+@pytest.mark.asyncio
+async def test_logout_lewat_bearer_memakai_klaim_perangkat(keluar, sm):
+    await keluar(None, bearer="hp-1:mobile")
+    assert _hidup(sm) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_logout_sesi_usang_tak_mencabut_sesi_sekelas_yang_lebih_baru(keluar, sm):
+    await keluar("rt-usang")
+    assert _hidup(sm) == (True, True)
+
+
+@pytest.mark.asyncio
+async def test_logout_tanpa_bukti_perangkat_tak_mencabut_apa_pun(keluar, sm):
+    await keluar("rt-tak-dikenal")
+    assert _hidup(sm) == (True, True)
 
 
 @pytest.mark.asyncio
 async def test_logout_semua_perangkat_tetap_membunuh_keduanya(keluar, sm):
-    await keluar("mobile", semua=True)
-    assert not sm.is_session_valid(UID, "web", "desk-1") and not sm.is_session_valid(UID, "mobile", "hp-1")
+    await keluar("rt-hp", semua=True)
+    assert _hidup(sm) == (False, False)

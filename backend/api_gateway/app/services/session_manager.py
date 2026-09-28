@@ -192,6 +192,19 @@ class SessionManager:
             logger.error("❌ Failed to revoke device", error=str(e))
             return False
 
+    def revoke_device_if_current(self, user_id: str, device_type: DeviceType, device_id: str) -> bool:
+        """Cabut sesi kelas ini HANYA bila pemegangnya perangkat ini (logout dua sesi, 28 Sep 2026)."""
+        if not self.redis:
+            logger.error("❌ Redis not available - cannot revoke device")
+            return False
+        try:
+            if self.redis.get(self._key(user_id, device_type)) != device_id:
+                return False
+            return bool(self.redis.delete(self._key(user_id, device_type)))
+        except Exception as e:
+            logger.error("❌ Failed to revoke device", error=str(e))
+            return False
+
     def revoke_all(self, user_id: str) -> bool:
         """
         Revoke ALL sessions for a user (mobile + web).

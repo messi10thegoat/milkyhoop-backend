@@ -839,6 +839,32 @@ async def _identitas_logout(http_request: Request, refresh_token: Optional[str])
     return None
 
 
+async def _perangkat_logout(http_request: Request, refresh_token: Optional[str], user_id: str):
+    """(device_id, device_type) sesi yang keluar: klaim Bearer sah, atau baris user_devices milik user ini yang
+    menunjuk sha256(refresh) (tautan yang ditulis login/refresh/ganti tenant). Tak terbukti -> None."""
+    auth = http_request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            v = await auth_client.validate_token(auth[7:].strip())
+            if v.get("valid") and str(v.get("user_id")) == str(user_id) and v.get("device_id") \
+                    and v.get("device_type") in ("web", "mobile"):
+                return str(v["device_id"]), v["device_type"]
+        except Exception:
+            pass
+    if refresh_token:
+        h = hashlib.sha256(refresh_token.encode()).hexdigest()
+        try:
+            pool = await get_pool()
+            row = await pool.fetchrow(
+                "SELECT id, device_type FROM user_devices WHERE refresh_token_hash = $1 AND user_id = $2 "
+                "ORDER BY is_active DESC, created_at DESC LIMIT 1", h, str(user_id))
+            if row and row["device_type"] in ("web", "mobile"):
+                return str(row["id"]), row["device_type"]
+        except Exception as e:
+            logger.error(f"[logout] cek perangkat gagal: {type(e).__name__}")
+    return None
+
+
 @router.get("/sessions")
 async def list_user_sessions(http_request: Request, user_id: Optional[str] = None):
     """
@@ -967,18 +993,23 @@ async def logout_user(data: LogoutRequest, http_request: Request, user_id: Optio
     try:
         logger.info(f"Logout request for user: {user_id}")
 
-        # Get device type from request state (set by auth middleware)
-        device_type = getattr(http_request.state, "user", {}).get("device_type", "web")
+        # Dua sesi (28 Sep 2026, diukur lewat journey): /logout ada di public_paths & FE memanggilnya TANPA
+        # Authorization -> request.state.user kosong -> dulu device_type SELALU "web" -> logout dari HP mencabut sesi
+        # DESKTOP (cabang "mobile" = kode mati). Kini perangkat = bukti logout itu sendiri (_perangkat_logout).
+        perangkat = await _perangkat_logout(http_request, data.refresh_token, user_id)
+        device_type = perangkat[1] if perangkat else None
 
         # ===== SESSION REVOCATION =====
         if data.logout_all_devices:
             session_manager.revoke_all(user_id)
             logger.info(f"✅ All sessions revoked for user {user_id[:8]}...")
+        elif perangkat:
+            # HANYA bila perangkat ini masih pemegang kelasnya: logout dari sesi yang sudah digantikan tak boleh
+            # mencabut sesi sekelas yang LEBIH BARU, apalagi kelas lain.
+            dicabut = session_manager.revoke_device_if_current(user_id, perangkat[1], perangkat[0])
+            logger.info(f"✅ logout {perangkat[1]}: sesi Redis dicabut={dicabut} user={user_id[:8]}...")
         else:
-            # Dua sesi (28 Sep 2026): keluar HANYA mencabut kelas sesi ini. Dulu logout HP = revoke_all -> desktop mati.
-            _kelas = "mobile" if device_type == "mobile" else "web"
-            session_manager.revoke_device(user_id, _kelas)
-            logger.info(f"✅ {_kelas} session revoked for user {user_id[:8]}...")
+            logger.info(f"logout tanpa bukti perangkat: sesi Redis tak disentuh user={user_id[:8]}...")
 
         # Call auth service to revoke refresh tokens
         result = await auth_client.logout(
