@@ -131,10 +131,27 @@ async def test_wa_cadangan_rekening_tenant_tak_mencetak_nama_akun():
 
         async def fetchrow(self, sql, *a):
             assert "account_holder_name" in sql and "tenant_id = $1" in sql
-            return {"bank_name": "BCA", "account_number": "8295032185", "account_name": "BCA Pemasukan",
+            # nama akun SENGAJA tanpa awalan bank: deteksi nama-akun tak boleh jadi satu-satunya penahan
+            return {"bank_name": "BCA", "account_number": "8295032185", "account_name": "Rekening Utama",
                     "account_holder_name": self.holder}
     assert await DV.rekening_tagih(C(None), "g") == "BCA 8295032185"
     assert await DV.rekening_tagih(C("Anthonius Iwan Adhipraja"), "g") == "BCA 8295032185 a.n. Anthonius Iwan Adhipraja"
+
+
+@pytest.mark.asyncio
+async def test_wa_per_faktur_memuat_pemilik_dari_kas_bank():
+    class C:
+        async def fetch(self, sql, *a):
+            if "FROM sales_invoices" in sql:
+                assert "tenant_id = $1" in sql
+                return [{"id": "f1", "payment_bank_name": "Bank BCA", "payment_account_number": "1111222233",
+                         "payment_account_holder": "BCA Operasional"},
+                        {"id": "f2", "payment_bank_name": "BCA", "payment_account_number": "4371922746",
+                         "payment_account_holder": "BCA Pengeluaran"}]
+            assert "FROM bank_accounts" in sql and a == ("kaos",)
+            return BARIS
+    out = await DV.rekening_per_faktur(C(), "kaos", ["f1", "f2"])
+    assert out == {"f1": "Bank BCA 1111222233 a.n. PT Kaos Biru", "f2": "BCA 4371922746"}
 
 
 def test_skema_kas_bank_membawa_account_holder_name():
