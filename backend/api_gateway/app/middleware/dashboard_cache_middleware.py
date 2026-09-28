@@ -42,6 +42,10 @@ FINANCIAL_PATHS = frozenset({
     "/api/bank-reconciliation",
     "/api/stock-adjustments",
     "/api/production-costing",
+    # D3 dashboard v2: tugas SO-kirim / DP / proforma ikut basi bila dokumen ini berubah
+    "/api/sales-orders",
+    "/api/proformas",
+    "/api/deliveries",
 })
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

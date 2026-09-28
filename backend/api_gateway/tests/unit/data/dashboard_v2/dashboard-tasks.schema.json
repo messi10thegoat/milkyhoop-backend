@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DashboardTasks",
+  "type": "object",
+  "required": ["as_of","sum_now","done_today","total_today","tasks"],
+  "properties": {
+    "as_of": {"type":"string","format":"date-time"},
+    "sum_now": {"type":"string","description":"Σ nominal tugas lajur now (Rupiah)"},
+    "done_today": {"type":"integer"},
+    "total_today": {"type":"integer"},
+    "tasks": {"type":"array","items":{"type":"object",
+      "required":["key","type","lane","title_html","subtitle","actions"],
+      "properties":{
+        "key":{"type":"string"},
+        "type":{"enum":["ar_due_today","ar_overdue","ar_due_soon","ap_due","so_to_ship","so_dp_pending","bank_recon"]},
+        "lane":{"enum":["now","week","any"]},
+        "title_html":{"type":"string","description":"Hanya tag <b> yang diizinkan"},
+        "subtitle":{"type":"string"},
+        "amount":{"type":["string","null"]},
+        "refs":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"},"number":{"type":"string"}}}},
+        "actions":{"type":"array","items":{"type":"object","required":["kind","label","primary"],"properties":{
+          "kind":{"enum":["wa_remind","record_payment","open_list","prepare_shipment","start_recon","record_bill_payment"]},
+          "label":{"type":"string"},"primary":{"type":"boolean"},"payload":{"type":"object"}}}},
+        "wa_targets":{"type":"array","items":{"type":"object","properties":{"customer_id":{"type":"string"},"name":{"type":"string"},"phone":{"type":["string","null"]},"message":{"type":"string"}}}}
+      }}}
+  }
+}

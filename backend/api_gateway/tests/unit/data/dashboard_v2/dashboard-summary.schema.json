@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DashboardSummary",
+  "type": "object",
+  "required": ["as_of","period","period_label","tenant_tz","cash","receivables","payables","pnl","cashflow","expenses"],
+  "properties": {
+    "as_of": {"type":"string","format":"date-time"},
+    "period": {"enum":["day","week","month","year"]},
+    "period_label": {"type":"string","examples":["Bulan ini"]},
+    "tenant_tz": {"type":"string","examples":["Asia/Makassar"]},
+    "cash": {"type":"object","required":["total","bank_total","cash_total","accounts"],
+      "properties":{"total":{"$ref":"#/$defs/money"},"bank_total":{"$ref":"#/$defs/money"},"cash_total":{"$ref":"#/$defs/money"},
+        "accounts":{"type":"array","items":{"type":"object","required":["id","name","type","balance"],"properties":{"id":{"type":"string"},"name":{"type":"string"},"type":{"enum":["bank","cash"]},"balance":{"$ref":"#/$defs/money"}}}}}},
+    "receivables": {"type":"object","required":["total","not_due","overdue_total","overdue_count","customer_count","due_7d"],
+      "properties":{"total":{"$ref":"#/$defs/money"},"not_due":{"$ref":"#/$defs/money"},"overdue_total":{"$ref":"#/$defs/money"},"overdue_count":{"type":"integer"},"customer_count":{"type":"integer"},
+        "due_7d":{"type":"array","items":{"type":"object","properties":{"invoice_id":{"type":"string"},"number":{"type":"string"},"customer":{"type":"string"},"due_date":{"type":"string","format":"date"},"balance":{"$ref":"#/$defs/money"}}}}}},
+    "payables": {"type":"object","required":["total","overdue_total"],"properties":{"total":{"$ref":"#/$defs/money"},"overdue_total":{"$ref":"#/$defs/money"}}},
+    "pnl": {"type":"object","required":["revenue","expense","profit","margin_pct"],"properties":{"revenue":{"$ref":"#/$defs/money"},"expense":{"$ref":"#/$defs/money"},"profit":{"$ref":"#/$defs/money"},"margin_pct":{"type":"number"}}},
+    "cashflow": {"type":"object","required":["unit","buckets","total_in","total_out","projection_net","note"],
+      "properties":{"unit":{"enum":["day","week","month"]},
+        "buckets":{"type":"array","items":{"type":"object","required":["label","start","end","in","out","is_projection"],"properties":{"label":{"type":"string"},"start":{"type":"string","format":"date"},"end":{"type":"string","format":"date"},"in":{"$ref":"#/$defs/money"},"out":{"$ref":"#/$defs/money"},"is_projection":{"type":"boolean"}}}},
+        "total_in":{"$ref":"#/$defs/money"},"total_out":{"$ref":"#/$defs/money"},"projection_net":{"$ref":"#/$defs/money"},"peak_label":{"type":["string","null"]},"note":{"type":"string"}}},
+    "expenses": {"type":"object","required":["total","per_100k_expense","per_100k_profit","categories"],
+      "properties":{"total":{"$ref":"#/$defs/money"},"per_100k_expense":{"type":"integer"},"per_100k_profit":{"type":"integer"},
+        "categories":{"type":"array","maxItems":7,"items":{"type":"object","required":["name","amount","per_100k","pct_of_expense"],"properties":{"account_id":{"type":["string","null"]},"name":{"type":"string"},"amount":{"$ref":"#/$defs/money"},"per_100k":{"type":"integer"},"pct_of_expense":{"type":"number"}}}}}}
+  },
+  "$defs": {"money":{"type":"string","pattern":"^-?\\d+(\\.\\d{1,2})?$","description":"Rupiah, Decimal sebagai string"}}
+}

@@ -78,6 +78,7 @@ from .routers import accounting_settings
 from .routers import financial_reports_journal
 from .routers import psak_reports
 from .routers import dashboard
+from .routers import dashboard_v2
 from .routers import device
 from .routers import mfa
 from .routers import opening_balance
@@ -562,6 +563,8 @@ app.include_router(
 
 # Dashboard Summary router (aggregated KPIs)
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
+# Dashboard v2 (D3): /v2/summary + /tasks (+ dismiss) — kontrak paket dashboard-sidebar
+app.include_router(dashboard_v2.router, prefix="/api/dashboard", tags=["dashboard-v2"])
 
 app.include_router(device.router, tags=["devices"])
 
