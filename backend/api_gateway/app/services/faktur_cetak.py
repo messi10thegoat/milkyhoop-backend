@@ -173,7 +173,10 @@ def pemilik_dari(rek: Dict[str, Any], bank: Optional[str], nomor: Optional[str],
 
 async def pemilik_cetak(conn, tenant_id: str, bank: Optional[str], nomor: Optional[str],
                         pemilik: Optional[str]) -> Optional[str]:
-    """pemilik_rekening dengan data bank_accounts tenant; dipakai juga sebagai SNAPSHOT saat dokumen dibuat."""
+    """pemilik_rekening dengan data bank_accounts tenant; dipakai juga sebagai SNAPSHOT saat dokumen dibuat.
+    Tanpa nomor DAN tanpa pemilik -> None tanpa kueri (dokumen tanpa rekening tak menyentuh bank_accounts)."""
+    if not nomor_rekening(nomor) and not (pemilik or "").strip():
+        return None
     return pemilik_dari(await muat_rekening(conn, tenant_id), bank, nomor, pemilik)
 
 

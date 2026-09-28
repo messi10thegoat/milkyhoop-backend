@@ -159,3 +159,12 @@ def test_skema_kas_bank_membawa_account_holder_name():
     for m in (S.CreateBankAccountRequest, S.UpdateBankAccountRequest, S.BankAccountDetail, S.BankAccountListItem):
         assert "account_holder_name" in m.model_fields, m.__name__
     assert S.UpdateBankAccountRequest(account_holder_name="PT X").account_holder_name == "PT X"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_dokumen_tanpa_rekening_tak_menyentuh_bank_accounts():
+    c = _Conn(BARIS)
+    assert await FC.pemilik_cetak(c, "kaos", "BCA", None, None) is None
+    assert await FC.pemilik_cetak(c, "kaos", None, " - ", "  ") is None
+    assert c.sql == []
+    assert await FC.pemilik_cetak(c, "kaos", "BCA", None, "Sari") == "Sari" and len(c.sql) == 1
