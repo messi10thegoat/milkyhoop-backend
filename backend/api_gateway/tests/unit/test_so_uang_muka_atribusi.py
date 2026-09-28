@@ -130,3 +130,9 @@ def test_rute_detail_so_memakai_uang_muka_so_dan_skema_membawa_medan():
     for k in ("deposit_date", "payment_method", "account_name", "proforma_id", "attributed_proforma_id",
               "attributed_proforma_number", "attribution"):
         assert k in M.model_fields, k
+
+
+def test_tautan_ke_proforma_di_luar_daftar_tetap_tautan_dan_bukan_tak_tertagih():
+    a = PA.atribusikan([_pf("a", 100, _t(20))], [_dp("d", 100, _t(21), "lain")])
+    assert PA.atribusi_uang_muka(a, "d")["attribution"] == "tautan" and a["tak_tertagih"] == 0
+    assert PA.atribusi_uang_muka(a, "d")["attributed_proforma_number"] is None

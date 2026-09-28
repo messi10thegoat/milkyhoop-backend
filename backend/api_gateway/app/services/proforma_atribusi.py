@@ -35,9 +35,9 @@ def atribusikan(proformas: list, deposits: list) -> dict:
         amt = _d(d["amount"])
         diterima += amt
         if d.get("proforma_id") is not None:
+            tautan[d["id"]] = d["proforma_id"]   # tautan langsung = atribusinya, juga ke proforma di luar daftar
             if d["proforma_id"] in ids:
                 per[d["proforma_id"]]["tertaut"] += amt
-                tautan[d["id"]] = d["proforma_id"]
             # tertaut ke proforma di luar daftar (mis. dikecualikan pemanggil) -> bukan uang bebas, tak dihitung ulang
             continue
         bebas.append(d)
