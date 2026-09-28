@@ -262,3 +262,45 @@ async def put_favorites(request: Request, body: FavoritesResponse):
         return FavoritesResponse(items=body.items)
     finally:
         await conn.close()
+
+
+
+# ── D2 sidebar (28 Sep 2026): usaha & akun milik PEMANGGIL — adaptor tipis (services/akun_saya) ──────────
+
+
+def _tenant_jwt(request: Request) -> str:
+    """Tenant aktif dari klaim JWT SAJA (bukan header X-Tenant-ID seperti get_tenant_id)."""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        return user.get("tenant_id") or ""
+    return getattr(user, "tenant_id", "") or ""
+
+
+@router.get("/tenants/mine")
+async def get_tenants_mine(request: Request):
+    """Usaha yang BISA diakses pemanggil (keanggotaan aktif) — kontrak dashboard-sidebar tenants-mine."""
+    from ..services.akun_saya import usaha_saya
+    user_id = _get_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn = await get_db_connection()
+    try:
+        return {"success": True, **await usaha_saya(conn, user_id, _tenant_jwt(request))}
+    finally:
+        await conn.close()
+
+
+@router.get("/me")
+async def get_me(request: Request):
+    """Akun pemanggil untuk menu akun sidebar: nama, email, inisial, peran di tenant aktif, paket."""
+    from ..services.akun_saya import akun_saya
+    user_id = _get_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = getattr(request.state, "user", {}) or {}
+    email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    conn = await get_db_connection()
+    try:
+        return {"success": True, **await akun_saya(conn, user_id, email, _tenant_jwt(request) or None)}
+    finally:
+        await conn.close()

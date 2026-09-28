@@ -916,6 +916,9 @@ READ_DEFAULT_OPEN_ALLOWLIST = [
     # --- STEP 2 leave-open set (added 2026-09-21), reviewed route-by-route with MASTER ---
     # Self-service: read of the caller's OWN profile / devices / sessions.
     r"^/api/user/",
+    # 28 Sep 2026 (D2 sidebar): akun & usaha milik PEMANGGIL -- handler menyaring ke user_id JWT (keanggotaan aktif).
+    r"^/api/me$",
+    r"^/api/tenants/mine$",
     r"^/api/devices(/|$)",
     r"^/api/session/",
     # Pre-provision: invited / onboarding user acting BEFORE a role exists.
