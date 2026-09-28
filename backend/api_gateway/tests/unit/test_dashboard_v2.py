@@ -453,3 +453,17 @@ async def test_rute_dismiss_tulis_dan_hapus_milik_pengguna_sendiri(monkeypatch):
     assert "tenant_id = $1 AND user_id = $2 AND task_key = $3" in dele[0] and dele[1] == ("t", "u1", k)
     with pytest.raises(HTTPException):
         await RV.tandai_selesai(SimpleNamespace(state=SimpleNamespace(user={"tenant_id": "t"})), k)
+
+
+def test_pesan_wa_rekening_faktur_dengan_pemilik_seperti_pdf():
+    f = _inv("INV-W", H, 945000)
+    rek = {str(f["invoice_id"]): DV.teks_rekening("BCA", "1234567890", "BCA Anthonius Iwan Adhipraja")}
+    assert rek[str(f["invoice_id"])] == "BCA 1234567890 a.n. Anthonius Iwan Adhipraja"  # awalan bank dibuang
+    pesan = _susun(ar_rows=[f], rek_faktur=rek)[0]["wa_targets"][0]["message"]
+    assert "Pembayaran ke BCA 1234567890 a.n. Anthonius Iwan Adhipraja." in pesan
+    # faktur tanpa rekening -> cadangan rekening tenant
+    assert "Pembayaran ke BCA 1234567890." in _susun(ar_rows=[f])[0]["wa_targets"][0]["message"]
+    assert DV.teks_rekening(None, None, "X") is None and DV.teks_rekening("BCA", "1", None) == "BCA 1"
+    src = inspect.getsource(DV.teks_rekening)
+    assert "faktur_cetak.pemilik_rekening" in src  # SATU sumber dengan PDF faktur
+    assert "sales_invoices" in inspect.getsource(DV.rekening_per_faktur) and "tenant_id = $1" in inspect.getsource(DV.rekening_per_faktur)

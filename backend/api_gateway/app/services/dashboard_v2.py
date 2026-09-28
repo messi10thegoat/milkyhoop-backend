@@ -29,7 +29,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List, Optional
 
 from .report_engine.ledger import compute_balance, compute_balance_detail
-from . import so_kirim
+from . import faktur_cetak, so_kirim
 
 NOL = Decimal("0")
 SEN = Decimal("0.01")
@@ -464,8 +464,19 @@ def _pesan_wa(nama, nomor_faktur, sisa, due, hari_ini, rekening, usaha) -> str:
     return "\n".join(baris)
 
 
-def _wa_targets(faktur: list, kontak: dict, hari_ini, rekening, usaha) -> list:
-    """Satu target per pelanggan; beberapa faktur digabung dalam satu pesan."""
+def teks_rekening(bank, nomor, pemilik) -> Optional[str]:
+    """'BCA 123 a.n. Anthonius …' — pemilik lewat faktur_cetak.pemilik_rekening (SAMA dengan blok bayar PDF faktur:
+    awalan nama bank dibuang). Tanpa bank & nomor -> None."""
+    inti = " ".join(x.strip() for x in (bank, nomor) if x and x.strip())
+    if not inti:
+        return None
+    an = faktur_cetak.pemilik_rekening(bank, pemilik)
+    return f"{inti} a.n. {an}" if an else inti
+
+
+def _wa_targets(faktur: list, kontak: dict, hari_ini, rekening, usaha, rek_faktur=None) -> list:
+    """Satu target per pelanggan; beberapa faktur digabung dalam satu pesan.
+    Rekening = rekening yang TERTULIS di faktur (seperti PDF-nya); cadangan = rekening bank tenant."""
     per_pel = {}
     for f in faktur:
         per_pel.setdefault(str(f["customer_id"]), []).append(f)
@@ -473,14 +484,16 @@ def _wa_targets(faktur: list, kontak: dict, hari_ini, rekening, usaha) -> list:
     for cid, fs in per_pel.items():
         k = kontak.get(cid, {})
         nama = k.get("nama") or fs[0]["customer_name"]
+        rek = next(((rek_faktur or {}).get(str(f["invoice_id"])) for f in fs
+                    if (rek_faktur or {}).get(str(f["invoice_id"]))), None) or rekening
         if len(fs) == 1:
             f = fs[0]
-            pesan = _pesan_wa(nama, f["invoice_number"], f["outstanding"], f["due_date"], hari_ini, rekening, usaha)
+            pesan = _pesan_wa(nama, f["invoice_number"], f["outstanding"], f["due_date"], hari_ini, rek, usaha)
         else:
             total = sum((d(f["outstanding"]) for f in fs), NOL)
             nomor = ", ".join(f["invoice_number"] for f in fs)
             pesan = _pesan_wa(nama, nomor, total, min((f["due_date"] for f in fs if f["due_date"]), default=None),
-                              hari_ini, rekening, usaha)
+                              hari_ini, rek, usaha)
         out.append({"customer_id": cid, "name": nama, "phone": k.get("wa"), "message": pesan})
     return out
 
@@ -490,7 +503,7 @@ def _ref_faktur(f) -> dict:
 
 
 def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, rekon_rows,
-                kontak: dict, rekening: Optional[str], usaha: str) -> list:
+                kontak: dict, rekening: Optional[str], usaha: str, rek_faktur: Optional[dict] = None) -> list:
     """Murni (tanpa DB) — diuji per jenis tugas dengan fixture."""
     tugas = []
     ar = [r for r in ar_rows if d(r["outstanding"]) > NOL]
@@ -509,7 +522,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
                  "payload": {"invoice_id": str(f["invoice_id"]), "customer_id": str(f["customer_id"]),
                              "amount": uang(f["outstanding"])}},
             ],
-            "wa_targets": _wa_targets([f], kontak, hari_ini, rekening, usaha),
+            "wa_targets": _wa_targets([f], kontak, hari_ini, rekening, usaha, rek_faktur),
         })
 
     # ar_overdue — digabung satu kartu
@@ -533,7 +546,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
                 {"kind": "open_list", "label": "Lihat", "primary": False,
                  "payload": {"list": "sales_invoices", "filter": "overdue"}},
             ],
-            "wa_targets": _wa_targets(telat, kontak, hari_ini, rekening, usaha),
+            "wa_targets": _wa_targets(telat, kontak, hari_ini, rekening, usaha, rek_faktur),
         })
 
     # ar_due_soon — besok per faktur; 2–7 hari digabung per hari
@@ -551,7 +564,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
                  "payload": {"invoice_id": str(f["invoice_id"]), "customer_id": str(f["customer_id"]),
                              "amount": uang(f["outstanding"])}},
             ],
-            "wa_targets": _wa_targets([f], kontak, hari_ini, rekening, usaha),
+            "wa_targets": _wa_targets([f], kontak, hari_ini, rekening, usaha, rek_faktur),
         })
     for selisih in range(2, 8):
         tgl = hari_ini + timedelta(days=selisih)
@@ -573,7 +586,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
                 {"kind": "open_list", "label": "Lihat", "primary": False,
                  "payload": {"list": "sales_invoices", "filter": "due_date", "due_date": tgl.isoformat()}},
             ],
-            "wa_targets": _wa_targets(grup, kontak, hari_ini, rekening, usaha),
+            "wa_targets": _wa_targets(grup, kontak, hari_ini, rekening, usaha, rek_faktur),
         })
 
     # ap_due — tagihan ≤ 7 hari (now bila hari ini/telat)
@@ -740,7 +753,27 @@ async def kontak_pelanggan(conn, tenant_id: str, customer_ids: Iterable[str]) ->
             for r in rows}
 
 
+async def rekening_per_faktur(conn, tenant_id: str, invoice_ids) -> dict:
+    """{invoice_id: 'BCA 123 a.n. …'} dari medan bayar faktur (payment_bank_name/_account_number/_account_holder)."""
+    ids = sorted({str(i) for i in invoice_ids if i})
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        """SELECT id, payment_bank_name, payment_account_number, payment_account_holder FROM sales_invoices
+           WHERE tenant_id = $1 AND id::text = ANY($2::text[])""",
+        tenant_id, ids,
+    )
+    out = {}
+    for r in rows:
+        t = teks_rekening(r["payment_bank_name"], r["payment_account_number"], r["payment_account_holder"])
+        if t:
+            out[str(r["id"])] = t
+    return out
+
+
 async def rekening_tagih(conn, tenant_id: str) -> Optional[str]:
+    """Cadangan bila faktur tak menulis rekening: rekening bank tenant (bawaan dulu). Pemilik = nama akun
+    (sama dengan yang disalin ke faktur) lewat pemilik_rekening."""
     r = await conn.fetchrow(
         """SELECT bank_name, account_number, account_name FROM bank_accounts
            WHERE tenant_id = $1 AND is_active = true AND account_type = 'bank'
@@ -749,8 +782,7 @@ async def rekening_tagih(conn, tenant_id: str) -> Optional[str]:
     )
     if not r:
         return None
-    teks = " ".join(x for x in (r["bank_name"], r["account_number"]) if x)
-    return teks or r["account_name"]
+    return teks_rekening(r["bank_name"], r["account_number"], r["account_name"])
 
 
 async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
@@ -766,6 +798,8 @@ async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
         rekon_rows=await rekening_belum_rekon(conn, tenant_id, hari_ini),
         kontak=await kontak_pelanggan(conn, tenant_id, (r["customer_id"] for r in ar_rows)),
         rekening=await rekening_tagih(conn, tenant_id), usaha=usaha,
+        rek_faktur=await rekening_per_faktur(conn, tenant_id, (r["invoice_id"] for r in ar_rows
+                                                               if d(r["outstanding"]) > NOL)),
     )
 
 
