@@ -480,17 +480,9 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 _so_uuid(order_id),
             )
 
-            # G2: linked customer deposits (exclude void)
-            deposits = await conn.fetch(
-                """
-                SELECT id, deposit_number, amount, status
-                FROM customer_deposits
-                WHERE sales_order_id = $1 AND tenant_id = $2 AND status <> 'void'
-                ORDER BY created_at
-            """,
-                _so_uuid(order_id),
-                ctx["tenant_id"],
-            )
+            # G2: linked customer deposits (exclude void) + atribusi proforma (28 Sep 2026)
+            from ..services.proforma_atribusi import uang_muka_so
+            deposits = await uang_muka_so(conn, ctx["tenant_id"], order["id"])
 
             # Q-011: angka "Dibayar" dari SERVER, journal-derived (bukan Σ deposits[]/invoices[] di FE).
             ringkas = await ringkasan_pesanan(conn, ctx["tenant_id"], [order["id"]])
@@ -595,15 +587,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                         }
                         for inv in invoices
                     ],
-                    deposits=[
-                        SalesOrderDepositSummary(
-                            id=str(dep["id"]),
-                            deposit_number=dep["deposit_number"],
-                            amount=dep["amount"],
-                            status=dep["status"],
-                        )
-                        for dep in deposits
-                    ],
+                    deposits=[SalesOrderDepositSummary(**dep) for dep in deposits],
                     created_at=order["created_at"].isoformat(),
                     updated_at=order["updated_at"].isoformat(),
                     created_by=str(order["created_by"])

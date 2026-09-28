@@ -310,11 +310,19 @@ class SalesOrderListItem(BaseModel):
 
 
 class SalesOrderDepositSummary(BaseModel):
-    """Linked customer deposit summary for a sales order (G2)."""
+    """Linked customer deposit summary for a sales order (G2). 28 Sep 2026: + tanggal/metode/rekening + atribusi
+    proforma (services.proforma_atribusi — sumber yang sama dengan plafon tagihan)."""
     id: str
     deposit_number: str
     amount: Decimal
     status: str
+    deposit_date: Optional[str] = None
+    payment_method: Optional[str] = None
+    account_name: Optional[str] = None        # format blok bayar PDF: 'BCA 123 a.n. <pemilik>' / nama kas
+    proforma_id: Optional[str] = None         # tautan LANGSUNG uang muka -> proforma
+    attributed_proforma_id: Optional[str] = None      # tautan ATAU hasil pencocokan; null = di luar tagihan
+    attributed_proforma_number: Optional[str] = None
+    attribution: Optional[str] = None         # "tautan" | "cocok" | null
 
 
 class SalesOrderDetail(BaseModel):

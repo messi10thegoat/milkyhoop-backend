@@ -30,13 +30,14 @@ def atribusikan(proformas: list, deposits: list) -> dict:
     ids = {p["id"] for p in proformas}
     per = {p["id"]: {"tertaut": NOL, "dicocokkan": NOL} for p in proformas}
     diterima = NOL
-    bebas = []
+    bebas, tautan = [], {}
     for d in deposits:
         amt = _d(d["amount"])
         diterima += amt
         if d.get("proforma_id") is not None:
             if d["proforma_id"] in ids:
                 per[d["proforma_id"]]["tertaut"] += amt
+                tautan[d["id"]] = d["proforma_id"]
             # tertaut ke proforma di luar daftar (mis. dikecualikan pemanggil) -> bukan uang bebas, tak dihitung ulang
             continue
         bebas.append(d)
@@ -59,7 +60,68 @@ def atribusikan(proformas: list, deposits: list) -> dict:
             tak += amt
             dep_tak.append(d["id"])
     return {"per_proforma": per, "pasangan": pasangan, "tak_tertagih": tak, "dep_tak_tertagih": dep_tak,
-            "diterima": diterima}
+            "diterima": diterima, "tautan": tautan,
+            "nomor": {p["id"]: p.get("proforma_number") for p in proformas}}
+
+
+def atribusi_uang_muka(hasil: dict, dep_id) -> dict:
+    """Atribusi SATU uang muka dari hasil atribusikan(): tautan langsung menang, lalu hasil pencocokan nominal,
+    selain itu di luar tagihan (null). Uang muka draf/void tak ada di hasil -> null."""
+    if dep_id in hasil["tautan"]:
+        pid, cara = hasil["tautan"][dep_id], "tautan"
+    elif dep_id in hasil["pasangan"]:
+        pid, cara = hasil["pasangan"][dep_id], "cocok"
+    else:
+        return {"attributed_proforma_id": None, "attributed_proforma_number": None, "attribution": None}
+    return {"attributed_proforma_id": str(pid), "attributed_proforma_number": hasil["nomor"].get(pid),
+            "attribution": cara}
+
+
+SQL_UANG_MUKA_SO = """
+SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.status, cd.payment_method, cd.proforma_id,
+       b.account_name, b.bank_name, b.account_number, b.account_holder_name, coa.name AS coa_name
+FROM customer_deposits cd
+LEFT JOIN LATERAL (
+    SELECT ba.account_name, ba.bank_name, ba.account_number, ba.account_holder_name FROM bank_accounts ba
+    WHERE ba.tenant_id = cd.tenant_id
+      AND (ba.id = cd.bank_account_id OR (cd.bank_account_id IS NULL AND ba.coa_id = cd.account_id))
+    ORDER BY (ba.id = cd.bank_account_id) DESC NULLS LAST, ba.is_active DESC LIMIT 1
+) b ON true
+LEFT JOIN chart_of_accounts coa ON coa.id = cd.account_id AND coa.tenant_id = cd.tenant_id
+WHERE cd.tenant_id = $1 AND cd.sales_order_id = $2 AND cd.status <> 'void'
+ORDER BY cd.created_at, cd.id
+"""
+
+
+def label_rekening(r) -> str | None:
+    """Rekening penerima dalam format blok bayar PDF: 'BCA 8295032185 a.n. <pemilik>' (pemilik lewat
+    faktur_cetak.pemilik_rekening dari account_holder_name; nama akun TIDAK dicetak sebagai pemilik). Kas tanpa
+    nomor -> nama akun Kas & Bank; tanpa akun Kas & Bank -> nama CoA."""
+    from . import faktur_cetak
+    inti = " ".join(x.strip() for x in (r["bank_name"], r["account_number"]) if x and x.strip() and x.strip() != "-")
+    if inti and r["account_number"] and r["account_number"].strip() not in ("", "-"):
+        an = faktur_cetak.pemilik_rekening(r["bank_name"], None, r["account_holder_name"])
+        return f"{inti} a.n. {an}" if an else inti
+    return r["account_name"] or r["coa_name"]
+
+
+async def uang_muka_so(conn, tenant_id: str, so_id) -> list:
+    """deposits[] detail SO (bukan void) + atribusi dari muat_atribusi — SUMBER YANG SAMA dengan plafon tagihan,
+    PDF proforma dan 'Sudah Dibayar'."""
+    rows = await conn.fetch(SQL_UANG_MUKA_SO, tenant_id, so_id)
+    hasil = (await muat_atribusi(conn, tenant_id, [so_id])).get(so_id) if rows else None
+    out = []
+    for r in rows:
+        atr = atribusi_uang_muka(hasil, r["id"]) if hasil else atribusi_uang_muka(
+            {"tautan": {}, "pasangan": {}, "nomor": {}}, r["id"])
+        out.append({
+            "id": str(r["id"]), "deposit_number": r["deposit_number"], "amount": r["amount"], "status": r["status"],
+            "deposit_date": r["deposit_date"].isoformat() if r["deposit_date"] else None,
+            "payment_method": r["payment_method"], "account_name": label_rekening(r),
+            "proforma_id": str(r["proforma_id"]) if r["proforma_id"] else None,
+            **atr,
+        })
+    return out
 
 
 async def muat_atribusi(conn, tenant_id: str, so_ids: list, exclude_proforma_id=None) -> dict:
