@@ -1601,6 +1601,39 @@ async def preview_close_sales_order(
         raise HTTPException(status_code=500, detail="Failed to preview close")
 
 
+from ..services.so_pelunasan import SOReceivePaymentPreviewRequest, pratinjau_pelunasan_so  # noqa: E402
+
+
+@router.post("/{order_id}/receive-payment/preview")
+async def preview_receive_payment_from_order(
+    request: Request, order_id: str, body: SOReceivePaymentPreviewRequest = None
+):
+    """PRATINJAU "Terima pelunasan" (halaman CW): rencana tertua-dulu atas faktur terbit SO + penerimaan NYATA
+    lewat inti create yang sama (receive_payments.buat_penerimaan), di transaksi yang SELALU di-ROLLBACK.
+    200 walau tak bisa disimpan (blocks). Tulis = POST /api/receive-payments dengan `payload` dari sini.
+    Lihat services/so_pelunasan.py."""
+    try:
+        ctx = get_user_context(request)
+        so_id = _so_uuid(order_id)  # id jalur tak sah -> 404 SEBELUM DB
+        pool = await get_pool()
+        from .receive_payments import _ensure_receive_payments_role_preconditions
+        await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                data = await pratinjau_pelunasan_so(conn, ctx, so_id, body or SOReceivePaymentPreviewRequest())
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing receive payment for order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview receive payment")
+
+
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
 async def create_shipment(request: Request, order_id: str, body: CreateShipmentRequest):
     """DINONAKTIFKAN — keputusan K2 (rencana Proforma, butir 3.4.5).

@@ -1150,6 +1150,270 @@ def _sidik_penerimaan(body) -> str:
     return hash_payload(d)
 
 
+async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
+    """Inti POST /receive-payments (validasi -> INSERT draf + alokasi -> posting bila bukan draf), di
+    transaksi PEMANGGIL. SATU-SATUNYA definisi: dipakai rute create (dibungkus idempotency) DAN
+    POST /sales-orders/{id}/receive-payment/preview (transaksi SELALU di-ROLLBACK). Galat pertama -> 400.
+    Lock domain/idempotency tetap milik pemanggil."""
+    # Check if accounting period is open (only if not saving as draft)
+    if not body.save_as_draft:
+        await check_period_is_open(
+            conn, ctx["tenant_id"], body.payment_date
+        )
+
+    # Validate bank account exists and is asset type
+    # Support both CoA UUID and bank_accounts UUID
+    bank_account_uuid = UUID(body.bank_account_id)
+    bank_account = await conn.fetchrow(
+        """
+        SELECT id, account_code, name, account_type
+        FROM chart_of_accounts
+        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+    """,
+        bank_account_uuid,
+        ctx["tenant_id"],
+    )
+
+    # If not found in CoA, try bank_accounts table (frontend sends bank_accounts.id)
+    if not bank_account:
+        ba_row = await conn.fetchrow(
+            """
+            SELECT ba.coa_id, ca.id, ca.account_code, ca.name, ca.account_type
+            FROM bank_accounts ba
+            JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
+            WHERE ba.id = $1 AND ba.tenant_id = $2
+            """,
+            bank_account_uuid,
+            ctx["tenant_id"],
+        )
+        if ba_row:
+            bank_account = ba_row
+            body.bank_account_id = str(ba_row["coa_id"])
+
+    if not bank_account:
+        raise HTTPException(
+            status_code=400, detail="Bank account not found"
+        )
+
+    if bank_account["account_type"] != "ASSET":
+        raise HTTPException(
+            status_code=400,
+            detail="Bank account must be an asset account (Kas/Bank)",
+        )
+
+    # t29-metode-dari-akun: override sah klien, atau turunan jenis akun
+    metode = await tentukan_metode(
+        conn, str(ctx["tenant_id"]), bank_account_uuid, body.payment_method
+    )
+
+    # Validate customer exists.
+    # customers.id = UUID (terverifikasi [SQL] 2026-08-09).
+    # uuid: customers.id / sales_invoices / receive_payments.
+    # varchar: credit_notes.customer_id / customer_deposits.customer_id.
+    customer = await conn.fetchrow(
+        """
+        SELECT id, nama FROM customers
+        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+    """,
+        body.customer_id,
+        ctx["tenant_id"],
+    )
+
+    if not customer:
+        raise HTTPException(status_code=400, detail="Customer not found")
+    # Auto-fill names if not provided
+    if not body.customer_name:
+        body.customer_name = customer["nama"] or body.customer_id
+    if not body.bank_account_name:
+        body.bank_account_name = (
+            bank_account["name"] or bank_account["account_code"]
+        )
+
+    # Validate source deposit if source_type='deposit'
+    if body.source_type == "deposit":
+        deposit = await conn.fetchrow(
+            """
+            SELECT id, deposit_number, amount, amount_applied, amount_refunded, status
+            FROM customer_deposits
+            WHERE id = $1 AND tenant_id = $2 AND customer_id = $3
+        """,
+            UUID(body.source_deposit_id),
+            ctx["tenant_id"],
+            body.customer_id,  # FIX_RCV_DEPOSIT_CUSTOMERID: customer_deposits.customer_id is VARCHAR (customers.id), passing UUID() -> asyncpg type-mismatch 500
+        )
+
+        if not deposit:
+            raise HTTPException(
+                status_code=400, detail="Source deposit not found"
+            )
+
+        if deposit["status"] not in ("posted", "partial"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot use deposit with status '{deposit['status']}'",
+            )
+
+        deposit_remaining = (
+            deposit["amount"]
+            - (deposit["amount_applied"] or 0)
+            - (deposit["amount_refunded"] or 0)
+        )
+        if body.total_amount > deposit_remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment amount ({body.total_amount}) exceeds deposit remaining ({deposit_remaining})",
+            )
+
+    # Validate allocations
+    total_allocated = 0
+    validated_allocations = []
+
+    for alloc in body.allocations:
+        invoice = await conn.fetchrow(
+            """
+            SELECT id, invoice_number, total_amount, status, customer_id
+            FROM sales_invoices
+            WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+        """,
+            UUID(alloc.invoice_id),
+            ctx["tenant_id"],
+        )
+
+        if not invoice:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invoice {alloc.invoice_id} not found",
+            )
+
+        if str(invoice["customer_id"]) != body.customer_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
+            )
+
+        # Law 16: compute remaining from journal, not amount_paid
+        invoice_remaining = await get_invoice_remaining_from_journal(
+            conn, ctx["tenant_id"], invoice["id"]
+        )
+        if alloc.amount_applied > invoice_remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Allocation ({alloc.amount_applied}) exceeds invoice remaining ({invoice_remaining})",
+            )
+
+        validated_allocations.append(
+            {
+                "invoice_id": invoice["id"],
+                "invoice_number": invoice["invoice_number"],
+                "invoice_amount": invoice["total_amount"],
+                "remaining_before": invoice_remaining,
+                "amount_applied": alloc.amount_applied,
+                "remaining_after": invoice_remaining - alloc.amount_applied,
+            }
+        )
+        total_allocated += alloc.amount_applied
+
+    # Calculate amounts
+    allocated_amount = total_allocated
+    # Effective amount after discount
+    effective_amount = body.total_amount + body.discount_amount
+    unapplied_amount = effective_amount - allocated_amount
+
+    if unapplied_amount < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Total allocation ({allocated_amount}) exceeds payment amount ({effective_amount})",
+        )
+
+    # Generate payment number
+    payment_number = await conn.fetchval(
+        "SELECT generate_receive_payment_number($1)", ctx["tenant_id"]
+    )
+
+    # Insert payment
+    payment_id = await conn.fetchval(
+        """
+        INSERT INTO receive_payments (
+            tenant_id, payment_number, customer_id, customer_name,
+            payment_date, payment_method, bank_account_id, bank_account_name,
+            source_type, source_deposit_id,
+            total_amount, allocated_amount, unapplied_amount,
+            discount_amount, discount_account_id,
+            reference_number, notes, status, created_by, idempotency_key
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18, $19)
+        RETURNING id
+    """,
+        ctx["tenant_id"],
+        payment_number,
+        body.customer_id,  # customers.id = UUID ([SQL] 2026-08-09);
+        # varchar hanya di credit_notes/customer_deposits
+        body.customer_name,
+        body.payment_date,
+        metode,
+        UUID(body.bank_account_id),
+        body.bank_account_name,
+        body.source_type,
+        UUID(body.source_deposit_id) if body.source_deposit_id else None,
+        body.total_amount,
+        allocated_amount,
+        unapplied_amount,
+        body.discount_amount,
+        UUID(body.discount_account_id)
+        if body.discount_account_id
+        else None,
+        body.reference_number,
+        body.notes,
+        ctx["user_id"],
+        body.idempotency_key,
+    )
+
+    # Insert allocations
+    for alloc in validated_allocations:
+        await conn.execute(
+            """
+            INSERT INTO receive_payment_allocations (
+                tenant_id, payment_id, invoice_id, invoice_number,
+                invoice_amount, remaining_before, amount_applied, remaining_after
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+            ctx["tenant_id"],
+            payment_id,
+            alloc["invoice_id"],
+            alloc["invoice_number"],
+            alloc["invoice_amount"],
+            alloc["remaining_before"],
+            alloc["amount_applied"],
+            alloc["remaining_after"],
+        )
+
+    logger.info(
+        f"Receive payment created: {payment_id}, number={payment_number}"
+    )
+
+    result = {
+        "success": True,
+        "message": "Receive payment created successfully",
+        "data": {
+            "id": str(payment_id),
+            "payment_number": payment_number,
+            "total_amount": body.total_amount,
+            "allocated_amount": allocated_amount,
+            "unapplied_amount": unapplied_amount,
+            "status": "draft",
+            "payment_method": metode,  # nilai TERSIMPAN
+        },
+    }
+
+    # Auto post if not draft
+    if not body.save_as_draft:
+        post_result = await _post_payment(conn, ctx, payment_id)
+        result["data"]["status"] = "posted"
+        result["data"]["journal_id"] = post_result.get("journal_id")
+        result["message"] = "Receive payment created and posted"
+
+    return result
+
+
 @router.post("", response_model=ReceivePaymentResponse, status_code=201)
 async def create_receive_payment(request: Request, body: CreateReceivePaymentRequest):
     """
@@ -1216,263 +1480,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 # Law 14: seluruh operasi dibungkus supaya request kedua me-REPLAY
                 # hasilnya, bukan menerima error atas sesuatu yang sudah berhasil.
                 async def _op():
-                    # Check if accounting period is open (only if not saving as draft)
-                    if not body.save_as_draft:
-                        await check_period_is_open(
-                            conn, ctx["tenant_id"], body.payment_date
-                        )
-
-                    # Validate bank account exists and is asset type
-                    # Support both CoA UUID and bank_accounts UUID
-                    bank_account_uuid = UUID(body.bank_account_id)
-                    bank_account = await conn.fetchrow(
-                        """
-                        SELECT id, account_code, name, account_type
-                        FROM chart_of_accounts
-                        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                    """,
-                        bank_account_uuid,
-                        ctx["tenant_id"],
-                    )
-
-                    # If not found in CoA, try bank_accounts table (frontend sends bank_accounts.id)
-                    if not bank_account:
-                        ba_row = await conn.fetchrow(
-                            """
-                            SELECT ba.coa_id, ca.id, ca.account_code, ca.name, ca.account_type
-                            FROM bank_accounts ba
-                            JOIN chart_of_accounts ca ON ca.id = ba.coa_id AND ca.tenant_id = ba.tenant_id
-                            WHERE ba.id = $1 AND ba.tenant_id = $2
-                            """,
-                            bank_account_uuid,
-                            ctx["tenant_id"],
-                        )
-                        if ba_row:
-                            bank_account = ba_row
-                            body.bank_account_id = str(ba_row["coa_id"])
-
-                    if not bank_account:
-                        raise HTTPException(
-                            status_code=400, detail="Bank account not found"
-                        )
-
-                    if bank_account["account_type"] != "ASSET":
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Bank account must be an asset account (Kas/Bank)",
-                        )
-
-                    # t29-metode-dari-akun: override sah klien, atau turunan jenis akun
-                    metode = await tentukan_metode(
-                        conn, str(ctx["tenant_id"]), bank_account_uuid, body.payment_method
-                    )
-
-                    # Validate customer exists.
-                    # customers.id = UUID (terverifikasi [SQL] 2026-08-09).
-                    # uuid: customers.id / sales_invoices / receive_payments.
-                    # varchar: credit_notes.customer_id / customer_deposits.customer_id.
-                    customer = await conn.fetchrow(
-                        """
-                        SELECT id, nama FROM customers
-                        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                    """,
-                        body.customer_id,
-                        ctx["tenant_id"],
-                    )
-
-                    if not customer:
-                        raise HTTPException(status_code=400, detail="Customer not found")
-                    # Auto-fill names if not provided
-                    if not body.customer_name:
-                        body.customer_name = customer["nama"] or body.customer_id
-                    if not body.bank_account_name:
-                        body.bank_account_name = (
-                            bank_account["name"] or bank_account["account_code"]
-                        )
-
-                    # Validate source deposit if source_type='deposit'
-                    if body.source_type == "deposit":
-                        deposit = await conn.fetchrow(
-                            """
-                            SELECT id, deposit_number, amount, amount_applied, amount_refunded, status
-                            FROM customer_deposits
-                            WHERE id = $1 AND tenant_id = $2 AND customer_id = $3
-                        """,
-                            UUID(body.source_deposit_id),
-                            ctx["tenant_id"],
-                            body.customer_id,  # FIX_RCV_DEPOSIT_CUSTOMERID: customer_deposits.customer_id is VARCHAR (customers.id), passing UUID() -> asyncpg type-mismatch 500
-                        )
-
-                        if not deposit:
-                            raise HTTPException(
-                                status_code=400, detail="Source deposit not found"
-                            )
-
-                        if deposit["status"] not in ("posted", "partial"):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Cannot use deposit with status '{deposit['status']}'",
-                            )
-
-                        deposit_remaining = (
-                            deposit["amount"]
-                            - (deposit["amount_applied"] or 0)
-                            - (deposit["amount_refunded"] or 0)
-                        )
-                        if body.total_amount > deposit_remaining:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Payment amount ({body.total_amount}) exceeds deposit remaining ({deposit_remaining})",
-                            )
-
-                    # Validate allocations
-                    total_allocated = 0
-                    validated_allocations = []
-
-                    for alloc in body.allocations:
-                        invoice = await conn.fetchrow(
-                            """
-                            SELECT id, invoice_number, total_amount, status, customer_id
-                            FROM sales_invoices
-                            WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                        """,
-                            UUID(alloc.invoice_id),
-                            ctx["tenant_id"],
-                        )
-
-                        if not invoice:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Invoice {alloc.invoice_id} not found",
-                            )
-
-                        if str(invoice["customer_id"]) != body.customer_id:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
-                            )
-
-                        # Law 16: compute remaining from journal, not amount_paid
-                        invoice_remaining = await get_invoice_remaining_from_journal(
-                            conn, ctx["tenant_id"], invoice["id"]
-                        )
-                        if alloc.amount_applied > invoice_remaining:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Allocation ({alloc.amount_applied}) exceeds invoice remaining ({invoice_remaining})",
-                            )
-
-                        validated_allocations.append(
-                            {
-                                "invoice_id": invoice["id"],
-                                "invoice_number": invoice["invoice_number"],
-                                "invoice_amount": invoice["total_amount"],
-                                "remaining_before": invoice_remaining,
-                                "amount_applied": alloc.amount_applied,
-                                "remaining_after": invoice_remaining - alloc.amount_applied,
-                            }
-                        )
-                        total_allocated += alloc.amount_applied
-
-                    # Calculate amounts
-                    allocated_amount = total_allocated
-                    # Effective amount after discount
-                    effective_amount = body.total_amount + body.discount_amount
-                    unapplied_amount = effective_amount - allocated_amount
-
-                    if unapplied_amount < 0:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Total allocation ({allocated_amount}) exceeds payment amount ({effective_amount})",
-                        )
-
-                    # Generate payment number
-                    payment_number = await conn.fetchval(
-                        "SELECT generate_receive_payment_number($1)", ctx["tenant_id"]
-                    )
-
-                    # Insert payment
-                    payment_id = await conn.fetchval(
-                        """
-                        INSERT INTO receive_payments (
-                            tenant_id, payment_number, customer_id, customer_name,
-                            payment_date, payment_method, bank_account_id, bank_account_name,
-                            source_type, source_deposit_id,
-                            total_amount, allocated_amount, unapplied_amount,
-                            discount_amount, discount_account_id,
-                            reference_number, notes, status, created_by, idempotency_key
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'draft', $18, $19)
-                        RETURNING id
-                    """,
-                        ctx["tenant_id"],
-                        payment_number,
-                        body.customer_id,  # customers.id = UUID ([SQL] 2026-08-09);
-                        # varchar hanya di credit_notes/customer_deposits
-                        body.customer_name,
-                        body.payment_date,
-                        metode,
-                        UUID(body.bank_account_id),
-                        body.bank_account_name,
-                        body.source_type,
-                        UUID(body.source_deposit_id) if body.source_deposit_id else None,
-                        body.total_amount,
-                        allocated_amount,
-                        unapplied_amount,
-                        body.discount_amount,
-                        UUID(body.discount_account_id)
-                        if body.discount_account_id
-                        else None,
-                        body.reference_number,
-                        body.notes,
-                        ctx["user_id"],
-                        body.idempotency_key,
-                    )
-
-                    # Insert allocations
-                    for alloc in validated_allocations:
-                        await conn.execute(
-                            """
-                            INSERT INTO receive_payment_allocations (
-                                tenant_id, payment_id, invoice_id, invoice_number,
-                                invoice_amount, remaining_before, amount_applied, remaining_after
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        """,
-                            ctx["tenant_id"],
-                            payment_id,
-                            alloc["invoice_id"],
-                            alloc["invoice_number"],
-                            alloc["invoice_amount"],
-                            alloc["remaining_before"],
-                            alloc["amount_applied"],
-                            alloc["remaining_after"],
-                        )
-
-                    logger.info(
-                        f"Receive payment created: {payment_id}, number={payment_number}"
-                    )
-
-                    result = {
-                        "success": True,
-                        "message": "Receive payment created successfully",
-                        "data": {
-                            "id": str(payment_id),
-                            "payment_number": payment_number,
-                            "total_amount": body.total_amount,
-                            "allocated_amount": allocated_amount,
-                            "unapplied_amount": unapplied_amount,
-                            "status": "draft",
-                            "payment_method": metode,  # nilai TERSIMPAN
-                        },
-                    }
-
-                    # Auto post if not draft
-                    if not body.save_as_draft:
-                        post_result = await _post_payment(conn, ctx, payment_id)
-                        result["data"]["status"] = "posted"
-                        result["data"]["journal_id"] = post_result.get("journal_id")
-                        result["message"] = "Receive payment created and posted"
-
-                    return result
+                    return await buat_penerimaan(conn, ctx, body)
 
                 # C2 (26 Sep 2026): kunci KIRIMAN KLIEN mengikat ISI permintaan -> kunci sama
                 # + isi beda = 409 IDEMPOTENCY_KEY_REUSED (seperti uang muka). Kunci default
