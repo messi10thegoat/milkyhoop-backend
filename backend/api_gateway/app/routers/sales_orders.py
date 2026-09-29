@@ -1328,7 +1328,9 @@ SO_BISA_DITUTUP = ("confirmed", "invoiced", "shipped", "partial_invoiced", "part
 async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
     """SATU-SATUNYA definisi aturan tutup SO: dipakai POST /close DAN /close/preview (tanpa tulisan).
     Mengembalikan SEMUA penghalang (tidak berhenti di yang pertama), urut = urutan /close dulu:
-    status -> uang muka bersisa -> pendapatan tertahan -> belum terfakturkan penuh tanpa alasan.
+    status -> pendapatan tertahan -> belum terfakturkan penuh tanpa alasan.
+    Uang muka bersisa BUKAN penghalang (putusan pemilik 28 Sep, pola NetSuite/SAP): ia tetap saldo
+    uang muka pelanggan -> `notes` + deposits[].after_close='tetap_saldo'.
     /close menaikkan blocks[0]["detail"] APA ADANYA -> galatnya identik dengan sebelum refaktor.
     Nol tulisan di sini (lock xact saja)."""
     await conn.execute(
@@ -1357,24 +1359,24 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
 
     from .customer_deposits import compute_deposit_remaining, linked_so_deposits
 
-    # (b) uang muka bersisa -> tolak, tanpa pengecualian
-    uang_muka, sisa_dp = [], []
+    # (b) uang muka bersisa -> TIDAK menghalangi (putusan pemilik 28 Sep, pola NetSuite Customer
+    # Deposit / SAP down payment): menutup SO = kejadian NON-keuangan, nol jurnal; liabilitas uang
+    # muka tak berubah dan tetap bisa DITERAPKAN ke faktur lain pelanggan yang SAMA (apply hanya
+    # menjaga pihak sama, bukan SO) atau DIKEMBALIKAN (refund). Perencana otomatis tetap per-SO.
+    uang_muka, notes = [], []
     for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
         rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
         uang_muka.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
-        if rem > 0:
-            sisa_dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": float(rem)})
+    sisa_dp = [x for x in uang_muka if x["remaining"] > 0]
     if sisa_dp:
-        detail = {
-            "code": "SO_DEPOSIT_REMAINING",
+        notes.append({
+            "code": "SO_DEPOSIT_STAYS",
             "message": (
-                f"SO {order['order_number']} tidak bisa ditutup: uang muka "
-                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
-                + " belum terpakai. Terapkan ke faktur pelanggan atau kembalikan (refund) dulu."
+                "Uang muka "
+                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{float(x['remaining']):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
+                + " tetap menjadi saldo uang muka pelanggan: bisa diterapkan ke faktur lain pelanggan ini atau dikembalikan."
             ),
-            "deposits": sisa_dp,
-        }
-        blocks.append({**detail, "detail": detail})
+        })
 
     # (c) F1: faktur SUDAH ditagih tapi pendapatan BELUM diakui (barang belum dikirim /
     # non-stok belum diakui) -> DITOLAK tanpa pengecualian: menutup di atasnya membuat
@@ -1439,7 +1441,8 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
         }
         blocks.append({**detail, "detail": detail})
 
-    return {"order": order, "blocks": blocks, "lines": lines, "kurang": kurang, "deposits": uang_muka}
+    return {"order": order, "blocks": blocks, "lines": lines, "kurang": kurang, "deposits": uang_muka,
+            "notes": notes}
 
 
 @router.post("/{order_id}/close", response_model=SalesOrderResponse)
@@ -1455,8 +1458,8 @@ async def close_sales_order(
           (BUKAN quantity_invoiced). Kurang -> ditolak, KECUALI dengan alasan (pelanggan
           membatalkan sisanya) -> ditutup + dicatat di audit_logs. Karena itu SO
           partial_invoiced / partial_shipped kini BISA ditutup, asal beralasan.
-      (b) uang muka milik SO yang masih bersisa -> DITOLAK TANPA pengecualian: menutup di
-          atasnya menelantarkan uang pelanggan. Terapkan ke faktur atau kembalikan dulu.
+      (b) uang muka milik SO yang masih bersisa -> TIDAK ditolak lagi (putusan pemilik 28 Sep):
+          tetap saldo uang muka pelanggan (nol jurnal), dicatat di riwayat + respons.
     Aturannya hidup di _rencana_tutup_so (dipakai juga /close/preview); di sini: penghalang
     pertama -> 400 dengan detail yang sama persis seperti sebelum pratinjau ada.
     """
@@ -1472,6 +1475,9 @@ async def close_sales_order(
                 if rencana["blocks"]:
                     raise HTTPException(status_code=400, detail=rencana["blocks"][0]["detail"])
                 order, kurang = rencana["order"], rencana["kurang"]
+                dp_tetap = [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
+                             "remaining": float(x["remaining"])}
+                            for x in rencana["deposits"] if x["remaining"] > 0]
 
                 await conn.execute(
                     """
@@ -1494,7 +1500,7 @@ async def close_sales_order(
                      + f" — {reason}") if kurang
                     else f"Pesanan {order['order_number']} ditutup" + (f" — {reason}" if reason else ""),
                     # alasan SELALU disimpan (MASTER/WORKSPACE 28 Sep), bukan hanya saat ada sisa
-                    {"reason": reason, "lines": kurang, "forced": bool(kurang)},
+                    {"reason": reason, "lines": kurang, "forced": bool(kurang), "deposits_remaining": dp_tetap},
                     source="api:sales_orders.close",
                 )
 
@@ -1503,7 +1509,7 @@ async def close_sales_order(
                     message="Sales order closed",
                     data={"order_number": order["order_number"], "status": "completed",
                           "forced": bool(kurang), "reason": reason,
-                          "cancelled_lines": kurang},
+                          "cancelled_lines": kurang, "deposits_remaining": dp_tetap},
                 )
 
     except HTTPException:
@@ -1577,11 +1583,13 @@ async def preview_close_sales_order(
                 "requires_reason": bool(r["kurang"]),
                 "status_after": "completed",
                 "blocks": [{k: v for k, v in b.items() if k != "detail"} for b in r["blocks"]],
+                "notes": r["notes"],
                 "lines": lines,
                 "cancelled_total": _f(sum(nilai.values(), _dd(0))),
                 "deposits": [
                     {"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
-                     "remaining": _f(x["remaining"]), "after_close": _f(x["remaining"])}
+                     "remaining": _f(x["remaining"]),
+                     "after_close": "tetap_saldo" if x["remaining"] > 0 else None}
                     for x in r["deposits"]
                 ],
             },

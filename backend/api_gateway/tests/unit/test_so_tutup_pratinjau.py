@@ -206,18 +206,19 @@ def test_satu_definisi_dipakai_kedua_rute():
 async def test_semua_penghalang_urutan_lama(pasang):
     pasang(_C(status="partial_invoiced", baris=_baris(4, 0), tertahan=[Decimal("50000")], dp=[Decimal("250000")]))
     d = await _pratinjau()
-    assert [b["code"] for b in d["blocks"]] == ["SO_DEPOSIT_REMAINING", "SO_REVENUE_NOT_RECOGNIZED", "SO_NOT_FULLY_INVOICED"]
+    # uang muka bersisa BUKAN penghalang (putusan pemilik 28 Sep) -> catatan + tetap_saldo
+    assert [b["code"] for b in d["blocks"]] == ["SO_REVENUE_NOT_RECOGNIZED", "SO_NOT_FULLY_INVOICED"]
     assert d["can_close"] is False and d["requires_reason"] is True
     assert all("detail" not in b for b in d["blocks"])
-    assert d["blocks"][0]["deposits"][0]["deposit_number"] == "DP-1"
-    assert d["deposits"] == [{"deposit_id": str(DPID), "deposit_number": "DP-1", "remaining": 250000.0, "after_close": 250000.0}]
+    assert [n["code"] for n in d["notes"]] == ["SO_DEPOSIT_STAYS"] and "DP-1 (sisa Rp250.000)" in d["notes"][0]["message"]
+    assert d["deposits"] == [{"deposit_id": str(DPID), "deposit_number": "DP-1", "remaining": 250000.0, "after_close": "tetap_saldo"}]
 
 
 @pytest.mark.asyncio
 async def test_status_tak_bisa_ditutup_ikut_dilaporkan_bersama_lainnya(pasang):
-    pasang(_C(status="draft", dp=[Decimal("1")]))
+    pasang(_C(status="draft", dp=[Decimal("1")], tertahan=[Decimal("5")]))
     d = await _pratinjau("x")
-    assert [b["code"] for b in d["blocks"]] == ["SO_STATUS_NOT_CLOSABLE", "SO_DEPOSIT_REMAINING"]
+    assert [b["code"] for b in d["blocks"]] == ["SO_STATUS_NOT_CLOSABLE", "SO_REVENUE_NOT_RECOGNIZED"]
 
 
 @pytest.mark.asyncio
@@ -231,12 +232,28 @@ async def test_alasan_menghapus_hanya_penghalang_belum_penuh(pasang):
 # ---------- /close tetap: penghalang PERTAMA, detail identik ----------
 
 @pytest.mark.asyncio
-async def test_close_tetap_menolak_uang_muka_dulu(pasang):
+async def test_close_penghalang_pertama_kini_pendapatan_tertahan(pasang):
     c = pasang(_C(status="partial_invoiced", baris=_baris(4, 0), tertahan=[Decimal("50000")], dp=[Decimal("250000")]))
     with pytest.raises(HTTPException) as e:
         await _tutup()
-    assert e.value.status_code == 400 and e.value.detail["code"] == "SO_DEPOSIT_REMAINING"
-    assert "DP-1 (sisa Rp250.000)" in e.value.detail["message"] and c.tulis == []
+    assert e.value.status_code == 400 and e.value.detail["code"] == "SO_REVENUE_NOT_RECOGNIZED" and c.tulis == []
+
+
+@pytest.mark.asyncio
+async def test_close_dengan_sisa_uang_muka_berhasil_tanpa_jurnal(pasang):
+    """Putusan pemilik 28 Sep (pola NetSuite/SAP): SO tertutup, uang muka TETAP saldo pelanggan.
+    Tulisan HANYA status SO + satu baris audit: nol jurnal, nol sentuhan customer_deposits."""
+    import json
+    c = pasang(_C(status="shipped", baris=_baris(10, 5), dp=[Decimal("250000")]))
+    r = await _tutup()
+    assert r.data["status"] == "completed"
+    assert r.data["deposits_remaining"] == [{"deposit_id": str(DPID), "deposit_number": "DP-1", "remaining": 250000.0}]
+    tulis = [s for s, _ in c.tulis]
+    assert len(tulis) == 2 and tulis[0].startswith("UPDATE sales_orders SET status = 'completed'")
+    assert "INSERT INTO audit_logs" in tulis[1]
+    assert not any(k in s for s in tulis for k in ("customer_deposit", "journal_", "bank_transactions"))
+    [(_, a)] = [(s, a) for s, a in c.tulis if "INSERT INTO audit_logs" in s]
+    assert json.loads(a[-1])["deposits_remaining"][0]["deposit_number"] == "DP-1"
 
 
 @pytest.mark.asyncio
@@ -255,6 +272,7 @@ SKENARIO = [
     dict(status="partial_invoiced", baris=_baris(4, 5)),
     dict(status="invoiced", baris=_baris(10, 5), tertahan=[Decimal("1000")]),
     dict(status="shipped", baris=_baris(10, 5), dp=[Decimal("5")]),
+    dict(status="partial_invoiced", baris=_baris(4, 5), dp=[Decimal("5")]),
     dict(status="draft"),
     dict(status="cancelled", alasan="x"),
     dict(status="partial_shipped", baris=_baris(4, 0), tertahan=[Decimal("9")], dp=[Decimal("3")], alasan="y"),
@@ -388,3 +406,82 @@ async def test_alasan_close_tampil_di_riwayat(pasang, monkeypatch, baris):
     h = await SR.riwayat_so(_HConn(baris_audit), T, SOID, semua)
     ringkas = [e["ringkas"] for e in h["events"] if e["jenis"] == ev]
     assert ringkas and "pelanggan minta ditutup" in ringkas[0], h
+
+
+
+# ---------- sisa uang muka SO tertutup tetap bisa DIPAKAI (apply) / DIKEMBALIKAN (refund) ----------
+# Jalur apply/refund TIDAK membaca SO: satu-satunya pagar pihak = pelanggan yang SAMA. Tiruan berhenti
+# di compute_deposit_remaining (_Lolos) = semua pagar SEBELUM tulis sudah dilewati.
+
+class _Lolos(BaseException):  # BaseException: rute refund menelan Exception jadi 500
+    pass
+
+
+C1 = UUID("40000000-0000-0000-0000-0000000000c1")
+C2 = UUID("40000000-0000-0000-0000-0000000000c2")
+INV_LAIN = UUID("50000000-0000-0000-0000-000000000001")
+
+
+class _DConn:
+    def __init__(self, pelanggan_faktur):
+        self.pf, self.q, self.tx = pelanggan_faktur, [], []
+
+    def transaction(self):
+        return _Tx(self)
+
+    async def execute(self, sql, *a):
+        self.q.append(sql)
+
+    async def fetchrow(self, sql, *a):
+        self.q.append(sql)
+        if "FROM customer_deposits" in sql:
+            # uang muka milik SO yang SUDAH DITUTUP (completed)
+            return {"id": DPID, "status": "partial", "customer_id": str(C1), "sales_order_id": SOID,
+                    "proforma_id": None, "deposit_number": "DP-1"}
+        if "FROM sales_invoices" in sql:
+            return {"invoice_number": "INV-SO-LAIN", "customer_id": self.pf}
+        raise AssertionError(sql[:60])
+
+
+@pytest.fixture
+def lolos(monkeypatch):
+    async def berhenti(*a, **k):
+        raise _Lolos()
+    monkeypatch.setattr(CD, "compute_deposit_remaining", berhenti)
+
+
+def _apl():
+    return SimpleNamespace(applications=[SimpleNamespace(invoice_id=str(INV_LAIN), amount=Decimal("100000"))],
+                           application_date=None)
+
+
+@pytest.mark.asyncio
+async def test_apply_sisa_dp_so_tertutup_ke_faktur_so_lain_pelanggan_sama(lolos):
+    c = _DConn(C1)
+    with pytest.raises(_Lolos):
+        await CD.apply_deposit_core(c, {"tenant_id": T, "user_id": None}, DPID, _apl())
+    assert not any("sales_orders" in s for s in c.q)  # status SO tak pernah dibaca
+
+
+@pytest.mark.asyncio
+async def test_apply_ke_pelanggan_lain_ditolak(lolos):
+    with pytest.raises(HTTPException) as e:
+        await CD.apply_deposit_core(_DConn(C2), {"tenant_id": T, "user_id": None}, DPID, _apl())
+    assert e.value.status_code == 400 and "pelanggan lain" in e.value.detail
+
+
+@pytest.mark.asyncio
+async def test_refund_sisa_dp_so_tertutup(lolos, monkeypatch):
+    c = _DConn(C1)
+
+    async def pool():
+        return _Pool(c)
+    monkeypatch.setattr(CD, "get_pool", pool)
+
+    async def prasyarat(*a, **k):
+        return None
+    monkeypatch.setattr(CD, "_ensure_role_preconditions", prasyarat)
+    body = SimpleNamespace(amount=Decimal("100000"), account_id=str(UUID(int=7)))
+    with pytest.raises(_Lolos):
+        await CD.refund_customer_deposit(_req(), DPID, body)
+    assert not any("sales_orders" in s for s in c.q)
