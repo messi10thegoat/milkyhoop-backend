@@ -3118,8 +3118,11 @@ async def get_receive_payment_pdf(
                 bank_name = pay["bank_account_name"]
                 if not bank_name and pay["bank_account_id"]:
                     bank_row = await conn.fetchrow(
-                        "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
-                        pay["bank_account_id"],
+                        # bank_accounts.id (jalur faktur lama) ATAU CoA id (inti create)
+                        """SELECT account_name, bank_name FROM bank_accounts
+                           WHERE tenant_id = $2 AND (id = $1 OR coa_id = $1)
+                           ORDER BY (id = $1) DESC LIMIT 1""",
+                        pay["bank_account_id"], ctx["tenant_id"],
                     )
                     if bank_row:
                         bank_name = bank_row["account_name"] or bank_row["bank_name"]

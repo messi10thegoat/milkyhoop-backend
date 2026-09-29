@@ -130,6 +130,7 @@ class _Conn:
         self.insert_rp = None
         self.update_rp = None
         self.kueri_jenis = []
+        self.pelanggan = uuid.uuid4()  # STABIL: inti create memeriksa faktur milik pelanggan yang sama
 
     def transaction(self):
         return _Tx()
@@ -156,7 +157,7 @@ class _Conn:
             return uuid.uuid4()
         if "SELECT bank_account_id FROM receive_payments" in q:
             return self.akun_tersimpan
-        if "journal_lines" in q:
+        if "journal_lines" in q or "compute_ar_outstanding" in q:  # sisa (29 Sep: jalur faktur = kanon)
             return Decimal("1000000")
         return None
 
@@ -173,7 +174,7 @@ class _Conn:
         if "FROM customers" in q:
             return {"id": a[0], "nama": "Pelanggan Uji"}
         if "FROM sales_invoices" in q:
-            return {"id": a[0], "invoice_number": "INV-UJI", "customer_id": uuid.uuid4(),
+            return {"id": a[0], "invoice_number": "INV-UJI", "customer_id": self.pelanggan,
                     "customer_name": "Pelanggan Uji", "status": "posted",
                     "total_amount": Decimal("1000000"), "amount_paid": 0, "ar_id": None}
         if "FROM receive_payments" in q and "status" in q:
@@ -316,7 +317,9 @@ async def _bayar_faktur(monkeypatch, conn, metode=None):
               account_id=str(uuid.uuid4()), bank_account_id=str(uuid.uuid4()))
     if metode is not None:
         kw["payment_method"] = metode
-    with pytest.raises(HTTPException):  # _Berhenti di INSERT -> handler membungkus 500
+    # 29 Sep: jalur faktur mencatat lewat receive_payments.buat_penerimaan (INSERT via fetchval di inti);
+    # tiruan berhenti sesudahnya (baris receive_payments tak lengkap) -> handler membungkus 500
+    with pytest.raises(HTTPException):
         await si.record_payment(_Req(), uuid.uuid4(), InvoicePaymentCreate(**kw))
     assert conn.insert_rp, "INSERT receive_payments tak tercapai — stimulus tak sampai"
     return _metode_insert_rp(conn)
@@ -346,12 +349,15 @@ async def test_faktur_akun_bank_tanpa_metode_jadi_bank_transfer(monkeypatch):
 
 
 def test_faktur_respons_membawa_metode_tersimpan():
-    """Variabel yang di-INSERT (pm) = variabel yang dipantulkan di respons."""
+    """Yang dipantulkan di respons = nilai TERSIMPAN (dibaca ulang dari baris receive_payments yang
+    ditulis inti), bukan nilai kiriman klien. 29 Sep: jalur faktur lewat buat_penerimaan."""
     src = Path(si.__file__).read_text()
     blok = src[src.index("async def record_payment("):]
     blok = blok[: blok.index("\n@router.")]
     assert '"payment_method": pm,' in blok
-    assert re.search(r"body\.payment_date,\s*\n\s*pm,", blok), "INSERT tak memakai pm"
+    assert re.search(r'payment_number, pm = rp_row\["payment_number"\], rp_row\["payment_method"\]', blok), \
+        "pm bukan nilai tersimpan"
+    assert "SELECT journal_id, journal_number, payment_number, payment_method FROM receive_payments" in blok
 
 
 def test_kwitansi_dan_aktivitas_memakai_label_metode():

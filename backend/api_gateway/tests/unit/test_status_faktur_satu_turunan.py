@@ -19,8 +19,10 @@ APP = Path(__file__).resolve().parents[2] / "app"
 PENULIS = {
     "routers/customer_deposits.py": ["apply_deposit_core", "reverse_deposit_application_core"],
     "routers/receive_payments.py": ["_post_payment", "unapply_receive_payment_allocation", "void_receive_payment"],
-    "routers/sales_invoices.py": ["record_payment"],
 }
+# 29 Sep: record_payment TIDAK lagi menulis sendiri -- ia mendelegasikan ke buat_penerimaan -> _post_payment
+# (yang ada di PENULIS). Penjaga delegasinya di test_penulis_faktur_lewat_inti di bawah.
+MENDELEGASI = {"routers/sales_invoices.py": ["record_payment"]}
 
 
 def _fungsi(berkas, nama):
@@ -100,3 +102,15 @@ async def test_lunas_jadi_paid_dan_nol_jadi_posted():
 async def test_draf_dan_void_tak_disentuh():
     for st in ("draft", "void"):
         assert (await _status(1000, 400, st)).exec == []
+
+
+@pytest.mark.parametrize("berkas,nama", [(b, n) for b, ns in MENDELEGASI.items() for n in ns])
+def test_penulis_faktur_lewat_inti(berkas, nama):
+    node, _ = _fungsi(berkas, nama)
+    assert _panggilan(node, "buat_penerimaan"), f"{nama} tak lewat inti buat_penerimaan"
+    for s in _sql(node):
+        s1 = " ".join(s.split()).lower()
+        assert "insert into receive_payments" not in s1 and "insert into journal" not in s1 \
+            and "update sales_invoices" not in s1, f"{nama} menulis sendiri: {s1[:100]}"
+    inti, _ = _fungsi("routers/receive_payments.py", "buat_penerimaan")
+    assert _panggilan(inti, "_post_payment"), "buat_penerimaan tak memposting lewat _post_payment"

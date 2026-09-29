@@ -52,6 +52,7 @@ def test_endpoint_tak_berparameter_helper():
 
 HARAP = [
     ("sales_invoices.py", "POST", "/{invoice_id}/post", "post_invoice"),
+    ("sales_invoices.py", "POST", "/{invoice_id}/payments", "record_payment"),  # 29 Sep: lewat buat_penerimaan
     ("sales_invoices.py", "POST", "/{invoice_id}/void", "void_invoice"),
     ("sales_invoices.py", "GET", "/{invoice_id}/pdf", "get_invoice_pdf"),
     ("sales_orders.py", "POST", "/{order_id}/to-invoice", "convert_to_invoice"),
