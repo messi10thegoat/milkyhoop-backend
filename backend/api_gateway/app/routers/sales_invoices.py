@@ -15,7 +15,7 @@ import asyncpg
 
 from ..services import faktur_cetak as _fc_snap
 from ..services.jatuh_tempo import hari_terlambat
-from ..services.pihak_helpers import segarkan_cache_piutang_faktur
+from ..services.pihak_helpers import segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 from ..services.so_riwayat import catat_riwayat, riwayat_faktur
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
@@ -3047,6 +3047,10 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             status_code=400, detail="Invalid customer_id format"
                         )
 
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID).
+                if customer_id_str:
+                    customer_id_str = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], customer_id_str)
+
                 # BUG-02 fix: Resolve customer_id from customer_name when missing
                 if not customer_id_str and body.customer_name:
                     # Exact match first (customers.nama is Bahasa Indonesia column)
@@ -3450,6 +3454,10 @@ async def update_invoice(
                     status_code=400,
                     detail="Cannot edit posted invoice. Only draft invoices can be edited.",
                 )
+
+            # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID) -- SEBELUM tulisan apa pun.
+            if "customer_id" in body.model_fields_set and body.customer_id:
+                body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
 
             async with conn.transaction():
                 # Hitung ulang bila BARIS atau DISKON DOKUMEN berubah. Diskon dokumen kini

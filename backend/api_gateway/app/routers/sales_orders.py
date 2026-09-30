@@ -13,6 +13,7 @@ import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..utils.idempotency import (
     ambil_replay_klien,
     hash_payload,
@@ -705,6 +706,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     "total_amount": _doc["total_amount"],
                 }
 
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID -> id tenant lain tersimpan).
+                body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
                 # Auto-resolve customer_name if not provided
                 if not body.customer_name and body.customer_id:
                     cust = await conn.fetchrow(
@@ -937,7 +940,8 @@ async def update_sales_order(
                         # customer_id tetap butuh cast uuid; null tetap boleh
                         # lewat (mengosongkan relasi) tanpa memanggil UUID(None).
                         if value is not None:
-                            value = uuid_module.UUID(str(value))
+                            _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
+                            value = uuid_module.UUID(_c) if _c else None
                         updates.append(f"{field} = ${param_idx}")
                     else:
                         updates.append(f"{field} = ${param_idx}")

@@ -1249,6 +1249,8 @@ async def update_customer_deposit(
 
                 # Build update
                 update_data = body.model_dump(exclude_unset=True)
+                if "customer_id" in update_data:  # pelanggan WAJIB milik tenant ini (30 Sep 2026), sama dengan create
+                    update_data["customer_id"] = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
 
                 if not update_data:
                     return {

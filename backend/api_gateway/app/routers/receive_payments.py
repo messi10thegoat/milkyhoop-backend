@@ -41,7 +41,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
-from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur
+from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 
 from ..schemas.receive_payments import (
     UnapplyAllocationRequest,
@@ -1558,6 +1558,8 @@ async def update_receive_payment(
                 update_data = body.model_dump(
                     exclude_unset=True, exclude={"allocations"}
                 )
+                if update_data.get("customer_id"):  # pelanggan WAJIB milik tenant ini (30 Sep 2026)
+                    update_data["customer_id"] = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
 
                 if not update_data and body.allocations is None:
                     return {

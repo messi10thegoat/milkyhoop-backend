@@ -38,6 +38,7 @@ Endpoints:
 """
 
 from fastapi import Depends, APIRouter, HTTPException, Request, Query
+from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.fitur_parkir import fitur_belum_tersedia
 from typing import Optional, Literal
@@ -947,6 +948,9 @@ async def receive_cheque(request: Request, body: ReceiveChequeRequest):
                 ar_account_id = await resolve_account_id(
                     conn, ctx["tenant_id"], AR_ACCOUNT
                 )
+
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
+                await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
 
                 # Create cheque
                 cheque_id = uuid_module.uuid4()

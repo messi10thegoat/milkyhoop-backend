@@ -19,6 +19,7 @@ from decimal import Decimal
 import logging
 import asyncpg
 
+from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..schemas.production import (
     CreateProductionOrderRequest,
     UpdateProductionOrderRequest,
@@ -446,6 +447,9 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                 planned_material = int(Decimal(str(bom["standard_cost"])) * multiplier)
                 planned_labor = int(Decimal(str(bom["labor_cost"])) * multiplier)
                 planned_overhead = int(Decimal(str(bom["overhead_cost"])) * multiplier)
+
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
+                await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
 
                 # Create production order
                 order_id = await conn.fetchval(

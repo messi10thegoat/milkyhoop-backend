@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.sales_receipts import (
@@ -380,6 +381,9 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                 raise HTTPException(
                     status_code=400, detail="Amount received is less than total"
                 )
+
+            # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
+            await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
 
             # Create receipt header
             receipt_row = await conn.fetchrow(

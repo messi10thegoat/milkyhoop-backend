@@ -8,6 +8,7 @@ from typing import Optional, Literal
 from datetime import date, datetime
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services import faktur_cetak as _fc_snap
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
@@ -649,6 +650,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                     totals["total_amount"], body.dp_amount, body.dp_percent
                 )
 
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID).
+                body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
                 # Auto-resolve customer_name if not provided
                 if not body.customer_name and body.customer_id:
                     cust = await conn.fetchrow(
@@ -837,7 +840,8 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
 
                 for field, value in update_data.items():
                     if field == "customer_id" and value is not None:
-                        value = uuid_module.UUID(str(value))
+                        _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
+                        value = uuid_module.UUID(_c) if _c else None
                     updates.append(f"{field} = ${param_idx}")
                     params.append(value)
                     param_idx += 1

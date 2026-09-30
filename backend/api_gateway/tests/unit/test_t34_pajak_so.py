@@ -54,6 +54,8 @@ class DB:
         s = " ".join(sql.split())
         if s.startswith('SELECT is_pkp FROM "Tenant"'):
             return self.is_pkp
+        if s.startswith("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2"):  # pelanggan satu tenant (30 Sep)
+            return 1
         if s.startswith("SELECT rate FROM tax_codes WHERE id"):
             k = self._kode(a[0], a[1])
             return k[1] if k else None
