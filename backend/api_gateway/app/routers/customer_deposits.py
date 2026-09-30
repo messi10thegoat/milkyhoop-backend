@@ -284,6 +284,11 @@ async def compute_deposit_remaining_many(conn, tenant_id: str, deposit_ids) -> d
                              SELECT journal_id FROM receive_payments
                              WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
                          )
+                         -- 30 Sep 2026: kredit dari KELEBIHAN NOTA KREDIT (credit_notes.created_deposit_id, V352)
+                         OR je.id IN (
+                             SELECT journal_id FROM credit_notes
+                             WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
+                         )
                          -- V299: kredit dari LEPAS PEMBAYARAN (jurnal lepas bersumber faktur, Law 29/30)
                          OR je.id IN (
                              SELECT unapply_journal_id FROM receive_payment_allocations

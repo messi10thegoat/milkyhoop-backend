@@ -949,7 +949,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         # 30 Sep (diukur di uji nyata WORKSPACE, CN-2609-0030): NK bertaut faktur LANGSUNG memotong sisa tagihan saat
         # diposting (compute_ar_outstanding). Catatan lama "belum memotong" SALAH -> diganti angka sebelum/sesudah.
         sisa = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
-    nomor, jurnal, stok = None, [], []
+    nomor, jurnal, stok, kredit = None, [], [], None
     if not blocks:
         try:
             async with conn.transaction():  # savepoint
@@ -957,6 +957,12 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
                 cn_id = UUID(h["data"]["id"])
                 nomor = h["data"]["credit_note_number"]
                 await posting_nota_kredit(conn, ctx, cn_id)
+                _k = await conn.fetchrow(
+                    """SELECT cd.deposit_number, cd.amount FROM credit_notes cn
+                       JOIN customer_deposits cd ON cd.id = cn.created_deposit_id
+                       WHERE cn.id = $1 AND cn.tenant_id = $2""", cn_id, tid)
+                if _k:
+                    kredit = {"deposit_number": _k["deposit_number"], "amount": float(_k["amount"])}
                 for j in await conn.fetch(
                     """SELECT id, journal_number, source_type, total_debit FROM journal_entries
                        WHERE tenant_id = $1 AND created_at = NOW() ORDER BY journal_number""", tid):
@@ -977,7 +983,11 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
             blocks.append({"code": "CN_REJECTED", "message": _pesan_galat(e)})
             nomor, jurnal, stok = None, [], []
     ok = not blocks
-    if ok and faktur is not None and sisa_sesudah is not None:
+    if ok and kredit:
+        notes.append({"code": "CN_EXCESS_TO_CUSTOMER_CREDIT",
+                      "message": f"{rupiah(kredit['amount'])} melebihi sisa tagihan -> jadi saldo kredit pelanggan "
+                                 f"{kredit['deposit_number']} (bisa dipakai untuk faktur lain atau dikembalikan)."})
+    if ok and faktur is not None and sisa_sesudah is not None and Decimal(str(sisa_sesudah)) != Decimal(str(sisa)):
         notes.append({"code": "CN_REDUCES_INVOICE",
                       "message": f"Sesudah diposting, sisa tagihan {faktur['invoice_number']} menjadi "
                                  f"{rupiah(sisa_sesudah)} (dari {rupiah(sisa)})."})
@@ -1000,6 +1010,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
                      "remaining_after_post": float(sisa_sesudah) if (ok and sisa_sesudah is not None) else None}
                     if faktur is not None else None),
         "journals_on_post": jurnal if ok else [],
+        "customer_credit_on_post": kredit if ok else None,
         "stock_returned_on_post": stok if ok else [],
         "payload": body.model_dump(mode="json") if ok else None,
     }
@@ -1530,7 +1541,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
         faktur_asal = await faktur_tenant_untuk_pelanggan(
             conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
         )
-        await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"])
+        await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"], kecuali_cn=credit_note_id)
         await periksa_bisa_dinotakan(
             conn, ctx["tenant_id"], faktur_asal["id"],
             [dict(r) for r in await conn.fetch(
@@ -1691,20 +1702,73 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             )
             line_number += 1
 
-    # Cr. Accounts Receivable
-    await conn.execute(
-        """
-        INSERT INTO journal_lines (
-            id, journal_id, line_number, account_id, debit, credit, memo
-        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-    """,
-        uuid_module.uuid4(),
-        journal_id,
-        line_number,
-        ar_account_id,
-        total_amount,
-        f"Pengurangan Piutang - {cn['credit_note_number']}",
-    )
+    # Cr. Accounts Receivable -- PUTUSAN PEMILIK 30 Sep 2026: NK bertaut faktur memotong piutang faktur itu PALING
+    # BANYAK sebesar sisa tagihannya (compute_ar_outstanding, sebelum NK ini); KELEBIHAN = saldo kredit pelanggan
+    # (Cr Uang Muka Pelanggan + baris customer_deposits, pola kelebihan bayar penerimaan), bukan piutang negatif.
+    # NK tanpa faktur asal: seluruhnya ke piutang (perilaku lama).
+    porsi_ar, kelebihan = total_amount, Decimal("0")
+    if faktur_asal:
+        _sisa_ar = Decimal(str(await conn.fetchval(
+            "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+            ctx["tenant_id"], faktur_asal["id"]) or 0))
+        porsi_ar = min(Decimal(str(total_amount)), max(_sisa_ar, Decimal("0")))
+        kelebihan = Decimal(str(total_amount)) - porsi_ar
+    if porsi_ar > 0:
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            ar_account_id,
+            porsi_ar,
+            f"Pengurangan Piutang - {cn['credit_note_number']}",
+        )
+        line_number += 1
+    created_deposit_id = None
+    if kelebihan > 0:
+        _dep_acc = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            _dep_acc,
+            kelebihan,
+            f"Saldo kredit pelanggan dari {cn['credit_note_number']}",
+        )
+        line_number += 1
+        _no_dep = await conn.fetchval("SELECT generate_customer_deposit_number($1, 'KRD')", ctx["tenant_id"])
+        created_deposit_id = await conn.fetchval(
+            """
+            INSERT INTO customer_deposits (
+                tenant_id, deposit_number, customer_id, customer_name,
+                amount, deposit_date, payment_method,
+                account_id, reference, notes,
+                status, posted_at, posted_by, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'other', $7, $8, $9, 'posted', NOW(), $10, $10)
+            RETURNING id
+        """,
+            ctx["tenant_id"],
+            _no_dep,
+            cn["customer_id"],
+            cn["customer_name"],
+            kelebihan,
+            cn["credit_note_date"],
+            sales_return_account_id,  # akun asal (sisi Dr NK); tak ada kas masuk
+            f"Nota kredit {cn['credit_note_number']}",
+            f"Saldo kredit dari kelebihan nota kredit {cn['credit_note_number']} atas {cn['original_invoice_number'] or '-'}",
+            ctx["user_id"],
+        )
+        await conn.execute("UPDATE credit_notes SET created_deposit_id = $2 WHERE id = $1",
+                           credit_note_id, created_deposit_id)
 
     # Law 20: Promote DRAFT -> POSTED after all lines inserted
     await conn.execute(
@@ -2643,6 +2707,23 @@ async def void_credit_note(
                         detail="Cannot void credit note with refunds. Reverse refunds first.",
                     )
 
+                # 30 Sep 2026: NK yang kelebihannya jadi saldo kredit pelanggan -> saldo itu ikut dibatalkan; bila
+                # sudah dipakai (diterapkan/dikembalikan) -> tolak, jurnal pembalik akan membuat kewajiban negatif.
+                dep_nk = None
+                if cn["created_deposit_id"]:
+                    from .customer_deposits import compute_deposit_remaining
+                    dep_nk = await conn.fetchrow(
+                        "SELECT id, deposit_number, amount, status FROM customer_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                        cn["created_deposit_id"], ctx["tenant_id"])
+                    if dep_nk and dep_nk["status"] != "void":
+                        _sisa_dep = await compute_deposit_remaining(conn, ctx["tenant_id"], dep_nk["id"])
+                        if _sisa_dep < Decimal(str(dep_nk["amount"])):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(f"Saldo kredit {dep_nk['deposit_number']} dari nota kredit ini sudah dipakai "
+                                        "(diterapkan ke faktur atau dikembalikan). Lepaskan pemakaiannya dulu."),
+                            )
+
                     # Law 5: Period lock check (tanggal jurnal pembalik = hari ini, tanggal bisnis)
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 period_row = await conn.fetchrow(
@@ -2834,6 +2915,12 @@ async def void_credit_note(
                         created_by=ctx["user_id"],
                         notes_prefix="VOID_CN",
                     )
+
+                if dep_nk and dep_nk["status"] != "void":
+                    await conn.execute(
+                        """UPDATE customer_deposits SET status = 'void', voided_at = NOW(), voided_by = $2,
+                               voided_reason = $3, updated_at = NOW() WHERE id = $1""",
+                        dep_nk["id"], ctx["user_id"], f"Nota kredit {cn['credit_note_number']} dibatalkan: {body.reason}")
 
                 # Update credit note status
                 await conn.execute(

@@ -78,6 +78,8 @@ class _C:
         self.q.append(sql)
 
     async def fetchrow(self, sql, *a):
+        if "JOIN customer_deposits cd ON cd.id = cn.created_deposit_id" in sql:
+            return None  # tanpa kelebihan -> tanpa saldo kredit
         if "FROM fiscal_periods" in sql:
             return {"status": self.periode} if self.periode else None
         raise AssertionError(sql[:80])

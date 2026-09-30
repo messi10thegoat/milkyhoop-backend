@@ -64,6 +64,8 @@ class DB:
             return Decimal("30000")
         if s.startswith("SELECT id FROM warehouses"):
             return GUDANG
+        if "FROM compute_ar_outstanding" in s:
+            return Decimal("999999999")  # sisa tagihan besar -> seluruh NK ke piutang (tanpa saldo kredit), perilaku lama
         raise AssertionError(f"fetchval tak dikenal: {s}")
 
     async def fetch(self, sql, *a):

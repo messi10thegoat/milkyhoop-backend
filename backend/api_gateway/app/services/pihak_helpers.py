@@ -103,18 +103,30 @@ async def faktur_tenant_untuk_pelanggan(conn, tenant_id: str, invoice_id, pelang
     return row
 
 
-async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn) -> None:
-    """Faktur harus sudah dibukukan & belum batal, dan nilai nota kredit <= sisa tagihan (compute_ar_outstanding)."""
+async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn, kecuali_cn=None) -> None:
+    """Faktur harus sudah dibukukan & belum batal, dan nilai nota kredit <= NILAI FAKTUR dikurangi nota kredit lain
+    yang tak-void atas faktur itu (draf ikut; NK ini sendiri dikecualikan).
+
+    PUTUSAN PEMILIK 30 Sep 2026 (langsung di sesi BACKEND): "batas nota kredit = nilai faktur dikurangi nota kredit
+    lain; kelebihan jadi saldo kredit pelanggan". Dulu batasnya SISA TAGIHAN (compute_ar_outstanding) -> retur atas
+    faktur LUNAS selalu ditolak (uji nyata WORKSPACE INV-2609-0140). Bagian di atas sisa tagihan dibukukan saat posting
+    ke Uang Muka Pelanggan (posting_nota_kredit), bukan piutang negatif."""
     if faktur["status"] in ("draft", "void") or faktur["journal_id"] is None:
         raise HTTPException(status_code=400, detail="Faktur belum dibukukan atau sudah dibatalkan.")
-    sisa = await conn.fetchval(
-        "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
-        tenant_id, faktur["id"],
-    )
-    if Decimal(str(total_cn)) > Decimal(str(sisa)):
+    nilai = await conn.fetchval(
+        "SELECT total_amount FROM sales_invoices WHERE id = $1 AND tenant_id = $2", faktur["id"], tenant_id)
+    lain = await conn.fetchval(
+        """SELECT COALESCE(SUM(total_amount), 0) FROM credit_notes
+           WHERE tenant_id = $1 AND original_invoice_id = $2 AND status <> 'void'
+             AND ($3::uuid IS NULL OR id <> $3::uuid)""",
+        tenant_id, faktur["id"], kecuali_cn)
+    batas = Decimal(str(nilai or 0)) - Decimal(str(lain or 0))
+    if Decimal(str(total_cn)) > batas:
         raise HTTPException(
             status_code=400,
-            detail=f"Nilai nota kredit ({rupiah(total_cn)}) melebihi sisa tagihan faktur ({rupiah(sisa)}).",
+            detail=(f"Nilai nota kredit ({rupiah(total_cn)}) melebihi yang masih bisa dinotakan dari faktur "
+                    f"({rupiah(max(batas, Decimal('0')))}: nilai faktur {rupiah(nilai or 0)} dikurangi nota kredit lain "
+                    f"{rupiah(lain or 0)})."),
         )
 
 
