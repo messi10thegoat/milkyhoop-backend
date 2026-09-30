@@ -672,6 +672,43 @@ async def periksa_tautan_baris_faktur(conn, tenant_id: str, faktur_id, items: li
         raise HTTPException(status_code=400, detail="Baris faktur yang dirujuk bukan milik faktur asal nota kredit ini.")
 
 
+async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, kecuali_cn=None) -> None:
+    """Putusan pemilik 30 Sep 2026 (dikonfirmasi langsung di sesi BACKEND): baris NK yang BERTAUT ke baris faktur
+    tak boleh melebihi yang masih bisa dinotakan = qty faktur - SIGMA qty NK tak-void lain yang bertaut ke baris itu
+    (draf ikut dihitung; NK ini sendiri dikecualikan). NK lama tanpa tautan tak dihitung per baris; penjaga tingkat
+    faktur (pastikan_cn_muat_faktur) tetap. Diserialkan per faktur (kunci CN_FAKTUR) oleh pemanggil lewat fungsi ini."""
+    per = {}
+    for i in items:
+        k = i.get("original_invoice_item_id")
+        if k:
+            per[str(k).lower()] = per.get(str(k).lower(), Decimal("0")) + Decimal(str(i.get("quantity") or 0))
+    if not per or not faktur_id:
+        return
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CN_FAKTUR:{tenant_id}:{faktur_id}")
+    rows = await conn.fetch(
+        """SELECT sii.id, sii.description, sii.quantity,
+                  COALESCE((SELECT SUM(cni.quantity) FROM credit_note_items cni
+                            JOIN credit_notes cn ON cn.id = cni.credit_note_id
+                            WHERE cni.original_invoice_item_id = sii.id AND cn.tenant_id = $3
+                              AND cn.status <> 'void' AND ($4::uuid IS NULL OR cn.id <> $4::uuid)), 0) AS sudah
+           FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id
+           WHERE sii.id = ANY($1::uuid[]) AND si.id = $2 AND si.tenant_id = $3""",
+        [UUID(k) for k in per], UUID(str(faktur_id)), tenant_id, UUID(str(kecuali_cn)) if kecuali_cn else None)
+    lebih = []
+    for r in rows:
+        bisa = max(Decimal(str(r["quantity"])) - Decimal(str(r["sudah"])), Decimal("0"))
+        minta = per.get(str(r["id"]), Decimal("0"))
+        if minta > bisa:
+            lebih.append({"original_invoice_item_id": str(r["id"]), "description": r["description"],
+                          "requested": float(minta), "creditable": float(bisa)})
+    if lebih:
+        raise HTTPException(status_code=400, detail={
+            "code": "CN_QTY_EXCEEDS_CREDITABLE",
+            "message": "Melebihi yang masih bisa dinotakan: " + ", ".join(
+                f"{x['description'] or '-'} (diminta {x['requested']:g}, sisa {x['creditable']:g})" for x in lebih) + ".",
+            "lines": lebih})
+
+
 async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
     """Inti POST /credit-notes (draf), di transaksi PEMANGGIL: rute create DAN /credit-notes/preview (savepoint lalu
     rollback). Isi = isi transaksi rute lama tanpa perubahan (30 Sep 2026)."""
@@ -706,6 +743,8 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
         original_invoice_number = faktur_asal["invoice_number"]
     await periksa_tautan_baris_faktur(conn, ctx["tenant_id"], faktur_asal["id"] if faktur_asal else None,
                                       [i.model_dump() for i in body.items])
+    await periksa_bisa_dinotakan(conn, ctx["tenant_id"], faktur_asal["id"] if faktur_asal else None,
+                                 [i.model_dump() for i in body.items])
 
     # Insert credit note
     cn_id = await conn.fetchval(
@@ -847,6 +886,12 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
                 await pastikan_cn_muat_faktur(conn, tid, faktur, doc["total_amount"])
             except HTTPException as e:
                 blocks.append({"code": "CN_EXCEEDS_INVOICE", "message": _pesan_galat(e)})
+    if faktur is not None:
+        try:
+            await periksa_bisa_dinotakan(conn, tid, faktur["id"], [i.model_dump() for i in body.items])
+        except HTTPException as e:
+            blocks.append({"code": "CN_QTY_EXCEEDS_CREDITABLE", "message": _pesan_galat(e),
+                           "lines": e.detail.get("lines") if isinstance(e.detail, dict) else None})
     if doc is not None:
         try:
             await tolak_ppn_bila_non_pkp(conn, tid, doc["tax_amount"])
@@ -1046,9 +1091,7 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
               "tax_rate": float(r["tax_rate"] or 0), "original_invoice_item_id": str(r["id"])}
         items.append(it)
         net_pilih += line_net(it)["net"]
-    if lebih:
-        notes.append({"code": "CN_QTY_EXCEEDS_CREDITABLE",
-                      "message": "Jumlah melebihi yang masih bisa dinotakan: " + ", ".join(lebih) + "."})
+    # lebih dari yang bisa dinotakan -> BLOK CN_QTY_EXCEEDS_CREDITABLE dari _rencana_nota_kredit (periksa_bisa_dinotakan)
     if Decimal(str(inv["shipping_amount"] or 0)) > 0:
         notes.append({"code": "CN_SHIPPING_NOT_INCLUDED", "message": "Ongkos kirim faktur tidak ikut dinotakan."})
     if not items and not blocks:
@@ -1182,6 +1225,7 @@ async def update_credit_note(
                               else await conn.fetchval("SELECT original_invoice_id FROM credit_notes WHERE id = $1",
                                                        credit_note_id))
                     await periksa_tautan_baris_faktur(conn, ctx["tenant_id"], _f_eff, _items)
+                    await periksa_bisa_dinotakan(conn, ctx["tenant_id"], _f_eff, _items, kecuali_cn=credit_note_id)
                     discount_percent = update_data.get("discount_percent", _cur["discount_percent"] or 0)
                     discount_amount = update_data.get("discount_amount", _cur["discount_amount"] or 0)
                     tax_rate = update_data.get("tax_rate", _cur["tax_rate"] or 0)
@@ -1478,6 +1522,11 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
         )
         await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"])
+        await periksa_bisa_dinotakan(
+            conn, ctx["tenant_id"], faktur_asal["id"],
+            [dict(r) for r in await conn.fetch(
+                "SELECT quantity, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", credit_note_id)],
+            kecuali_cn=credit_note_id)
 
     # Law 5: Period lock check
     period_row = await conn.fetchrow(

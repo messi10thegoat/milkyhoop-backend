@@ -83,8 +83,9 @@ async def test_sudah_dinotakan_mengurangi_bisa_dan_lebih_hanya_catatan():
                                    _b(lines=[{"original_invoice_item_id": str(L1), "quantity": "2"}]))
     assert r["lines"][0]["already_credited"] == 3.0 and r["lines"][0]["creditable"] == 1.0
     kode = [n["code"] for n in r["notes"]]
-    assert "CN_QTY_EXCEEDS_CREDITABLE" in kode and "CN_LEGACY_UNLINKED" in kode
-    assert r["blocks"] == [] and r["create"]["items"][0]["quantity"] == Decimal("2")  # BUKAN penghalang (putusan pemilik)
+    assert kode == ["CN_LEGACY_UNLINKED"]
+    # rakit tak menolak sendiri; blok datang dari _rencana_nota_kredit -> periksa_bisa_dinotakan (satu sumber)
+    assert r["blocks"] == [] and r["create"]["items"][0]["quantity"] == Decimal("2")
 
 
 @pytest.mark.asyncio
@@ -126,4 +127,45 @@ def test_insert_baris_nk_menyimpan_tautan():
     for nama in ("buat_nota_kredit", "update_credit_note"):
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
         assert any(isinstance(c, ast.Call) and getattr(c.func, "id", None) == "periksa_tautan_baris_faktur"
+                   for c in ast.walk(fn)), nama
+
+
+class _Bisa:
+    """baris faktur L1 qty 4; NK lain tak-void sudah 3 (draf ikut)."""
+
+    def __init__(self, sudah=Decimal("3")):
+        self.sudah, self.kunci, self.args = sudah, [], None
+
+    async def execute(self, sql, *a):
+        self.kunci.append(a[0])
+
+    async def fetch(self, sql, *a):
+        assert "cn.status <> 'void'" in sql and "cn.id <> $4::uuid" in sql and "si.tenant_id = $3" in sql
+        self.args = a
+        return [{"id": L1, "description": "Kaos", "quantity": Decimal("4"), "sudah": self.sudah}]
+
+
+@pytest.mark.asyncio
+async def test_penjaga_bisa_dinotakan_per_baris():
+    c = _Bisa()
+    await CN.periksa_bisa_dinotakan(c, T, INV, [{"original_invoice_item_id": str(L1), "quantity": Decimal("1")}])
+    assert c.kunci == [f"CN_FAKTUR:{T}:{INV}"]  # diserialkan per faktur
+    with pytest.raises(HTTPException) as e:
+        await CN.periksa_bisa_dinotakan(_Bisa(), T, INV, [{"original_invoice_item_id": str(L1), "quantity": Decimal("1")},
+                                                           {"original_invoice_item_id": str(L1), "quantity": Decimal("1")}])
+    assert e.value.status_code == 400 and e.value.detail["code"] == "CN_QTY_EXCEEDS_CREDITABLE"
+    assert e.value.detail["lines"] == [{"original_invoice_item_id": str(L1), "description": "Kaos", "requested": 2.0, "creditable": 1.0}]
+    c = _Bisa()
+    await CN.periksa_bisa_dinotakan(c, T, INV, [{"original_invoice_item_id": str(L1), "quantity": Decimal("1")}], kecuali_cn=UUID(int=55))
+    assert c.args[3] == UUID(int=55)  # NK ini sendiri dikecualikan (ubah/posting)
+    await CN.periksa_bisa_dinotakan(_Bisa(), T, INV, [{"description": "tanpa tautan", "quantity": 99}])  # lama: tak dihitung
+
+
+def test_penjaga_dipanggil_di_buat_ubah_posting_dan_pratinjau():
+    import ast
+    src = open(CN.__file__, encoding="utf-8").read()
+    t = ast.parse(src)
+    for nama in ("buat_nota_kredit", "update_credit_note", "posting_nota_kredit", "_rencana_nota_kredit"):
+        fn = next(n for n in ast.walk(t) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
+        assert any(isinstance(c, ast.Call) and getattr(c.func, "id", None) == "periksa_bisa_dinotakan"
                    for c in ast.walk(fn)), nama
