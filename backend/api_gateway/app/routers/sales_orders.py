@@ -30,6 +30,7 @@ from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
 from ..services.so_riwayat import catat_riwayat, riwayat_so
+from ..services.default_dokumen import default_pesanan, hitung_dp
 from ..services.termin_bayar import tentukan_jatuh_tempo, termin_hari
 from ..services.dashboard_izin import boleh_baca
 
@@ -388,6 +389,18 @@ async def get_sales_order_aggregate(
         raise HTTPException(status_code=500, detail="Failed to get sales order aggregate")
 
 
+@router.get("/defaults")
+async def get_sales_order_defaults(request: Request, customer_id: Optional[str] = None):
+    """Default form Pesanan Penjualan (default bisa-ditimpa tahap 1, 30 Sep 2026): persen uang muka perusahaan +
+    rekening penerimaan UTAMA (bendera eksplisit). null = tak ada default (FE membiarkan isian kosong). Server tak
+    mengisi dokumen sendiri; FE mengirim nilainya (snapshot). customer_id diterima untuk tahap 2 (per pelanggan)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await default_pesanan(conn, ctx["tenant_id"], customer_id)
+    return {"success": True, "data": data}
+
+
 @router.get("/{order_id}", response_model=SalesOrderDetailResponse)
 async def get_sales_order_detail(request: Request, order_id: str):
     """Get sales order detail with items and shipments."""
@@ -540,6 +553,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     # T199: syarat DP yang dibawa dari Penawaran (V224).
                     dp_percent=order["dp_percent"],
                     dp_amount=order["dp_amount"],
+                    dp_amount_source=order.get("dp_amount_source"),
                     payment_terms=order["payment_terms"],
                     payment_bank_name=order["payment_bank_name"],
                     payment_account_number=order["payment_account_number"],
@@ -706,6 +720,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     "tax_amount": _doc["tax_amount"],
                     "total_amount": _doc["total_amount"],
                 }
+                # Uang muka: nominal diketik = timpa; hanya persen = nominal DIHITUNG SERVER dari total (default_dokumen)
+                _dp = hitung_dp(_doc["total_amount"], body.dp_percent, body.dp_amount)
 
                 # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID -> id tenant lain tersimpan).
                 body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
@@ -731,11 +747,12 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         dp_percent, dp_amount, payment_terms,
                         payment_bank_name, payment_account_number,
                         payment_account_holder,
-                        shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp
+                        shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp,
+                        dp_amount_source
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                         $12, $13, $14, $15, $16, 'draft', $17, $18, $19,
-                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
+                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
                     )
                 """,
                     order_id,
@@ -757,9 +774,9 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     body.notes,
                     body.internal_notes,
                     ctx["user_id"],
-                    # DP ikut ditulis SEJAK PEMBUATAN ($20-$22).
-                    body.dp_percent,
-                    body.dp_amount,
+                    # DP ikut ditulis SEJAK PEMBUATAN ($20-$22) -- lewat hitung_dp (nominal dari persen = server).
+                    _dp["dp_percent"],
+                    _dp["dp_amount"],
                     body.payment_terms,
                     # Rekening tujuan cetak ($23-$25).
                     body.payment_bank_name,
@@ -770,6 +787,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     _doc["shipping_tax_rate"],
                     _doc["shipping_tax_amount"],
                     _doc["shipping_dpp"],
+                    _dp["dp_amount_source"],
                 )
 
                 for idx, item in enumerate(calculated_items):
@@ -843,9 +861,13 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
         doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
     f = lambda v: float(v) if v is not None else None  # noqa: E731
+    _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
     return {
         "success": True,
         "data": {
+            "dp_percent": f(_dp["dp_percent"]),
+            "dp_amount": f(_dp["dp_amount"]),
+            "dp_amount_source": _dp["dp_amount_source"],
             "subtotal": f(doc["net_subtotal"]),
             "discount_amount": f(doc["doc_discount"]),
             "line_tax_amount": f(doc["line_tax_amount"]),
@@ -937,6 +959,8 @@ async def update_sales_order(
                 update_data = body.model_dump(exclude_unset=True, exclude={"items"})
 
                 for field, value in update_data.items():
+                    if field in ("dp_percent", "dp_amount"):
+                        continue  # ditulis blok uang muka di bawah (sesudah total baru diketahui)
                     if field == "customer_id":
                         # customer_id tetap butuh cast uuid; null tetap boleh
                         # lewat (mengosongkan relasi) tanpa memanggil UUID(None).
@@ -1019,6 +1043,33 @@ async def update_sales_order(
                                    WHERE id = $1""",
                                 _ln["id"], _ln["tax_amount"], _ln["line_total"], _ln["dpp"],
                             )
+
+                # Uang muka (default bisa-ditimpa, 30 Sep): nominal diketik = 'manual' (terkunci); persen saja /
+                # nominal dikosongkan dengan persen ada = 'percent' (dihitung server dari total); sumber 'percent'
+                # dihitung ulang bila total berubah. Sumber NULL (SO lama) tak disentuh kecuali medan DP dikirim.
+                _dp_kirim = {"dp_percent", "dp_amount"} & _fs
+                _dp = None
+                _kini = await conn.fetchrow(
+                    "SELECT dp_percent, dp_amount, dp_amount_source, total_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                    _so_uuid(order_id), ctx["tenant_id"],
+                ) if (_dp_kirim or _recalc) else None
+                _total_baru = (_doc["total_amount"] if _recalc else _kini["total_amount"]) if _kini else None
+                if _dp_kirim:
+                    _pct = body.dp_percent if "dp_percent" in _fs else _kini["dp_percent"]
+                    if "dp_amount" in _fs:
+                        _amt = body.dp_amount
+                    elif _kini["dp_amount_source"] == "manual":
+                        _amt = _kini["dp_amount"]  # persen berubah, nominal diketik tetap terkunci
+                    else:
+                        _amt = None
+                    _dp = hitung_dp(_total_baru, _pct, _amt)
+                elif _recalc and _kini["dp_amount_source"] == "percent" and _kini["dp_percent"] is not None:
+                    _dp = hitung_dp(_total_baru, _kini["dp_percent"], None)
+                if _dp is not None:
+                    for fld in ("dp_percent", "dp_amount", "dp_amount_source"):
+                        updates.append(f"{fld} = ${param_idx}")
+                        params.append(_dp[fld])
+                        param_idx += 1
 
                 if body.items is not None:
                     await conn.execute(

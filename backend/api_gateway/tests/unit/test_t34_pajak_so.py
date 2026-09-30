@@ -69,6 +69,8 @@ class DB:
 
     async def fetchrow(self, sql, *a):
         s = " ".join(sql.split())
+        if s.startswith("SELECT dp_percent, dp_amount, dp_amount_source, total_amount FROM sales_orders"):
+            return {"dp_percent": None, "dp_amount": None, "dp_amount_source": None, "total_amount": 0}  # V349: tanpa DP
         if s.startswith("SELECT dpp_factor_num, dpp_factor_den FROM tax_codes WHERE id"):
             k = self._kode(a[0], a[1])
             return {"dpp_factor_num": k[2], "dpp_factor_den": k[3]} if k else None

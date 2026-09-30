@@ -367,6 +367,8 @@ class SalesOrderDetail(BaseModel):
     # Aturan repo: REQUEST boleh Decimal, RESPONSE tetap float.
     dp_percent: Optional[float] = None
     dp_amount: Optional[float] = None
+    # V349: 'percent' = nominal dihitung server dari persen (ikut total), 'manual' = diketik (terkunci), None = lama
+    dp_amount_source: Optional[str] = None
     payment_terms: Optional[str] = None
     payment_bank_name: Optional[str] = None
     payment_account_number: Optional[str] = None

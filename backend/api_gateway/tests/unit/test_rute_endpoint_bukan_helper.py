@@ -69,6 +69,7 @@ HARAP = [
     ("receive_payments.py", "POST", "/{payment_id}/post", "post_receive_payment"),
     ("sales_orders.py", "POST", "/{order_id}/receive-payment/preview", "preview_receive_payment_from_order"),
     ("sales_orders.py", "POST", "/{order_id}/fulfill/preview", "preview_fulfill_order"),
+    ("sales_orders.py", "GET", "/defaults", "get_sales_order_defaults"),
     ("sales_orders.py", "POST", "/{order_id}/fulfill", "fulfill_order"),
     ("sales_orders.py", "POST", "/{order_id}/close", "close_sales_order"),
     ("sales_orders.py", "POST", "/{order_id}/close/preview", "preview_close_sales_order"),
