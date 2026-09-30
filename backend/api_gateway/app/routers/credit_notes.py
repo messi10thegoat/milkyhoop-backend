@@ -943,11 +943,12 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
     blocks, notes = list(r["blocks"]), []
     faktur, doc = r["faktur"], r["doc"]
     sisa = None
+    _SQL_SISA = "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2"
+    sisa_sesudah = None
     if faktur is not None:
-        sisa = await get_invoice_remaining_from_journal(conn, tid, faktur["id"])
-        notes.append({"code": "CN_NOT_APPLIED_YET",
-                      "message": f"Sesudah diposting, kredit belum memotong sisa tagihan {faktur['invoice_number']}; "
-                                 "terapkan ke faktur lewat Terapkan."})
+        # 30 Sep (diukur di uji nyata WORKSPACE, CN-2609-0030): NK bertaut faktur LANGSUNG memotong sisa tagihan saat
+        # diposting (compute_ar_outstanding). Catatan lama "belum memotong" SALAH -> diganti angka sebelum/sesudah.
+        sisa = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
     nomor, jurnal, stok = None, [], []
     if not blocks:
         try:
@@ -970,10 +971,16 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
                 stok = [{"product_name": s["product_name"], "quantity": float(s["q"])} for s in await conn.fetch(
                     """SELECT product_name, SUM(quantity_in) AS q FROM inventory_ledger
                        WHERE tenant_id = $1 AND created_at = NOW() AND quantity_in > 0 GROUP BY 1 ORDER BY 1""", tid)]
+                if faktur is not None:
+                    sisa_sesudah = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
         except HTTPException as e:
             blocks.append({"code": "CN_REJECTED", "message": _pesan_galat(e)})
             nomor, jurnal, stok = None, [], []
     ok = not blocks
+    if ok and faktur is not None and sisa_sesudah is not None:
+        notes.append({"code": "CN_REDUCES_INVOICE",
+                      "message": f"Sesudah diposting, sisa tagihan {faktur['invoice_number']} menjadi "
+                                 f"{rupiah(sisa_sesudah)} (dari {rupiah(sisa)})."})
     return {
         "ok": ok,
         "can_save": ok,
@@ -989,7 +996,9 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         "tax_amount": float(doc["tax_amount"]) if doc else None,
         "total_amount": float(doc["total_amount"]) if doc else None,
         "invoice": ({"id": str(faktur["id"]), "invoice_number": faktur["invoice_number"],
-                     "remaining": float(sisa) if sisa is not None else None} if faktur is not None else None),
+                     "remaining": float(sisa) if sisa is not None else None,
+                     "remaining_after_post": float(sisa_sesudah) if (ok and sisa_sesudah is not None) else None}
+                    if faktur is not None else None),
         "journals_on_post": jurnal if ok else [],
         "stock_returned_on_post": stok if ok else [],
         "payload": body.model_dump(mode="json") if ok else None,

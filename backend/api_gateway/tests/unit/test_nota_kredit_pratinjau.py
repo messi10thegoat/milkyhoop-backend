@@ -82,6 +82,11 @@ class _C:
             return {"status": self.periode} if self.periode else None
         raise AssertionError(sql[:80])
 
+    async def fetchval(self, sql, *a):
+        if "compute_ar_outstanding" in sql:  # sisa tagihan: sebelum 80.000, sesudah posting (di savepoint) 30.000
+            return Decimal("30000") if "sp" in self.tx and self.tx[-1] == "sp" else Decimal("80000")
+        raise AssertionError(sql[:80])
+
     async def fetch(self, sql, *a):
         if "FROM journal_entries" in sql and "created_at = NOW()" in sql:
             return [{"id": UUID(int=1), "journal_number": "CN-2609-0009", "source_type": "CREDIT_NOTE", "total_debit": Decimal("50000")}]
@@ -204,8 +209,9 @@ async def test_bersih_buat_lalu_posting_di_savepoint_lalu_rollback(pasang):
     assert d["credit_note_number_preview"] == "CN-2609-0031" and d["total_amount"] == 55500.0
     assert d["journals_on_post"][0]["lines"][1] == {"account_code": "1-10400", "account_name": "Piutang Usaha",
                                                     "debit": 0.0, "credit": 50000.0}
-    assert d["invoice"] == {"id": str(INV), "invoice_number": "INV-7", "remaining": 80000.0}
-    assert [n["code"] for n in d["notes"]] == ["CN_NOT_APPLIED_YET"]
+    # 30 Sep: NK bertaut LANGSUNG memotong sisa tagihan saat posting (diukur nyata CN-2609-0030) -> sebelum/sesudah
+    assert d["invoice"] == {"id": str(INV), "invoice_number": "INV-7", "remaining": 80000.0, "remaining_after_post": 30000.0}
+    assert [n["code"] for n in d["notes"]] == ["CN_REDUCES_INVOICE"]
     assert d["payload"]["original_invoice_id"] == str(INV) and d["payload"]["items"][0]["description"] == "Koreksi"
 
 
