@@ -563,6 +563,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             tax_rate=float(item["tax_rate"]),
                             tax_amount=item["tax_amount"],
                             line_total=item["line_total"],
+                            line_net=item["line_total"] - (item["tax_amount"] or 0),
                             warehouse_id=str(item["warehouse_id"])
                             if item["warehouse_id"]
                             else None,

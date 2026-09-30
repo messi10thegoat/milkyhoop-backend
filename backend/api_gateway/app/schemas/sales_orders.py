@@ -64,14 +64,15 @@ class SalesOrderItemResponse(BaseModel):
     # (Surat Jalan aktif, sumber = header shipped_qty) — services/so_kirim.py:
     fulfilled_qty: float = 0
     unfulfilled_qty: float = 0
-    unfulfilled_value: float = 0  # (qty - terkirim) x line_total/qty; NETO sebelum pajak, tanpa diskon header/ongkir
+    unfulfilled_value: float = 0  # (qty - terkirim) x line_net/qty; NETO sebelum pajak, tanpa diskon header/ongkir
     unit: Optional[str] = None
     unit_price: int
     discount_percent: float = 0
     tax_id: Optional[str] = None
     tax_rate: float = 0
     tax_amount: float = 0
-    line_total: float
+    line_total: float  # BRUTO: neto baris + PPN baris (diukur 30 Sep)
+    line_net: float = 0  # neto baris = line_total - tax_amount (server; FE jangan menghitung sendiri)
     warehouse_id: Optional[str] = None
     sort_order: int = 0
     # Jenis baris (26 Sep 2026, CW): item_type dari master produk (null = baris teks bebas tanpa produk);
