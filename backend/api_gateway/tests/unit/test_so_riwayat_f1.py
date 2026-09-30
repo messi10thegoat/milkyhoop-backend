@@ -221,10 +221,19 @@ class _AConn:
 
     async def fetchrow(self, sql, *a):
         if "FROM sales_orders" in sql:
-            return {"id": SOID, "status": self.status, "order_number": "SO-1", "shipped_qty": 0, "invoiced_qty": 0}
+            return {"id": SOID, "status": self.status, "order_number": "SO-1", "shipped_qty": 0, "invoiced_qty": 0,
+                    "total_amount": 100000}
         raise AssertionError(sql[:60])
 
     async def fetch(self, sql, *a):
+        # 30 Sep: rencana batal membaca uang muka DRAF + proforma SO (tiruan: tak ada)
+        if "FROM customer_deposits cd" in sql and "'draft'" in sql:
+            return []
+        if "FROM proformas" in sql and "sales_order_id = $2" in sql:
+            return []
+        if "UPDATE proformas SET status = 'cancelled'" in sql:
+            self.tulis.append((" ".join(sql.split()), a))
+            return []
         if "allocated_amount" in sql:
             assert "si.tenant_id = $2" in sql and "NOT IN ('draft', 'void')" in sql
             return [{"invoice_number": "INV-1", "description": "Kaos", "sisa": s} for s in self.tertahan]
@@ -233,6 +242,8 @@ class _AConn:
         raise AssertionError(sql[:60])
 
     async def fetchval(self, sql, *a):
+        if "FOR UPDATE" in sql and sql.lstrip().startswith("SELECT 1"):
+            return 1  # kunci baris SO (30 Sep: /cancel mengunci dulu, lalu rencana)
         self.tulis.append((" ".join(sql.split()), a))
         return SOID if self.update_ok else None
 

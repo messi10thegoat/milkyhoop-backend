@@ -65,6 +65,8 @@ HARAP = [
     ("sales_orders.py", "POST", "/{order_id}/receive-payment/preview", "preview_receive_payment_from_order"),
     ("sales_orders.py", "POST", "/{order_id}/close", "close_sales_order"),
     ("sales_orders.py", "POST", "/{order_id}/close/preview", "preview_close_sales_order"),
+    ("sales_orders.py", "POST", "/{order_id}/cancel", "cancel_sales_order"),
+    ("sales_orders.py", "POST", "/{order_id}/cancel/preview", "preview_cancel_sales_order"),
     ("bill_payments.py", "POST", "/{payment_id}/void", None),
     ("expenses.py", "POST", "/{expense_id}/void", None),
     ("kasbank_v2.py", "POST", "/bank-transactions/{transaction_id}/void", "void_transaction"),

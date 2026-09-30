@@ -205,7 +205,9 @@ def test_batal_dan_hapus_so_memakai_pagar_pesanan():
             if any(isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_tolak_bila_ada_uang_muka_aktif"
                    for n in ast.walk(f)):
                 pemanggil.add(f.name)
-    assert {"cancel_sales_order", "delete_sales_order"} <= pemanggil
+    # 30 Sep (putusan pemilik LANGSUNG, pola SAP/NetSuite): BATAL tak lagi ditolak uang muka posted (tetap
+    # saldo pelanggan); HAPUS tetap dijaga -- baris SO lenyap, uang muka jadi yatim.
+    assert "delete_sales_order" in pemanggil and "cancel_sales_order" not in pemanggil
     pembungkus = next(f for f in pohon.body if isinstance(f, ast.AsyncFunctionDef)
                       and f.name == "_tolak_bila_ada_uang_muka_aktif")
     dipanggil = {getattr(n.func, "id", None) for n in ast.walk(pembungkus) if isinstance(n, ast.Call)}

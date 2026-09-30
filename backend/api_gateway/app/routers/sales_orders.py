@@ -1239,56 +1239,114 @@ async def confirm_sales_order(request: Request, order_id: str):
         raise HTTPException(status_code=500, detail="Failed to confirm sales order")
 
 
+SO_TAK_BISA_BATAL = ("cancelled", "completed", "invoiced")
+
+
+def _rp_teks(x) -> str:
+    return "Rp" + f"{float(x):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00")
+
+
+async def _rencana_batal_so(conn, ctx, order_id: str, reason) -> dict:
+    """SATU-SATUNYA definisi aturan batal SO: dipakai POST /cancel DAN /cancel/preview (tanpa tulisan).
+    SEMUA penghalang, urut = urutan /cancel lama: status -> ada kiriman/faktur -> uang muka DRAF.
+    /cancel menaikkan blocks[0]["detail"] APA ADANYA (galat lama identik).
+    Putusan pemilik 29 Sep (LANGSUNG di sesi BACKEND, pola SAP/NetSuite): uang muka POSTED/PARTIAL
+    bukan penghalang -> tetap saldo uang muka pelanggan (nol jurnal); proforma TERBIT ikut dibatalkan.
+    Uang muka DRAF tetap menghalangi: belum berjurnal, jadi bukan "saldo" -- posting atau hapus dulu.
+    Pemanggil WAJIB sudah memegang FOR UPDATE baris SO (atau di transaksi yang di-rollback)."""
+    order = await conn.fetchrow(
+        """SELECT id, status, order_number, shipped_qty, invoiced_qty, total_amount FROM sales_orders
+           WHERE id = $1 AND tenant_id = $2""",
+        _so_uuid(order_id), ctx["tenant_id"],
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Sales order not found")
+    blocks, notes = [], []
+    if order["status"] in SO_TAK_BISA_BATAL:
+        blocks.append({
+            "code": "SO_STATUS_NOT_CANCELLABLE",
+            "message": f"Pesanan {order['order_number']} berstatus '{order['status']}' — tidak bisa dibatalkan.",
+            "detail": f"Cannot cancel order with status '{order['status']}'",
+        })
+    if (order["shipped_qty"] or 0) > 0 or (order["invoiced_qty"] or 0) > 0:
+        blocks.append({
+            "code": "SO_HAS_SHIPMENTS_OR_INVOICES",
+            "message": f"Pesanan {order['order_number']} sudah punya pengiriman atau faktur — tidak bisa dibatalkan.",
+            "detail": "Cannot cancel order with shipments or invoices",
+        })
+
+    # uang muka DRAF (tertaut langsung / lewat proforma SO) -- predikat "aktif" dp_guard, status draft
+    draf = await conn.fetch(
+        """SELECT cd.id, cd.deposit_number, cd.amount FROM customer_deposits cd
+           WHERE cd.tenant_id = $2 AND cd.status = 'draft'
+             AND (cd.sales_order_id = $1
+                  OR cd.proforma_id IN (SELECT p.id FROM proformas p WHERE p.tenant_id = $2 AND p.sales_order_id = $1))
+           ORDER BY cd.deposit_number""",
+        order["id"], ctx["tenant_id"],
+    )
+    if draf:
+        pesan = (f"Pesanan {order['order_number']} punya uang muka draf ("
+                 + ", ".join(d["deposit_number"] for d in draf)
+                 + ") yang belum diposting. Posting atau hapus uang muka draf itu dulu.")
+        blocks.append({"code": "SO_DEPOSIT_DRAFT", "message": pesan, "detail": pesan,
+                       "deposits": [{"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"]} for d in draf]})
+
+    from .customer_deposits import compute_deposit_remaining, linked_so_deposits
+    uang_muka = []
+    for d in await linked_so_deposits(conn, ctx["tenant_id"], order["id"]):
+        rem = await compute_deposit_remaining(conn, ctx["tenant_id"], d["id"])
+        uang_muka.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
+    tetap = [x for x in uang_muka if x["remaining"] > 0]
+    if tetap:
+        notes.append({"code": "SO_DEPOSIT_STAYS", "message": (
+            "Uang muka " + ", ".join(f"{x['deposit_number']} (sisa {_rp_teks(x['remaining'])})" for x in tetap)
+            + " tetap menjadi saldo uang muka pelanggan: bisa diterapkan ke faktur lain pelanggan ini atau dikembalikan.")})
+
+    from .proformas import compute_paid_amount
+    proforma = []
+    for p in await conn.fetch(
+        """SELECT id, proforma_number, status, amount FROM proformas
+           WHERE tenant_id = $1 AND sales_order_id = $2 ORDER BY proforma_date, proforma_number NULLS LAST, created_at""",
+        ctx["tenant_id"], order["id"],
+    ):
+        proforma.append({"proforma_id": str(p["id"]), "proforma_number": p["proforma_number"], "status": p["status"],
+                         "amount": p["amount"], "paid": await compute_paid_amount(conn, ctx["tenant_id"], p["id"])})
+    batal = [p for p in proforma if p["status"] == "issued"]
+    if batal:
+        notes.append({"code": "SO_PROFORMAS_CANCELLED", "message": (
+            "Proforma " + ", ".join(p["proforma_number"] or "(tanpa nomor)" for p in batal)
+            + " ikut dibatalkan bersama pesanan.")})
+    return {"order": order, "blocks": blocks, "notes": notes, "deposits": uang_muka, "proformas": proforma}
+
+
 @router.post("/{order_id}/cancel", response_model=SalesOrderResponse)
 async def cancel_sales_order(
     request: Request, order_id: str, body: CancelSalesOrderRequest = None
 ):
-    """Cancel a sales order."""
+    """Cancel a sales order. Aturan = _rencana_batal_so (dipakai juga /cancel/preview); penghalang pertama
+    -> 400 dengan detail lama. Uang muka posted tetap saldo pelanggan (nol jurnal); proforma TERBIT SO ikut
+    dibatalkan di transaksi yang sama (cancelled_reason menyebut SO, riwayat per proforma)."""
     try:
         ctx = get_user_context(request)
         _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
+        alasan_batal = ((body.reason if body else None) or "").strip() or None
 
         async with pool.acquire() as conn:
-            order = await conn.fetchrow(
-                """
-                SELECT id, status, order_number, shipped_qty, invoiced_qty FROM sales_orders
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                _so_uuid(order_id),
-                ctx["tenant_id"],
-            )
-
-            if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
-
-            if order["status"] in ("cancelled", "completed", "invoiced"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot cancel order with status '{order['status']}'",
-                )
-
-            if order["shipped_qty"] > 0 or order["invoiced_qty"] > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot cancel order with shipments or invoices",
-                )
-
-            await _tolak_bila_ada_uang_muka_aktif(
-                conn, _so_uuid(order_id), ctx["tenant_id"], "dibatalkan"
-            )
-
-            alasan_batal = ((body.reason if body else None) or "").strip() or None
             async with conn.transaction():
-                # mutex baris SO (sama dengan DELETE & pembuatan uang muka) + guard DP DIULANG di dalamnya:
-                # DP yang dibuat sesudah cek di atas tak boleh berakhir menunjuk SO batal.
-                await conn.execute(
+                # mutex baris SO (sama dengan DELETE & pembuatan uang muka): uang muka/faktur/kirim yang
+                # dibuat bersamaan menunggu, lalu rencana dibaca di bawah kunci yang sama.
+                ada = await conn.fetchval(
                     "SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     _so_uuid(order_id), ctx["tenant_id"],
                 )
-                await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dibatalkan")
-                # UPDATE BERSYARAT: status & pencacah dibaca di atas tanpa kunci; faktur/kirim yang
-                # masuk di antaranya membuat syarat gagal -> 409, bukan SO batal berfaktur hidup.
+                if not ada:
+                    raise HTTPException(status_code=404, detail="Sales order not found")
+                rencana = await _rencana_batal_so(conn, ctx, order_id, alasan_batal)
+                if rencana["blocks"]:
+                    raise HTTPException(status_code=400, detail=rencana["blocks"][0]["detail"])
+                order = rencana["order"]
+                # UPDATE BERSYARAT (sabuk kedua): syarat gagal -> 409, bukan SO batal berfaktur hidup.
                 ok = await conn.fetchval(
                     """
                     UPDATE sales_orders SET status = 'cancelled'
@@ -1302,17 +1360,38 @@ async def cancel_sales_order(
                 )
                 if not ok:
                     raise HTTPException(status_code=409, detail="Pesanan sudah berubah (dikirim/difakturkan/diubah). Muat ulang halaman.")
+                alasan_pf = f"Pesanan {order['order_number']} dibatalkan" + (f": {alasan_batal}" if alasan_batal else "")
+                pf_batal = await conn.fetch(
+                    """UPDATE proformas SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = $3
+                       WHERE sales_order_id = $1 AND tenant_id = $2 AND status = 'issued'
+                       RETURNING id, proforma_number""",
+                    order["id"], ctx["tenant_id"], alasan_pf,
+                )
+                for p in pf_batal:
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "proformas", p["id"], p["proforma_number"], "PROFORMA_CANCELLED",
+                        ctx["user_id"], f"Proforma {p['proforma_number'] or ''} dibatalkan — {alasan_pf}".replace("  ", " "),
+                        {"reason": alasan_batal, "sales_order_id": str(order["id"]), "sebab": "SO_CANCELLED"},
+                        source="api:sales_orders.cancel",
+                    )
+                proformas_cancelled = [{"proforma_id": str(p["id"]), "proforma_number": p["proforma_number"]} for p in pf_batal]
+                deposits_remaining = [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
+                                       "remaining": float(x["remaining"])}
+                                      for x in rencana["deposits"] if x["remaining"] > 0]
                 await catat_riwayat(
                     conn, ctx["tenant_id"], "sales_orders", order["id"], order["order_number"],
                     "SALES_ORDER_CANCELLED", ctx["user_id"],
                     f"Pesanan {order['order_number']} dibatalkan" + (f": {alasan_batal}" if alasan_batal else ""),
-                    {"reason": alasan_batal}, source="api:sales_orders.cancel",
+                    {"reason": alasan_batal, "proformas_cancelled": proformas_cancelled,
+                     "deposits_remaining": deposits_remaining},
+                    source="api:sales_orders.cancel",
                 )
 
             return SalesOrderResponse(
                 success=True,
                 message="Sales order cancelled",
-                data={"order_number": order["order_number"], "status": "cancelled"},
+                data={"order_number": order["order_number"], "status": "cancelled", "reason": alasan_batal,
+                      "proformas_cancelled": proformas_cancelled, "deposits_remaining": deposits_remaining},
             )
 
     except HTTPException:
@@ -1320,6 +1399,48 @@ async def cancel_sales_order(
     except Exception as e:
         logger.error(f"Error cancelling sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to cancel sales order")
+
+
+@router.post("/{order_id}/cancel/preview")
+async def preview_cancel_sales_order(
+    request: Request, order_id: str, body: CancelSalesOrderRequest = None
+):
+    """PRATINJAU batal SO: body SAMA dengan /cancel, NOL tulisan (transaksi SELALU di-ROLLBACK). Aturan =
+    _rencana_batal_so. SEMUA penghalang; 200 walau tak bisa dibatalkan."""
+    try:
+        ctx = get_user_context(request)
+        _so_uuid(order_id)
+        pool = await get_pool()
+        alasan = ((body.reason if body else None) or "").strip() or None
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                r = await _rencana_batal_so(conn, ctx, order_id, alasan)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        o = r["order"]
+        return {"success": True, "data": {
+            "order_number": o["order_number"],
+            "status": o["status"],
+            "can_cancel": not r["blocks"],
+            "status_after": "cancelled",
+            "reason": alasan,
+            "blocks": [{k: v for k, v in b.items() if k != "detail"} for b in r["blocks"]],
+            "notes": r["notes"],
+            "total_amount": _f(o["total_amount"]),
+            "deposits": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
+                          "remaining": _f(x["remaining"]),
+                          "after_cancel": "tetap_saldo" if x["remaining"] > 0 else None} for x in r["deposits"]],
+            "proformas": [{"proforma_id": p["proforma_id"], "proforma_number": p["proforma_number"], "status": p["status"],
+                           "amount": _f(p["amount"]), "paid": _f(p["paid"]),
+                           "after_cancel": "dibatalkan" if p["status"] == "issued" else None} for p in r["proformas"]],
+        }}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing cancel of sales order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview cancel")
 
 
 SO_BISA_DITUTUP = ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped")

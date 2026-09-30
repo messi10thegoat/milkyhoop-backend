@@ -168,10 +168,13 @@ def test_race_delete_kunci_guard_dan_bersyarat_di_dalam_tx():
     assert tx < s.index("FOR UPDATE") < s.index("\"dihapus\")", tx) < s.index("AND status = 'draft' RETURNING id")
 
 
-def test_race_cancel_kunci_dan_guard_dp_di_dalam_tx():
+def test_race_cancel_kunci_lalu_rencana_di_dalam_tx():
+    """30 Sep (putusan pemilik: uang muka posted TIDAK lagi menghalangi batal): invarian balapan yang
+    tersisa = kunci baris SO (FOR UPDATE) -> rencana batal (_rencana_batal_so: status/kirim/faktur/uang muka
+    DRAF) dibaca DI BAWAH kunci -> UPDATE bersyarat, semuanya di SATU transaksi."""
     s = _src(SO.cancel_sales_order)
     tx = s.index("async with conn.transaction()")
-    assert tx < s.index("FOR UPDATE", tx) < s.index("\"dibatalkan\")", tx) < s.index("UPDATE sales_orders SET status = 'cancelled'")
+    assert tx < s.index("FOR UPDATE", tx) < s.index("_rencana_batal_so(", tx) < s.index("UPDATE sales_orders SET status = 'cancelled'")
 
 
 def test_race_patch_dan_to_invoice_mengunci_baris_so():
