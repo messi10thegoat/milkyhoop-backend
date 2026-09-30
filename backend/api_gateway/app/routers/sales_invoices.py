@@ -15,7 +15,7 @@ import asyncpg
 from ..services import faktur_cetak as _fc_snap
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur
-from ..services.so_riwayat import catat_riwayat
+from ..services.so_riwayat import catat_riwayat, riwayat_faktur
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -5128,11 +5128,25 @@ async def get_invoice_history(
     request: Request,
     invoice_id: UUID,
     limit: int = Query(50, ge=1, le=200),
+    format: Optional[str] = Query(None, pattern="^events$",
+                                  description="'events' = bentuk riwayat SO (events[], omitted[]); kosong = bentuk lama"),
 ):
-    """Get audit history for a sales invoice."""
+    """Get audit history for a sales invoice.
+
+    ?format=events (30 Sep, halaman CW detail faktur): bentuk SAMA dengan GET /sales-orders/{id}/history lewat
+    services/so_riwayat.riwayat_faktur (pemetaan faktur/SJ/pembayaran BERSAMA riwayat SO + uang muka diterapkan,
+    nota kredit, SO asal); dokumen terkait disaring izin BACA -> omitted[]. Tanpa format = bentuk lama (klien lama)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+
+        if format == "events":
+            from ..services.dashboard_izin import boleh_baca
+            async with pool.acquire() as conn:
+                data = await riwayat_faktur(conn, ctx["tenant_id"], invoice_id, lambda m: boleh_baca(request, m), limit)
+            if data is None:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+            return {"success": True, "data": data}
 
         async with pool.acquire() as conn:
             # Verify invoice exists and belongs to tenant
