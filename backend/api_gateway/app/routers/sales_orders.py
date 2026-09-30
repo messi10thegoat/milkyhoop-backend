@@ -1755,6 +1755,95 @@ async def preview_receive_payment_from_order(
         raise HTTPException(status_code=500, detail="Failed to preview receive payment")
 
 
+from ..services.so_pengiriman import (  # noqa: E402
+    SOFulfillRequest,
+    bentuk as _bentuk_kirim,
+    kunci_faktur_so,
+    pratinjau_kirim_so,
+    rencana_kirim_so,
+    tulis_kirim_so,
+    _so_sesudah,
+)
+
+
+@router.post("/{order_id}/fulfill/preview")
+async def preview_fulfill_order(request: Request, order_id: str, body: SOFulfillRequest = None):
+    """PRATINJAU "Kirim barang" (halaman CW): baris SO -> faktur terbit tertua-dulu + Surat Jalan NYATA lewat inti
+    yang sama dengan /sales-invoices/{id}/fulfill, di transaksi yang SELALU di-ROLLBACK. 200 walau diblok.
+    Tulis = POST /{order_id}/fulfill dengan `payload` dari sini. Lihat services/so_pengiriman.py."""
+    try:
+        ctx = get_user_context(request)
+        so_id = _so_uuid(order_id)  # id jalur tak sah -> 404 SEBELUM DB
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                data = await pratinjau_kirim_so(conn, ctx, so_id, body or SOFulfillRequest())
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing fulfill for order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview shipment")
+
+
+@router.post("/{order_id}/fulfill")
+async def fulfill_order(request: Request, response: Response, order_id: str, body: SOFulfillRequest = None):
+    """KIRIM BARANG dari SO, ATOMIK: satu Surat Jalan per faktur, SEMUA dalam satu transaksi (satu gagal = nol
+    tulisan). Rencana & inti = sama dengan /fulfill/preview. Blok -> 409 SO_FULFILL_BLOCKED berisi SEMUA blok.
+    X-Idempotency-Key: kunci sama + isi sama = respons asli (X-Idempotent-Replay); isi beda = 409."""
+    try:
+        ctx = get_user_context(request)
+        so_id = _so_uuid(order_id)
+        body = body or SOFulfillRequest()
+        try:
+            kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                kunci_penuh = sidik = None
+                if kunci_klien:
+                    kunci_penuh = f"SO_FULFILL:{ctx['user_id']}:{so_id}:{kunci_klien}"
+                    sidik = hash_payload(body.model_dump(mode="json"))
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
+                                       f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
+                    try:
+                        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
+                    except LookupError:
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Idempotency-Key sudah dipakai untuk pengiriman dengan isi berbeda"})
+                    if lama is not None:
+                        response.headers["X-Idempotent-Replay"] = "true"
+                        return lama
+                # urutan kunci = /sales-invoices/{id}/fulfill (faktur dulu; baris SO dikunci trigger sesudahnya)
+                await kunci_faktur_so(conn, ctx["tenant_id"], so_id)
+                r = await rencana_kirim_so(conn, ctx, so_id, body)
+                if r["blocks"]:
+                    periode = any(b["code"] == "SO_FULFILL_PERIOD_CLOSED" for b in r["blocks"])  # Law 5: 403
+                    raise HTTPException(status_code=403 if periode else 409, detail={
+                        "code": "SO_FULFILL_BLOCKED", "message": r["blocks"][0]["message"], "blocks": r["blocks"]})
+                hasil = await tulis_kirim_so(conn, ctx, r, kunci_klien and f"{ctx['user_id']}:{kunci_klien}")
+                data = _bentuk_kirim(r, hasil, await _so_sesudah(conn, ctx["tenant_id"], so_id))
+                respons = {"success": True, "data": data}
+                if kunci_penuh:
+                    await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "SO_FULFILL", sidik,
+                                              respons, result_id=so_id)
+        return respons
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fulfilling order {order_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to ship order")
+
+
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
 async def create_shipment(request: Request, order_id: str, body: CreateShipmentRequest):
     """DINONAKTIFKAN — keputusan K2 (rencana Proforma, butir 3.4.5).
