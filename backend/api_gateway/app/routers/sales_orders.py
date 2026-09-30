@@ -571,8 +571,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
                             requires_fulfillment=bool(item["requires_fulfillment"]),
                             fulfilled_qty=float(terkirim.get(item["id"], 0)),
                             unfulfilled_qty=float(so_kirim.belum_dikirim(item["quantity"], terkirim.get(item["id"]))),
-                            unfulfilled_value=float(so_kirim.nilai_belum_dikirim(
-                                item["quantity"], item["line_total"], terkirim.get(item["id"]))),
+                            unfulfilled_value=float(so_kirim.nilai_belum_dikirim(  # neto = line_total - PPN baris
+                                item["quantity"], item["line_total"] - (item["tax_amount"] or 0), terkirim.get(item["id"]))),
                         )
                         for item in items
                     ],

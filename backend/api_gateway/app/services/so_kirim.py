@@ -8,9 +8,10 @@ Rantai per baris: invoice_fulfillment_items.invoice_item_id -> sales_invoice_ite
 Baris faktur tanpa tautan ke baris SO tak bisa dibagikan ke baris mana pun; jumlahnya dilaporkan
 TERPISAH (fulfilled_qty_unlinked) supaya Σ baris + tak-tertaut == header shipped_qty (terukur 26 Sep: 0).
 
-Nilai belum dikirim per baris = (qty − terkirim, min 0) × line_total / qty. line_total SO = NETO
-(sesudah diskon baris, SEBELUM pajak; terukur 210/212 baris = qty×harga×(1−diskon%)). Diskon header,
-ongkir, dan pajak TIDAK termasuk. Decimal + ROUND_HALF_UP (Law 9/25).
+Nilai belum dikirim per baris = (qty − terkirim, min 0) × NETO baris / qty, NETO baris = line_total − tax_amount.
+KOREKSI 30 Sep 2026 (diukur di baris ber-PPN kaos SO-2609-0335): line_total SO = neto + PPN baris (BRUTO termasuk pajak;
+sama dengan docstring kalkulator sales_orders), BUKAN neto. Ukuran lama "210/212 baris = qty×harga×(1−diskon%)" buta
+karena semua baris kaos saat itu berpajak 0. Diskon header, ongkir, dan pajak TIDAK termasuk. Decimal + ROUND_HALF_UP.
 """
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -78,11 +79,12 @@ def belum_dikirim(quantity, terkirim) -> Decimal:
     return sisa if sisa > NOL else NOL
 
 
-def nilai_belum_dikirim(quantity, line_total, terkirim) -> Decimal:
+def nilai_belum_dikirim(quantity, neto_baris, terkirim) -> Decimal:
+    """neto_baris = line_total − tax_amount (BUKAN line_total mentah: itu bruto termasuk PPN)."""
     q = _d(quantity)
     if q <= NOL:
         return NOL
-    return (belum_dikirim(q, terkirim) * _d(line_total) / q).quantize(SEN, rounding=ROUND_HALF_UP)
+    return (belum_dikirim(q, terkirim) * _d(neto_baris) / q).quantize(SEN, rounding=ROUND_HALF_UP)
 
 
 async def jumlah_surat_jalan(conn, tenant_id: str) -> int:
@@ -96,7 +98,8 @@ async def jumlah_surat_jalan(conn, tenant_id: str) -> int:
 async def ringkasan_belum_dikirim(conn, tenant_id: str, status_tidak: tuple) -> dict:
     """Σ nilai belum dikirim SO selain status_tidak (satu definisi dengan detail per baris)."""
     baris = await conn.fetch(
-        """SELECT so.id AS so_id, soi.id AS soi_id, soi.quantity, soi.line_total
+        """SELECT so.id AS so_id, soi.id AS soi_id, soi.quantity,
+                  soi.line_total - COALESCE(soi.tax_amount, 0) AS line_total  -- NETO: line_total SO = bruto + PPN
            FROM sales_orders so JOIN sales_order_items soi ON soi.sales_order_id = so.id
            WHERE so.tenant_id = $1 AND so.status <> ALL($2::text[])""",
         tenant_id, list(status_tidak),
@@ -119,7 +122,8 @@ async def ringkasan_menunggu_kirim(conn, tenant_id: str, status_tidak: tuple) ->
     Dulu kartu memakai STATUS SO (confirmed/partial_shipped) -> tenant serba non-stok (grapgrap) melihat
     Rp 56 jt / 21 pesanan "menunggu kirim" yang tak akan pernah dikirim (kelas "completed != lunas")."""
     baris = await conn.fetch(
-        """SELECT so.id AS so_id, soi.id AS soi_id, soi.quantity, soi.line_total
+        """SELECT so.id AS so_id, soi.id AS soi_id, soi.quantity,
+                  soi.line_total - COALESCE(soi.tax_amount, 0) AS line_total  -- NETO: line_total SO = bruto + PPN
            FROM sales_orders so
            JOIN sales_order_items soi ON soi.sales_order_id = so.id
            LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = so.tenant_id
