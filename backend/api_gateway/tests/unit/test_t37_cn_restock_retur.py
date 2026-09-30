@@ -72,6 +72,9 @@ class DB:
             return self.items
         if "FROM credit_note_items cni" in s:
             return []
+        if s.startswith("SELECT quantity, original_invoice_item_id FROM credit_note_items"):
+            # penjaga per baris (30 Sep): baris uji ini tak bertaut baris faktur -> penjaga tak berlaku
+            return [{"quantity": i.get("quantity"), "original_invoice_item_id": i.get("original_invoice_item_id")} for i in self.items]
         raise AssertionError(f"fetch tak dikenal: {s}")
 
     async def execute(self, sql, *a):
