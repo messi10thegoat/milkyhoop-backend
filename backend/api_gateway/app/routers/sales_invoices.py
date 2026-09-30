@@ -1352,6 +1352,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
                             "tax_code": item["tax_code"],
+                            "tax_code_id": str(item["tax_code_id"]) if item["tax_code_id"] else None,  # FE Ubah faktur: peta kode pajak baris
                             "tax_rate": float(item["tax_rate"] or 0),
                             "tax_amount": item["tax_amount"],
                             "subtotal": item["subtotal"],
@@ -1386,6 +1387,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
                             "tax_code": item["tax_code"],
+                            "tax_code_id": str(item["tax_code_id"]) if item["tax_code_id"] else None,  # FE Ubah faktur: peta kode pajak baris
                             "tax_rate": float(item["tax_rate"] or 0),
                             "tax_amount": item["tax_amount"],
                             "subtotal": item["subtotal"],
