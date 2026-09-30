@@ -73,3 +73,20 @@ def test_satu_kalkulator_dp(nama):
 def test_patch_tak_menulis_dp_mentah():
     s = " ".join(ast.unparse(_fn("update_sales_order")).split())
     assert "if field in ('dp_percent', 'dp_amount'): continue" in s
+
+
+@pytest.mark.asyncio
+async def test_penentu_persen_nol_sama_dengan_tanpa_default():
+    assert (await DD.default_pesanan(_C(pct=D("0")), "kaos"))["dp_percent"] is None
+
+
+def test_setelan_dp_0_100_dan_null_mengosongkan():
+    from app.routers import accounting_settings as AS
+    import pydantic
+    for v in (-5, 250):
+        with pytest.raises(pydantic.ValidationError) as e:
+            AS.UpdateAccountingSettingsRequest(default_dp_percent=v)
+        assert "Uang muka default harus 0" in str(e.value)
+    assert AS.UpdateAccountingSettingsRequest(default_dp_percent=None).model_fields_set == {"default_dp_percent"}
+    src = open(AS.__file__, encoding="utf-8").read()
+    assert "if \"default_dp_percent\" in data.model_fields_set:" in src  # null eksplisit = kosongkan

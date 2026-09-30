@@ -42,7 +42,8 @@ async def default_pesanan(conn, tenant_id: str, customer_id: Optional[str] = Non
         tenant_id,
     )
     return {
-        "dp_percent": ({"value": float(pct), "source": "company"} if pct is not None else None),
+        # 0 = sama dengan tanpa default (permintaan WORKSPACE 30 Sep)
+        "dp_percent": ({"value": float(pct), "source": "company"} if pct is not None and pct > 0 else None),
         "receiving_account": ({
             "id": str(rek["id"]), "account_name": rek["account_name"], "bank_name": rek["bank_name"],
             "account_number": rek["account_number"], "account_holder": rek["account_holder_name"],

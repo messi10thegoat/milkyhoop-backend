@@ -9,7 +9,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal  # FIX_P2_QUOTEDP 2026-06-16
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 from enum import Enum
 
@@ -92,10 +92,18 @@ class UpdateAccountingSettingsRequest(BaseModel):
     decimal_separator: Optional[str] = None
     date_format: Optional[str] = None
     # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
+    # 30 Sep 2026: juga default uang muka Pesanan Penjualan (default_dokumen.default_pesanan). 0-100; null = tanpa default.
     default_dp_percent: Optional[float] = None
     default_uang_muka_account_id: Optional[str] = None
     default_quote_opening_text: Optional[str] = None
     default_quote_closing_text: Optional[str] = None
+
+    @field_validator("default_dp_percent")
+    @classmethod
+    def _dp_0_100(cls, v):
+        if v is not None and not (0 <= v <= 100):
+            raise ValueError("Uang muka default harus 0–100%")
+        return v
 
 
 class CreateAccountingSettingsRequest(BaseModel):
@@ -352,9 +360,10 @@ async def update_accounting_settings(
                 param_idx += 1
 
             # FIX_P2_QUOTEDP 2026-06-16 — quote down-payment defaults (NO-LEDGER)
-            if data.default_dp_percent is not None:
+            # 30 Sep 2026: null EKSPLISIT = kosongkan (tanpa default); dulu null diabaikan diam -> nilai lama bertahan.
+            if "default_dp_percent" in data.model_fields_set:
                 updates.append(f"default_dp_percent = ${param_idx}")
-                params.append(Decimal(str(data.default_dp_percent)))
+                params.append(Decimal(str(data.default_dp_percent)) if data.default_dp_percent is not None else None)
                 param_idx += 1
 
             if data.default_uang_muka_account_id is not None:
