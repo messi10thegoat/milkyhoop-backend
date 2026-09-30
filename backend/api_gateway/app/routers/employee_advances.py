@@ -4,13 +4,19 @@ Foundation is V281 (employee_advances + append-only employee_advance_movements;
 remaining balance DERIVED = SUM(movements); EMPLOYEE_ADVANCE role account).
 
 Grant       : Dr EMPLOYEE_ADVANCE (Piutang Karyawan) / Cr chosen cash-bank.  movement +principal
+              opening_balance=true: Cr EQUITY_OPENING_BALANCE (Modal Saldo Awal) -- kasbon yang
+              diberikan SEBELUM pakai MilkyHoop; uang tak keluar dari rekening mana pun (30 Sep).
 Void (grant): reversal (Dr cash-bank / Cr EMPLOYEE_ADVANCE).                 movement -principal
+Cermin bank (BankSync Rule 1/3, FIX_R9_KASBON_MIRROR 30 Sep): akun sumber yang TERTAUT bank_accounts
+(reverse lookup coa_id, seperti FIX_R9_RCV_MIRROR) -> grant membuat bank_transactions withdrawal dan void
+membuat cermin pembaliknya, di transaksi yang sama. Dulu tak ada -> grapgrap BCA Pengeluaran gap -1.600.000.
 Per-run deductions (Cr EMPLOYEE_ADVANCE on the payroll journal) are added in the
 payroll-run integration increment; this router owns the grant lifecycle only.
 """
 import logging
 import uuid as uuid_module
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from uuid import UUID
 
@@ -19,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.bank_sync import create_bank_transaction_for_journal, create_reversal_bank_transaction
 from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
@@ -47,9 +54,11 @@ def get_user_context(request: Request) -> dict:
 
 class GrantAdvanceRequest(BaseModel):
     employee_id: UUID
-    principal: float = Field(..., gt=0, description="Jumlah kasbon yang diberikan")
+    # Law 25: Decimal di masuk/hitung/simpan (dulu float -> round(float))
+    principal: Decimal = Field(..., gt=0, description="Jumlah kasbon yang diberikan")
     granted_date: date
-    source_account_id: UUID = Field(..., description="Akun kas/bank sumber (CoA id)")
+    source_account_id: Optional[UUID] = Field(None, description="Akun kas/bank sumber (CoA id); wajib kecuali opening_balance")
+    opening_balance: bool = Field(False, description="Kasbon saldo awal (sebelum pakai MilkyHoop): Cr Modal Saldo Awal, tanpa rekening")
     notes: Optional[str] = None
 
 
@@ -70,7 +79,11 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
     if not ctx["user_id"]:
         raise HTTPException(status_code=401, detail="User ID required")
     tenant_id = ctx["tenant_id"]
-    principal = round(float(body.principal), 2)
+    principal = body.principal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if body.opening_balance and body.source_account_id:
+        raise HTTPException(status_code=400, detail="Kasbon saldo awal tidak memakai akun sumber kas/bank")
+    if not body.opening_balance and not body.source_account_id:
+        raise HTTPException(status_code=422, detail="Akun sumber (kas/bank) wajib diisi")
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -86,18 +99,30 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
             except AccountRoleUnmappedError:
                 raise HTTPException(status_code=422, detail=_UNMAPPED)
 
-            src = await conn.fetchrow(
-                "SELECT id, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                body.source_account_id,
-                tenant_id,
-            )
+            if body.opening_balance:
+                try:
+                    ekuitas = await resolve_account_id_by_role(conn, tenant_id, AccountRole.EQUITY_OPENING_BALANCE)
+                except AccountRoleUnmappedError:
+                    raise HTTPException(status_code=422, detail={
+                        "code": "ACCOUNT_DEFAULT_UNMAPPED",
+                        "message": "Akun Modal Saldo Awal belum diatur untuk usaha ini. Atur dulu di Pengaturan Akun.",
+                    })
+                src = await conn.fetchrow(
+                    "SELECT id, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2", ekuitas, tenant_id,
+                )
+            else:
+                src = await conn.fetchrow(
+                    "SELECT id, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                    body.source_account_id,
+                    tenant_id,
+                )
             if not src:
                 raise HTTPException(status_code=404, detail="Akun sumber (kas/bank) tidak ditemukan")
             if src["id"] == adv_acct:
                 raise HTTPException(status_code=400, detail="Akun sumber tidak boleh sama dengan akun Piutang Karyawan")
 
             emp = await conn.fetchrow(
-                "SELECT id FROM employees WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, name FROM employees WHERE id = $1 AND tenant_id = $2",
                 body.employee_id,
                 tenant_id,
             )
@@ -126,11 +151,25 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
             )
             await conn.execute(
                 "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,2,$3,0,$4,$5)",
-                uuid_module.uuid4(), journal_id, src["id"], principal, "Pembayaran kasbon",
+                uuid_module.uuid4(), journal_id, src["id"], principal,
+                "Kasbon saldo awal" if body.opening_balance else "Pembayaran kasbon",
             )
             await conn.execute(
                 "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id
             )
+            # FIX_R9_KASBON_MIRROR: akun sumber tertaut rekening -> cermin withdrawal (atomik, jurnal sama).
+            # Saldo awal (ekuitas) tak pernah tertaut rekening -> tanpa cermin, benar.
+            rek = await conn.fetchrow(
+                "SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2", src["id"], tenant_id,
+            )
+            if rek:
+                await create_bank_transaction_for_journal(
+                    conn, tenant_id=tenant_id, bank_account_id=rek["id"], journal_id=journal_id,
+                    transaction_date=body.granted_date, transaction_type="withdrawal", amount=-principal,
+                    reference_type="employee_advance", reference_id=advance_id, created_by=ctx["user_id"],
+                    reference_number=jnum, description=f"Kasbon karyawan - {emp['name'] or ''}".rstrip(" -"),
+                    payee_payer=emp["name"],
+                )
 
             await conn.execute(
                 """INSERT INTO employee_advances
@@ -151,8 +190,8 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
         "success": True,
         "advance_id": str(advance_id),
         "employee_id": str(body.employee_id),
-        "principal": principal,
-        "remaining_balance": principal,
+        "principal": float(principal),          # Law 25: Decimal di dalam, float di respons
+        "remaining_balance": float(principal),
         "journal_id": str(journal_id),
         "journal_number": jnum,
     }
@@ -269,8 +308,8 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
                 raise HTTPException(status_code=404, detail="Kasbon tidak ditemukan")
             if adv["status"] == "void":
                 raise HTTPException(status_code=400, detail="Kasbon sudah dibatalkan")
-            bal = float(await conn.fetchval("SELECT employee_advance_balance($1)", advance_id) or 0)
-            if round(bal, 2) != round(float(adv["principal"]), 2):
+            bal = Decimal(str(await conn.fetchval("SELECT employee_advance_balance($1)", advance_id) or 0))
+            if bal.quantize(Decimal("0.01")) != Decimal(str(adv["principal"])).quantize(Decimal("0.01")):
                 raise HTTPException(
                     status_code=400,
                     detail="Kasbon sudah dipotong sebagian dari gaji; tidak bisa dibatalkan. Selesaikan lewat penyesuaian, bukan pembatalan.",
@@ -280,7 +319,7 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
             except AccountRoleUnmappedError:
                 raise HTTPException(status_code=422, detail=_UNMAPPED)
 
-            principal = round(float(adv["principal"]), 2)
+            principal = Decimal(str(adv["principal"])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             journal_id = uuid_module.uuid4()
             jnum = f"KASBON-VOID-{uuid_module.uuid4().hex[:8].upper()}"
             hari_ini = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
@@ -311,6 +350,17 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
                 "UPDATE journal_entries SET reversed_by_id = $1, reversed_at = NOW() WHERE id = $2 AND reversed_by_id IS NULL",
                 journal_id, adv["grant_journal_id"],
             )
+            # FIX_R9_KASBON_MIRROR (BankSync Rule 3): grant bercermin -> pembalik WAJIB bercermin (cari lewat
+            # journal_id, seperti void penerimaan). Grant lama tanpa cermin -> tak ada yang dibalik, benar.
+            orig_bt = await conn.fetchrow(
+                "SELECT id FROM bank_transactions WHERE journal_id = $1 AND tenant_id = $2 ORDER BY created_at ASC LIMIT 1",
+                adv["grant_journal_id"], tenant_id,
+            )
+            if orig_bt:
+                await create_reversal_bank_transaction(
+                    conn, tenant_id=tenant_id, original_bank_transaction_id=orig_bt["id"],
+                    reversal_journal_id=journal_id, created_by=ctx["user_id"], description_prefix="[VOID]",
+                )
             grant_mov = await conn.fetchval(
                 "SELECT id FROM employee_advance_movements WHERE advance_id = $1 AND movement_type = 'grant' ORDER BY created_at LIMIT 1",
                 advance_id,
