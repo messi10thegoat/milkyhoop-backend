@@ -58,6 +58,7 @@ from ..services.role_resolver import (
     resolve_account_id_by_role_if_pkp,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import cn_tertunda
 
 logger = logging.getLogger(__name__)
@@ -648,6 +649,120 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 # =============================================================================
 
 
+async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
+    """Inti POST /credit-notes (draf), di transaksi PEMANGGIL: rute create DAN /credit-notes/preview (savepoint lalu
+    rollback). Isi = isi transaksi rute lama tanpa perubahan (30 Sep 2026)."""
+    # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
+    # dulu body mentah -> CN-2608-0001 menyimpan NAMA "Toko Melati" sebagai customer_id).
+    pelanggan_cn = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+
+    # Generate credit note number
+    cn_number = await conn.fetchval(
+        "SELECT generate_credit_note_number($1, 'CN')", ctx["tenant_id"]
+    )
+
+    # 3(c): kalkulator bersama (lihat _cn_doc).
+    _doc = await _cn_doc(
+        conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
+        body.discount_percent, body.discount_amount, body.tax_rate,
+    )
+    calculated_items = _doc["items"]
+    subtotal = _doc["gross_subtotal"]
+    overall_discount = _doc["doc_discount"]
+    overall_tax = _doc["tax_amount"]
+    total_amount = _doc["total_amount"]
+
+    # Get original invoice number if provided
+    original_invoice_number = None
+    faktur_asal = None
+    if body.original_invoice_id:
+        # Unit B (a): dulu tanpa tenant & tanpa pelanggan -> atribusi lintas pihak saat posting.
+        faktur_asal = await faktur_tenant_untuk_pelanggan(
+            conn, ctx["tenant_id"], body.original_invoice_id, pelanggan_cn
+        )
+        original_invoice_number = faktur_asal["invoice_number"]
+
+    # Insert credit note
+    cn_id = await conn.fetchval(
+        """
+        INSERT INTO credit_notes (
+            tenant_id, credit_note_number, customer_id, customer_name,
+            original_invoice_id, original_invoice_number,
+            subtotal, discount_percent, discount_amount,
+            tax_rate, tax_amount, total_amount,
+            status, credit_note_date, reason, reason_detail,
+            ref_no, notes, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                  'draft', $13, $14, $15, $16, $17, $18)
+        RETURNING id
+    """,
+        ctx["tenant_id"],
+        cn_number,
+        pelanggan_cn,
+        body.customer_name,
+        faktur_asal["id"] if faktur_asal else None,
+        original_invoice_number,
+        subtotal,
+        body.discount_percent,
+        overall_discount,
+        body.tax_rate,
+        overall_tax,
+        total_amount,
+        body.credit_note_date,
+        body.reason,
+        body.reason_detail,
+        body.ref_no,
+        body.notes,
+        ctx["user_id"],
+    )
+
+    # Insert items
+    for idx, item in enumerate(calculated_items, 1):
+        await conn.execute(
+            """
+            INSERT INTO credit_note_items (
+                credit_note_id, item_id, item_code, description,
+                quantity, unit, unit_price,
+                discount_percent, discount_amount,
+                tax_code, tax_rate, tax_amount,
+                subtotal, total, line_number,
+                tax_code_id, dpp, dpp_harga_jual
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        """,
+            cn_id,
+            UUID(item["item_id"]) if item.get("item_id") else None,
+            item.get("item_code"),
+            item["description"],
+            item["quantity"],
+            item.get("unit"),
+            item["unit_price"],
+            item.get("discount_percent", 0),
+            item.get("discount_amount", 0),
+            item.get("tax_code"),
+            item.get("tax_rate", 0),
+            item.get("tax_amount", 0),
+            item["subtotal"],
+            item["total"],
+            idx,
+            UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
+            item["dpp"],
+            item["dpp_harga_jual"],
+        )
+
+    logger.info(f"Credit note created: {cn_id}, number={cn_number}")
+
+    return {
+        "success": True,
+        "message": "Credit note created successfully",
+        "data": {
+            "id": str(cn_id),
+            "credit_note_number": cn_number,
+            "total_amount": total_amount,
+            "status": "draft",
+        },
+    }
+
+
 @router.post("", response_model=CreditNoteResponse, status_code=201)
 async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
     """
@@ -664,121 +779,148 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
-                # dulu body mentah -> CN-2608-0001 menyimpan NAMA "Toko Melati" sebagai customer_id).
-                pelanggan_cn = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
-
-                # Generate credit note number
-                cn_number = await conn.fetchval(
-                    "SELECT generate_credit_note_number($1, 'CN')", ctx["tenant_id"]
-                )
-
-                # 3(c): kalkulator bersama (lihat _cn_doc).
-                _doc = await _cn_doc(
-                    conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
-                    body.discount_percent, body.discount_amount, body.tax_rate,
-                )
-                calculated_items = _doc["items"]
-                subtotal = _doc["gross_subtotal"]
-                overall_discount = _doc["doc_discount"]
-                overall_tax = _doc["tax_amount"]
-                total_amount = _doc["total_amount"]
-
-                # Get original invoice number if provided
-                original_invoice_number = None
-                faktur_asal = None
-                if body.original_invoice_id:
-                    # Unit B (a): dulu tanpa tenant & tanpa pelanggan -> atribusi lintas pihak saat posting.
-                    faktur_asal = await faktur_tenant_untuk_pelanggan(
-                        conn, ctx["tenant_id"], body.original_invoice_id, pelanggan_cn
-                    )
-                    original_invoice_number = faktur_asal["invoice_number"]
-
-                # Insert credit note
-                cn_id = await conn.fetchval(
-                    """
-                    INSERT INTO credit_notes (
-                        tenant_id, credit_note_number, customer_id, customer_name,
-                        original_invoice_id, original_invoice_number,
-                        subtotal, discount_percent, discount_amount,
-                        tax_rate, tax_amount, total_amount,
-                        status, credit_note_date, reason, reason_detail,
-                        ref_no, notes, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                              'draft', $13, $14, $15, $16, $17, $18)
-                    RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    cn_number,
-                    pelanggan_cn,
-                    body.customer_name,
-                    faktur_asal["id"] if faktur_asal else None,
-                    original_invoice_number,
-                    subtotal,
-                    body.discount_percent,
-                    overall_discount,
-                    body.tax_rate,
-                    overall_tax,
-                    total_amount,
-                    body.credit_note_date,
-                    body.reason,
-                    body.reason_detail,
-                    body.ref_no,
-                    body.notes,
-                    ctx["user_id"],
-                )
-
-                # Insert items
-                for idx, item in enumerate(calculated_items, 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO credit_note_items (
-                            credit_note_id, item_id, item_code, description,
-                            quantity, unit, unit_price,
-                            discount_percent, discount_amount,
-                            tax_code, tax_rate, tax_amount,
-                            subtotal, total, line_number,
-                            tax_code_id, dpp, dpp_harga_jual
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                    """,
-                        cn_id,
-                        UUID(item["item_id"]) if item.get("item_id") else None,
-                        item.get("item_code"),
-                        item["description"],
-                        item["quantity"],
-                        item.get("unit"),
-                        item["unit_price"],
-                        item.get("discount_percent", 0),
-                        item.get("discount_amount", 0),
-                        item.get("tax_code"),
-                        item.get("tax_rate", 0),
-                        item.get("tax_amount", 0),
-                        item["subtotal"],
-                        item["total"],
-                        idx,
-                        UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
-                        item["dpp"],
-                        item["dpp_harga_jual"],
-                    )
-
-                logger.info(f"Credit note created: {cn_id}, number={cn_number}")
-
-                return {
-                    "success": True,
-                    "message": "Credit note created successfully",
-                    "data": {
-                        "id": str(cn_id),
-                        "credit_note_number": cn_number,
-                        "total_amount": total_amount,
-                        "status": "draft",
-                    },
-                }
+                return await buat_nota_kredit(conn, ctx, body)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating credit note: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create credit note")
+
+
+def _pesan_galat(e: HTTPException) -> str:
+    d = e.detail
+    return d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))
+
+
+async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
+    """Penghalang yang bisa dibaca TANPA menulis, SEMUA dikumpulkan (inti create/post berhenti di yang pertama).
+    Helper yang dipanggil = helper yang SAMA dengan inti (pelanggan, faktur milik pelanggan, muat faktur, kalkulator,
+    PKP); periode = pemeriksaan yang sama dengan posting_nota_kredit."""
+    tid = ctx["tenant_id"]
+    blocks = []
+    pelanggan = None
+    try:
+        pelanggan = await pelanggan_kanonik_tenant(conn, tid, body.customer_id)
+    except HTTPException as e:
+        blocks.append({"code": "CN_CUSTOMER_INVALID", "message": _pesan_galat(e)})
+    doc = None
+    try:
+        doc = await _cn_doc(conn, tid, [i.model_dump() for i in body.items], body.discount_percent,
+                            body.discount_amount, body.tax_rate)
+    except HTTPException as e:
+        blocks.append({"code": "CN_DISCOUNT_INVALID", "message": _pesan_galat(e)})
+    faktur = None
+    if body.original_invoice_id:
+        try:
+            faktur = await faktur_tenant_untuk_pelanggan(conn, tid, body.original_invoice_id, pelanggan)
+        except HTTPException as e:
+            blocks.append({"code": "CN_INVOICE_INVALID", "message": _pesan_galat(e)})
+        if faktur is not None and doc is not None:
+            try:
+                await pastikan_cn_muat_faktur(conn, tid, faktur, doc["total_amount"])
+            except HTTPException as e:
+                blocks.append({"code": "CN_EXCEEDS_INVOICE", "message": _pesan_galat(e)})
+    if doc is not None:
+        try:
+            await tolak_ppn_bila_non_pkp(conn, tid, doc["tax_amount"])
+        except HTTPException as e:
+            blocks.append({"code": "CN_TAX_NON_PKP", "message": _pesan_galat(e)})
+    periode = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        tid, body.credit_note_date)
+    if periode and periode["status"] != "OPEN":
+        blocks.append({"code": "CN_PERIOD_CLOSED", "message": f"Periode akuntansi sudah {periode['status']}"})
+    return {"blocks": blocks, "doc": doc, "faktur": faktur}
+
+
+async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
+    """Di transaksi PEMANGGIL (wajib ROLLBACK): rencana; bila bersih -> buat_nota_kredit + posting_nota_kredit
+    (inti yang SAMA dengan POST /credit-notes dan /{id}/post) di savepoint, lalu jurnal yang lahir dibaca."""
+    tid = ctx["tenant_id"]
+    r = await _rencana_nota_kredit(conn, ctx, body)
+    blocks, notes = list(r["blocks"]), []
+    faktur, doc = r["faktur"], r["doc"]
+    sisa = None
+    if faktur is not None:
+        sisa = await get_invoice_remaining_from_journal(conn, tid, faktur["id"])
+        notes.append({"code": "CN_NOT_APPLIED_YET",
+                      "message": f"Sesudah diposting, kredit belum memotong sisa tagihan {faktur['invoice_number']}; "
+                                 "terapkan ke faktur lewat Terapkan."})
+    nomor, jurnal, stok = None, [], []
+    if not blocks:
+        try:
+            async with conn.transaction():  # savepoint
+                h = await buat_nota_kredit(conn, ctx, body)
+                cn_id = UUID(h["data"]["id"])
+                nomor = h["data"]["credit_note_number"]
+                await posting_nota_kredit(conn, ctx, cn_id)
+                for j in await conn.fetch(
+                    """SELECT id, journal_number, source_type, total_debit FROM journal_entries
+                       WHERE tenant_id = $1 AND created_at = NOW() ORDER BY journal_number""", tid):
+                    jurnal.append({"journal_number": j["journal_number"], "source_type": j["source_type"],
+                                   "amount": float(j["total_debit"] or 0),
+                                   "lines": [{"account_code": x["account_code"], "account_name": x["name"],
+                                              "debit": float(x["debit"] or 0), "credit": float(x["credit"] or 0)}
+                                             for x in await conn.fetch(
+                                                 """SELECT coa.account_code, coa.name, jl.debit, jl.credit FROM journal_lines jl
+                                                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                                                    WHERE jl.journal_id = $1 ORDER BY jl.line_number""", j["id"])]})
+                stok = [{"product_name": s["product_name"], "quantity": float(s["q"])} for s in await conn.fetch(
+                    """SELECT product_name, SUM(quantity_in) AS q FROM inventory_ledger
+                       WHERE tenant_id = $1 AND created_at = NOW() AND quantity_in > 0 GROUP BY 1 ORDER BY 1""", tid)]
+        except HTTPException as e:
+            blocks.append({"code": "CN_REJECTED", "message": _pesan_galat(e)})
+            nomor, jurnal, stok = None, [], []
+    ok = not blocks
+    return {
+        "ok": ok,
+        "can_save": ok,
+        "blocks": blocks,
+        "notes": notes,
+        "credit_note_number_preview": nomor,
+        "items": ([{k: (float(v) if isinstance(v, Decimal) else v) for k, v in it.items()
+                    if k in ("description", "item_id", "quantity", "unit", "unit_price", "discount_percent",
+                             "discount_amount", "tax_rate", "tax_amount", "subtotal", "total", "dpp")}
+                   for it in doc["items"]] if doc else []),
+        "gross_subtotal": float(doc["gross_subtotal"]) if doc else None,
+        "doc_discount": float(doc["doc_discount"]) if doc else None,
+        "tax_amount": float(doc["tax_amount"]) if doc else None,
+        "total_amount": float(doc["total_amount"]) if doc else None,
+        "invoice": ({"id": str(faktur["id"]), "invoice_number": faktur["invoice_number"],
+                     "remaining": float(sisa) if sisa is not None else None} if faktur is not None else None),
+        "journals_on_post": jurnal if ok else [],
+        "stock_returned_on_post": stok if ok else [],
+        "payload": body.model_dump(mode="json") if ok else None,
+    }
+
+
+@router.post("/preview")
+async def preview_credit_note(request: Request, body: CreateCreditNoteRequest):
+    """PRATINJAU nota kredit (halaman CW): rencana (SEMUA blok) + draf NYATA (buat_nota_kredit) + posting NYATA
+    (posting_nota_kredit) di savepoint -> jurnal/stok yang AKAN lahir saat diposting; transaksi SELALU di-ROLLBACK
+    (nomor CN/jurnal tak terbakar). 200 walau diblok. Tulis = POST /credit-notes dengan `payload` (lahir DRAF),
+    lalu POST /credit-notes/{id}/post."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="User ID required")
+        pool = await get_pool()
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                data = await pratinjau_nota_kredit(conn, ctx, body)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing credit note: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview credit note")
 
 
 # =============================================================================
@@ -1125,6 +1267,544 @@ async def _keluar_faktur_untuk_retur(conn, tenant_id, invoice_id, product_id, cr
     return sisa, unit_cost, gudang
 
 
+async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
+    """Inti POST /credit-notes/{id}/post, di transaksi PEMANGGIL (kunci CREDIT_NOTE + semua pemeriksaan ada di sini):
+    rute post DAN /credit-notes/preview (savepoint lalu rollback). Isi = isi transaksi rute lama tanpa perubahan."""
+    # Law 13: Advisory lock
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"CREDIT_NOTE:{credit_note_id}",
+    )
+
+    # Get credit note
+    cn = await conn.fetchrow(
+        """
+        SELECT * FROM credit_notes
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+
+    if cn["status"] != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot post credit note with status '{cn['status']}'",
+        )
+
+    # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
+    faktur_asal = None
+    if cn["original_invoice_id"]:
+        faktur_asal = await faktur_tenant_untuk_pelanggan(
+            conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
+        )
+        await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"])
+
+    # Law 5: Period lock check
+    period_row = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        ctx["tenant_id"],
+        cn["credit_note_date"],
+    )
+    if period_row and period_row["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Periode akuntansi sudah {period_row['status']}",
+        )
+
+    # Get account IDs
+    # Law 27: Resolve account IDs dynamically
+    ar_account_id = await resolve_account_id(
+        conn, ctx["tenant_id"], AR_ACCOUNT_CODE
+    )
+    sales_return_account_id = await resolve_account_id(
+        conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE
+    )
+
+    if not ar_account_id or not sales_return_account_id:
+        raise HTTPException(
+            status_code=500, detail="Required accounts not found in CoA"
+        )
+
+    # Generate journal number
+    import uuid as uuid_module
+
+    journal_id = uuid_module.uuid4()
+    trace_id = uuid_module.uuid4()
+
+    journal_number = await conn.fetchval(
+        """
+        SELECT get_next_journal_number($1, 'CN')
+    """,
+        ctx["tenant_id"],
+    )
+
+    if not journal_number:
+        # Fallback if function doesn't exist
+        journal_number = f"CN-{cn['credit_note_number']}"
+
+    # Calculate amounts
+    total_amount = cn["total_amount"]
+    tax_amount = cn["tax_amount"] or 0
+    subtotal = total_amount - tax_amount
+
+    # V312 (26 Sep 2026): porsi NK atas kewajiban yang BELUM dipenuhi (pendapatan masih di Dimuka) ->
+    # Dr Dimuka + allocated_amount turun; sisanya Dr Retur. Dulu seluruhnya Dr Retur -> Dimuka terdampar
+    # bila barang tak pernah dikirim (Check 16 buta). Lihat services/cn_tertunda.py.
+    porsi_tertunda, baris_faktur_nk = await cn_tertunda.hitung_untuk_nk(
+        conn, ctx["tenant_id"], cn, subtotal
+    )
+    u_tertunda = sum(porsi_tertunda.values(), Decimal("0"))
+    dimuka_account_id = None
+    if u_tertunda > 0:
+        dimuka_account_id = await resolve_account_id_by_role(
+            conn, ctx["tenant_id"], AccountRole.REVENUE_DEFERRED
+        )
+        if not dimuka_account_id:
+            raise HTTPException(
+                status_code=500, detail="Akun Pendapatan Diterima Dimuka (REVENUE_DEFERRED) tak ditemukan"
+            )
+
+    # Create journal entry
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, trace_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE', $6, $7, 'DRAFT', $8, $8, $9)
+    """,
+        journal_id,
+        ctx["tenant_id"],
+        journal_number,
+        cn["credit_note_date"],
+        f"Credit Note {cn['credit_note_number']} - {cn['customer_name']}",
+        credit_note_id,
+        str(trace_id),
+        total_amount,
+        ctx["user_id"],
+    )
+
+    # Journal lines
+    line_number = 1
+
+    # V312: Dr. Pendapatan Diterima Dimuka (porsi kewajiban yang belum dipenuhi)
+    if u_tertunda > 0:
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            dimuka_account_id,
+            u_tertunda,
+            f"Pengurangan Pendapatan Diterima Dimuka - {cn['credit_note_number']}",
+        )
+        line_number += 1
+
+    # Dr. Sales Returns (subtotal - porsi tertunda)
+    if subtotal - u_tertunda > 0:
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+        """,
+            uuid_module.uuid4(),
+            journal_id,
+            line_number,
+            sales_return_account_id,
+            subtotal - u_tertunda,
+            f"Retur Penjualan - {cn['credit_note_number']}",
+        )
+        line_number += 1
+
+    # Dr. VAT Payable (if tax)
+    # Fase D2-wrap C4: PKP-guarded VAT_OUTPUT role resolution.
+    # Tenant non-PKP tidak boleh post PPN > 0 (fail-loud 422).
+    tax_jl_id = None
+    if tax_amount > 0:
+        tax_account_id = await resolve_account_id_by_role_if_pkp(
+            conn, ctx["tenant_id"], "VAT_OUTPUT"
+        )
+
+        if tax_account_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Tenant non-PKP tidak dapat post PPN > 0 pada credit note",
+            )
+
+        if tax_account_id:
+            tax_jl_id = uuid_module.uuid4()
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+            """,
+                tax_jl_id,
+                journal_id,
+                line_number,
+                tax_account_id,
+                tax_amount,
+                f"PPN Retur - {cn['credit_note_number']}",
+            )
+            line_number += 1
+
+    # Cr. Accounts Receivable
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (
+            id, journal_id, line_number, account_id, debit, credit, memo
+        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+    """,
+        uuid_module.uuid4(),
+        journal_id,
+        line_number,
+        ar_account_id,
+        total_amount,
+        f"Pengurangan Piutang - {cn['credit_note_number']}",
+    )
+
+    # Law 20: Promote DRAFT -> POSTED after all lines inserted
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id,
+    )
+
+    # V312: allocated_amount baris faktur turun sebesar porsi + catat porsi (untuk void cermin)
+    if porsi_tertunda:
+        await cn_tertunda.catat_porsi(
+            conn, ctx["tenant_id"], cn, journal_id, porsi_tertunda, baris_faktur_nk
+        )
+
+    # ── Inventory restock for returned goods + COGS companion journal ──
+    # Fase 4 fix (V164): emit companion journal Dr INVENTORY / Cr COGS @ WAC×qty
+    # mirroring `record_inventory_outbound` (Sales side). Direct reversal pattern,
+    # NOT wash. Atomic within same transaction as main CN journal.
+    from ..services.inventory_helpers import record_inventory_inbound
+
+    cn_items = await conn.fetch(
+        "SELECT * FROM credit_note_items WHERE credit_note_id = $1",
+        credit_note_id,
+    )
+
+    inv_restock_results = []  # [(ledger_id, total_cost)]
+    companion_total_cost = Decimal("0")
+    # Per-product accounts (resolved lazily once per product)
+    _acct_cache = {}
+
+    # #37: barang KEMBALI ke stok (+ jurnal Dr Persediaan / Cr HPP) HANYA untuk
+    # retur. Koreksi harga / diskon / rusak / lainnya = nilai saja. Dulu SETIAP
+    # baris barang ber-track_inventory di-restock apa pun alasannya -> CN koreksi
+    # harga yang memilih barang katalog menambah stok fiktif dan mengurangi HPP.
+    # Rusak: putusan pemilik 25 Sep -- tanpa restock; kerugian lewat penyesuaian stok.
+    if cn["original_invoice_id"] and _cn_memulihkan_stok(cn["reason"]):
+        # Serialkan NK retur atas faktur yang sama: batas "sisa terkirim"
+        # dihitung di bawah dan tak boleh dilewati dua posting bersamaan.
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            f"CN_RETUR_FAKTUR:{ctx['tenant_id']}:{cn['original_invoice_id']}",
+        )
+    for item in (cn_items if _cn_memulihkan_stok(cn["reason"]) else []):
+        if not item["item_id"]:
+            continue
+        # Check if product tracks inventory
+        product = await conn.fetchrow(
+            "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
+            item["item_id"],
+        )
+        if not product or not product["track_inventory"]:
+            continue
+
+        qty_dec = Decimal(str(item["quantity"]))
+        if cn["original_invoice_id"]:
+            # HPP + gudang ASLI dari keluarnya barang lewat faktur asal.
+            asal = await _keluar_faktur_untuk_retur(
+                conn, ctx["tenant_id"], cn["original_invoice_id"],
+                product["id"], credit_note_id,
+            )
+            nama_brg = product["nama_produk"] or product["item_code"]
+            if asal is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Barang {nama_brg} belum pernah dikirim lewat faktur "
+                        f"{cn['original_invoice_number'] or ''}".rstrip()
+                        + ", jadi tidak bisa diretur ke stok. Pilih alasan selain "
+                        "'Retur barang' bila ini koreksi nilai."
+                    ),
+                )
+            sisa, unit_cost_val, wh_id = asal
+            if qty_dec > sisa:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Retur {nama_brg} {qty_dec.normalize():f} melebihi yang "
+                        f"terkirim dan belum diretur ({max(sisa, Decimal('0')).normalize():f})."
+                    ),
+                )
+        else:
+            # Tanpa faktur asal: WAC hari ini + gudang pertama tenant (lama).
+            avg_cost = await conn.fetchval(
+                "SELECT get_weighted_average_cost($1, $2)",
+                ctx["tenant_id"],
+                product["id"],
+            )
+            unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
+            wh_id = await conn.fetchval(
+                "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                ctx["tenant_id"],
+            )
+            if not wh_id:
+                continue
+        line_cost = qty_dec * unit_cost_val
+
+        inb_result = await record_inventory_inbound(
+            conn=conn,
+            tenant_id=ctx["tenant_id"],
+            product_id=product["id"],
+            product_code=product["item_code"],
+            product_name=product["nama_produk"],
+            warehouse_id=wh_id,
+            quantity=float(item["quantity"]),
+            unit_cost=float(unit_cost_val),
+            source_type="CREDIT_NOTE",
+            source_id=credit_note_id,
+            source_number=cn["credit_note_number"],
+            user_id=ctx["user_id"],
+            notes=f"Restock from Credit Note {cn['credit_note_number']}",
+            movement_date=cn["credit_note_date"],
+            movement_type="SALES_RETURN",  # #37 (dulu default 'PURCHASE')
+        )
+
+        if line_cost > 0:
+            # Cache per-product Inventory + COGS account resolution
+            if product["id"] not in _acct_cache:
+                prod_accts = await conn.fetchrow(
+                    "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
+                    product["id"],
+                )
+                cogs_acct = (
+                    prod_accts["cogs_account_id"] if prod_accts else None
+                )
+                inv_acct = (
+                    prod_accts["inventory_account_id"]
+                    if prod_accts
+                    else None
+                )
+                if not cogs_acct:
+                    logger.warning(
+                        "Product %s (tenant %s) has NULL cogs_account_id; "
+                        "substituting tenant COGS_SALES role default",
+                        product["id"],
+                        ctx["tenant_id"],
+                    )
+                    cogs_acct = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], AccountRole.COGS_SALES
+                    )
+                if not inv_acct:
+                    logger.warning(
+                        "Product %s (tenant %s) has NULL inventory_account_id; "
+                        "substituting tenant INVENTORY_MERCHANDISE role default",
+                        product["id"],
+                        ctx["tenant_id"],
+                    )
+                    inv_acct = await resolve_account_id_by_role(
+                        conn,
+                        ctx["tenant_id"],
+                        AccountRole.INVENTORY_MERCHANDISE,
+                    )
+                _acct_cache[product["id"]] = (inv_acct, cogs_acct)
+
+            inv_restock_results.append(
+                {
+                    "ledger_id": inb_result["ledger_id"],
+                    "product_id": product["id"],
+                    "line_cost": line_cost,
+                    "memo": f"Retur HPP - {cn['credit_note_number']} - {product['nama_produk']}",
+                }
+            )
+            companion_total_cost += line_cost
+
+    # Emit companion journal (Dr Inventory / Cr COGS) if any tracked items
+    if companion_total_cost > 0 and inv_restock_results:
+        companion_journal_id = uuid_module.uuid4()
+        companion_number = (
+            await conn.fetchval(
+                "SELECT get_next_journal_number($1, 'COGS-CN')",
+                ctx["tenant_id"],
+            )
+            or f"COGS-CN-{cn['credit_note_number']}"
+        )
+
+        # Header — DRAFT first (Law 20)
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_COGS', $6,
+                      'DRAFT', $7, $7, $8)
+            """,
+            companion_journal_id,
+            ctx["tenant_id"],
+            companion_number,
+            cn["credit_note_date"],
+            f"COGS reversal {cn['credit_note_number']} - {cn['customer_name']}",
+            credit_note_id,
+            companion_total_cost,
+            ctx["user_id"],
+        )
+
+        # Lines: per-item Dr INVENTORY / aggregate Cr COGS
+        ln = 1
+        # Aggregate COGS lines per product (single Cr per product is also fine,
+        # but a single Cr COGS for the total is cleanest).
+        # Inventory side: one Dr line per ledger entry for traceability.
+        for r in inv_restock_results:
+            inv_acct_id, _cogs_acct_id = _acct_cache[r["product_id"]]
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+                """,
+                uuid_module.uuid4(),
+                companion_journal_id,
+                ln,
+                inv_acct_id,
+                r["line_cost"],
+                r["memo"],
+            )
+            ln += 1
+
+        # Single aggregate Cr COGS line (per-tenant COGS account; cache shows
+        # all products mapped to same COGS_SALES role in normal tenants).
+        # If products have heterogeneous COGS accounts, emit one Cr per account.
+        cogs_buckets: dict = {}
+        for r in inv_restock_results:
+            _inv, cogs_acct_id = _acct_cache[r["product_id"]]
+            cogs_buckets[cogs_acct_id] = (
+                cogs_buckets.get(cogs_acct_id, Decimal("0"))
+                + r["line_cost"]
+            )
+
+        for cogs_acct_id, total in cogs_buckets.items():
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                """,
+                uuid_module.uuid4(),
+                companion_journal_id,
+                ln,
+                cogs_acct_id,
+                total,
+                f"Retur HPP - {cn['credit_note_number']}",
+            )
+            ln += 1
+
+        # Law 20: Promote DRAFT -> POSTED
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            companion_journal_id,
+        )
+
+        # Link inventory_ledger rows just created to the companion journal
+        for r in inv_restock_results:
+            await conn.execute(
+                "UPDATE inventory_ledger SET journal_id = $1 WHERE id = $2",
+                companion_journal_id,
+                r["ledger_id"],
+            )
+
+    # Wave 3: Write document_tax_lines (PPN reversal on CN)
+    if tax_amount > 0 and tax_jl_id:
+        # 3(c): SATU baris DTL per kode PPN baris (arah 'output'), dasar = dpp TERSIMPAN.
+        # Dulu: "kode PPN aktif MANA SAJA, LIMIT 1, tanpa ORDER BY" (bisa kode MASUKAN) dan
+        # dasar = subtotal header (bruto).
+        _groups = await conn.fetch(
+            """SELECT cni.tax_code_id, SUM(COALESCE(cni.dpp, cni.subtotal - COALESCE(cni.discount_amount, 0))) AS base,
+                      SUM(cni.tax_amount) AS tax
+               FROM credit_note_items cni
+               WHERE cni.credit_note_id = $1 AND COALESCE(cni.tax_amount, 0) > 0
+               GROUP BY cni.tax_code_id""",
+            credit_note_id,
+        )
+        for _g in _groups:
+            ppn_tc_id = _g["tax_code_id"] or await conn.fetchval(
+                """SELECT id FROM tax_codes WHERE tenant_id = $1 AND tax_type = 'ppn'
+                   AND direction = 'output' AND is_active ORDER BY is_default DESC, code LIMIT 1""",
+                ctx["tenant_id"],
+            )
+            if not ppn_tc_id:
+                continue
+            tc_coa = await conn.fetchval(
+                "SELECT coa_id FROM tax_codes WHERE id = $1",
+                ppn_tc_id,
+            )
+            dpp_val = float(_g["base"])
+            await conn.execute(
+                """
+                INSERT INTO document_tax_lines (
+                    id, tenant_id, document_type, document_id,
+                    tax_code_id, direction, base_amount, tax_amount,
+                    coa_id, journal_line_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                """,
+                uuid_module.uuid4(),
+                ctx["tenant_id"],
+                "CREDIT_NOTE",
+                credit_note_id,
+                ppn_tc_id,
+                "output",
+                dpp_val,
+                float(_g["tax"]),
+                tc_coa,
+                tax_jl_id,
+            )
+
+    # Update credit note status
+    await conn.execute(
+        """
+        UPDATE credit_notes
+        SET status = 'posted', journal_id = $2,
+            posted_at = NOW(), posted_by = $3, updated_at = NOW()
+        WHERE id = $1
+    """,
+        credit_note_id,
+        journal_id,
+        ctx["user_id"],
+    )
+
+    if faktur_asal:
+        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], faktur_asal["id"])
+
+    logger.info(
+        f"Credit note posted: {credit_note_id}, journal={journal_id}"
+    )
+
+    return {
+        "success": True,
+        "message": "Credit note posted to accounting",
+        "data": {
+            "id": str(credit_note_id),
+            "journal_id": str(journal_id),
+            "journal_number": journal_number,
+            "status": "posted",
+        },
+    }
+
+
 @router.post("/{credit_note_id}/post", response_model=CreditNoteResponse)
 async def post_credit_note(request: Request, credit_note_id: UUID):
     """
@@ -1147,539 +1827,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CREDIT_NOTE:{credit_note_id}",
-                )
-
-                # Get credit note
-                cn = await conn.fetchrow(
-                    """
-                    SELECT * FROM credit_notes
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-
-                if not cn:
-                    raise HTTPException(status_code=404, detail="Credit note not found")
-
-                if cn["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot post credit note with status '{cn['status']}'",
-                    )
-
-                # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
-                faktur_asal = None
-                if cn["original_invoice_id"]:
-                    faktur_asal = await faktur_tenant_untuk_pelanggan(
-                        conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
-                    )
-                    await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"])
-
-                # Law 5: Period lock check
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    cn["credit_note_date"],
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
-                    )
-
-                # Get account IDs
-                # Law 27: Resolve account IDs dynamically
-                ar_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], AR_ACCOUNT_CODE
-                )
-                sales_return_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE
-                )
-
-                if not ar_account_id or not sales_return_account_id:
-                    raise HTTPException(
-                        status_code=500, detail="Required accounts not found in CoA"
-                    )
-
-                # Generate journal number
-                import uuid as uuid_module
-
-                journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
-
-                journal_number = await conn.fetchval(
-                    """
-                    SELECT get_next_journal_number($1, 'CN')
-                """,
-                    ctx["tenant_id"],
-                )
-
-                if not journal_number:
-                    # Fallback if function doesn't exist
-                    journal_number = f"CN-{cn['credit_note_number']}"
-
-                # Calculate amounts
-                total_amount = cn["total_amount"]
-                tax_amount = cn["tax_amount"] or 0
-                subtotal = total_amount - tax_amount
-
-                # V312 (26 Sep 2026): porsi NK atas kewajiban yang BELUM dipenuhi (pendapatan masih di Dimuka) ->
-                # Dr Dimuka + allocated_amount turun; sisanya Dr Retur. Dulu seluruhnya Dr Retur -> Dimuka terdampar
-                # bila barang tak pernah dikirim (Check 16 buta). Lihat services/cn_tertunda.py.
-                porsi_tertunda, baris_faktur_nk = await cn_tertunda.hitung_untuk_nk(
-                    conn, ctx["tenant_id"], cn, subtotal
-                )
-                u_tertunda = sum(porsi_tertunda.values(), Decimal("0"))
-                dimuka_account_id = None
-                if u_tertunda > 0:
-                    dimuka_account_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.REVENUE_DEFERRED
-                    )
-                    if not dimuka_account_id:
-                        raise HTTPException(
-                            status_code=500, detail="Akun Pendapatan Diterima Dimuka (REVENUE_DEFERRED) tak ditemukan"
-                        )
-
-                # Create journal entry
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE', $6, $7, 'DRAFT', $8, $8, $9)
-                """,
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    cn["credit_note_date"],
-                    f"Credit Note {cn['credit_note_number']} - {cn['customer_name']}",
-                    credit_note_id,
-                    str(trace_id),
-                    total_amount,
-                    ctx["user_id"],
-                )
-
-                # Journal lines
-                line_number = 1
-
-                # V312: Dr. Pendapatan Diterima Dimuka (porsi kewajiban yang belum dipenuhi)
-                if u_tertunda > 0:
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        line_number,
-                        dimuka_account_id,
-                        u_tertunda,
-                        f"Pengurangan Pendapatan Diterima Dimuka - {cn['credit_note_number']}",
-                    )
-                    line_number += 1
-
-                # Dr. Sales Returns (subtotal - porsi tertunda)
-                if subtotal - u_tertunda > 0:
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        line_number,
-                        sales_return_account_id,
-                        subtotal - u_tertunda,
-                        f"Retur Penjualan - {cn['credit_note_number']}",
-                    )
-                    line_number += 1
-
-                # Dr. VAT Payable (if tax)
-                # Fase D2-wrap C4: PKP-guarded VAT_OUTPUT role resolution.
-                # Tenant non-PKP tidak boleh post PPN > 0 (fail-loud 422).
-                tax_jl_id = None
-                if tax_amount > 0:
-                    tax_account_id = await resolve_account_id_by_role_if_pkp(
-                        conn, ctx["tenant_id"], "VAT_OUTPUT"
-                    )
-
-                    if tax_account_id is None:
-                        raise HTTPException(
-                            status_code=422,
-                            detail="Tenant non-PKP tidak dapat post PPN > 0 pada credit note",
-                        )
-
-                    if tax_account_id:
-                        tax_jl_id = uuid_module.uuid4()
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                        """,
-                            tax_jl_id,
-                            journal_id,
-                            line_number,
-                            tax_account_id,
-                            tax_amount,
-                            f"PPN Retur - {cn['credit_note_number']}",
-                        )
-                        line_number += 1
-
-                # Cr. Accounts Receivable
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    ar_account_id,
-                    total_amount,
-                    f"Pengurangan Piutang - {cn['credit_note_number']}",
-                )
-
-                # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # V312: allocated_amount baris faktur turun sebesar porsi + catat porsi (untuk void cermin)
-                if porsi_tertunda:
-                    await cn_tertunda.catat_porsi(
-                        conn, ctx["tenant_id"], cn, journal_id, porsi_tertunda, baris_faktur_nk
-                    )
-
-                # ── Inventory restock for returned goods + COGS companion journal ──
-                # Fase 4 fix (V164): emit companion journal Dr INVENTORY / Cr COGS @ WAC×qty
-                # mirroring `record_inventory_outbound` (Sales side). Direct reversal pattern,
-                # NOT wash. Atomic within same transaction as main CN journal.
-                from ..services.inventory_helpers import record_inventory_inbound
-
-                cn_items = await conn.fetch(
-                    "SELECT * FROM credit_note_items WHERE credit_note_id = $1",
-                    credit_note_id,
-                )
-
-                inv_restock_results = []  # [(ledger_id, total_cost)]
-                companion_total_cost = Decimal("0")
-                # Per-product accounts (resolved lazily once per product)
-                _acct_cache = {}
-
-                # #37: barang KEMBALI ke stok (+ jurnal Dr Persediaan / Cr HPP) HANYA untuk
-                # retur. Koreksi harga / diskon / rusak / lainnya = nilai saja. Dulu SETIAP
-                # baris barang ber-track_inventory di-restock apa pun alasannya -> CN koreksi
-                # harga yang memilih barang katalog menambah stok fiktif dan mengurangi HPP.
-                # Rusak: putusan pemilik 25 Sep -- tanpa restock; kerugian lewat penyesuaian stok.
-                if cn["original_invoice_id"] and _cn_memulihkan_stok(cn["reason"]):
-                    # Serialkan NK retur atas faktur yang sama: batas "sisa terkirim"
-                    # dihitung di bawah dan tak boleh dilewati dua posting bersamaan.
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext($1))",
-                        f"CN_RETUR_FAKTUR:{ctx['tenant_id']}:{cn['original_invoice_id']}",
-                    )
-                for item in (cn_items if _cn_memulihkan_stok(cn["reason"]) else []):
-                    if not item["item_id"]:
-                        continue
-                    # Check if product tracks inventory
-                    product = await conn.fetchrow(
-                        "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
-                        item["item_id"],
-                    )
-                    if not product or not product["track_inventory"]:
-                        continue
-
-                    qty_dec = Decimal(str(item["quantity"]))
-                    if cn["original_invoice_id"]:
-                        # HPP + gudang ASLI dari keluarnya barang lewat faktur asal.
-                        asal = await _keluar_faktur_untuk_retur(
-                            conn, ctx["tenant_id"], cn["original_invoice_id"],
-                            product["id"], credit_note_id,
-                        )
-                        nama_brg = product["nama_produk"] or product["item_code"]
-                        if asal is None:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"Barang {nama_brg} belum pernah dikirim lewat faktur "
-                                    f"{cn['original_invoice_number'] or ''}".rstrip()
-                                    + ", jadi tidak bisa diretur ke stok. Pilih alasan selain "
-                                    "'Retur barang' bila ini koreksi nilai."
-                                ),
-                            )
-                        sisa, unit_cost_val, wh_id = asal
-                        if qty_dec > sisa:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"Retur {nama_brg} {qty_dec.normalize():f} melebihi yang "
-                                    f"terkirim dan belum diretur ({max(sisa, Decimal('0')).normalize():f})."
-                                ),
-                            )
-                    else:
-                        # Tanpa faktur asal: WAC hari ini + gudang pertama tenant (lama).
-                        avg_cost = await conn.fetchval(
-                            "SELECT get_weighted_average_cost($1, $2)",
-                            ctx["tenant_id"],
-                            product["id"],
-                        )
-                        unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
-                        wh_id = await conn.fetchval(
-                            "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                            ctx["tenant_id"],
-                        )
-                        if not wh_id:
-                            continue
-                    line_cost = qty_dec * unit_cost_val
-
-                    inb_result = await record_inventory_inbound(
-                        conn=conn,
-                        tenant_id=ctx["tenant_id"],
-                        product_id=product["id"],
-                        product_code=product["item_code"],
-                        product_name=product["nama_produk"],
-                        warehouse_id=wh_id,
-                        quantity=float(item["quantity"]),
-                        unit_cost=float(unit_cost_val),
-                        source_type="CREDIT_NOTE",
-                        source_id=credit_note_id,
-                        source_number=cn["credit_note_number"],
-                        user_id=ctx["user_id"],
-                        notes=f"Restock from Credit Note {cn['credit_note_number']}",
-                        movement_date=cn["credit_note_date"],
-                        movement_type="SALES_RETURN",  # #37 (dulu default 'PURCHASE')
-                    )
-
-                    if line_cost > 0:
-                        # Cache per-product Inventory + COGS account resolution
-                        if product["id"] not in _acct_cache:
-                            prod_accts = await conn.fetchrow(
-                                "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
-                                product["id"],
-                            )
-                            cogs_acct = (
-                                prod_accts["cogs_account_id"] if prod_accts else None
-                            )
-                            inv_acct = (
-                                prod_accts["inventory_account_id"]
-                                if prod_accts
-                                else None
-                            )
-                            if not cogs_acct:
-                                logger.warning(
-                                    "Product %s (tenant %s) has NULL cogs_account_id; "
-                                    "substituting tenant COGS_SALES role default",
-                                    product["id"],
-                                    ctx["tenant_id"],
-                                )
-                                cogs_acct = await resolve_account_id_by_role(
-                                    conn, ctx["tenant_id"], AccountRole.COGS_SALES
-                                )
-                            if not inv_acct:
-                                logger.warning(
-                                    "Product %s (tenant %s) has NULL inventory_account_id; "
-                                    "substituting tenant INVENTORY_MERCHANDISE role default",
-                                    product["id"],
-                                    ctx["tenant_id"],
-                                )
-                                inv_acct = await resolve_account_id_by_role(
-                                    conn,
-                                    ctx["tenant_id"],
-                                    AccountRole.INVENTORY_MERCHANDISE,
-                                )
-                            _acct_cache[product["id"]] = (inv_acct, cogs_acct)
-
-                        inv_restock_results.append(
-                            {
-                                "ledger_id": inb_result["ledger_id"],
-                                "product_id": product["id"],
-                                "line_cost": line_cost,
-                                "memo": f"Retur HPP - {cn['credit_note_number']} - {product['nama_produk']}",
-                            }
-                        )
-                        companion_total_cost += line_cost
-
-                # Emit companion journal (Dr Inventory / Cr COGS) if any tracked items
-                if companion_total_cost > 0 and inv_restock_results:
-                    companion_journal_id = uuid_module.uuid4()
-                    companion_number = (
-                        await conn.fetchval(
-                            "SELECT get_next_journal_number($1, 'COGS-CN')",
-                            ctx["tenant_id"],
-                        )
-                        or f"COGS-CN-{cn['credit_note_number']}"
-                    )
-
-                    # Header — DRAFT first (Law 20)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_COGS', $6,
-                                  'DRAFT', $7, $7, $8)
-                        """,
-                        companion_journal_id,
-                        ctx["tenant_id"],
-                        companion_number,
-                        cn["credit_note_date"],
-                        f"COGS reversal {cn['credit_note_number']} - {cn['customer_name']}",
-                        credit_note_id,
-                        companion_total_cost,
-                        ctx["user_id"],
-                    )
-
-                    # Lines: per-item Dr INVENTORY / aggregate Cr COGS
-                    ln = 1
-                    # Aggregate COGS lines per product (single Cr per product is also fine,
-                    # but a single Cr COGS for the total is cleanest).
-                    # Inventory side: one Dr line per ledger entry for traceability.
-                    for r in inv_restock_results:
-                        inv_acct_id, _cogs_acct_id = _acct_cache[r["product_id"]]
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                            """,
-                            uuid_module.uuid4(),
-                            companion_journal_id,
-                            ln,
-                            inv_acct_id,
-                            r["line_cost"],
-                            r["memo"],
-                        )
-                        ln += 1
-
-                    # Single aggregate Cr COGS line (per-tenant COGS account; cache shows
-                    # all products mapped to same COGS_SALES role in normal tenants).
-                    # If products have heterogeneous COGS accounts, emit one Cr per account.
-                    cogs_buckets: dict = {}
-                    for r in inv_restock_results:
-                        _inv, cogs_acct_id = _acct_cache[r["product_id"]]
-                        cogs_buckets[cogs_acct_id] = (
-                            cogs_buckets.get(cogs_acct_id, Decimal("0"))
-                            + r["line_cost"]
-                        )
-
-                    for cogs_acct_id, total in cogs_buckets.items():
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                            """,
-                            uuid_module.uuid4(),
-                            companion_journal_id,
-                            ln,
-                            cogs_acct_id,
-                            total,
-                            f"Retur HPP - {cn['credit_note_number']}",
-                        )
-                        ln += 1
-
-                    # Law 20: Promote DRAFT -> POSTED
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        companion_journal_id,
-                    )
-
-                    # Link inventory_ledger rows just created to the companion journal
-                    for r in inv_restock_results:
-                        await conn.execute(
-                            "UPDATE inventory_ledger SET journal_id = $1 WHERE id = $2",
-                            companion_journal_id,
-                            r["ledger_id"],
-                        )
-
-                # Wave 3: Write document_tax_lines (PPN reversal on CN)
-                if tax_amount > 0 and tax_jl_id:
-                    # 3(c): SATU baris DTL per kode PPN baris (arah 'output'), dasar = dpp TERSIMPAN.
-                    # Dulu: "kode PPN aktif MANA SAJA, LIMIT 1, tanpa ORDER BY" (bisa kode MASUKAN) dan
-                    # dasar = subtotal header (bruto).
-                    _groups = await conn.fetch(
-                        """SELECT cni.tax_code_id, SUM(COALESCE(cni.dpp, cni.subtotal - COALESCE(cni.discount_amount, 0))) AS base,
-                                  SUM(cni.tax_amount) AS tax
-                           FROM credit_note_items cni
-                           WHERE cni.credit_note_id = $1 AND COALESCE(cni.tax_amount, 0) > 0
-                           GROUP BY cni.tax_code_id""",
-                        credit_note_id,
-                    )
-                    for _g in _groups:
-                        ppn_tc_id = _g["tax_code_id"] or await conn.fetchval(
-                            """SELECT id FROM tax_codes WHERE tenant_id = $1 AND tax_type = 'ppn'
-                               AND direction = 'output' AND is_active ORDER BY is_default DESC, code LIMIT 1""",
-                            ctx["tenant_id"],
-                        )
-                        if not ppn_tc_id:
-                            continue
-                        tc_coa = await conn.fetchval(
-                            "SELECT coa_id FROM tax_codes WHERE id = $1",
-                            ppn_tc_id,
-                        )
-                        dpp_val = float(_g["base"])
-                        await conn.execute(
-                            """
-                            INSERT INTO document_tax_lines (
-                                id, tenant_id, document_type, document_id,
-                                tax_code_id, direction, base_amount, tax_amount,
-                                coa_id, journal_line_id
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                            """,
-                            uuid_module.uuid4(),
-                            ctx["tenant_id"],
-                            "CREDIT_NOTE",
-                            credit_note_id,
-                            ppn_tc_id,
-                            "output",
-                            dpp_val,
-                            float(_g["tax"]),
-                            tc_coa,
-                            tax_jl_id,
-                        )
-
-                # Update credit note status
-                await conn.execute(
-                    """
-                    UPDATE credit_notes
-                    SET status = 'posted', journal_id = $2,
-                        posted_at = NOW(), posted_by = $3, updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    credit_note_id,
-                    journal_id,
-                    ctx["user_id"],
-                )
-
-                if faktur_asal:
-                    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], faktur_asal["id"])
-
-                logger.info(
-                    f"Credit note posted: {credit_note_id}, journal={journal_id}"
-                )
-
-                return {
-                    "success": True,
-                    "message": "Credit note posted to accounting",
-                    "data": {
-                        "id": str(credit_note_id),
-                        "journal_id": str(journal_id),
-                        "journal_number": journal_number,
-                        "status": "posted",
-                    },
-                }
+                return await posting_nota_kredit(conn, ctx, credit_note_id)
 
     except HTTPException:
         raise
