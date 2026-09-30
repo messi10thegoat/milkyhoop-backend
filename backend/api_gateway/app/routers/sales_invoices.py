@@ -4983,6 +4983,38 @@ async def _pratinjau_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, ala
     }
 
 
+from ..services.so_pelunasan import SIReceivePaymentPreviewRequest, pratinjau_pelunasan_faktur  # noqa: E402
+
+
+@router.post("/{invoice_id}/receive-payment/preview")
+async def preview_receive_payment_for_invoice(
+    request: Request, invoice_id: UUID, body: SIReceivePaymentPreviewRequest = None
+):
+    """PRATINJAU "Terima pembayaran" per faktur (halaman CW, F2 a): rencana SAMA dengan pratinjau SO (sisa
+    compute_ar_outstanding, rekening, periode, kelebihan = uang muka) + penerimaan NYATA lewat inti create
+    (receive_payments.buat_penerimaan) di transaksi yang SELALU di-ROLLBACK. 200 walau diblok. Tulis =
+    POST /api/receive-payments dengan `payload`. Lihat services/so_pelunasan.py."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        from .receive_payments import _ensure_receive_payments_role_preconditions
+        await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                data = await pratinjau_pelunasan_faktur(conn, ctx, invoice_id, body or SIReceivePaymentPreviewRequest())
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing receive payment for invoice {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview receive payment")
+
+
 @router.post("/{invoice_id}/void/preview")
 async def preview_void_invoice(request: Request, invoice_id: UUID, body: VoidInvoicePreviewRequest = None):
     """PRATINJAU void (halaman CW): rencana (_rencana_void_faktur, SEMUA blok) + tulisan void NYATA

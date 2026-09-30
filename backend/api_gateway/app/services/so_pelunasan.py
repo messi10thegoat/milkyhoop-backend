@@ -200,12 +200,12 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
             "bank_account_source": sumber_rek, "payment_date": tgl, "deposits_unapplied": dp, "payload": payload}
 
 
-async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaymentPreviewRequest) -> dict:
-    """Lapis 1 + lapis 2 di transaksi PEMANGGIL (pemanggil WAJIB me-ROLLBACK)."""
+async def _jalankan_inti(conn, ctx: dict, r: dict):
+    """Lapis 2 bersama (SO dan faktur): bila rencana bersih, payload lewat buat_penerimaan di savepoint, lalu sisa
+    sesudah dibaca. Penolakan inti -> blok RP_REJECTED. Mengubah r di tempat; kembalikan hasil atau None."""
     from ..routers.receive_payments import buat_penerimaan
     from ..schemas.receive_payments import CreateReceivePaymentRequest
 
-    r = await rencana_pelunasan_so(conn, ctx, so_id, body)
     tid = ctx["tenant_id"]
     hasil = None
     if r["payload"] is not None:
@@ -239,6 +239,13 @@ async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePa
                                 "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
             r["payload"] = None
             hasil = None
+    return hasil
+
+
+async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaymentPreviewRequest) -> dict:
+    """Lapis 1 + lapis 2 di transaksi PEMANGGIL (pemanggil WAJIB me-ROLLBACK)."""
+    r = await rencana_pelunasan_so(conn, ctx, so_id, body)
+    hasil = await _jalankan_inti(conn, ctx, r)
     so = r["so"]
     return {
         "order_number": so["order_number"],
@@ -253,6 +260,139 @@ async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePa
         "total_remaining": _f(r["total_remaining"]),
         "total_applied": _f(r["total_applied"]),
         "total_remaining_after": _f(sum((f["remaining_after"] for f in r["invoices"]), _NOL)),
+        "amount": _f(r["amount"]),
+        "overpayment": _f(r["overpayment"]),
+        "overpayment_deposit_number": hasil["overpayment_deposit_number"] if hasil else None,
+        "bank_account": ({**r["bank_account"], "source": r["bank_account_source"]} if r["bank_account"] else None),
+        "payment_method": hasil["payment_method"] if hasil else None,
+        "payment_date": r["payment_date"].isoformat(),
+        "payment_number_preview": hasil["payment_number"] if hasil else None,
+        "deposits_unapplied": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
+                                "remaining": _f(x["remaining"])} for x in r["deposits_unapplied"]],
+        "payload": r["payload"],
+    }
+
+
+# =====================================================================================================================
+# Faktur tunggal (F2 a, 30 Sep 2026): POST /api/sales-invoices/{id}/receive-payment/preview -- rencana yang SAMA
+# (sisa compute_ar_outstanding, rekening _rekening, periode, kelebihan = uang muka) untuk SATU faktur, lapis 2 =
+# _jalankan_inti (buat_penerimaan di savepoint). Tulis = POST /api/receive-payments dengan `payload`.
+# =====================================================================================================================
+
+
+class SIReceivePaymentPreviewRequest(BaseModel):
+    payment_date: Optional[date] = None           # kosong -> tanggal bisnis tenant
+    bank_account_id: Optional[str] = None         # bank_accounts.id ATAU CoA id; kosong -> bawaan server
+    amount: Optional[Decimal] = None              # kosong -> lunasi sisa faktur
+    reference_number: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = None
+
+
+async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIReceivePaymentPreviewRequest) -> dict:
+    """Lapis 1 untuk satu faktur: SEMUA penghalang, nol tulisan."""
+    tid = ctx["tenant_id"]
+    inv = await conn.fetchrow(
+        """SELECT id, invoice_number, invoice_date, due_date, status, customer_id, customer_name, sales_order_id,
+                  payment_account_number
+           FROM sales_invoices WHERE id = $1 AND tenant_id = $2""",
+        invoice_id, tid,
+    )
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    inv = dict(inv)
+    blocks, notes = [], []
+    if inv["status"] == "draft":
+        blocks.append({"code": "RP_INVOICE_DRAFT", "message": f"Faktur {inv['invoice_number']} masih draf — terbitkan dulu."})
+    elif inv["status"] == "void":
+        blocks.append({"code": "RP_INVOICE_VOID", "message": f"Faktur {inv['invoice_number']} sudah dibatalkan."})
+    sisa = _NOL
+    if inv["status"] not in ("draft", "void"):
+        sisa = Decimal(str(await conn.fetchval(
+            "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+            tid, invoice_id) or 0))
+        sisa = max(sisa, _NOL)
+        if sisa <= 0:
+            blocks.append({"code": "RP_NOTHING_DUE", "message": f"Faktur {inv['invoice_number']} sudah lunas."})
+    faktur = [{"invoice_id": inv["id"], "invoice_number": inv["invoice_number"], "invoice_date": inv["invoice_date"],
+               "due_date": inv["due_date"], "status": inv["status"], "remaining": sisa}]
+
+    jumlah = body.amount if body.amount is not None else sisa
+    if body.amount is not None and body.amount <= 0:
+        blocks.append({"code": "RP_AMOUNT_INVALID", "message": "Jumlah diterima harus lebih dari 0."})
+    a = min(sisa, jumlah) if jumlah > 0 and sisa > 0 else _NOL
+    faktur[0]["applied"] = a
+    faktur[0]["remaining_after"] = sisa - a
+    kelebihan = max(jumlah - a, _NOL) if sisa > 0 else _NOL
+    if kelebihan > 0:
+        notes.append({"code": "RP_OVERPAYMENT_DEPOSIT",
+                      "message": f"Kelebihan {_rp(kelebihan)} dicatat sebagai uang muka pelanggan (bisa dipakai "
+                                 "untuk faktur berikutnya atau dikembalikan)."})
+    if not inv["customer_id"]:
+        blocks.append({"code": "RP_CUSTOMER_MISSING", "message": "Faktur tidak tertaut ke pelanggan."})
+
+    rekening, sumber_rek, blok_rek = await _rekening(conn, tid, body.bank_account_id, inv)
+    if blok_rek:
+        blocks.append(blok_rek)
+
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    from ..routers.receive_payments import check_period_is_open
+    tgl = body.payment_date or await tanggal_dokumen(conn, tid)
+    try:
+        await check_period_is_open(conn, tid, tgl)
+    except HTTPException as e:
+        blocks.append({"code": "RP_PERIOD_CLOSED", "message": str(e.detail)})
+
+    dp = []
+    if inv["sales_order_id"]:
+        from ..routers.customer_deposits import compute_deposit_remaining, linked_so_deposits
+        for d in await linked_so_deposits(conn, tid, inv["sales_order_id"]):
+            rem = await compute_deposit_remaining(conn, tid, d["id"])
+            if rem > 0:
+                dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
+    if dp:
+        notes.append({"code": "RP_DEPOSIT_AVAILABLE",
+                      "message": "Uang muka " + ", ".join(f"{x['deposit_number']} (sisa {_rp(x['remaining'])})" for x in dp)
+                                 + " belum dipotong dari faktur — penerimaan ini tidak memakainya."})
+
+    payload = None
+    if not blocks:
+        payload = {
+            "customer_id": str(inv["customer_id"]),
+            "payment_date": tgl.isoformat(),
+            "bank_account_id": rekening["id"],
+            "total_amount": str(jumlah),
+            "allocations": [{"invoice_id": str(inv["id"]), "amount_applied": str(a)}] if a > 0 else [],
+            "reference_number": body.reference_number,
+            "notes": body.notes,
+            "save_as_draft": False,
+        }
+    return {"doc": inv, "blocks": blocks, "notes": notes, "invoices": faktur, "total_remaining": sisa,
+            "total_applied": a, "amount": jumlah, "overpayment": kelebihan, "bank_account": rekening,
+            "bank_account_source": sumber_rek, "payment_date": tgl, "deposits_unapplied": dp, "payload": payload}
+
+
+async def pratinjau_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIReceivePaymentPreviewRequest) -> dict:
+    """Lapis 1 + lapis 2 di transaksi PEMANGGIL (pemanggil WAJIB me-ROLLBACK). Bentuk = pratinjau SO, dengan
+    invoice_number + customer menggantikan order_number."""
+    r = await rencana_pelunasan_faktur(conn, ctx, invoice_id, body)
+    hasil = await _jalankan_inti(conn, ctx, r)
+    inv = r["doc"]
+    f = r["invoices"][0]
+    return {
+        "invoice_id": str(inv["id"]),
+        "invoice_number": inv["invoice_number"],
+        "customer": {"id": str(inv["customer_id"]) if inv["customer_id"] else None, "name": inv["customer_name"]},
+        "can_save": not r["blocks"],
+        "blocks": r["blocks"],
+        "notes": r["notes"],
+        "invoices": [{"invoice_id": str(f["invoice_id"]), "invoice_number": f["invoice_number"],
+                      "invoice_date": f["invoice_date"].isoformat() if f["invoice_date"] else None,
+                      "due_date": f["due_date"].isoformat() if f["due_date"] else None,
+                      "status": f["status"], "remaining": _f(f["remaining"]), "applied": _f(f["applied"]),
+                      "remaining_after": _f(f["remaining_after"])}],
+        "total_remaining": _f(r["total_remaining"]),
+        "total_applied": _f(r["total_applied"]),
+        "total_remaining_after": _f(f["remaining_after"]),
         "amount": _f(r["amount"]),
         "overpayment": _f(r["overpayment"]),
         "overpayment_deposit_number": hasil["overpayment_deposit_number"] if hasil else None,
