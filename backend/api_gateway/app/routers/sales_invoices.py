@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
 from typing import List, Optional, Literal
 from uuid import UUID
+from pydantic import BaseModel, Field
 import logging
 import asyncpg
 
@@ -4097,6 +4098,909 @@ async def record_payment(
 _STATUS_PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
 
 
+async def _rencana_void_faktur(conn, ctx: dict, invoice_id: UUID) -> dict:
+    """Pemeriksaan void (dipakai /void DAN /void/preview) — SEMUA penghalang dikumpulkan. Nol tulisan.
+    Blok = {code, message, status, detail}: /void menaikkan blok PERTAMA dengan status+detail LAMA apa adanya."""
+    blocks, notes = [], []
+    # Get full invoice data including COGS info
+    invoice = await conn.fetchrow(
+        """
+        SELECT id, invoice_number, customer_id, customer_name, total_amount, invoice_date,
+               status, ar_id, journal_id, cogs_journal_id, total_cogs
+        FROM sales_invoices
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice["status"] == "void":
+        d = f"Faktur {invoice['invoice_number']} sudah dibatalkan."
+        blocks.append({"code": "VOID_ALREADY_VOID", "message": d, "status": 400, "detail": d})
+        return {"invoice": invoice, "blocks": blocks, "notes": notes, "fulfillments": [],
+                "active_deposit_apps": [], "today": None, "payments": [], "credit_notes": []}
+
+    # Pure Ledger: check if invoice has journal-based payments (Law 16)
+    journal_paid = await conn.fetchval(
+        """
+        SELECT
+            COALESCE((SELECT SUM(rpa.amount_applied)
+                FROM receive_payment_allocations rpa
+                JOIN receive_payments rp ON rp.id = rpa.payment_id
+                WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
+                  AND rpa.status = 'active'  -- V299: a DILEPAS allocation no longer settles
+                  AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
+            + COALESCE((SELECT SUM(sip_jl.credit)
+                FROM sales_invoice_payments sip
+                JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
+                JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
+                JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
+                WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
+                  AND sip_coa.account_type = 'RECEIVABLE'), 0)
+            + COALESCE((SELECT SUM(jl5.credit)
+                FROM journal_lines jl5
+                JOIN journal_entries je5 ON je5.id = jl5.journal_id
+                JOIN chart_of_accounts coa5 ON coa5.id = jl5.account_id
+                WHERE je5.source_type = 'PAYMENT_RECEIVED'
+                  AND je5.tenant_id = $2 AND je5.status = 'POSTED'
+                  AND coa5.account_type = 'RECEIVABLE'
+                  AND je5.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $1) || '%%'
+                  AND NOT EXISTS(
+                      SELECT 1 FROM receive_payment_allocations rpa5
+                      WHERE rpa5.payment_id = je5.source_id AND rpa5.tenant_id = $2
+                  )), 0)
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+    if (journal_paid or 0) > 0:
+        # Sebut pembayarannya. "Refund first" dulu menyesatkan: tak ada jalan refund
+        # yang membuka faktur; fitur lepas-pembayaran belum ada (menunggu pemilik).
+        bayar = await conn.fetch(
+            """SELECT DISTINCT rp.payment_number
+               FROM receive_payment_allocations rpa
+               JOIN receive_payments rp ON rp.id = rpa.payment_id
+               WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'active'
+                 AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
+               ORDER BY rp.payment_number""",
+            invoice_id,
+            ctx["tenant_id"],
+        )
+        nomor = ", ".join(r["payment_number"] for r in bayar if r["payment_number"])
+        d = (f"Faktur {invoice['invoice_number']} sudah menerima pembayaran"
+             + (f" ({nomor})" if nomor else "")
+             + ". Lepas pembayaran itu dulu (Lepas Pembayaran), lalu batalkan fakturnya.")
+        blocks.append({"code": "VOID_HAS_PAYMENTS", "message": d, "status": 400, "detail": d,
+                       "payments": [r["payment_number"] for r in bayar if r["payment_number"]]})
+
+    # Unit B (14 Sep 2026): nota kredit yang terkait (original_invoice_id) mengkredit piutang faktur ini.
+    # Membatalkan faktur akan membuat kredit itu tak teratribusi lagi tanpa suara -> tolak.
+    cn_terkait = await conn.fetch(
+        """SELECT credit_note_number FROM credit_notes
+           WHERE tenant_id = $1 AND original_invoice_id = $2 AND status NOT IN ('draft', 'void')
+           ORDER BY credit_note_number""",
+        ctx["tenant_id"],
+        invoice_id,
+    )
+    if cn_terkait:
+        d = (f"Faktur {invoice['invoice_number']} punya nota kredit terkait ("
+             + ", ".join(r["credit_note_number"] for r in cn_terkait)
+             + "). Faktur yang punya nota kredit tidak bisa dibatalkan.")
+        blocks.append({"code": "VOID_HAS_CREDIT_NOTES", "message": d, "status": 400, "detail": d,
+                       "credit_notes": [r["credit_note_number"] for r in cn_terkait]})
+
+    # ============================================================
+    # FIX_P3_BRIDGE 2026-06-16: void-cascade guard for applied deposits
+    # ------------------------------------------------------------
+    # An applied customer deposit (Dr Uang Muka / Cr Piutang) settles
+    # this invoice's AR. Voiding the invoice while that application is
+    # still ACTIVE (non-reversed) would strand the application against a
+    # gone obligation (symmetric-state lesson #23). Block the void and
+    # point the user at the P1 un-apply remediation. Reversed
+    # applications (status='reversed') do NOT block.
+    active_deposit_apps = await conn.fetch(
+        """
+        SELECT cda.id AS application_id,
+               cda.deposit_id,
+               cda.amount_applied,
+               cd.deposit_number
+        FROM customer_deposit_applications cda
+        LEFT JOIN customer_deposits cd ON cd.id = cda.deposit_id
+        WHERE cda.invoice_id = $1
+          AND cda.tenant_id = $2
+          AND cda.status = 'active'
+          AND cda.reversed_by_id IS NULL
+        ORDER BY cda.created_at
+        """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+    # Unit 6: void MEMBATALKAN penerapan uang muka yang masih aktif (termasuk yang
+    # diterapkan otomatis saat posting), di transaksi void di bawah, lewat logika
+    # un-apply YANG SAMA dengan /reverse. Dulu (FIX_P3_BRIDGE) void DITOLAK sampai
+    # pengguna un-apply manual; kini keadaan tetap simetris tanpa jalan buntu:
+    # deposit kembali tersedia, piutang faktur ikut dibalik oleh void.
+
+    # ============================================================
+    # Fulfillment pre-checks (3-Event Revenue Recognition)
+    # ============================================================
+    fulfillments = await conn.fetch(
+        """
+        SELECT id, fulfillment_number, fulfillment_date, journal_id, revenue_journal_id, status
+        FROM invoice_fulfillments
+        WHERE invoice_id = $1 AND tenant_id = $2 AND status = 'posted'
+        ORDER BY created_at DESC
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+
+    # Pre-check: ALL fulfillment periods must be open
+    for f in fulfillments:
+        f_period = await conn.fetchrow(
+            "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+            ctx["tenant_id"],
+            f["fulfillment_date"],
+        )
+        if f_period and f_period["status"] in ("CLOSED", "LOCKED"):
+            d = {
+                    "message": f"Pengiriman {f['fulfillment_number']} ada di periode {f_period['period_name']} yang sudah {_STATUS_PERIODE.get(f_period['status'], 'ditutup')}",
+                    "suggestion": "credit_note",
+                    "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
+                    "prefill": {
+                        "customer_id": str(invoice.get("customer_id", "")),
+                        "customer_name": invoice.get("customer_name", ""),
+                        "invoice_id": str(invoice_id),
+                        "invoice_number": invoice.get("invoice_number", ""),
+                    },
+                }
+            blocks.append({"code": "VOID_FULFILLMENT_PERIOD_CLOSED", "message": d["message"], "status": 409, "detail": d})
+            break  # seperti dulu: satu penghalang per jenis (Surat Jalan terbaru lebih dulu)
+
+    # Check billing period (with CN suggestion if closed)
+    today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+
+    billing_period = await conn.fetchrow(
+        "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
+        ctx["tenant_id"],
+        invoice["invoice_date"],
+    )
+    if billing_period and billing_period["status"] in ("CLOSED", "LOCKED"):
+        d = {
+                "message": f"Faktur {invoice['invoice_number']} ada di periode {billing_period['period_name']} yang sudah {_STATUS_PERIODE.get(billing_period['status'], 'ditutup')}",
+                "suggestion": "credit_note",
+                "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
+                "prefill": {
+                    "customer_id": str(invoice.get("customer_id", "")),
+                    "customer_name": invoice.get("customer_name", ""),
+                    "invoice_id": str(invoice_id),
+                    "invoice_number": invoice.get("invoice_number", ""),
+                },
+            }
+        blocks.append({"code": "VOID_INVOICE_PERIOD_CLOSED", "message": d["message"], "status": 409, "detail": d})
+    # Still check void date period
+    try:
+        await check_period_is_open(conn, ctx["tenant_id"], today)
+    except HTTPException as e:
+        blocks.append({"code": "VOID_PERIOD_CLOSED", "message": str(e.detail), "status": e.status_code, "detail": e.detail})
+
+    if active_deposit_apps:
+        notes.append({"code": "VOID_DEPOSITS_RELEASED",
+                      "message": "Uang muka " + ", ".join(sorted({a["deposit_number"] or "-" for a in active_deposit_apps}))
+                                 + " dilepas dari faktur ini dan kembali jadi saldo pelanggan."})
+    if fulfillments:
+        notes.append({"code": "VOID_FULFILLMENTS_VOIDED",
+                      "message": "Surat Jalan " + ", ".join(f["fulfillment_number"] or "-" for f in fulfillments)
+                                 + " ikut dibatalkan; barang kembali ke stok."})
+    return {"invoice": invoice, "blocks": blocks, "notes": notes, "fulfillments": fulfillments,
+            "active_deposit_apps": active_deposit_apps, "today": today}
+
+
+async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -> dict:
+    """Tulisan void (isi transaksi LAMA, tanpa perubahan): pemanggil memegang transaksi + kunci INVOICE_VOID dan
+    rencana tanpa blok. Dipakai /void (commit) dan /void/preview (savepoint, lalu rollback)."""
+    import uuid
+
+    invoice, fulfillments, active_deposit_apps, today = r["invoice"], r["fulfillments"], r["active_deposit_apps"], r["today"]
+    if active_deposit_apps:
+        from .customer_deposits import reverse_deposit_application_core
+        for _a in active_deposit_apps:
+            await reverse_deposit_application_core(
+                conn, ctx, _a["deposit_id"], _a["application_id"]
+            )
+
+    year_month_str = today.strftime("%y%m")
+    reversal_journal_id = None
+    cogs_reversal_journal_id = None
+    last_cogs_rev_id = None
+
+    # ============================================================
+    # 0. VOID FULFILLMENTS (reverse chronological)
+    # 3-Event Revenue Recognition cascade
+    # ============================================================
+    for f in fulfillments:
+        # 0a. Reverse revenue journal (if exists)
+        if f["revenue_journal_id"]:
+            rev_rev_id = uuid.uuid4()
+            rev_trace = str(uuid.uuid4())
+            # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+            rev_number = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
+                ctx["tenant_id"],
+                "REV",
+                today,
+            )
+
+            orig_rev = await conn.fetchrow(
+                "SELECT total_debit, description FROM journal_entries WHERE id=$1",
+                f["revenue_journal_id"],
+            )
+            rev_amount = orig_rev["total_debit"] if orig_rev else 0
+
+            await conn.execute(
+                """
+                INSERT INTO journal_entries (
+                    id, tenant_id, journal_number, journal_date,
+                    description, source_type, source_id, trace_id,
+                    total_debit, total_credit,
+                    status, created_by, reversal_of_id, reversal_reason
+                ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+            """,
+                rev_rev_id,
+                ctx["tenant_id"],
+                rev_number,
+                today,
+                f"VOID Revenue: {invoice['invoice_number']}",
+                invoice_id,
+                rev_trace,
+                rev_amount,
+                ctx["user_id"],
+                f["revenue_journal_id"],
+                body.reason,
+            )
+            # Reverse lines: flip debit/credit
+            orig_lines = await conn.fetch(
+                "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                f["revenue_journal_id"],
+            )
+            for ln_num, ol in enumerate(orig_lines, 1):
+                await conn.execute(
+                    "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    uuid.uuid4(),
+                    rev_rev_id,
+                    ln_num,
+                    ol["account_id"],
+                    ol["credit"],
+                    ol["debit"],
+                    f"VOID: {ol['memo']}",
+                )
+            await conn.execute(
+                "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                rev_rev_id,
+            )
+            await conn.execute(
+                "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+                f["revenue_journal_id"],
+                rev_rev_id,
+            )
+
+        # 0b. Reverse COGS journal (if exists)
+        if f["journal_id"]:
+            last_cogs_rev_id = uuid.uuid4()
+            cogs_trace = str(uuid.uuid4())
+            # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
+            cogs_rev_number_f = await conn.fetchval(
+                "SELECT get_next_journal_number($1, $2, $3)",
+                ctx["tenant_id"],
+                "COGS-REV",
+                today,
+            )
+            orig_cogs = await conn.fetchrow(
+                "SELECT total_debit FROM journal_entries WHERE id=$1",
+                f["journal_id"],
+            )
+            cogs_amount = orig_cogs["total_debit"] if orig_cogs else 0
+
+            await conn.execute(
+                """
+                INSERT INTO journal_entries (
+                    id, tenant_id, journal_number, journal_date,
+                    description, source_type, source_id, trace_id,
+                    total_debit, total_credit,
+                    status, created_by, reversal_of_id, reversal_reason
+                ) VALUES ($1,$2,$3,$4,$5,'INVOICE_FULFILLMENT_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+            """,
+                last_cogs_rev_id,
+                ctx["tenant_id"],
+                cogs_rev_number_f,
+                today,
+                f"VOID COGS: {invoice['invoice_number']}",
+                invoice_id,
+                cogs_trace,
+                cogs_amount,
+                ctx["user_id"],
+                f["journal_id"],
+                body.reason,
+            )
+            orig_cogs_lines = await conn.fetch(
+                "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+                f["journal_id"],
+            )
+            for ln_num, ol in enumerate(orig_cogs_lines, 1):
+                await conn.execute(
+                    "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    uuid.uuid4(),
+                    last_cogs_rev_id,
+                    ln_num,
+                    ol["account_id"],
+                    ol["credit"],
+                    ol["debit"],
+                    f"VOID: {ol['memo']}",
+                )
+            await conn.execute(
+                "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+                last_cogs_rev_id,
+            )
+            await conn.execute(
+                "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+                f["journal_id"],
+                last_cogs_rev_id,
+            )
+
+        # 0c. Mark fulfillment as voided
+        await conn.execute(
+            "UPDATE invoice_fulfillments SET status='voided', voided_at=NOW(), voided_reason=$2 WHERE id=$1",
+            f["id"],
+            body.reason,
+        )
+        # Riwayat SO: invoice_fulfillments tak punya kolom voided_by -> audit_logs, tx yang sama (Law 12)
+        await catat_riwayat(
+            conn, ctx["tenant_id"], "invoice_fulfillments", f["id"], f["fulfillment_number"],
+            "FULFILLMENT_VOIDED", ctx.get("user_id"),
+            f"Surat Jalan {f['fulfillment_number'] or ''} dibatalkan: {body.reason}".replace("  ", " "),
+            {"reason": body.reason, "invoice_id": str(invoice_id)}, source="api:sales_invoices.void",
+        )
+
+    # Inventory reversal for ALL fulfillments (single call since same source_id)
+    if fulfillments:
+        from ..services.inventory_helpers import record_inventory_reversal
+
+        await record_inventory_reversal(
+            conn,
+            ctx["tenant_id"],
+            source_type="INVOICE_FULFILLMENT",
+            source_id=invoice_id,
+            reversal_journal_id=last_cogs_rev_id or invoice_id,
+            created_by=ctx["user_id"],
+            reversal_date=today,
+            notes_prefix="VOID",
+        )
+
+    # Reset fulfillment tracking on invoice items
+    if fulfillments:
+        await conn.execute(
+            "UPDATE sales_invoice_items SET fulfilled_qty=0, recognized_amount=0 WHERE invoice_id=$1",
+            invoice_id,
+        )
+
+    # ============================================================
+    # 1. Create REVERSAL Journal for AR/Billing (if posted)
+    # Iron Law 2: Journal Immutability - REVERSAL, not delete
+    # Uses flip-lines approach: automatically handles Dimuka + PPN
+    # ============================================================
+    if invoice["journal_id"]:
+        reversal_journal_id = uuid.uuid4()
+        trace_id = str(uuid.uuid4())
+
+        # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+        rev_journal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
+            ctx["tenant_id"],
+            "REV",
+            today,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                total_debit, total_credit,
+                status, created_by, reversal_of_id, reversal_reason
+            ) VALUES ($1, $2, $3, $4, $5, 'INVOICE_REVERSAL', $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
+        """,
+            reversal_journal_id,
+            ctx["tenant_id"],
+            rev_journal_number,
+            today,
+            f"VOID: Faktur {invoice['invoice_number']} - {invoice['customer_name']}",
+            invoice_id,
+            trace_id,
+            invoice["total_amount"],
+            ctx["user_id"],
+            invoice["journal_id"],
+            body.reason,
+        )
+
+        # Flip original billing journal lines (handles Dimuka + PPN correctly)
+        orig_billing_lines = await conn.fetch(
+            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+            invoice["journal_id"],
+        )
+        for ln_num, ol in enumerate(orig_billing_lines, 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                uuid.uuid4(),
+                reversal_journal_id,
+                ln_num,
+                ol["account_id"],
+                ol["credit"],
+                ol["debit"],
+                f"VOID: {ol['memo']}",
+            )
+
+        # Law 20: DRAFT->POSTED triggers hash chain
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            reversal_journal_id,
+        )
+
+        # Mark original journal as reversed
+        await conn.execute(
+            """
+            UPDATE journal_entries
+            SET reversed_by_id = $2, reversed_at = NOW()
+            WHERE id = $1
+        """,
+            invoice["journal_id"],
+            reversal_journal_id,
+        )
+
+        logger.info(f"AR reversal journal created: {reversal_journal_id}")
+
+    # ============================================================
+    # 1b. FIX_VOID_REVREC_ORPHAN 2026-06-18: source-agnostic
+    # recognition-leg reversal. void_invoice reverses recognition
+    # only via invoice_fulfillments.revenue_journal_id (loop above),
+    # which is EMPTY for SERVICE invoices (no fulfillment row) ->
+    # their INVOICE_REVENUE journal (Dr Unearned / Cr Penjualan)
+    # survives orphaned + is_effective -> deferred-rev guard FAIL.
+    # Reverse any live INVOICE_REVENUE for this invoice not already
+    # reversed (reversed_by_id IS NULL naturally skips fulfilled
+    # invoices already handled by loop 0a; Law 26 max-1).
+    # ============================================================
+    orphan_rev = await conn.fetchrow(
+        """
+        SELECT id, total_debit FROM journal_entries
+        WHERE source_type = 'INVOICE_REVENUE'
+          AND source_id = $1
+          AND tenant_id = $2
+          AND status = 'POSTED'
+          AND reversed_by_id IS NULL
+        """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+    if orphan_rev:
+        orphan_rev_rev_id = uuid.uuid4()
+        orphan_rev_trace = str(uuid.uuid4())
+        # Self-healing canonical generator (V176): emits REV, bumps REV counter.
+        orphan_rev_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
+            ctx["tenant_id"],
+            "REV",
+            today,
+        )
+        orphan_rev_amount = orphan_rev["total_debit"] or 0
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                total_debit, total_credit,
+                status, created_by, reversal_of_id, reversal_reason
+            ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
+        """,
+            orphan_rev_rev_id,
+            ctx["tenant_id"],
+            orphan_rev_number,
+            today,
+            f"VOID Revenue: {invoice['invoice_number']}",
+            invoice_id,
+            orphan_rev_trace,
+            orphan_rev_amount,
+            ctx["user_id"],
+            orphan_rev["id"],
+            body.reason,
+        )
+        # Reverse lines: flip debit/credit
+        orphan_rev_lines = await conn.fetch(
+            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+            orphan_rev["id"],
+        )
+        for ln_num, ol in enumerate(orphan_rev_lines, 1):
+            await conn.execute(
+                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                uuid.uuid4(),
+                orphan_rev_rev_id,
+                ln_num,
+                ol["account_id"],
+                ol["credit"],
+                ol["debit"],
+                f"VOID: {ol['memo']}",
+            )
+        # Law 20: DRAFT->POSTED triggers hash chain
+        await conn.execute(
+            "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
+            orphan_rev_rev_id,
+        )
+        # Law 26: mark original reversed (max-1 enforced)
+        await conn.execute(
+            "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
+            orphan_rev["id"],
+            orphan_rev_rev_id,
+        )
+        logger.info(
+            f"Orphan INVOICE_REVENUE reversal created: {orphan_rev_rev_id}"
+        )
+
+    # ============================================================
+    # 2. Legacy COGS reversal (pre-3-event invoices only)
+    # For invoices that have cogs_journal_id but NO fulfillment records
+    # ============================================================
+    if (
+        not fulfillments
+        and invoice["cogs_journal_id"]
+        and invoice["total_cogs"]
+        and invoice["total_cogs"] > 0
+    ):
+        cogs_reversal_journal_id = uuid.uuid4()
+        cogs_trace_id = str(uuid.uuid4())
+
+        # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
+        cogs_rev_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
+            ctx["tenant_id"],
+            "COGS-REV",
+            today,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                total_debit, total_credit,
+                status, created_by, reversal_of_id, reversal_reason
+            ) VALUES ($1, $2, $3, $4, $5, 'SALES_INVOICE_COGS_REVERSAL', $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
+        """,
+            cogs_reversal_journal_id,
+            ctx["tenant_id"],
+            cogs_rev_number,
+            today,
+            f"VOID HPP: {invoice['invoice_number']} - {invoice['customer_name']}",
+            invoice_id,
+            cogs_trace_id,
+            invoice["total_cogs"],
+            ctx["user_id"],
+            invoice["cogs_journal_id"],
+            body.reason,
+        )
+
+        # Flip original COGS journal lines
+        orig_cogs_lines = await conn.fetch(
+            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
+            invoice["cogs_journal_id"],
+        )
+        for ln_num, ol in enumerate(orig_cogs_lines, 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                uuid.uuid4(),
+                cogs_reversal_journal_id,
+                ln_num,
+                ol["account_id"],
+                ol["credit"],
+                ol["debit"],
+                f"VOID: {ol['memo']}",
+            )
+
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            cogs_reversal_journal_id,
+        )
+
+        await conn.execute(
+            """
+            UPDATE journal_entries
+            SET reversed_by_id = $2, reversed_at = NOW()
+            WHERE id = $1
+        """,
+            invoice["cogs_journal_id"],
+            cogs_reversal_journal_id,
+        )
+
+        logger.info(
+            f"COGS reversal journal created: {cogs_reversal_journal_id}"
+        )
+
+    # ============================================================
+    # 3. Restore Inventory (legacy path, pre-3-event)
+    # ============================================================
+    if not fulfillments:
+        from ..services.inventory_helpers import record_inventory_reversal
+
+        await record_inventory_reversal(
+            conn,
+            ctx["tenant_id"],
+            source_type="SALES_INVOICE",
+            source_id=invoice_id,
+            reversal_journal_id=cogs_reversal_journal_id
+            or (reversal_journal_id if reversal_journal_id else invoice_id),
+            created_by=ctx["user_id"],
+            reversal_date=today,
+            notes_prefix="VOID",
+        )
+
+    # ============================================================
+    # 3.5. Reverse Bank Transactions (BankSync Rule 3)
+    # ============================================================
+    payment_bank_txns = await conn.fetch(
+        """
+        SELECT bt.id, bt.bank_account_id, bt.amount, bt.transaction_type,
+               bt.description, bt.journal_id
+        FROM bank_transactions bt
+        JOIN sales_invoice_payments sip ON sip.journal_id = bt.journal_id
+        WHERE sip.invoice_id = $1 AND bt.tenant_id = $2
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+
+    for bt in payment_bank_txns:
+        reversal_bt_id = uuid.uuid4()
+        reversed_type = (
+            "CREDIT" if bt["transaction_type"] == "DEBIT" else "DEBIT"
+        )
+        await conn.execute(
+            """
+            INSERT INTO bank_transactions (
+                id, tenant_id, bank_account_id, transaction_date,
+                transaction_type, amount, running_balance,
+                reference_type, reference_id, description,
+                journal_id, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'invoice_void', $7, $8, $9, $10)
+        """,
+            reversal_bt_id,
+            ctx["tenant_id"],
+            bt["bank_account_id"],
+            today,
+            reversed_type,
+            -bt["amount"],
+            invoice_id,
+            f"VOID: Reversal of {bt['description']}",
+            reversal_journal_id,
+            ctx["user_id"],
+        )
+        logger.info(
+            f"Bank transaction reversed: {bt['id']} -> {reversal_bt_id}"
+        )
+
+    # ============================================================
+    # 4. Update AR status to VOID
+    # ============================================================
+    if invoice["ar_id"]:
+        await conn.execute(
+            """
+            UPDATE accounts_receivable
+            SET status = 'VOID', updated_at = NOW()
+            WHERE id = $1
+        """,
+            invoice["ar_id"],
+        )
+
+    # ============================================================
+    # 5. Update invoice status to void (+ fulfillment tracking reset)
+    # ============================================================
+    # #43(a): status respons dibaca dari baris yang BENAR-BENAR ditulis,
+    # bukan literal (dulu membalas "draft" untuk faktur yang void).
+    voided_status = await conn.fetchval(
+        """
+        UPDATE sales_invoices
+        SET status = 'void', operational_status = 'VOID', accounting_status = 'REVERSED',
+            voided_at = NOW(), voided_reason = $2,
+            fulfillment_status = 'not_applicable', revenue_status = 'not_applicable',
+            total_fulfilled_qty = 0, total_recognized_amount = 0,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING status
+    """,
+        invoice_id,
+        body.reason,
+    )
+
+    # V271 (item 7): reverse the create-invoice increment of
+    # sales_order_items.quantity_invoiced (sales_orders.py). Without this,
+    # voiding an invoice created from a SO leaves the SO line stuck
+    # 'invoiced'. Linked per-line via sales_invoice_items.sales_order_item_id;
+    # GREATEST(0, ...) never goes negative.
+    await conn.execute(
+        """
+        UPDATE sales_order_items soi
+        SET quantity_invoiced = GREATEST(0, soi.quantity_invoiced - v.qty)
+        FROM (
+            SELECT sii.sales_order_item_id AS soi_id, SUM(sii.quantity) AS qty
+            FROM sales_invoice_items sii
+            WHERE sii.invoice_id = $1 AND sii.sales_order_item_id IS NOT NULL
+            GROUP BY sii.sales_order_item_id
+        ) v
+        WHERE soi.id = v.soi_id
+        """,
+        invoice_id,
+    )
+
+    # Clean up document_tax_lines on void
+    await conn.execute(
+        "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
+        invoice_id,
+        ctx["tenant_id"],
+    )
+
+    # Riwayat SO: sales_invoices tak menyimpan voided_by -> audit_logs, tx yang sama (Law 12)
+    await catat_riwayat(
+        conn, ctx["tenant_id"], "sales_invoices", invoice_id, invoice["invoice_number"],
+        "SALES_INVOICE_VOIDED", ctx.get("user_id"),
+        f"Faktur {invoice['invoice_number'] or ''} dibatalkan (void): {body.reason}".replace("  ", " "),
+        {"reason": body.reason}, source="api:sales_invoices.void",
+    )
+
+    logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")
+
+    return {
+        "success": True,
+        "message": "Invoice voided successfully with reversal journals",
+        "data": {
+            "status": voided_status,
+            "id": str(invoice_id),
+            "reversal_journal_id": str(reversal_journal_id)
+            if reversal_journal_id
+            else None,
+            "cogs_reversal_journal_id": str(cogs_reversal_journal_id)
+            if cogs_reversal_journal_id
+            else None,
+            "fulfillments_voided": len(fulfillments),
+        },
+    }
+
+
+class VoidInvoicePreviewRequest(BaseModel):
+    reason: Optional[str] = Field(None, max_length=500)  # kosong -> blok VOID_REASON_REQUIRED (angka tetap dihitung)
+
+
+def _blok_keluar(b: dict) -> dict:
+    """Blok rencana -> bentuk respons: {code, message} + nomor terkait + saran nota kredit (periode tutup)."""
+    k = {"code": b["code"], "message": b["message"]}
+    for x in ("payments", "credit_notes"):
+        if x in b:
+            k[x] = b[x]
+    if isinstance(b.get("detail"), dict):
+        for x in ("suggestion", "action_url"):
+            if x in b["detail"]:
+                k[x] = b["detail"][x]
+    return k
+
+
+_JENIS_BALIK = {
+    "INVOICE_REVERSAL": "ar", "INVOICE_REVENUE_REVERSAL": "revenue",
+    "INVOICE_FULFILLMENT_REVERSAL": "cogs", "SALES_INVOICE_COGS_REVERSAL": "cogs", "DEPOSIT_APPLICATION": "deposit",
+}
+
+
+async def _pratinjau_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, alasan: str) -> dict:
+    """Di transaksi PEMANGGIL (wajib ROLLBACK): bila rencana bersih, _tulis_void_faktur di savepoint lalu hasil
+    NYATA-nya dibaca — jurnal pembalik (reversed_at = NOW() = cap transaksi ini), stok kembali, mutasi bank."""
+    from types import SimpleNamespace
+    tid = ctx["tenant_id"]
+    inv = r["invoice"]
+    blocks = [_blok_keluar(b) for b in r["blocks"]]
+    if not alasan:
+        blocks.append({"code": "VOID_REASON_REQUIRED", "message": "Tulis alasan pembatalan."})
+    ar_sisa = await conn.fetchval(
+        "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2", tid, invoice_id)
+    so = await conn.fetchrow(
+        """SELECT so.id, so.order_number FROM sales_invoices si JOIN sales_orders so ON so.id = si.sales_order_id
+           WHERE si.id = $1 AND si.tenant_id = $2""", invoice_id, tid)
+    jurnal, stok, bank, dp = [], [], 0, []
+    jumlah = {"ar": Decimal("0"), "revenue": Decimal("0"), "cogs": Decimal("0"), "deposit": Decimal("0")}
+    ditulis = False
+    if not r["blocks"]:
+        try:
+            async with conn.transaction():  # savepoint
+                await _tulis_void_faktur(conn, ctx, invoice_id, r, SimpleNamespace(reason=alasan or "(pratinjau)"))
+                # SEMUA jurnal pembalik yang lahir di transaksi ini (created_at = NOW() = cap transaksi), termasuk
+                # pelepasan uang muka (reverse_deposit_application_core) yang tak menandai reversed_at jurnal asal.
+                for j in await conn.fetch(
+                    """SELECT b.journal_number, b.source_type, b.total_debit, o.journal_number AS reverses
+                       FROM journal_entries b LEFT JOIN journal_entries o ON o.id = b.reversal_of_id
+                       WHERE b.tenant_id = $1 AND b.created_at = NOW() AND b.reversal_of_id IS NOT NULL
+                       ORDER BY b.journal_number""", tid):
+                    jenis = _JENIS_BALIK.get(j["source_type"])
+                    if jenis:
+                        jumlah[jenis] += Decimal(str(j["total_debit"] or 0))
+                    jurnal.append({"journal_number": j["journal_number"], "source_type": j["source_type"],
+                                   "amount": float(j["total_debit"] or 0), "reverses": j["reverses"]})
+                stok = [{"product_name": s["product_name"], "quantity": float(s["q"])} for s in await conn.fetch(
+                    """SELECT product_name, SUM(quantity_in) AS q FROM inventory_ledger
+                       WHERE tenant_id = $1 AND created_at = NOW() AND quantity_in > 0 GROUP BY 1 ORDER BY 1""", tid)]
+                bank = await conn.fetchval(
+                    "SELECT count(*) FROM bank_transactions WHERE tenant_id = $1 AND reference_type = 'invoice_void' AND reference_id = $2",
+                    tid, invoice_id)
+                ditulis = True
+        except HTTPException as e:
+            d = e.detail
+            blocks.append({"code": "VOID_REJECTED",
+                           "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
+    dp = [{"deposit_number": a["deposit_number"], "amount": float(a["amount_applied"] or 0)}
+          for a in r["active_deposit_apps"]]
+    return {
+        "invoice_id": str(invoice_id),
+        "invoice_number": inv["invoice_number"],
+        "status": inv["status"],
+        "ok": not blocks,
+        "can_save": not blocks,
+        "blocks": blocks,
+        "notes": r["notes"],
+        "void_date": r["today"].isoformat() if r.get("today") else None,
+        "ar_outstanding_before": float(ar_sisa or 0),
+        "reversals": ({"ar_amount": float(jumlah["ar"]), "revenue_amount": float(jumlah["revenue"]),
+                       "cogs_amount": float(jumlah["cogs"]), "deposit_released_amount": float(jumlah["deposit"]),
+                       "journals": jurnal} if ditulis else None),
+        "fulfillments_voided": [f["fulfillment_number"] for f in r["fulfillments"]],
+        "stock_returned": stok if ditulis else None,
+        "bank_reversals": bank if ditulis else None,
+        "deposits_released": dp,
+        "sales_order": {"id": str(so["id"]), "order_number": so["order_number"]} if so else None,
+        "payload": {"reason": alasan} if not blocks else None,
+    }
+
+
+@router.post("/{invoice_id}/void/preview")
+async def preview_void_invoice(request: Request, invoice_id: UUID, body: VoidInvoicePreviewRequest = None):
+    """PRATINJAU void (halaman CW): rencana (_rencana_void_faktur, SEMUA blok) + tulisan void NYATA
+    (_tulis_void_faktur, isi yang SAMA dengan /void) di savepoint, lalu jurnal pembalik dibaca; transaksi SELALU
+    di-ROLLBACK (nomor REV/COGS-REV tak terbakar). 200 walau diblok. Tulis = POST /{id}/void dengan `payload`."""
+    try:
+        ctx = get_user_context(request)
+        body = body or VoidInvoicePreviewRequest()
+        alasan = (body.reason or "").strip()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"INVOICE_VOID:{str(invoice_id)}")
+                r = await _rencana_void_faktur(conn, ctx, invoice_id)
+                data = await _pratinjau_void_faktur(conn, ctx, invoice_id, r, alasan)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing void invoice {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview void")
+
+
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
 async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequest):
     """
@@ -4105,783 +5009,26 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
     - Law 3: Append-Only - inventory restored via new ledger entry
     - Law 4: Double-Entry - all reversals must balance
     - Fulfillment cascade: void fulfillments (reverse chrono) before billing reversal
+    Aturan = _rencana_void_faktur (dipakai juga /void/preview), dibaca DI BAWAH kunci INVOICE_VOID (dulu dibaca
+    sebelum kunci -> dua void bersamaan bisa sama-sama lolos); penghalang pertama -> status + detail lama.
+    Tulisan = _tulis_void_faktur.
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Get full invoice data including COGS info
-            invoice = await conn.fetchrow(
-                """
-                SELECT id, invoice_number, customer_id, customer_name, total_amount, invoice_date,
-                       status, ar_id, journal_id, cogs_journal_id, total_cogs
-                FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
-
-            if invoice["status"] == "void":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Faktur {invoice['invoice_number']} sudah dibatalkan.",
-                )
-
-            # Pure Ledger: check if invoice has journal-based payments (Law 16)
-            journal_paid = await conn.fetchval(
-                """
-                SELECT
-                    COALESCE((SELECT SUM(rpa.amount_applied)
-                        FROM receive_payment_allocations rpa
-                        JOIN receive_payments rp ON rp.id = rpa.payment_id
-                        WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2
-                          AND rpa.status = 'active'  -- V299: a DILEPAS allocation no longer settles
-                          AND rp.status = 'posted' AND rp.journal_id IS NOT NULL), 0)
-                    + COALESCE((SELECT SUM(sip_jl.credit)
-                        FROM sales_invoice_payments sip
-                        JOIN journal_entries sip_je ON sip_je.id = sip.journal_id
-                        JOIN journal_lines sip_jl ON sip_jl.journal_id = sip_je.id
-                        JOIN chart_of_accounts sip_coa ON sip_coa.id = sip_jl.account_id
-                        WHERE sip.invoice_id = $1 AND sip_je.status = 'POSTED'
-                          AND sip_coa.account_type = 'RECEIVABLE'), 0)
-                    + COALESCE((SELECT SUM(jl5.credit)
-                        FROM journal_lines jl5
-                        JOIN journal_entries je5 ON je5.id = jl5.journal_id
-                        JOIN chart_of_accounts coa5 ON coa5.id = jl5.account_id
-                        WHERE je5.source_type = 'PAYMENT_RECEIVED'
-                          AND je5.tenant_id = $2 AND je5.status = 'POSTED'
-                          AND coa5.account_type = 'RECEIVABLE'
-                          AND je5.description LIKE '%%' || (SELECT invoice_number FROM sales_invoices WHERE id = $1) || '%%'
-                          AND NOT EXISTS(
-                              SELECT 1 FROM receive_payment_allocations rpa5
-                              WHERE rpa5.payment_id = je5.source_id AND rpa5.tenant_id = $2
-                          )), 0)
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-            if (journal_paid or 0) > 0:
-                # Sebut pembayarannya. "Refund first" dulu menyesatkan: tak ada jalan refund
-                # yang membuka faktur; fitur lepas-pembayaran belum ada (menunggu pemilik).
-                bayar = await conn.fetch(
-                    """SELECT DISTINCT rp.payment_number
-                       FROM receive_payment_allocations rpa
-                       JOIN receive_payments rp ON rp.id = rpa.payment_id
-                       WHERE rpa.invoice_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'active'
-                         AND rp.status = 'posted' AND rp.journal_id IS NOT NULL
-                       ORDER BY rp.payment_number""",
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-                nomor = ", ".join(r["payment_number"] for r in bayar if r["payment_number"])
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Faktur {invoice['invoice_number']} sudah menerima pembayaran"
-                    + (f" ({nomor})" if nomor else "")
-                    + ". Lepas pembayaran itu dulu (Lepas Pembayaran), lalu batalkan fakturnya.",
-                )
-
-            # Unit B (14 Sep 2026): nota kredit yang terkait (original_invoice_id) mengkredit piutang faktur ini.
-            # Membatalkan faktur akan membuat kredit itu tak teratribusi lagi tanpa suara -> tolak.
-            cn_terkait = await conn.fetch(
-                """SELECT credit_note_number FROM credit_notes
-                   WHERE tenant_id = $1 AND original_invoice_id = $2 AND status NOT IN ('draft', 'void')
-                   ORDER BY credit_note_number""",
-                ctx["tenant_id"],
-                invoice_id,
-            )
-            if cn_terkait:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Faktur {invoice['invoice_number']} punya nota kredit terkait ("
-                    + ", ".join(r["credit_note_number"] for r in cn_terkait)
-                    + "). Faktur yang punya nota kredit tidak bisa dibatalkan.",
-                )
-
-            # ============================================================
-            # FIX_P3_BRIDGE 2026-06-16: void-cascade guard for applied deposits
-            # ------------------------------------------------------------
-            # An applied customer deposit (Dr Uang Muka / Cr Piutang) settles
-            # this invoice's AR. Voiding the invoice while that application is
-            # still ACTIVE (non-reversed) would strand the application against a
-            # gone obligation (symmetric-state lesson #23). Block the void and
-            # point the user at the P1 un-apply remediation. Reversed
-            # applications (status='reversed') do NOT block.
-            active_deposit_apps = await conn.fetch(
-                """
-                SELECT cda.id AS application_id,
-                       cda.deposit_id,
-                       cda.amount_applied,
-                       cd.deposit_number
-                FROM customer_deposit_applications cda
-                LEFT JOIN customer_deposits cd ON cd.id = cda.deposit_id
-                WHERE cda.invoice_id = $1
-                  AND cda.tenant_id = $2
-                  AND cda.status = 'active'
-                  AND cda.reversed_by_id IS NULL
-                ORDER BY cda.created_at
-                """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-            # Unit 6: void MEMBATALKAN penerapan uang muka yang masih aktif (termasuk yang
-            # diterapkan otomatis saat posting), di transaksi void di bawah, lewat logika
-            # un-apply YANG SAMA dengan /reverse. Dulu (FIX_P3_BRIDGE) void DITOLAK sampai
-            # pengguna un-apply manual; kini keadaan tetap simetris tanpa jalan buntu:
-            # deposit kembali tersedia, piutang faktur ikut dibalik oleh void.
-
-            # ============================================================
-            # Fulfillment pre-checks (3-Event Revenue Recognition)
-            # ============================================================
-            fulfillments = await conn.fetch(
-                """
-                SELECT id, fulfillment_number, fulfillment_date, journal_id, revenue_journal_id, status
-                FROM invoice_fulfillments
-                WHERE invoice_id = $1 AND tenant_id = $2 AND status = 'posted'
-                ORDER BY created_at DESC
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            # Pre-check: ALL fulfillment periods must be open
-            for f in fulfillments:
-                f_period = await conn.fetchrow(
-                    "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
-                    ctx["tenant_id"],
-                    f["fulfillment_date"],
-                )
-                if f_period and f_period["status"] in ("CLOSED", "LOCKED"):
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "message": f"Pengiriman {f['fulfillment_number']} ada di periode {f_period['period_name']} yang sudah {_STATUS_PERIODE.get(f_period['status'], 'ditutup')}",
-                            "suggestion": "credit_note",
-                            "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
-                            "prefill": {
-                                "customer_id": str(invoice.get("customer_id", "")),
-                                "customer_name": invoice.get("customer_name", ""),
-                                "invoice_id": str(invoice_id),
-                                "invoice_number": invoice.get("invoice_number", ""),
-                            },
-                        },
-                    )
-
-            # Check billing period (with CN suggestion if closed)
-            today = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-
-            billing_period = await conn.fetchrow(
-                "SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id=$1 AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
-                ctx["tenant_id"],
-                invoice["invoice_date"],
-            )
-            if billing_period and billing_period["status"] in ("CLOSED", "LOCKED"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": f"Faktur {invoice['invoice_number']} ada di periode {billing_period['period_name']} yang sudah {_STATUS_PERIODE.get(billing_period['status'], 'ditutup')}",
-                        "suggestion": "credit_note",
-                        "action_url": f"/api/credit-notes/from-invoice/{invoice_id}",
-                        "prefill": {
-                            "customer_id": str(invoice.get("customer_id", "")),
-                            "customer_name": invoice.get("customer_name", ""),
-                            "invoice_id": str(invoice_id),
-                            "invoice_number": invoice.get("invoice_number", ""),
-                        },
-                    },
-                )
-            # Still check void date period
-            await check_period_is_open(conn, ctx["tenant_id"], today)
-
             async with conn.transaction():
-                import uuid
-
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"INVOICE_VOID:{str(invoice_id)}",
                 )
-
-                if active_deposit_apps:
-                    from .customer_deposits import reverse_deposit_application_core
-                    for _a in active_deposit_apps:
-                        await reverse_deposit_application_core(
-                            conn, ctx, _a["deposit_id"], _a["application_id"]
-                        )
-
-                year_month_str = today.strftime("%y%m")
-                reversal_journal_id = None
-                cogs_reversal_journal_id = None
-                last_cogs_rev_id = None
-
-                # ============================================================
-                # 0. VOID FULFILLMENTS (reverse chronological)
-                # 3-Event Revenue Recognition cascade
-                # ============================================================
-                for f in fulfillments:
-                    # 0a. Reverse revenue journal (if exists)
-                    if f["revenue_journal_id"]:
-                        rev_rev_id = uuid.uuid4()
-                        rev_trace = str(uuid.uuid4())
-                        # Self-healing canonical generator (V176): emits REV, bumps REV counter.
-                        rev_number = await conn.fetchval(
-                            "SELECT get_next_journal_number($1, $2, $3)",
-                            ctx["tenant_id"],
-                            "REV",
-                            today,
-                        )
-
-                        orig_rev = await conn.fetchrow(
-                            "SELECT total_debit, description FROM journal_entries WHERE id=$1",
-                            f["revenue_journal_id"],
-                        )
-                        rev_amount = orig_rev["total_debit"] if orig_rev else 0
-
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_entries (
-                                id, tenant_id, journal_number, journal_date,
-                                description, source_type, source_id, trace_id,
-                                total_debit, total_credit,
-                                status, created_by, reversal_of_id, reversal_reason
-                            ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
-                        """,
-                            rev_rev_id,
-                            ctx["tenant_id"],
-                            rev_number,
-                            today,
-                            f"VOID Revenue: {invoice['invoice_number']}",
-                            invoice_id,
-                            rev_trace,
-                            rev_amount,
-                            ctx["user_id"],
-                            f["revenue_journal_id"],
-                            body.reason,
-                        )
-                        # Reverse lines: flip debit/credit
-                        orig_lines = await conn.fetch(
-                            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
-                            f["revenue_journal_id"],
-                        )
-                        for ln_num, ol in enumerate(orig_lines, 1):
-                            await conn.execute(
-                                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                                uuid.uuid4(),
-                                rev_rev_id,
-                                ln_num,
-                                ol["account_id"],
-                                ol["credit"],
-                                ol["debit"],
-                                f"VOID: {ol['memo']}",
-                            )
-                        await conn.execute(
-                            "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
-                            rev_rev_id,
-                        )
-                        await conn.execute(
-                            "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
-                            f["revenue_journal_id"],
-                            rev_rev_id,
-                        )
-
-                    # 0b. Reverse COGS journal (if exists)
-                    if f["journal_id"]:
-                        last_cogs_rev_id = uuid.uuid4()
-                        cogs_trace = str(uuid.uuid4())
-                        # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
-                        cogs_rev_number_f = await conn.fetchval(
-                            "SELECT get_next_journal_number($1, $2, $3)",
-                            ctx["tenant_id"],
-                            "COGS-REV",
-                            today,
-                        )
-                        orig_cogs = await conn.fetchrow(
-                            "SELECT total_debit FROM journal_entries WHERE id=$1",
-                            f["journal_id"],
-                        )
-                        cogs_amount = orig_cogs["total_debit"] if orig_cogs else 0
-
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_entries (
-                                id, tenant_id, journal_number, journal_date,
-                                description, source_type, source_id, trace_id,
-                                total_debit, total_credit,
-                                status, created_by, reversal_of_id, reversal_reason
-                            ) VALUES ($1,$2,$3,$4,$5,'INVOICE_FULFILLMENT_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
-                        """,
-                            last_cogs_rev_id,
-                            ctx["tenant_id"],
-                            cogs_rev_number_f,
-                            today,
-                            f"VOID COGS: {invoice['invoice_number']}",
-                            invoice_id,
-                            cogs_trace,
-                            cogs_amount,
-                            ctx["user_id"],
-                            f["journal_id"],
-                            body.reason,
-                        )
-                        orig_cogs_lines = await conn.fetch(
-                            "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
-                            f["journal_id"],
-                        )
-                        for ln_num, ol in enumerate(orig_cogs_lines, 1):
-                            await conn.execute(
-                                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                                uuid.uuid4(),
-                                last_cogs_rev_id,
-                                ln_num,
-                                ol["account_id"],
-                                ol["credit"],
-                                ol["debit"],
-                                f"VOID: {ol['memo']}",
-                            )
-                        await conn.execute(
-                            "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
-                            last_cogs_rev_id,
-                        )
-                        await conn.execute(
-                            "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
-                            f["journal_id"],
-                            last_cogs_rev_id,
-                        )
-
-                    # 0c. Mark fulfillment as voided
-                    await conn.execute(
-                        "UPDATE invoice_fulfillments SET status='voided', voided_at=NOW(), voided_reason=$2 WHERE id=$1",
-                        f["id"],
-                        body.reason,
-                    )
-                    # Riwayat SO: invoice_fulfillments tak punya kolom voided_by -> audit_logs, tx yang sama (Law 12)
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "invoice_fulfillments", f["id"], f["fulfillment_number"],
-                        "FULFILLMENT_VOIDED", ctx.get("user_id"),
-                        f"Surat Jalan {f['fulfillment_number'] or ''} dibatalkan: {body.reason}".replace("  ", " "),
-                        {"reason": body.reason, "invoice_id": str(invoice_id)}, source="api:sales_invoices.void",
-                    )
-
-                # Inventory reversal for ALL fulfillments (single call since same source_id)
-                if fulfillments:
-                    from ..services.inventory_helpers import record_inventory_reversal
-
-                    await record_inventory_reversal(
-                        conn,
-                        ctx["tenant_id"],
-                        source_type="INVOICE_FULFILLMENT",
-                        source_id=invoice_id,
-                        reversal_journal_id=last_cogs_rev_id or invoice_id,
-                        created_by=ctx["user_id"],
-                        reversal_date=today,
-                        notes_prefix="VOID",
-                    )
-
-                # Reset fulfillment tracking on invoice items
-                if fulfillments:
-                    await conn.execute(
-                        "UPDATE sales_invoice_items SET fulfilled_qty=0, recognized_amount=0 WHERE invoice_id=$1",
-                        invoice_id,
-                    )
-
-                # ============================================================
-                # 1. Create REVERSAL Journal for AR/Billing (if posted)
-                # Iron Law 2: Journal Immutability - REVERSAL, not delete
-                # Uses flip-lines approach: automatically handles Dimuka + PPN
-                # ============================================================
-                if invoice["journal_id"]:
-                    reversal_journal_id = uuid.uuid4()
-                    trace_id = str(uuid.uuid4())
-
-                    # Self-healing canonical generator (V176): emits REV, bumps REV counter.
-                    rev_journal_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "REV",
-                        today,
-                    )
-
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, trace_id,
-                            total_debit, total_credit,
-                            status, created_by, reversal_of_id, reversal_reason
-                        ) VALUES ($1, $2, $3, $4, $5, 'INVOICE_REVERSAL', $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
-                    """,
-                        reversal_journal_id,
-                        ctx["tenant_id"],
-                        rev_journal_number,
-                        today,
-                        f"VOID: Faktur {invoice['invoice_number']} - {invoice['customer_name']}",
-                        invoice_id,
-                        trace_id,
-                        invoice["total_amount"],
-                        ctx["user_id"],
-                        invoice["journal_id"],
-                        body.reason,
-                    )
-
-                    # Flip original billing journal lines (handles Dimuka + PPN correctly)
-                    orig_billing_lines = await conn.fetch(
-                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
-                        invoice["journal_id"],
-                    )
-                    for ln_num, ol in enumerate(orig_billing_lines, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                            uuid.uuid4(),
-                            reversal_journal_id,
-                            ln_num,
-                            ol["account_id"],
-                            ol["credit"],
-                            ol["debit"],
-                            f"VOID: {ol['memo']}",
-                        )
-
-                    # Law 20: DRAFT->POSTED triggers hash chain
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        reversal_journal_id,
-                    )
-
-                    # Mark original journal as reversed
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET reversed_by_id = $2, reversed_at = NOW()
-                        WHERE id = $1
-                    """,
-                        invoice["journal_id"],
-                        reversal_journal_id,
-                    )
-
-                    logger.info(f"AR reversal journal created: {reversal_journal_id}")
-
-                # ============================================================
-                # 1b. FIX_VOID_REVREC_ORPHAN 2026-06-18: source-agnostic
-                # recognition-leg reversal. void_invoice reverses recognition
-                # only via invoice_fulfillments.revenue_journal_id (loop above),
-                # which is EMPTY for SERVICE invoices (no fulfillment row) ->
-                # their INVOICE_REVENUE journal (Dr Unearned / Cr Penjualan)
-                # survives orphaned + is_effective -> deferred-rev guard FAIL.
-                # Reverse any live INVOICE_REVENUE for this invoice not already
-                # reversed (reversed_by_id IS NULL naturally skips fulfilled
-                # invoices already handled by loop 0a; Law 26 max-1).
-                # ============================================================
-                orphan_rev = await conn.fetchrow(
-                    """
-                    SELECT id, total_debit FROM journal_entries
-                    WHERE source_type = 'INVOICE_REVENUE'
-                      AND source_id = $1
-                      AND tenant_id = $2
-                      AND status = 'POSTED'
-                      AND reversed_by_id IS NULL
-                    """,
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-                if orphan_rev:
-                    orphan_rev_rev_id = uuid.uuid4()
-                    orphan_rev_trace = str(uuid.uuid4())
-                    # Self-healing canonical generator (V176): emits REV, bumps REV counter.
-                    orphan_rev_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "REV",
-                        today,
-                    )
-                    orphan_rev_amount = orphan_rev["total_debit"] or 0
-
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, trace_id,
-                            total_debit, total_credit,
-                            status, created_by, reversal_of_id, reversal_reason
-                        ) VALUES ($1,$2,$3,$4,$5,'INVOICE_REVENUE_REVERSAL',$6,$7,$8,$8,'DRAFT',$9,$10,$11)
-                    """,
-                        orphan_rev_rev_id,
-                        ctx["tenant_id"],
-                        orphan_rev_number,
-                        today,
-                        f"VOID Revenue: {invoice['invoice_number']}",
-                        invoice_id,
-                        orphan_rev_trace,
-                        orphan_rev_amount,
-                        ctx["user_id"],
-                        orphan_rev["id"],
-                        body.reason,
-                    )
-                    # Reverse lines: flip debit/credit
-                    orphan_rev_lines = await conn.fetch(
-                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
-                        orphan_rev["id"],
-                    )
-                    for ln_num, ol in enumerate(orphan_rev_lines, 1):
-                        await conn.execute(
-                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                            uuid.uuid4(),
-                            orphan_rev_rev_id,
-                            ln_num,
-                            ol["account_id"],
-                            ol["credit"],
-                            ol["debit"],
-                            f"VOID: {ol['memo']}",
-                        )
-                    # Law 20: DRAFT->POSTED triggers hash chain
-                    await conn.execute(
-                        "UPDATE journal_entries SET status='POSTED' WHERE id=$1",
-                        orphan_rev_rev_id,
-                    )
-                    # Law 26: mark original reversed (max-1 enforced)
-                    await conn.execute(
-                        "UPDATE journal_entries SET reversed_by_id=$2, reversed_at=NOW() WHERE id=$1",
-                        orphan_rev["id"],
-                        orphan_rev_rev_id,
-                    )
-                    logger.info(
-                        f"Orphan INVOICE_REVENUE reversal created: {orphan_rev_rev_id}"
-                    )
-
-                # ============================================================
-                # 2. Legacy COGS reversal (pre-3-event invoices only)
-                # For invoices that have cogs_journal_id but NO fulfillment records
-                # ============================================================
-                if (
-                    not fulfillments
-                    and invoice["cogs_journal_id"]
-                    and invoice["total_cogs"]
-                    and invoice["total_cogs"] > 0
-                ):
-                    cogs_reversal_journal_id = uuid.uuid4()
-                    cogs_trace_id = str(uuid.uuid4())
-
-                    # Self-healing canonical generator (V176): emits COGS-REV, bumps COGS-REV counter.
-                    cogs_rev_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "COGS-REV",
-                        today,
-                    )
-
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, trace_id,
-                            total_debit, total_credit,
-                            status, created_by, reversal_of_id, reversal_reason
-                        ) VALUES ($1, $2, $3, $4, $5, 'SALES_INVOICE_COGS_REVERSAL', $6, $7, $8, $8, 'DRAFT', $9, $10, $11)
-                    """,
-                        cogs_reversal_journal_id,
-                        ctx["tenant_id"],
-                        cogs_rev_number,
-                        today,
-                        f"VOID HPP: {invoice['invoice_number']} - {invoice['customer_name']}",
-                        invoice_id,
-                        cogs_trace_id,
-                        invoice["total_cogs"],
-                        ctx["user_id"],
-                        invoice["cogs_journal_id"],
-                        body.reason,
-                    )
-
-                    # Flip original COGS journal lines
-                    orig_cogs_lines = await conn.fetch(
-                        "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id=$1 ORDER BY line_number",
-                        invoice["cogs_journal_id"],
-                    )
-                    for ln_num, ol in enumerate(orig_cogs_lines, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                            uuid.uuid4(),
-                            cogs_reversal_journal_id,
-                            ln_num,
-                            ol["account_id"],
-                            ol["credit"],
-                            ol["debit"],
-                            f"VOID: {ol['memo']}",
-                        )
-
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        cogs_reversal_journal_id,
-                    )
-
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET reversed_by_id = $2, reversed_at = NOW()
-                        WHERE id = $1
-                    """,
-                        invoice["cogs_journal_id"],
-                        cogs_reversal_journal_id,
-                    )
-
-                    logger.info(
-                        f"COGS reversal journal created: {cogs_reversal_journal_id}"
-                    )
-
-                # ============================================================
-                # 3. Restore Inventory (legacy path, pre-3-event)
-                # ============================================================
-                if not fulfillments:
-                    from ..services.inventory_helpers import record_inventory_reversal
-
-                    await record_inventory_reversal(
-                        conn,
-                        ctx["tenant_id"],
-                        source_type="SALES_INVOICE",
-                        source_id=invoice_id,
-                        reversal_journal_id=cogs_reversal_journal_id
-                        or (reversal_journal_id if reversal_journal_id else invoice_id),
-                        created_by=ctx["user_id"],
-                        reversal_date=today,
-                        notes_prefix="VOID",
-                    )
-
-                # ============================================================
-                # 3.5. Reverse Bank Transactions (BankSync Rule 3)
-                # ============================================================
-                payment_bank_txns = await conn.fetch(
-                    """
-                    SELECT bt.id, bt.bank_account_id, bt.amount, bt.transaction_type,
-                           bt.description, bt.journal_id
-                    FROM bank_transactions bt
-                    JOIN sales_invoice_payments sip ON sip.journal_id = bt.journal_id
-                    WHERE sip.invoice_id = $1 AND bt.tenant_id = $2
-                """,
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-
-                for bt in payment_bank_txns:
-                    reversal_bt_id = uuid.uuid4()
-                    reversed_type = (
-                        "CREDIT" if bt["transaction_type"] == "DEBIT" else "DEBIT"
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO bank_transactions (
-                            id, tenant_id, bank_account_id, transaction_date,
-                            transaction_type, amount, running_balance,
-                            reference_type, reference_id, description,
-                            journal_id, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 0, 'invoice_void', $7, $8, $9, $10)
-                    """,
-                        reversal_bt_id,
-                        ctx["tenant_id"],
-                        bt["bank_account_id"],
-                        today,
-                        reversed_type,
-                        -bt["amount"],
-                        invoice_id,
-                        f"VOID: Reversal of {bt['description']}",
-                        reversal_journal_id,
-                        ctx["user_id"],
-                    )
-                    logger.info(
-                        f"Bank transaction reversed: {bt['id']} -> {reversal_bt_id}"
-                    )
-
-                # ============================================================
-                # 4. Update AR status to VOID
-                # ============================================================
-                if invoice["ar_id"]:
-                    await conn.execute(
-                        """
-                        UPDATE accounts_receivable
-                        SET status = 'VOID', updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        invoice["ar_id"],
-                    )
-
-                # ============================================================
-                # 5. Update invoice status to void (+ fulfillment tracking reset)
-                # ============================================================
-                # #43(a): status respons dibaca dari baris yang BENAR-BENAR ditulis,
-                # bukan literal (dulu membalas "draft" untuk faktur yang void).
-                voided_status = await conn.fetchval(
-                    """
-                    UPDATE sales_invoices
-                    SET status = 'void', operational_status = 'VOID', accounting_status = 'REVERSED',
-                        voided_at = NOW(), voided_reason = $2,
-                        fulfillment_status = 'not_applicable', revenue_status = 'not_applicable',
-                        total_fulfilled_qty = 0, total_recognized_amount = 0,
-                        updated_at = NOW()
-                    WHERE id = $1
-                    RETURNING status
-                """,
-                    invoice_id,
-                    body.reason,
-                )
-
-                # V271 (item 7): reverse the create-invoice increment of
-                # sales_order_items.quantity_invoiced (sales_orders.py). Without this,
-                # voiding an invoice created from a SO leaves the SO line stuck
-                # 'invoiced'. Linked per-line via sales_invoice_items.sales_order_item_id;
-                # GREATEST(0, ...) never goes negative.
-                await conn.execute(
-                    """
-                    UPDATE sales_order_items soi
-                    SET quantity_invoiced = GREATEST(0, soi.quantity_invoiced - v.qty)
-                    FROM (
-                        SELECT sii.sales_order_item_id AS soi_id, SUM(sii.quantity) AS qty
-                        FROM sales_invoice_items sii
-                        WHERE sii.invoice_id = $1 AND sii.sales_order_item_id IS NOT NULL
-                        GROUP BY sii.sales_order_item_id
-                    ) v
-                    WHERE soi.id = v.soi_id
-                    """,
-                    invoice_id,
-                )
-
-                # Clean up document_tax_lines on void
-                await conn.execute(
-                    "DELETE FROM document_tax_lines WHERE document_id = $1 AND tenant_id = $2",
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-
-                # Riwayat SO: sales_invoices tak menyimpan voided_by -> audit_logs, tx yang sama (Law 12)
-                await catat_riwayat(
-                    conn, ctx["tenant_id"], "sales_invoices", invoice_id, invoice["invoice_number"],
-                    "SALES_INVOICE_VOIDED", ctx.get("user_id"),
-                    f"Faktur {invoice['invoice_number'] or ''} dibatalkan (void): {body.reason}".replace("  ", " "),
-                    {"reason": body.reason}, source="api:sales_invoices.void",
-                )
-
-                logger.info(f"Invoice voided: {invoice_id}, reason: {body.reason}")
-
-                return {
-                    "success": True,
-                    "message": "Invoice voided successfully with reversal journals",
-                    "data": {
-                        "status": voided_status,
-                        "id": str(invoice_id),
-                        "reversal_journal_id": str(reversal_journal_id)
-                        if reversal_journal_id
-                        else None,
-                        "cogs_reversal_journal_id": str(cogs_reversal_journal_id)
-                        if cogs_reversal_journal_id
-                        else None,
-                        "fulfillments_voided": len(fulfillments),
-                    },
-                }
+                r = await _rencana_void_faktur(conn, ctx, invoice_id)
+                if r["blocks"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=b["status"], detail=b["detail"])
+                return await _tulis_void_faktur(conn, ctx, invoice_id, r, body)
 
     except HTTPException:
         raise

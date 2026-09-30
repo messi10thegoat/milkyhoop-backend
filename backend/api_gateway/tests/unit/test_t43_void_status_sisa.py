@@ -89,7 +89,7 @@ def _nilai_status_respons(fn):
 
 
 def test_void_membalas_status_dari_returning():
-    fn = _fungsi("void_invoice")
+    fn = _fungsi("_tulis_void_faktur")  # 30 Sep: isi tx void pindah utuh ke penulis
     nilai = _nilai_status_respons(fn)
     assert isinstance(nilai, ast.Name), (
         f"data.status void harus dari DB, bukan literal {ast.dump(nilai)}"

@@ -31,12 +31,32 @@ SJ = UUID("20000004-0000-0000-0000-000000000001")
 U1, U2 = "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000a2"
 
 
-def _void():
+def _fn(nama):
     tree = ast.parse(open(si.__file__, encoding="utf-8").read())
     for n in ast.walk(tree):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "void_invoice":
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == nama:
             return n
-    raise AssertionError("void_invoice tak ditemukan")
+    raise AssertionError(f"{nama} tak ditemukan")
+
+
+def _void():
+    return _fn("void_invoice")
+
+
+def _penulis():
+    """30 Sep 2026 (void/preview): isi transaksi void pindah UTUH ke _tulis_void_faktur; void_invoice memanggilnya
+    DI DALAM transaksinya (diperiksa di bawah) -> penulis tak punya transaksi sendiri, riwayat tetap di tx void."""
+    return _fn("_tulis_void_faktur")
+
+
+def test_void_invoice_memanggil_penulis_di_dalam_transaksi():
+    tx = _tx(_void())
+    p = [c for c in ast.walk(tx) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_tulis_void_faktur"]
+    assert len(p) == 1, "void_invoice wajib memanggil _tulis_void_faktur tepat sekali DI DALAM transaksinya"
+    kunci = [c for c in ast.walk(tx) if isinstance(c, ast.Call) and getattr(c.func, "attr", None) == "execute"
+             and c.args and "pg_advisory_xact_lock" in str(getattr(c.args[0], "value", ""))]
+    rencana = [c for c in ast.walk(tx) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_rencana_void_faktur"]
+    assert kunci and rencana and kunci[0].lineno < rencana[0].lineno < p[0].lineno, "kunci -> rencana -> tulis"
 
 
 def _tx(fn):
@@ -63,7 +83,7 @@ def _sql_execute(node, frasa):
 
 
 def test_void_faktur_dicatat_sekali_di_tx_sesudah_update():
-    tx = _tx(_void())
+    tx = _penulis()
     p = _panggil_riwayat(tx, "SALES_INVOICE_VOIDED")
     assert len(p) == 1, "void_invoice wajib mencatat SALES_INVOICE_VOIDED tepat sekali, DI DALAM transaksi"
     upd = _sql_execute(tx, "UPDATE sales_invoices SET status = 'void'")
@@ -74,7 +94,7 @@ def test_void_faktur_dicatat_sekali_di_tx_sesudah_update():
 
 
 def test_void_surat_jalan_dicatat_per_sj_di_loop_kaskade():
-    tx = _tx(_void())
+    tx = _penulis()
     loop = [n for n in ast.walk(tx) if isinstance(n, ast.For) and ast.unparse(n.iter) == "fulfillments"
             and _sql_execute(n, "UPDATE invoice_fulfillments SET status='voided'")]
     assert len(loop) == 1, "loop kaskade void Surat Jalan tak ditemukan"
@@ -84,11 +104,11 @@ def test_void_surat_jalan_dicatat_per_sj_di_loop_kaskade():
     a = [ast.unparse(x) for x in p[0].args]
     assert a[2] == "'invoice_fulfillments'" and a[3] == "f['id']" and a[4] == "f['fulfillment_number']", a
     assert "user_id" in a[6], a
-    assert len(_panggil_riwayat(_void(), "FULFILLMENT_VOIDED")) == 1
+    assert len(_panggil_riwayat(_penulis(), "FULFILLMENT_VOIDED")) == 1
 
 
 def test_query_kaskade_membawa_fulfillment_number():
-    s = " ".join(ast.unparse(_void()).split())
+    s = " ".join(ast.unparse(_fn("_rencana_void_faktur")).split())
     assert "SELECT id, fulfillment_number, fulfillment_date, journal_id" in s
 
 

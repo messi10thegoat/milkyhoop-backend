@@ -54,6 +54,7 @@ HARAP = [
     ("sales_invoices.py", "POST", "/{invoice_id}/post", "post_invoice"),
     ("sales_invoices.py", "POST", "/{invoice_id}/payments", "record_payment"),  # 29 Sep: lewat buat_penerimaan
     ("sales_invoices.py", "POST", "/{invoice_id}/void", "void_invoice"),
+    ("sales_invoices.py", "POST", "/{invoice_id}/void/preview", "preview_void_invoice"),
     ("sales_invoices.py", "GET", "/{invoice_id}/pdf", "get_invoice_pdf"),
     ("sales_orders.py", "POST", "/{order_id}/to-invoice", "convert_to_invoice"),
     ("sales_orders.py", "POST", "/{order_id}/to-invoice/preview", "preview_to_invoice"),
