@@ -24,7 +24,8 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
-from typing import Optional, Literal
+from typing import List, Optional, Literal
+from pydantic import BaseModel, Field
 from uuid import UUID
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import (
@@ -40,6 +41,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from ..schemas.credit_notes import (
+    CreditNoteItemCreate,
     CreateCreditNoteRequest,
     UpdateCreditNoteRequest,
     ApplyCreditNoteRequest,
@@ -649,6 +651,27 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 # =============================================================================
 
 
+async def periksa_tautan_baris_faktur(conn, tenant_id: str, faktur_id, items: list) -> None:
+    """V348 (30 Sep 2026): original_invoice_item_id tiap baris NK WAJIB baris faktur asal NK ini (tenant sama).
+    Dulu medan ini diterima lalu DIBUANG DIAM saat INSERT. Tanpa faktur asal = tak boleh bertaut baris."""
+    ids = [str(i.get("original_invoice_item_id")) for i in items if i.get("original_invoice_item_id")]
+    if not ids:
+        return
+    if not faktur_id:
+        raise HTTPException(status_code=400, detail="Baris nota kredit merujuk baris faktur, tetapi nota kredit tak dikaitkan ke faktur.")
+    try:
+        uu = [UUID(x) for x in ids]
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Baris faktur yang dirujuk tidak valid.")
+    ada = {r["id"] for r in await conn.fetch(
+        """SELECT sii.id FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id
+           WHERE sii.id = ANY($1::uuid[]) AND si.id = $2 AND si.tenant_id = $3""",
+        uu, UUID(str(faktur_id)), tenant_id)}
+    luar = [x for x, u in zip(ids, uu) if u not in ada]
+    if luar:
+        raise HTTPException(status_code=400, detail="Baris faktur yang dirujuk bukan milik faktur asal nota kredit ini.")
+
+
 async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
     """Inti POST /credit-notes (draf), di transaksi PEMANGGIL: rute create DAN /credit-notes/preview (savepoint lalu
     rollback). Isi = isi transaksi rute lama tanpa perubahan (30 Sep 2026)."""
@@ -681,6 +704,8 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
             conn, ctx["tenant_id"], body.original_invoice_id, pelanggan_cn
         )
         original_invoice_number = faktur_asal["invoice_number"]
+    await periksa_tautan_baris_faktur(conn, ctx["tenant_id"], faktur_asal["id"] if faktur_asal else None,
+                                      [i.model_dump() for i in body.items])
 
     # Insert credit note
     cn_id = await conn.fetchval(
@@ -726,8 +751,8 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
                 discount_percent, discount_amount,
                 tax_code, tax_rate, tax_amount,
                 subtotal, total, line_number,
-                tax_code_id, dpp, dpp_harga_jual
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         """,
             cn_id,
             UUID(item["item_id"]) if item.get("item_id") else None,
@@ -747,6 +772,7 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
             UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
             item["dpp"],
             item["dpp_harga_jual"],
+            UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
         )
 
     logger.info(f"Credit note created: {cn_id}, number={cn_number}")
@@ -834,6 +860,36 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
     return {"blocks": blocks, "doc": doc, "faktur": faktur}
 
 
+async def _pratinjau_dua_bentuk(conn, ctx: dict, body) -> dict:
+    """Bentuk (1) items diisi -> CreateCreditNoteRequest apa adanya; (2) dari faktur -> rakit_dari_faktur."""
+    from pydantic import ValidationError
+    tgl = body.credit_note_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+    if body.items is None and body.original_invoice_id:
+        rakit = await rakit_dari_faktur(conn, ctx["tenant_id"], body)
+        data = None
+        if rakit["create"] is not None:
+            rakit["create"]["credit_note_date"] = tgl
+            data = await pratinjau_nota_kredit(conn, ctx, CreateCreditNoteRequest(**rakit["create"]))
+        if data is None:
+            data = {"ok": False, "can_save": False, "blocks": [], "notes": [], "credit_note_number_preview": None,
+                    "items": [], "gross_subtotal": None, "doc_discount": None, "tax_amount": None, "total_amount": None,
+                    "invoice": None, "journals_on_post": [], "stock_returned_on_post": [], "payload": None}
+        data["blocks"] = rakit["blocks"] + data["blocks"]
+        data["notes"] = rakit["notes"] + data["notes"]
+        data["ok"] = data["can_save"] = not data["blocks"]
+        if data["blocks"]:
+            data["payload"] = None
+        data["lines"] = rakit["lines"]
+        return data
+    try:
+        badan = CreateCreditNoteRequest(**{**body.model_dump(exclude={"lines"}), "credit_note_date": tgl})
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False))
+    data = await pratinjau_nota_kredit(conn, ctx, badan)
+    data["lines"] = None
+    return data
+
+
 async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
     """Di transaksi PEMANGGIL (wajib ROLLBACK): rencana; bila bersih -> buat_nota_kredit + posting_nota_kredit
     (inti yang SAMA dengan POST /credit-notes dan /{id}/post) di savepoint, lalu jurnal yang lahir dibaca."""
@@ -895,8 +951,122 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
     }
 
 
+class CreditNoteFromInvoiceLine(BaseModel):
+    original_invoice_item_id: str
+    quantity: Decimal = Field(..., ge=0)
+
+
+class CreditNotePreviewRequest(BaseModel):
+    """Badan /credit-notes/preview. Dua bentuk: (1) `items` diisi = sama persis dengan POST /credit-notes;
+    (2) `items` ABSEN + `original_invoice_id` = "dari faktur": server mengisi baris dari faktur (harga, diskon, kode
+    pajak, pelanggan), `lines` memilih baris & qty (absen = semua yang masih bisa dinotakan)."""
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    credit_note_date: Optional[date] = None
+    original_invoice_id: Optional[str] = None
+    reason: Literal["return", "pricing_error", "discount", "damaged", "other"]
+    reason_detail: Optional[str] = Field(None, max_length=500)
+    ref_no: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = None
+    items: Optional[List[CreditNoteItemCreate]] = None
+    lines: Optional[List[CreditNoteFromInvoiceLine]] = None
+    discount_percent: float = Field(0, ge=0, le=100)
+    discount_amount: Decimal = Field(Decimal("0"), ge=0)
+    tax_rate: float = Field(0, ge=0, le=100)
+
+
+async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> dict:
+    """Bentuk (2): baris NK dari baris faktur asal (V348: tautan original_invoice_item_id). Nol tulisan.
+    Diskon baris nominal diskalakan qty/qty_faktur; persen dipakai apa adanya; diskon DOKUMEN faktur dibagi
+    pro-rata neto (NK penuh = diskon faktur penuh). Bisa-dinotakan = qty faktur - SIGMA qty NK tak-void yang bertaut
+    ke baris itu (INFORMASI; belum menjadi penghalang -- menunggu putusan pemilik)."""
+    from ..services.sales_doc_calc import line_net, q2
+    blocks, notes = [], []
+    try:
+        fid = UUID(str(body.original_invoice_id))
+    except (ValueError, TypeError):
+        return {"blocks": [{"code": "CN_INVOICE_INVALID", "message": "Faktur tidak ditemukan"}], "notes": [],
+                "lines": [], "create": None}
+    inv = await conn.fetchrow(
+        """SELECT id, invoice_number, customer_id, customer_name, status, discount_amount, shipping_amount
+           FROM sales_invoices WHERE id = $1 AND tenant_id = $2""", fid, tid)
+    if not inv:
+        return {"blocks": [{"code": "CN_INVOICE_INVALID", "message": "Faktur tidak ditemukan"}], "notes": [],
+                "lines": [], "create": None}
+    rows = await conn.fetch(
+        """SELECT id, item_id, item_code, description, quantity, unit, unit_price, discount_percent, discount_amount,
+                  tax_code, tax_code_id, tax_rate
+           FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number""", fid)
+    sudah = {r["oid"]: Decimal(str(r["q"])) for r in await conn.fetch(
+        """SELECT cni.original_invoice_item_id AS oid, SUM(cni.quantity) AS q
+           FROM credit_note_items cni JOIN credit_notes cn ON cn.id = cni.credit_note_id
+           WHERE cn.tenant_id = $1 AND cn.original_invoice_id = $2 AND cn.status <> 'void'
+             AND cni.original_invoice_item_id IS NOT NULL
+           GROUP BY 1""", tid, fid)}
+    lawas = [r["credit_note_number"] for r in await conn.fetch(
+        """SELECT DISTINCT cn.credit_note_number FROM credit_notes cn JOIN credit_note_items cni ON cni.credit_note_id = cn.id
+           WHERE cn.tenant_id = $1 AND cn.original_invoice_id = $2 AND cn.status <> 'void'
+             AND cni.original_invoice_item_id IS NULL ORDER BY 1""", tid, fid)]
+    if lawas:
+        notes.append({"code": "CN_LEGACY_UNLINKED",
+                      "message": "Nota kredit " + ", ".join(n or "-" for n in lawas) + " atas faktur ini tidak bertaut ke "
+                                 "baris faktur; jumlahnya tidak dihitung per baris."})
+    pilih = None
+    if body.lines is not None:
+        pilih = {}
+        milik = {str(r["id"]) for r in rows}
+        for ln in body.lines:
+            k = str(ln.original_invoice_item_id).lower()
+            if k not in milik:
+                blocks.append({"code": "CN_LINE_NOT_IN_INVOICE",
+                               "message": f"Baris {ln.original_invoice_item_id} bukan baris faktur {inv['invoice_number']}.",
+                               "original_invoice_item_id": ln.original_invoice_item_id})
+                continue
+            pilih[k] = pilih.get(k, Decimal("0")) + ln.quantity
+    lines, items, lebih = [], [], []
+    net_semua, net_pilih = Decimal("0"), Decimal("0")
+    for r in rows:
+        qty = Decimal(str(r["quantity"]))
+        sd = sudah.get(r["id"], Decimal("0"))
+        bisa = max(qty - sd, Decimal("0"))
+        q = pilih.get(str(r["id"]), Decimal("0")) if pilih is not None else bisa
+        lines.append({"original_invoice_item_id": str(r["id"]), "description": r["description"], "unit": r["unit"],
+                      "invoiced": float(qty), "already_credited": float(sd), "creditable": float(bisa), "quantity": float(q)})
+        net_semua += line_net(dict(r))["net"]
+        if q <= 0:
+            continue
+        if q > bisa:
+            lebih.append(r["description"] or "-")
+        pct = Decimal(str(r["discount_percent"] or 0))
+        amt = Decimal(str(r["discount_amount"] or 0))
+        it = {"item_id": str(r["item_id"]) if r["item_id"] else None, "item_code": r["item_code"],
+              "description": r["description"] or "-", "quantity": q, "unit": r["unit"], "unit_price": r["unit_price"],
+              "discount_percent": float(pct), "discount_amount": Decimal("0") if pct > 0 else (q2(amt * q / qty) if qty else Decimal("0")),
+              "tax_code": r["tax_code"], "tax_code_id": str(r["tax_code_id"]) if r["tax_code_id"] else None,
+              "tax_rate": float(r["tax_rate"] or 0), "original_invoice_item_id": str(r["id"])}
+        items.append(it)
+        net_pilih += line_net(it)["net"]
+    if lebih:
+        notes.append({"code": "CN_QTY_EXCEEDS_CREDITABLE",
+                      "message": "Jumlah melebihi yang masih bisa dinotakan: " + ", ".join(lebih) + "."})
+    if Decimal(str(inv["shipping_amount"] or 0)) > 0:
+        notes.append({"code": "CN_SHIPPING_NOT_INCLUDED", "message": "Ongkos kirim faktur tidak ikut dinotakan."})
+    if not items and not blocks:
+        blocks.append({"code": "CN_NOTHING_TO_CREDIT", "message": "Tidak ada baris yang dinotakan."})
+    doc = Decimal(str(inv["discount_amount"] or 0))
+    diskon_dok = q2(doc * net_pilih / net_semua) if doc > 0 and net_semua > 0 else Decimal("0")
+    create = None
+    if items:
+        create = {"customer_id": str(inv["customer_id"]) if inv["customer_id"] else None,
+                  "customer_name": inv["customer_name"] or "-",
+                  "credit_note_date": body.credit_note_date, "original_invoice_id": str(inv["id"]),
+                  "reason": body.reason, "reason_detail": body.reason_detail, "ref_no": body.ref_no, "notes": body.notes,
+                  "items": items, "discount_percent": 0, "discount_amount": diskon_dok, "tax_rate": 0}
+    return {"blocks": blocks, "notes": notes, "lines": lines, "create": create}
+
+
 @router.post("/preview")
-async def preview_credit_note(request: Request, body: CreateCreditNoteRequest):
+async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
     """PRATINJAU nota kredit (halaman CW): rencana (SEMUA blok) + draf NYATA (buat_nota_kredit) + posting NYATA
     (posting_nota_kredit) di savepoint -> jurnal/stok yang AKAN lahir saat diposting; transaksi SELALU di-ROLLBACK
     (nomor CN/jurnal tak terbakar). 200 walau diblok. Tulis = POST /credit-notes dengan `payload` (lahir DRAF),
@@ -912,7 +1082,7 @@ async def preview_credit_note(request: Request, body: CreateCreditNoteRequest):
             await tr.start()
             try:
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
-                data = await pratinjau_nota_kredit(conn, ctx, body)
+                data = await _pratinjau_dua_bentuk(conn, ctx, body)
             finally:
                 await tr.rollback()  # SELALU: pratinjau tak pernah menulis
         return {"success": True, "data": data}
@@ -988,7 +1158,7 @@ async def update_credit_note(
                     update_data["items"] = [
                         {k: r[k] for k in ("item_id", "item_code", "description", "quantity", "unit",
                                            "unit_price", "discount_percent", "discount_amount",
-                                           "tax_code", "tax_code_id", "tax_rate")}
+                                           "tax_code", "tax_code_id", "tax_rate", "original_invoice_item_id")}
                         for r in _rows
                     ]
                 if _recalc:
@@ -1007,6 +1177,11 @@ async def update_credit_note(
                     for i in _items:
                         if i.get("item_id") is not None:
                             i["item_id"] = str(i["item_id"])
+                    # V348: tautan baris faktur divalidasi terhadap faktur asal EFEKTIF (baru bila diubah, else tersimpan)
+                    _f_eff = (update_data["original_invoice_id"] if "original_invoice_id" in update_data
+                              else await conn.fetchval("SELECT original_invoice_id FROM credit_notes WHERE id = $1",
+                                                       credit_note_id))
+                    await periksa_tautan_baris_faktur(conn, ctx["tenant_id"], _f_eff, _items)
                     discount_percent = update_data.get("discount_percent", _cur["discount_percent"] or 0)
                     discount_amount = update_data.get("discount_amount", _cur["discount_amount"] or 0)
                     tax_rate = update_data.get("tax_rate", _cur["tax_rate"] or 0)
@@ -1042,8 +1217,8 @@ async def update_credit_note(
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
-                                tax_code_id, dpp, dpp_harga_jual
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                         """,
                             credit_note_id,
                             UUID(item["item_id"]) if item.get("item_id") else None,
@@ -1063,6 +1238,7 @@ async def update_credit_note(
                             UUID(item["tax_code_id"]) if item.get("tax_code_id") else None,
                             item["dpp"],
                             item["dpp_harga_jual"],
+                            UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
                         )
 
                     update_data.pop("items", None)

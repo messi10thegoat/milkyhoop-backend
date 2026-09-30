@@ -55,6 +55,7 @@ class CreditNoteItemUpdate(BaseModel):
     discount_amount: Optional[Decimal] = Field(None, ge=0)
     tax_code: Optional[str] = None
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    original_invoice_item_id: Optional[str] = None  # V348: tautan baris faktur (disimpan, divalidasi)
 
 
 # =============================================================================
