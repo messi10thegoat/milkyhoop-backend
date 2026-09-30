@@ -35,7 +35,7 @@ FUNGSI = {
     "services/payment_request_service.py": ["_create_payment_journal"],
     "routers/bank_reconciliation.py": ["list_accounts", "categorize_statement_line", "complete_session"],
     "routers/payroll_runs.py": ["void_payroll"],
-    "routers/employee_advances.py": ["void_advance"],
+    "routers/employee_advances.py": ["void_advance", "_rencana_batal_kasbon", "_tulis_batal_kasbon"],
     "routers/payroll_payments.py": ["void_payment"],
     "routers/expenses.py": ["get_expenses_summary"],
     "routers/items.py": ["create_item", "create_single_item_stock_transfer", "create_stock_adjustment"],
@@ -114,7 +114,6 @@ def _baris_tulis(node):
 
 
 @pytest.mark.parametrize("berkas,nama", [("routers/payroll_runs.py", "void_payroll"),
-                                         ("routers/employee_advances.py", "void_advance"),
                                          ("routers/payroll_payments.py", "void_payment")])
 def test_void_cek_periode_asal_dan_pembalik_sebelum_tulis(berkas, nama):
     """Dulu hanya trigger DB yang menolak periode tertutup -> pengguna melihat 500."""
@@ -166,3 +165,23 @@ def test_ringkasan_biaya_periode_berbatas_atas():
     for satuan in ("1 month", "3 months", "1 year"):
         assert f"INTERVAL '{satuan}'" in teks, satuan
     assert teks.count("<= {h}") >= 2  # minggu: sampai hari ini, di jurnal DAN biaya
+
+
+def test_void_kasbon_cek_periode_di_rencana_sebelum_penulis():
+    """30 Sep (modul CW kasbon): aturan void kasbon = _rencana_batal_kasbon (dipakai juga /void/preview), penulis =
+    _tulis_batal_kasbon. Invarian SAMA dgn di atas, dibagi dua fungsi: rencana memegang cek periode asal +
+    pembalik dan NOL tulisan; rute memanggil rencana SEBELUM penulis."""
+    rencana = _fungsi("routers/employee_advances.py", "_rencana_batal_kasbon")
+    assert len(_baris_panggilan(rencana, "check_period_is_open")) >= 2
+    assert _baris_tulis(rencana) == []
+    rute = ast.unparse(_fungsi("routers/employee_advances.py", "void_advance"))
+    assert rute.index("_rencana_batal_kasbon(") < rute.index("_tulis_batal_kasbon(")
+    assert _baris_tulis(_fungsi("routers/employee_advances.py", "_tulis_batal_kasbon"))
+
+
+def test_grant_kasbon_cek_periode_di_rencana():
+    """Law 5 pada grant (dulu hanya trigger DB -> 500): rencana grant memeriksa periode tanggal kasbon."""
+    rencana = _fungsi("routers/employee_advances.py", "_rencana_kasbon")
+    assert _baris_panggilan(rencana, "check_period_is_open") and _baris_tulis(rencana) == []
+    rute = ast.unparse(_fungsi("routers/employee_advances.py", "grant_advance"))
+    assert rute.index("_rencana_kasbon(") < rute.index("_tulis_kasbon(")

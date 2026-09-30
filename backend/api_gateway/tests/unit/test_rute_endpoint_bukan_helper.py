@@ -72,6 +72,11 @@ HARAP = [
     ("kasbank_v2.py", "POST", "/bank-transactions/{transaction_id}/void", "void_transaction"),
     ("bank_transfers.py", "POST", "/{transfer_id}/void", None),
     ("customer_deposits.py", "POST", "/{deposit_id}/void", "void_customer_deposit"),
+    # 30 Sep: modul CW kasbon (rencana/penulis dipisah dari rute)
+    ("employee_advances.py", "POST", "", "grant_advance"),
+    ("employee_advances.py", "POST", "/preview", "preview_grant_advance"),
+    ("employee_advances.py", "POST", "/{advance_id}/void", "void_advance"),
+    ("employee_advances.py", "POST", "/{advance_id}/void/preview", "preview_void_advance"),
     ("vendor_deposits.py", "POST", "/{deposit_id}/void", "void_vendor_deposit"),
     ("sales_receipts.py", "POST", "/{receipt_id}/void", None),
 ]
@@ -85,3 +90,10 @@ def test_rute_disentuh_27_sep_ke_endpoint_yang_benar(berkas, metode, jalur, nama
     if nama:
         assert fn.name == nama
     assert fn.args.args and fn.args.args[0].arg == "request", f"{fn.name}: parameter pertama bukan request"
+
+
+def test_rute_statis_kasbon_sebelum_rute_berparameter():
+    """GET /summary & /balances WAJIB dideklarasikan SEBELUM GET /{advance_id} (UUID): kalau sesudahnya,
+    FastAPI mencocokkan /{advance_id} dulu -> 422 'bukan UUID' untuk /summary."""
+    get = [j for b, m, j, fn in _rute() if b == "employee_advances.py" and m == "GET"]
+    assert get.index("/summary") < get.index("/{advance_id}") and get.index("/balances") < get.index("/{advance_id}")

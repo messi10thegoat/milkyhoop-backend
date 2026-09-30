@@ -76,24 +76,30 @@ class _C:
 
     async def fetchrow(self, q, *a):
         if "FROM chart_of_accounts" in q:
-            return {"id": a[0], "name": "akun"}
+            return {"id": a[0], "name": "akun", "account_code": "1-10202"}
         if "FROM employees" in q:
             return {"id": EMP, "name": "Suryani"}
         if "FROM bank_accounts WHERE coa_id" in q:
             return {"id": BA} if a[0] == BANK_COA else None
         if "FROM employee_advances" in q:
             return {"id": ADV, "employee_id": EMP, "principal": Decimal("500000.00"), "status": "active",
-                    "grant_journal_id": GRANT_J, "source_account_id": self.sumber, "granted_date": date(2026, 9, 1)}
+                    "grant_journal_id": GRANT_J, "source_account_id": self.sumber, "granted_date": date(2026, 9, 1),
+                    "advance_number": "KSB-2609-0001"}
         if "FROM bank_transactions" in q:
             assert a == (GRANT_J, T)
-            return {"id": BT} if self.grant_bercermin else None
+            return ({"id": BT, "bank_account_id": BA, "amount": Decimal("-500000.00"), "account_name": "BCA"}
+                    if self.grant_bercermin else None)
         raise AssertionError(q[:60])
 
     async def fetchval(self, q, *a):
         if "employee_advance_balance" in q:
             return Decimal("500000.00")
+        if "SUM(amount)" in q and "employee_advance_movements" in q:
+            return Decimal("0")  # sisa kasbon karyawan sebelum (rencana grant, V334)
         if "employee_advance_movements" in q:
             return UUID(int=1)
+        if "generate_employee_advance_number" in q:
+            return "KSB-2609-0009"
         raise AssertionError(q[:60])
 
 
@@ -138,7 +144,8 @@ def pasang(monkeypatch):
 
 
 def _req():
-    return SimpleNamespace(state=SimpleNamespace(user={"user_id": "00000000-0000-0000-0000-0000000000a1", "tenant_id": T}))
+    return SimpleNamespace(state=SimpleNamespace(user={"user_id": "00000000-0000-0000-0000-0000000000a1", "tenant_id": T}),
+                           headers={})
 
 
 async def _beri(**kw):
@@ -155,7 +162,8 @@ async def test_grant_dari_rekening_bercermin_withdrawal(pasang):
     assert k["bank_account_id"] == BA and k["transaction_type"] == "withdrawal"
     assert k["amount"] == Decimal("-150000.50") and isinstance(k["amount"], Decimal)
     assert k["reference_type"] == "employee_advance" and k["reference_id"] == UUID(r["advance_id"])
-    assert str(k["journal_id"]) == r["journal_id"] and k["reference_number"] == r["journal_number"]
+    # V334: nomor rujukan mutasi = nomor dokumen kasbon (KSB-…), bukan nomor jurnal internal
+    assert str(k["journal_id"]) == r["journal_id"] and k["reference_number"] == r["advance_number"] == "KSB-2609-0009"
     assert k["payee_payer"] == "Suryani" and k["transaction_date"] == date(2026, 9, 1)
     # baris jurnal: Dr kasbon / Cr akun bank, jumlah Decimal PERSIS
     assert [b[:3] for b in c.baris] == [(KASBON, Decimal("150000.50"), 0), (BANK_COA, 0, Decimal("150000.50"))]
