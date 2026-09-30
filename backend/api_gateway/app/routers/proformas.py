@@ -948,7 +948,9 @@ async def get_proforma_pdf(
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT p.*, so.order_number, so.order_date, so.total_amount AS order_total_amount
+                SELECT p.*, so.order_number, so.order_date, so.total_amount AS order_total_amount,
+                       so.subtotal AS order_subtotal, so.discount_amount AS order_discount,
+                       so.shipping_amount AS order_shipping, so.tax_amount AS order_tax
                 FROM proformas p
                 LEFT JOIN sales_orders so
                        ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
@@ -976,7 +978,7 @@ async def get_proforma_pdf(
             if row["sales_order_id"]:
                 _oi = await conn.fetch(
                     """
-                    SELECT description, quantity, unit, unit_price, line_total
+                    SELECT description, quantity, unit, unit_price, line_total, tax_amount
                     FROM sales_order_items
                     WHERE sales_order_id = $1
                     ORDER BY sort_order, description
@@ -989,7 +991,10 @@ async def get_proforma_pdf(
                         "quantity": _f(r["quantity"]),
                         "unit": r["unit"],
                         "unit_price": _f(r["unit_price"]),
-                        "line_total": _f(r["line_total"]),
+                        # 30 Sep: jumlah baris = NETO (line_total SO = neto + PPN baris). Dasar SAMA dengan
+                        # subtotal SO (Σ neto) -> baris Subtotal/Diskon/Ongkir/PPN di bawahnya tak menghitung
+                        # PPN dua kali. Tanpa PPN (grapgrap) = line_total, tak berubah.
+                        "line_total": _f(r["line_total"] - (r["tax_amount"] or 0)),
                     }
                     for r in _oi
                 ]
@@ -1053,6 +1058,12 @@ async def get_proforma_pdf(
                 if row["order_date"]
                 else None,
                 "order_total_amount": _f(row["order_total_amount"]),
+                # 30 Sep (pemilik, PRO-2609-0069): komposisi Nilai Pesanan dari kolom SO yang SAMA dengan detail
+                # SO (tidak dihitung ulang): Subtotal (neto) -> Diskon -> Ongkos kirim -> PPN (baris + ongkir) -> Nilai.
+                "order_subtotal": _f(row["order_subtotal"]),
+                "order_discount": _f(row["order_discount"]),
+                "order_shipping": _f(row["order_shipping"]),
+                "order_tax": _f(row["order_tax"]),
                 "customer_name": row["customer_name"],
                 "purpose": row["purpose"],
                 "percent_of_order": _f(row["percent_of_order"]),

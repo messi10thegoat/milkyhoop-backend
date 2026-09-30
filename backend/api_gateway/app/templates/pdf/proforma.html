@@ -110,6 +110,40 @@
                 <td class="col-amount">Rp {{ item.line_total | currency }}</td>
             </tr>
             {% endfor %}
+            {# Komposisi Nilai Pesanan (30 Sep, PRO-2609-0069: ongkir 150.000 tak terlihat) — SAMA dengan detail SO:
+               Subtotal -> Diskon -> Ongkos kirim -> PPN -> Nilai Pesanan, angka dari kolom SO (tak dihitung ulang). #}
+            {% if proforma.get('order_items') and proforma.get('order_subtotal') is not none %}
+            <tr>
+                <td class="col-desc">Subtotal</td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
+                <td class="col-amount">Rp {{ proforma.order_subtotal | currency }}</td>
+            </tr>
+            {% if proforma.get('order_discount') and proforma.order_discount|float > 0 %}
+            <tr>
+                <td class="col-desc">Diskon</td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
+                <td class="col-amount">-Rp {{ proforma.order_discount | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if proforma.get('order_shipping') and proforma.order_shipping|float > 0 %}
+            <tr>
+                <td class="col-desc">Ongkos kirim</td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
+                <td class="col-amount">Rp {{ proforma.order_shipping | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if proforma.get('order_tax') and proforma.order_tax|float > 0 %}
+            <tr>
+                <td class="col-desc">PPN</td>
+                <td class="col-qty"></td>
+                <td class="col-price"></td>
+                <td class="col-amount">Rp {{ proforma.order_tax | currency }}</td>
+            </tr>
+            {% endif %}
+            {% endif %}
             {% if proforma.get('order_items') and proforma.get('order_total_amount') %}
             <tr>
                 <td class="col-desc"><strong>Nilai Pesanan</strong></td>
