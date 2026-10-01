@@ -36,9 +36,4 @@ POST /api/document-intake/retry-all-failed
 POST /api/financial-ratios/alerts
 POST /api/financial-ratios/snapshot
 POST /api/flow/flow/run
-POST /api/inventory/products
-POST /api/inventory/products/{product_id}/adjust
-POST /api/members/add-points
 POST /api/transactions/parse-guided
-POST /api/transactions/purchase
-POST /api/transactions/sales

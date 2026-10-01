@@ -168,6 +168,13 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+/fulfill/preview$", ["POST"], "sales_invoice", "P"),
     (r"^/api/employee-advances/preview$", ["POST"], "payroll", "C"),
     (r"^/api/employee-advances/[^/]+/void/preview$", ["POST"], "payroll", "V"),
+    # Rute lama yang DIPANGGIL FE tapi tak terpetakan (1 Okt 2026, putusan pemilik LANGSUNG di sesi BACKEND:
+    # "buka akses admin untuk semua modul kecuali infrastruktur") -> izin modul yang sama dengan tulis padanannya.
+    (r"^/api/transactions/purchase$", ["POST"], "bill", "C"),
+    (r"^/api/transactions/sales$", ["POST"], "sales_invoice", "C"),
+    (r"^/api/inventory/products$", ["POST"], "product", "C"),
+    (r"^/api/inventory/products/[^/]+/adjust$", ["POST"], "stock_adjust", "C"),
+    (r"^/api/members/add-points$", ["POST"], "customer", "U"),
     (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),
     (r"^/api/payment-requests/[^/]+/cancel$", ["POST"], "payment_request", "U"),
     # menulis data, tanpa jurnal
