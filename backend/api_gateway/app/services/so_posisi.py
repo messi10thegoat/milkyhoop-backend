@@ -19,6 +19,7 @@ from .proforma_terbayar import alokasikan, ringkasan_pesanan
 from .so_kirim import _AKTIF, belum_dikirim, terkirim_per_baris
 
 NOL = Decimal("0")
+SELESAI_KIRIM = ("completed", "cancelled")  # putusan pemilik #8: Kirim "—"
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
@@ -51,8 +52,12 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
 
 
 def kirim(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bool, hari: date) -> tuple:
-    """-> (teks, gaya 'normal'|'muted'|'strong'). 01 §A + putusan pemilik #2; `hari` = tanggal usaha zona tenant."""
-    if status == "cancelled" or not perlu_kirim:
+    """-> (teks, gaya 'normal'|'muted'|'strong'). 01 §A + putusan pemilik #2 dan #8; `hari` = tanggal usaha zona tenant.
+
+    #8 (1 Okt 2026): SO SELESAI (completed -- juga hasil "Tutup pesanan") atau batal -> "—". SO yang masih TERBUKA
+    (termasuk Lunas tapi belum selesai) dengan baris perlu-kirim belum terkirim tetap "telat" tebal = sinyal nyata.
+    """
+    if status in SELESAI_KIRIM or not perlu_kirim:
         return "—", "muted"
     if semua_terkirim:
         return "Terkirim", "muted"

@@ -88,6 +88,16 @@ def test_kirim_batal():
     assert K("cancelled") == ("—", "muted")
 
 
+def test_putusan8_selesai_strip_meski_baris_belum_terkirim_dan_telat():
+    assert K("completed", d=date(2026, 9, 9)) == ("—", "muted")
+
+
+@pytest.mark.parametrize("status", ["invoiced", "partial_invoiced", "confirmed", "partial_shipped"])
+def test_putusan8_terbuka_termasuk_lunas_tetap_telat_tebal(status):
+    # SO-2609-0033/0031 grapgrap: invoiced + Lunas, baris perlu_kirim=true tanpa SJ
+    assert K(status, d=date(2026, 9, 9)) == ("9 Sep, telat", "strong")
+
+
 def test_putusan2_tanpa_baris_perlu_kirim_strip():
     assert K(perlu=False, d=date(2026, 9, 26)) == ("—", "muted")  # dulu "26 Sep, telat" tebal (SO-0024/0025)
 
