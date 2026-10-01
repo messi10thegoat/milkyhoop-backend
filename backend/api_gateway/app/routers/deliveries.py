@@ -387,8 +387,11 @@ async def get_delivery_detail(delivery_id: str, request: Request):
 
 async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
     """Konteks PDF surat jalan (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari get_delivery_pdf.
-    -> {delivery_data, row}."""
-    await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+    -> {delivery_data, row}.
+
+    1 Okt 2026: `SET LOCAL app.tenant_id = '<f-string>'` DICABUT -- gateway = postgres BYPASSRLS (diukur: rolbypassrls t)
+    dan di luar transaksi (no-op): bukan pagar, hanya permukaan injeksi. Pagar = filter tenant EKSPLISIT di tiap join
+    ber-tenant (customers, warehouses, products) + item dari id SJ yang SUDAH lolos filter tenant (row["id"])."""
 
     row = await conn.fetchrow(
         """
@@ -409,9 +412,9 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
         FROM invoice_fulfillments f
         JOIN sales_invoices si ON si.id = f.invoice_id
-        LEFT JOIN customers c ON c.id = si.customer_id
-        LEFT JOIN warehouses w ON w.id = f.warehouse_id
-        WHERE f.id = $1 AND f.tenant_id = $2
+        LEFT JOIN customers c ON c.id = si.customer_id AND c.tenant_id = f.tenant_id
+        LEFT JOIN warehouses w ON w.id = f.warehouse_id AND w.tenant_id = f.tenant_id
+        WHERE f.id = $1 AND f.tenant_id = $2 AND si.tenant_id = f.tenant_id
         """,
         delivery_id,
         ctx["tenant_id"],
@@ -431,12 +434,13 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             p.sku AS product_sku,
             sii.unit
         FROM invoice_fulfillment_items fi
-        LEFT JOIN products p ON p.id = fi.product_id
+        LEFT JOIN products p ON p.id = fi.product_id AND p.tenant_id = $2
         LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
         WHERE fi.fulfillment_id = $1
         ORDER BY fi.created_at
         """,
-        delivery_id,
+        row["id"],
+        ctx["tenant_id"],
     )
 
     # Fetch tenant info
