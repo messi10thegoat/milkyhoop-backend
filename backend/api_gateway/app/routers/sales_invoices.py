@@ -5814,6 +5814,12 @@ async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
         # akan menerima faktur bergaya LAIN tanpa tanda apa pun, dan
         # faktur adalah dokumen yang dikirim ke pelanggan.
         raise HTTPException(status_code=422, detail=str(_e))
+    # P3 SO-dokumen (03-DOKUMEN): faktur ber-SO -> "Rincian n pembayaran ada di Rekap Pesanan SO-…" (template A);
+    # n dari pemuat Rekap yang SAMA dengan dokumen Rekap (bukan hitungan sendiri).
+    if invoice["sales_order_id"] and invoice_data.get("sales_order_number"):
+        from ..services.rekap_pesanan import muat_rekap_pesanan
+        _rk = (await muat_rekap_pesanan(conn, ctx, invoice["sales_order_id"]))["rekap"]
+        invoice_data["rekap_pembayaran"] = len(_rk["pembayaran"])
     return {"invoice_data": invoice_data, "tpl": tpl, "invoice": invoice}
 
 

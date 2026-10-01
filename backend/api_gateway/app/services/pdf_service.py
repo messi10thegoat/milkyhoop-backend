@@ -75,6 +75,7 @@ def pilih_template(bawaan_tenant, override=None) -> str:
 # P3b (putusan pemilik 1 Okt 2026): font Inter untuk SEMUA dokumen SO lewat fonts.css + FontConfiguration.
 # Template faktur B (gaya industri, metrik Arial -> Liberation Sans) dan laporan keuangan (DejaVu) TIDAK berubah.
 CSS_DOKUMEN = ("fonts.css", "invoice.css")
+CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)
 
 
 @dataclass(frozen=True)
@@ -759,6 +760,18 @@ class PDFService:
         )
         return Render(html_content, CSS_DOKUMEN, font=True)
 
+    def render_rekap_pesanan(self, rekap: dict, tenant_info: dict) -> Render:
+        """Rekap Pesanan (P3 SO-dokumen) -- konteks dari services/rekap_pesanan.muat_rekap_pesanan."""
+        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
+                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
+                   "logo_base64": tenant_info.get("logo_data")}
+        html_content = self.jinja_env.get_template("rekap_pesanan.html").render(
+            rekap=rekap, company=company, generated_at=datetime.now())
+        return Render(html_content, CSS_DOKUMEN, font=True)
+
+    def generate_rekap_pesanan_pdf(self, rekap: dict, tenant_info: dict) -> bytes:
+        return self.tulis_pdf(self.render_rekap_pesanan(rekap, tenant_info))
+
     def generate_receipt_pdf(self, receipt_data, tenant_info):
         """
         Generate PDF for a receipt (Bukti Penerimaan / Kwitansi).
@@ -793,7 +806,8 @@ class PDFService:
             generated_at=datetime.now(),
             batal=self._tanda_batal(receipt_data),
         )
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        # P3d: SEMUA kwitansi A5 melintang (putusan pemilik 1 Okt 2026) -- kwitansi.css sesudah invoice.css.
+        return Render(html_content, CSS_KWITANSI, font=True)
 
 
 # Singleton instance

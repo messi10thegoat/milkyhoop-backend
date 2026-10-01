@@ -2,139 +2,101 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>{{ receipt.get('title') or 'Bukti Penerimaan' }} {{ receipt.receipt_number or '-' }}</title></head>
 <body>
+{# Kwitansi A5 MELINTANG (P3 SO-dokumen, 1 Okt 2026; gaya: kwitansi.css sesudah invoice.css). Medan konteks SAMA dengan
+   versi A4 lama (pemuat muat_pdf_kwitansi_penerimaan / muat_pdf_kwitansi_uang_muka / jurnal penerapan) -- hanya tata
+   letak yang berubah: dua kolom supaya muat 148 mm. Varian jurnal (Bukti Penerapan Uang Muka / Bukti Nota Kredit,
+   hide_method) TIDAK distempel DITERIMA: tak ada uang baru diterima. #}
 {% include "_partials/tanda_batal.html" %}
 <div class="invoice">
 
-    <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">{{ receipt.get('title') or 'Bukti Penerimaan' }}</h1>
-            <div class="doc-subtitle">{{ receipt.get('subtitle') or 'Kwitansi' }}</div>
-        </div>
-        {% if company and company.logo_base64 %}
-        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
-        {% endif %}
-    </div>
+    <table class="kw-kepala"><tr>
+        <td>
+            <div class="kw-judul">{{ receipt.get('title') or 'Bukti Penerimaan' }}</div>
+            <div class="kw-subjudul">{{ receipt.get('subtitle') or 'Kwitansi' }}</div>
+        </td>
+        <td class="kw-usaha">
+            {% if company and company.logo_base64 %}<img src="{{ company.logo_base64 }}" class="kw-logo" alt=""><br>{% endif %}
+            {% if company %}
+            <div class="kw-usaha-nama">{{ company.name }}</div>
+            {% if company.address %}<div>{{ company.address }}</div>{% endif %}
+            {% if company.phone %}<div>{{ company.phone }}</div>{% endif %}
+            {% if company.email %}<div>{{ company.email }}</div>{% endif %}
+            {% endif %}
+        </td>
+    </tr></table>
 
-    <!-- 2. Tenant header -->
-    {% if company %}
-    <div class="parties">
-        <div class="party">
-            <div class="party-label">{{ company.name }}</div>
-            {% if company.address %}
-            <div class="party-detail">{{ company.address }}</div>
-            {% endif %}
-            {% if company.phone %}
-            <div class="party-detail">{{ company.phone }}</div>
-            {% endif %}
-            {% if company.email %}
-            <div class="party-detail">{{ company.email }}</div>
-            {% endif %}
-        </div>
-        <div class="party">
-            <div class="party-label">{{ receipt.get('party_label') or 'Telah Terima Dari' }}</div>
-            <div class="party-name">{{ receipt.payer_name or '-' }}</div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- 3. Meta -->
-    <div class="meta-block">
-        <table class="meta-table">
-            <tr>
-                <td class="meta-label">{{ receipt.get('number_label') or 'No. Kwitansi' }}</td>
-                <td class="meta-value">{{ receipt.receipt_number or '-' }}</td>
-            </tr>
-            <tr>
-                <td class="meta-label">Tanggal</td>
-                <td class="meta-value">{{ receipt.receipt_date | date_id }}</td>
-            </tr>
-        </table>
-    </div>
-
-    <!-- 4. Hero Amount -->
-    <div class="hero">
-        <div class="hero-amount">{{ receipt.get('amount_label') or 'Jumlah Diterima' }} Rp {{ receipt.amount | currency }}</div>
-    </div>
-
-    <!-- 5. Terbilang -->
-    {% if receipt.amount_words %}
-    <div class="notes-section">
-        <div class="notes-label">Terbilang</div>
-        <div class="notes-text">{{ receipt.amount_words }}</div>
-    </div>
-    {% endif %}
-
-    <div style="height: 12px;"></div>
-
-    <!-- 6. Detail -->
-    <div class="summary">
-        <table class="summary-table">
-            {% if not receipt.get('hide_method') %}
-            <tr>
-                <td class="label">Metode</td>
-                <td class="value">{{ receipt.method or '-' }}</td>
-            </tr>
-            {% endif %}
-            {% if receipt.get('source_ref') %}
-            <tr>
-                <td class="label">{{ receipt.get('source_label') or 'Sumber' }}</td>
-                <td class="value">{{ receipt.source_ref }}</td>
-            </tr>
-            {% endif %}
-            {% if receipt.bank_name %}
-            <tr>
-                <td class="label">Bank / Rekening</td>
-                <td class="value">{{ receipt.bank_name }}</td>
-            </tr>
-            {% endif %}
-            {% if receipt.purpose_ref %}
-            <tr>
-                <td class="label">Untuk {{ receipt.purpose_label or 'Pembayaran' }}</td>
-                <td class="value">{{ receipt.purpose_ref }}</td>
-            </tr>
-            {% endif %}
+    <table class="kw-badan"><tr>
+        <td class="kw-kiri">
+            <div class="kw-kotak">
+                <div class="kw-baris">
+                    <div class="kw-label">{{ receipt.get('party_label') or 'Telah Terima Dari' }}</div>
+                    <div class="kw-nilai">{{ receipt.payer_name or '-' }}</div>
+                </div>
+                <div class="kw-baris">
+                    <div class="kw-label">{{ receipt.get('amount_label') or 'Jumlah Diterima' }}</div>
+                    <div class="kw-jumlah">Rp {{ receipt.amount | currency }}</div>
+                    {% if receipt.amount_words %}<div class="kw-terbilang">Terbilang: {{ receipt.amount_words }}</div>{% endif %}
+                </div>
+                {% if receipt.purpose_ref %}
+                <div class="kw-baris">
+                    <div class="kw-label">Untuk {{ receipt.purpose_label or 'Pembayaran' }}</div>
+                    <div class="kw-nilai">{{ receipt.purpose_ref }}</div>
+                </div>
+                {% endif %}
+                {% if receipt.get('source_ref') %}
+                <div class="kw-baris">
+                    <div class="kw-label">{{ receipt.get('source_label') or 'Sumber' }}</div>
+                    <div class="kw-nilai">{{ receipt.source_ref }}</div>
+                </div>
+                {% endif %}
+                {% if not receipt.get('hide_method') %}
+                <div class="kw-baris">
+                    <div class="kw-label">Metode</div>
+                    <div class="kw-nilai">{{ receipt.method or '-' }}{% if receipt.bank_name %} &middot; {{ receipt.bank_name }}{% endif %}</div>
+                </div>
+                {% endif %}
+            </div>
+        </td>
+        <td class="kw-kanan">
+            <table class="kw-meta">
+                <tr><td class="kw-m-label">{{ receipt.get('number_label') or 'No. Kwitansi' }}</td><td>{{ receipt.receipt_number or '-' }}</td></tr>
+                <tr><td class="kw-m-label">Tanggal</td><td>{{ receipt.receipt_date | date_id }}</td></tr>
+            </table>
             {% if receipt.get('order_total') is not none %}
-            <tr>
-                <td class="label">Nilai Pesanan</td>
-                <td class="value">Rp {{ receipt.order_total | currency }}</td>
-            </tr>
-            <tr>
-                <td class="label">Total Uang Muka Diterima</td>
-                <td class="value">Rp {{ receipt.dp_received_total | currency }}</td>
-            </tr>
-            <tr class="total-row">
-                <td class="label">Sisa Nilai Pesanan</td>
-                <td class="value">Rp {{ receipt.order_remaining | currency }}</td>
-            </tr>
+            <table class="kw-ringkas">
+                <tr><td>Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_total | currency }}</td></tr>
+                <tr><td>Total Uang Muka Diterima</td><td class="kw-r-nilai">Rp {{ receipt.dp_received_total | currency }}</td></tr>
+                <tr class="kw-r-total"><td>Sisa Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_remaining | currency }}</td></tr>
+            </table>
             {% elif receipt.get('remaining') is not none %}
-            <tr class="total-row">
-                <td class="label">{{ receipt.get('remaining_label') or 'Sisa / Saldo' }}</td>
-                <td class="value">Rp {{ receipt.remaining | currency }}</td>
-            </tr>
+            <table class="kw-ringkas">
+                <tr class="kw-r-total"><td>{{ receipt.get('remaining_label') or 'Sisa / Saldo' }}</td><td class="kw-r-nilai">Rp {{ receipt.remaining | currency }}</td></tr>
+            </table>
             {% endif %}
-        </table>
-    </div>
+            {% if receipt.notes %}
+            <div class="kw-catatan"><span class="kw-label">Catatan</span><br>{{ receipt.notes }}</div>
+            {% endif %}
+        </td>
+    </tr></table>
 
-    <!-- 7. Notes -->
-    {% if receipt.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ receipt.notes }}</div>
-    </div>
-    {% endif %}
+    <table class="kw-kaki"><tr>
+        <td>
+            {% if not batal and not receipt.get('hide_method') and (receipt.status or 'posted')|lower not in ('draft',) %}
+            <div class="kw-stempel kw-stempel-diterima">
+                <div class="kw-stempel-teks">DITERIMA</div>
+                <div class="kw-stempel-kecil">{{ receipt.receipt_date | date_id | upper }}</div>
+            </div>
+            {% endif %}
+        </td>
+        <td class="kw-ttd">
+            <div>{{ receipt.receipt_date | date_id }}</div>
+            <div>{{ receipt.get('signature_label') or 'Penerima,' }}</div>
+            <div class="kw-ttd-ruang"></div>
+            <div class="kw-ttd-garis">{{ company.name if company and company.name else '-' }}</div>
+        </td>
+    </tr></table>
 
-    <!-- 8. Tanda tangan penerima -->
-    <div style="margin-top: 36px; text-align: right;">
-        <div class="party-label">{{ receipt.get('signature_label') or 'Penerima,' }}</div>
-        <div style="height: 64px;"></div>
-        <div class="party-name">( {{ company.name if company and company.name else '-' }} )</div>
-    </div>
-
-    <!-- 9. Footer -->
-    <div class="footer-line">
-        Dicetak {{ generated_at | date_id }}
-    </div>
+    <div class="kw-dicetak">Dicetak {{ generated_at | date_id }}</div>
 
 </div>
 </body>

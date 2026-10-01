@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Rekap Pesanan {{ rekap.order_number or '-' }}</title>
+<style>
+  /* Rekap Pesanan (P3 SO-dokumen, 03-DOKUMEN): dibangkitkan, tak disimpan. Gaya bersama invoice.css. */
+  .rk-hero { position: relative; margin: 6px 0 22px 0; }
+  .rk-sub { font-size: 9.5pt; margin-top: 2px; }
+  .rk-judul-tabel { font-size: 8.5pt; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin: 18px 0 6px 0; }
+  .rk-tabel { width: 100%; border-collapse: collapse; }
+  .rk-tabel th { font-size: 8.5pt; font-weight: 400; text-align: left; border-bottom: 1px solid #1a1a1a; padding: 4px 6px 4px 0; }
+  .rk-tabel td { font-size: 9.5pt; border-bottom: 1px solid #E6E3DC; padding: 5px 6px 5px 0; vertical-align: top; }
+  .rk-tabel .rk-kanan { text-align: right; white-space: nowrap; padding-right: 0; }
+  .rk-kosong { font-size: 9.5pt; padding: 6px 0; }
+</style>
+</head>
+<body>
+<div class="invoice">
+
+    <div class="header">
+        <div><h1 class="doc-title">Rekap Pesanan</h1></div>
+        {% if company and company.logo_base64 %}<img src="{{ company.logo_base64 }}" class="company-logo" alt="">{% endif %}
+    </div>
+
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr><td class="meta-label">No. Pesanan</td><td class="meta-value">{{ rekap.order_number or '-' }}</td></tr>
+            <tr><td class="meta-label">Tanggal</td><td class="meta-value">{{ rekap.order_date | date_id }}</td></tr>
+        </table>
+    </div>
+
+    <div class="parties">
+        {% if company %}
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
+            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+        </div>
+        {% endif %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ rekap.customer_name or '-' }}</div>
+        </div>
+    </div>
+
+    <div class="rk-hero">
+        <div class="hero-teks">
+            <div class="hero-label">{{ 'Total pesanan' if rekap.status in ('lunas', 'batal') else 'Sisa tagihan' }}</div>
+            <div class="hero-amount">Rp {{ (rekap.total if rekap.status in ('lunas', 'batal') else rekap.sisa) | currency }}</div>
+            <div class="rk-sub">Total pesanan Rp {{ rekap.total | currency }} · sudah dibayar Rp {{ rekap.dibayar | currency }}</div>
+        </div>
+        {% if rekap.status == 'lunas' %}
+        <div class="stempel stempel-lunas"><div class="stempel-teks">LUNAS</div></div>
+        {% elif rekap.status == 'batal' %}
+        <div class="stempel stempel-batal"><div class="stempel-teks">BATAL</div></div>
+        {% endif %}
+    </div>
+
+    <div class="rk-judul-tabel">Tagihan</div>
+    {% if rekap.tagihan %}
+    <table class="rk-tabel">
+        <thead><tr><th>No.</th><th>Tanggal</th><th>Jenis</th><th>Status</th><th class="rk-kanan">Jumlah</th></tr></thead>
+        <tbody>
+        {% for t in rekap.tagihan %}
+        <tr><td>{{ t.nomor or '-' }}</td><td>{{ t.tanggal | date_id }}</td><td>{{ t.jenis }}</td><td>{{ t.status }}</td>
+            <td class="rk-kanan">Rp {{ t.jumlah | currency }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="rk-kosong">Belum ada tagihan.</div>{% endif %}
+
+    <div class="rk-judul-tabel">Pembayaran</div>
+    {% if rekap.pembayaran %}
+    <table class="rk-tabel">
+        <thead><tr><th>Tanggal</th><th>Jenis</th><th>Metode</th><th>No.</th><th class="rk-kanan">Jumlah</th></tr></thead>
+        <tbody>
+        {% for b in rekap.pembayaran %}
+        <tr><td>{{ b.tanggal | date_id if b.tanggal else '-' }}</td><td>{{ b.jenis }}</td><td>{{ b.metode or '-' }}</td><td>{{ b.nomor or '-' }}</td>
+            <td class="rk-kanan">{% if b.jumlah < 0 %}-Rp {{ (-b.jumlah) | currency }}{% else %}Rp {{ b.jumlah | currency }}{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="rk-kosong">Belum ada pembayaran.</div>{% endif %}
+
+    <div class="summary">
+        <table class="summary-table">
+            <tr><td class="label">Total pesanan</td><td class="value">Rp {{ rekap.total | currency }}</td></tr>
+            <tr><td class="label">Sudah dibayar</td><td class="value">{% if rekap.dibayar > 0 %}-{% endif %}Rp {{ rekap.dibayar | currency }}</td></tr>
+            {% if rekap.nota_kredit and rekap.nota_kredit > 0 %}
+            <tr><td class="label">Nota kredit</td><td class="value">-Rp {{ rekap.nota_kredit | currency }}</td></tr>
+            {% endif %}
+            <tr class="due-row"><td class="label">Sisa tagihan</td><td class="value">Rp {{ rekap.sisa | currency }}</td></tr>
+        </table>
+    </div>
+
+    {% if rekap.sisa > 0 and rekap.status != 'batal' %}
+    {% with dok = rekap %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
+    {% endif %}
+
+    <div class="footer-line">Dicetak {{ generated_at | date_id }}</div>
+</div>
+</body>
+</html>

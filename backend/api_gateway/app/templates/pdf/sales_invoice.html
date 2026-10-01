@@ -336,6 +336,10 @@
         </table>
     </div>
     {% endif %}
+    {# P3 SO-dokumen (03-DOKUMEN): faktur ber-SO menunjuk ke Rekap Pesanan; n = baris PEMBAYARAN rekap (satu sumber). #}
+    {% if invoice.get('rekap_pembayaran') and invoice.sales_order_number and not (c and c.jenis == 'batal') %}
+    <div class="notes-section"><div class="notes-text">Rincian {{ invoice.rekap_pembayaran }} pembayaran ada di Rekap Pesanan {{ invoice.sales_order_number }}.</div></div>
+    {% endif %}
 
     {% if c and c.jenis == 'batal' %}
     <div class="notes-section catatan-batal">
