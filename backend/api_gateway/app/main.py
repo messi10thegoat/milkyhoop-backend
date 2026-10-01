@@ -280,6 +280,10 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # Disable OpenAPI/Swagger in production for security
 _is_production = settings.ENVIRONMENT == "production"
 
+# P5: samarkan token tautan publik di log akses (syarat tinjauan keamanan, 1 Okt 2026)
+from .utils.log_tautan import pasang as _pasang_saring_log_tautan
+_pasang_saring_log_tautan()
+
 app = FastAPI(
     title="MilkyHoop API Gateway",
     description="Enterprise Multi-Tenant Chatbot Platform with Phase 2 Authentication",

@@ -116,3 +116,40 @@ def test_halaman_tak_berlaku():
     assert DK._tak_berlaku(None, 404).status_code == 404 and "Hubungi" not in DK._tak_berlaku(None, 404).body.decode()
     r = DK._tak_berlaku("Kaos Biru", 410)
     assert r.status_code == 410 and "Tautan tidak berlaku. Hubungi Kaos Biru untuk tautan baru." in r.body.decode()
+
+
+def test_iframe_dokumen_bersandbox_tanpa_izin():
+    """Syarat tinjauan MASTER (A): srcdoc seasal milkyhoop.com (localStorage token aplikasi) -> sandbox TANPA
+    allow-scripts/allow-same-origin supaya injeksi di HTML dokumen tak bisa membaca token/cookie."""
+    src = inspect.getsource(DK.halaman_dokumen_publik)
+    tag = src[src.index('<iframe id="dok"'):src.index("</iframe>")]
+    assert tag.startswith('<iframe id="dok" sandbox=""')
+    assert "allow-" not in tag
+    assert "contentDocument" not in src  # skrip induk tak boleh bergantung pada akses ke isi iframe
+
+
+def test_suar_tanpa_cookie_dan_jwt_hanya_header():
+    src = inspect.getsource(DK.halaman_dokumen_publik)
+    assert "credentials: 'omit'" in src and "set_cookie" not in inspect.getsource(DK.suar_dibuka)
+
+
+def test_font_publik_boleh_lintas_asal():
+    r = asyncio.run(DK.font_publik("Inter-Regular.ttf"))
+    assert r.headers["access-control-allow-origin"] == "*"
+
+
+def test_log_menyamarkan_token():
+    import logging
+    from app.utils import log_tautan as LT
+    assert LT.samarkan(f'1.2.3.4 - "GET /api/public/d/{TOK}/pdf HTTP/1.1" 200') == '1.2.3.4 - "GET /api/public/d/***/pdf HTTP/1.1" 200'
+    assert LT.samarkan(f"/d/{TOK}") == "/d/***"
+    rec = logging.LogRecord("uvicorn.access", 20, "x", 1, '%s - "%s %s HTTP/%s" %d',
+                            ("1.2.3.4", "GET", f"/api/public/d/{TOK}", "1.1", 200), None)
+    LT.SaringTokenTautan().filter(rec)
+    assert TOK not in rec.getMessage() and "/api/public/d/***" in rec.getMessage()
+
+
+def test_saringan_log_terpasang_saat_impor_app():
+    import pathlib
+    main = (pathlib.Path(DK.__file__).parents[1] / "main.py").read_text()
+    assert "_pasang_saring_log_tautan()" in main and main.index("_pasang_saring_log_tautan()") < main.index("app = FastAPI(")

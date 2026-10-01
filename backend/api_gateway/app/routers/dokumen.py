@@ -146,7 +146,8 @@ async def font_publik(nama: str):
     if nama not in FONT_SAH:
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(TEMPLATE_DIR / "fonts" / nama, media_type="font/ttf",
-                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                        # ACAO *: dokumen di iframe ber-sandbox (asal opak) memuat font lintas-asal (P5, 1 Okt 2026).
+                        headers={"Cache-Control": "public, max-age=31536000, immutable", "Access-Control-Allow-Origin": "*"})
 
 
 @router.get("/documents/receipts/pdf")
@@ -449,7 +450,7 @@ _KEAMANAN_PUBLIK = {
 
 def _halaman_publik(judul: str, isi: str, status: int, nonce: str = "", skrip: str = "") -> HTMLResponse:
     from html import escape
-    csp = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; "
+    csp = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' https://milkyhoop.com; connect-src 'self'; "
            f"frame-src 'self'; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
     halaman = f"""<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow">
@@ -504,25 +505,28 @@ async def halaman_dokumen_publik(request: Request, token: str):
             return _tak_berlaku(usaha, 410)
         r, nomor = await _render(conn, {"tenant_id": t["tenant_id"]}, request, t["kind"], str(t["doc_id"]), cek_izin=False)
     html_dok = await run_in_threadpool(get_pdf_service().html_layar, r)
-    lebar = get_pdf_service().geometri(r)[0]
+    lebar, tinggi_hal = get_pdf_service().geometri(r)[:2]
+    # Iframe ber-sandbox (tanpa allow-scripts / allow-same-origin): srcdoc SEASAL milkyhoop.com (localStorage token
+    # aplikasi) -> injeksi apa pun di HTML dokumen tak bisa membaca token/cookie. Akibatnya skrip induk tak bisa
+    # mengukur tinggi isi -> tinggi = jumlah halaman PDF x tinggi halaman (dari tata letak yang sama, server).
+    n_hal = len((await run_in_threadpool(get_pdf_service().dokumen, r)).pages)
     judul = f"{LABEL_JENIS.get(t['kind'], 'Dokumen')} {nomor} dari {usaha}"
     nonce = _secrets.token_urlsafe(16)
     dasar = f"/api/public/d/{token}"
     isi = (f'<div class="bilah"><h1>{escape(judul)}</h1><a href="{dasar}/pdf">Unduh PDF</a></div>'
-           f'<div class="kertas"><iframe id="dok" title="{escape(judul)}" width="{lebar:.0f}" height="1123" '
-           f'srcdoc="{escape(html_dok, quote=True)}"></iframe></div>')
+           f'<div class="kertas"><iframe id="dok" sandbox="" title="{escape(judul)}" width="{lebar:.0f}" '
+           f'height="{tinggi_hal * n_hal:.0f}" srcdoc="{escape(html_dok, quote=True)}"></iframe></div>')
     skrip = f"""<script nonce="{nonce}">
 (function () {{
-  var f = document.getElementById('dok'), w = {lebar:.0f};
+  var f = document.getElementById('dok'), w = {lebar:.0f}, h = {tinggi_hal * n_hal:.0f};
   function pas() {{
     var s = Math.min(1, (window.innerWidth - 16) / w);
     f.style.transform = 'scale(' + s + ')';
-    try {{ var h = f.contentDocument.documentElement.scrollHeight; f.style.height = h + 'px';
-           f.parentNode.style.height = (h * s + 48) + 'px'; }} catch (e) {{}}
+    f.parentNode.style.height = (h * s + 48) + 'px';
   }}
-  f.addEventListener('load', pas); window.addEventListener('resize', pas);
-  var h = {{}}; try {{ var t = localStorage.getItem('access_token'); if (t) h['Authorization'] = 'Bearer ' + t; }} catch (e) {{}}
-  fetch({json.dumps(dasar + "/view")}, {{ method: 'POST', headers: h, keepalive: true }}).catch(function () {{}});
+  pas(); window.addEventListener('resize', pas);
+  var hd = {{}}; try {{ var t = localStorage.getItem('access_token'); if (t) hd['Authorization'] = 'Bearer ' + t; }} catch (e) {{}}
+  fetch({json.dumps(dasar + "/view")}, {{ method: 'POST', headers: hd, keepalive: true, credentials: 'omit' }}).catch(function () {{}});
 }})();
 </script>"""
     return _halaman_publik(judul, isi, 200, nonce, skrip)
