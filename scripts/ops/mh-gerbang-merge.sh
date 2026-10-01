@@ -44,7 +44,7 @@ CABANG_SHA=$(git -C "$REPO" rev-parse --verify -q "$CABANG^{commit}") || { echo 
 TOLAK() { echo "DITOLAK: $*"; echo "  cabang $CABANG (${CABANG_SHA:0:8}) di atas $DASAR (${DASAR_SHA:0:8})"; exit 1; }
 
 # 1. berkas gerbang yang disentuh cabang
-GERBANG_RE='^(scripts/jalankan_unit\.sh|backend/api_gateway/pytest-unit\.ini|backend/api_gateway/tests/unit/conftest\.py|scripts/ops/mh-gerbang-merge\.sh|scripts/ops/gerbang-merge\.lantai)$'
+GERBANG_RE='^(scripts/jalankan_unit\.sh|backend/api_gateway/pytest-unit\.ini|backend/api_gateway/tests/unit/conftest\.py|scripts/ops/mh-gerbang-merge\.sh|scripts/ops/gerbang-merge\.lantai|scripts/gate_izin_rute\.py)$'
 SENTUH=$(git -C "$REPO" diff --name-only "$(git -C "$REPO" merge-base "$DASAR_SHA" "$CABANG_SHA")" "$CABANG_SHA" | grep -E "$GERBANG_RE" || true)
 if [ -n "$SENTUH" ]; then
   if [ $IZIN_GERBANG -eq 1 ]; then
@@ -72,6 +72,21 @@ if ! git -C "$T" -c user.email=gerbang@milkyhoop -c user.name=gerbang merge -q -
   TOLAK "merge bentrok dengan dasar"
 fi
 git -C "$REPO" show "$DASAR_SHA:scripts/jalankan_unit.sh" > "$RUN" || { echo "galat: runner tak ada di dasar"; exit 2; }
+
+# 3b. KESEGARAN inventaris rute izin (1 Okt 2026). test_pagar_rute_izin / test_izin_rute_pratinjau membaca
+# inventaris_rute_tulis.txt yang DI-COMMIT; inventaris basi = penjaga buta tapi HIJAU (16 rute CW lolos 26-30 Sep
+# -> ADMIN 403). gate_izin_rute.py membandingkan inventaris dgn app.routes pohon GABUNGAN. Skrip dari DASAR (cabang
+# tak bisa melemahkannya), kontainer sekali-pakai :ro. Lulus HANYA bila rc 0 DAN baris "HIJAU: n/n".
+IZG=$(mktemp /tmp/mh-gerbang-izin-XXXXXX.py)
+git -C "$REPO" show "$DASAR_SHA:scripts/gate_izin_rute.py" > "$IZG" || { rm -f "$IZG"; echo "galat: scripts/gate_izin_rute.py tak ada di dasar"; exit 2; }
+IZO=$(docker run --rm -i --network milkyhoop_dev_network --env-file "$REPO/.env" -v "$T/backend:/app/backend:ro" -w /app \
+      milkyhoop-dev-api_gateway:latest python - < "$IZG" 2>&1); IZRC=$?; rm -f "$IZG"
+IZB=$(echo "$IZO" | grep -E '^(HIJAU|MERAH): [0-9]+/[0-9]+$' | tail -1)
+echo "izin-rute: rc=$IZRC | ${IZB:-<tak ada baris ringkasan>}"
+if ! { [ "$IZRC" -eq 0 ] && echo "$IZB" | grep -qE '^HIJAU: ([0-9]+)/\1$'; }; then
+  echo "$IZO" | grep -F '[X]' | sed 's/^/    /'
+  TOLAK "kesegaran izin rute MERAH (inventaris_rute_tulis.txt basi / rute tulis tanpa pola) -- jalankan scripts/gate_izin_rute.py"
+fi
 
 # 4. suite
 mkdir -p /root/logs; LOG=/root/logs/gerbang-merge-$(echo "$CABANG" | tr '/' '_')-$(date -u +%Y%m%dT%H%M%S).log
