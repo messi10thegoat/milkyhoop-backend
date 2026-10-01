@@ -464,6 +464,13 @@ class PDFService:
 
         return pdf_bytes
 
+    # Judul dokumen per tujuan (1 Okt 2026, pemilik: proforma PELUNASAN tercetak "Tagihan Uang Muka").
+    PROFORMA_JUDUL = {
+        "DP": "Tagihan Uang Muka",
+        "TERMIN": "Tagihan Termin",
+        "PELUNASAN": "Tagihan Pelunasan",
+    }
+
     PROFORMA_PURPOSE_LABELS = {
         "DP": "Uang Muka (DP)",
         "TERMIN": "Pembayaran Termin",
@@ -503,6 +510,7 @@ class PDFService:
             proforma=proforma_data,
             company=company,
             purpose_label=purpose_label,
+            judul=self.PROFORMA_JUDUL.get(str(purpose).upper(), "Tagihan Uang Muka"),
             status_label=status_label,
             generated_at=datetime.now(),
             batal=self._tanda_batal(proforma_data),
