@@ -36,6 +36,8 @@ BEDA_SENGAJA = {
 SAMA_IZIN = [
     # Kirim barang SO = _execute_fulfillment per faktur
     ("POST /api/sales-orders/{order_id}/fulfill", "POST /api/sales-invoices/{invoice_id}/fulfill"),
+    # setelan akuntansi: rute lama (deprecated) = rute FE -> hanya pemilik (ADMIN SETTINGS {R}, V353; 1 Okt 2026)
+    ("PATCH /api/reports/accounting-settings", "PATCH /api/settings/accounting"),
 ]
 
 

@@ -31,8 +31,6 @@ POST /api/approval-workflows/{workflow_id}/levels
 POST /api/audit/cleanup
 POST /api/audit/sensitive-access
 POST /api/document-intake/cleanup
-POST /api/document-intake/process
-POST /api/document-intake/retry-all-failed
 POST /api/financial-ratios/alerts
 POST /api/financial-ratios/snapshot
 POST /api/flow/flow/run

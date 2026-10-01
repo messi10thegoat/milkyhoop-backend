@@ -522,7 +522,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/employees/[^/]+/salary-config$", ["PUT"], "employee", "U"),
     (r"^/api/tables/", ["POST"], "tables", "C"),
     (r"^/api/tables/", ["PUT"], "tables", "U"),
-    (r"^/api/reports/accounting-settings$", ["PATCH"], "report", "U"),
+    # 1 Okt 2026 (putusan pemilik LANGSUNG di sesi BACKEND): setelan akuntansi = PENGATURAN, hanya pemilik
+    # yang mengubah (ADMIN SETTINGS {R}, V353). Dulu report U -> pintu belakang ADMIN ke setelan yang sama
+    # dengan PATCH /api/settings/accounting (tenant_settings U).
+    (r"^/api/reports/accounting-settings$", ["PATCH"], "tenant_settings", "U"),
     (r"^/api/reports/aging-snapshot$", ["POST"], "report", "C"),
     (r"^/api/settings/aging-snapshot$", ["POST"], "report", "C"),
     (r"^/api/settings/accounting$", ["POST"], "tenant_settings", "U"),
@@ -1015,6 +1018,8 @@ WRITE_EXEMPT = [
     # [B] intake/dokumen: gate lolos, izin ditegakkan di handler (anggota aktif + modul-tujuan per doc_type tersimpan)
     (r"^/api/document-intake/upload$", "intake: anggota aktif dicek di handler"),
     (r"^/api/document-intake/execute-batch$", "intake: izin per-item dicek di handler"),
+    (r"^/api/document-intake/process$", "intake: OCR+klasifikasi, anggota aktif dicek di handler (1 Okt 2026)"),
+    (r"^/api/document-intake/retry-all-failed$", "intake: izin per-dokumen dicek di handler (_saring_izin_per_dokumen, 1 Okt 2026)"),
     (r"^/api/document-intake/document/[^/]+/(confirm|execute|reject|retry)$", "intake: izin modul-tujuan/anggota dicek di handler"),
     (r"^/api/documents/upload$", "unggah dokumen: anggota aktif dicek di handler"),
     (r"^/api/documents/[^/]+/attach$", "lampir dokumen: anggota aktif dicek di handler"),

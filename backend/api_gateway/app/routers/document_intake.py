@@ -197,6 +197,37 @@ async def _require_doc_create_perm(request, tenant_id, doc_id):
     await _require_legacy_journal_perm(eng, ctx, tenant_id, _did)
 
 
+async def _saring_izin_per_dokumen(request, pool, tenant_id, document_ids):
+    """Izin PER DOKUMEN dari doc_type TERSIMPAN (dipakai execute-batch DAN retry-all-failed, 1 Okt 2026).
+
+    Anggota nonaktif -> 403 seluruhnya. Tiap dokumen: doc_type tak dikenal / tanpa izin C modul-tujuan /
+    jalur jurnal legacy tanpa izin C journal -> masuk `denied` (403 per item), TIDAK dieksekusi.
+    -> (permitted, denied)
+    """
+    _eng, _uctx = await _intake_ctx(request)
+    if not anggota_aktif(_uctx):
+        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
+    _permitted, _denied = [], []
+    async with pool.acquire() as _c:
+        for _did in document_ids:
+            _dt = await _c.fetchval("SELECT doc_type FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
+                                    UUID(str(_did)), tenant_id)
+            _modul = _DOCTYPE_MODULE.get((_dt or "").strip().lower())
+            if not _modul:
+                logger.warning(f"[intake-izin] batch doc_type tak dikenal '{_dt}' doc={_did} -> 403 fail-closed")
+                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Jenis dokumen tak dikenal"})
+            elif not await _eng.can(_uctx, "C", _modul):
+                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": f"Tak punya izin membuat {_modul}"})
+            else:
+                try:
+                    await _require_legacy_journal_perm(_eng, _uctx, tenant_id, UUID(str(_did)), conn=_c)
+                except HTTPException:
+                    _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Tak punya izin membuat jurnal"})
+                    continue
+                _permitted.append(_did)
+    return _permitted, _denied
+
+
 # Audit WRITE_EXEMPT intake (26 Sep 2026). Eksekutor merutekan dari
 # draft_plan.action_type: yang TAK punya rute REST jatuh ke _execute_legacy =
 # INSERT journal_entries/lines LANGSUNG dari journal_draft (tanpa lewat modul
@@ -465,6 +496,7 @@ async def trigger_processing(
     from ..services.document_processor import DocumentProcessor
 
     ctx = get_user_context(request)
+    await _require_active_member(request)  # OCR + klasifikasi saja (tak memposting); sama dengan /upload
     pool = await get_pool()
     processor = DocumentProcessor(pool=pool)
 
@@ -542,27 +574,7 @@ async def execute_batch(
         raise HTTPException(status_code=400, detail="Max 50 documents per batch")
 
     # kondisi 3: izin PER ITEM dari doc_type tersimpan. Item tanpa izin -> 403 item, bukan batch diam-diam.
-    _eng, _uctx = await _intake_ctx(request)
-    if not anggota_aktif(_uctx):
-        raise HTTPException(status_code=403, detail="Keanggotaan tenant tidak aktif")
-    _permitted, _denied = [], []
-    async with pool.acquire() as _c:
-        for _did in document_ids:
-            _dt = await _c.fetchval("SELECT doc_type FROM uploaded_documents WHERE id = $1 AND tenant_id = $2",
-                                    UUID(str(_did)), ctx["tenant_id"])
-            _modul = _DOCTYPE_MODULE.get((_dt or "").strip().lower())
-            if not _modul:
-                logger.warning(f"[intake-izin] batch doc_type tak dikenal '{_dt}' doc={_did} -> 403 fail-closed")
-                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Jenis dokumen tak dikenal"})
-            elif not await _eng.can(_uctx, "C", _modul):
-                _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": f"Tak punya izin membuat {_modul}"})
-            else:
-                try:
-                    await _require_legacy_journal_perm(_eng, _uctx, ctx["tenant_id"], UUID(str(_did)), conn=_c)
-                except HTTPException:
-                    _denied.append({"document_id": str(_did), "success": False, "status": 403, "error": "Tak punya izin membuat jurnal"})
-                    continue
-                _permitted.append(_did)
+    _permitted, _denied = await _saring_izin_per_dokumen(request, pool, ctx["tenant_id"], document_ids)
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
 
@@ -753,13 +765,19 @@ async def retry_all_failed(
             "results": [],
         }
 
-    # Reset all to confirmed first
+    # 1 Okt 2026: dulu SEMUA dokumen gagal tenant di-reset + dieksekusi ulang TANPA cek izin (rute tak terpetakan
+    # = hanya OWNER). Kini izin PER DOKUMEN sama dengan execute-batch; yang ditolak TIDAK disentuh (tetap
+    # posting_failed) dan dilaporkan di `denied`.
+    _permitted, _denied = await _saring_izin_per_dokumen(request, pool, ctx["tenant_id"], [str(d["id"]) for d in failed_docs])
+    if not _permitted:
+        return {"success": True, "data": {"total": 0, "succeeded": 0, "failed": 0, "results": []}, "denied": _denied}
+
     async with pool.acquire() as conn:
         await conn.execute(
             """UPDATE uploaded_documents
                SET status = 'confirmed', updated_at = NOW()
-               WHERE tenant_id = $1 AND status = 'posting_failed'""",
-            ctx["tenant_id"],
+               WHERE tenant_id = $1 AND status = 'posting_failed' AND id = ANY($2::uuid[])""",
+            ctx["tenant_id"], [UUID(str(x)) for x in _permitted],
         )
 
     from ..services.kernel_document_executor import KernelDocumentExecutor
@@ -769,12 +787,12 @@ async def retry_all_failed(
     )
     executor = KernelDocumentExecutor(pool, auth_token=auth_token)
     result = await executor.execute_batch(
-        [str(d["id"]) for d in failed_docs],
+        [str(x) for x in _permitted],
         ctx["tenant_id"],
         str(ctx["user_id"]),
     )
 
-    return {"success": True, "data": result}
+    return {"success": True, "data": result, "denied": _denied}
 
 
 @router.get("/stats")
