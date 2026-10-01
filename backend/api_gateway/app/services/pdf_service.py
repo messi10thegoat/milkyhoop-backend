@@ -72,6 +72,11 @@ def pilih_template(bawaan_tenant, override=None) -> str:
     return bawaan
 
 
+# P3b (putusan pemilik 1 Okt 2026): font Inter untuk SEMUA dokumen SO lewat fonts.css + FontConfiguration.
+# Template faktur B (gaya industri, metrik Arial -> Liberation Sans) dan laporan keuangan (DejaVu) TIDAK berubah.
+CSS_DOKUMEN = ("fonts.css", "invoice.css")
+
+
 @dataclass(frozen=True)
 class Render:
     """Satu dokumen yang SUDAH dirender jadi HTML (P3 SO-dokumen, 1 Okt 2026).
@@ -442,7 +447,7 @@ class PDFService:
         # pun, lalu memakai font sistem. Terukur: dengan CSS yang sama,
         # tanpa FontConfiguration -> DejaVu-Sans; dengan -> Liberation-Sans.
         # Template B punya lembar gayanya sendiri; A tetap memakai invoice.css.
-        return Render(html_content, ("invoice.css",) if template == "a" else ("invoice_b.css",), font=True)
+        return Render(html_content, CSS_DOKUMEN if template == "a" else ("invoice_b.css",), font=True)
 
     def generate_quote_pdf(self, quote_data, tenant_info):
         """
@@ -480,7 +485,7 @@ class PDFService:
             status_label=status_label,
             generated_at=datetime.now(),
         )
-        return Render(html_content, ("invoice.css",))
+        return Render(html_content, CSS_DOKUMEN, font=True)
 
     # Judul dokumen per tujuan (1 Okt 2026, pemilik: proforma PELUNASAN tercetak "Tagihan Uang Muka").
     PROFORMA_JUDUL = {
@@ -537,7 +542,7 @@ class PDFService:
             batal=self._tanda_batal(proforma_data),
             draf=str(status).lower() == "draft",  # 26 Sep 2026: tanda DRAF (_partials/tanda_draf.html)
         )
-        return Render(html_content, ("invoice.css",))
+        return Render(html_content, CSS_DOKUMEN, font=True)
 
     def generate_income_statement_pdf(
         self, data: dict, company_name: str, basis: str = "Akrual"
@@ -752,7 +757,7 @@ class PDFService:
             delivery_items=delivery.get("items", []),
             generated_at=datetime.now(),
         )
-        return Render(html_content, ("invoice.css",))
+        return Render(html_content, CSS_DOKUMEN, font=True)
 
     def generate_receipt_pdf(self, receipt_data, tenant_info):
         """
@@ -788,7 +793,7 @@ class PDFService:
             generated_at=datetime.now(),
             batal=self._tanda_batal(receipt_data),
         )
-        return Render(html_content, ("invoice.css",))
+        return Render(html_content, CSS_DOKUMEN, font=True)
 
 
 # Singleton instance

@@ -1,0 +1,10 @@
+/* Font dokumen SO (P3 SO-dokumen, 1 Okt 2026, putusan pemilik: INTER). SATU deklarasi untuk PDF (WeasyPrint)
+   dan HTML layar. Berkas TTF di fonts/ (Inter 4.1, SIL OFL 1.1 -- fonts/LISENSI-Inter-OFL.txt).
+   URL relatif = terhadap LETAK BERKAS INI (WeasyPrint memuatnya lewat CSS(filename=...)); HTML layar menulis
+   ulang url() ke rute font publik. Tanpa FontConfiguration WeasyPrint DIAM-DIAM mengabaikan aturan ini
+   (dulu: 'Inter' di invoice.css jatuh ke DejaVu karena Inter tak pernah terpasang di kontainer). */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; src: url("fonts/Inter-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; src: url("fonts/Inter-Medium.ttf") format("truetype"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; src: url("fonts/Inter-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 700; src: url("fonts/Inter-Bold.ttf") format("truetype"); }
+@font-face { font-family: "Inter"; font-style: italic; font-weight: 400; src: url("fonts/Inter-Italic.ttf") format("truetype"); }
