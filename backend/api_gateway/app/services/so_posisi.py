@@ -28,6 +28,7 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
     """-> (teks, muted). Aturan 02 §Posisi, yang PERTAMA cocok.
 
     belum_bayar: proforma issued yang belum lunas, urut issued_at: [{"purpose", "termin_ke"}].
+    Aturan 6b (putusan pemilik 1 Okt): ada faktur, faktur lunas, sisa SO > 0, tanpa uang muka -> "Sebagian ditagih".
     Aturan 3 (cicilan) = fase 2, tidak aktif.
     """
     if status == "cancelled":
@@ -46,6 +47,11 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
         return "Menunggu pelunasan", False
     if ada_surat_jalan and not ada_faktur:
         return "Perlu faktur", False
+    if ada_faktur and dp_diterima <= NOL:
+        # #6b putusan pemilik 1 Okt 2026 (lewat MASTER, "Ok ikut rekomendasi"): SO sebagian difaktur, faktur LUNAS
+        # (aturan 5 tak cocok), sisa SO belum ditagih, TANPA uang muka. Dulu jatuh ke "Belum ditagih" (aturan 8)
+        # padahal sudah ada tagihan dibayar (kaos SO-2609-0333). Dengan uang muka -> tetap "Produksi" (aturan 7).
+        return "Sebagian ditagih", False
     if dp_diterima > NOL:
         return "Produksi", False
     return "Belum ditagih", False
