@@ -16,12 +16,13 @@ body { font-size: 9pt; line-height: 1.4; }
 
 .kw-kepala { width: 100%; border-collapse: collapse; margin-bottom: 4mm; }
 .kw-kepala td { vertical-align: top; padding: 0; }
-.kw-kepala td:first-child { white-space: nowrap; width: 48%; padding-right: 4mm; }  /* judul tak pecah; alamat panjang membungkus di kanan */
+.kw-kepala td:first-child { white-space: nowrap; width: 40%; padding-right: 4mm; }  /* judul tak pecah; alamat panjang membungkus di kanan */
 .kw-judul { font-size: 16pt; font-weight: 700; line-height: 1.15; }
 .kw-subjudul { font-size: 9pt; }
 .kw-usaha { text-align: right; font-size: 8pt; }
 .kw-usaha .kw-usaha-nama { font-weight: 600; font-size: 9pt; }
-.kw-logo { max-height: 30px; max-width: 110px; margin-bottom: 2px; }
+.kw-logo-sel { width: 1%; padding-left: 4mm !important; }
+.kw-logo { max-height: 64px; max-width: 120px; object-fit: contain; }  /* persegi 295px (grapgrap) -> 64px masih terbaca */
 
 .kw-badan { width: 100%; border-collapse: collapse; }
 .kw-badan > tbody > tr > td { vertical-align: top; padding: 0; }

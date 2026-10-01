@@ -96,17 +96,23 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
                         "status": "Lunas" if s <= NOL else ("Sebagian" if s < _d(f["total_amount"]) else "Belum dibayar")})
 
     # ── PEMBAYARAN: uang muka (diterima) + penerimaan atas faktur SO − pengembalian ──
+    from . import faktur_cetak as _fc
     bayar_rows = []
     for d in await conn.fetch(
-        """SELECT cd.deposit_number, cd.deposit_date, cd.payment_method, cd.amount, cd.amount_refunded
+        """SELECT cd.deposit_number, cd.deposit_date, cd.payment_method, cd.amount, cd.amount_refunded, ba.bank_name
            FROM customer_deposits cd
            LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
+           LEFT JOIN LATERAL (
+               SELECT b.bank_name FROM bank_accounts b
+               WHERE b.tenant_id = cd.tenant_id AND (b.id = cd.bank_account_id OR b.coa_id = cd.account_id)
+               ORDER BY (b.id = cd.bank_account_id) DESC, b.is_default DESC LIMIT 1
+           ) ba ON true
            WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
              AND COALESCE(cd.sales_order_id, p.sales_order_id) = $2""",
         tid, sid,
     ):
         bayar_rows.append({"tanggal": d["deposit_date"], "jenis": "Uang muka", "nomor": d["deposit_number"],
-                           "metode": "Tunai" if (d["payment_method"] or "").lower() == "cash" else "Transfer",
+                           "metode": _fc.label_metode(d["payment_method"], d["bank_name"]),  # SAMA dengan riwayat faktur
                            "jumlah": _d(d["amount"])})
         if _d(d["amount_refunded"]) > NOL:
             bayar_rows.append({"tanggal": None, "jenis": "Pengembalian uang muka", "nomor": d["deposit_number"],
@@ -115,7 +121,6 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
     # jurnal). Penerimaan selalu; penerapan uang muka HANYA bila uang mukanya TAK tertaut SO (yang tertaut sudah
     # tercatat di atas saat DITERIMA -> jangan dihitung dua kali). Nota kredit = baris ringkasan, bukan pembayaran.
     # Terukur 1 Okt: kaos SO-2609-0180 dilunasi DA dari uang muka lepas -> tanpa cabang ini Σ kurang 10.389.600.
-    from . import faktur_cetak as _fc
     tertaut = {b["nomor"] for b in bayar_rows}
     per_nomor = {}
     for f in faktur:

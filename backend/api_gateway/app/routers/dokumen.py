@@ -205,6 +205,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     Rekap/Posisi (ringkasan_pesanan, terbayar_proforma, compute_ar_outstanding). Filter tenant eksplisit."""
     from ..services.proforma_terbayar import ringkasan_pesanan, terbayar_proforma
     from ..services.so_posisi import fakta_daftar
+    from ..services.faktur_cetak import label_metode  # SATU format metode (riwayat faktur / Rekap / bundel)
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
@@ -254,8 +255,14 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     # (himpunan yang sama dengan baris PEMBAYARAN Rekap; satu dokumen kwitansi per nomor).
     kw = {}
     for d in await conn.fetch(
-        """SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.payment_method FROM customer_deposits cd
+        """SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.payment_method, ba.bank_name
+           FROM customer_deposits cd
            LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
+           LEFT JOIN LATERAL (
+               SELECT b.bank_name FROM bank_accounts b
+               WHERE b.tenant_id = cd.tenant_id AND (b.id = cd.bank_account_id OR b.coa_id = cd.account_id)
+               ORDER BY (b.id = cd.bank_account_id) DESC, b.is_default DESC LIMIT 1
+           ) ba ON true
            WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
              AND (COALESCE(cd.sales_order_id, p.sales_order_id) = $2
                   OR cd.id IN (SELECT cda.deposit_id FROM customer_deposit_applications cda
@@ -264,18 +271,21 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
             tid, sid):
         kw[d["id"]] = {"kind": "receipt", "id": str(d["id"]), "number": d["deposit_number"],
                        "date": _tgl(d["deposit_date"]), "amount": _uang(d["amount"]),
-                       "method": "Tunai" if (d["payment_method"] or "").lower() == "cash" else "Transfer",
+                       "method": label_metode(d["payment_method"], d["bank_name"]),
                        "installment": None, "paper": "A5-landscape",
                        "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
     for p in await conn.fetch(
-        """SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, SUM(rpa.amount_applied) AS jumlah
+        """SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, SUM(rpa.amount_applied) AS jumlah,
+                  (SELECT b.bank_name FROM bank_accounts b
+                   WHERE b.tenant_id = rp.tenant_id AND (b.id = rp.bank_account_id OR b.coa_id = rp.bank_account_id)
+                   ORDER BY (b.id = rp.bank_account_id) DESC, b.is_default DESC LIMIT 1) AS bank_name
            FROM receive_payment_allocations rpa
            JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
            JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1 AND si.sales_order_id = $2
-           WHERE rpa.status = 'active' GROUP BY 1, 2, 3, 4""", tid, sid):
+           WHERE rpa.status = 'active' GROUP BY 1, 2, 3, 4, rp.tenant_id, rp.bank_account_id""", tid, sid):
         kw[p["id"]] = {"kind": "receipt", "id": str(p["id"]), "number": p["payment_number"],
                        "date": _tgl(p["payment_date"]), "amount": _uang(p["jumlah"]),
-                       "method": "Tunai" if (p["payment_method"] or "").lower() == "cash" else "Transfer",
+                       "method": label_metode(p["payment_method"], p["bank_name"]),
                        "installment": None, "paper": "A5-landscape",
                        "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
     if kw:

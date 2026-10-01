@@ -15,7 +15,6 @@
             <div class="kw-subjudul">{{ receipt.get('subtitle') or 'Kwitansi' }}</div>
         </td>
         <td class="kw-usaha">
-            {% if company and company.logo_base64 %}<img src="{{ company.logo_base64 }}" class="kw-logo" alt=""><br>{% endif %}
             {% if company %}
             <div class="kw-usaha-nama">{{ company.name }}</div>
             {% if company.address %}<div>{{ company.address }}</div>{% endif %}
@@ -23,6 +22,10 @@
             {% if company.email %}<div>{{ company.email }}</div>{% endif %}
             {% endif %}
         </td>
+        {% if company and company.logo_base64 %}
+        {# logo DI SAMPING blok usaha (bukan di atasnya): logo persegi butuh tinggi, A5 tidak punya. #}
+        <td class="kw-logo-sel"><img src="{{ company.logo_base64 }}" class="kw-logo" alt=""></td>
+        {% endif %}
     </tr></table>
 
     <table class="kw-badan"><tr>
