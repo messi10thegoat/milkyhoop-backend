@@ -307,6 +307,12 @@ class SalesOrderListItem(BaseModel):
     has_draft_invoice: bool = False
     draft_invoice_count: int = 0
     posted_invoiced_qty: float = 0
+    # P1 SO-dokumen (1 Okt 2026): dihitung server (services/so_posisi), zona tenant. Tak mengubah filter/urut/kartu.
+    position_text: Optional[str] = None
+    position_muted: bool = False
+    ship_text: Optional[str] = None
+    ship_style: Optional[Literal["normal", "muted", "strong"]] = None
+    doc_count: int = 0
     created_at: str
 
 

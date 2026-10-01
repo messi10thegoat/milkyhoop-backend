@@ -12,6 +12,7 @@ import logging
 import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services.so_faktur_draf import penanda_faktur_so
+from ..services.so_posisi import fakta_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..utils.idempotency import (
@@ -187,7 +188,7 @@ async def list_sales_orders(
             list_query = f"""
                 SELECT id, order_number, order_date, expected_ship_date, customer_id, customer_name,
                        subtotal, discount_amount, tax_amount, shipping_amount, total_amount,
-                       status, shipped_qty, invoiced_qty, created_at
+                       status, shipped_qty, invoiced_qty, created_at, quote_id
                 FROM sales_orders
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -197,6 +198,8 @@ async def list_sales_orders(
             rows = await conn.fetch(list_query, *params)
             # Q-016 (a): penanda faktur DRAF per SO (status tetap) — satu kueri, sumber = quantity_invoiced
             penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
+            # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
+            posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, await tanggal_dokumen(conn, ctx["tenant_id"]))
 
             items = [
                 SalesOrderListItem(
@@ -217,6 +220,7 @@ async def list_sales_orders(
                     shipped_qty=float(row["shipped_qty"] or 0),
                     invoiced_qty=float(row["invoiced_qty"] or 0),
                     **penanda[str(row["id"])],
+                    **posisi[str(row["id"])],
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
