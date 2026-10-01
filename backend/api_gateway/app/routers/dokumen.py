@@ -20,7 +20,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ..services.pdf_service import TEMPLATE_DIR, Render, get_pdf_service
@@ -64,8 +64,9 @@ async def _wajib_izin(request: Request, aksi: str, modul: str):
         raise HTTPException(status_code=403, detail="Aksi ini belum diberi izin untuk peran Anda. Hubungi pemilik usaha.")
 
 
-async def _render(conn, ctx: dict, request: Request, jenis: str, did: str) -> tuple:
-    """-> (Render, nomor). Konteks dari pemuat rute /pdf lama (satu sumber)."""
+async def _render(conn, ctx: dict, request: Request, jenis: str, did: str, cek_izin: bool = True) -> tuple:
+    """-> (Render, nomor). Konteks dari pemuat rute /pdf lama (satu sumber). cek_izin=False HANYA untuk halaman
+    publik bertoken (P5): otorisasinya = token tautan yang berlaku, bukan peran pengguna."""
     ps = get_pdf_service()
     uid = _uuid(did)
     if jenis == "rekap":
@@ -82,7 +83,8 @@ async def _render(conn, ctx: dict, request: Request, jenis: str, did: str) -> tu
         return ps.render_proforma(m["proforma_data"], m["tenant_info"]), m["proforma_data"]["proforma_number"]
     if jenis == "receipt":
         if await conn.fetchval("SELECT 1 FROM customer_deposits WHERE id = $1 AND tenant_id = $2", uid, ctx["tenant_id"]):
-            await _wajib_izin(request, "R", "customer_deposit")
+            if cek_izin:
+                await _wajib_izin(request, "R", "customer_deposit")
             from . import customer_deposits as CD
             m = await CD.muat_pdf_kwitansi_uang_muka(conn, ctx, str(uid))
         else:
@@ -209,7 +211,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
-        """SELECT id, order_number, customer_name, status, total_amount, expected_ship_date, quote_id
+        """SELECT id, order_number, customer_name, customer_id, status, total_amount, expected_ship_date, quote_id
            FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, tid)
     if not so:
         raise HTTPException(status_code=404, detail="Sales order not found")
@@ -315,6 +317,20 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     if ki:
         kelompok.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
 
+    # P5: status kirim dari document_shares (tautan publik); penawaran tanpa tautan tetap memakai quotes.sent_at.
+    from ..services.dokumen_bagikan import keadaan_kirim
+    kirim = await keadaan_kirim(conn, tid, [(d["kind"], d["id"]) for gr in kelompok for d in gr["docs"]])
+    for gr in kelompok:
+        for d in gr["docs"]:
+            k = kirim.get((d["kind"], d["id"]))
+            if k:
+                d["sent"] = k
+            elif "sent" not in d:
+                d["sent"] = {"state": "none", "sent_at": None, "viewed_at": None}
+    kontak = await conn.fetchrow(
+        """SELECT COALESCE(mobile_phone, phone, telepon) AS telepon, email FROM customers
+           WHERE id = $1 AND tenant_id = $2""", so["customer_id"], tid) if so["customer_id"] else None
+
     # Dibuka pertama = proforma yang belum dibayar (01 §C), kalau tidak ada -> Rekap.
     bawaan = {"group": "rekap", "index": 0}
     for i, d in enumerate(docs_pro):
@@ -324,7 +340,10 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     return {
         "so": {"id": str(sid), "number": so["order_number"], "customer": so["customer_name"] or "",
                "position_text": posisi["position_text"], "total": _uang(total),
-               "paid": _uang(r["tertutup"] - r["credit_note"]), "balance": _uang(sisa)},
+               "paid": _uang(r["tertutup"] - r["credit_note"]), "balance": _uang(sisa),
+               # P5: untuk wa.me / email di FE (tambahan; skema so tak membatasi medan tambahan)
+               "customer_phone": (kontak["telepon"] if kontak else None) or None,
+               "customer_email": (kontak["email"] if kontak else None) or None},
         "default": bawaan,
         "groups": kelompok,
     }
@@ -336,3 +355,204 @@ async def dokumen_pesanan(request: Request, order_id: str):
     pool = await _pool()
     async with pool.acquire() as conn:
         return await susun_dokumen(conn, ctx, _uuid(order_id))
+
+
+# ── P5: tautan publik + lacak (02-DATA-DAN-API §Kirim & lacak) ─────────────────────────────────────────────────
+
+_DOKUMEN_TABEL = {
+    # kind -> (SQL keberadaan + status, kolom nomor). Tenant SELALU eksplisit.
+    "rekap": ("SELECT order_number AS nomor, status FROM sales_orders WHERE id = $1 AND tenant_id = $2", None),
+    "quotation": ("SELECT quote_number AS nomor, status FROM quotes WHERE id = $1 AND tenant_id = $2", None),
+    "proforma": ("SELECT proforma_number AS nomor, status FROM proformas WHERE id = $1 AND tenant_id = $2", "draft"),
+    "delivery": ("SELECT fulfillment_number AS nomor, status FROM invoice_fulfillments WHERE id = $1 AND tenant_id = $2", None),
+    "invoice": ("SELECT invoice_number AS nomor, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2", "draft"),
+}
+LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "Proforma", "receipt": "Kwitansi",
+               "delivery": "Surat Jalan", "invoice": "Faktur"}
+
+
+async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:
+    """{nomor, status} atau 404; dokumen DRAF (proforma/faktur) belum boleh dibagikan -> 409."""
+    if kind == "receipt":
+        row = await conn.fetchrow("SELECT deposit_number AS nomor, status FROM customer_deposits WHERE id = $1 AND tenant_id = $2", uid, tid) \
+            or await conn.fetchrow("SELECT payment_number AS nomor, status FROM receive_payments WHERE id = $1 AND tenant_id = $2", uid, tid)
+        draf = None
+    else:
+        sql, draf = _DOKUMEN_TABEL[kind]
+        row = await conn.fetchrow(sql, uid, tid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
+    if draf and row["status"] == draf:
+        raise HTTPException(status_code=409, detail={"code": "DOKUMEN_DRAF",
+                                                     "message": "Dokumen draf belum bisa dibagikan. Terbitkan dulu."})
+    return dict(row)
+
+
+@router.post("/documents/{kind}/{doc_id}/share", status_code=201)
+async def bagikan_dokumen(request: Request, kind: str, doc_id: str):
+    """Buat tautan publik (satu kiriman = satu baris; kanal wa|email|link). Token hanya muncul di respons ini."""
+    from ..services import dokumen_bagikan as DB
+    if kind not in JENIS:
+        raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
+    ctx = _ctx(request)
+    try:
+        badan = await request.json()
+    except Exception:
+        badan = {}
+    channel = (badan or {}).get("channel", "link")
+    if channel not in DB.KANAL:
+        raise HTTPException(status_code=422, detail=f"channel harus salah satu dari {list(DB.KANAL)}")
+    uid = _uuid(doc_id)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        if kind == "receipt" and await conn.fetchval(
+                "SELECT 1 FROM customer_deposits WHERE id = $1 AND tenant_id = $2", uid, ctx["tenant_id"]):
+            await _wajib_izin(request, "E", "customer_deposit")
+        dok = await _dokumen_ada(conn, ctx["tenant_id"], kind, uid)
+        hasil = await DB.buat_tautan(conn, ctx["tenant_id"], kind, uid, channel, ctx["user_id"])
+    hasil["document"] = {"kind": kind, "id": str(uid), "number": dok["nomor"]}
+    return hasil
+
+
+@router.get("/documents/{kind}/{doc_id}/shares")
+async def daftar_tautan_dokumen(request: Request, kind: str, doc_id: str):
+    from ..services import dokumen_bagikan as DB
+    if kind not in JENIS:
+        raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return {"shares": await DB.daftar_tautan(conn, ctx["tenant_id"], kind, _uuid(doc_id))}
+
+
+@router.post("/documents/{kind}/{doc_id}/shares/{share_id}/revoke")
+async def cabut_tautan_dokumen(request: Request, kind: str, doc_id: str, share_id: str):
+    from ..services import dokumen_bagikan as DB
+    if kind not in JENIS:
+        raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        ok = await DB.cabut(conn, ctx["tenant_id"], kind, _uuid(doc_id), _uuid(share_id), ctx["user_id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tautan tidak ditemukan atau sudah dicabut")
+    return {"revoked": True}
+
+
+_KEAMANAN_PUBLIK = {
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _halaman_publik(judul: str, isi: str, status: int, nonce: str = "", skrip: str = "") -> HTMLResponse:
+    from html import escape
+    csp = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; "
+           f"frame-src 'self'; script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+    halaman = f"""<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow">
+<title>{escape(judul)}</title>
+<style>
+  html, body {{ margin: 0; background: #F1EFEA; font-family: Inter, system-ui, sans-serif; color: #1a1a1a; }}
+  .bilah {{ position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+           gap: 12px; padding: 12px 16px; background: #fff; border-bottom: 1px solid #E6E3DC; }}
+  .bilah h1 {{ font-size: 15px; font-weight: 600; margin: 0; }}
+  .bilah a {{ font-size: 14px; font-weight: 600; color: #fff; background: #1a1a1a; border-radius: 8px;
+             padding: 8px 14px; text-decoration: none; white-space: nowrap; }}
+  .kertas {{ display: flex; justify-content: center; padding: 16px 0 32px; }}
+  iframe {{ border: 0; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.08); transform-origin: top center; }}
+  .pesan {{ max-width: 520px; margin: 18vh auto 0; padding: 0 16px; text-align: center; font-size: 16px; line-height: 1.5; }}
+</style></head><body>{isi}{skrip}</body></html>"""
+    return HTMLResponse(halaman, status_code=status, headers={**_KEAMANAN_PUBLIK, "Content-Security-Policy": csp})
+
+
+def _tak_berlaku(usaha: Optional[str], status: int) -> HTMLResponse:
+    from html import escape
+    teks = (f"Tautan tidak berlaku. Hubungi {escape(usaha)} untuk tautan baru." if usaha else "Tautan tidak berlaku.")
+    return _halaman_publik("Tautan tidak berlaku", f'<div class="pesan">{teks}</div>', status)
+
+
+async def _tautan_dari_token(conn, token: str):
+    """-> (tautan|None, usaha|None). Token berbentuk salah / tak dikenal -> (None, None)."""
+    import re
+    from ..services import dokumen_bagikan as DB
+    if not re.fullmatch(DB.POLA_TOKEN, token or ""):
+        return None, None
+    t = await DB.cari_tautan(conn, token)
+    if not t:
+        return None, None
+    from ..services.rekap_pesanan import muat_kop
+    return t, (await muat_kop(conn, t["tenant_id"]))["name"]
+
+
+@router.get("/public/d/{token}", response_class=HTMLResponse)
+async def halaman_dokumen_publik(request: Request, token: str):
+    """Halaman publik /d/{token} (lewat nginx) -- HTML dokumen YANG SAMA + Unduh PDF, tanpa login. TIDAK mencatat
+    "dibuka" (bot pratinjau tautan); pencatatan lewat suar JS ke /view."""
+    import json
+    import secrets as _secrets
+    from html import escape
+    from ..services import dokumen_bagikan as DB
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        t, usaha = await _tautan_dari_token(conn, token)
+        if not t:
+            return _tak_berlaku(None, 404)
+        if not DB.berlaku(t):
+            return _tak_berlaku(usaha, 410)
+        r, nomor = await _render(conn, {"tenant_id": t["tenant_id"]}, request, t["kind"], str(t["doc_id"]), cek_izin=False)
+    html_dok = await run_in_threadpool(get_pdf_service().html_layar, r)
+    lebar = get_pdf_service().geometri(r)[0]
+    judul = f"{LABEL_JENIS.get(t['kind'], 'Dokumen')} {nomor} dari {usaha}"
+    nonce = _secrets.token_urlsafe(16)
+    dasar = f"/api/public/d/{token}"
+    isi = (f'<div class="bilah"><h1>{escape(judul)}</h1><a href="{dasar}/pdf">Unduh PDF</a></div>'
+           f'<div class="kertas"><iframe id="dok" title="{escape(judul)}" width="{lebar:.0f}" height="1123" '
+           f'srcdoc="{escape(html_dok, quote=True)}"></iframe></div>')
+    skrip = f"""<script nonce="{nonce}">
+(function () {{
+  var f = document.getElementById('dok'), w = {lebar:.0f};
+  function pas() {{
+    var s = Math.min(1, (window.innerWidth - 16) / w);
+    f.style.transform = 'scale(' + s + ')';
+    try {{ var h = f.contentDocument.documentElement.scrollHeight; f.style.height = h + 'px';
+           f.parentNode.style.height = (h * s + 48) + 'px'; }} catch (e) {{}}
+  }}
+  f.addEventListener('load', pas); window.addEventListener('resize', pas);
+  var h = {{}}; try {{ var t = localStorage.getItem('access_token'); if (t) h['Authorization'] = 'Bearer ' + t; }} catch (e) {{}}
+  fetch({json.dumps(dasar + "/view")}, {{ method: 'POST', headers: h, keepalive: true }}).catch(function () {{}});
+}})();
+</script>"""
+    return _halaman_publik(judul, isi, 200, nonce, skrip)
+
+
+@router.get("/public/d/{token}/pdf")
+async def pdf_dokumen_publik(request: Request, token: str):
+    from ..services import dokumen_bagikan as DB
+    from ..utils.content_disposition import pdf_content_disposition
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        t, usaha = await _tautan_dari_token(conn, token)
+        if not t:
+            return _tak_berlaku(None, 404)
+        if not DB.berlaku(t):
+            return _tak_berlaku(usaha, 410)
+        r, nomor = await _render(conn, {"tenant_id": t["tenant_id"]}, request, t["kind"], str(t["doc_id"]), cek_izin=False)
+    pdf = await pdf_tercache(t["tenant_id"], r)
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf",
+                             headers={**_KEAMANAN_PUBLIK, "Content-Disposition": pdf_content_disposition(nomor or "dokumen", "attachment")})
+
+
+@router.post("/public/d/{token}/view")
+async def suar_dibuka(request: Request, token: str):
+    """Suar "dibuka" dari JS halaman publik. Pengunjung ber-token aplikasi SAH dari tenant yang sama = INTERNAL ->
+    tidak dihitung (spek 05). Jawaban seragam {ok:true} (tanpa oracle keadaan)."""
+    from ..services import dokumen_bagikan as DB
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        t, _ = await _tautan_dari_token(conn, token)
+        if t and DB.berlaku(t) and DB.tenant_dari_jwt(request.headers.get("authorization")) != t["tenant_id"]:
+            await DB.catat_dibuka(conn, t)
+    return JSONResponse({"ok": True}, headers=_KEAMANAN_PUBLIK)

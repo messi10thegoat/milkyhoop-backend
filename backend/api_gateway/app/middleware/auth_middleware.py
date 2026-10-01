@@ -131,6 +131,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
             re.match(r"^/api/public/fonts/Inter-(Regular|Medium|SemiBold|Bold|Italic)\.ttf$", path)
         )
 
+    def _is_public_share(self, path: str, method: str) -> bool:
+        """Tautan publik dokumen (P5 SO-dokumen, 1 Okt 2026): pelanggan membuka TANPA akun. Tiga rute, regex token
+        tepat (token_urlsafe(32) = 43 karakter), metode dipatok -- bukan prefiks /api/public."""
+        tok = r"[A-Za-z0-9_-]{43}"
+        return bool(
+            (method == "GET" and re.match(rf"^/api/public/d/{tok}$", path))
+            or (method == "GET" and re.match(rf"^/api/public/d/{tok}/pdf$", path))
+            or (method == "POST" and re.match(rf"^/api/public/d/{tok}/view$", path))
+        )
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         entered_downstream = False
@@ -148,6 +158,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return await _forward()
 
             if self._is_public_font(path, request.method):
+                return await _forward()
+
+            if self._is_public_share(path, request.method):
                 return await _forward()
 
             if path in self.public_paths:

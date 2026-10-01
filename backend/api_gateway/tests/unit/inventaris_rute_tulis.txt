@@ -529,3 +529,7 @@ POST /api/sales-orders/{order_id}/fulfill/preview
 POST /api/sales-orders/{order_id}/receive-payment/preview
 POST /api/sales-orders/{order_id}/to-invoice/preview
 PUT /api/items/aliases
+# + 1 Okt 2026 P5 SO-dokumen (tautan publik)
+POST /api/documents/{kind}/{doc_id}/share
+POST /api/documents/{kind}/{doc_id}/shares/{share_id}/revoke
+POST /api/public/d/{token}/view

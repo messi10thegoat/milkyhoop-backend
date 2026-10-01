@@ -258,6 +258,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         untuk semuanya, sehingga beberapa tab pemilik bisa memicu 429."""
         if path in self.auth_paths:
             return "auth"
+        if path.startswith("/api/public/d/"):
+            return "publik"  # P5: tautan publik tanpa login -> per-IP ketat (tebak token + pemborosan render)
         if method in ("GET", "HEAD", "OPTIONS"):
             return "read"
         return "write"
@@ -269,6 +271,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return settings.RATE_LIMIT_AUTH_REQUESTS, settings.RATE_LIMIT_AUTH_WINDOW
         if b == "read":
             return settings.RATE_LIMIT_READ_REQUESTS, settings.RATE_LIMIT_WINDOW
+        if b == "publik":
+            return 30, 60  # 30/menit per IP: cukup untuk pelanggan membuka ulang + unduh + suar
         return settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW
 
     async def _check_rate_limit(
