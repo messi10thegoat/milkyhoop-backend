@@ -96,3 +96,20 @@ def test_faktur_ber_so_menunjuk_rekap(monkeypatch):
     PS.get_pdf_service().generate_sales_invoice_pdf(dict(inv, status="void", voided_at="2026-10-01T01:00:00Z",
                                                          cetak={"jenis": "batal", "riwayat": []}))
     assert "Rekap Pesanan" not in tangkap["isi"]  # faktur batal: tak menunjuk ke rekap
+
+
+def test_surat_jalan_berlogo_kanan_atas():
+    """MASTER 1 Okt: SJ satu-satunya dokumen tanpa logo (03-DOKUMEN: logo kanan atas semua dokumen)."""
+    s = PS.get_pdf_service()
+    r = s.render_delivery_note({"delivery_number": "SJ-T", "items": [], "tenant": dict(KOP, logo_data="data:image/png;base64,AAAA")})
+    assert '<img src="data:image/png;base64,AAAA" class="doc-logo"' in r.html
+    r = s.render_delivery_note({"delivery_number": "SJ-T", "items": [], "tenant": KOP})
+    assert "doc-logo\"" not in r.html.split("</style>")[-1]
+
+
+def test_proforma_jarak_dirapatkan_untuk_muat_satu_halaman():
+    """PRO-2610-0001 PELUNASAN + logo dulu 2 halaman (diukur: 49/112 proforma grapgrap 2 halaman -> 2)."""
+    src = (PS.TEMPLATE_DIR / "proforma.html").read_text()
+    for aturan in (".header { margin-bottom: 18px !important; }", ".company-logo { max-height: 60px !important; }",
+                   ".meta-table { border-spacing: 20px 3px !important; }"):
+        assert aturan in src, aturan

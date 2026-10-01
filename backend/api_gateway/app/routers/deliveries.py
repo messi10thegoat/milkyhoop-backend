@@ -449,6 +449,9 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
         "address": tenant_row["address"] if tenant_row else None,
         "phone": tenant_row["phone"] if tenant_row else None,
     }
+    # 1 Okt 2026: logo kanan atas seperti dokumen lain (kop yang sama dengan Rekap -- logo_url -> data URI).
+    from ..services.rekap_pesanan import muat_kop as _muat_kop
+    tenant_info["logo_data"] = (await _muat_kop(conn, ctx["tenant_id"]))["logo_data"]
     delivery_data = {
         "id": str(row["id"]),
         "delivery_number": row["delivery_number"],

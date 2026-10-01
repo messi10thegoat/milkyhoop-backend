@@ -8,6 +8,14 @@
      proforma ber-catatan (mis. 0001) pun muat 1 halaman. !important krn invoice.css dimuat sesudah. */
   .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
   @page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }
+  /* 1 Okt 2026 (pemilik: PRO-2610-0001 PELUNASAN + logo = 2 halaman, catatan penutup tumpah): jarak vertikal
+     dirapatkan untuk proforma saja (~50px); teks & urutan tak berubah. !important krn invoice.css dimuat sesudah. */
+  .header { margin-bottom: 18px !important; }
+  .meta-block { margin-bottom: 18px !important; }
+  .parties { margin-bottom: 22px !important; }
+  .company-logo { max-height: 60px !important; }  /* invoice.css 94px: logo persegi grapgrap memakan ~34px */
+  .meta-table { border-spacing: 20px 3px !important; }  /* 6 baris meta: 5px -> 3px */
+  .notes-section { margin-bottom: 10px !important; }
 </style>
 </head>
 <body>
@@ -86,7 +94,7 @@
         {% endif %}
     </div>
 
-    <div style="height: 28px;"></div>
+    <div style="height: 16px;"></div>
 
     <!-- 5. Rincian tagihan -->
     <table class="items-table">

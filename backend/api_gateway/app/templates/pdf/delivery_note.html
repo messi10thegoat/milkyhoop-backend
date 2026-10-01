@@ -11,6 +11,7 @@
   .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
   .company-info p { font-size: 11px; color: #555; line-height: 1.5; }
   .doc-title { text-align: right; }
+  .doc-logo { max-height: 52px; max-width: 130px; object-fit: contain; display: block; margin: 0 0 6px auto; }
   .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
   .doc-title .subtitle { font-size: 11px; color: #777; }
   .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
@@ -44,6 +45,7 @@
     {% if delivery.tenant.phone %}<p>Telp: {{ delivery.tenant.phone }}</p>{% endif %}
   </div>
   <div class="doc-title">
+    {% if delivery.tenant.logo_data %}<img src="{{ delivery.tenant.logo_data }}" class="doc-logo" alt="">{% endif %}
     <h2>SURAT JALAN</h2>
     <div class="subtitle">Delivery Note</div>
   </div>
