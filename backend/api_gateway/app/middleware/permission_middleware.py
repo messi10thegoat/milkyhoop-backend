@@ -168,6 +168,17 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+/fulfill/preview$", ["POST"], "sales_invoice", "P"),
     (r"^/api/employee-advances/preview$", ["POST"], "payroll", "C"),
     (r"^/api/employee-advances/[^/]+/void/preview$", ["POST"], "payroll", "V"),
+    # P3 SO-dokumen (1 Okt 2026): render dokumen = izin BACA modul dokumennya (sama dengan rute /pdf lama). DI ATAS
+    # READ_DEFAULT_OPEN_ALLOWLIST ^/api/documents (multi-doctype) -- tanpa pola ini render terbuka bagi semua anggota.
+    # Kwitansi uang muka: handler menambah customer_deposit R (satu rute, dua sumber kwitansi).
+    (r"^/api/documents/rekap/[^/]+/(html|pdf)$", ["GET"], "sales_order", "R"),
+    (r"^/api/documents/quotation/[^/]+/(html|pdf)$", ["GET"], "quote", "R"),
+    (r"^/api/documents/proforma/[^/]+/(html|pdf)$", ["GET"], "proforma", "R"),
+    (r"^/api/documents/receipt/[^/]+/(html|pdf)$", ["GET"], "receive_payment", "R"),
+    (r"^/api/documents/delivery/[^/]+/(html|pdf)$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/documents/invoice/[^/]+/(html|pdf)$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/documents/receipts/pdf$", ["GET"], "receive_payment", "R"),
+    (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
     # Rute lama yang DIPANGGIL FE tapi tak terpetakan (1 Okt 2026, putusan pemilik LANGSUNG di sesi BACKEND:
     # "buka akses admin untuk semua modul kecuali infrastruktur") -> izin modul yang sama dengan tulis padanannya.
     (r"^/api/transactions/purchase$", ["POST"], "bill", "C"),

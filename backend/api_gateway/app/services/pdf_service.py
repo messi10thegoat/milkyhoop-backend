@@ -4,6 +4,7 @@ PDF Generation Service - WeasyPrint-based HTML to PDF conversion.
 """
 
 import logging
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -332,6 +333,40 @@ class PDFService:
             fc = FontConfiguration()
             return HTML(string=r.html).write_pdf(stylesheets=self._lembar_gaya(r, fc), font_config=fc)
         return HTML(string=r.html).write_pdf(stylesheets=self._lembar_gaya(r))
+
+    # ── HTML layar (panel dokumen P4): string HTML YANG SAMA dengan PDF ──────────────────────────────────────
+    FONT_PUBLIK = "/api/public/fonts/"
+
+    def _css_teks(self, nama: str) -> str:
+        teks = (TEMPLATE_DIR / nama).read_text(encoding="utf-8")
+        # url("fonts/X.ttf") relatif terhadap berkas CSS (WeasyPrint) -> rute font publik (browser tak membawa JWT
+        # untuk unduhan font CSS).
+        return re.sub(r'url\("fonts/([^"]+)"\)', lambda m: f'url("{self.FONT_PUBLIK}{m.group(1)}")', teks)
+
+    def kertas(self, r: Render) -> str:
+        hal = self.dokumen(r).pages[0]
+        return "A5-landscape" if hal.width > hal.height else "A4"
+
+    def html_layar(self, r: Render) -> str:
+        """HTML untuk panel (P3e, 02-DATA-DAN-API §Render): `r.html` YANG SAMA dengan PDF + lembar gaya PDF disisipkan
+        SESUDAH gaya inline dokumen (urutan yang sama dengan WeasyPrint: stylesheets= menyusul gaya dokumen) + kertas
+        selebar/setinggi halaman PDF dengan padding = margin @page -- geometri dibaca dari TATA LETAK WeasyPrint
+        (halaman pertama), bukan ditebak per template. "Halaman x dari y" hidup di kotak margin @page -> tak tampil
+        di browser (putusan pemilik #9: hanya di PDF)."""
+        hal = self.dokumen(r).pages[0]
+        b = hal._page_box
+        gaya = "\n".join(self._css_teks(n) for n in r.css if (TEMPLATE_DIR / n).exists())
+        layar = (
+            "@media screen { html { background: #F1EFEA; } "
+            f"body {{ box-sizing: border-box; width: {hal.width:.2f}px; min-height: {hal.height:.2f}px; "
+            f"margin: 0 auto; padding: {b.margin_top:.2f}px {b.margin_right:.2f}px {b.margin_bottom:.2f}px "
+            f"{b.margin_left:.2f}px; background: #fff; transform: translateZ(0); }} }}"
+        )
+        # transform di body = blok penampung untuk position:fixed (tanda DIBATALKAN) -> tetap di atas kertas, bukan layar.
+        sisip = f'<style data-sumber="pdf">\n{gaya}\n</style><style data-sumber="layar">{layar}</style>'
+        kertas = "A5-landscape" if hal.width > hal.height else "A4"
+        html = r.html.replace("</head>", sisip + "</head>", 1) if "</head>" in r.html else sisip + r.html
+        return html.replace("<html", f'<html data-kertas="{kertas}"', 1)
 
     def generate_bill_pdf(self, bill: Dict[str, Any]) -> bytes:
         """

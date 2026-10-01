@@ -930,6 +930,26 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
 # ============================================================================
 
 
+# Baris konteks PDF proforma -- SATU SQL untuk rute /pdf dan render dokumen (P3 SO-dokumen).
+SQL_PDF_PROFORMA = """
+                SELECT p.*, so.order_number, so.order_date, so.total_amount AS order_total_amount,
+                       so.subtotal AS order_subtotal, so.discount_amount AS order_discount,
+                       so.shipping_amount AS order_shipping, so.tax_amount AS order_tax
+                FROM proformas p
+                LEFT JOIN sales_orders so
+                       ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
+                WHERE p.id = $1 AND p.tenant_id = $2
+                """
+
+
+async def muat_pdf_proforma_id(conn, ctx, pid) -> dict:
+    """Pemuat PDF proforma berdasar id (render dokumen P3): baris SQL_PDF_PROFORMA + muat_pdf_proforma; 404 bila tak ada."""
+    row = await conn.fetchrow(SQL_PDF_PROFORMA, pid, ctx["tenant_id"])
+    if not row:
+        raise HTTPException(status_code=404, detail="Proforma not found")
+    return await muat_pdf_proforma(conn, ctx, row)
+
+
 async def muat_pdf_proforma(conn, ctx, row) -> dict:
     """Konteks PDF proforma dari baris SQL_PDF_PROFORMA (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM
     dari get_proforma_pdf. -> {proforma_data, tenant_info}."""
@@ -1087,19 +1107,7 @@ async def get_proforma_pdf(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT p.*, so.order_number, so.order_date, so.total_amount AS order_total_amount,
-                       so.subtotal AS order_subtotal, so.discount_amount AS order_discount,
-                       so.shipping_amount AS order_shipping, so.tax_amount AS order_tax
-                FROM proformas p
-                LEFT JOIN sales_orders so
-                       ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
-                WHERE p.id = $1 AND p.tenant_id = $2
-                """,
-                pid,
-                ctx["tenant_id"],
-            )
+            row = await conn.fetchrow(SQL_PDF_PROFORMA, pid, ctx["tenant_id"])
             if not row:
                 raise HTTPException(status_code=404, detail="Proforma not found")
             if format == "url":

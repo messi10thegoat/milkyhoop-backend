@@ -662,6 +662,9 @@ app.include_router(
 )
 
 # Documents router (Lampiran / Attachments - S3/MinIO)
+# P3 SO-dokumen: render dokumen + bundel pesanan + font publik -- SEBELUM documents.router (rute /api/documents/* lebih spesifik)
+from .routers import dokumen as _dokumen_so
+app.include_router(_dokumen_so.router, prefix="/api", tags=["dokumen-so"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(uploads.router)
 

@@ -123,6 +123,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or (method == "POST" and re.match(r"^/api/invite/[^/]+/decline/?$", path))
         )
 
+    def _is_public_font(self, path: str, method: str) -> bool:
+        """Font Inter HTML dokumen (P3 SO-dokumen, 1 Okt 2026). Unduhan font lewat CSS @font-face TIDAK membawa
+        header Authorization, jadi rute ini wajib publik. Dipatok ke LIMA nama berkas statis (lisensi OFL, tanpa data
+        tenant), GET saja -- bukan prefiks /api/public."""
+        return method == "GET" and bool(
+            re.match(r"^/api/public/fonts/Inter-(Regular|Medium|SemiBold|Bold|Italic)\.ttf$", path)
+        )
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         entered_downstream = False
@@ -137,6 +145,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             # Allow public paths
             if self._is_public_invite(path, request.method):
+                return await _forward()
+
+            if self._is_public_font(path, request.method):
                 return await _forward()
 
             if path in self.public_paths:
