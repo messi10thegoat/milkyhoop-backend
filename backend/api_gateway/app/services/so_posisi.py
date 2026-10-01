@@ -118,22 +118,30 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         tenant_id, ids,
     )
     per_baris, _ = await terkirim_per_baris(conn, tenant_id, ids)
-    dep = {r["so_id"]: r["n"] for r in await conn.fetch(
-        """SELECT COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id, count(*) AS n
-           FROM customer_deposits cd
-           LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
-           WHERE cd.tenant_id = $1 AND cd.status <> 'void'
-             AND COALESCE(cd.sales_order_id, p.sales_order_id) = ANY($2::uuid[])
-           GROUP BY 1""",
-        tenant_id, ids,
-    )}
+    # Kwitansi = himpunan yang SAMA dengan kelompok "Pembayaran" panel /documents (routers/dokumen.susun_dokumen):
+    # uang muka tertaut ber-jurnal + uang muka lepas yang diterapkan ke faktur SO + penerimaan atas faktur SO,
+    # dihitung per nomor unik. Dulu uang muka dihitung tanpa syarat jurnal & tanpa yang diterapkan (gerbang 05 D3).
     kw = {r["so_id"]: r["n"] for r in await conn.fetch(
-        """SELECT si.sales_order_id AS so_id, count(DISTINCT rpa.payment_id) AS n
-           FROM receive_payment_allocations rpa
-           JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
-           JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1
-           WHERE si.sales_order_id = ANY($2::uuid[]) AND rpa.status = 'active'
-           GROUP BY 1""",
+        """SELECT so_id, count(DISTINCT id) AS n FROM (
+               SELECT COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id, cd.id
+               FROM customer_deposits cd
+               LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
+               WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
+                 AND COALESCE(cd.sales_order_id, p.sales_order_id) = ANY($2::uuid[])
+               UNION
+               SELECT si.sales_order_id, cd.id
+               FROM customer_deposit_applications cda
+               JOIN customer_deposits cd ON cd.id = cda.deposit_id AND cd.tenant_id = $1
+               JOIN sales_invoices si ON si.id = cda.invoice_id AND si.tenant_id = $1
+               WHERE cda.tenant_id = $1 AND cda.status = 'active' AND cd.status <> 'void'
+                 AND cd.journal_id IS NOT NULL AND si.sales_order_id = ANY($2::uuid[])
+               UNION
+               SELECT si.sales_order_id, rpa.payment_id
+               FROM receive_payment_allocations rpa
+               JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
+               JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1
+               WHERE si.sales_order_id = ANY($2::uuid[]) AND rpa.status = 'active'
+           ) x GROUP BY 1""",
         tenant_id, ids,
     )}
 
@@ -161,8 +169,11 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         bk = per_so_baris.get(sid, [])
         semua = bool(bk) and all(belum_dikirim(b["quantity"], per_baris.get(b["id"])) == NOL for b in bk)
         teks_kirim, gaya = kirim(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
-        n_dok = ((1 if r["quote_id"] else 0) + sum(1 for p in daftar_pf if p["status"] != "cancelled")
-                 + dep.get(sid, 0) + kw.get(sid, 0) + sj.get(sid, 0) + n_faktur)
+        # Sama dengan panel: proforma draf tak tampil; proforma batal tampil hanya bila SO batal (cap DIBATALKAN).
+        n_dok = ((1 if r["quote_id"] else 0)
+                 + sum(1 for p in daftar_pf if p["status"] != "draft"
+                       and (p["status"] != "cancelled" or r["status"] == "cancelled"))
+                 + kw.get(sid, 0) + sj.get(sid, 0) + n_faktur)
         hasil[str(sid)] = {"position_text": teks_pos, "position_muted": muted,
                            "ship_text": teks_kirim, "ship_style": gaya, "doc_count": n_dok}
     return hasil
