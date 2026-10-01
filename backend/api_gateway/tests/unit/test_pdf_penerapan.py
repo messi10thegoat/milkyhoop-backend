@@ -44,21 +44,25 @@ LAMA = {"receipt_number": "RCV-1", "receipt_date": "2026-09-24", "payer_name": "
 
 
 def _elemen(html):
-    """Teks tiap elemen kunci (bukan substring bebas: <title> juga memuat judul)."""
+    """Teks tiap elemen kunci (bukan substring bebas: <title> juga memuat judul).
+    1 Okt 2026 (P3d, putusan pemilik): kwitansi A5 melintang -- kelas tata letak baru (kw-*); KONTRAK teks sama:
+    templat tanpa kunci baru = teks kwitansi lama; varian jurnal berlabel jujur. Satu perubahan sengaja: baris
+    "Bank / Rekening" digabung ke baris Metode ("Transfer Bank · BCA")."""
     import re
 
     def satu(pola):
         m = re.findall(pola, html, re.S)
-        return [" ".join(x.split()) for x in m]
+        return [" ".join(re.sub(r"<[^>]+>", " ", x).split()) for x in m]
 
     return {
         "title_tag": satu(r"<title>(.*?)</title>"),
-        "h1": satu(r'<h1 class="doc-title">(.*?)</h1>'),
-        "sub": satu(r'<div class="doc-subtitle">(.*?)</div>'),
-        "party": satu(r'<div class="party-label">(.*?)</div>'),
-        "meta": satu(r'<td class="meta-label">(.*?)</td>'),
-        "hero": satu(r'<div class="hero-amount">(.*?)</div>'),
-        "label": satu(r'<td class="label">(.*?)</td>'),
+        "h1": satu(r'<div class="kw-judul">(.*?)</div>'),
+        "sub": satu(r'<div class="kw-subjudul">(.*?)</div>'),
+        "label": satu(r'<div class="kw-label">(.*?)</div>'),
+        "meta": satu(r'<td class="kw-m-label">(.*?)</td>'),
+        "jumlah": satu(r'<div class="kw-jumlah">(.*?)</div>'),
+        "ttd": satu(r'<td class="kw-ttd">(.*?)</td>'),
+        "metode": satu(r'<div class="kw-label">Metode</div>\s*<div class="kw-nilai">(.*?)</div>'),
     }
 
 
@@ -66,10 +70,11 @@ def test_templat_default_sama_dengan_kwitansi_lama():
     e = _elemen(render(LAMA))
     assert e["title_tag"] == ["Bukti Penerimaan RCV-1"]
     assert e["h1"] == ["Bukti Penerimaan"] and e["sub"] == ["Kwitansi"]
-    assert e["party"] == ["Toko", "Telah Terima Dari", "Penerima,"]
+    assert e["label"] == ["Telah Terima Dari", "Jumlah Diterima", "Untuk Pelunasan Faktur", "Metode"]
     assert e["meta"] == ["No. Kwitansi", "Tanggal"]
-    assert e["hero"] == ["Jumlah Diterima Rp 1.000"]
-    assert e["label"] == ["Metode", "Bank / Rekening", "Untuk Pelunasan Faktur"]
+    assert e["jumlah"] == ["Rp 1.000"]
+    assert e["metode"] == ["Transfer Bank &middot; BCA"] or e["metode"] == ["Transfer Bank · BCA"]
+    assert "Penerima," in e["ttd"][0] and "Toko" in e["ttd"][0]
 
 
 def test_templat_penerapan_jujur():
@@ -79,12 +84,12 @@ def test_templat_penerapan_jujur():
                        source_ref="DEP-2609-0039", signature_label="Hormat kami,"))
     e = _elemen(html)
     assert e["h1"] == ["Bukti Penerapan Uang Muka"] and e["sub"] == ["Tanpa penerimaan uang baru"]
-    assert e["party"] == ["Toko", "Pelanggan", "Hormat kami,"]
+    assert e["label"] == ["Pelanggan", "Jumlah Diterapkan", "Untuk Pelunasan Faktur", "Dari Uang Muka"]
     assert e["meta"] == ["No. Penerapan", "Tanggal"]
-    assert e["hero"] == ["Jumlah Diterapkan Rp 1.000"]
-    assert e["label"] == ["Dari Uang Muka", "Untuk Pelunasan Faktur"]
+    assert e["jumlah"] == ["Rp 1.000"]
+    assert "Hormat kami," in e["ttd"][0]
     assert "DEP-2609-0039" in html
-    for tak in ("Kwitansi", "Metode", "Telah Terima Dari", "Jumlah Diterima", "Penerima,"):
+    for tak in ("Kwitansi", "Metode", "Telah Terima Dari", "Jumlah Diterima", "Penerima,", "DITERIMA"):
         assert tak not in html, tak
 
 
