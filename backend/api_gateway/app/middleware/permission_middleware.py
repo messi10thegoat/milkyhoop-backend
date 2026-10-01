@@ -156,6 +156,18 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # menulis lewat DELEGASI ke service (tulis=0 di handler, tapi bukan baca)
     (r"^/api/bills/[^/]+/payments$", ["POST"], "send_payment", "C"),
     (r"^/api/sales-invoices/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
+    # Rute CW (26 Sep+): PRATINJAU = izin yang SAMA dengan tulisnya (1 Okt 2026, insiden ADMIN grapgrap
+    # 403 PERMISSION_UNMAPPED di halaman Pembayaran). Dijaga test_izin_rute_pratinjau: tiap .../preview
+    # harus terpetakan = izin rute tulisnya. Pola ber-$ dan DI ATAS prefiks ^/api/sales-orders (= C).
+    (r"^/api/sales-invoices/[^/]+/receive-payment/preview$", ["POST"], "receive_payment", "C"),
+    (r"^/api/sales-invoices/[^/]+/void/preview$", ["POST"], "sales_invoice", "V"),
+    (r"^/api/sales-invoices/[^/]+/recognize-non-stock-revenue$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/sales-orders/[^/]+/receive-payment/preview$", ["POST"], "receive_payment", "C"),
+    # Kirim barang SO menulis lewat _execute_fulfillment faktur = izin /sales-invoices/{id}/fulfill.
+    (r"^/api/sales-orders/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/sales-orders/[^/]+/fulfill/preview$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/employee-advances/preview$", ["POST"], "payroll", "C"),
+    (r"^/api/employee-advances/[^/]+/void/preview$", ["POST"], "payroll", "V"),
     (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),
     (r"^/api/payment-requests/[^/]+/cancel$", ["POST"], "payment_request", "U"),
     # menulis data, tanpa jurnal
@@ -903,6 +915,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/employee-advances$", ["GET"], "payroll", "R"),
     (r"^/api/employee-advances/balances$", ["GET"], "payroll", "R"),
     (r"^/api/employee-advances/[^/]+/void$", ["POST"], "payroll", "V"),
+    (r"^/api/employee-advances/summary$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/[^/]+$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/[^/]+/history$", ["GET"], "payroll", "R"),
 ]
 
 # READ default-open allowlist — for the STEP 2 default-closed flip (not yet built).
