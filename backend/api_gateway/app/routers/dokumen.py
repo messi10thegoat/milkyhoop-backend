@@ -225,12 +225,13 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     kelompok = [{"key": "rekap", "label": "Rekap", "docs": [{"kind": "rekap", "id": str(sid), "paper": "A4"}]}]
 
     if so["quote_id"]:
-        q = await conn.fetchrow("""SELECT id, quote_number, quote_date, total_amount, sent_at FROM quotes
+        q = await conn.fetchrow("""SELECT id, quote_number, quote_date, expiry_date, total_amount, sent_at FROM quotes
                                    WHERE id = $1 AND tenant_id = $2""", so["quote_id"], tid)
         if q:
             kelompok.append({"key": "pnw", "label": "Penawaran", "docs": [{
                 "kind": "quotation", "id": str(q["id"]), "number": q["quote_number"], "date": _tgl(q["quote_date"]),
                 "amount": _uang(q["total_amount"]), "paper": "A4",
+                "valid_until": _tgl(q["expiry_date"]),  # P5 pesan Kirim "berlaku sampai {tgl}"
                 "sent": {"state": "sent" if q["sent_at"] else "none",
                          "sent_at": q["sent_at"].isoformat() if q["sent_at"] else None, "viewed_at": None}}]})
 
@@ -344,7 +345,11 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
                "paid": _uang(r["tertutup"] - r["credit_note"]), "balance": _uang(sisa),
                # P5: untuk wa.me / email di FE (tambahan; skema so tak membatasi medan tambahan)
                "customer_phone": (kontak["telepon"] if kontak else None) or None,
-               "customer_email": (kontak["email"] if kontak else None) or None},
+               "customer_email": (kontak["email"] if kontak else None) or None,
+               # P5: "— {nama usaha}" di pesan Kirim. Aturan nama SAMA dgn kop (rekap_pesanan.muat_kop:
+               # display_name, kalau kosong id) tanpa membaca berkas logo.
+               "business_name": (await conn.fetchval(
+                   'SELECT display_name FROM "Tenant" WHERE id = $1', tid)) or tid},
         "default": bawaan,
         "groups": kelompok,
     }

@@ -163,3 +163,10 @@ def test_iframe_tak_menyusut_di_layar_sempit():
     aturan = re.search(r"\n  iframe \{\{([^}]*)\}\}", src).group(1)
     assert "flex: none" in aturan and "max-width" not in aturan
     assert "overflow: hidden" in re.search(r"\.kertas \{\{([^}]*)\}\}", src).group(1)
+
+
+def test_documents_membawa_nama_usaha_dan_berlaku_penawaran():
+    """Kartu Kirim (FE P5): pesan memakai nama usaha + berlaku sampai penawaran dari /documents (satu panggilan)."""
+    src = inspect.getsource(DK.susun_dokumen)
+    assert "\"business_name\"" in src and "display_name FROM \"Tenant\"" in src
+    assert "\"valid_until\": _tgl(q[\"expiry_date\"])" in src

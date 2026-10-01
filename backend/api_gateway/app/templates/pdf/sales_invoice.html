@@ -1,6 +1,23 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Faktur {{ invoice.invoice_number or '-' }}</title></head>
+<head><meta charset="UTF-8"><title>Faktur {{ invoice.invoice_number or '-' }}</title>
+<style>
+  /* 1 Okt 2026 (MASTER/pemilik: 15/37 faktur grapgrap 2 halaman dgn 1-4 baris; halaman 2 hanya catatan transfer +
+     "Dicetak"). Pola proforma: "Dicetak…" keluar dari alur -> kotak margin @page bawah-kiri (running element),
+     margin bawah 2.2cm -> 1.4cm, jarak vertikal dirapatkan. Teks & urutan isi tak berubah. Template A saja (B punya
+     lembar gaya sendiri). !important krn invoice.css dimuat sesudah. */
+  .footer-line { position: running(dicetak); margin-top: 0 !important; padding-top: 0 !important;
+                 border-top: 0 !important; font-size: 8pt; color: #1a1a1a; }
+  @page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }
+  .header { margin-bottom: 18px !important; }
+  .meta-block { margin-bottom: 18px !important; }
+  .parties { margin-bottom: 22px !important; }
+  .company-logo { max-height: 60px !important; }
+  .meta-table { border-spacing: 20px 3px !important; }
+  .summary { margin-bottom: 18px !important; }
+  .notes-section { margin-bottom: 10px !important; }
+</style>
+</head>
 <body>
 {# Faktur ber-keadaan cetak: stempel BATAL + total dicoret + Catatan alasan MENGGANTIKAN tanda diagonal (tanda itu
    menimpa stempel & tabel; spek pemilik 27 Sep: stempel tak boleh menimpa teks). Tanpa `cetak` = perilaku lama. #}
