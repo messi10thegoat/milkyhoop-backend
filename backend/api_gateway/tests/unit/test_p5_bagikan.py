@@ -153,3 +153,13 @@ def test_saringan_log_terpasang_saat_impor_app():
     import pathlib
     main = (pathlib.Path(DK.__file__).parents[1] / "main.py").read_text()
     assert "_pasang_saring_log_tautan()" in main and main.index("_pasang_saring_log_tautan()") < main.index("app = FastAPI(")
+
+
+def test_iframe_tak_menyusut_di_layar_sempit():
+    """HP 390px: iframe item flex menyusut ke lebar layar lalu diskala lagi -> kertas terpotong (diukur 1 Okt).
+    Lebar tata letak iframe harus tetap lebar kertas; pengecilan hanya lewat transform."""
+    import re
+    src = inspect.getsource(DK)
+    aturan = re.search(r"\n  iframe \{\{([^}]*)\}\}", src).group(1)
+    assert "flex: none" in aturan and "max-width" not in aturan
+    assert "overflow: hidden" in re.search(r"\.kertas \{\{([^}]*)\}\}", src).group(1)

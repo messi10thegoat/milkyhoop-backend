@@ -462,8 +462,10 @@ def _halaman_publik(judul: str, isi: str, status: int, nonce: str = "", skrip: s
   .bilah h1 {{ font-size: 15px; font-weight: 600; margin: 0; }}
   .bilah a {{ font-size: 14px; font-weight: 600; color: #fff; background: #1a1a1a; border-radius: 8px;
              padding: 8px 14px; text-decoration: none; white-space: nowrap; }}
-  .kertas {{ display: flex; justify-content: center; padding: 16px 0 32px; }}
-  iframe {{ border: 0; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.08); transform-origin: top center; }}
+  .kertas {{ display: flex; justify-content: center; padding: 16px 0 32px; overflow: hidden; }}
+  /* flex: none -- tanpa ini item flex MENYUSUT ke lebar layar (390px) lalu DISKALA lagi -> kertas terpotong &
+     kecil di HP (diukur Chromium 390px, 1 Okt). Lebar tata letak tetap = lebar kertas; skala yang mengecilkan. */
+  iframe {{ flex: none; border: 0; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.08); transform-origin: top center; }}
   .pesan {{ max-width: 520px; margin: 18vh auto 0; padding: 0 16px; text-align: center; font-size: 16px; line-height: 1.5; }}
 </style></head><body>{isi}{skrip}</body></html>"""
     return HTMLResponse(halaman, status_code=status, headers={**_KEAMANAN_PUBLIK, "Content-Security-Policy": csp})
