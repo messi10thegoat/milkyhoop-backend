@@ -5533,6 +5533,290 @@ async def get_invoice_deposit_plan(
     }
 
 
+async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
+    """Konteks PDF faktur (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari get_invoice_pdf
+    (blok acquire + cetak/rekening/has_cents/pilih template). -> {invoice_data, tpl, invoice}."""
+    # Fetch invoice with full details
+    invoice = await conn.fetchrow(
+        """
+        SELECT si.*, so.order_number AS sales_order_number,
+               c.alamat  AS pelanggan_alamat,
+               c.telepon AS pelanggan_telepon,
+               c.tax_id  AS pelanggan_npwp
+          FROM sales_invoices si
+          LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
+          LEFT JOIN customers c ON c.id = si.customer_id
+         WHERE si.id = $1 AND si.tenant_id = $2
+    """,
+        invoice_id,
+        ctx["tenant_id"],
+    )
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Cabang dan alamat bank untuk blok pembayaran.
+    #
+    # Faktur TIDAK menyimpan tautan ke rekening -- hanya tiga medan
+    # teks payment_bank_name/account_number/account_holder. Jadi
+    # cabangnya diturunkan dengan mencocokkan NOMOR REKENING di dalam
+    # tenant yang sama. Kalau tak ketemu, medan teks faktur dicetak apa
+    # adanya: faktur lama tetap tercetak seperti sebelumnya, tidak
+    # tiba-tiba kehilangan blok banknya.
+    bank_row = None
+    if invoice["payment_account_number"]:
+        bank_row = await conn.fetchrow(
+            """
+            SELECT bank_branch, bank_address FROM bank_accounts
+             WHERE tenant_id = $1 AND account_number = $2
+             ORDER BY is_default DESC, updated_at DESC LIMIT 1
+            """,
+            ctx["tenant_id"],
+            invoice["payment_account_number"],
+        )
+
+    # Nomor surat jalan untuk cetakan.
+    #
+    # ARAHNYA TERBALIK dari dugaan awal: pengiriman lahir DARI faktur
+    # (invoice_fulfillments.invoice_id -> faktur), bukan faktur dari
+    # pengiriman. Jadi saat faktur DIBUAT nomor DO memang belum ada,
+    # dan pengisian otomatis saat create mustahil. Yang bisa: saat
+    # MENCETAK, faktur yang sudah dikirim sudah punya nomornya.
+    #
+    # Nilai yang ditulis pengguna MENANG; turunan ini hanya mengisi
+    # kekosongan, dan TIDAK disalin ke kolom -- kalau pengiriman
+    # kemudian di-void, cetakan berikutnya ikut berubah sendiri.
+    no_surat_jalan = invoice["delivery_order_no"]
+    if not no_surat_jalan:
+        no_surat_jalan = await conn.fetchval(
+            """
+            SELECT fulfillment_number FROM invoice_fulfillments
+             WHERE invoice_id = $1 AND tenant_id = $2 AND voided_at IS NULL
+             ORDER BY fulfillment_date DESC, created_at DESC LIMIT 1
+            """,
+            invoice_id,
+            ctx["tenant_id"],
+        )
+
+    # Fetch items
+    items = await conn.fetch(
+        """
+        SELECT * FROM sales_invoice_items
+        WHERE invoice_id = $1 ORDER BY line_number
+    """,
+        invoice_id,
+    )
+
+    # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
+    pdf_ar_row = await conn.fetchrow(
+        """
+        SELECT paid_amount, outstanding
+        FROM compute_ar_outstanding($1)
+        WHERE invoice_id = $2
+    """,
+        ctx["tenant_id"],
+        invoice_id,
+    )
+    # If no row from function: invoice is fully paid (outstanding=0) or draft/void
+    if pdf_ar_row:
+        pdf_amount_paid = float(
+            invoice["total_amount"] - pdf_ar_row["outstanding"]
+        )
+    elif invoice["status"] in ("paid",):
+        pdf_amount_paid = float(invoice["total_amount"])
+    else:
+        pdf_amount_paid = 0
+
+    # Cetak per status pembayaran (pemilik 27 Sep): riwayat = cabang compute_ar_outstanding yang sama;
+    # tanggal cetak = tanggal bisnis tenant (bukan jam server UTC).
+    from ..services import faktur_cetak as _fc
+    from ..utils.tanggal_tenant import tanggal_dokumen as _tanggal_dokumen
+    _riwayat_cetak = await _fc.riwayat_pembayaran(conn, ctx["tenant_id"], invoice_id)
+    _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
+    _tanggal_cetak = await _tanggal_dokumen(conn, ctx["tenant_id"])
+    from ..utils.tanggal_tenant import zona_tenant as _zona_tenant
+    _zona_cetak = await _zona_tenant(conn, ctx["tenant_id"])
+
+    # Fetch tenant info for PDF header
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
+        'workshop_address, signatory_name, '
+        'pdf_template FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    tenant_info = (
+        {
+            "name": tenant_row["display_name"]
+            if tenant_row
+            else ctx["tenant_id"],
+            "address": tenant_row["address"] if tenant_row else None,
+            "phone": tenant_row["phone"] if tenant_row else None,
+            "logo_url": tenant_row["logo_url"] if tenant_row else None,
+            # NPWP tenant. `tax_id` adalah kolom yang SUDAH ADA dan
+            # sudah ditulis /api/tenant/profile — sengaja TIDAK
+            # menambah kolom `npwp` baru (dua sumber kebenaran untuk
+            # satu nomor pajak).
+            "tax_id": tenant_row["tax_id"] if tenant_row else None,
+            # Menentukan apakah baris "Tax 11%" tampil di template B.
+            # Non-PKP yang menampilkan "Tax 0" menyiratkan ia memungut
+            # pajak nol, bukan tidak memungut.
+            "is_pkp": bool(tenant_row["is_pkp"]) if tenant_row else False,
+            # V239. Kosong = barisnya tidak dicetak sama sekali;
+            # baris berlabel tanpa isi terbaca seperti data yang
+            # HILANG, bukan medan yang belum dipakai.
+            "workshop_address": (
+                tenant_row["workshop_address"] if tenant_row else None
+            ),
+            "signatory_name": (
+                tenant_row["signatory_name"] if tenant_row else None
+            ),
+        }
+        if tenant_row
+        else {
+            "name": ctx["tenant_id"],
+            "address": None,
+            "phone": None,
+            "logo_url": None,
+        }
+    )
+
+    # Resolve logo to base64 data URI for PDF embedding
+    _logo_data = None
+    _logo_filename = tenant_info.get("logo_url")
+    if _logo_filename:
+        _logo_path = (
+            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+        )
+        if _logo_path.exists():
+            with open(_logo_path, "rb") as _lf:
+                _logo_b64 = base64.b64encode(_lf.read()).decode()
+            _logo_data = f"data:image/png;base64,{_logo_b64}"
+    tenant_info["logo_data"] = _logo_data
+    # Convert to dict for template
+    invoice_data = {
+        "id": str(invoice["id"]),
+        "invoice_number": invoice["invoice_number"],
+        "customer_id": str(invoice["customer_id"])
+        if invoice["customer_id"]
+        else None,
+        "customer_name": invoice["customer_name"],
+        "invoice_date": invoice["invoice_date"].isoformat()
+        if invoice["invoice_date"]
+        else None,
+        "due_date": invoice["due_date"].isoformat()
+        if invoice["due_date"]
+        else None,
+        "ref_no": invoice["ref_no"],
+        "purchase_order_no": invoice["purchase_order_no"],
+        # Nomor pesanan milik KITA (SO tertaut) -- beda dari ref_no (ketikan) dan
+        # purchase_order_no (PO pelanggan). Dicetak hanya bila tertaut.
+        "sales_order_number": invoice["sales_order_number"],
+        # Alamat/telepon/NPWP pelanggan diambil dari kartu pelanggan
+        # kalau faktur tidak menyimpannya sendiri.
+        #
+        # CACAT YANG DITUTUP: rute ini hanya `SELECT si.*` tanpa JOIN
+        # ke `customers`, jadi alamat dan telepon pelanggan TIDAK
+        # PERNAH sampai ke cetakan -- padahal datanya ada. Terukur
+        # pada PT. USAHA LOKA: alamat dan telepon terisi di kartu
+        # pelanggan, tapi fakturnya tercetak tanpa keduanya. Bukan
+        # data kosong, melainkan medan yang tak pernah diambil.
+        "customer_address": invoice["pelanggan_alamat"],
+        "customer_phone": invoice["pelanggan_telepon"],
+        # Nilai di faktur MENANG (ia potret saat faktur dibuat);
+        # kartu pelanggan hanya mengisi kekosongan.
+        "customer_npwp": invoice["customer_npwp"] or invoice["pelanggan_npwp"],
+        # Nilai CETAK: kolom kalau diisi, kalau tidak nomor pengiriman.
+        "delivery_order_no": no_surat_jalan,
+        "notes": invoice["notes"],
+        "payment_bank_name": invoice["payment_bank_name"],
+        "payment_bank_branch": bank_row["bank_branch"] if bank_row else None,
+        "payment_bank_address": bank_row["bank_address"] if bank_row else None,
+        "payment_account_number": invoice["payment_account_number"],
+        "payment_account_holder": invoice["payment_account_holder"],
+        "subtotal": invoice["subtotal"],
+        "discount_percent": float(invoice["discount_percent"] or 0),
+        "discount_amount": invoice["discount_amount"],
+        "tax_rate": float(invoice["tax_rate"] or 0),
+        "tax_amount": invoice["tax_amount"],
+        "total_amount": invoice["total_amount"],
+        # V290 ongkir baris sendiri: dicetak sebagai baris "Ongkos kirim"; PPN-nya
+        # sudah termasuk di tax_amount. item_discount_total dikirim supaya baris
+        # "Diskon item" template A tercetak -- tanpa itu, faktur berdiskon baris
+        # mencetak Subtotal - Diskon + PPN != Total.
+        "shipping_amount": invoice.get("shipping_amount") or 0,
+        "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
+        "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
+        "item_discount_total": sum((it["discount_amount"] or 0) for it in items),
+        **_pdf_dpp_rows(invoice, items),
+        "amount_paid": pdf_amount_paid,
+        "amount_due": float(pdf_ar_row["outstanding"])
+        if pdf_ar_row
+        else (
+            0
+            if invoice["status"] in ("paid",)
+            else float(invoice["total_amount"])
+        ),
+        "status": invoice["status"],
+        # tanggal + alasan pembatalan -> baris tanda DIBATALKAN (pdf_service._tanda_batal)
+        "voided_at": invoice["voided_at"],
+        "voided_reason": invoice["voided_reason"],
+        "tenant": tenant_info,
+        "items": [
+            {
+                "id": str(item["id"]),
+                "item_code": item["item_code"],
+                "description": item["description"],
+                "quantity": float(item["quantity"]),
+                "unit": item["unit"],
+                "unit_price": item["unit_price"],
+                "discount_percent": float(item["discount_percent"] or 0),
+                "discount_amount": item["discount_amount"],
+                "tax_rate": float(item["tax_rate"] or 0),
+                "tax_amount": item["tax_amount"],
+                "subtotal": item["subtotal"],
+                "total": item["total"],
+                "line_number": item["line_number"],
+                "batch_no": item["batch_no"],
+                "exp_date": item["exp_date"],
+                "product_name": item["description"],
+            }
+            for item in items
+        ],
+    }
+    invoice_data["cetak"] = _fc.keadaan_cetak(invoice_data, _tanggal_cetak, _riwayat_cetak, _zona_cetak)
+    if invoice_data["cetak"]["selisih_riwayat"] != 0:
+        logger.warning("[PDF] faktur %s: Σ riwayat != dibayar (selisih %s)", invoice_id, invoice_data["cetak"]["selisih_riwayat"])
+    invoice_data["rekening_pemilik_cetak"] = _fc.pemilik_dari(
+        _rek_cetak, invoice_data["payment_bank_name"], invoice_data["payment_account_number"],
+        invoice_data["payment_account_holder"])
+    invoice_data["catatan_transfer"] = (
+        f"Cantumkan nomor faktur {invoice_data['invoice_number']} pada berita transfer."
+        if invoice_data["invoice_number"] else None)
+
+    # Generate PDF
+    pdf_service = get_pdf_service()
+    # 3f: template A mencetak dua desimal HANYA bila faktur ini bersen. Dicetak bulat per
+    # baris, faktur bersen (mis. PPN 12% @11/12) menampilkan baris yang tak menjumlah ke Total.
+    invoice_data["has_cents"] = pdf_service.money_has_cents(
+        *[invoice_data.get(k) for k in (
+            "subtotal", "item_discount_total", "discount_amount", "shipping_amount",
+            "shipping_tax_amount", "tax_amount", "total_amount", "amount_paid", "amount_due",
+            "dpp_harga_jual_total", "dpp_nilai_lain_total",
+        )],
+        *[it.get(k) for it in invoice_data["items"] for k in ("unit_price", "subtotal", "total")],
+    )
+    try:
+        tpl = pilih_template(
+            tenant_row["pdf_template"] if tenant_row else "a", template
+        )
+    except TemplateTidakDikenal as _e:
+        # 422, bukan diam-diam jatuh ke 'a': pengguna yang salah ketik
+        # akan menerima faktur bergaya LAIN tanpa tanda apa pun, dan
+        # faktur adalah dokumen yang dikirim ke pelanggan.
+        raise HTTPException(status_code=422, detail=str(_e))
+    return {"invoice_data": invoice_data, "tpl": tpl, "invoice": invoice}
+
+
 @router.get("/{invoice_id}/pdf")
 async def get_invoice_pdf(
     request: Request,
@@ -5567,285 +5851,10 @@ async def get_invoice_pdf(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Fetch invoice with full details
-            invoice = await conn.fetchrow(
-                """
-                SELECT si.*, so.order_number AS sales_order_number,
-                       c.alamat  AS pelanggan_alamat,
-                       c.telepon AS pelanggan_telepon,
-                       c.tax_id  AS pelanggan_npwp
-                  FROM sales_invoices si
-                  LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
-                  LEFT JOIN customers c ON c.id = si.customer_id
-                 WHERE si.id = $1 AND si.tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
+            _m = await muat_pdf_faktur(conn, ctx, invoice_id, template)
+        invoice_data, tpl, invoice = _m["invoice_data"], _m["tpl"], _m["invoice"]
 
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
-
-            # Cabang dan alamat bank untuk blok pembayaran.
-            #
-            # Faktur TIDAK menyimpan tautan ke rekening -- hanya tiga medan
-            # teks payment_bank_name/account_number/account_holder. Jadi
-            # cabangnya diturunkan dengan mencocokkan NOMOR REKENING di dalam
-            # tenant yang sama. Kalau tak ketemu, medan teks faktur dicetak apa
-            # adanya: faktur lama tetap tercetak seperti sebelumnya, tidak
-            # tiba-tiba kehilangan blok banknya.
-            bank_row = None
-            if invoice["payment_account_number"]:
-                bank_row = await conn.fetchrow(
-                    """
-                    SELECT bank_branch, bank_address FROM bank_accounts
-                     WHERE tenant_id = $1 AND account_number = $2
-                     ORDER BY is_default DESC, updated_at DESC LIMIT 1
-                    """,
-                    ctx["tenant_id"],
-                    invoice["payment_account_number"],
-                )
-
-            # Nomor surat jalan untuk cetakan.
-            #
-            # ARAHNYA TERBALIK dari dugaan awal: pengiriman lahir DARI faktur
-            # (invoice_fulfillments.invoice_id -> faktur), bukan faktur dari
-            # pengiriman. Jadi saat faktur DIBUAT nomor DO memang belum ada,
-            # dan pengisian otomatis saat create mustahil. Yang bisa: saat
-            # MENCETAK, faktur yang sudah dikirim sudah punya nomornya.
-            #
-            # Nilai yang ditulis pengguna MENANG; turunan ini hanya mengisi
-            # kekosongan, dan TIDAK disalin ke kolom -- kalau pengiriman
-            # kemudian di-void, cetakan berikutnya ikut berubah sendiri.
-            no_surat_jalan = invoice["delivery_order_no"]
-            if not no_surat_jalan:
-                no_surat_jalan = await conn.fetchval(
-                    """
-                    SELECT fulfillment_number FROM invoice_fulfillments
-                     WHERE invoice_id = $1 AND tenant_id = $2 AND voided_at IS NULL
-                     ORDER BY fulfillment_date DESC, created_at DESC LIMIT 1
-                    """,
-                    invoice_id,
-                    ctx["tenant_id"],
-                )
-
-            # Fetch items
-            items = await conn.fetch(
-                """
-                SELECT * FROM sales_invoice_items
-                WHERE invoice_id = $1 ORDER BY line_number
-            """,
-                invoice_id,
-            )
-
-            # Pure Ledger: derive amount_paid via compute_ar_outstanding() DB function
-            pdf_ar_row = await conn.fetchrow(
-                """
-                SELECT paid_amount, outstanding
-                FROM compute_ar_outstanding($1)
-                WHERE invoice_id = $2
-            """,
-                ctx["tenant_id"],
-                invoice_id,
-            )
-            # If no row from function: invoice is fully paid (outstanding=0) or draft/void
-            if pdf_ar_row:
-                pdf_amount_paid = float(
-                    invoice["total_amount"] - pdf_ar_row["outstanding"]
-                )
-            elif invoice["status"] in ("paid",):
-                pdf_amount_paid = float(invoice["total_amount"])
-            else:
-                pdf_amount_paid = 0
-
-            # Cetak per status pembayaran (pemilik 27 Sep): riwayat = cabang compute_ar_outstanding yang sama;
-            # tanggal cetak = tanggal bisnis tenant (bukan jam server UTC).
-            from ..services import faktur_cetak as _fc
-            from ..utils.tanggal_tenant import tanggal_dokumen as _tanggal_dokumen
-            _riwayat_cetak = await _fc.riwayat_pembayaran(conn, ctx["tenant_id"], invoice_id)
-            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
-            _tanggal_cetak = await _tanggal_dokumen(conn, ctx["tenant_id"])
-            from ..utils.tanggal_tenant import zona_tenant as _zona_tenant
-            _zona_cetak = await _zona_tenant(conn, ctx["tenant_id"])
-
-            # Fetch tenant info for PDF header
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
-                'workshop_address, signatory_name, '
-                'pdf_template FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            tenant_info = (
-                {
-                    "name": tenant_row["display_name"]
-                    if tenant_row
-                    else ctx["tenant_id"],
-                    "address": tenant_row["address"] if tenant_row else None,
-                    "phone": tenant_row["phone"] if tenant_row else None,
-                    "logo_url": tenant_row["logo_url"] if tenant_row else None,
-                    # NPWP tenant. `tax_id` adalah kolom yang SUDAH ADA dan
-                    # sudah ditulis /api/tenant/profile — sengaja TIDAK
-                    # menambah kolom `npwp` baru (dua sumber kebenaran untuk
-                    # satu nomor pajak).
-                    "tax_id": tenant_row["tax_id"] if tenant_row else None,
-                    # Menentukan apakah baris "Tax 11%" tampil di template B.
-                    # Non-PKP yang menampilkan "Tax 0" menyiratkan ia memungut
-                    # pajak nol, bukan tidak memungut.
-                    "is_pkp": bool(tenant_row["is_pkp"]) if tenant_row else False,
-                    # V239. Kosong = barisnya tidak dicetak sama sekali;
-                    # baris berlabel tanpa isi terbaca seperti data yang
-                    # HILANG, bukan medan yang belum dipakai.
-                    "workshop_address": (
-                        tenant_row["workshop_address"] if tenant_row else None
-                    ),
-                    "signatory_name": (
-                        tenant_row["signatory_name"] if tenant_row else None
-                    ),
-                }
-                if tenant_row
-                else {
-                    "name": ctx["tenant_id"],
-                    "address": None,
-                    "phone": None,
-                    "logo_url": None,
-                }
-            )
-
-            # Resolve logo to base64 data URI for PDF embedding
-            _logo_data = None
-            _logo_filename = tenant_info.get("logo_url")
-            if _logo_filename:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_b64 = base64.b64encode(_lf.read()).decode()
-                    _logo_data = f"data:image/png;base64,{_logo_b64}"
-            tenant_info["logo_data"] = _logo_data
-            # Convert to dict for template
-            invoice_data = {
-                "id": str(invoice["id"]),
-                "invoice_number": invoice["invoice_number"],
-                "customer_id": str(invoice["customer_id"])
-                if invoice["customer_id"]
-                else None,
-                "customer_name": invoice["customer_name"],
-                "invoice_date": invoice["invoice_date"].isoformat()
-                if invoice["invoice_date"]
-                else None,
-                "due_date": invoice["due_date"].isoformat()
-                if invoice["due_date"]
-                else None,
-                "ref_no": invoice["ref_no"],
-                "purchase_order_no": invoice["purchase_order_no"],
-                # Nomor pesanan milik KITA (SO tertaut) -- beda dari ref_no (ketikan) dan
-                # purchase_order_no (PO pelanggan). Dicetak hanya bila tertaut.
-                "sales_order_number": invoice["sales_order_number"],
-                # Alamat/telepon/NPWP pelanggan diambil dari kartu pelanggan
-                # kalau faktur tidak menyimpannya sendiri.
-                #
-                # CACAT YANG DITUTUP: rute ini hanya `SELECT si.*` tanpa JOIN
-                # ke `customers`, jadi alamat dan telepon pelanggan TIDAK
-                # PERNAH sampai ke cetakan -- padahal datanya ada. Terukur
-                # pada PT. USAHA LOKA: alamat dan telepon terisi di kartu
-                # pelanggan, tapi fakturnya tercetak tanpa keduanya. Bukan
-                # data kosong, melainkan medan yang tak pernah diambil.
-                "customer_address": invoice["pelanggan_alamat"],
-                "customer_phone": invoice["pelanggan_telepon"],
-                # Nilai di faktur MENANG (ia potret saat faktur dibuat);
-                # kartu pelanggan hanya mengisi kekosongan.
-                "customer_npwp": invoice["customer_npwp"] or invoice["pelanggan_npwp"],
-                # Nilai CETAK: kolom kalau diisi, kalau tidak nomor pengiriman.
-                "delivery_order_no": no_surat_jalan,
-                "notes": invoice["notes"],
-                "payment_bank_name": invoice["payment_bank_name"],
-                "payment_bank_branch": bank_row["bank_branch"] if bank_row else None,
-                "payment_bank_address": bank_row["bank_address"] if bank_row else None,
-                "payment_account_number": invoice["payment_account_number"],
-                "payment_account_holder": invoice["payment_account_holder"],
-                "subtotal": invoice["subtotal"],
-                "discount_percent": float(invoice["discount_percent"] or 0),
-                "discount_amount": invoice["discount_amount"],
-                "tax_rate": float(invoice["tax_rate"] or 0),
-                "tax_amount": invoice["tax_amount"],
-                "total_amount": invoice["total_amount"],
-                # V290 ongkir baris sendiri: dicetak sebagai baris "Ongkos kirim"; PPN-nya
-                # sudah termasuk di tax_amount. item_discount_total dikirim supaya baris
-                # "Diskon item" template A tercetak -- tanpa itu, faktur berdiskon baris
-                # mencetak Subtotal - Diskon + PPN != Total.
-                "shipping_amount": invoice.get("shipping_amount") or 0,
-                "shipping_tax_amount": invoice.get("shipping_tax_amount") or 0,
-                "shipping_tax_rate": float(invoice.get("shipping_tax_rate") or 0),
-                "item_discount_total": sum((it["discount_amount"] or 0) for it in items),
-                **_pdf_dpp_rows(invoice, items),
-                "amount_paid": pdf_amount_paid,
-                "amount_due": float(pdf_ar_row["outstanding"])
-                if pdf_ar_row
-                else (
-                    0
-                    if invoice["status"] in ("paid",)
-                    else float(invoice["total_amount"])
-                ),
-                "status": invoice["status"],
-                # tanggal + alasan pembatalan -> baris tanda DIBATALKAN (pdf_service._tanda_batal)
-                "voided_at": invoice["voided_at"],
-                "voided_reason": invoice["voided_reason"],
-                "tenant": tenant_info,
-                "items": [
-                    {
-                        "id": str(item["id"]),
-                        "item_code": item["item_code"],
-                        "description": item["description"],
-                        "quantity": float(item["quantity"]),
-                        "unit": item["unit"],
-                        "unit_price": item["unit_price"],
-                        "discount_percent": float(item["discount_percent"] or 0),
-                        "discount_amount": item["discount_amount"],
-                        "tax_rate": float(item["tax_rate"] or 0),
-                        "tax_amount": item["tax_amount"],
-                        "subtotal": item["subtotal"],
-                        "total": item["total"],
-                        "line_number": item["line_number"],
-                        "batch_no": item["batch_no"],
-                        "exp_date": item["exp_date"],
-                        "product_name": item["description"],
-                    }
-                    for item in items
-                ],
-            }
-
-        invoice_data["cetak"] = _fc.keadaan_cetak(invoice_data, _tanggal_cetak, _riwayat_cetak, _zona_cetak)
-        if invoice_data["cetak"]["selisih_riwayat"] != 0:
-            logger.warning("[PDF] faktur %s: Σ riwayat != dibayar (selisih %s)", invoice_id, invoice_data["cetak"]["selisih_riwayat"])
-        invoice_data["rekening_pemilik_cetak"] = _fc.pemilik_dari(
-            _rek_cetak, invoice_data["payment_bank_name"], invoice_data["payment_account_number"],
-            invoice_data["payment_account_holder"])
-        invoice_data["catatan_transfer"] = (
-            f"Cantumkan nomor faktur {invoice_data['invoice_number']} pada berita transfer."
-            if invoice_data["invoice_number"] else None)
-
-        # Generate PDF
         pdf_service = get_pdf_service()
-        # 3f: template A mencetak dua desimal HANYA bila faktur ini bersen. Dicetak bulat per
-        # baris, faktur bersen (mis. PPN 12% @11/12) menampilkan baris yang tak menjumlah ke Total.
-        invoice_data["has_cents"] = pdf_service.money_has_cents(
-            *[invoice_data.get(k) for k in (
-                "subtotal", "item_discount_total", "discount_amount", "shipping_amount",
-                "shipping_tax_amount", "tax_amount", "total_amount", "amount_paid", "amount_due",
-                "dpp_harga_jual_total", "dpp_nilai_lain_total",
-            )],
-            *[it.get(k) for it in invoice_data["items"] for k in ("unit_price", "subtotal", "total")],
-        )
-        try:
-            tpl = pilih_template(
-                tenant_row["pdf_template"] if tenant_row else "a", template
-            )
-        except TemplateTidakDikenal as _e:
-            # 422, bukan diam-diam jatuh ke 'a': pengguna yang salah ketik
-            # akan menerima faktur bergaya LAIN tanpa tanda apa pun, dan
-            # faktur adalah dokumen yang dikirim ke pelanggan.
-            raise HTTPException(status_code=422, detail=str(_e))
         pdf_bytes = pdf_service.generate_sales_invoice_pdf(invoice_data, template=tpl)
 
         # Generate filename

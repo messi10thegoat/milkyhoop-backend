@@ -385,81 +385,70 @@ async def get_delivery_detail(delivery_id: str, request: Request):
 # =============================================================================
 
 
-@router.get("/{delivery_id}/pdf")
-async def get_delivery_pdf(
-    delivery_id: str,
-    request: Request,
-):
-    """
-    Generate Surat Jalan PDF for a delivery.
-    Returns PDF bytes inline (for browser preview / download).
-    """
-    ctx = get_user_context(request)
-    pool = await get_pool()
+async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
+    """Konteks PDF surat jalan (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari get_delivery_pdf.
+    -> {delivery_data, row}."""
+    await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-    async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+    row = await conn.fetchrow(
+        """
+        SELECT
+            f.id,
+            f.fulfillment_number AS delivery_number,
+            f.fulfillment_date AS delivery_date,
+            f.status,
+            f.notes,
+            si.id AS invoice_id,
+            si.invoice_number,
+            si.customer_id,
+            c.nama AS customer_name,
+            c.telepon AS customer_phone,
+            c.alamat AS customer_address,
+            w.name AS warehouse_name,
+            (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
+            (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
+        FROM invoice_fulfillments f
+        JOIN sales_invoices si ON si.id = f.invoice_id
+        LEFT JOIN customers c ON c.id = si.customer_id
+        LEFT JOIN warehouses w ON w.id = f.warehouse_id
+        WHERE f.id = $1 AND f.tenant_id = $2
+        """,
+        delivery_id,
+        ctx["tenant_id"],
+    )
 
-        row = await conn.fetchrow(
-            """
-            SELECT
-                f.id,
-                f.fulfillment_number AS delivery_number,
-                f.fulfillment_date AS delivery_date,
-                f.status,
-                f.notes,
-                si.id AS invoice_id,
-                si.invoice_number,
-                si.customer_id,
-                c.nama AS customer_name,
-                c.telepon AS customer_phone,
-                c.alamat AS customer_address,
-                w.name AS warehouse_name,
-                (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
-                (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
-            FROM invoice_fulfillments f
-            JOIN sales_invoices si ON si.id = f.invoice_id
-            LEFT JOIN customers c ON c.id = si.customer_id
-            LEFT JOIN warehouses w ON w.id = f.warehouse_id
-            WHERE f.id = $1 AND f.tenant_id = $2
-            """,
-            delivery_id,
-            ctx["tenant_id"],
-        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Delivery not found")
 
-        if not row:
-            raise HTTPException(status_code=404, detail="Delivery not found")
+    items_rows = await conn.fetch(
+        """
+        SELECT
+            fi.id,
+            fi.quantity,
+            fi.notes,
+            p.nama_produk AS product_name,
+            sii.description AS line_description,
+            p.sku AS product_sku,
+            sii.unit
+        FROM invoice_fulfillment_items fi
+        LEFT JOIN products p ON p.id = fi.product_id
+        LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
+        WHERE fi.fulfillment_id = $1
+        ORDER BY fi.created_at
+        """,
+        delivery_id,
+    )
 
-        items_rows = await conn.fetch(
-            """
-            SELECT
-                fi.id,
-                fi.quantity,
-                fi.notes,
-                p.nama_produk AS product_name,
-                sii.description AS line_description,
-                p.sku AS product_sku,
-                sii.unit
-            FROM invoice_fulfillment_items fi
-            LEFT JOIN products p ON p.id = fi.product_id
-            LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
-            WHERE fi.fulfillment_id = $1
-            ORDER BY fi.created_at
-            """,
-            delivery_id,
-        )
-
-        # Fetch tenant info
-        tenant_row = await conn.fetchrow(
-            'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-            ctx["tenant_id"],
-        )
-        tenant_info = {
-            "name": tenant_row["display_name"] if tenant_row else str(ctx["tenant_id"]),
-            "address": tenant_row["address"] if tenant_row else None,
-            "phone": tenant_row["phone"] if tenant_row else None,
-        }
-
+    # Fetch tenant info
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    tenant_info = {
+        "name": tenant_row["display_name"] if tenant_row else str(ctx["tenant_id"]),
+        "address": tenant_row["address"] if tenant_row else None,
+        "phone": tenant_row["phone"] if tenant_row else None,
+    }
     delivery_data = {
         "id": str(row["id"]),
         "delivery_number": row["delivery_number"],
@@ -489,6 +478,25 @@ async def get_delivery_pdf(
             for i in items_rows
         ],
     }
+    return {"delivery_data": delivery_data, "row": row}
+
+
+@router.get("/{delivery_id}/pdf")
+async def get_delivery_pdf(
+    delivery_id: str,
+    request: Request,
+):
+    """
+    Generate Surat Jalan PDF for a delivery.
+    Returns PDF bytes inline (for browser preview / download).
+    """
+    ctx = get_user_context(request)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        _m = await muat_pdf_surat_jalan(conn, ctx, delivery_id)
+    delivery_data, row = _m["delivery_data"], _m["row"]
+
 
     pdf_service = get_pdf_service()
     pdf_bytes = pdf_service.generate_delivery_note_pdf(delivery_data)

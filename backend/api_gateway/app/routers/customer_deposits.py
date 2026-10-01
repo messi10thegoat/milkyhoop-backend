@@ -2876,6 +2876,142 @@ def _deposit_purpose_label(sales_order_id) -> str:
     return "Uang Muka Pesanan" if sales_order_id else "Uang Muka"
 
 
+async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
+    """Konteks PDF kwitansi uang muka (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari
+    get_customer_deposit_pdf. -> {receipt_data, tenant_info, dep}."""
+    dep = await conn.fetchrow(
+        "SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+        uuid_module.UUID(deposit_id),
+        ctx["tenant_id"],
+    )
+    if not dep:
+        raise HTTPException(status_code=404, detail="Customer deposit not found")
+
+    # Bank account name (optional)
+    bank_name = None
+    if dep["bank_account_id"]:
+        bank_row = await conn.fetchrow(
+            "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
+            dep["bank_account_id"],
+        )
+        if bank_row:
+            bank_name = bank_row["account_name"] or bank_row["bank_name"]
+
+    # Linked reference: sales order > quote > deposit number
+    purpose_ref = dep["deposit_number"]
+    if dep["sales_order_id"]:
+        so_row = await conn.fetchrow(
+            "SELECT order_number FROM sales_orders WHERE id = $1",
+            dep["sales_order_id"],
+        )
+        if so_row and so_row["order_number"]:
+            purpose_ref = so_row["order_number"]
+    elif dep["quote_id"]:
+        q_row = await conn.fetchrow(
+            "SELECT quote_number FROM quotes WHERE id = $1",
+            dep["quote_id"],
+        )
+        if q_row and q_row["quote_number"]:
+            purpose_ref = q_row["quote_number"]
+
+    # Remaining = amount - applied - refunded (SALDO UANG MUKA, konsep internal)
+    _amt = int(dep["amount"] or 0)
+    _applied = int(dep["amount_applied"] or 0)
+    _refunded = int(dep["amount_refunded"] or 0)
+    remaining = _amt - _applied - _refunded
+
+    # T199: baris "Sisa / Saldo" menyesatkan pelanggan pada kwitansi DP.
+    # Kasus A (DP bertambat Sales Order): ganti dengan tiga baris yang
+    # bisa dijumlahkan pembaca — Nilai Pesanan / Total Uang Muka Diterima /
+    # Sisa Nilai Pesanan. BUKAN "tagihan"/"piutang": belum ada faktur.
+    # Kasus B (DP lepas): pertahankan satu baris, tapi labelnya jujur
+    # "Saldo Uang Muka".
+    order_total = None
+    dp_received_total = None
+    order_remaining = None
+    remaining_label = "Saldo Uang Muka"
+    if dep["sales_order_id"]:
+        so_total_row = await conn.fetchrow(
+            "SELECT total_amount FROM sales_orders "
+            "WHERE id = $1 AND tenant_id = $2",
+            dep["sales_order_id"],
+            ctx["tenant_id"],
+        )
+        if so_total_row is not None:
+            order_total = int(float(so_total_row["total_amount"] or 0))
+            # SELURUH DP untuk pesanan ini (termasuk yang sedang dicetak),
+            # supaya kwitansi cicilan kedua menunjukkan sisa yang benar.
+            dp_received_total = int(
+                await received_total_for_order(
+                    conn, ctx["tenant_id"], dep["sales_order_id"]
+                )
+            )
+            order_remaining = order_total - dp_received_total
+            # Baris saldo internal disembunyikan di kasus A.
+            remaining = None
+
+    method_label = (
+        "Tunai" if (dep["payment_method"] or "").lower() == "cash"
+        else "Transfer Bank"
+    )
+
+    receipt_data = {
+        # status + voided_* -> tanda DIBATALKAN di kwitansi uang muka yang void (pdf_service._tanda_batal)
+        "status": dep["status"],
+        "voided_at": dep["voided_at"],
+        "voided_reason": dep["voided_reason"],
+        "receipt_number": dep["deposit_number"],
+        "receipt_date": dep["deposit_date"].isoformat()
+        if dep["deposit_date"] else None,
+        "payer_name": dep["customer_name"],
+        "amount": _amt,
+        "amount_words": _terbilang(_amt),
+        "method": method_label,
+        "bank_name": bank_name,
+        "purpose_label": _deposit_purpose_label(dep["sales_order_id"]),
+        "purpose_ref": purpose_ref,
+        "remaining": remaining,
+        "remaining_label": remaining_label,
+        "order_total": order_total,
+        "dp_received_total": dp_received_total,
+        "order_remaining": order_remaining,
+        "notes": dep["notes"],
+    }
+
+    # Tenant info for header
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    if tenant_row:
+        tenant_info = {
+            "name": tenant_row["display_name"],
+            "address": tenant_row["address"],
+            "phone": tenant_row["phone"],
+            "logo_url": tenant_row["logo_url"],
+        }
+    else:
+        tenant_info = {
+            "name": ctx["tenant_id"],
+            "address": None,
+            "phone": None,
+            "logo_url": None,
+        }
+
+    _logo_data = None
+    _logo_filename = tenant_info.get("logo_url")
+    if _logo_filename:
+        _logo_path = (
+            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+        )
+        if _logo_path.exists():
+            with open(_logo_path, "rb") as _lf:
+                _logo_b64 = _base64.b64encode(_lf.read()).decode()
+            _logo_data = f"data:image/png;base64,{_logo_b64}"
+    tenant_info["logo_data"] = _logo_data
+    return {"receipt_data": receipt_data, "tenant_info": tenant_info, "dep": dep}
+
+
 @router.get("/{deposit_id}/pdf")
 async def get_customer_deposit_pdf(
     request: Request,
@@ -2891,136 +3027,8 @@ async def get_customer_deposit_pdf(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            dep = await conn.fetchrow(
-                "SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
-                uuid_module.UUID(deposit_id),
-                ctx["tenant_id"],
-            )
-            if not dep:
-                raise HTTPException(status_code=404, detail="Customer deposit not found")
-
-            # Bank account name (optional)
-            bank_name = None
-            if dep["bank_account_id"]:
-                bank_row = await conn.fetchrow(
-                    "SELECT account_name, bank_name FROM bank_accounts WHERE id = $1",
-                    dep["bank_account_id"],
-                )
-                if bank_row:
-                    bank_name = bank_row["account_name"] or bank_row["bank_name"]
-
-            # Linked reference: sales order > quote > deposit number
-            purpose_ref = dep["deposit_number"]
-            if dep["sales_order_id"]:
-                so_row = await conn.fetchrow(
-                    "SELECT order_number FROM sales_orders WHERE id = $1",
-                    dep["sales_order_id"],
-                )
-                if so_row and so_row["order_number"]:
-                    purpose_ref = so_row["order_number"]
-            elif dep["quote_id"]:
-                q_row = await conn.fetchrow(
-                    "SELECT quote_number FROM quotes WHERE id = $1",
-                    dep["quote_id"],
-                )
-                if q_row and q_row["quote_number"]:
-                    purpose_ref = q_row["quote_number"]
-
-            # Remaining = amount - applied - refunded (SALDO UANG MUKA, konsep internal)
-            _amt = int(dep["amount"] or 0)
-            _applied = int(dep["amount_applied"] or 0)
-            _refunded = int(dep["amount_refunded"] or 0)
-            remaining = _amt - _applied - _refunded
-
-            # T199: baris "Sisa / Saldo" menyesatkan pelanggan pada kwitansi DP.
-            # Kasus A (DP bertambat Sales Order): ganti dengan tiga baris yang
-            # bisa dijumlahkan pembaca — Nilai Pesanan / Total Uang Muka Diterima /
-            # Sisa Nilai Pesanan. BUKAN "tagihan"/"piutang": belum ada faktur.
-            # Kasus B (DP lepas): pertahankan satu baris, tapi labelnya jujur
-            # "Saldo Uang Muka".
-            order_total = None
-            dp_received_total = None
-            order_remaining = None
-            remaining_label = "Saldo Uang Muka"
-            if dep["sales_order_id"]:
-                so_total_row = await conn.fetchrow(
-                    "SELECT total_amount FROM sales_orders "
-                    "WHERE id = $1 AND tenant_id = $2",
-                    dep["sales_order_id"],
-                    ctx["tenant_id"],
-                )
-                if so_total_row is not None:
-                    order_total = int(float(so_total_row["total_amount"] or 0))
-                    # SELURUH DP untuk pesanan ini (termasuk yang sedang dicetak),
-                    # supaya kwitansi cicilan kedua menunjukkan sisa yang benar.
-                    dp_received_total = int(
-                        await received_total_for_order(
-                            conn, ctx["tenant_id"], dep["sales_order_id"]
-                        )
-                    )
-                    order_remaining = order_total - dp_received_total
-                    # Baris saldo internal disembunyikan di kasus A.
-                    remaining = None
-
-            method_label = (
-                "Tunai" if (dep["payment_method"] or "").lower() == "cash"
-                else "Transfer Bank"
-            )
-
-            receipt_data = {
-                # status + voided_* -> tanda DIBATALKAN di kwitansi uang muka yang void (pdf_service._tanda_batal)
-                "status": dep["status"],
-                "voided_at": dep["voided_at"],
-                "voided_reason": dep["voided_reason"],
-                "receipt_number": dep["deposit_number"],
-                "receipt_date": dep["deposit_date"].isoformat()
-                if dep["deposit_date"] else None,
-                "payer_name": dep["customer_name"],
-                "amount": _amt,
-                "amount_words": _terbilang(_amt),
-                "method": method_label,
-                "bank_name": bank_name,
-                "purpose_label": _deposit_purpose_label(dep["sales_order_id"]),
-                "purpose_ref": purpose_ref,
-                "remaining": remaining,
-                "remaining_label": remaining_label,
-                "order_total": order_total,
-                "dp_received_total": dp_received_total,
-                "order_remaining": order_remaining,
-                "notes": dep["notes"],
-            }
-
-            # Tenant info for header
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            if tenant_row:
-                tenant_info = {
-                    "name": tenant_row["display_name"],
-                    "address": tenant_row["address"],
-                    "phone": tenant_row["phone"],
-                    "logo_url": tenant_row["logo_url"],
-                }
-            else:
-                tenant_info = {
-                    "name": ctx["tenant_id"],
-                    "address": None,
-                    "phone": None,
-                    "logo_url": None,
-                }
-
-            _logo_data = None
-            _logo_filename = tenant_info.get("logo_url")
-            if _logo_filename:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_b64 = _base64.b64encode(_lf.read()).decode()
-                    _logo_data = f"data:image/png;base64,{_logo_b64}"
-            tenant_info["logo_data"] = _logo_data
+            _m = await muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id)
+        receipt_data, tenant_info, dep = _m["receipt_data"], _m["tenant_info"], _m["dep"]
 
         pdf_service = _get_pdf_service()
         pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)

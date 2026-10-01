@@ -82,7 +82,7 @@ def test_proforma_tanpa_so_tanpa_komposisi(tangkap):
 
 def test_router_membaca_kolom_so_bukan_menghitung_ulang():
     src = (Path(PS.__file__).parents[1] / "routers" / "proformas.py").read_text()
-    blok = src[src.index("async def get_proforma_pdf("):]
+    blok = src[src.index("async def muat_pdf_proforma("):]  # P3: pemuat bersama berada tepat sebelum rute /pdf
     for kol in ("so.subtotal AS order_subtotal", "so.discount_amount AS order_discount",
                 "so.shipping_amount AS order_shipping", "so.tax_amount AS order_tax"):
         assert kol in blok, kol

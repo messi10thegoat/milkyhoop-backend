@@ -216,5 +216,5 @@ def test_pembaca_nama_rekening_menerima_dua_bentuk_id():
     src = Path(SI.__file__).read_text()
     assert "LEFT JOIN bank_accounts ba ON ba.id = rp.bank_account_id" not in src
     assert src.count("(b.id = rp.bank_account_id OR b.coa_id = rp.bank_account_id)") == 2
-    pdf = inspect.getsource(RP.get_receive_payment_pdf)
+    pdf = inspect.getsource(RP.muat_pdf_kwitansi_penerimaan)  # P3: konteks PDF dipindah ke pemuat bersama
     assert "(id = $1 OR coa_id = $1)" in pdf

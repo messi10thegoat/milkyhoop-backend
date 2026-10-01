@@ -5,6 +5,7 @@ PDF Generation Service - WeasyPrint-based HTML to PDF conversion.
 
 import logging
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from datetime import datetime, date
 
@@ -69,6 +70,18 @@ def pilih_template(bawaan_tenant, override=None) -> str:
         )
         return "a"
     return bawaan
+
+
+@dataclass(frozen=True)
+class Render:
+    """Satu dokumen yang SUDAH dirender jadi HTML (P3 SO-dokumen, 1 Okt 2026).
+
+    SATU sumber untuk PDF (tulis_pdf) DAN HTML layar (html_layar): keduanya memakai string `html` yang SAMA,
+    jadi isi panel = isi PDF. css = nama berkas di TEMPLATE_DIR (urutan dipertahankan); font = pasang
+    FontConfiguration (tanpa itu WeasyPrint DIAM-DIAM mengabaikan @font-face)."""
+    html: str
+    css: tuple
+    font: bool = False
 
 
 class PDFService:
@@ -291,6 +304,29 @@ class PDFService:
             "alasan": (str(alasan).strip() or None) if alasan else None,
         }
 
+    def _lembar_gaya(self, r: Render, font_config=None) -> list:
+        lembar = []
+        for nama in r.css:
+            path = TEMPLATE_DIR / nama
+            if path.exists():
+                lembar.append(CSS(filename=str(path), font_config=font_config) if font_config else CSS(filename=str(path)))
+        return lembar
+
+    def dokumen(self, r: Render):
+        """weasyprint Document (sudah ditata) -- dipakai tulis_pdf, geometri halaman html_layar, dan PDF gabungan."""
+        if r.font:
+            fc = FontConfiguration()
+            return HTML(string=r.html).render(stylesheets=self._lembar_gaya(r, fc), font_config=fc)
+        return HTML(string=r.html).render(stylesheets=self._lembar_gaya(r))
+
+    def tulis_pdf(self, r: Render) -> bytes:
+        """PDF dari Render -- SATU penulis untuk semua dokumen SO (faktur, penawaran, proforma, SJ, kwitansi).
+        Bentuk panggilan SAMA dengan sebelum P3 (HTML(...).write_pdf(stylesheets[, font_config]))."""
+        if r.font:
+            fc = FontConfiguration()
+            return HTML(string=r.html).write_pdf(stylesheets=self._lembar_gaya(r, fc), font_config=fc)
+        return HTML(string=r.html).write_pdf(stylesheets=self._lembar_gaya(r))
+
     def generate_bill_pdf(self, bill: Dict[str, Any]) -> bytes:
         """
         Generate PDF for a bill (purchase invoice).
@@ -390,6 +426,9 @@ class PDFService:
         Returns:
             PDF content as bytes
         """
+        return self.tulis_pdf(self.render_sales_invoice(invoice, template))
+
+    def render_sales_invoice(self, invoice: Dict[str, Any], template: str = "a") -> Render:
         berkas = TEMPLATE_FAKTUR.get(template)
         if berkas is None:
             raise TemplateTidakDikenal(f"template '{template}' tidak dikenal")
@@ -402,22 +441,8 @@ class PDFService:
         # WeasyPrint MENGABAIKAN seluruh aturan @font-face tanpa satu galat
         # pun, lalu memakai font sistem. Terukur: dengan CSS yang sama,
         # tanpa FontConfiguration -> DejaVu-Sans; dengan -> Liberation-Sans.
-        _font_config = FontConfiguration()
-
-        # Load CSS. Template B punya lembar gayanya sendiri; A tetap memakai
-        # invoice.css yang sudah ada, TANPA perubahan.
-        stylesheets = []
-        for _nama_css in (["invoice.css"] if template == "a" else ["invoice_b.css"]):
-            css_path = TEMPLATE_DIR / _nama_css
-            if css_path.exists():
-                stylesheets.append(CSS(filename=str(css_path), font_config=_font_config))
-
-        # Generate PDF
-        pdf_bytes = HTML(string=html_content).write_pdf(
-            stylesheets=stylesheets, font_config=_font_config
-        )
-
-        return pdf_bytes
+        # Template B punya lembar gayanya sendiri; A tetap memakai invoice.css.
+        return Render(html_content, ("invoice.css",) if template == "a" else ("invoice_b.css",), font=True)
 
     def generate_quote_pdf(self, quote_data, tenant_info):
         """
@@ -430,6 +455,9 @@ class PDFService:
         Returns:
             PDF content as bytes
         """
+        return self.tulis_pdf(self.render_quote(quote_data, tenant_info))
+
+    def render_quote(self, quote_data, tenant_info) -> Render:
         template = self.jinja_env.get_template("quote.html")
 
         # Get status label
@@ -452,17 +480,7 @@ class PDFService:
             status_label=status_label,
             generated_at=datetime.now(),
         )
-
-        # Load CSS
-        css_path = TEMPLATE_DIR / "invoice.css"
-        stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
-
-        # Generate PDF
-        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
-
-        return pdf_bytes
+        return Render(html_content, ("invoice.css",))
 
     # Judul dokumen per tujuan (1 Okt 2026, pemilik: proforma PELUNASAN tercetak "Tagihan Uang Muka").
     PROFORMA_JUDUL = {
@@ -490,6 +508,9 @@ class PDFService:
         Returns:
             PDF content as bytes
         """
+        return self.tulis_pdf(self.render_proforma(proforma_data, tenant_info))
+
+    def render_proforma(self, proforma_data, tenant_info) -> Render:
         template = self.jinja_env.get_template("proforma.html")
 
         purpose = proforma_data.get("purpose") or "DP"
@@ -516,15 +537,7 @@ class PDFService:
             batal=self._tanda_batal(proforma_data),
             draf=str(status).lower() == "draft",  # 26 Sep 2026: tanda DRAF (_partials/tanda_draf.html)
         )
-
-        css_path = TEMPLATE_DIR / "invoice.css"
-        stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
-
-        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
-
-        return pdf_bytes
+        return Render(html_content, ("invoice.css",))
 
     def generate_income_statement_pdf(
         self, data: dict, company_name: str, basis: str = "Akrual"
@@ -729,6 +742,9 @@ class PDFService:
 
     def generate_delivery_note_pdf(self, delivery: dict) -> bytes:
         """Generate PDF for a Surat Jalan (Delivery Note)."""
+        return self.tulis_pdf(self.render_delivery_note(delivery))
+
+    def render_delivery_note(self, delivery: dict) -> Render:
         template = self.jinja_env.get_template("delivery_note.html")
 
         html_content = template.render(
@@ -736,13 +752,7 @@ class PDFService:
             delivery_items=delivery.get("items", []),
             generated_at=datetime.now(),
         )
-
-        css_path = TEMPLATE_DIR / "invoice.css"
-        stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
-
-        return HTML(string=html_content).write_pdf(stylesheets=stylesheets)
+        return Render(html_content, ("invoice.css",))
 
     def generate_receipt_pdf(self, receipt_data, tenant_info):
         """
@@ -757,6 +767,9 @@ class PDFService:
         Returns:
             PDF content as bytes
         """
+        return self.tulis_pdf(self.render_receipt(receipt_data, tenant_info))
+
+    def render_receipt(self, receipt_data, tenant_info) -> Render:
         template = self.jinja_env.get_template("kwitansi.html")
 
         # Build company context matching template variable name
@@ -775,17 +788,7 @@ class PDFService:
             generated_at=datetime.now(),
             batal=self._tanda_batal(receipt_data),
         )
-
-        # Load CSS
-        css_path = TEMPLATE_DIR / "invoice.css"
-        stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
-
-        # Generate PDF
-        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
-
-        return pdf_bytes
+        return Render(html_content, ("invoice.css",))
 
 
 # Singleton instance

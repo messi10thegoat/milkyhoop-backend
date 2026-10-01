@@ -930,6 +930,147 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
 # ============================================================================
 
 
+async def muat_pdf_proforma(conn, ctx, row) -> dict:
+    """Konteks PDF proforma dari baris SQL_PDF_PROFORMA (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM
+    dari get_proforma_pdf. -> {proforma_data, tenant_info}."""
+    paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
+
+    # Rincian item Sales Order untuk tabel Keterangan.
+    # `sales_order_items` TIDAK punya kolom `deleted_at` (diukur
+    # 2026-09-03 lewat information_schema), jadi tak ada saringan
+    # soft-delete yang bisa dipasang -- baris yang ada adalah baris
+    # yang berlaku.
+    _order_items = []
+    if row["sales_order_id"]:
+        _oi = await conn.fetch(
+            """
+            SELECT description, quantity, unit, unit_price, line_total, tax_amount
+            FROM sales_order_items
+            WHERE sales_order_id = $1
+            ORDER BY sort_order, description
+            """,
+            row["sales_order_id"],
+        )
+        _order_items = [
+            {
+                "description": r["description"],
+                "quantity": _f(r["quantity"]),
+                "unit": r["unit"],
+                "unit_price": _f(r["unit_price"]),
+                # 30 Sep: jumlah baris = NETO (line_total SO = neto + PPN baris). Dasar SAMA dengan
+                # subtotal SO (Σ neto) -> baris Subtotal/Diskon/Ongkir/PPN di bawahnya tak menghitung
+                # PPN dua kali. Tanpa PPN (grapgrap) = line_total, tak berubah.
+                "line_total": _f(r["line_total"] - (r["tax_amount"] or 0)),
+            }
+            for r in _oi
+        ]
+
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    if tenant_row:
+        tenant_info = {
+            "name": tenant_row["display_name"],
+            "address": tenant_row["address"],
+            "phone": tenant_row["phone"],
+            "logo_url": tenant_row["logo_url"],
+        }
+    else:
+        tenant_info = {
+            "name": ctx["tenant_id"],
+            "address": None,
+            "phone": None,
+            "logo_url": None,
+        }
+
+    _logo_data = None
+    _logo_filename = tenant_info.get("logo_url")
+    if _logo_filename:
+        _logo_path = (
+            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+        )
+        if _logo_path.exists():
+            with open(_logo_path, "rb") as _lf:
+                _logo_data = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(_lf.read()).decode()
+                )
+    tenant_info["logo_data"] = _logo_data
+
+    amount = _f(row["amount"]) or 0.0
+    # Celah 1 (MASTER 28 Sep): angka ringkasan dari proforma LAIN & uang muka, rumus sama dengan plafon.
+    _total_so = _f(row["order_total_amount"]) or 0.0
+    _billed_before = await issued_total_for_order(conn, ctx["tenant_id"], row["sales_order_id"], exclude_id=row["id"]) \
+        if row["sales_order_id"] else 0.0
+    _atr = (await muat_atribusi(conn, ctx["tenant_id"], [row["sales_order_id"]]))[row["sales_order_id"]] \
+        if row["sales_order_id"] else None
+    _milik_ini = (_atr["per_proforma"].get(row["id"], {}) if _atr else {})
+    # diterima SEBELUM tagihan ini = semua uang muka SO kecuali yang diatribusikan ke proforma INI (tautan/cocok)
+    _received_before = float(_atr["diterima"] - _milik_ini.get("tertaut", 0) - _milik_ini.get("dicocokkan", 0)) \
+        if _atr else 0.0
+    _tak_tertagih = float(_atr["tak_tertagih"]) if _atr else 0.0
+    from ..services import faktur_cetak as _fc
+    _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
+    proforma_data = {
+        "id": str(row["id"]),
+        "proforma_number": row["proforma_number"],
+        "proforma_date": row["proforma_date"].isoformat()
+        if row["proforma_date"]
+        else None,
+        "due_date": row["due_date"].isoformat() if row["due_date"] else None,
+        "sales_order_number": row["order_number"],
+        "sales_order_date": row["order_date"].isoformat()
+        if row["order_date"]
+        else None,
+        "order_total_amount": _f(row["order_total_amount"]),
+        # 30 Sep (pemilik, PRO-2609-0069): komposisi Nilai Pesanan dari kolom SO yang SAMA dengan detail
+        # SO (tidak dihitung ulang): Subtotal (neto) -> Diskon -> Ongkos kirim -> PPN (baris + ongkir) -> Nilai.
+        "order_subtotal": _f(row["order_subtotal"]),
+        "order_discount": _f(row["order_discount"]),
+        "order_shipping": _f(row["order_shipping"]),
+        "order_tax": _f(row["order_tax"]),
+        "customer_name": row["customer_name"],
+        "purpose": row["purpose"],
+        "percent_of_order": _f(row["percent_of_order"]),
+        "amount": amount,
+        "paid_amount": paid,
+        "outstanding_amount": round(amount - paid, 2),
+        # ── angka turunan untuk ringkasan kanan ──
+        # Persen ditampilkan HANYA bila nilai SO > 0; tanpa penjaga itu
+        # proforma tanpa SO membagi dengan nol.
+        "order_items": _order_items,
+        "dp_percent_display": (
+            int(round(amount / _f(row["order_total_amount"]) * 100))
+            if _f(row["order_total_amount"])
+            else None
+        ),
+        # Celah 1: sisa SESUDAH tagihan ini = max(0, total - max(ditagih_sebelum + ini, diterima_sebelum)).
+        # Dulu total - amount INI saja -> salah untuk PELUNASAN dan uang muka kedua.
+        "billed_before": round(_billed_before, 2),
+        "received_before": round(_received_before, 2),
+        "remaining_after_this": (
+            sisa_bisa_ditagih(_total_so, _billed_before + amount, _tak_tertagih) if _total_so else None
+        ),
+        # Baris "Sudah Dibayar"/"Sisa Tagihan Ini" HANYA saat proforma
+        # dibayar SEBAGIAN. Belum dibayar sama sekali -> nol baris sisa.
+        "is_partially_paid": bool(0 < paid < amount),
+        "currency": row["currency"],
+        "terms": row["terms"],
+        "notes": row["notes"],
+        "payment_bank_name": row["payment_bank_name"],
+        "payment_account_number": row["payment_account_number"],
+        "payment_account_holder": row["payment_account_holder"],
+        "rekening_pemilik_cetak": _fc.pemilik_dari(
+            _rek_cetak, row["payment_bank_name"], row["payment_account_number"], row["payment_account_holder"]),
+        "status": row["status"],
+        # tanda DIBATALKAN pada proforma yang dibatalkan (pdf_service._tanda_batal)
+        "cancelled_at": row["cancelled_at"],
+        "cancelled_reason": row["cancelled_reason"],
+    }
+    return {"proforma_data": proforma_data, "tenant_info": tenant_info}
+
+
 @router.get("/{proforma_id}/pdf")
 async def get_proforma_pdf(
     request: Request,
@@ -967,141 +1108,8 @@ async def get_proforma_pdf(
                 from ..utils.pdf_url import respons_pdf_url
                 return respons_pdf_url("proformas", pid, f"{row['proforma_number'] or 'proforma'}.pdf")
 
-            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
-
-            # Rincian item Sales Order untuk tabel Keterangan.
-            # `sales_order_items` TIDAK punya kolom `deleted_at` (diukur
-            # 2026-09-03 lewat information_schema), jadi tak ada saringan
-            # soft-delete yang bisa dipasang -- baris yang ada adalah baris
-            # yang berlaku.
-            _order_items = []
-            if row["sales_order_id"]:
-                _oi = await conn.fetch(
-                    """
-                    SELECT description, quantity, unit, unit_price, line_total, tax_amount
-                    FROM sales_order_items
-                    WHERE sales_order_id = $1
-                    ORDER BY sort_order, description
-                    """,
-                    row["sales_order_id"],
-                )
-                _order_items = [
-                    {
-                        "description": r["description"],
-                        "quantity": _f(r["quantity"]),
-                        "unit": r["unit"],
-                        "unit_price": _f(r["unit_price"]),
-                        # 30 Sep: jumlah baris = NETO (line_total SO = neto + PPN baris). Dasar SAMA dengan
-                        # subtotal SO (Σ neto) -> baris Subtotal/Diskon/Ongkir/PPN di bawahnya tak menghitung
-                        # PPN dua kali. Tanpa PPN (grapgrap) = line_total, tak berubah.
-                        "line_total": _f(r["line_total"] - (r["tax_amount"] or 0)),
-                    }
-                    for r in _oi
-                ]
-
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            if tenant_row:
-                tenant_info = {
-                    "name": tenant_row["display_name"],
-                    "address": tenant_row["address"],
-                    "phone": tenant_row["phone"],
-                    "logo_url": tenant_row["logo_url"],
-                }
-            else:
-                tenant_info = {
-                    "name": ctx["tenant_id"],
-                    "address": None,
-                    "phone": None,
-                    "logo_url": None,
-                }
-
-            _logo_data = None
-            _logo_filename = tenant_info.get("logo_url")
-            if _logo_filename:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_data = (
-                            "data:image/png;base64,"
-                            + base64.b64encode(_lf.read()).decode()
-                        )
-            tenant_info["logo_data"] = _logo_data
-
-            amount = _f(row["amount"]) or 0.0
-            # Celah 1 (MASTER 28 Sep): angka ringkasan dari proforma LAIN & uang muka, rumus sama dengan plafon.
-            _total_so = _f(row["order_total_amount"]) or 0.0
-            _billed_before = await issued_total_for_order(conn, ctx["tenant_id"], row["sales_order_id"], exclude_id=row["id"]) \
-                if row["sales_order_id"] else 0.0
-            _atr = (await muat_atribusi(conn, ctx["tenant_id"], [row["sales_order_id"]]))[row["sales_order_id"]] \
-                if row["sales_order_id"] else None
-            _milik_ini = (_atr["per_proforma"].get(row["id"], {}) if _atr else {})
-            # diterima SEBELUM tagihan ini = semua uang muka SO kecuali yang diatribusikan ke proforma INI (tautan/cocok)
-            _received_before = float(_atr["diterima"] - _milik_ini.get("tertaut", 0) - _milik_ini.get("dicocokkan", 0)) \
-                if _atr else 0.0
-            _tak_tertagih = float(_atr["tak_tertagih"]) if _atr else 0.0
-            from ..services import faktur_cetak as _fc
-            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
-            proforma_data = {
-                "id": str(row["id"]),
-                "proforma_number": row["proforma_number"],
-                "proforma_date": row["proforma_date"].isoformat()
-                if row["proforma_date"]
-                else None,
-                "due_date": row["due_date"].isoformat() if row["due_date"] else None,
-                "sales_order_number": row["order_number"],
-                "sales_order_date": row["order_date"].isoformat()
-                if row["order_date"]
-                else None,
-                "order_total_amount": _f(row["order_total_amount"]),
-                # 30 Sep (pemilik, PRO-2609-0069): komposisi Nilai Pesanan dari kolom SO yang SAMA dengan detail
-                # SO (tidak dihitung ulang): Subtotal (neto) -> Diskon -> Ongkos kirim -> PPN (baris + ongkir) -> Nilai.
-                "order_subtotal": _f(row["order_subtotal"]),
-                "order_discount": _f(row["order_discount"]),
-                "order_shipping": _f(row["order_shipping"]),
-                "order_tax": _f(row["order_tax"]),
-                "customer_name": row["customer_name"],
-                "purpose": row["purpose"],
-                "percent_of_order": _f(row["percent_of_order"]),
-                "amount": amount,
-                "paid_amount": paid,
-                "outstanding_amount": round(amount - paid, 2),
-                # ── angka turunan untuk ringkasan kanan ──
-                # Persen ditampilkan HANYA bila nilai SO > 0; tanpa penjaga itu
-                # proforma tanpa SO membagi dengan nol.
-                "order_items": _order_items,
-                "dp_percent_display": (
-                    int(round(amount / _f(row["order_total_amount"]) * 100))
-                    if _f(row["order_total_amount"])
-                    else None
-                ),
-                # Celah 1: sisa SESUDAH tagihan ini = max(0, total - max(ditagih_sebelum + ini, diterima_sebelum)).
-                # Dulu total - amount INI saja -> salah untuk PELUNASAN dan uang muka kedua.
-                "billed_before": round(_billed_before, 2),
-                "received_before": round(_received_before, 2),
-                "remaining_after_this": (
-                    sisa_bisa_ditagih(_total_so, _billed_before + amount, _tak_tertagih) if _total_so else None
-                ),
-                # Baris "Sudah Dibayar"/"Sisa Tagihan Ini" HANYA saat proforma
-                # dibayar SEBAGIAN. Belum dibayar sama sekali -> nol baris sisa.
-                "is_partially_paid": bool(0 < paid < amount),
-                "currency": row["currency"],
-                "terms": row["terms"],
-                "notes": row["notes"],
-                "payment_bank_name": row["payment_bank_name"],
-                "payment_account_number": row["payment_account_number"],
-                "payment_account_holder": row["payment_account_holder"],
-                "rekening_pemilik_cetak": _fc.pemilik_dari(
-                    _rek_cetak, row["payment_bank_name"], row["payment_account_number"], row["payment_account_holder"]),
-                "status": row["status"],
-                # tanda DIBATALKAN pada proforma yang dibatalkan (pdf_service._tanda_batal)
-                "cancelled_at": row["cancelled_at"],
-                "cancelled_reason": row["cancelled_reason"],
-            }
+            _m = await muat_pdf_proforma(conn, ctx, row)
+        proforma_data, tenant_info = _m["proforma_data"], _m["tenant_info"]
 
         from ..services.pdf_service import get_pdf_service
 

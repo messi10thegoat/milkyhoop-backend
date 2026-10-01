@@ -3038,6 +3038,115 @@ async def _pdf_dari_jurnal(conn, payment_id: str, tenant_id: str):
     }
 
 
+async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
+    """Konteks PDF kwitansi penerimaan (P3 SO-dokumen: SATU sumber untuk /pdf DAN render HTML/dokumen).
+    Dipindah VERBATIM dari get_receive_payment_pdf. -> {receipt_data, tenant_info, payment_id}."""
+    pay = await conn.fetchrow(
+        "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2",
+        uuid_module.UUID(payment_id),
+        ctx["tenant_id"],
+    )
+    receipt_data = None
+    if not pay:
+        # Setara jalur cadangan DETAIL (Law 29): daftar Penerimaan
+        # memuat baris ber-id JURNAL. Tanpa ini detail 200 tapi PDF 404
+        # (bug pemilik grapgrap DA-2609-0026, 24 Sep 2026: 38 DA + 2 CN).
+        pay, receipt_data = await _pdf_dari_jurnal(conn, payment_id, ctx["tenant_id"])
+        if pay is None and receipt_data is None:
+            raise HTTPException(status_code=404, detail="Receive payment not found")
+        if pay is not None:
+            payment_id = str(pay["id"])  # jurnal RECEIVE_PAYMENT -> pembayaran asalnya
+
+    if receipt_data is None:
+        # Bank account name: prefer stored column, fallback to join
+        bank_name = pay["bank_account_name"]
+        if not bank_name and pay["bank_account_id"]:
+            bank_row = await conn.fetchrow(
+                # bank_accounts.id (jalur faktur lama) ATAU CoA id (inti create)
+                """SELECT account_name, bank_name FROM bank_accounts
+                   WHERE tenant_id = $2 AND (id = $1 OR coa_id = $1)
+                   ORDER BY (id = $1) DESC LIMIT 1""",
+                pay["bank_account_id"], ctx["tenant_id"],
+            )
+            if bank_row:
+                bank_name = bank_row["account_name"] or bank_row["bank_name"]
+
+        # Linked invoice(s) + remaining from allocations
+        allocs = await conn.fetch(
+            """
+            SELECT invoice_number, remaining_after
+            FROM receive_payment_allocations
+            WHERE payment_id = $1
+            ORDER BY created_at
+            """,
+            uuid_module.UUID(payment_id),
+        )
+        invoice_number = None
+        remaining = None
+        if allocs:
+            _nums = [a["invoice_number"] for a in allocs if a["invoice_number"]]
+            if _nums:
+                invoice_number = ", ".join(_nums)
+            if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
+                remaining = float(allocs[0]["remaining_after"])
+
+        _amt = float(pay["total_amount"] or 0)
+        method_label = label_metode(pay["payment_method"])
+        receipt_number = pay["payment_number"] or pay["reference_number"]
+
+        receipt_data = {
+            # status + voided_at/void_reason -> tanda DIBATALKAN di kwitansi pembayaran yang void
+            "status": pay["status"],
+            "voided_at": pay["voided_at"],
+            "void_reason": pay["void_reason"],
+            "receipt_number": receipt_number,
+            "receipt_date": pay["payment_date"].isoformat()
+            if pay["payment_date"] else None,
+            "payer_name": pay["customer_name"],
+            "amount": _amt,
+            "amount_words": _terbilang(_amt),
+            "method": method_label,
+            "bank_name": bank_name,
+            "purpose_label": "Pelunasan Faktur",
+            "purpose_ref": invoice_number,
+            "remaining": remaining,
+            "notes": pay["notes"],
+        }
+
+    # Tenant info for header
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    if tenant_row:
+        tenant_info = {
+            "name": tenant_row["display_name"],
+            "address": tenant_row["address"],
+            "phone": tenant_row["phone"],
+            "logo_url": tenant_row["logo_url"],
+        }
+    else:
+        tenant_info = {
+            "name": ctx["tenant_id"],
+            "address": None,
+            "phone": None,
+            "logo_url": None,
+        }
+
+    _logo_data = None
+    _logo_filename = tenant_info.get("logo_url")
+    if _logo_filename:
+        _logo_path = (
+            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+        )
+        if _logo_path.exists():
+            with open(_logo_path, "rb") as _lf:
+                _logo_b64 = _base64.b64encode(_lf.read()).decode()
+            _logo_data = f"data:image/png;base64,{_logo_b64}"
+    tenant_info["logo_data"] = _logo_data
+    return {"receipt_data": receipt_data, "tenant_info": tenant_info, "payment_id": payment_id}
+
+
 @router.get("/{payment_id}/pdf")
 async def get_receive_payment_pdf(
     request: Request,
@@ -3053,109 +3162,8 @@ async def get_receive_payment_pdf(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            pay = await conn.fetchrow(
-                "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2",
-                uuid_module.UUID(payment_id),
-                ctx["tenant_id"],
-            )
-            receipt_data = None
-            if not pay:
-                # Setara jalur cadangan DETAIL (Law 29): daftar Penerimaan
-                # memuat baris ber-id JURNAL. Tanpa ini detail 200 tapi PDF 404
-                # (bug pemilik grapgrap DA-2609-0026, 24 Sep 2026: 38 DA + 2 CN).
-                pay, receipt_data = await _pdf_dari_jurnal(conn, payment_id, ctx["tenant_id"])
-                if pay is None and receipt_data is None:
-                    raise HTTPException(status_code=404, detail="Receive payment not found")
-                if pay is not None:
-                    payment_id = str(pay["id"])  # jurnal RECEIVE_PAYMENT -> pembayaran asalnya
-
-            if receipt_data is None:
-                # Bank account name: prefer stored column, fallback to join
-                bank_name = pay["bank_account_name"]
-                if not bank_name and pay["bank_account_id"]:
-                    bank_row = await conn.fetchrow(
-                        # bank_accounts.id (jalur faktur lama) ATAU CoA id (inti create)
-                        """SELECT account_name, bank_name FROM bank_accounts
-                           WHERE tenant_id = $2 AND (id = $1 OR coa_id = $1)
-                           ORDER BY (id = $1) DESC LIMIT 1""",
-                        pay["bank_account_id"], ctx["tenant_id"],
-                    )
-                    if bank_row:
-                        bank_name = bank_row["account_name"] or bank_row["bank_name"]
-
-                # Linked invoice(s) + remaining from allocations
-                allocs = await conn.fetch(
-                    """
-                    SELECT invoice_number, remaining_after
-                    FROM receive_payment_allocations
-                    WHERE payment_id = $1
-                    ORDER BY created_at
-                    """,
-                    uuid_module.UUID(payment_id),
-                )
-                invoice_number = None
-                remaining = None
-                if allocs:
-                    _nums = [a["invoice_number"] for a in allocs if a["invoice_number"]]
-                    if _nums:
-                        invoice_number = ", ".join(_nums)
-                    if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
-                        remaining = float(allocs[0]["remaining_after"])
-
-                _amt = float(pay["total_amount"] or 0)
-                method_label = label_metode(pay["payment_method"])
-                receipt_number = pay["payment_number"] or pay["reference_number"]
-
-                receipt_data = {
-                    # status + voided_at/void_reason -> tanda DIBATALKAN di kwitansi pembayaran yang void
-                    "status": pay["status"],
-                    "voided_at": pay["voided_at"],
-                    "void_reason": pay["void_reason"],
-                    "receipt_number": receipt_number,
-                    "receipt_date": pay["payment_date"].isoformat()
-                    if pay["payment_date"] else None,
-                    "payer_name": pay["customer_name"],
-                    "amount": _amt,
-                    "amount_words": _terbilang(_amt),
-                    "method": method_label,
-                    "bank_name": bank_name,
-                    "purpose_label": "Pelunasan Faktur",
-                    "purpose_ref": invoice_number,
-                    "remaining": remaining,
-                    "notes": pay["notes"],
-                }
-
-            # Tenant info for header
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            if tenant_row:
-                tenant_info = {
-                    "name": tenant_row["display_name"],
-                    "address": tenant_row["address"],
-                    "phone": tenant_row["phone"],
-                    "logo_url": tenant_row["logo_url"],
-                }
-            else:
-                tenant_info = {
-                    "name": ctx["tenant_id"],
-                    "address": None,
-                    "phone": None,
-                    "logo_url": None,
-                }
-
-            _logo_data = None
-            _logo_filename = tenant_info.get("logo_url")
-            if _logo_filename:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_b64 = _base64.b64encode(_lf.read()).decode()
-                    _logo_data = f"data:image/png;base64,{_logo_b64}"
-            tenant_info["logo_data"] = _logo_data
+            _m = await muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id)
+        receipt_data, tenant_info, payment_id = _m["receipt_data"], _m["tenant_info"], _m["payment_id"]
 
         pdf_service = _get_pdf_service()
         pdf_bytes = pdf_service.generate_receipt_pdf(receipt_data, tenant_info)

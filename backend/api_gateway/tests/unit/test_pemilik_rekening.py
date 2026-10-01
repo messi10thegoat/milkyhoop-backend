@@ -104,7 +104,8 @@ def test_template_b_memakai_hasil_penentu():
     assert "invoice.rekening_pemilik_cetak" in t and "invoice.payment_account_holder" not in t
 
 
-@pytest.mark.parametrize("fungsi", [SI.get_invoice_pdf, PF.get_proforma_pdf, Q.get_quote_pdf])
+# P3 SO-dokumen: konteks PDF dipindah ke pemuat bersama (rute /pdf + render dokumen)
+@pytest.mark.parametrize("fungsi", [SI.muat_pdf_faktur, PF.muat_pdf_proforma, Q.muat_pdf_penawaran])
 def test_ketiga_pdf_mengisi_rekening_pemilik_cetak_lewat_penentu(fungsi):
     src = inspect.getsource(fungsi)
     assert "muat_rekening(conn" in src and "pemilik_dari(" in src

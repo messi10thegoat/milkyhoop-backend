@@ -1872,6 +1872,142 @@ import base64
 from pathlib import Path as _Path
 
 
+async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
+    """Konteks PDF penawaran (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari get_quote_pdf
+    (+ has_cents). -> {quote_data, tenant_info, quote}."""
+    pdf_service = get_pdf_service()
+    # Fetch quote header
+    quote = await conn.fetchrow(
+        """
+        SELECT * FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Quote not found")
+
+    # Fetch items
+    items = await conn.fetch(
+        """
+        SELECT * FROM quote_items
+        WHERE quote_id = $1
+        ORDER BY sort_order, id
+        """,
+        uuid_module.UUID(quote_id),
+    )
+
+    # Fetch tenant info for PDF header
+    tenant_row = await conn.fetchrow(
+        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        ctx["tenant_id"],
+    )
+    if tenant_row:
+        tenant_info = {
+            "name": tenant_row["display_name"],
+            "address": tenant_row["address"],
+            "phone": tenant_row["phone"],
+            "logo_url": tenant_row["logo_url"],
+        }
+    else:
+        tenant_info = {
+            "name": ctx["tenant_id"],
+            "address": None,
+            "phone": None,
+            "logo_url": None,
+        }
+
+    # Resolve logo to base64 data URI for PDF embedding
+    _logo_data = None
+    _logo_filename = tenant_info.get("logo_url")
+    if _logo_filename:
+        _logo_path = (
+            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
+        )
+        if _logo_path.exists():
+            with open(_logo_path, "rb") as _lf:
+                _logo_b64 = base64.b64encode(_lf.read()).decode()
+            _logo_data = f"data:image/png;base64,{_logo_b64}"
+    tenant_info["logo_data"] = _logo_data
+
+    # Build quote data dict for template
+    from ..services import faktur_cetak as _fc
+    _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
+    quote_data = {
+        "id": str(quote["id"]),
+        "quote_number": quote["quote_number"],
+        "quote_date": quote["quote_date"].isoformat()
+        if quote["quote_date"]
+        else None,
+        "expiry_date": quote["expiry_date"].isoformat()
+        if quote["expiry_date"]
+        else None,
+        "customer_id": str(quote["customer_id"])
+        if quote["customer_id"]
+        else None,
+        "customer_name": quote["customer_name"],
+        "customer_email": quote["customer_email"],
+        "reference": quote["reference"],
+        "subject": quote["subject"],
+        "status": quote["status"],
+        "subtotal": quote["subtotal"],
+        "discount_type": quote["discount_type"],
+        "discount_value": float(quote["discount_value"] or 0),
+        "discount_amount": quote["discount_amount"],
+        "tax_amount": quote["tax_amount"],
+        "total_amount": quote["total_amount"],
+        # FIX_P2_QUOTEDP 2026-06-16 — down-payment block (NO-LEDGER, display only)
+        "dp_amount": quote["dp_amount"],
+        "dp_percent": float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
+        # 3h: Decimal, bukan int() -- sisa dari total bersen tak boleh terpotong.
+        "dp_remaining": (
+            quote["total_amount"] - quote["dp_amount"]
+            if quote["dp_amount"] is not None
+            else None
+        ),
+        "shipping_charges": None,
+        "adjustment": None,
+        "adjustment_label": None,
+        "opening_text": quote["opening_text"],
+        "closing_text": quote["closing_text"],
+        "notes": quote["notes"],
+        "terms": quote["terms"],
+        "footer": quote["footer"],
+        "payment_bank_name": quote.get("payment_bank_name"),
+        "payment_account_number": quote.get("payment_account_number"),
+        "payment_account_holder": quote.get("payment_account_holder"),
+        "rekening_pemilik_cetak": _fc.pemilik_dari(
+            _rek_cetak, quote.get("payment_bank_name"), quote.get("payment_account_number"),
+            quote.get("payment_account_holder")),
+        "items": [
+            {
+                "id": str(item["id"]),
+                "item_id": str(item["item_id"]) if item["item_id"] else None,
+                "description": item["description"],
+                "quantity": float(item["quantity"]),
+                "unit": item["unit"],
+                "unit_price": item["unit_price"],
+                "discount_percent": float(item["discount_percent"] or 0),
+                "tax_rate": float(item["tax_rate"] or 0),
+                "tax_amount": item["tax_amount"],
+                "line_total": item["line_total"],
+                "group_name": item["group_name"],
+                "sort_order": item["sort_order"],
+            }
+            for item in items
+        ],
+    }
+    # 3h: dua desimal hanya bila Penawaran ini bersen (lihat filter `rupiah`).
+    quote_data["has_cents"] = pdf_service.money_has_cents(
+        quote_data["subtotal"], quote_data["discount_amount"], quote_data["tax_amount"],
+        quote_data["total_amount"], quote_data["dp_amount"], quote_data["dp_remaining"],
+        *[v for it in quote_data["items"] for v in (it["unit_price"], it["tax_amount"], it["line_total"])],
+    )
+    return {"quote_data": quote_data, "tenant_info": tenant_info, "quote": quote}
+
+
 @router.get("/{quote_id}/pdf")
 async def get_quote_pdf(
     request: Request,
@@ -1893,138 +2029,11 @@ async def get_quote_pdf(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Fetch quote header
-            quote = await conn.fetchrow(
-                """
-                SELECT * FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-                """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
-
-            # Fetch items
-            items = await conn.fetch(
-                """
-                SELECT * FROM quote_items
-                WHERE quote_id = $1
-                ORDER BY sort_order, id
-                """,
-                uuid_module.UUID(quote_id),
-            )
-
-            # Fetch tenant info for PDF header
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            if tenant_row:
-                tenant_info = {
-                    "name": tenant_row["display_name"],
-                    "address": tenant_row["address"],
-                    "phone": tenant_row["phone"],
-                    "logo_url": tenant_row["logo_url"],
-                }
-            else:
-                tenant_info = {
-                    "name": ctx["tenant_id"],
-                    "address": None,
-                    "phone": None,
-                    "logo_url": None,
-                }
-
-            # Resolve logo to base64 data URI for PDF embedding
-            _logo_data = None
-            _logo_filename = tenant_info.get("logo_url")
-            if _logo_filename:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_b64 = base64.b64encode(_lf.read()).decode()
-                    _logo_data = f"data:image/png;base64,{_logo_b64}"
-            tenant_info["logo_data"] = _logo_data
-
-            # Build quote data dict for template
-            from ..services import faktur_cetak as _fc
-            _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
-            quote_data = {
-                "id": str(quote["id"]),
-                "quote_number": quote["quote_number"],
-                "quote_date": quote["quote_date"].isoformat()
-                if quote["quote_date"]
-                else None,
-                "expiry_date": quote["expiry_date"].isoformat()
-                if quote["expiry_date"]
-                else None,
-                "customer_id": str(quote["customer_id"])
-                if quote["customer_id"]
-                else None,
-                "customer_name": quote["customer_name"],
-                "customer_email": quote["customer_email"],
-                "reference": quote["reference"],
-                "subject": quote["subject"],
-                "status": quote["status"],
-                "subtotal": quote["subtotal"],
-                "discount_type": quote["discount_type"],
-                "discount_value": float(quote["discount_value"] or 0),
-                "discount_amount": quote["discount_amount"],
-                "tax_amount": quote["tax_amount"],
-                "total_amount": quote["total_amount"],
-                # FIX_P2_QUOTEDP 2026-06-16 — down-payment block (NO-LEDGER, display only)
-                "dp_amount": quote["dp_amount"],
-                "dp_percent": float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
-                # 3h: Decimal, bukan int() -- sisa dari total bersen tak boleh terpotong.
-                "dp_remaining": (
-                    quote["total_amount"] - quote["dp_amount"]
-                    if quote["dp_amount"] is not None
-                    else None
-                ),
-                "shipping_charges": None,
-                "adjustment": None,
-                "adjustment_label": None,
-                "opening_text": quote["opening_text"],
-                "closing_text": quote["closing_text"],
-                "notes": quote["notes"],
-                "terms": quote["terms"],
-                "footer": quote["footer"],
-                "payment_bank_name": quote.get("payment_bank_name"),
-                "payment_account_number": quote.get("payment_account_number"),
-                "payment_account_holder": quote.get("payment_account_holder"),
-                "rekening_pemilik_cetak": _fc.pemilik_dari(
-                    _rek_cetak, quote.get("payment_bank_name"), quote.get("payment_account_number"),
-                    quote.get("payment_account_holder")),
-                "items": [
-                    {
-                        "id": str(item["id"]),
-                        "item_id": str(item["item_id"]) if item["item_id"] else None,
-                        "description": item["description"],
-                        "quantity": float(item["quantity"]),
-                        "unit": item["unit"],
-                        "unit_price": item["unit_price"],
-                        "discount_percent": float(item["discount_percent"] or 0),
-                        "tax_rate": float(item["tax_rate"] or 0),
-                        "tax_amount": item["tax_amount"],
-                        "line_total": item["line_total"],
-                        "group_name": item["group_name"],
-                        "sort_order": item["sort_order"],
-                    }
-                    for item in items
-                ],
-            }
+            _m = await muat_pdf_penawaran(conn, ctx, quote_id)
+        quote_data, tenant_info, quote = _m["quote_data"], _m["tenant_info"], _m["quote"]
 
         # Generate PDF
         pdf_service = get_pdf_service()
-        # 3h: dua desimal hanya bila Penawaran ini bersen (lihat filter `rupiah`).
-        quote_data["has_cents"] = pdf_service.money_has_cents(
-            quote_data["subtotal"], quote_data["discount_amount"], quote_data["tax_amount"],
-            quote_data["total_amount"], quote_data["dp_amount"], quote_data["dp_remaining"],
-            *[v for it in quote_data["items"] for v in (it["unit_price"], it["tax_amount"], it["line_total"])],
-        )
         pdf_bytes = pdf_service.generate_quote_pdf(quote_data, tenant_info)
 
         # Generate filename
