@@ -337,15 +337,43 @@ class PDFService:
     # ── HTML layar (panel dokumen P4): string HTML YANG SAMA dengan PDF ──────────────────────────────────────
     FONT_PUBLIK = "/api/public/fonts/"
 
+    _CSS_TEKS: Dict[str, str] = {}
+
     def _css_teks(self, nama: str) -> str:
+        if nama in self._CSS_TEKS:
+            return self._CSS_TEKS[nama]
+        self._CSS_TEKS[nama] = self._css_teks_baca(nama)
+        return self._CSS_TEKS[nama]
+
+    def _css_teks_baca(self, nama: str) -> str:
         teks = (TEMPLATE_DIR / nama).read_text(encoding="utf-8")
         # url("fonts/X.ttf") relatif terhadap berkas CSS (WeasyPrint) -> rute font publik (browser tak membawa JWT
         # untuk unduhan font CSS).
         return re.sub(r'url\("fonts/([^"]+)"\)', lambda m: f'url("{self.FONT_PUBLIK}{m.group(1)}")', teks)
 
     def kertas(self, r: Render) -> str:
-        hal = self.dokumen(r).pages[0]
-        return "A5-landscape" if hal.width > hal.height else "A4"
+        lebar, tinggi = self.geometri(r)[:2]
+        return "A5-landscape" if lebar > tinggi else "A4"
+
+    _GEOMETRI: Dict[str, tuple] = {}
+
+    def geometri(self, r: Render) -> tuple:
+        """(lebar, tinggi, margin atas/kanan/bawah/kiri) halaman pertama, px CSS.
+
+        1 Okt 2026 (ukur: GET /documents/*/html 200-430 ms HANYA untuk tata letak WeasyPrint penuh demi geometri):
+        geometri ditentukan @page (lembar gaya + <style> di <head>), BUKAN isi -> tata letak <head> dengan <body>
+        KOSONG + cache per isi <head> tanpa <title> (judul memuat nomor dokumen) + css + font. Kesetaraan dengan tata
+        letak penuh diukur di 25 dokumen nyata (lihat commit)."""
+        kepala = r.html.split("<body", 1)[0]
+        kunci = "\0".join((re.sub(r"<title>.*?</title>", "", kepala, flags=re.S), *r.css, str(r.font)))
+        g = self._GEOMETRI.get(kunci)
+        if g is None:
+            hal = self.dokumen(Render(kepala + "<body></body></html>", r.css, r.font)).pages[0]
+            b = hal._page_box
+            g = (hal.width, hal.height, b.margin_top, b.margin_right, b.margin_bottom, b.margin_left)
+            if len(self._GEOMETRI) < 256:  # beberapa template x varian <head>; batas keras terhadap kebocoran
+                self._GEOMETRI[kunci] = g
+        return g
 
     def html_layar(self, r: Render) -> str:
         """HTML untuk panel (P3e, 02-DATA-DAN-API §Render): `r.html` YANG SAMA dengan PDF + lembar gaya PDF disisipkan
@@ -353,18 +381,17 @@ class PDFService:
         selebar/setinggi halaman PDF dengan padding = margin @page -- geometri dibaca dari TATA LETAK WeasyPrint
         (halaman pertama), bukan ditebak per template. "Halaman x dari y" hidup di kotak margin @page -> tak tampil
         di browser (putusan pemilik #9: hanya di PDF)."""
-        hal = self.dokumen(r).pages[0]
-        b = hal._page_box
+        lebar, tinggi, m_atas, m_kanan, m_bawah, m_kiri = self.geometri(r)
         gaya = "\n".join(self._css_teks(n) for n in r.css if (TEMPLATE_DIR / n).exists())
         layar = (
             "@media screen { html { background: #F1EFEA; } "
-            f"body {{ box-sizing: border-box; width: {hal.width:.2f}px; min-height: {hal.height:.2f}px; "
-            f"margin: 0 auto; padding: {b.margin_top:.2f}px {b.margin_right:.2f}px {b.margin_bottom:.2f}px "
-            f"{b.margin_left:.2f}px; background: #fff; transform: translateZ(0); }} }}"
+            f"body {{ box-sizing: border-box; width: {lebar:.2f}px; min-height: {tinggi:.2f}px; "
+            f"margin: 0 auto; padding: {m_atas:.2f}px {m_kanan:.2f}px {m_bawah:.2f}px "
+            f"{m_kiri:.2f}px; background: #fff; transform: translateZ(0); }} }}"
         )
         # transform di body = blok penampung untuk position:fixed (tanda DIBATALKAN) -> tetap di atas kertas, bukan layar.
         sisip = f'<style data-sumber="pdf">\n{gaya}\n</style><style data-sumber="layar">{layar}</style>'
-        kertas = "A5-landscape" if hal.width > hal.height else "A4"
+        kertas = "A5-landscape" if lebar > tinggi else "A4"
         html = r.html.replace("</head>", sisip + "</head>", 1) if "</head>" in r.html else sisip + r.html
         return html.replace("<html", f'<html data-kertas="{kertas}"', 1)
 
