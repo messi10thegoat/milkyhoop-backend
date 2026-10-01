@@ -7,7 +7,7 @@ proforma PELUNASAN tak memicu aturan 4 bila faktur sudah ada (-> "Menunggu pelun
 SATU tempat aturannya: `posisi()` dan `kirim()` MURNI (diuji per aturan); `fakta_daftar()` mengumpulkan faktanya
 dalam kueri ber-batch (daftar <= 100 SO) dari sumber yang SUDAH ADA -- tanpa rumus uang baru (Iron Law 1/16/29):
   sisa SO = total − ringkasan_pesanan.tertutup (journal-derived; sama dengan payment_summary/P0)
-  proforma terbayar = proforma_terbayar.alokasikan (eksplisit uang muka + kolam pesanan)
+  proforma terbayar = proforma_terbayar.terbayar_proforma (atribusi kanonik, sama dengan detail proforma & Rekap)
   perlu-kirim = COALESCE(soi.perlu_kirim, products.track_inventory, false) (= ringkasan_menunggu_kirim, V318)
   terkirim = Surat Jalan AKTIF per baris (so_kirim.terkirim_per_baris)
 Filter tenant EKSPLISIT di tiap kueri (set_config bukan pagar).
@@ -15,7 +15,7 @@ Filter tenant EKSPLISIT di tiap kueri (set_config bukan pagar).
 from datetime import date, timedelta
 from decimal import Decimal
 
-from .proforma_terbayar import alokasikan, ringkasan_pesanan
+from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
 from .so_kirim import _AKTIF, belum_dikirim, terkirim_per_baris
 
 NOL = Decimal("0")
@@ -86,11 +86,10 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
            FROM proformas WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])""",
         tenant_id, ids,
     )]
-    eks = {r["pid"]: Decimal(str(r["s"])) for r in await conn.fetch(
-        """SELECT proforma_id AS pid, SUM(amount) AS s FROM customer_deposits
-           WHERE tenant_id = $1 AND status <> 'void' AND proforma_id = ANY($2::uuid[]) GROUP BY 1""",
-        tenant_id, [p["id"] for p in pfs],
-    )} if pfs else {}
+    # Terbayar per proforma = SATU sumber kanonik (terbayar_proforma: atribusi uang muka tertaut/tercocok + kolam
+    # pesanan tanpa uang muka di luar tagihan) -- sama dengan detail proforma & Rekap. Dulu P1 memakai alokasikan
+    # dengan eksplisit = Σ uang muka ber-proforma_id saja (versi ringkas; diukur 1 Okt: lihat commit).
+    terbayar = await terbayar_proforma(conn, tenant_id, ids) if pfs else {}
     faktur = {r["so_id"]: r["n"] for r in await conn.fetch(
         """SELECT sales_order_id AS so_id, count(*) AS n FROM sales_invoices
            WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[]) AND status NOT IN ('draft', 'void')
@@ -144,13 +143,12 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         o = rg[sid]
         sisa = Decimal(str(r["total_amount"] or 0)) - o["tertutup"]
         daftar_pf = per_so_pf.get(sid, [])
-        alok = alokasikan(daftar_pf, o["tertutup"], eks) if daftar_pf else {}
         issued = sorted((p for p in daftar_pf if p["status"] == "issued"),
                         key=lambda p: (p["issued_at"] is None, p["issued_at"], p["proforma_number"] or ""))
         termin = [p["id"] for p in sorted((p for p in daftar_pf if p["status"] != "cancelled" and p["purpose"] == "TERMIN"),
                                           key=lambda p: (p["issued_at"] is None, p["issued_at"], p["proforma_number"] or ""))]
         belum_bayar = [{"purpose": p["purpose"], "termin_ke": (termin.index(p["id"]) + 1) if p["id"] in termin else None}
-                       for p in issued if alok[p["id"]]["paid"] < Decimal(str(p["amount"]))]
+                       for p in issued if terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))]
         n_faktur = faktur.get(sid, 0)
         teks_pos, muted = posisi(r["status"], sisa, belum_bayar, n_faktur > 0, o["invoice_outstanding"],
                                  sj.get(sid, 0) > 0, o["dp_received"])
