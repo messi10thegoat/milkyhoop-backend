@@ -1019,6 +1019,17 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
     tenant_info["logo_data"] = _logo_data
 
     amount = _f(row["amount"]) or 0.0
+    # Tanggal lunas JUJUR: bila uang muka yang TERTAUT ke proforma ini (proforma_id) sendiri menutupinya = tanggal
+    # uang muka terakhir itu. Lunas dari kolam pesanan (pembayaran faktur / uang muka SO tanpa tautan) tak punya
+    # satu tanggal yang benar -> None (stempel tanpa tanggal; tak mengarang).
+    _tanggal_lunas = None
+    _tertaut = await conn.fetchrow(
+        """SELECT COALESCE(SUM(amount), 0) AS jml, MAX(deposit_date) AS tgl FROM customer_deposits
+           WHERE tenant_id = $1 AND proforma_id = $2 AND status <> 'void' AND journal_id IS NOT NULL""",
+        ctx["tenant_id"], row["id"],
+    )
+    if _tertaut and amount > 0 and float(_tertaut["jml"] or 0) >= amount and _tertaut["tgl"]:
+        _tanggal_lunas = _tertaut["tgl"].isoformat()
     # Celah 1 (MASTER 28 Sep): angka ringkasan dari proforma LAIN & uang muka, rumus sama dengan plafon.
     _total_so = _f(row["order_total_amount"]) or 0.0
     _billed_before = await issued_total_for_order(conn, ctx["tenant_id"], row["sales_order_id"], exclude_id=row["id"]) \
@@ -1075,6 +1086,10 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
         # Baris "Sudah Dibayar"/"Sisa Tagihan Ini" HANYA saat proforma
         # dibayar SEBAGIAN. Belum dibayar sama sekali -> nol baris sisa.
         "is_partially_paid": bool(0 < paid < amount),
+        # 1 Okt 2026 (MASTER/pemilik, pola faktur 27 Sep "Lunas: JANGAN Rp 0 sebagai angka besar"): proforma terbit
+        # yang LUNAS -> angka besar = nominal tagihan + stempel LUNAS; tanggal hanya bila jujur diketahui.
+        "is_paid": bool(row["status"] == "issued" and amount > 0 and paid >= amount),
+        "paid_date": _tanggal_lunas,
         "currency": row["currency"],
         "terms": row["terms"],
         "notes": row["notes"],

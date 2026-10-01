@@ -85,6 +85,20 @@
     </div>
 
     <!-- 4. Hero Amount -->
+    {% if proforma.get('is_paid') and not batal %}
+    {# LUNAS (1 Okt 2026, pola faktur 27 Sep): angka besar = nominal tagihan proforma ini, BUKAN "Rp 0". #}
+    <div class="hero hero-status">
+        <div class="hero-teks">
+            <div class="hero-label">{{ judul or 'Tagihan Uang Muka' }}</div>
+            <div class="hero-amount">Rp {{ proforma.amount | currency }}</div>
+            <div class="hero-due">Dibayar lunas{% if proforma.get('paid_date') %} {{ proforma.paid_date | date_id }}{% endif %}</div>
+        </div>
+        <div class="stempel stempel-lunas">
+            <div class="stempel-teks">LUNAS</div>
+            {% if proforma.get('paid_date') %}<div class="stempel-kecil">{{ proforma.paid_date | date_id | upper }}</div>{% endif %}
+        </div>
+    </div>
+    {% else %}
     <div class="hero">
         {# Hero = SISA yang masih diminta (26 Sep 2026; dulu nominal penuh walau sudah dibayar). #}
         {% set proforma_hero = proforma.outstanding_amount if proforma.outstanding_amount is defined and proforma.outstanding_amount is not none else proforma.amount %}
@@ -93,6 +107,7 @@
         <div class="hero-due">Mohon dibayar sebelum {{ proforma.due_date | date_id }}</div>
         {% endif %}
     </div>
+    {% endif %}
 
     <div style="height: 16px;"></div>
 
@@ -207,7 +222,7 @@
             {% endif %}
             {# Baris sisa HANYA saat dibayar sebagian. Belum dibayar sama
                sekali -> tidak ada baris sisa apa pun. #}
-            {% if proforma.get('is_partially_paid') %}
+            {% if proforma.get('is_partially_paid') or (proforma.get('is_paid') and not batal) %}
             <tr>
                 <td class="label">Sudah Dibayar</td>
                 <td class="value">-Rp {{ proforma.paid_amount | currency }}</td>
@@ -220,7 +235,8 @@
         </table>
     </div>
 
-    {% with dok = proforma %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
+    {# Rekening hanya bila masih ada yang dibayar (03-DOKUMEN: "rekening bila belum lunas"). #}
+    {% if not proforma.get('is_paid') %}{% with dok = proforma %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}{% endif %}
 
     {% if proforma.notes %}
     <div class="notes-section">
