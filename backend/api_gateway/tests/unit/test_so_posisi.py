@@ -146,3 +146,39 @@ def test_kirim_besok_lintas_bulan():
 @pytest.mark.parametrize("bulan,teks", [(1, "Jan"), (5, "Mei"), (8, "Agu"), (10, "Okt"), (12, "Des")])
 def test_nama_bulan_indonesia(bulan, teks):
     assert K(d=date(2027, bulan, 9))[0] == f"9 {teks}"
+
+
+# ---- Kirim x jam tenant (gerbang 05 D2): hari = tanggal_dokumen (zona tenant), BUKAN tanggal UTC server ----
+@pytest.mark.parametrize("utc,d,status,semua,harap", [
+    # 23.30 WIB 30 Sep (= 16.30 UTC 30 Sep)
+    ("2026-09-30T16:30", date(2026, 9, 30), "confirmed", False, ("Hari ini", "strong")),
+    ("2026-09-30T16:30", date(2026, 10, 1), "confirmed", False, ("Besok", "normal")),
+    ("2026-09-30T16:30", date(2026, 9, 29), "confirmed", False, ("29 Sep, telat", "strong")),
+    ("2026-09-30T16:30", date(2026, 9, 29), "confirmed", True, ("Terkirim", "muted")),
+    ("2026-09-30T16:30", None, "confirmed", False, ("—", "muted")),
+    ("2026-09-30T16:30", date(2026, 9, 30), "cancelled", False, ("—", "muted")),
+    # 00.30 WIB 1 Okt (= 17.30 UTC 30 Sep -- tanggal UTC masih 30 Sep)
+    ("2026-09-30T17:30", date(2026, 10, 1), "confirmed", False, ("Hari ini", "strong")),
+    ("2026-09-30T17:30", date(2026, 10, 2), "confirmed", False, ("Besok", "normal")),
+    ("2026-09-30T17:30", date(2026, 9, 30), "confirmed", False, ("30 Sep, telat", "strong")),
+    ("2026-09-30T17:30", date(2026, 9, 30), "confirmed", True, ("Terkirim", "muted")),
+    ("2026-09-30T17:30", None, "confirmed", False, ("—", "muted")),
+    ("2026-09-30T17:30", date(2026, 10, 1), "cancelled", False, ("—", "muted")),
+])
+def test_kirim_pada_jam_tenant_23_30_dan_00_30(monkeypatch, utc, d, status, semua, harap):
+    import asyncio
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from app.utils import tanggal_tenant as tt
+    saat = datetime.fromisoformat(utc).replace(tzinfo=timezone.utc)
+
+    class _Jam(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return saat
+    async def zona(conn, tenant_id):
+        return ZoneInfo("Asia/Jakarta")
+    monkeypatch.setattr(tt, "datetime", _Jam)
+    monkeypatch.setattr(tt, "zona_tenant", zona)
+    hari = asyncio.run(tt.tanggal_dokumen(None, "t"))
+    assert kirim(status, d, True, semua, hari) == harap
