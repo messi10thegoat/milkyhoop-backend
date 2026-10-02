@@ -117,6 +117,7 @@ PATCH /api/recurring-bills/{recurring_bill_id}
 PATCH /api/reports/accounting-settings
 PATCH /api/sales-invoices/{invoice_id}
 PATCH /api/sales-orders/{order_id}
+PATCH /api/sales-orders/{order_id}/order-code
 PATCH /api/settings/accounting
 PATCH /api/settings/pkp
 PATCH /api/settings/pkp-status
@@ -427,6 +428,7 @@ POST /api/session/logout
 POST /api/session/logout-all
 POST /api/settings/accounting
 POST /api/settings/aging-snapshot
+POST /api/settings/order-codes/preview
 POST /api/setup/chat
 POST /api/stock-adjustments
 POST /api/stock-adjustments/{adjustment_id}/post
@@ -506,6 +508,7 @@ PUT /api/recipes/menu-items/{item_id}
 PUT /api/recipes/recipes/{recipe_id}
 PUT /api/recurring-expenses/{template_id}
 PUT /api/salary-components/{component_id}
+PUT /api/settings/order-codes
 PUT /api/tables/areas/{area_id}
 PUT /api/tables/reservations/{reservation_id}
 PUT /api/tables/tables/{table_id}
