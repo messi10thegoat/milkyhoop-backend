@@ -62,7 +62,7 @@
             {% if invoice.sales_order_number %}
             <tr>
                 <td class="meta-label">No. Pesanan</td>
-                <td class="meta-value">{{ invoice.sales_order_number }}</td>
+                <td class="meta-value"{% if invoice.get('order_code_cetak') %} style="white-space: nowrap"{% endif %}>{{ invoice.sales_order_number }}{% if invoice.get('order_code_cetak') %} · {{ invoice.order_code_cetak }}{% endif %}</td>
             </tr>
             {% endif %}
             {% if invoice.ref_no %}

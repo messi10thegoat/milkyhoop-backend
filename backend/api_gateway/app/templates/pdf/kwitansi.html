@@ -43,7 +43,7 @@
                 {% if receipt.purpose_ref %}
                 <div class="kw-baris">
                     <div class="kw-label">Untuk {{ receipt.purpose_label or 'Pembayaran' }}</div>
-                    <div class="kw-nilai">{{ receipt.purpose_ref }}</div>
+                    <div class="kw-nilai">{{ receipt.purpose_ref }}{% if receipt.get('order_code_pendek') %} &middot; {{ receipt.order_code_pendek }}{% endif %}</div>
                 </div>
                 {% endif %}
                 {% if receipt.get('source_ref') %}

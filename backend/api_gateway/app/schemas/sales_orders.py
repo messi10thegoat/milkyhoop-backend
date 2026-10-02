@@ -296,6 +296,7 @@ class SalesOrderListItem(BaseModel):
     order_number: str
     order_code: Optional[str] = None  # V359 kode order produksi (server menerbitkan)
     order_title: Optional[str] = None  # V359 judul order (HURUF BESAR)
+    order_code_label: str = "Kode order"  # label tenant (sama untuk semua baris)
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str
@@ -346,6 +347,7 @@ class SalesOrderDetail(BaseModel):
     order_title: Optional[str] = None
     order_code_source: Optional[str] = None
     order_code_can_override: bool = False  # keputusan SERVER: allow_override tenant DAN peran OWNER/ADMIN
+    order_code_label: str = "Kode order"  # label tenant (setelan) -- "No. Job" / "Kode Proyek" / ...
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str

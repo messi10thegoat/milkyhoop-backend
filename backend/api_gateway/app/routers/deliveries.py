@@ -485,6 +485,12 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             for i in items_rows
         ],
     }
+    from ..services.kode_order import label_cetak
+    _so_sj = await conn.fetchval(
+        """SELECT si.sales_order_id FROM invoice_fulfillments f
+           JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+           WHERE f.id = $1 AND f.tenant_id = $2""", row["id"], ctx["tenant_id"])
+    delivery_data.update(await label_cetak(conn, ctx["tenant_id"], _so_sj))
     return {"delivery_data": delivery_data, "row": row}
 
 

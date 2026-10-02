@@ -152,4 +152,6 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
         "rekening_pemilik_cetak": _fc.pemilik_dari(rek, so["payment_bank_name"], so["payment_account_number"],
                                                    so["payment_account_holder"]),
     }
+    from .kode_order import label_cetak
+    rekap.update(await label_cetak(conn, tid, so["id"]))
     return {"rekap": rekap, "tenant_info": await muat_kop(conn, tid)}

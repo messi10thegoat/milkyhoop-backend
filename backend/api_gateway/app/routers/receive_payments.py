@@ -2115,16 +2115,6 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         ctx["user_id"],
     )
 
-    # V359 kode order: penerimaan yang melunasi faktur SO = uang masuk untuk SO itu -> kode terbit bila belum.
-    from ..services.kode_order import terbitkan as _terbitkan_kode
-    for _so in await conn.fetch(
-        """SELECT DISTINCT si.sales_order_id FROM receive_payment_allocations rpa
-           JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1
-           WHERE rpa.payment_id = $2 AND rpa.status = 'active' AND si.sales_order_id IS NOT NULL""",
-        ctx["tenant_id"], payment_id,
-    ):
-        await _terbitkan_kode(conn, ctx["tenant_id"], _so["sales_order_id"], payment["payment_date"], "payment",
-                              ctx["user_id"], payment["payment_number"])
 
     return {
         "journal_id": str(journal_id),
@@ -3155,6 +3145,14 @@ async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
                 _logo_b64 = _base64.b64encode(_lf.read()).decode()
             _logo_data = f"data:image/png;base64,{_logo_b64}"
     tenant_info["logo_data"] = _logo_data
+    # Kode order: hanya bila SEMUA alokasi penerimaan ini ke faktur SATU SO (lebih dari satu SO -> tak dicetak).
+    from ..services.kode_order import label_cetak
+    _so_rp = await conn.fetch(
+        """SELECT DISTINCT si.sales_order_id FROM receive_payment_allocations rpa
+           JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $2
+           WHERE rpa.payment_id = $1 AND rpa.status = 'active' AND si.sales_order_id IS NOT NULL""",
+        uuid_module.UUID(payment_id), ctx["tenant_id"])
+    receipt_data.update(await label_cetak(conn, ctx["tenant_id"], _so_rp[0]["sales_order_id"] if len(_so_rp) == 1 else None))
     return {"receipt_data": receipt_data, "tenant_info": tenant_info, "payment_id": payment_id}
 
 

@@ -117,6 +117,9 @@ class Conn:
         return self.jumlah
 
     async def fetch(self, sql, *a):
+        if "FROM receive_payment_allocations rpa" in sql:  # 2 Okt: SO tunggal utk baris kode order kwitansi
+            assert "si.tenant_id = $2" in sql and a[1] == TENANT
+            return []
         assert "journal_id = $1 AND tenant_id = $2" in sql and a[1] == TENANT
         return [{"invoice_number": f} for f in self.faktur]
 

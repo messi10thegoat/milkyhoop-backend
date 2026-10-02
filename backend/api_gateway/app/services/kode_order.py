@@ -16,11 +16,13 @@ from typing import Optional
 
 TOKEN = re.compile(r"\{(SEQ|MM|YY|YYYY)\}")
 RESET = ("never", "yearly", "monthly")
-PEMICU = ("first_payment", "so_confirmed", "manual_only")
+PEMICU = ("so_confirmed", "manual_only")  # putusan pemilik 2 Okt: murni SAP/NetSuite -- terbit saat SO dikonfirmasi
 PERAN_UBAH = ("OWNER", "ADMIN")
-BAWAAN = {"enabled": False, "template": "{SEQ}", "min_digits": 3, "reset": "never",
-          "trigger": "first_payment", "allow_override": False}
-MAKS_KODE, MAKS_JUDUL = 40, 60
+BAWAAN = {"enabled": False, "template": "{SEQ}", "min_digits": 4, "reset": "never",
+          "trigger": "so_confirmed", "allow_override": False, "label": "Kode order"}
+MAKS_KODE, MAKS_JUDUL, MAKS_LABEL = 40, 60, 30
+# PDF: judul dipotong supaya "{SO} · {label} {kode} · {judul}" tetap SEBARIS di baris yang sudah ada
+MAKS_JUDUL_CETAK = 24
 
 
 class KodeOrderGalat(ValueError):
@@ -48,6 +50,15 @@ def validasi_setelan(template: str, min_digits: int, reset: str, trigger: str) -
         raise KodeOrderGalat("Reset bulanan wajib memuat {MM} supaya kode tak bentrok antarbulan.")
     if reset == "yearly" and "{YY}" not in template and "{YYYY}" not in template:
         raise KodeOrderGalat("Reset tahunan wajib memuat {YY} atau {YYYY} supaya kode tak bentrok antartahun.")
+
+
+def normal_label(label) -> str:
+    if not isinstance(label, str):
+        raise KodeOrderGalat("Label wajib berupa teks.")
+    lb = " ".join(label.split())
+    if not lb or len(lb) > MAKS_LABEL or any(ord(c) < 32 for c in lb):
+        raise KodeOrderGalat(f"Label 1 sampai {MAKS_LABEL} karakter.")
+    return lb
 
 
 def kunci_periode(reset: str, tgl: date) -> str:
@@ -117,7 +128,7 @@ def normal_judul(judul) -> Optional[str]:
 
 async def muat_setelan(conn, tenant_id: str) -> dict:
     row = await conn.fetchrow(
-        """SELECT enabled, template, min_digits, reset, trigger, allow_override FROM order_code_settings
+        """SELECT enabled, template, min_digits, reset, trigger, allow_override, label FROM order_code_settings
            WHERE tenant_id = $1""", tenant_id)
     return dict(row) if row else dict(BAWAAN)
 
@@ -162,15 +173,14 @@ async def terbitkan(conn, tenant_id: str, so_id, tanggal: date, pemicu: str, akt
                     dok_nomor: Optional[str] = None) -> Optional[str]:
     """Terbitkan kode untuk SO bila: setelan menyala, pemicu cocok, SO belum berkode. Idempoten. WAJIB dipanggil
     DI DALAM transaksi inti yang memicunya, SESUDAH kunci inti itu (urutan kunci tetap -> tak ada deadlock).
-    pemicu: 'deposit' | 'payment' | 'deposit_application' (-> first_payment) | 'so_confirmed'.
+    pemicu: 'so_confirmed' (satu-satunya pemicu otomatis; manual_only = hanya ganti manual/impor).
     Tidak menyentuh jurnal/nominal apa pun."""
     if so_id is None:
         return None
     s = await muat_setelan(conn, tenant_id)
     if not s["enabled"]:
         return None
-    jenis = "so_confirmed" if pemicu == "so_confirmed" else "first_payment"
-    if s["trigger"] != jenis:
+    if pemicu != "so_confirmed" or s["trigger"] != "so_confirmed":
         return None
     # Urutan kunci TETAP: per-SO dulu, lalu per-periode. Kunci per-SO membuat dua pemicu untuk SO yang sama
     # (mis. DP + penerimaan bersamaan, beda tanggal = beda periode) berurutan -> yang kedua membaca kode yang sudah
@@ -202,7 +212,7 @@ async def terbitkan(conn, tenant_id: str, so_id, tanggal: date, pemicu: str, akt
     if not str(hasil).endswith(" 1"):
         raise RuntimeError("kode order: SO berubah di tengah penerbitan")  # batalkan transaksi -> nomor tak terpakai
     await _catat(conn, tenant_id, so_id, so["order_number"], None, kode, "auto", aktor, "ORDER_CODE_ISSUED",
-                 f"Kode order {kode} terbit", {"code": kode, "trigger": pemicu, "doc_number": dok_nomor})
+                 f"{s['label']} {kode} terbit", {"code": kode, "trigger": pemicu, "doc_number": dok_nomor})
     return kode
 
 
@@ -226,7 +236,7 @@ async def ganti_kode(conn, tenant_id: str, so_id, kode_baru: str, aktor) -> dict
     await naikkan_penghitung(conn, tenant_id, s, kode)
     lama = so["order_code"]
     await _catat(conn, tenant_id, so_id, so["order_number"], lama, kode, "manual", aktor, "ORDER_CODE_OVERRIDDEN",
-                 f"Kode order: {lama or '—'} → {kode}")
+                 f"{s['label']}: {lama or '—'} → {kode}")
     return {"status": 200, "order_code": kode, "old_code": lama}
 
 
@@ -246,3 +256,144 @@ async def ubah_judul(conn, tenant_id: str, so_id, judul, aktor) -> dict:
                         f"Judul order: {so['order_title'] or '—'} → {baru or '—'}",
                         {"old": so["order_title"], "new": baru}, source="api:kode_order")
     return {"status": 200, "order_title": baru}
+
+
+def potong_judul(judul: Optional[str]) -> Optional[str]:
+    if not judul:
+        return None
+    return judul if len(judul) <= MAKS_JUDUL_CETAK else judul[:MAKS_JUDUL_CETAK - 1].rstrip() + "…"
+
+
+async def label_cetak(conn, tenant_id: str, so_id) -> dict:
+    """{order_code_cetak} = "{label} {kode} · {judul}" (judul dipotong) untuk ditempel SEBARIS pada baris nomor
+    pesanan yang SUDAH ADA di PDF. so_id None / SO tanpa kode -> None (template tak mencetak apa pun -> PDF dokumen
+    tanpa kode sama dengan sebelumnya)."""
+    kosong = {"order_code_cetak": None, "order_code_pendek": None}
+    if not so_id:
+        return kosong
+    r = await conn.fetchrow("SELECT order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                            so_id, tenant_id)
+    if not r or not r["order_code"]:
+        return kosong
+    label = (await muat_setelan(conn, tenant_id))["label"]
+    judul = potong_judul(r["order_title"])
+    return {"order_code_cetak": f"{label} {r['order_code']}" + (f" · {judul}" if judul else ""),
+            "order_code_pendek": f"{label} {r['order_code']}"}  # kwitansi A5: tanpa judul
+
+
+MAKS_BARIS_IMPOR = 2000
+
+
+async def _cari_so(conn, tenant_id: str, b: dict):
+    """-> (so_row|None, galat|None). order_number dulu; tanpa nomor -> nama pelanggan + tanggal pesanan (persis,
+    tak peka huruf). Lebih dari satu kecocokan = galat 'ambigu' -- tak pernah menebak."""
+    nomor = (b.get("order_number") or "").strip()
+    if nomor:
+        r = await conn.fetchrow("""SELECT id, order_number, order_code FROM sales_orders
+                                   WHERE tenant_id = $1 AND order_number = $2""", tenant_id, nomor)
+        return (r, None) if r else (None, f"Pesanan {nomor} tidak ditemukan")
+    nama, tgl = (b.get("customer_name") or "").strip(), b.get("order_date")
+    if not nama or not tgl:
+        return None, None  # baris tanpa pengenal = reservasi nomor saja
+    try:
+        tgl = date.fromisoformat(str(tgl)[:10])
+    except ValueError:
+        return None, f"Tanggal {b.get('order_date')} tidak sah (pakai YYYY-MM-DD)"
+    rows = await conn.fetch("""SELECT id, order_number, order_code FROM sales_orders
+                               WHERE tenant_id = $1 AND lower(btrim(customer_name)) = lower($2) AND order_date = $3
+                                 AND status <> 'draft'""", tenant_id, nama, tgl)
+    if not rows:
+        return None, f"Tidak ada pesanan {nama} tanggal {tgl.isoformat()}"
+    if len(rows) > 1:
+        return None, (f"Ambigu: {len(rows)} pesanan {nama} tanggal {tgl.isoformat()} "
+                      f"({', '.join(r['order_number'] for r in rows)}) -- pakai nomor pesanan")
+    return rows[0], None
+
+
+async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict:
+    """Pemanggil membuka transaksi. Laporan per baris + ringkasan + penghitung yang akan diset. dry_run=True -> nol
+    tulis. Terapkan dengan galat apa pun -> tak menulis apa pun (pemanggil menolak 422 dengan laporan yang sama).
+    Urutan kunci SAMA dengan terbitkan(): per-SO (urut id) lalu per-periode (urut kunci) -> tak ada deadlock."""
+    if not isinstance(baris, list) or not baris:
+        raise KodeOrderGalat("rows wajib berisi minimal satu baris.")
+    if len(baris) > MAKS_BARIS_IMPOR:
+        raise KodeOrderGalat(f"Maksimal {MAKS_BARIS_IMPOR} baris per impor.")
+    s = await muat_setelan(conn, tenant_id)
+    laporan, dipakai, per_so, penghitung = [], {}, {}, {}
+    for i, b in enumerate(baris, start=1):
+        b = b if isinstance(b, dict) else {}
+        hasil = {"row": i, "order_number": b.get("order_number"), "order_code": b.get("order_code")}
+        try:
+            kode = normal_kode(b.get("order_code"))
+            judul = normal_judul(b.get("order_title")) if b.get("order_title") is not None else None
+        except KodeOrderGalat as e:
+            laporan.append({**hasil, "status": "error", "message": str(e)})
+            continue
+        hasil["order_code"] = kode
+        if kode in dipakai:
+            laporan.append({**hasil, "status": "error", "message": f"Kode {kode} ganda di berkas (baris {dipakai[kode]})"})
+            continue
+        dipakai[kode] = i
+        so, galat = await _cari_so(conn, tenant_id, b)
+        if galat:
+            laporan.append({**hasil, "status": "error", "message": galat})
+            continue
+        lain = await conn.fetchval("""SELECT order_number FROM sales_orders WHERE tenant_id = $1 AND order_code = $2
+                                        AND ($3::uuid IS NULL OR id <> $3)""", tenant_id, kode, so["id"] if so else None)
+        if lain:
+            laporan.append({**hasil, "status": "error", "message": f"Kode {kode} sudah dipakai pesanan {lain}"})
+            continue
+        u = urai(s["template"], kode)
+        pk = periode_dari_urai(s["reset"], u) if u and "SEQ" in u else None
+        if pk:
+            penghitung[pk] = max(penghitung.get(pk, 0), u["SEQ"])
+        if so is None:
+            laporan.append({**hasil, "status": "reserve", "message": "Tanpa pesanan: hanya memajukan penghitung"
+                            if pk else "Tanpa pesanan dan tak cocok templat: tak berpengaruh"})
+            continue
+        hasil["order_number"] = so["order_number"]
+        if so["id"] in per_so:
+            laporan.append({**hasil, "status": "error", "message": f"Pesanan {so['order_number']} muncul dua kali (baris {per_so[so['id']][0]})"})
+            continue
+        if so["order_code"] and so["order_code"] != kode:
+            laporan.append({**hasil, "status": "error",
+                            "message": f"Pesanan {so['order_number']} sudah berkode {so['order_code']} (ubah lewat ganti manual)"})
+            continue
+        per_so[so["id"]] = (i, kode, judul, so)
+        laporan.append({**hasil, "status": "unchanged" if so["order_code"] == kode else "ok",
+                        "message": "Sudah berkode sama" if so["order_code"] == kode else
+                                   ("Cocok templat" if u else "Tak cocok templat: diterima, penghitung tak berubah")})
+    galat_n = sum(1 for x in laporan if x["status"] == "error")
+    ringkas = {"rows": len(baris), "ok": sum(1 for x in laporan if x["status"] == "ok"),
+               "unchanged": sum(1 for x in laporan if x["status"] == "unchanged"),
+               "reserve": sum(1 for x in laporan if x["status"] == "reserve"), "error": galat_n}
+    hasil_akhir = {"dry_run": dry_run, "applied": False, "summary": ringkas, "rows": laporan,
+                   "counters": [{"period": k, "last_seq_at_least": v} for k, v in sorted(penghitung.items())]}
+    if dry_run or galat_n:
+        return hasil_akhir
+    for so_id in sorted(per_so, key=str):
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
+    for pk in sorted(penghitung):
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE:{tenant_id}:{pk}")
+    for so_id, (i, kode, judul, so) in per_so.items():
+        if so["order_code"] == kode and judul is None:
+            continue
+        sekarang = await conn.fetchrow("SELECT order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
+        if sekarang["order_code"] not in (None, kode):
+            raise KodeOrderGalat(f"Pesanan {so['order_number']} berubah kodenya selama impor; ulangi pratinjau.")
+        await conn.execute(
+            """UPDATE sales_orders SET order_code = $3, order_code_source = CASE WHEN order_code IS NULL THEN 'import'
+                                                                               ELSE order_code_source END,
+                      order_title = COALESCE($4, order_title), updated_at = NOW()
+               WHERE id = $1 AND tenant_id = $2""", so_id, tenant_id, kode, judul)
+        if sekarang["order_code"] is None:
+            await _catat(conn, tenant_id, so_id, so["order_number"], None, kode, "import", aktor, "ORDER_CODE_IMPORTED",
+                         f"{s['label']} {kode} diimpor", {"code": kode})
+    for pk, seq in penghitung.items():
+        await conn.execute(
+            """INSERT INTO order_code_counters (tenant_id, period_key, last_seq) VALUES ($1, $2, $3)
+               ON CONFLICT (tenant_id, period_key) DO UPDATE
+                 SET last_seq = GREATEST(order_code_counters.last_seq, EXCLUDED.last_seq), updated_at = now()""",
+            tenant_id, pk, seq)
+    hasil_akhir["applied"] = True
+    return hasil_akhir

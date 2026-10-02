@@ -52,7 +52,7 @@
             {% endif %}
             <tr>
                 <td class="meta-label">Sales Order</td>
-                <td class="meta-value">{{ proforma.sales_order_number or '-' }}</td>
+                <td class="meta-value"{% if proforma.get('order_code_cetak') %} style="white-space: nowrap"{% endif %}>{{ proforma.sales_order_number or '-' }}{% if proforma.get('order_code_cetak') %} · {{ proforma.order_code_cetak }}{% endif %}</td>
             </tr>
             {% if proforma.sales_order_date %}
             <tr>

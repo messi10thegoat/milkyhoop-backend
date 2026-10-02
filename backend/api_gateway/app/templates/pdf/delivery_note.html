@@ -61,7 +61,7 @@
         <td>Tanggal</td><td>:</td><td>{{ delivery.delivery_date | date_id if delivery.delivery_date else "-" }}</td>
       </tr>
       <tr>
-        <td>No. Faktur</td><td>:</td><td>{{ delivery.invoice_number or "-" }}</td>
+        <td>No. Faktur</td><td>:</td><td{% if delivery.get('order_code_cetak') %} style="white-space: nowrap"{% endif %}>{{ delivery.invoice_number or "-" }}{% if delivery.get('order_code_cetak') %} · {{ delivery.order_code_cetak }}{% endif %}</td>
       </tr>
     </table>
   </div>

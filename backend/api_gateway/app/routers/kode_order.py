@@ -28,14 +28,15 @@ def _ctx(request: Request) -> dict:
 
 
 def _keluaran(s: dict) -> dict:
-    return {k: s[k] for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override")}
+    return {k: s[k] for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label")}
 
 
 def _badan(b: dict, lama: dict) -> dict:
     s = dict(lama)
-    for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override"):
+    for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label"):
         if k in b:
             s[k] = b[k]
+    s["label"] = KO.normal_label(s.get("label") or KO.BAWAAN["label"])
     for k in ("enabled", "allow_override"):
         if not isinstance(s[k], bool):
             raise KO.KodeOrderGalat(f"{k} wajib boolean.")
@@ -45,6 +46,9 @@ def _badan(b: dict, lama: dict) -> dict:
 
 def _peringatan(lama: dict, baru: dict, tgl: date) -> list:
     w = []
+    if baru["enabled"] and not lama["enabled"]:
+        w.append("Pesanan yang sudah dikonfirmasi sebelum fitur ini dinyalakan tidak mendapat kode otomatis; "
+                 "isi lewat impor atau ganti manual.")
     if lama["enabled"] and (lama["template"], lama["min_digits"]) != (baru["template"], baru["min_digits"]):
         a = KO.render(lama["template"], 1, lama["min_digits"], tgl)
         b = KO.render(baru["template"], 1, baru["min_digits"], tgl)
@@ -100,13 +104,14 @@ async def simpan_setelan(request: Request):
                 raise HTTPException(status_code=422, detail=str(e))
             await conn.execute(
                 """INSERT INTO order_code_settings (tenant_id, enabled, template, min_digits, reset, trigger,
-                                                    allow_override, updated_at, updated_by)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+                                                    allow_override, label, updated_at, updated_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9)
                    ON CONFLICT (tenant_id) DO UPDATE SET enabled = EXCLUDED.enabled, template = EXCLUDED.template,
                      min_digits = EXCLUDED.min_digits, reset = EXCLUDED.reset, trigger = EXCLUDED.trigger,
-                     allow_override = EXCLUDED.allow_override, updated_at = now(), updated_by = EXCLUDED.updated_by""",
+                     allow_override = EXCLUDED.allow_override, label = EXCLUDED.label, updated_at = now(),
+                     updated_by = EXCLUDED.updated_by""",
                 ctx["tenant_id"], baru["enabled"], baru["template"], baru["min_digits"], baru["reset"],
-                baru["trigger"], baru["allow_override"], str(ctx["user_id"]))
+                baru["trigger"], baru["allow_override"], baru["label"], str(ctx["user_id"]))
     return {"success": True, "data": _keluaran(baru)}
 
 
@@ -132,3 +137,28 @@ async def ganti_kode_order(request: Request, order_id: str):
     if h["status"] == 409:
         raise HTTPException(status_code=409, detail="Kode order sudah dipakai pesanan lain.")
     return {"success": True, "data": {k: v for k, v in h.items() if k != "status"}}
+
+
+@router.post("/settings/order-codes/import")
+async def impor_kode_order(request: Request):
+    """Impor kode yang sudah dipakai di luar MilkyHoop (tenant mana pun). PEMILIK saja. {rows:[{order_number |
+    customer_name+order_date, order_code, order_title?}], dry_run}. dry_run WAJIB dikirim eksplisit (bawaan true):
+    pratinjau dulu, terapkan dengan dry_run=false. Terapkan = semua-atau-tidak (ada galat -> 422 + laporan)."""
+    ctx = _ctx(request)
+    b = await request.json()
+    dry_run = (b or {}).get("dry_run", True) is not False
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        from ..services.role_resolution import try_resolve_business_role
+        if await try_resolve_business_role(conn, str(ctx["user_id"]), ctx["tenant_id"]) != "OWNER":
+            raise HTTPException(status_code=403, detail="Hanya pemilik usaha yang dapat mengimpor kode order.")
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_IMPORT:{ctx['tenant_id']}")
+            try:
+                h = await KO.impor(conn, ctx["tenant_id"], (b or {}).get("rows"), dry_run, ctx["user_id"])
+            except KO.KodeOrderGalat as e:
+                raise HTTPException(status_code=422, detail=str(e))
+    if not dry_run and not h["applied"]:
+        raise HTTPException(status_code=422, detail={"code": "IMPORT_HAS_ERRORS",
+                                                     "message": "Impor dibatalkan: ada baris bermasalah.", "report": h})
+    return {"success": True, "data": h}

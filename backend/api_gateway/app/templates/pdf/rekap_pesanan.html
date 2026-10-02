@@ -23,7 +23,7 @@
 
     <div class="meta-block">
         <table class="meta-table">
-            <tr><td class="meta-label">No. Pesanan</td><td class="meta-value">{{ rekap.order_number or '-' }}</td></tr>
+            <tr><td class="meta-label">No. Pesanan</td><td class="meta-value"{% if rekap.get('order_code_cetak') %} style="white-space: nowrap"{% endif %}>{{ rekap.order_number or '-' }}{% if rekap.get('order_code_cetak') %} · {{ rekap.order_code_cetak }}{% endif %}</td></tr>
             <tr><td class="meta-label">Tanggal</td><td class="meta-value">{{ rekap.order_date | date_id }}</td></tr>
         </table>
     </div>

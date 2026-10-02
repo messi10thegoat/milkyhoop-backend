@@ -34,12 +34,12 @@ def test_kunci_periode(reset, harap):
 ])
 def test_setelan_ditolak(tpl, reset):
     with pytest.raises(KO.KodeOrderGalat):
-        KO.validasi_setelan(tpl, 3, reset, "first_payment")
+        KO.validasi_setelan(tpl, 3, reset, "so_confirmed")
 
 
 def test_setelan_sah():
-    KO.validasi_setelan("{SEQ}-{MM}-{YY}", 3, "monthly", "first_payment")
-    KO.validasi_setelan("JO/{YYYY}/{SEQ}", 4, "yearly", "so_confirmed")
+    KO.validasi_setelan("{SEQ}-{MM}-{YY}", 3, "monthly", "so_confirmed")
+    KO.validasi_setelan("JO/{YYYY}/{SEQ}", 4, "yearly", "manual_only")
 
 
 def test_urai_dan_periode():
@@ -123,23 +123,33 @@ def test_patch_hanya_judul_lolos_di_so_confirmed(monkeypatch):
     assert r.success and dipanggil == ["kemeja"] and not any("UPDATE sales_orders SET" in s for s in tulis)
 
 
-@pytest.mark.parametrize("modul,fungsi,pemicu", [
-    ("customer_deposits", "_post_deposit", '"deposit"'),
-    ("customer_deposits", "apply_deposit_core", '"deposit_application"'),
-    ("receive_payments", "_post_payment", '"payment"'),
-])
-def test_tiga_inti_uang_masuk_menerbitkan_kode_sesudah_jurnal(modul, fungsi, pemicu):
-    """Fase 2 (diuji nyata di salinan DB 8/8: DP/penerimaan terbit, idempoten, tenant mati no-op, bersamaan tanpa
-    lubang, PARITAS jurnal setelan nyala==mati). Di sini: tiap inti memanggil terbitkan dgn pemicunya, SESUDAH tulisan
-    jurnal/alokasi inti itu (urutan kunci: kunci inti -> ORDER_CODE_SO -> ORDER_CODE periode)."""
-    import importlib
-    m = importlib.import_module(f"app.routers.{modul}")
-    src = inspect.getsource(getattr(m, fungsi))
+def test_inti_uang_masuk_TIDAK_menerbitkan_kode():
+    """Putusan pemilik LANGSUNG 2 Okt (murni SAP/NetSuite): kode terbit saat SO DIKONFIRMASI saja. Inti DP /
+    penerapan / penerimaan dikembalikan AST-identik ke sebelum kait (jurnal identik dgn sendirinya)."""
+    from app.routers import customer_deposits as CD, receive_payments as RP
+    for fn in (CD._post_deposit, CD.apply_deposit_core, RP._post_payment):
+        assert "terbitkan" not in inspect.getsource(fn) and "kode_order" not in inspect.getsource(fn)
+
+
+def test_konfirmasi_so_menerbitkan_kode_dalam_transaksi():
+    from app.routers import sales_orders as SO
+    src = inspect.getsource(SO.confirm_sales_order)
+    assert "async with pool.acquire() as conn, conn.transaction():" in src
     i = src.index("_terbitkan_kode(")
-    assert pemicu in src[i:i + 300]
-    jangkar = {"_post_deposit": "SET status = 'posted', journal_id", "apply_deposit_core": "INSERT INTO customer_deposit_applications",
-               "_post_payment": "SET status = 'posted',"}[fungsi]
-    assert src.index(jangkar) < i
+    assert src.index("UPDATE sales_orders SET status = 'confirmed'") < i and '"so_confirmed"' in src[i:i + 200]
+
+
+def test_pemicu_hanya_so_confirmed_dan_manual():
+    assert KO.PEMICU == ("so_confirmed", "manual_only") and KO.BAWAAN["trigger"] == "so_confirmed"
+    assert KO.BAWAAN["min_digits"] == 4 and KO.BAWAAN["label"] == "Kode order"
+    with pytest.raises(KO.KodeOrderGalat):
+        KO.validasi_setelan("{SEQ}", 4, "never", "first_payment")
+
+
+def test_label_cetak_memotong_judul():
+    assert KO.potong_judul("KEMEJA GMIM") == "KEMEJA GMIM"
+    p = KO.potong_judul("X" * 60)
+    assert len(p) == KO.MAKS_JUDUL_CETAK and p.endswith("…")
 
 
 def test_boleh_isi_kode_tak_bergantung_kode_sudah_ada():
@@ -148,3 +158,13 @@ def test_boleh_isi_kode_tak_bergantung_kode_sudah_ada():
     src = inspect.getsource(SO.get_sales_order_detail)
     i = src.index("_boleh_kode = ")
     assert "order_code" not in src[i:src.index("\n", i)]
+
+
+def test_impor_galat_atau_pratinjau_tak_menulis_dan_urutan_kunci():
+    """Impor (diuji nyata di salinan DB 8/8: dry_run nol tulis, galat -> 422 nol tulis, ambigu ditolak, penghitung
+    melompat, konfirmasi berikutnya melanjutkan sesudah impor, bukan pemilik 403). Di sini: galat ATAU dry_run kembali
+    SEBELUM tulisan pertama; kunci per-SO diambil sebelum kunci periode (urutan sama dengan terbitkan)."""
+    src = inspect.getsource(KO.impor)
+    kembali = src.index("if dry_run or galat_n:")
+    assert kembali < src.index("UPDATE sales_orders") and kembali < src.index("INSERT INTO order_code_counters")
+    assert src.index('f"ORDER_CODE_SO:{tenant_id}:{so_id}"') < src.index('f"ORDER_CODE:{tenant_id}:{pk}"')

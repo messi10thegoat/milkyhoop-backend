@@ -200,6 +200,8 @@ async def list_sales_orders(
             penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
             # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
             posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, await tanggal_dokumen(conn, ctx["tenant_id"]))
+            from ..services.kode_order import muat_setelan as _setelan_kode
+            _label_kode = (await _setelan_kode(conn, ctx["tenant_id"]))["label"]
 
             items = [
                 SalesOrderListItem(
@@ -207,6 +209,7 @@ async def list_sales_orders(
                     order_number=row["order_number"],
                     order_code=row["order_code"],
                     order_title=row["order_title"],
+                    order_code_label=_label_kode,
                     order_date=row["order_date"].isoformat(),
                     expected_ship_date=row["expected_ship_date"].isoformat()
                     if row["expected_ship_date"]
@@ -515,7 +518,9 @@ async def get_sales_order_detail(request: Request, order_id: str):
             from ..services.kode_order import boleh_ganti_kode
             # Boleh isi/ganti kode TAK bergantung pada kode sudah ada: tenant pemicu manual_only (dan SO yang belum
             # terbit kodenya) mengisi lewat jalur yang sama (pemilik: "nomor job order bisa diinput manual").
-            _boleh_kode = await boleh_ganti_kode(conn, ctx["tenant_id"], ctx.get("user_id"))
+            from ..services.kode_order import muat_setelan as _setelan_kode
+            _set_kode = await _setelan_kode(conn, ctx["tenant_id"])
+            _boleh_kode = await boleh_ganti_kode(conn, ctx["tenant_id"], ctx.get("user_id"), _set_kode)
 
             return SalesOrderDetailResponse(
                 success=True,
@@ -524,6 +529,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     order_title=order.get("order_title"),
                     order_code_source=order.get("order_code_source"),
                     order_code_can_override=_boleh_kode,
+                    order_code_label=_set_kode["label"],
                     completed_source=order.get("completed_source"),  # V315 (.get: kode aman sebelum migrasi)
                     payment_terms_days=termin_n,
                     payment_terms_source=termin_sumber,
@@ -1284,7 +1290,8 @@ async def confirm_sales_order(request: Request, order_id: str):
         _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
+        # 2 Okt 2026: transaksi -- kode order pemicu 'so_confirmed' terbit ATOMIK bersama konfirmasinya.
+        async with pool.acquire() as conn, conn.transaction():
             order = await conn.fetchrow(
                 """
                 SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
@@ -1316,6 +1323,12 @@ async def confirm_sales_order(request: Request, order_id: str):
             )
             if not ok:
                 raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
+
+            # V359/V361: tenant ber-pemicu 'so_confirmed' -> kode terbit saat konfirmasi (tanggal usaha zona tenant).
+            # Pemicu lain / setelan mati -> terbitkan() no-op.
+            from ..services.kode_order import terbitkan as _terbitkan_kode
+            await _terbitkan_kode(conn, ctx["tenant_id"], ok, await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                  "so_confirmed", ctx["user_id"], order["order_number"])
 
             return SalesOrderResponse(
                 success=True,

@@ -431,6 +431,7 @@ POST /api/session/logout-all
 POST /api/settings/accounting
 POST /api/settings/aging-snapshot
 POST /api/settings/order-codes/preview
+POST /api/settings/order-codes/import
 POST /api/setup/chat
 POST /api/stock-adjustments
 POST /api/stock-adjustments/{adjustment_id}/post
