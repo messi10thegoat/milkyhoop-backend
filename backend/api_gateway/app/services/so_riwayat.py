@@ -40,6 +40,7 @@ MODUL_FAKTUR = {**MODUL, "credit_note": "credit_note"}
 
 # entity_type di audit_logs (lama memakai nama tabel, penulis baru juga) -> jenis dokumen
 ENTITAS_AUDIT = {
+    "quotes": "quote", "quote": "quote",
     "sales_orders": "sales_order", "sales_order": "sales_order",
     "proformas": "proforma", "proforma": "proforma",
     "sales_invoices": "sales_invoice", "sales_invoice": "sales_invoice",
@@ -200,6 +201,9 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
 
     # kolom tanpa aktor yang punya padanan audit (beraktor) -> pakai yang audit saja
     PADANAN = {"PROFORMA_DITERBITKAN": "PROFORMA_ISSUED", "PROFORMA_DIBATALKAN": "PROFORMA_CANCELLED",
+               "PENAWARAN_DIKIRIM": "QUOTE_SENT", "PENAWARAN_DISETUJUI": "QUOTE_ACCEPTED",
+               "PENAWARAN_DITOLAK": "QUOTE_DECLINED", "PENAWARAN_DIBATALKAN": "QUOTE_VOIDED",
+               "PENAWARAN_JADI_PESANAN": "QUOTE_CONVERTED",
                "FAKTUR_DIBATALKAN": "SALES_INVOICE_VOIDED", "SURAT_JALAN_DIBATALKAN": "FULFILLMENT_VOIDED"}
     ev = [e for e in k.ev if not (e["jenis"] in PADANAN and e["dokumen"]
                                   and (PADANAN[e["jenis"]], e["dokumen"]["id"]) in audit_ada)]
@@ -391,6 +395,65 @@ async def riwayat_faktur(conn, tenant_id: str, invoice_id, boleh: Callable[[str]
         "invoice_number": f["invoice_number"],
         "sales_order": ({"id": str(f["sales_order_id"]), "order_number": f["order_number"]}
                         if f["sales_order_id"] and lihat["sales_order"] else None),
+        "events": keluar,
+        "total": total,
+        "omitted": omitted,
+    }
+
+
+MODUL_PENAWARAN = {"quote": "quote", "sales_order": "sales_order"}
+
+
+async def riwayat_penawaran(conn, tenant_id: str, quote_id, boleh: Callable[[str], Awaitable[bool]],
+                            limit: int = 200) -> Optional[dict]:
+    """Riwayat PENAWARAN, bentuk SAMA dengan riwayat_so / riwayat_faktur (2 Okt 2026, Penawaran CW).
+    Kolom siklus (dibuat/terkirim/dilihat/disetujui/ditolak/jadi pesanan) + audit_logs beraktor (QUOTE_* sejak
+    2 Okt). Kolom tanpa aktor yang punya padanan audit -> pakai yang audit (PADANAN di _selesaikan).
+    Pesanan hasil konversi tampil bila izin baca sales_order. None = penawaran tak ada di tenant ini (-> 404)."""
+    q = await conn.fetchrow(
+        """SELECT q.id, q.quote_number, q.total_amount, q.status, q.created_at, q.created_by, q.sent_at, q.viewed_at,
+                  q.accepted_at, q.declined_at, q.declined_reason, q.converted_at, q.converted_to_type,
+                  q.converted_to_id, q.updated_at, so.order_number
+           FROM quotes q
+           LEFT JOIN sales_orders so ON q.converted_to_type = 'sales_order' AND so.id = q.converted_to_id
+                                    AND so.tenant_id = q.tenant_id
+           WHERE q.id = $1 AND q.tenant_id = $2""",
+        quote_id, tenant_id,
+    )
+    if not q:
+        return None
+    izin = {}
+    for jenis, modul in MODUL_PENAWARAN.items():
+        if modul not in izin:
+            izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_PENAWARAN.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+
+    k = _Kumpul()
+    n = q["quote_number"]
+    k.tambah(q["created_at"], "PENAWARAN_DIBUAT", f"Penawaran {n} {_rp(q['total_amount'])} dibuat", q["created_by"],
+             "quote", q["id"], n)
+    k.tambah(q["sent_at"], "PENAWARAN_DIKIRIM", f"Penawaran {n} ditandai terkirim", None, "quote", q["id"], n)
+    k.tambah(q["viewed_at"], "PENAWARAN_DILIHAT", f"Penawaran {n} dibuka pelanggan", None, "quote", q["id"], n)
+    k.tambah(q["accepted_at"], "PENAWARAN_DISETUJUI", f"Penawaran {n} disetujui pelanggan", None, "quote", q["id"], n)
+    alasan = f": {q['declined_reason']}" if q["declined_reason"] else ""
+    k.tambah(q["declined_at"], "PENAWARAN_DITOLAK", f"Penawaran {n} ditolak{alasan}", None, "quote", q["id"], n)
+    if q["status"] == "void":
+        # tak ada kolom waktu batal: updated_at (penawaran batal tak bisa disunting lagi) -- audit menimpa bila ada
+        k.tambah(q["updated_at"], "PENAWARAN_DIBATALKAN", f"Penawaran {n} dibatalkan", None, "quote", q["id"], n)
+    if q["converted_at"] and q["converted_to_type"] == "sales_order":
+        # dokumen = penawaran (supaya padanan audit QUOTE_CONVERTED menimpanya); tautan SO ada di "sales_order" atas
+        so_teks = f" {q['order_number']}" if lihat["sales_order"] and q["order_number"] else ""
+        k.tambah(q["converted_at"], "PENAWARAN_JADI_PESANAN", f"Penawaran {n} dijadikan pesanan{so_teks}", None,
+                 "quote", q["id"], n)
+    entitas_audit = {"quote": [q["id"]]}
+    keluar, total = await _selesaikan(conn, tenant_id, k, entitas_audit, lihat, limit)
+    return {
+        "quote_id": str(q["id"]),
+        "quote_number": n,
+        "sales_order": ({"id": str(q["converted_to_id"]), "order_number": q["order_number"]}
+                        if q["converted_to_type"] == "sales_order" and q["converted_to_id"] and lihat["sales_order"]
+                        else None),
         "events": keluar,
         "total": total,
         "omitted": omitted,

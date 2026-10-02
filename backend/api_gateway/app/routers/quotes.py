@@ -769,6 +769,51 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
         raise HTTPException(status_code=500, detail="Failed to create quote")
 
 
+@router.post("/calculate")
+async def calculate_quote(request: Request, body: CreateQuoteRequest):
+    """Pratinjau Penawaran TANPA menyimpan: _quote_calc + resolve_dp + penjaga PPN non-PKP YANG SAMA dengan create
+    (pola SO /calculate). KONTRAK: mengembalikan PERSIS yang akan disimpan create. Nol tulis."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _doc = await _quote_calc(conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
+                                 body.discount_type, body.discount_value)
+        from ..services.pkp_guard import tolak_ppn_bila_non_pkp as _non_pkp
+        await _non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+    dp = resolve_dp(_doc["total_amount"], body.dp_amount, body.dp_percent)
+    f = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {"success": True, "data": {
+        "subtotal": f(_doc["net_subtotal"]), "discount_amount": f(_doc["doc_discount"]),
+        "tax_amount": f(_doc["tax_amount"]), "total_amount": f(_doc["total_amount"]),
+        "dp_amount": f(dp["dp_amount"]), "dp_percent": f(dp["dp_percent"]),
+        "items": [{"line_number": i + 1, "description": ln.get("description"), "quantity": f(ln.get("quantity")),
+                   "unit_price": f(ln.get("unit_price")), "discount_percent": f(ln.get("discount_percent") or 0),
+                   "tax_rate": f(ln.get("tax_rate") or 0), "tax_amount": f(ln["tax_amount"]),
+                   "line_total": f(ln["line_total"]), "dpp": f(ln.get("dpp"))}
+                  for i, ln in enumerate(_doc["items"])],
+    }}
+
+
+@router.get("/{quote_id}/history")
+async def get_quote_history(request: Request, quote_id: str, limit: int = Query(200, ge=1, le=500),
+                            format: Optional[str] = Query(None, pattern="^events$")):
+    """Riwayat penawaran bentuk SAMA dengan GET /sales-orders/{id}/history (services/so_riwayat.riwayat_penawaran).
+    Pesanan hasil konversi disaring izin baca -> omitted[]."""
+    ctx = get_user_context(request)
+    try:
+        qid = uuid_module.UUID(quote_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.so_riwayat import riwayat_penawaran
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_penawaran(conn, ctx["tenant_id"], qid, lambda m: boleh_baca(request, m), limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    return {"success": True, "data": data}
+
+
 @router.patch("/{quote_id}", response_model=QuoteResponse)
 async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest):
     """Update an existing quote (draft only)."""
@@ -782,10 +827,14 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Check quote exists and is draft
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+                )
                 quote = await conn.fetchrow(
                     """
                     SELECT id, status FROM quotes
                     WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
                 """,
                     uuid_module.UUID(quote_id),
                     ctx["tenant_id"],
@@ -793,6 +842,31 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
+
+                # 2 Okt 2026 (MASTER, praktik umum): "Perpanjang" = HANYA expiry_date, pada penawaran terkirim/
+                # dilihat. Field lain tetap hanya draf (penjaga di bawah).
+                if body.model_fields_set == {"expiry_date"} and quote["status"] in ("sent", "viewed"):
+                    quote = await conn.fetchrow(
+                        "SELECT id, quote_number, quote_date, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2",
+                        quote["id"], ctx["tenant_id"])
+                    baru = body.expiry_date
+                    if baru is None:
+                        raise HTTPException(status_code=422, detail="Tanggal berlaku wajib diisi.")
+                    if quote["quote_date"] and baru < quote["quote_date"]:
+                        raise HTTPException(status_code=422, detail="Tanggal berlaku tidak boleh sebelum tanggal penawaran.")
+                    from ..utils.tanggal_tenant import tanggal_dokumen as _hari_ini
+                    if baru < await _hari_ini(conn, ctx["tenant_id"]):
+                        raise HTTPException(status_code=422, detail="Tanggal berlaku baru tidak boleh di masa lalu.")
+                    await conn.execute(
+                        "UPDATE quotes SET expiry_date = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+                        quote["id"], ctx["tenant_id"], baru)
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_EXPIRY_EXTENDED",
+                        ctx.get("user_id"), f"Masa berlaku penawaran {quote['quote_number']} diperpanjang sampai "
+                        f"{baru.isoformat()}", {"old": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
+                                                "new": baru.isoformat()}, source="api:quotes")
+                    return QuoteResponse(success=True, message="Quote validity extended",
+                                         data={"quote_id": quote_id, "expiry_date": baru.isoformat()})
 
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
@@ -1066,12 +1140,15 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
+            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
             # Check quote
             quote = await conn.fetchrow(
                 """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
+                FOR UPDATE
             """,
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
@@ -1120,6 +1197,11 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                 ctx["tenant_id"],
             )
 
+            await catat_riwayat(
+                conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_SENT", ctx.get("user_id"),
+                f"Penawaran {quote['quote_number']} ditandai terkirim", source="api:quotes",
+            )
+
             return QuoteResponse(
                 success=True,
                 message="Quote sent successfully",
@@ -1140,11 +1222,14 @@ async def accept_quote(request: Request, quote_id: str):
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
+            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
             quote = await conn.fetchrow(
                 """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
+                FOR UPDATE
             """,
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
@@ -1166,6 +1251,11 @@ async def accept_quote(request: Request, quote_id: str):
             """,
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
+            )
+
+            await catat_riwayat(
+                conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_ACCEPTED", ctx.get("user_id"),
+                f"Penawaran {quote['quote_number']} disetujui pelanggan", source="api:quotes",
             )
 
             return QuoteResponse(
@@ -1192,6 +1282,7 @@ async def accept_quote(request: Request, quote_id: str):
 # ═════════════════════════════════════════════════════════════════════════
 
 from ..services.dp_guard import tolak_bila_ada_uang_muka_aktif
+from ..services.so_riwayat import catat_riwayat
 
 
 async def _tolak_bila_ada_uang_muka_aktif(conn, quote_id, tenant_id, aksi: str):
@@ -1208,11 +1299,14 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
+            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
             quote = await conn.fetchrow(
                 """
                 SELECT id, status, quote_number FROM quotes
                 WHERE id = $1 AND tenant_id = $2
+                FOR UPDATE
             """,
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
@@ -1239,6 +1333,11 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
                 body.reason,
+            )
+
+            await catat_riwayat(
+                conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_DECLINED", ctx.get("user_id"),
+                f"Penawaran {quote['quote_number']} ditolak" + (f": {body.reason}" if body.reason else ""), source="api:quotes",
             )
 
             return QuoteResponse(
@@ -1269,12 +1368,15 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
+            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
             quote = await conn.fetchrow(
                 """
                 SELECT id, status, quote_number, total_amount, customer_name
                 FROM quotes
                 WHERE id = $1 AND tenant_id = $2
+                FOR UPDATE
             """,
                 uuid_module.UUID(quote_id),
                 ctx["tenant_id"],
@@ -1307,6 +1409,11 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                 f"Quote voided: {quote['quote_number']} "
                 f"(customer={quote['customer_name']}, amount={quote['total_amount']}, "
                 f"reason={reason_str})"
+            )
+
+            await catat_riwayat(
+                conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_VOIDED", ctx.get("user_id"),
+                f"Penawaran {quote['quote_number']} dibatalkan" + (f": {body.reason}" if body and body.reason else ""), source="api:quotes",
             )
 
             return QuoteResponse(
@@ -1662,219 +1769,230 @@ async def convert_to_invoice(
         )
 
 
-@router.post("/{quote_id}/to-order", response_model=QuoteResponse)
-async def convert_to_sales_order(
-    request: Request, quote_id: str, body: ConvertToOrderRequest = None
-):
-    """Convert quote to sales order.
+async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResponse:
+    """SATU jalan konversi Penawaran -> SO (to-order DAN pratinjaunya). Pemanggil membuka transaksi.
 
     2 Okt 2026 (MASTER, bug nyata): dulu TANPA kunci -- klik ganda = dua SO dari satu penawaran (cek status di luar
     kunci, keduanya lolos). Kini kunci QUOTE:{tenant}:{id} + FOR UPDATE; satu penawaran = paling banyak SATU SO,
     jadi permintaan ulang (klik ganda / coba-ulang jaringan) MENGEMBALIKAN SO yang sama (idempoten alami), bukan
     galat dan bukan SO kedua."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+    )
+    # Get quote
+    quote = await conn.fetchrow(
+        """
+        SELECT * FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+    """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Quote not found")
+
+    if (quote["status"] == "converted" and quote.get("converted_to_type") == "sales_order"
+            and quote.get("converted_to_id")):
+        so_lama = await conn.fetchrow(
+            "SELECT id, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+            quote["converted_to_id"], ctx["tenant_id"],
+        )
+        if so_lama:
+            return QuoteResponse(
+                success=True,
+                message="Quote already converted to sales order",
+                data={"quote_id": quote_id, "sales_order_id": str(so_lama["id"]),
+                      "order_number": so_lama["order_number"], "already_converted": True},
+            )
+
+    if quote["status"] not in ("sent", "accepted", "viewed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot convert quote with status '{quote['status']}'",
+        )
+
+    # Get items
+    items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
+    if body and body.item_ids:
+        items_query += " AND id = ANY($2)"
+        items = await conn.fetch(
+            items_query,
+            uuid_module.UUID(quote_id),
+            [uuid_module.UUID(id) for id in body.item_ids],
+        )
+    else:
+        items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
+
+    if not items:
+        raise HTTPException(status_code=400, detail="No items to convert")
+
+    # Generate SO number
+    so_number = await conn.fetchval(
+        "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
+    )
+
+    # Create sales order
+    so_id = uuid_module.uuid4()
+    order_date = (
+        body.order_date
+        if body and body.order_date
+        else await tanggal_dokumen(conn, ctx["tenant_id"])
+    )
+
+    # 3g: kalkulator bersama. Arti kolom SO: subtotal = SIGMA neto baris (lihat _so_doc).
+    _doc = await _quote_converted_doc(conn, ctx["tenant_id"], quote, items)
+    # #34: SO ber-PPN untuk tenant non-PKP ditolak di SEMUA jalur pembuat SO (faktur dari
+    # penawaran tetap draf dan dijaga saat posting).
+    from ..services.pkp_guard import tolak_ppn_bila_non_pkp
+    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+
+    # T199 (2026-09-01): syarat DP terbawa dari Penawaran ke Sales Order.
+    # SEBELUMNYA keenam kolom DP quote (dp_percent, dp_amount, terms,
+    # payment_bank_name, payment_account_number, payment_account_holder)
+    # LENYAP tanpa peringatan saat konversi -- Proforma (Tahap 3) tidak
+    # punya sumber untuk tahu berapa yang ditagih.
+    # `notes` adalah bagian dari PERBAIKAN YANG SAMA: kolomnya sudah ADA
+    # di sales_orders sejak awal, tapi tidak pernah disalin.
+    # Pemetaan nama: quotes.terms -> sales_orders.payment_terms (V224).
+    # Tetap TIDAK menjurnal: konversi quote->SO nol journal_entries.
+    await conn.execute(
+        """
+        INSERT INTO sales_orders (
+            id, tenant_id, order_number, order_date, expected_ship_date,
+            customer_id, customer_name,
+            subtotal, tax_amount, total_amount, discount_amount,
+            status, quote_id, created_by,
+            notes,
+            dp_percent, dp_amount, payment_terms,
+            payment_bank_name, payment_account_number,
+            payment_account_holder
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7,
+            $8, $9, $10, $20,
+            'draft', $11, $12,
+            $13,
+            $14, $15, $16,
+            $17, $18,
+            $19
+        )
+    """,
+        so_id,
+        ctx["tenant_id"],
+        so_number,
+        order_date,
+        body.expected_ship_date if body else None,
+        str(quote["customer_id"]),
+        quote["customer_name"],
+        _doc["net_subtotal"],
+        _doc["tax_amount"],
+        _doc["total_amount"],
+        uuid_module.UUID(quote_id),
+        ctx["user_id"],
+        quote["notes"],
+        quote["dp_percent"],
+        quote["dp_amount"],
+        quote["terms"],
+        quote["payment_bank_name"],
+        quote["payment_account_number"],
+        quote["payment_account_holder"],
+        _doc["doc_discount"],
+    )
+
+    for idx, ln in enumerate(_doc["items"]):
+        await conn.execute(
+            """
+            INSERT INTO sales_order_items (
+                id, sales_order_id, item_id, description,
+                quantity, unit, unit_price, discount_percent,
+                tax_id, tax_rate, tax_amount, line_total, sort_order, dpp
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+            )
+        """,
+            uuid_module.uuid4(),
+            so_id,
+            uuid_module.UUID(ln["item_id"]) if ln["item_id"] else None,
+            ln["description"],
+            ln["quantity"],
+            ln["unit"],
+            ln["unit_price"],
+            ln["discount_percent"],
+            uuid_module.UUID(ln["tax_id"]) if ln["tax_id"] else None,
+            ln["tax_rate"],
+            ln["tax_amount"],
+            ln["total"],
+            idx,
+            ln["dpp"],
+        )
+
+    # FIX_P3_BRIDGE 2026-06-16: propagate the new sales_order_id to
+    # any customer deposit already taken at the quote stage. WAJIB:
+    # a DP taken against the quote must spine-match the invoice that
+    # is later created from this SO (sales_order_id linkage).
+    # Tenant-scoped; only stamp deposits that aren't already linked.
+    propagated = await conn.execute(
+        """
+        UPDATE customer_deposits
+        SET sales_order_id = $1, updated_at = NOW()
+        WHERE quote_id = $2
+          AND tenant_id = $3
+          AND sales_order_id IS NULL
+        """,
+        so_id,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+    logger.info(
+        f"Quote->SO convert {quote_id}->{so_id}: deposit propagation {propagated}"
+    )
+
+    # Update quote status
+    await conn.execute(
+        """
+        UPDATE quotes SET
+            status = 'converted',
+            converted_to_type = 'sales_order',
+            converted_to_id = $3,
+            converted_at = NOW()
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+        so_id,
+    )
+
+    await catat_riwayat(
+        conn, ctx["tenant_id"], "quotes", quote["id"], quote.get("quote_number"), "QUOTE_CONVERTED",
+        ctx.get("user_id"), f"Penawaran {quote.get('quote_number') or ''} dijadikan pesanan {so_number}",
+        {"sales_order_id": str(so_id), "order_number": so_number}, source="api:quotes",
+    )
+
+    return QuoteResponse(
+        success=True,
+        message="Quote converted to sales order",
+        data={
+            "quote_id": quote_id,
+            "sales_order_id": str(so_id),
+            "order_number": so_number,
+        },
+    )
+
+
+@router.post("/{quote_id}/to-order", response_model=QuoteResponse)
+async def convert_to_sales_order(
+    request: Request, quote_id: str, body: ConvertToOrderRequest = None
+):
+    """Convert quote to sales order (lihat _konversi_penawaran)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
-                )
-                # Get quote
-                quote = await conn.fetchrow(
-                    """
-                    SELECT * FROM quotes
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                """,
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                )
-
-                if not quote:
-                    raise HTTPException(status_code=404, detail="Quote not found")
-
-                if (quote["status"] == "converted" and quote.get("converted_to_type") == "sales_order"
-                        and quote.get("converted_to_id")):
-                    so_lama = await conn.fetchrow(
-                        "SELECT id, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
-                        quote["converted_to_id"], ctx["tenant_id"],
-                    )
-                    if so_lama:
-                        return QuoteResponse(
-                            success=True,
-                            message="Quote already converted to sales order",
-                            data={"quote_id": quote_id, "sales_order_id": str(so_lama["id"]),
-                                  "order_number": so_lama["order_number"], "already_converted": True},
-                        )
-
-                if quote["status"] not in ("sent", "accepted", "viewed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot convert quote with status '{quote['status']}'",
-                    )
-
-                # Get items
-                items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
-                if body and body.item_ids:
-                    items_query += " AND id = ANY($2)"
-                    items = await conn.fetch(
-                        items_query,
-                        uuid_module.UUID(quote_id),
-                        [uuid_module.UUID(id) for id in body.item_ids],
-                    )
-                else:
-                    items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
-
-                if not items:
-                    raise HTTPException(status_code=400, detail="No items to convert")
-
-                # Generate SO number
-                so_number = await conn.fetchval(
-                    "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
-                )
-
-                # Create sales order
-                so_id = uuid_module.uuid4()
-                order_date = (
-                    body.order_date
-                    if body and body.order_date
-                    else await tanggal_dokumen(conn, ctx["tenant_id"])
-                )
-
-                # 3g: kalkulator bersama. Arti kolom SO: subtotal = SIGMA neto baris (lihat _so_doc).
-                _doc = await _quote_converted_doc(conn, ctx["tenant_id"], quote, items)
-                # #34: SO ber-PPN untuk tenant non-PKP ditolak di SEMUA jalur pembuat SO (faktur dari
-                # penawaran tetap draf dan dijaga saat posting).
-                from ..services.pkp_guard import tolak_ppn_bila_non_pkp
-                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
-
-                # T199 (2026-09-01): syarat DP terbawa dari Penawaran ke Sales Order.
-                # SEBELUMNYA keenam kolom DP quote (dp_percent, dp_amount, terms,
-                # payment_bank_name, payment_account_number, payment_account_holder)
-                # LENYAP tanpa peringatan saat konversi -- Proforma (Tahap 3) tidak
-                # punya sumber untuk tahu berapa yang ditagih.
-                # `notes` adalah bagian dari PERBAIKAN YANG SAMA: kolomnya sudah ADA
-                # di sales_orders sejak awal, tapi tidak pernah disalin.
-                # Pemetaan nama: quotes.terms -> sales_orders.payment_terms (V224).
-                # Tetap TIDAK menjurnal: konversi quote->SO nol journal_entries.
-                await conn.execute(
-                    """
-                    INSERT INTO sales_orders (
-                        id, tenant_id, order_number, order_date, expected_ship_date,
-                        customer_id, customer_name,
-                        subtotal, tax_amount, total_amount, discount_amount,
-                        status, quote_id, created_by,
-                        notes,
-                        dp_percent, dp_amount, payment_terms,
-                        payment_bank_name, payment_account_number,
-                        payment_account_holder
-                    ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        $6, $7,
-                        $8, $9, $10, $20,
-                        'draft', $11, $12,
-                        $13,
-                        $14, $15, $16,
-                        $17, $18,
-                        $19
-                    )
-                """,
-                    so_id,
-                    ctx["tenant_id"],
-                    so_number,
-                    order_date,
-                    body.expected_ship_date if body else None,
-                    str(quote["customer_id"]),
-                    quote["customer_name"],
-                    _doc["net_subtotal"],
-                    _doc["tax_amount"],
-                    _doc["total_amount"],
-                    uuid_module.UUID(quote_id),
-                    ctx["user_id"],
-                    quote["notes"],
-                    quote["dp_percent"],
-                    quote["dp_amount"],
-                    quote["terms"],
-                    quote["payment_bank_name"],
-                    quote["payment_account_number"],
-                    quote["payment_account_holder"],
-                    _doc["doc_discount"],
-                )
-
-                for idx, ln in enumerate(_doc["items"]):
-                    await conn.execute(
-                        """
-                        INSERT INTO sales_order_items (
-                            id, sales_order_id, item_id, description,
-                            quantity, unit, unit_price, discount_percent,
-                            tax_id, tax_rate, tax_amount, line_total, sort_order, dpp
-                        ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-                        )
-                    """,
-                        uuid_module.uuid4(),
-                        so_id,
-                        uuid_module.UUID(ln["item_id"]) if ln["item_id"] else None,
-                        ln["description"],
-                        ln["quantity"],
-                        ln["unit"],
-                        ln["unit_price"],
-                        ln["discount_percent"],
-                        uuid_module.UUID(ln["tax_id"]) if ln["tax_id"] else None,
-                        ln["tax_rate"],
-                        ln["tax_amount"],
-                        ln["total"],
-                        idx,
-                        ln["dpp"],
-                    )
-
-                # FIX_P3_BRIDGE 2026-06-16: propagate the new sales_order_id to
-                # any customer deposit already taken at the quote stage. WAJIB:
-                # a DP taken against the quote must spine-match the invoice that
-                # is later created from this SO (sales_order_id linkage).
-                # Tenant-scoped; only stamp deposits that aren't already linked.
-                propagated = await conn.execute(
-                    """
-                    UPDATE customer_deposits
-                    SET sales_order_id = $1, updated_at = NOW()
-                    WHERE quote_id = $2
-                      AND tenant_id = $3
-                      AND sales_order_id IS NULL
-                    """,
-                    so_id,
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                )
-                logger.info(
-                    f"Quote->SO convert {quote_id}->{so_id}: deposit propagation {propagated}"
-                )
-
-                # Update quote status
-                await conn.execute(
-                    """
-                    UPDATE quotes SET
-                        status = 'converted',
-                        converted_to_type = 'sales_order',
-                        converted_to_id = $3,
-                        converted_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                    so_id,
-                )
-
-                return QuoteResponse(
-                    success=True,
-                    message="Quote converted to sales order",
-                    data={
-                        "quote_id": quote_id,
-                        "sales_order_id": str(so_id),
-                        "order_number": so_number,
-                    },
-                )
+                return await _konversi_penawaran(conn, ctx, quote_id, body)
 
     except HTTPException:
         raise
@@ -1884,6 +2002,70 @@ async def convert_to_sales_order(
             status_code=500, detail="Failed to convert quote to sales order"
         )
 
+
+class _Batalkan(Exception):
+    """Pembatal transaksi pratinjau (membawa hasilnya keluar)."""
+
+    def __init__(self, isi):
+        self.isi = isi
+
+
+@router.post("/{quote_id}/to-order/preview")
+async def preview_convert_to_sales_order(
+    request: Request, quote_id: str, body: ConvertToOrderRequest = None
+):
+    """Pratinjau to-order: menjalankan _konversi_penawaran YANG SAMA di dalam transaksi lalu MEMBATALKANNYA -> nol
+    tulis (nomor SO dari tabel penghitung ikut kembali), angka PERSIS yang akan disimpan. `payload` = badan POST
+    to-order apa adanya. Penawaran yang sudah jadi pesanan -> already_converted + SO-nya."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    payload = body.model_dump(mode="json", exclude_none=True) if body else {}
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                r = await _konversi_penawaran(conn, ctx, quote_id, body)
+                so_id = uuid_module.UUID(r.data["sales_order_id"])
+                so = await conn.fetchrow(
+                    """SELECT order_number, order_date, expected_ship_date, customer_id, customer_name, subtotal,
+                              discount_amount, tax_amount, total_amount, notes, dp_percent, dp_amount, payment_terms,
+                              payment_bank_name, payment_account_number, payment_account_holder
+                       FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, ctx["tenant_id"])
+                baris = await conn.fetch(
+                    """SELECT description, quantity, unit, unit_price, discount_percent, tax_rate, tax_amount,
+                              line_total, dpp FROM sales_order_items WHERE sales_order_id = $1 ORDER BY sort_order""",
+                    so_id)
+                dep = await conn.fetchval(
+                    """SELECT count(*) FROM customer_deposits WHERE tenant_id = $1 AND quote_id = $2
+                         AND status <> 'void'""", ctx["tenant_id"], uuid_module.UUID(quote_id))
+                raise _Batalkan((r, so, baris, dep))
+    except _Batalkan as b:
+        r, so, baris, dep = b.isi
+    f = lambda v: float(v) if v is not None else None  # noqa: E731
+    if r.data.get("already_converted"):
+        return {"success": True, "data": {"already_converted": True, "sales_order_id": r.data["sales_order_id"],
+                                          "order_number": r.data["order_number"], "payload": payload}}
+    return {"success": True, "data": {
+        "already_converted": False,
+        "payload": payload,
+        "sales_order": {
+            "order_number_preview": so["order_number"],
+            "order_date": so["order_date"].isoformat() if so["order_date"] else None,
+            "expected_ship_date": so["expected_ship_date"].isoformat() if so["expected_ship_date"] else None,
+            "customer_id": str(so["customer_id"]) if so["customer_id"] else None,
+            "customer_name": so["customer_name"],
+            "subtotal": f(so["subtotal"]), "discount_amount": f(so["discount_amount"]),
+            "tax_amount": f(so["tax_amount"]), "total_amount": f(so["total_amount"]),
+            "notes": so["notes"],
+            "dp_percent": f(so["dp_percent"]), "dp_amount": f(so["dp_amount"]), "payment_terms": so["payment_terms"],
+            "payment_bank_name": so["payment_bank_name"], "payment_account_number": so["payment_account_number"],
+            "payment_account_holder": so["payment_account_holder"],
+            "items": [{"description": x["description"], "quantity": f(x["quantity"]), "unit": x["unit"],
+                       "unit_price": f(x["unit_price"]), "discount_percent": f(x["discount_percent"] or 0),
+                       "tax_rate": f(x["tax_rate"] or 0), "tax_amount": f(x["tax_amount"]),
+                       "line_total": f(x["line_total"]), "dpp": f(x["dpp"])} for x in baris],
+        },
+        "deposits_to_link": int(dep or 0),
+    }}
 
 # =============================================================================
 # GENERATE PDF

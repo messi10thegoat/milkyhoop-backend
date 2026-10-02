@@ -241,7 +241,8 @@ async def test_pkp_ber_ppn_jalan(pasang):
 def test_konversi_penawaran_ke_so_menjaga_sebelum_insert():
     tree = ast.parse(open(Q.__file__, encoding="utf-8").read())
     fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == "convert_to_sales_order")
+              # 2 Okt 2026: logika konversi pindah ke _konversi_penawaran (SATU jalan to-order + pratinjaunya)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_konversi_penawaran")
     jaga = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
             and getattr(n.func, "id", None) == "tolak_ppn_bila_non_pkp"]
     ins = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant)
