@@ -383,7 +383,9 @@ POST /api/quotes/{quote_id}/duplicate
 POST /api/quotes/{quote_id}/send
 POST /api/quotes/{quote_id}/to-invoice
 POST /api/quotes/{quote_id}/to-order
+POST /api/quotes/{quote_id}/to-order/preview
 POST /api/quotes/{quote_id}/void
+POST /api/quotes/calculate
 POST /api/receive-payments
 POST /api/receive-payments/preview-journal
 POST /api/receive-payments/{payment_id}/allocations/{allocation_id}/unapply

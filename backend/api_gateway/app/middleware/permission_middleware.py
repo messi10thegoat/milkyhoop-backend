@@ -28,6 +28,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-invoices/summary$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices/calculate$", ["POST"], "sales_invoice", "R"),
     (r"^/api/sales-orders/calculate$", ["POST"], "sales_order", "R"),  # 3d pratinjau
+    (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     # L1 lampiran SO (24 Sep 2026) -- eksplisit, di atas pola umum SO. Tanpa
     # baris ini POST .../attachments jatuh ke `^/api/sales-orders` POST = "C":
     # menambah lampiran ke SO yang SUDAH ADA = mengubahnya ("U").

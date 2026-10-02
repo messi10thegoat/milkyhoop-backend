@@ -1004,6 +1004,11 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
 
+        # 2 Okt 2026 (putusan pemilik): uang muka WAJIB lewat SO (pola NetSuite customer deposit) -- penawaran saja
+        # tak boleh menampung DP. Diukur: DP ber-quote_id tanpa SO yang hidup = 0 (kaos 7 semuanya void).
+        if body.quote_id and not body.sales_order_id and not body.proforma_id:
+            raise HTTPException(status_code=422, detail="Uang muka wajib lewat SO. Jadikan penawaran pesanan dulu.")
+
         pool = await get_pool()
 
         # Fase C1.4: precondition gate (one-time per process). Required
