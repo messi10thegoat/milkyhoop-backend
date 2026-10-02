@@ -555,7 +555,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/reports/aging-snapshot$", ["POST"], "report", "C"),
     (r"^/api/settings/aging-snapshot$", ["POST"], "report", "C"),
     (r"^/api/settings/accounting$", ["POST"], "tenant_settings", "U"),
-    (r"^/api/settings/order-codes/preview$", ["POST"], "tenant_settings", "R"),  # V359 pratinjau, nol tulis
+    (r"^/api/settings/order-codes/preview$", ["POST"], "tenant_settings", "U"),  # V359 pratinjau (izin = tulisnya), nol tulis
     # -- [A] modul dihibahkan ADMIN (V258) --
     (r"^/api/branches", ["POST"], "branch", "C"),
     (r"^/api/branches", ["PUT", "PATCH"], "branch", "U"),
