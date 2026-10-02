@@ -814,6 +814,32 @@ async def get_quote_history(request: Request, quote_id: str, limit: int = Query(
     return {"success": True, "data": data}
 
 
+async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> QuoteResponse:
+    """Perpanjang (2 Okt 2026, MASTER): HANYA expiry_date pada penawaran sent/viewed. Fungsi terpisah dari
+    update_quote supaya penjaga pelanggan-satu-tenant tetap mendahului UPDATE quotes di jalur ubah penuh."""
+    quote = await conn.fetchrow(
+        "SELECT id, quote_number, quote_date, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2",
+        quote["id"], ctx["tenant_id"])
+    baru = body.expiry_date
+    if baru is None:
+        raise HTTPException(status_code=422, detail="Tanggal berlaku wajib diisi.")
+    if quote["quote_date"] and baru < quote["quote_date"]:
+        raise HTTPException(status_code=422, detail="Tanggal berlaku tidak boleh sebelum tanggal penawaran.")
+    from ..utils.tanggal_tenant import tanggal_dokumen as _hari_ini
+    if baru < await _hari_ini(conn, ctx["tenant_id"]):
+        raise HTTPException(status_code=422, detail="Tanggal berlaku baru tidak boleh di masa lalu.")
+    await conn.execute(
+        "UPDATE quotes SET expiry_date = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+        quote["id"], ctx["tenant_id"], baru)
+    await catat_riwayat(
+        conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_EXPIRY_EXTENDED",
+        ctx.get("user_id"), f"Masa berlaku penawaran {quote['quote_number']} diperpanjang sampai "
+        f"{baru.isoformat()}", {"old": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
+                                "new": baru.isoformat()}, source="api:quotes")
+    return QuoteResponse(success=True, message="Quote validity extended",
+                         data={"quote_id": quote_id, "expiry_date": baru.isoformat()})
+
+
 @router.patch("/{quote_id}", response_model=QuoteResponse)
 async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest):
     """Update an existing quote (draft only)."""
@@ -846,27 +872,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 # 2 Okt 2026 (MASTER, praktik umum): "Perpanjang" = HANYA expiry_date, pada penawaran terkirim/
                 # dilihat. Field lain tetap hanya draf (penjaga di bawah).
                 if body.model_fields_set == {"expiry_date"} and quote["status"] in ("sent", "viewed"):
-                    quote = await conn.fetchrow(
-                        "SELECT id, quote_number, quote_date, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2",
-                        quote["id"], ctx["tenant_id"])
-                    baru = body.expiry_date
-                    if baru is None:
-                        raise HTTPException(status_code=422, detail="Tanggal berlaku wajib diisi.")
-                    if quote["quote_date"] and baru < quote["quote_date"]:
-                        raise HTTPException(status_code=422, detail="Tanggal berlaku tidak boleh sebelum tanggal penawaran.")
-                    from ..utils.tanggal_tenant import tanggal_dokumen as _hari_ini
-                    if baru < await _hari_ini(conn, ctx["tenant_id"]):
-                        raise HTTPException(status_code=422, detail="Tanggal berlaku baru tidak boleh di masa lalu.")
-                    await conn.execute(
-                        "UPDATE quotes SET expiry_date = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
-                        quote["id"], ctx["tenant_id"], baru)
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_EXPIRY_EXTENDED",
-                        ctx.get("user_id"), f"Masa berlaku penawaran {quote['quote_number']} diperpanjang sampai "
-                        f"{baru.isoformat()}", {"old": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
-                                                "new": baru.isoformat()}, source="api:quotes")
-                    return QuoteResponse(success=True, message="Quote validity extended",
-                                         data={"quote_id": quote_id, "expiry_date": baru.isoformat()})
+                    return await _perpanjang_penawaran(conn, ctx, quote_id, body, quote)
 
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
