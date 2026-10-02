@@ -121,3 +121,22 @@ def test_patch_hanya_judul_lolos_di_so_confirmed(monkeypatch):
     monkeypatch.setattr(KO, "ubah_judul", judul)
     r = asyncio.run(SO.update_sales_order(object(), str(sid), UpdateSalesOrderRequest(order_title="kemeja")))
     assert r.success and dipanggil == ["kemeja"] and not any("UPDATE sales_orders SET" in s for s in tulis)
+
+
+@pytest.mark.parametrize("modul,fungsi,pemicu", [
+    ("customer_deposits", "_post_deposit", '"deposit"'),
+    ("customer_deposits", "apply_deposit_core", '"deposit_application"'),
+    ("receive_payments", "_post_payment", '"payment"'),
+])
+def test_tiga_inti_uang_masuk_menerbitkan_kode_sesudah_jurnal(modul, fungsi, pemicu):
+    """Fase 2 (diuji nyata di salinan DB 8/8: DP/penerimaan terbit, idempoten, tenant mati no-op, bersamaan tanpa
+    lubang, PARITAS jurnal setelan nyala==mati). Di sini: tiap inti memanggil terbitkan dgn pemicunya, SESUDAH tulisan
+    jurnal/alokasi inti itu (urutan kunci: kunci inti -> ORDER_CODE_SO -> ORDER_CODE periode)."""
+    import importlib
+    m = importlib.import_module(f"app.routers.{modul}")
+    src = inspect.getsource(getattr(m, fungsi))
+    i = src.index("_terbitkan_kode(")
+    assert pemicu in src[i:i + 300]
+    jangkar = {"_post_deposit": "SET status = 'posted', journal_id", "apply_deposit_core": "INSERT INTO customer_deposit_applications",
+               "_post_payment": "SET status = 'posted',"}[fungsi]
+    assert src.index(jangkar) < i

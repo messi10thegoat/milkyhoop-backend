@@ -1609,6 +1609,14 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
         ctx["user_id"],
     )
 
+    # V359 kode order: uang muka PERTAMA untuk SO -> kode terbit (transaksi yang sama, sesudah jurnal; tak
+    # menyentuh jurnal/nominal). Uang muka lepas (tanpa SO/proforma) -> tak ada SO -> no-op.
+    if dep["sales_order_id"] or dep["proforma_id"]:
+        from ..services.kode_order import terbitkan as _terbitkan_kode
+        _so = await resolve_order_id_for_deposit(conn, ctx["tenant_id"], dep["sales_order_id"], dep["proforma_id"])
+        await _terbitkan_kode(conn, ctx["tenant_id"], _so, dep["deposit_date"], "deposit", ctx["user_id"],
+                              dep["deposit_number"])
+
     return {"journal_id": str(journal_id), "journal_number": journal_number}
 
 
@@ -1921,6 +1929,17 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
                 "amount": app.amount,
             }
         )
+
+    # V359 kode order: penerapan uang muka / kredit pelanggan (KRD) ke faktur SO = uang masuk untuk SO itu
+    # (putusan pemilik/MASTER 2 Okt; nota kredit BUKAN). Idempoten: SO yang sudah berkode -> no-op.
+    from ..services.kode_order import terbitkan as _terbitkan_kode
+    for _so in await conn.fetch(
+        """SELECT DISTINCT sales_order_id FROM sales_invoices
+           WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND sales_order_id IS NOT NULL""",
+        ctx["tenant_id"], [UUID(a["invoice_id"]) for a in applications_created],
+    ):
+        await _terbitkan_kode(conn, ctx["tenant_id"], _so["sales_order_id"], application_date,
+                              "deposit_application", ctx["user_id"], dep["deposit_number"])
 
     # Deposit status will be updated by trigger
     logger.info(

@@ -2115,6 +2115,17 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
         ctx["user_id"],
     )
 
+    # V359 kode order: penerimaan yang melunasi faktur SO = uang masuk untuk SO itu -> kode terbit bila belum.
+    from ..services.kode_order import terbitkan as _terbitkan_kode
+    for _so in await conn.fetch(
+        """SELECT DISTINCT si.sales_order_id FROM receive_payment_allocations rpa
+           JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1
+           WHERE rpa.payment_id = $2 AND rpa.status = 'active' AND si.sales_order_id IS NOT NULL""",
+        ctx["tenant_id"], payment_id,
+    ):
+        await _terbitkan_kode(conn, ctx["tenant_id"], _so["sales_order_id"], payment["payment_date"], "payment",
+                              ctx["user_id"], payment["payment_number"])
+
     return {
         "journal_id": str(journal_id),
         "journal_number": journal_number,
