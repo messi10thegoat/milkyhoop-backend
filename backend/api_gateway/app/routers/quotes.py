@@ -1666,18 +1666,27 @@ async def convert_to_invoice(
 async def convert_to_sales_order(
     request: Request, quote_id: str, body: ConvertToOrderRequest = None
 ):
-    """Convert quote to sales order."""
+    """Convert quote to sales order.
+
+    2 Okt 2026 (MASTER, bug nyata): dulu TANPA kunci -- klik ganda = dua SO dari satu penawaran (cek status di luar
+    kunci, keduanya lolos). Kini kunci QUOTE:{tenant}:{id} + FOR UPDATE; satu penawaran = paling banyak SATU SO,
+    jadi permintaan ulang (klik ganda / coba-ulang jaringan) MENGEMBALIKAN SO yang sama (idempoten alami), bukan
+    galat dan bukan SO kedua."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+                )
                 # Get quote
                 quote = await conn.fetchrow(
                     """
                     SELECT * FROM quotes
                     WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
                 """,
                     uuid_module.UUID(quote_id),
                     ctx["tenant_id"],
@@ -1685,6 +1694,20 @@ async def convert_to_sales_order(
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Quote not found")
+
+                if (quote["status"] == "converted" and quote.get("converted_to_type") == "sales_order"
+                        and quote.get("converted_to_id")):
+                    so_lama = await conn.fetchrow(
+                        "SELECT id, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                        quote["converted_to_id"], ctx["tenant_id"],
+                    )
+                    if so_lama:
+                        return QuoteResponse(
+                            success=True,
+                            message="Quote already converted to sales order",
+                            data={"quote_id": quote_id, "sales_order_id": str(so_lama["id"]),
+                                  "order_number": so_lama["order_number"], "already_converted": True},
+                        )
 
                 if quote["status"] not in ("sent", "accepted", "viewed"):
                     raise HTTPException(
