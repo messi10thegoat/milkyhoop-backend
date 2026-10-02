@@ -26,6 +26,8 @@ KHUSUS = {
     # pelunasan faktur/pesanan menulis receive_payments (penulis bersama so_pelunasan._jalankan_inti)
     "POST /api/sales-invoices/{invoice_id}/receive-payment/preview": "POST /api/receive-payments",
     "POST /api/sales-orders/{order_id}/receive-payment/preview": "POST /api/receive-payments",
+    # V359 kode order: pratinjau setelan -> PUT setelan (PEMILIK; izin rute tenant_settings U)
+    "POST /api/settings/order-codes/preview": "PUT /api/settings/order-codes",
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {
