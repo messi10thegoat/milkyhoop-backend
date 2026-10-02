@@ -513,8 +513,9 @@ async def get_sales_order_detail(request: Request, order_id: str):
             termin_n, termin_sumber = await termin_hari(
                 conn, ctx["tenant_id"], order.get("payment_terms"), order.get("customer_id"))
             from ..services.kode_order import boleh_ganti_kode
-            _boleh_kode = bool(order.get("order_code")) and await boleh_ganti_kode(
-                conn, ctx["tenant_id"], ctx.get("user_id"))
+            # Boleh isi/ganti kode TAK bergantung pada kode sudah ada: tenant pemicu manual_only (dan SO yang belum
+            # terbit kodenya) mengisi lewat jalur yang sama (pemilik: "nomor job order bisa diinput manual").
+            _boleh_kode = await boleh_ganti_kode(conn, ctx["tenant_id"], ctx.get("user_id"))
 
             return SalesOrderDetailResponse(
                 success=True,

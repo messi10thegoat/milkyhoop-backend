@@ -140,3 +140,11 @@ def test_tiga_inti_uang_masuk_menerbitkan_kode_sesudah_jurnal(modul, fungsi, pem
     jangkar = {"_post_deposit": "SET status = 'posted', journal_id", "apply_deposit_core": "INSERT INTO customer_deposit_applications",
                "_post_payment": "SET status = 'posted',"}[fungsi]
     assert src.index(jangkar) < i
+
+
+def test_boleh_isi_kode_tak_bergantung_kode_sudah_ada():
+    """manual_only / SO tanpa kode: pensil HARUS bisa tampil untuk MENGISI kode (2 Okt, temuan uji nyata FRONTEND)."""
+    from app.routers import sales_orders as SO
+    src = inspect.getsource(SO.get_sales_order_detail)
+    i = src.index("_boleh_kode = ")
+    assert "order_code" not in src[i:src.index("\n", i)]
