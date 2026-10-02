@@ -129,6 +129,7 @@ class ShipmentDetail(BaseModel):
 class CreateSalesOrderRequest(BaseModel):
     """Schema for creating a new sales order."""
     order_number: Optional[str] = None  # opsional; kosong -> auto-generate (unik/tenant)
+    order_title: Optional[str] = None  # V359: judul order; server memangkas + HURUF BESAR, maks 60
     order_date: date = Field(..., description="Order date")
     expected_ship_date: Optional[date] = Field(None, description="Expected shipping date")
     customer_id: str = Field(..., description="Customer UUID")
@@ -201,6 +202,8 @@ class CreateSalesOrderRequest(BaseModel):
 class UpdateSalesOrderRequest(BaseModel):
     """Schema for updating an existing sales order (draft only)."""
     order_number: Optional[str] = None  # edit nomor hanya saat draft (unik/tenant)
+    # V359: judul order -- boleh diubah di SEMUA status (label, bukan uang). Body HANYA {order_title} = jalur sendiri.
+    order_title: Optional[str] = None
     order_date: Optional[date] = None
     expected_ship_date: Optional[date] = None
     customer_id: Optional[str] = None
@@ -291,6 +294,8 @@ class SalesOrderListItem(BaseModel):
     """Summary schema for sales order list."""
     id: str
     order_number: str
+    order_code: Optional[str] = None  # V359 kode order produksi (server menerbitkan)
+    order_title: Optional[str] = None  # V359 judul order (HURUF BESAR)
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str
@@ -336,6 +341,11 @@ class SalesOrderDetail(BaseModel):
     """Full detail schema for single sales order."""
     id: str
     order_number: str
+    # V359 kode order: kunci SELALU ada (null bila kosong) -- FE memakai keberadaan kunci sebagai tanda BE baru.
+    order_code: Optional[str] = None
+    order_title: Optional[str] = None
+    order_code_source: Optional[str] = None
+    order_code_can_override: bool = False  # keputusan SERVER: allow_override tenant DAN peran OWNER/ADMIN
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str

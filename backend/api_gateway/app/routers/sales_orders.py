@@ -188,7 +188,7 @@ async def list_sales_orders(
             list_query = f"""
                 SELECT id, order_number, order_date, expected_ship_date, customer_id, customer_name,
                        subtotal, discount_amount, tax_amount, shipping_amount, total_amount,
-                       status, shipped_qty, invoiced_qty, created_at, quote_id
+                       status, shipped_qty, invoiced_qty, created_at, quote_id, order_code, order_title
                 FROM sales_orders
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -205,6 +205,8 @@ async def list_sales_orders(
                 SalesOrderListItem(
                     id=str(row["id"]),
                     order_number=row["order_number"],
+                    order_code=row["order_code"],
+                    order_title=row["order_title"],
                     order_date=row["order_date"].isoformat(),
                     expected_ship_date=row["expected_ship_date"].isoformat()
                     if row["expected_ship_date"]
@@ -510,10 +512,17 @@ async def get_sales_order_detail(request: Request, order_id: str):
 
             termin_n, termin_sumber = await termin_hari(
                 conn, ctx["tenant_id"], order.get("payment_terms"), order.get("customer_id"))
+            from ..services.kode_order import boleh_ganti_kode
+            _boleh_kode = bool(order.get("order_code")) and await boleh_ganti_kode(
+                conn, ctx["tenant_id"], ctx.get("user_id"))
 
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
+                    order_code=order.get("order_code"),
+                    order_title=order.get("order_title"),
+                    order_code_source=order.get("order_code_source"),
+                    order_code_can_override=_boleh_kode,
                     completed_source=order.get("completed_source"),  # V315 (.get: kode aman sebelum migrasi)
                     payment_terms_days=termin_n,
                     payment_terms_source=termin_sumber,
@@ -739,6 +748,11 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     if cust:
                         body.customer_name = cust["nama"]
 
+                from ..services.kode_order import KodeOrderGalat, normal_judul
+                try:
+                    _judul_order = normal_judul(body.order_title)
+                except KodeOrderGalat as e:
+                    raise HTTPException(status_code=422, detail=str(e))
                 order_id = uuid_module.uuid4()
                 await conn.execute(
                     """
@@ -752,11 +766,11 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         payment_bank_name, payment_account_number,
                         payment_account_holder,
                         shipping_tax_code_id, shipping_tax_rate, shipping_tax_amount, shipping_dpp,
-                        dp_amount_source
+                        dp_amount_source, order_title
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                         $12, $13, $14, $15, $16, 'draft', $17, $18, $19,
-                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
                     )
                 """,
                     order_id,
@@ -792,6 +806,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     _doc["shipping_tax_amount"],
                     _doc["shipping_dpp"],
                     _dp["dp_amount_source"],
+                    _judul_order,
                 )
 
                 for idx, item in enumerate(calculated_items):
@@ -919,6 +934,21 @@ async def update_sales_order(
 
                 if not order:
                     raise HTTPException(status_code=404, detail="Sales order not found")
+
+                # V359 judul order: label, bukan uang -> boleh di SEMUA status. Diterapkan lewat jalur sendiri
+                # (services/kode_order.ubah_judul: normalisasi + riwayat), lalu dibuang dari body supaya penjaga
+                # status draf di bawah hanya berlaku untuk field lain.
+                if "order_title" in body.model_fields_set:
+                    from ..services.kode_order import KodeOrderGalat, ubah_judul
+                    try:
+                        await ubah_judul(conn, ctx["tenant_id"], order["id"], body.order_title, ctx["user_id"])
+                    except KodeOrderGalat as e:
+                        raise HTTPException(status_code=422, detail=str(e))
+                    body.__pydantic_fields_set__.discard("order_title")
+                    if not body.model_fields_set:
+                        return SalesOrderResponse(
+                            success=True, message="Sales order updated", data={"id": order_id}
+                        )
 
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))

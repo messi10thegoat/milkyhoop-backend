@@ -212,7 +212,8 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
-        """SELECT id, order_number, customer_name, customer_id, status, total_amount, expected_ship_date, quote_id
+        """SELECT id, order_number, customer_name, customer_id, status, total_amount, expected_ship_date, quote_id,
+                  order_code, order_title
            FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, tid)
     if not so:
         raise HTTPException(status_code=404, detail="Sales order not found")
@@ -341,6 +342,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
             break
     return {
         "so": {"id": str(sid), "number": so["order_number"], "customer": so["customer_name"] or "",
+               "order_code": so["order_code"], "order_title": so["order_title"],  # V359 kode order
                "position_text": posisi["position_text"], "total": _uang(total),
                "paid": _uang(r["tertutup"] - r["credit_note"]), "balance": _uang(sisa),
                # P5: untuk wa.me / email di FE (tambahan; skema so tak membatasi medan tambahan)
