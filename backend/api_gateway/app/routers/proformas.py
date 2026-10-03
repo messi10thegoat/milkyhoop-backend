@@ -605,12 +605,12 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 order = await fetch_order_or_404(conn, ctx["tenant_id"], oid)
 
                 if order["status"] not in SO_BILLABLE_STATUSES:
-                    raise HTTPException(
+                    raise HTTPException(  # 3 Okt: kode stabil (bentuk sama dgn SO_NOT_ACCEPTING_DEPOSIT)
                         status_code=400,
-                        detail=(
+                        detail={"code": "SO_NOT_BILLABLE", "message": (
                             f"Sales Order berstatus '{order['status']}' tidak bisa ditagih "
                             f"dengan proforma. Harus 'confirmed' ke atas."
-                        ),
+                        )},
                     )
 
                 order_total = _f(order["total_amount"]) or 0.0
@@ -816,7 +816,8 @@ async def issue_proforma(request: Request, proforma_id: str):
                 if order["status"] not in SO_BILLABLE_STATUSES:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Sales Order berstatus '{order['status']}' tidak bisa ditagih.",
+                        detail={"code": "SO_NOT_BILLABLE",
+                                "message": f"Sales Order berstatus '{order['status']}' tidak bisa ditagih."},
                     )
 
                 await assert_within_order_total(
