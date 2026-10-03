@@ -408,7 +408,8 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
     for so_id, (i, kode, judul, so) in per_so.items():
         if so["order_code"] == kode and judul is None:
             continue
-        sekarang = await conn.fetchrow("SELECT order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
+        sekarang = await conn.fetchrow(
+            "SELECT order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
         if sekarang["order_code"] not in (None, kode):
             raise KodeOrderGalat(f"Pesanan {so['order_number']} berubah kodenya selama impor; ulangi pratinjau.")
         await conn.execute(
@@ -419,6 +420,12 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
         if sekarang["order_code"] is None:
             await _catat(conn, tenant_id, so_id, so["order_number"], None, kode, "import", aktor, "ORDER_CODE_IMPORTED",
                          f"{s['label']} {kode} diimpor", {"code": kode})
+        if judul is not None and judul != sekarang["order_title"]:
+            # 3 Okt (pemilik): SETIAP perubahan judul tampil di riwayat SO "dari -> ke" -- impor juga (bentuk = ubah_judul)
+            from .so_riwayat import catat_riwayat
+            await catat_riwayat(conn, tenant_id, "sales_order", so_id, so["order_number"], "ORDER_TITLE_CHANGED", aktor,
+                                f"Judul order: {sekarang['order_title'] or '—'} → {judul}",
+                                {"old": sekarang["order_title"], "new": judul}, source="api:kode_order.impor")
     for pk, seq in penghitung.items():
         await conn.execute(
             """INSERT INTO order_code_counters (tenant_id, period_key, last_seq) VALUES ($1, $2, $3)
