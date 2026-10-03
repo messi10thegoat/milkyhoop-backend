@@ -63,6 +63,7 @@ RINGKAS_AUDIT = {
     "PROFORMA_ISSUED": "Proforma diterbitkan",
     "PROFORMA_CANCELLED": "Proforma dibatalkan",
     "PROFORMA_UPDATED": "Proforma diubah",
+    "QUOTE_UPDATED": "Penawaran diubah",
     "SALES_INVOICE_LINKED_TO_ORDER": "Faktur ditautkan ke pesanan",
     "REVENUE_RECOGNIZED_NON_STOCK": "Pendapatan non-stok diakui",
     "SALES_INVOICE_VOIDED": "Faktur dibatalkan (void)",

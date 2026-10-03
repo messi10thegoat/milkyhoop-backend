@@ -33,6 +33,8 @@ class DBQ(DB):
             return "QUO-UJI-0001"
         if s.startswith("SELECT 1 FROM quotes"):
             return None
+        if s.startswith("SELECT quote_number FROM quotes"):  # audit QUOTE_UPDATED (3 Okt)
+            return "QUO-UJI-0001"
         return await super().fetchval(sql, *a)
 
     async def fetchrow(self, sql, *a):

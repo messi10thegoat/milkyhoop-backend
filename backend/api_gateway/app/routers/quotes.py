@@ -1076,6 +1076,20 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     """
                     await conn.execute(update_query, *params)
 
+                _ubah = sorted(set(update_data) | ({"items"} if body.items is not None else set())
+                               | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
+                if _ubah:
+                    # 3 Okt 2026 (MASTER): riwayat Penawaran 'diubah' -- pola SO (SALES_ORDER_UPDATED): tak punya kolom
+                    # aktor -> audit_logs di transaksi YANG SAMA (gagal mencatat = suntingan batal). 'Dibuat' tetap
+                    # dari kolom created_at/created_by (beraktor) seperti SO -- tak perlu QUOTE_CREATED.
+                    _nomor = await conn.fetchval("SELECT quote_number FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                                 uuid_module.UUID(quote_id), ctx["tenant_id"])
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "quotes", uuid_module.UUID(quote_id), _nomor, "QUOTE_UPDATED",
+                        ctx.get("user_id"), "Penawaran diubah (" + ", ".join(_ubah) + ")", {"fields": _ubah},
+                        source="api:quotes.update",
+                    )
+
                 return QuoteResponse(
                     success=True,
                     message="Quote updated successfully",
