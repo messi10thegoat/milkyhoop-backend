@@ -21,7 +21,7 @@ Journal Entry on POST (From Deposit):
 
 from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import date
 
 
@@ -142,6 +142,8 @@ class AllocationResponse(BaseModel):
 
 class ReceivePaymentListItem(BaseModel):
     """Receive payment item for list responses."""
+    order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
+    order_code_label: Optional[str] = None
 
     id: str
     payment_number: str
@@ -175,6 +177,8 @@ class ReceivePaymentListItem(BaseModel):
 
 class ReceivePaymentDetail(BaseModel):
     """Full receive payment detail."""
+    order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
+    order_code_label: Optional[str] = None
 
     id: str
     payment_number: str

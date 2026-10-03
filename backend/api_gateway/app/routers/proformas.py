@@ -416,6 +416,8 @@ async def list_proformas(
                                    tb[r["id"]]["paid_breakdown"] if r["id"] in tb else None)
                 for r in rows
             ]
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "proforma", items)
 
             page = (skip // limit) + 1 if limit > 0 else 1
             total_pages = (total + limit - 1) // limit if limit > 0 else 1
@@ -486,6 +488,8 @@ async def get_proforma_detail(request: Request, proforma_id: str):
                 for d in deposits
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "proforma", [data])
             return {"success": True, "data": data}
 
     except HTTPException:

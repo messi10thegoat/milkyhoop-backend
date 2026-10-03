@@ -53,6 +53,37 @@ ENTITAS_AUDIT = {
 # Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).
 AKTOR_SISTEM = "__sistem__"
 
+# Label manusia untuk metadata.fields kejadian "*_UPDATED" (3 Okt 2026, MASTER): dirender SAAT BACA supaya baris lama
+# ikut membaik; ringkas tersimpan dibiarkan. Urutan tampil = urutan daftar ini; label ganda (diskon, uang muka, rekening,
+# pelanggan, ...) dirapatkan; medan tak dikenal tampil dengan NAMA ASLINYA (tak disembunyikan).
+LABEL_MEDAN = [
+    ("customer_id", "pelanggan"), ("customer_name", "pelanggan"), ("customer_email", "pelanggan"),
+    ("quote_number", "nomor"), ("order_number", "nomor"),
+    ("quote_date", "tanggal"), ("order_date", "tanggal"), ("expiry_date", "berlaku sampai"),
+    ("expected_ship_date", "tanggal kirim"), ("subject", "perihal"), ("reference", "referensi"),
+    ("order_title", "judul"), ("items", "barang"),
+    ("discount_type", "diskon"), ("discount_value", "diskon"), ("discount_amount", "diskon"),
+    ("shipping_address", "alamat kirim"), ("shipping_method", "cara kirim"), ("shipping_amount", "ongkir"),
+    ("shipping_tax_code_id", "ongkir"), ("dp_percent", "uang muka"), ("dp_amount", "uang muka"),
+    ("payment_bank_name", "rekening"), ("payment_account_number", "rekening"), ("payment_account_holder", "rekening"),
+    ("terms", "syarat pembayaran"), ("payment_terms", "syarat pembayaran"),
+    ("opening_text", "teks pembuka"), ("closing_text", "teks penutup"),
+    ("notes", "catatan"), ("internal_notes", "catatan internal"), ("footer", "catatan kaki"),
+]
+_PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
+_LABEL = dict(LABEL_MEDAN)
+
+
+def label_medan(fields) -> str:
+    """['notes', 'discount_value', 'dp_percent', 'items'] -> 'barang, diskon, uang muka, catatan'."""
+    keluar = []
+    for m in sorted(fields, key=lambda m: (_PERINGKAT.get(m, len(_PERINGKAT)), m)):
+        lb = _LABEL.get(m, m)
+        if lb not in keluar:
+            keluar.append(lb)
+    return ", ".join(keluar)
+
+
 RINGKAS_AUDIT = {
     "SALES_ORDER_UPDATED": "Pesanan diubah",
     "SALES_ORDER_CANCELLED": "Pesanan dibatalkan",
@@ -194,6 +225,10 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
                 meta = json.loads(meta)
             jenis = ENTITAS_AUDIT.get(r["entity_type"])
             ringkas = meta.get("ringkas") or RINGKAS_AUDIT.get(r["eventType"], r["eventType"])
+            _medan = meta.get("fields")
+            if (r["eventType"].endswith("_UPDATED") and r["eventType"] in RINGKAS_AUDIT and isinstance(_medan, list)
+                    and _medan):
+                ringkas = f"{RINGKAS_AUDIT[r['eventType']]}: {label_medan(_medan)}"
             aktor = r["userId"] or meta.get("user_id")
             if not aktor and str(r["source"] or "").startswith("db:"):
                 aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)

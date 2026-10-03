@@ -351,6 +351,9 @@ class VoidInvoiceRequest(BaseModel):
 
 class InvoiceListItem(BaseModel):
     """Invoice item for list responses."""
+    order_code: Optional[str] = None  # kode order SO induk (3 Okt)
+    order_title: Optional[str] = None
+    order_code_label: Optional[str] = None
 
     id: str
     invoice_number: str

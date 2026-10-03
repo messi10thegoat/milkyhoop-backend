@@ -555,6 +555,8 @@ async def list_customer_deposits(
                 for row in rows
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
@@ -713,9 +715,13 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                 )
                 remaining_state = "posted"
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            _kode = (await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", [{"id": dep["id"]}]))[0]
+            _kode.pop("id")
             return {
                 "success": True,
                 "data": {
+                    **_kode,
                     "id": str(dep["id"]),
                     "deposit_number": dep["deposit_number"],
                     # V247: str() -- kolom menjadi uuid; model respons Optional[str] menolak uuid.UUID
@@ -2849,6 +2855,8 @@ async def list_customer_deposits_by_customer(
                 for row in rows
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:

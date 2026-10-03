@@ -427,3 +427,85 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
             tenant_id, pk, seq)
     hasil_akhir["applied"] = True
     return hasil_akhir
+
+
+# ── Kode order di DOKUMEN ANAK (3 Okt 2026, MASTER/pemilik: sub-judul "005-10-26 · KEMEJA GMIM" di semua dokumen anak).
+# Jalur SO induk SAMA dengan pemuat PDF (label_cetak di proformas/sales_invoices/deliveries/customer_deposits/
+# receive_payments) supaya layar = cetak. Tenant eksplisit di KEDUA sisi setiap join (gateway BYPASSRLS).
+SUMBER_SO = {
+    "proforma": """SELECT d.id, d.sales_order_id AS so_id FROM proformas d
+                   WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
+    "sales_invoice": """SELECT d.id, d.sales_order_id AS so_id FROM sales_invoices d
+                        WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
+    "delivery": """SELECT f.id, si.sales_order_id AS so_id FROM invoice_fulfillments f
+                   JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+                   WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[])""",
+    # = resolve_order_id_for_deposit: sales_order_id dulu, kalau kosong SO milik proformanya
+    "customer_deposit": """SELECT d.id, COALESCE(d.sales_order_id, p.sales_order_id) AS so_id FROM customer_deposits d
+                           LEFT JOIN proformas p ON p.id = d.proforma_id AND p.tenant_id = d.tenant_id
+                           WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
+    # nota kredit tak punya sales_order_id: lewat faktur asalnya (tanpa faktur asal -> tanpa kode)
+    "credit_note": """SELECT d.id, si.sales_order_id AS so_id FROM credit_notes d
+                      LEFT JOIN sales_invoices si ON si.id = d.original_invoice_id AND si.tenant_id = d.tenant_id
+                      WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
+    # penerimaan bisa melunasi faktur dari BEBERAPA SO -> daftar (alokasi aktif, sama dengan PDF kwitansi)
+    "receive_payment": """SELECT DISTINCT rp.id, si.sales_order_id AS so_id FROM receive_payments rp
+                          JOIN receive_payment_allocations rpa ON rpa.payment_id = rp.id AND rpa.tenant_id = rp.tenant_id
+                               AND rpa.status = 'active'
+                          JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = rp.tenant_id
+                          WHERE rp.tenant_id = $1 AND rp.id = ANY($2::uuid[]) AND si.sales_order_id IS NOT NULL""",
+}
+
+
+async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
+    """{str(id): {order_code, order_title, order_code_label}}; receive_payment: {order_codes: [{order_code, order_title,
+    order_number}], order_code_label}. SO tanpa kode / tanpa SO -> null / []. Label selalu terisi (setelan tenant).
+    TIGA kueri tetap per panggilan (setelan, pasangan dokumen->SO, SO) berapa pun jumlah dokumennya -- tanpa N+1."""
+    import uuid as _uuid
+    ids = [i if isinstance(i, _uuid.UUID) else _uuid.UUID(str(i)) for i in ids if i]
+    label = (await muat_setelan(conn, tenant_id))["label"]
+    banyak = jenis == "receive_payment"
+    hasil = {str(i): ({"order_codes": [], "order_code_label": label} if banyak
+                      else {"order_code": None, "order_title": None, "order_code_label": label}) for i in ids}
+    if not ids:
+        return hasil
+    pasangan = await conn.fetch(SUMBER_SO[jenis], tenant_id, ids)
+    so_ids = sorted({p["so_id"] for p in pasangan if p["so_id"]}, key=str)
+    so = {}
+    if so_ids:
+        for r in await conn.fetch("""SELECT id, order_number, order_code, order_title FROM sales_orders
+                                     WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tenant_id, so_ids):
+            so[r["id"]] = r
+    for p in pasangan:
+        s = so.get(p["so_id"])
+        if not s or not s["order_code"] or str(p["id"]) not in hasil:
+            continue
+        h = hasil[str(p["id"])]
+        if banyak:
+            h["order_codes"].append({"order_code": s["order_code"], "order_title": s["order_title"],
+                                     "order_number": s["order_number"]})
+        else:
+            h["order_code"], h["order_title"] = s["order_code"], s["order_title"]
+    if banyak:
+        for h in hasil.values():
+            h["order_codes"].sort(key=lambda x: x["order_code"])
+    return hasil
+
+
+async def tempel_kode(conn, tenant_id: str, jenis: str, dokumen: list, kunci: str = "id") -> list:
+    """Tempelkan medan kode order ke daftar dict (di tempat). Baris yang id-nya bukan dokumen jenis ini (mis. penerimaan
+    berinduk jurnal) mendapat nilai kosong, bukan galat."""
+    import uuid as _uuid
+    ok = []
+    for d in dokumen:
+        try:
+            ok.append(_uuid.UUID(str(d[kunci])))
+        except (ValueError, TypeError, KeyError):
+            pass
+    k = await kode_untuk_dokumen(conn, tenant_id, jenis, ok)
+    label = (await muat_setelan(conn, tenant_id))["label"] if not k else next(iter(k.values()))["order_code_label"]
+    kosong = ({"order_codes": [], "order_code_label": label} if jenis == "receive_payment"
+              else {"order_code": None, "order_title": None, "order_code_label": label})
+    for d in dokumen:
+        d.update(k.get(str(d.get(kunci)), kosong))
+    return dokumen

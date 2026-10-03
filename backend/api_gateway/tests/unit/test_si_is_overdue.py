@@ -28,7 +28,12 @@ class DB:
         self.args.append(a)
         return len(self.rows)
 
+    async def fetchrow(self, sql, *a):  # setelan kode order (3 Okt) -> bawaan
+        return None
+
     async def fetch(self, sql, *a):
+        if "AS so_id" in sql:  # kode order dokumen anak (3 Okt): tak direkam, tanpa SO
+            return []
         self.sql.append(sql)
         self.args.append(a)
         return self.rows

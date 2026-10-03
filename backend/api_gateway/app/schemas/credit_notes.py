@@ -189,6 +189,9 @@ class CreditNoteRefundResponse(BaseModel):
 
 class CreditNoteListItem(BaseModel):
     """Credit note item for list responses."""
+    order_code: Optional[str] = None  # kode order SO induk (3 Okt)
+    order_title: Optional[str] = None
+    order_code_label: Optional[str] = None
     id: str
     credit_note_number: str
     customer_id: Optional[str] = None
@@ -205,6 +208,9 @@ class CreditNoteListItem(BaseModel):
 
 class CreditNoteDetail(BaseModel):
     """Full credit note detail."""
+    order_code: Optional[str] = None  # kode order SO induk (3 Okt)
+    order_title: Optional[str] = None
+    order_code_label: Optional[str] = None
     id: str
     credit_note_number: str
     customer_id: Optional[str] = None

@@ -1104,6 +1104,8 @@ async def list_invoices(
                 for row in rows
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "sales_invoice", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
@@ -1265,9 +1267,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 f"SELECT {_syarat_jatuh_tempo('$3')} FROM sales_invoices si WHERE si.id = $2 AND si.tenant_id = $1",
                 ctx["tenant_id"], invoice_id, _hari_jt,
             ))
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            _kode = (await _tempel_kode(conn, ctx["tenant_id"], "sales_invoice", [{"id": invoice["id"]}]))[0]
+            _kode.pop("id")
             return {
                 "success": True,
                 "data": {
+                    **_kode,
                     "status": invoice["status"],
                     "id": str(invoice["id"]),
                     "invoice_number": invoice["invoice_number"],

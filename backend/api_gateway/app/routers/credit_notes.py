@@ -407,6 +407,8 @@ async def list_credit_notes(
                 for row in rows
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "credit_note", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total}
 
     except HTTPException:
@@ -550,9 +552,13 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                 )
             )
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            _kode = (await _tempel_kode(conn, ctx["tenant_id"], "credit_note", [{"id": cn["id"]}]))[0]
+            _kode.pop("id")
             return {
                 "success": True,
                 "data": {
+                    **_kode,
                     "id": str(cn["id"]),
                     "credit_note_number": cn["credit_note_number"],
                     "customer_id": str(cn["customer_id"])

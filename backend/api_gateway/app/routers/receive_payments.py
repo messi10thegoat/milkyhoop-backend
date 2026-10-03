@@ -693,6 +693,8 @@ async def list_receive_payments(
                 for row in rows
             ]
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            await _tempel_kode(conn, ctx["tenant_id"], "receive_payment", items)
             return {
                 "items": items,
                 "total": total or 0,
@@ -1043,9 +1045,13 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             )
             attachments = _rp_lampiran_ke_respons(attachment_rows, payment["id"])
 
+            from ..services.kode_order import tempel_kode as _tempel_kode
+            _kode = (await _tempel_kode(conn, ctx["tenant_id"], "receive_payment", [{"id": payment["id"]}]))[0]
+            _kode.pop("id")
             return {
                 "success": True,
                 "data": {
+                    **_kode,
                     "id": str(payment["id"]),
                     "payment_number": payment["payment_number"],
                     "customer_id": str(payment["customer_id"])

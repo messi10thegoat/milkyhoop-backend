@@ -193,6 +193,9 @@ async def list_deliveries(
         for r in rows
     ]
 
+    from ..services.kode_order import tempel_kode as _tempel_kode
+    async with pool.acquire() as _c:
+        await _tempel_kode(_c, ctx["tenant_id"], "delivery", items)
     return {
         "items": items,
         "total": total,
@@ -377,6 +380,9 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         ],
     }
 
+    from ..services.kode_order import tempel_kode as _tempel_kode
+    async with pool.acquire() as _c:
+        await _tempel_kode(_c, ctx["tenant_id"], "delivery", [detail])
     return detail
 
 
