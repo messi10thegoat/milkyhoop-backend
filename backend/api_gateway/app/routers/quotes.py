@@ -1111,41 +1111,57 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
         raise HTTPException(status_code=500, detail="Failed to update quote")
 
 
+async def alasan_tak_bisa_hapus(conn, tenant_id: str, quote) -> Optional[str]:
+    """Pola Xero/NetSuite (pemilik 3 Okt, "ikuti pola SaaS mapan"): yang boleh DIHAPUS hanya draf yang belum pernah
+    keluar -- sent_at kosong, 0 tautan dokumen, tak dirujuk pesanan. Selain itu jejaknya harus tinggal: Batalkan.
+    -> None (boleh) atau kalimat alasan."""
+    n = quote["quote_number"]
+    if quote["status"] != "draft":
+        return f"Penawaran {n} berstatus {quote['status']}; hanya draf yang bisa dihapus. Batalkan saja."
+    if quote["sent_at"] is not None:
+        return f"Penawaran {n} sudah pernah ditandai terkirim. Batalkan saja."
+    if await conn.fetchval("""SELECT 1 FROM document_shares WHERE tenant_id = $1 AND kind = 'quotation' AND doc_id = $2
+                              LIMIT 1""", tenant_id, quote["id"]):
+        return f"Penawaran {n} sudah pernah dibagikan ke pelanggan. Batalkan saja."
+    if await conn.fetchval("SELECT 1 FROM sales_orders WHERE tenant_id = $1 AND quote_id = $2 LIMIT 1",
+                           tenant_id, quote["id"]):
+        return f"Penawaran {n} sudah dijadikan pesanan. Batalkan saja."
+    return None
+
+
 @router.delete("/{quote_id}", response_model=QuoteResponse)
 async def delete_quote(request: Request, quote_id: str):
-    """Delete a quote (draft only)."""
+    """Hapus penawaran: HANYA draf yang belum pernah keluar (alasan_tak_bisa_hapus); selain itu 409
+    QUOTE_NOT_DELETABLE. Hapus keras; jejak = trigger trg_log_deletion (audit DOCUMENT_DELETED beraktor + nomor)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check quote exists and is draft
-            quote = await conn.fetchrow(
-                """
-                SELECT id, status, quote_number FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
-
-            if quote["status"] != "draft":
-                raise HTTPException(
-                    status_code=400, detail="Only draft quotes can be deleted"
+            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca `app.user_id`, dan GUC itu HANYA hidup di
+            # dalam transaksi -- set_config + DELETE di SATU transaksi. 3 Okt: kunci QUOTE + FOR UPDATE di transaksi
+            # yang sama (dulu status dibaca tanpa kunci -> bisa berpacu dengan kirim/bagikan bersamaan).
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+                )
+                quote = await conn.fetchrow(
+                    """
+                    SELECT id, status, quote_number, sent_at FROM quotes
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    uuid_module.UUID(quote_id),
+                    ctx["tenant_id"],
                 )
 
-            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
-            # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
-            # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
-            # menghasilkan WARNING "SET LOCAL can only be used in transaction
-            # blocks" dan statement berikutnya membaca kosong. Karena itu SET
-            # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
-            # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
-            # sehingga tak ada interpolasi string ke dalam SQL.
-            async with conn.transaction():
+                if not quote:
+                    raise HTTPException(status_code=404, detail="Quote not found")
+
+                alasan = await alasan_tak_bisa_hapus(conn, ctx["tenant_id"], quote)
+                if alasan:
+                    raise HTTPException(status_code=409, detail={"code": "QUOTE_NOT_DELETABLE", "message": alasan})
+
                 await conn.execute(
                     "SELECT set_config('app.user_id', $1, true)",
                     str(ctx["user_id"] or ""),
