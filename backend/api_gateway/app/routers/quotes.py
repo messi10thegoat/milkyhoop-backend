@@ -372,6 +372,20 @@ async def list_quotes(
         raise HTTPException(status_code=500, detail="Failed to list quotes")
 
 
+@router.get("/defaults")
+async def get_quote_defaults(request: Request, customer_id: Optional[str] = None):
+    """Q6 (3 Okt 2026): default form Penawaran CW -- bentuk SAMA dengan /sales-orders/defaults (dp_percent,
+    receiving_account; null = tak ada default) + opening_text/closing_text {value, source} + validity_days
+    {value, source, expiry_date}. Nol tulis."""
+    from ..services.default_dokumen import default_penawaran
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await default_penawaran(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                       customer_id)
+    return {"success": True, "data": data}
+
+
 @router.get("/expiring", response_model=ExpiringQuotesResponse)
 async def get_expiring_quotes(
     request: Request, days: int = Query(7, ge=1, le=30, description="Days until expiry")

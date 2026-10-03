@@ -4,6 +4,7 @@ GET  /api/settings/order-codes          baca (tenant_settings R; ADMIN boleh bac
 PUT  /api/settings/order-codes          ubah (tenant_settings U + PEMILIK saja, dicek di sini dari DB)
 POST /api/settings/order-codes/preview  contoh kode + peringatan, NOL tulis
 PATCH /api/sales-orders/{id}/order-code ganti manual (allow_override + OWNER/ADMIN, dicek di sini dari DB)
+                                        {order_code} = ketik; {mode: "next"} = nomor berikutnya dari penghitung
 Penerbitan otomatis TIDAK lewat sini: services/kode_order.terbitkan dipanggil dari inti uang masuk.
 """
 import logging
@@ -40,7 +41,7 @@ def _badan(b: dict, lama: dict) -> dict:
     for k in ("enabled", "allow_override"):
         if not isinstance(s[k], bool):
             raise KO.KodeOrderGalat(f"{k} wajib boolean.")
-    KO.validasi_setelan(s["template"], s["min_digits"], s["reset"], s["trigger"])
+    KO.validasi_setelan(s["template"], s["min_digits"], s["reset"], s["trigger"], s["allow_override"])
     return s
 
 
@@ -127,15 +128,25 @@ async def ganti_kode_order(request: Request, order_id: str):
     async with pool.acquire() as conn:
         if not await KO.boleh_ganti_kode(conn, ctx["tenant_id"], ctx["user_id"]):
             raise HTTPException(status_code=403, detail="Kode order tidak dapat diganti manual untuk peran/pengaturan ini.")
+        mode = (b or {}).get("mode") or "manual"
+        if mode not in ("manual", "next"):
+            raise HTTPException(status_code=422, detail="mode harus 'manual' atau 'next'.")
         async with conn.transaction():
             try:
-                h = await KO.ganti_kode(conn, ctx["tenant_id"], so_id, (b or {}).get("order_code"), ctx["user_id"])
+                if mode == "next":
+                    from ..utils.tanggal_tenant import tanggal_dokumen
+                    h = await KO.terbitkan_berikutnya(conn, ctx["tenant_id"], so_id,
+                                                      await tanggal_dokumen(conn, ctx["tenant_id"]), ctx["user_id"])
+                else:
+                    h = await KO.ganti_kode(conn, ctx["tenant_id"], so_id, (b or {}).get("order_code"),
+                                            ctx["user_id"])
             except KO.KodeOrderGalat as e:
                 raise HTTPException(status_code=422, detail=str(e))
     if h["status"] == 404:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if h["status"] == 409:
-        raise HTTPException(status_code=409, detail="Kode order sudah dipakai pesanan lain.")
+        raise HTTPException(status_code=409, detail=(f"Pesanan sudah berkode {h['order_code']}." if mode == "next"
+                                                     else "Kode order sudah dipakai pesanan lain."))
     return {"success": True, "data": {k: v for k, v in h.items() if k != "status"}}
 
 

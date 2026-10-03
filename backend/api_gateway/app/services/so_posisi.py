@@ -50,10 +50,10 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
     if ada_faktur and dp_diterima <= NOL:
         # #6b putusan pemilik 1 Okt 2026 (lewat MASTER, "Ok ikut rekomendasi"): SO sebagian difaktur, faktur LUNAS
         # (aturan 5 tak cocok), sisa SO belum ditagih, TANPA uang muka. Dulu jatuh ke "Belum ditagih" (aturan 8)
-        # padahal sudah ada tagihan dibayar (kaos SO-2609-0333). Dengan uang muka -> tetap "Produksi" (aturan 7).
+        # padahal sudah ada tagihan dibayar (kaos SO-2609-0333). Dengan uang muka -> tetap "Diproses" (aturan 7).
         return "Sebagian ditagih", False
     if dp_diterima > NOL:
-        return "Produksi", False
+        return "Diproses", False  # 3 Okt putusan pemilik: generik (juga reseller), dulu "Produksi"
     return "Belum ditagih", False
 
 

@@ -61,7 +61,7 @@ def test_judul_dan_kode():
 
 
 def test_penerbitan_kunci_per_so_lalu_periode_dan_tanpa_jurnal():
-    src = inspect.getsource(KO.terbitkan)
+    src = inspect.getsource(KO._terbitkan_inti)  # 3 Okt: inti bersama otomatis + manual berikutnya
     assert src.index("ORDER_CODE_SO:") < src.index('f"ORDER_CODE:{tenant_id}:{pk}"')
     assert "order_code IS NULL" in src and "journal_" not in src
 
@@ -134,7 +134,8 @@ def test_inti_uang_masuk_TIDAK_menerbitkan_kode():
 def test_konfirmasi_so_menerbitkan_kode_dalam_transaksi():
     from app.routers import sales_orders as SO
     src = inspect.getsource(SO.confirm_sales_order)
-    assert "async with pool.acquire() as conn, conn.transaction():" in src
+    assert "async with pool.acquire() as conn, conn.transaction():" in src and "_konfirmasi_so(conn" in src
+    src = inspect.getsource(SO._konfirmasi_so)  # 3 Okt: jalur tunggal konfirmasi + pratinjau
     i = src.index("_terbitkan_kode(")
     assert src.index("UPDATE sales_orders SET status = 'confirmed'") < i and '"so_confirmed"' in src[i:i + 200]
 

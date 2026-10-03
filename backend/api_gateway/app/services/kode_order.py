@@ -29,8 +29,10 @@ class KodeOrderGalat(ValueError):
     """Galat masukan (-> 422 di router)."""
 
 
-def validasi_setelan(template: str, min_digits: int, reset: str, trigger: str) -> None:
-    """Aturan yang SAMA dengan CHECK V359 (chk_ocs_seq / chk_ocs_reset_token) + token yang dikenal saja."""
+def validasi_setelan(template: str, min_digits: int, reset: str, trigger: str,
+                     allow_override: Optional[bool] = None) -> None:
+    """Aturan yang SAMA dengan CHECK V359 (chk_ocs_seq / chk_ocs_reset_token) + token yang dikenal saja.
+    allow_override dikirim router setelan: manual_only tanpa ganti manual = tak ada yang bisa memberi kode (3 Okt)."""
     if not isinstance(template, str) or not template.strip() or len(template) > MAKS_KODE:
         raise KodeOrderGalat(f"Templat wajib diisi, maksimal {MAKS_KODE} karakter.")
     if template.count("{SEQ}") != 1:
@@ -46,6 +48,8 @@ def validasi_setelan(template: str, min_digits: int, reset: str, trigger: str) -
         raise KodeOrderGalat(f"Reset harus salah satu dari {list(RESET)}.")
     if trigger not in PEMICU:
         raise KodeOrderGalat(f"Pemicu harus salah satu dari {list(PEMICU)}.")
+    if trigger == "manual_only" and allow_override is False:
+        raise KodeOrderGalat("Pemicu 'Manual saja' wajib dengan izin ganti manual supaya kode bisa diisi.")
     if reset == "monthly" and "{MM}" not in template:
         raise KodeOrderGalat("Reset bulanan wajib memuat {MM} supaya kode tak bentrok antarbulan.")
     if reset == "yearly" and "{YY}" not in template and "{YYYY}" not in template:
@@ -182,6 +186,14 @@ async def terbitkan(conn, tenant_id: str, so_id, tanggal: date, pemicu: str, akt
         return None
     if pemicu != "so_confirmed" or s["trigger"] != "so_confirmed":
         return None
+    return await _terbitkan_inti(conn, tenant_id, so_id, tanggal, s, "auto", aktor,
+                                 {"trigger": pemicu, "doc_number": dok_nomor})
+
+
+async def _terbitkan_inti(conn, tenant_id: str, so_id, tanggal: date, s: dict, sumber: str, aktor,
+                          meta: dict) -> Optional[str]:
+    """Penerbitan dari penghitung -- dipakai otomatis (konfirmasi) DAN manual 'berikutnya'. None = SO tak ada /
+    sudah berkode."""
     # Urutan kunci TETAP: per-SO dulu, lalu per-periode. Kunci per-SO membuat dua pemicu untuk SO yang sama
     # (mis. DP + penerimaan bersamaan, beda tanggal = beda periode) berurutan -> yang kedua membaca kode yang sudah
     # terbit dan berhenti, tak menghabiskan nomor (= tak ada lubang). Tanpa FOR UPDATE baris SO supaya tak bertabrakan
@@ -207,13 +219,31 @@ async def terbitkan(conn, tenant_id: str, so_id, tanggal: date, pemicu: str, akt
     else:
         raise RuntimeError("kode order: 1000 nomor berturut-turut sudah terpakai")
     hasil = await conn.execute(
-        """UPDATE sales_orders SET order_code = $3, order_code_source = 'auto', updated_at = NOW()
-           WHERE id = $1 AND tenant_id = $2 AND order_code IS NULL""", so_id, tenant_id, kode)
+        """UPDATE sales_orders SET order_code = $3, order_code_source = $4, updated_at = NOW()
+           WHERE id = $1 AND tenant_id = $2 AND order_code IS NULL""", so_id, tenant_id, kode, sumber)
     if not str(hasil).endswith(" 1"):
         raise RuntimeError("kode order: SO berubah di tengah penerbitan")  # batalkan transaksi -> nomor tak terpakai
-    await _catat(conn, tenant_id, so_id, so["order_number"], None, kode, "auto", aktor, "ORDER_CODE_ISSUED",
-                 f"{s['label']} {kode} terbit", {"code": kode, "trigger": pemicu, "doc_number": dok_nomor})
+    await _catat(conn, tenant_id, so_id, so["order_number"], None, kode, sumber, aktor, "ORDER_CODE_ISSUED",
+                 f"{s['label']} {kode} terbit" + (" (manual)" if sumber == "manual" else ""), {"code": kode, **meta})
     return kode
+
+
+async def terbitkan_berikutnya(conn, tenant_id: str, so_id, tanggal: date, aktor) -> dict:
+    """'+ {label}' tanpa mengetik (3 Okt, MASTER): nomor berikutnya dari penghitung yang SAMA (kunci sama),
+    source='manual'. Jalan untuk pemicu apa pun selama setelan menyala. Pemanggil sudah memeriksa boleh_ganti_kode
+    dan membuka transaksi."""
+    s = await muat_setelan(conn, tenant_id)
+    if not s["enabled"]:
+        raise KodeOrderGalat(f"{s['label']} belum dinyalakan di Pengaturan.")
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
+    so = await conn.fetchrow(
+        "SELECT id, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
+    if not so:
+        return {"status": 404}
+    if so["order_code"]:
+        return {"status": 409, "order_code": so["order_code"]}
+    kode = await _terbitkan_inti(conn, tenant_id, so_id, tanggal, s, "manual", aktor, {"trigger": "manual_next"})
+    return {"status": 200, "order_code": kode, "old_code": None, "source": "manual"}
 
 
 async def ganti_kode(conn, tenant_id: str, so_id, kode_baru: str, aktor) -> dict:

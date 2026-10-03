@@ -1282,6 +1282,56 @@ async def delete_sales_order(request: Request, order_id: str):
 # ============================================================================
 
 
+async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
+    """SATU-SATUNYA jalur konfirmasi SO: dipakai POST /confirm DAN /confirm/preview (yang di-rollback). Pemanggil
+    membuka transaksi. -> {order_number, status, order_code, order_code_issued, order_code_label}."""
+    order = await conn.fetchrow(
+        """
+        SELECT id, status, order_number, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2
+    """,
+        _so_uuid(order_id),
+        ctx["tenant_id"],
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Sales order not found")
+
+    if order["status"] != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot confirm order with status '{order['status']}'",
+        )
+
+    # UPDATE BERSYARAT status='draft': status dibaca di atas tanpa kunci -> tanpa syarat
+    # ini dua permintaan bersamaan sama-sama 'berhasil' (konfirmasi menimpa aktor/waktu).
+    ok = await conn.fetchval(
+        """
+        UPDATE sales_orders SET status = 'confirmed', confirmed_at = NOW(), confirmed_by = $3
+        WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+        RETURNING id
+    """,
+        _so_uuid(order_id),
+        ctx["tenant_id"],
+        ctx["user_id"],
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
+
+    # V359/V361: tenant ber-pemicu 'so_confirmed' -> kode terbit saat konfirmasi (tanggal usaha zona tenant).
+    # Pemicu lain / setelan mati -> terbitkan() no-op.
+    from ..services.kode_order import terbitkan as _terbitkan_kode, muat_setelan as _setelan_kode
+    kode = await _terbitkan_kode(conn, ctx["tenant_id"], ok, await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                 "so_confirmed", ctx["user_id"], order["order_number"])
+    return {"order_number": order["order_number"], "status": "confirmed",
+            "order_code": kode or order["order_code"], "order_code_issued": kode is not None,
+            "order_code_label": (await _setelan_kode(conn, ctx["tenant_id"]))["label"]}
+
+
+class _BatalkanKonfirmasi(Exception):
+    def __init__(self, hasil):
+        self.hasil = hasil
+
+
 @router.post("/{order_id}/confirm", response_model=SalesOrderResponse)
 async def confirm_sales_order(request: Request, order_id: str):
     """Confirm a sales order."""
@@ -1292,55 +1342,36 @@ async def confirm_sales_order(request: Request, order_id: str):
 
         # 2 Okt 2026: transaksi -- kode order pemicu 'so_confirmed' terbit ATOMIK bersama konfirmasinya.
         async with pool.acquire() as conn, conn.transaction():
-            order = await conn.fetchrow(
-                """
-                SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
-            """,
-                _so_uuid(order_id),
-                ctx["tenant_id"],
-            )
-
-            if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
-
-            if order["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot confirm order with status '{order['status']}'",
-                )
-
-            # UPDATE BERSYARAT status='draft': status dibaca di atas tanpa kunci -> tanpa syarat
-            # ini dua permintaan bersamaan sama-sama 'berhasil' (konfirmasi menimpa aktor/waktu).
-            ok = await conn.fetchval(
-                """
-                UPDATE sales_orders SET status = 'confirmed', confirmed_at = NOW(), confirmed_by = $3
-                WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
-                RETURNING id
-            """,
-                _so_uuid(order_id),
-                ctx["tenant_id"],
-                ctx["user_id"],
-            )
-            if not ok:
-                raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
-
-            # V359/V361: tenant ber-pemicu 'so_confirmed' -> kode terbit saat konfirmasi (tanggal usaha zona tenant).
-            # Pemicu lain / setelan mati -> terbitkan() no-op.
-            from ..services.kode_order import terbitkan as _terbitkan_kode
-            await _terbitkan_kode(conn, ctx["tenant_id"], ok, await tanggal_dokumen(conn, ctx["tenant_id"]),
-                                  "so_confirmed", ctx["user_id"], order["order_number"])
-
-            return SalesOrderResponse(
-                success=True,
-                message="Sales order confirmed",
-                data={"order_number": order["order_number"], "status": "confirmed"},
-            )
+            h = await _konfirmasi_so(conn, ctx, order_id)
+            return SalesOrderResponse(success=True, message="Sales order confirmed", data=h)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error confirming sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to confirm sales order")
+
+
+@router.post("/{order_id}/confirm/preview", response_model=SalesOrderResponse)
+async def preview_confirm_sales_order(request: Request, order_id: str):
+    """Pratinjau konfirmasi (3 Okt, MASTER): jalur _konfirmasi_so yang SAMA lalu ROLLBACK -> nol tulis (status,
+    penghitung kode order, peristiwa). Galat sama dengan /confirm (404/400/409). order_code = kode yang AKAN
+    dimiliki SO (terbit sekarang bila order_code_issued, atau yang sudah ada); null bila manual_only/mati."""
+    try:
+        ctx = get_user_context(request)
+        _so_uuid(order_id)
+        pool = await get_pool()
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                raise _BatalkanKonfirmasi(await _konfirmasi_so(conn, ctx, order_id))
+        except _BatalkanKonfirmasi as b:
+            h = b.hasil
+        return SalesOrderResponse(success=True, message="Preview", data={**h, "preview": True})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing confirm of sales order: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview sales order confirmation")
 
 
 SO_TAK_BISA_BATAL = ("cancelled", "completed", "invoiced")

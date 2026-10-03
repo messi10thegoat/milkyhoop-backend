@@ -66,8 +66,8 @@ def test_6_perlu_faktur_dikirim_tanpa_faktur():
 
 
 def test_6_tak_berlaku_bila_faktur_ada_tapi_lunas():
-    # faktur ada, sisanya 0, SO masih bersisa (belum semua ditagih) -> bukan "Perlu faktur"; DP -> Produksi
-    assert P(ada_faktur=True, sisa_faktur=D("0"), ada_sj=True, dp=D("5")) == ("Produksi", False)
+    # faktur ada, sisanya 0, SO masih bersisa (belum semua ditagih) -> bukan "Perlu faktur"; DP -> Diproses
+    assert P(ada_faktur=True, sisa_faktur=D("0"), ada_sj=True, dp=D("5")) == ("Diproses", False)
 
 
 def test_6b_sebagian_ditagih_faktur_lunas_tanpa_dp():
@@ -77,13 +77,13 @@ def test_6b_sebagian_ditagih_faktur_lunas_tanpa_dp():
 
 
 def test_6b_tak_berlaku_bila_ada_dp_atau_faktur_bersisa():
-    assert P(ada_faktur=True, sisa_faktur=D("0"), dp=D("5")) == ("Produksi", False)
+    assert P(ada_faktur=True, sisa_faktur=D("0"), dp=D("5")) == ("Diproses", False)
     assert P(ada_faktur=True, sisa_faktur=D("1")) == ("Menunggu pelunasan", False)
     assert P(sisa=D("0"), ada_faktur=True) == ("Lunas", True)
 
 
 def test_7_produksi_ada_dp():
-    assert P(dp=D("1000000")) == ("Produksi", False)
+    assert P(dp=D("1000000")) == ("Diproses", False)
 
 
 def test_8_belum_ditagih():

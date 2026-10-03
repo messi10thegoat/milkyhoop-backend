@@ -50,3 +50,25 @@ async def default_pesanan(conn, tenant_id: str, customer_id: Optional[str] = Non
             "source": "company_main",
         } if rek else None),
     }
+
+
+# Masa berlaku penawaran bawaan SISTEM (MASTER 3 Okt: 14 hari = yang dipakai sekarang). Tahap berikut: ditimpa per
+# tenant/pelanggan (pola "default bisa ditimpa"); source berubah dari 'system' ke 'company'/'customer'.
+MASA_BERLAKU_PENAWARAN_HARI = 14
+
+
+async def default_penawaran(conn, tenant_id: str, hari_ini, customer_id: Optional[str] = None) -> dict:
+    """Default form Penawaran = default Pesanan (persen DP + rekening utama) + teks pembuka/penutup (Pengaturan
+    > Default Penawaran) + masa berlaku. hari_ini = tanggal usaha
+    zona tenant (pemanggil). expiry_date = usulan, FE yang mengirimnya (server tak mengisi dokumen sendiri)."""
+    from datetime import timedelta
+    d = await default_pesanan(conn, tenant_id, customer_id)
+    teks = await conn.fetchrow(
+        """SELECT default_quote_opening_text, default_quote_closing_text FROM accounting_settings
+           WHERE tenant_id = $1""", tenant_id)
+    for k, kol in (("opening_text", "default_quote_opening_text"), ("closing_text", "default_quote_closing_text")):
+        v = (teks[kol] if teks else None) or ""
+        d[k] = {"value": v, "source": "company"} if v.strip() else None  # kosong = tanpa default (tak dikarang)
+    d["validity_days"] = {"value": MASA_BERLAKU_PENAWARAN_HARI, "source": "system",
+                          "expiry_date": (hari_ini + timedelta(days=MASA_BERLAKU_PENAWARAN_HARI)).isoformat()}
+    return d
