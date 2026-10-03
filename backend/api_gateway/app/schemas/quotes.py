@@ -280,6 +280,8 @@ class QuoteDetail(BaseModel):
     declined_at: Optional[str] = None
     declined_reason: Optional[str] = None
     is_expired: bool = False
+    customer_phone: Optional[str] = None  # Q5: kontak pelanggan (bundel SO /documents)
+    business_name: Optional[str] = None   # Q5: nama usaha = kop dokumen
 
 
 class QuoteListResponse(BaseModel):

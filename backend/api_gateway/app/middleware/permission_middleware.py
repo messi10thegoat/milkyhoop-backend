@@ -182,11 +182,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
     # P5 tautan publik: membagikan = EKSPOR dokumen itu (E), daftar tautan = baca (R). Kwitansi uang muka: + E
     # customer_deposit di handler.
-    (r"^/api/documents/rekap/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),
-    (r"^/api/documents/quotation/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "quote", "E"),
-    (r"^/api/documents/proforma/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "proforma", "E"),
-    (r"^/api/documents/receipt/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "receive_payment", "E"),
-    (r"^/api/documents/(delivery|invoice)/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "sales_invoice", "E"),
+    (r"^/api/documents/rekap/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),
+    (r"^/api/documents/quotation/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "quote", "E"),
+    (r"^/api/documents/proforma/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "proforma", "E"),
+    (r"^/api/documents/receipt/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "receive_payment", "E"),
+    (r"^/api/documents/(delivery|invoice)/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_invoice", "E"),
     (r"^/api/documents/rekap/[^/]+/shares$", ["GET"], "sales_order", "R"),
     (r"^/api/documents/quotation/[^/]+/shares$", ["GET"], "quote", "R"),
     (r"^/api/documents/proforma/[^/]+/shares$", ["GET"], "proforma", "R"),
@@ -194,7 +194,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/(delivery|invoice)/[^/]+/shares$", ["GET"], "sales_invoice", "R"),
     # Jenis tak dikenal: handler menolak 404 SEBELUM menulis apa pun; pola penampung ini hanya supaya rute tulis tak
     # pernah jatuh ke default-tertutup tanpa pola (penjaga test_pagar_rute_izin). Jenis sah dipetakan di atas.
-    (r"^/api/documents/[^/]+/[^/]+/(share|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),
+    (r"^/api/documents/[^/]+/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),
     # Rute lama yang DIPANGGIL FE tapi tak terpetakan (1 Okt 2026, putusan pemilik LANGSUNG di sesi BACKEND:
     # "buka akses admin untuk semua modul kecuali infrastruktur") -> izin modul yang sama dengan tulis padanannya.
     (r"^/api/transactions/purchase$", ["POST"], "bill", "C"),

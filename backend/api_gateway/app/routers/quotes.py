@@ -529,6 +529,12 @@ async def get_quote_detail(request: Request, quote_id: str):
 
             # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
             is_expired = kedaluwarsa(quote["status"], quote["expiry_date"], await tanggal_dokumen(conn, ctx["tenant_id"]))
+            # Q5 (3 Okt): kontak + nama usaha untuk pesan Kirim -- sumber & aturan SAMA dgn bundel SO /documents
+            _telp = await conn.fetchval(
+                """SELECT COALESCE(mobile_phone, phone, telepon) FROM customers WHERE id = $1 AND tenant_id = $2""",
+                quote["customer_id"], ctx["tenant_id"]) if quote["customer_id"] else None
+            _usaha = (await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', ctx["tenant_id"])) \
+                or ctx["tenant_id"]
 
             return QuoteDetailResponse(
                 success=True,
@@ -606,6 +612,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                     else None,
                     declined_reason=quote["declined_reason"],
                     is_expired=is_expired,
+                    customer_phone=_telp or None,
+                    business_name=_usaha,
                 ),
             )
 
@@ -1221,20 +1229,10 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
                     ),
                 )
 
-            # Update status
-            await conn.execute(
-                """
-                UPDATE quotes SET status = 'sent', sent_at = NOW()
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            await catat_riwayat(
-                conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_SENT", ctx.get("user_id"),
-                f"Penawaran {quote['quote_number']} ditandai terkirim", source="api:quotes",
-            )
+            # 3 Okt (Q5): penanda bersama dengan POST /documents/quotation/{id}/share
+            from ..services.penawaran_bagikan import tandai_terkirim
+            await tandai_terkirim(conn, ctx["tenant_id"], quote["id"], quote["quote_number"], ctx.get("user_id"),
+                                  "api:quotes")
 
             return QuoteResponse(
                 success=True,
