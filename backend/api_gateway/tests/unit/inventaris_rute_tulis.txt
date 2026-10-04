@@ -530,6 +530,7 @@ POST /api/sales-invoices/{invoice_id}/recognize-non-stock-revenue
 POST /api/sales-invoices/{invoice_id}/void/preview
 POST /api/sales-orders/{order_id}/cancel/preview
 POST /api/sales-orders/{order_id}/confirm/preview
+POST /api/sales-orders/{order_id}/edit/preview
 POST /api/sales-orders/{order_id}/close/preview
 POST /api/sales-orders/{order_id}/fulfill
 POST /api/sales-orders/{order_id}/fulfill/preview

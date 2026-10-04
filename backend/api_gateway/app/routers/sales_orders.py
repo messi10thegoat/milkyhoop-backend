@@ -971,6 +971,12 @@ async def update_sales_order(
                     body.order_number = _new_num
 
                 if order["status"] != "draft":
+                    # 4 Okt 2026: ubah SO TERKONFIRMASI (pola NetSuite, putusan pemilik) -- jalur sendiri, diff baris per id,
+                    # HANYA bila flag tenant so_edit_confirmed aktif. Tanpa flag: perilaku lama apa adanya.
+                    from ..services import so_ubah_terkonfirmasi as _sut
+                    if await _sut.flag_aktif(conn, ctx["tenant_id"]):
+                        hasil = await _sut.ubah(conn, ctx, await _so_untuk_ubah(conn, ctx, order["id"]), body, _hitung_so)
+                        return SalesOrderResponse(success=True, message="Sales order updated", data=hasil)
                     raise HTTPException(
                         status_code=400, detail="Only draft orders can be updated"
                     )
@@ -1179,6 +1185,55 @@ async def update_sales_order(
     except Exception as e:
         logger.error(f"Error updating sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update sales order")
+
+
+async def _so_untuk_ubah(conn, ctx: dict, so_id) -> Optional[dict]:
+    """Baris SO untuk ubah terkonfirmasi, DIKUNCI (FOR UPDATE = mutex bersama uang muka/batal/to-invoice)."""
+    r = await conn.fetchrow(
+        """SELECT id, status, order_number, customer_id, customer_name, discount_amount, shipping_amount,
+                  shipping_tax_code_id, total_amount, dp_percent, dp_amount, dp_amount_source
+           FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE""",
+        so_id, ctx["tenant_id"],
+    )
+    return dict(r) if r else None
+
+
+async def _hitung_so(conn, tenant_id: str, src: list, discount, shipping, shipping_code) -> dict:
+    """Kalkulator SO yang SAMA dengan jalur draf (faktor DPP, pajak ongkir, _so_doc, pagar PKP #34)."""
+    await attach_dpp_factors(conn, tenant_id, src, "tax_id")
+    _ship = await resolve_shipping_tax(conn, tenant_id, shipping_code, src, shipping, "tax_id")
+    doc = _so_doc(src, discount, shipping, _ship)
+    await tolak_ppn_bila_non_pkp(conn, tenant_id, doc["tax_amount"])
+    return doc
+
+
+class _BatalkanUbah(Exception):
+    def __init__(self, hasil):
+        self.hasil = hasil
+
+
+@router.post("/{order_id}/edit/preview", response_model=SalesOrderResponse)
+async def preview_edit_sales_order(request: Request, order_id: str, body: UpdateSalesOrderRequest):
+    """Pratinjau ubah SO terkonfirmasi: jalur ubah() YANG SAMA lalu ROLLBACK (nol tulis). Body kosong = keadaan kunci
+    tiap baris (min qty, faktur draf + tautan) untuk layar Tinjau. Galat = galat yang sama dengan PATCH."""
+    ctx = get_user_context(request)
+    oid = _so_uuid(order_id)
+    from ..services import so_ubah_terkonfirmasi as _sut
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                so = await _so_untuk_ubah(conn, ctx, oid)
+                if not so:
+                    raise HTTPException(status_code=404, detail="Sales order not found")
+                if so["status"] == "draft":
+                    _sut.galat(409, "SO_IS_DRAFT", "Pesanan masih draf: ubah langsung tanpa pratinjau.")
+                if not await _sut.flag_aktif(conn, ctx["tenant_id"]):
+                    _sut.galat(409, "SO_EDIT_NOT_ENABLED", "Ubah pesanan terkonfirmasi belum aktif untuk usaha ini.")
+                body.__pydantic_fields_set__.discard("order_title")  # judul = jalur sendiri (PATCH), bukan pratinjau ini
+                raise _BatalkanUbah(await _sut.ubah(conn, ctx, so, body, _hitung_so))
+    except _BatalkanUbah as b:
+        return SalesOrderResponse(success=True, message="Pratinjau ubah pesanan", data={**b.hasil, "preview": True})
 
 
 # ═════════════════════════════════════════════════════════════════════════
