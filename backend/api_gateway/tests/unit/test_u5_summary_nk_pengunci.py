@@ -13,7 +13,7 @@ from app.routers import credit_notes as C
 
 
 MEDAN = {"total", "draft_count", "posted_count", "partial_count", "applied_count", "total_value", "total_applied",
-         "total_refunded", "available_balance"}
+         "total_refunded", "available_balance", "void_count"}  # void_count: U9 (5 Okt), kueri TERPISAH
 
 
 def test_summary_terdaftar_sebelum_rute_parameter():
@@ -36,12 +36,16 @@ def test_sumber_angka_jurnal_bukan_kolom_dan_pagar_tenant():
 
 
 class _Konn:
-    def __init__(self, baris):
-        self.baris, self.args = baris, None
+    def __init__(self, baris, void=None):
+        self.baris, self.args, self.void, self.args_void = baris, None, void, None
 
     async def fetchrow(self, sql, *a):
         self.args = a
         return self.baris
+
+    async def fetchval(self, sql, *a):  # U9: hitungan void = kueri terpisah (kueri utama TANPA void)
+        self.args_void = a
+        return self.void
 
 
 class _Pool:
@@ -60,8 +64,8 @@ class _Pool:
         return _A()
 
 
-def _panggil(monkeypatch, baris):
-    k = _Konn(baris)
+def _panggil(monkeypatch, baris, void=None):
+    k = _Konn(baris, void)
 
     async def pool():
         return _Pool(k)
@@ -83,7 +87,9 @@ def test_bentuk_respons_sama_dengan_skema_dan_none_jadi_nol(monkeypatch):
     assert set(data) == MEDAN
     assert all(v == 0 for v in data.values())
     assert all(isinstance(data[x], float) for x in ("total_value", "total_applied", "total_refunded", "available_balance"))
-    assert all(isinstance(data[x], int) for x in ("total", "draft_count", "posted_count", "partial_count", "applied_count"))
+    assert all(isinstance(data[x], int) for x in ("total", "draft_count", "posted_count", "partial_count", "applied_count",
+                                                  "void_count"))
+    assert k.args_void == ("t1",)  # kueri void juga bertenant eksplisit
 
 
 def test_angka_dilewatkan_apa_adanya(monkeypatch):
@@ -91,9 +97,9 @@ def test_angka_dilewatkan_apa_adanya(monkeypatch):
     baris = {"total": 5, "draft_count": 1, "posted_count": 2, "partial_count": 1, "applied_count": 1,
              "total_value": Decimal("1234567.50"), "total_applied": Decimal("200000.25"), "total_refunded": Decimal("0"),
              "available_balance": Decimal("1034367.25")}
-    _, out = _panggil(monkeypatch, baris)
+    _, out = _panggil(monkeypatch, baris, void=4)
     d = out["data"]
-    assert d["total"] == 5 and d["total_value"] == 1234567.5 and d["available_balance"] == 1034367.25
+    assert d["void_count"] == 4 and d["total"] == 5 and d["total_value"] == 1234567.5 and d["available_balance"] == 1034367.25
     assert d["total_applied"] == 200000.25 and d["total_refunded"] == 0.0
 
 
