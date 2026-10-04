@@ -152,3 +152,95 @@ def test_patch_terkonfirmasi_hanya_lewat_flag():
 def test_teks_angka():
     assert SUT._q(Decimal("60.00")) == "60" and SUT._q(Decimal("2.5000")) == "2.5"
     assert SUT._rp(Decimal("1234567.5")) == "Rp 1.234.568"
+
+
+# ---- X-Idempotency-Key PATCH SO (permintaan WORKSPACE 4 Okt; Law 14: kunci men-SERIAL-kan, idempotensi men-DEDUP) ----
+
+class _IConn:
+    def __init__(self, simpan=None):
+        self.simpan, self.kunci = simpan, []
+
+    async def fetchrow(self, q, *a):
+        if "FROM idempotency_keys" in q:
+            return {"result": self.simpan} if self.simpan else None
+        raise AssertionError("tak boleh menyentuh SO saat replay: " + q)
+
+    async def execute(self, q, *a):
+        self.kunci.append(a)
+        return "OK"
+
+    def transaction(self):
+        c = self
+
+        class _T:
+            async def __aenter__(s): return c
+            async def __aexit__(s, *x): return False
+        return _T()
+
+
+class _IPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        c = self.conn
+
+        class _A:
+            async def __aenter__(s): return c
+            async def __aexit__(s, *x): return False
+        return _A()
+
+
+UID = str(uuid.uuid4())
+
+
+def _req(kunci, if_match=None):
+    from types import SimpleNamespace
+    h = {"X-Idempotency-Key": kunci}
+    if if_match:
+        h["if-match"] = if_match
+    return SimpleNamespace(state=SimpleNamespace(user={"user_id": UID, "tenant_id": T, "role": "OWNER"}), headers=h)
+
+
+@pytest.mark.asyncio
+async def test_kunci_sama_badan_sama_replay_tanpa_tulis_bahkan_dengan_if_match_basi(monkeypatch):
+    from starlette.responses import Response
+    from app.utils.idempotency import hash_payload
+    body = U(notes="x")
+    sidik = hash_payload(body.model_dump(mode="json", exclude_unset=True))
+    lama = {"success": True, "message": "Sales order updated", "data": {"id": str(SOID), "new_total": 5}}
+    conn = _IConn({"payload_hash": sidik, "sidik": sidik, "response": lama, **lama})
+    async def gp(): return _IPool(conn)
+    monkeypatch.setattr(SO, "get_pool", gp)
+    async def basi(*a, **k):
+        raise AssertionError("If-Match diperiksa SEBELUM replay -> balasan hilang lalu diulang = 412, bukan replay")
+    import app.services.optimistic_concurrency as OC
+    monkeypatch.setattr(OC, "assert_if_match_row", basi)
+    import app.routers.sales_orders as _m
+    async def replay(c, t, k, s):
+        assert k == f"SO_UPDATE:{UID}:{SOID}:k-1" and s == sidik
+        return lama
+    monkeypatch.setattr(_m, "ambil_replay_klien", replay)
+    resp = Response()
+    r = await SO.update_sales_order(_req("k-1", if_match='W/"basi"'), str(SOID), body, resp)
+    assert r.data == lama["data"] and resp.headers.get("X-Idempotent-Replay") == "true"
+
+
+@pytest.mark.asyncio
+async def test_kunci_sama_badan_beda_409(monkeypatch):
+    import app.routers.sales_orders as _m
+    async def gp(): return _IPool(_IConn())
+    monkeypatch.setattr(SO, "get_pool", gp)
+    async def beda(*a):
+        raise LookupError("isi beda")
+    monkeypatch.setattr(_m, "ambil_replay_klien", beda)
+    with pytest.raises(HTTPException) as e:
+        await SO.update_sales_order(_req("k-1"), str(SOID), U(notes="y"))
+    assert e.value.status_code == 409 and e.value.detail["code"] == "IDEMPOTENCY_KEY_REUSED"
+
+
+def test_patch_menyimpan_replay_di_setiap_jalan_sukses():
+    src = inspect.getsource(SO.update_sales_order)
+    assert src.count("return SalesOrderResponse(") == 1  # satu-satunya = bentuk replay
+    assert src.count("_simpan_idem_patch(") == 3          # judul-saja, terkonfirmasi, draf
+    assert src.index("IDEM:") < src.index("FOR UPDATE")  # kunci idempotensi sebelum baris SO

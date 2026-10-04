@@ -916,21 +916,65 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
     }
 
 
+async def _simpan_idem_patch(conn, ctx: dict, kunci_penuh, sidik, resp, so_id):
+    """Catat respons SUKSES PATCH SO untuk replay (tx yang SAMA dengan tulisnya; gagal = ikut rollback)."""
+    if kunci_penuh:
+        await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "SO_UPDATE", sidik,
+                                  resp.model_dump(mode="json"), result_id=so_id)
+    return resp
+
+
 @router.patch("/{order_id}", response_model=SalesOrderResponse)
 async def update_sales_order(
-    request: Request, order_id: str, body: UpdateSalesOrderRequest
+    request: Request, order_id: str, body: UpdateSalesOrderRequest, response: Response = None
 ):
-    """Update a sales order (draft only)."""
+    """Update a sales order (draft; terkonfirmasi lewat flag so_edit_confirmed).
+
+    X-Idempotency-Key opsional (4 Okt 2026, permintaan WORKSPACE untuk ubah terkonfirmasi: baris baru tanpa id
+    tersisip ulang bila badan dikirim dua kali). Kunci sama + badan sama -> respons PERTAMA, tanpa tulis ulang
+    (X-Idempotent-Replay: true); kunci sama + badan beda -> 409 IDEMPOTENCY_KEY_REUSED. Pola /fulfill."""
     try:
         ctx = get_user_context(request)
         _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
+        try:
+            _kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _kunci_penuh = _sidik = None
+        if _kunci_klien:
+            _kunci_penuh = f"SO_UPDATE:{ctx['user_id']}:{_so_uuid(order_id)}:{_kunci_klien}"
+            _sidik = hash_payload(body.model_dump(mode="json", exclude_unset=True))  # SEBELUM jalur judul membuang medan
         pool = await get_pool()
+
+        async def _replay(conn):
+            try:
+                lama = await ambil_replay_klien(conn, ctx["tenant_id"], _kunci_penuh, _sidik)
+            except LookupError:
+                raise HTTPException(status_code=409, detail={
+                    "code": "IDEMPOTENCY_KEY_REUSED",
+                    "message": "Idempotency-Key sudah dipakai untuk perubahan pesanan dengan isi berbeda"})
+            if lama is not None and response is not None:
+                response.headers["X-Idempotent-Replay"] = "true"
+            return SalesOrderResponse(**lama) if lama is not None else None
+
+        if _kunci_penuh:
+            # pra-cek SEBELUM If-Match: balasan yang hilang lalu diulang membawa If-Match lama -> tanpa ini 412, bukan
+            # replay. Koneksi sendiri yang DILEPAS dulu (assert_if_match_row meminjam koneksinya sendiri; Law 32).
+            async with pool.acquire() as c0:
+                _lama = await _replay(c0)
+            if _lama is not None:
+                return _lama
         # Optimistic concurrency (opt-in If-Match): reject a stale write.
         from ..services.optimistic_concurrency import assert_if_match_row
         await assert_if_match_row(request, "sales_orders", order_id)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if _kunci_penuh:  # dua permintaan identik bersamaan: yang kedua menunggu lalu mendapat replay
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{_kunci_penuh}")
+                    _lama = await _replay(conn)
+                    if _lama is not None:
+                        return _lama
                 order = await conn.fetchrow(
                     """
                     SELECT id, status FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE
@@ -953,9 +997,9 @@ async def update_sales_order(
                         raise HTTPException(status_code=422, detail=str(e))
                     body.__pydantic_fields_set__.discard("order_title")
                     if not body.model_fields_set:
-                        return SalesOrderResponse(
+                        return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
                             success=True, message="Sales order updated", data={"id": order_id}
-                        )
+                        ), order["id"])
 
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
@@ -976,7 +1020,8 @@ async def update_sales_order(
                     from ..services import so_ubah_terkonfirmasi as _sut
                     if await _sut.flag_aktif(conn, ctx["tenant_id"]):
                         hasil = await _sut.ubah(conn, ctx, await _so_untuk_ubah(conn, ctx, order["id"]), body, _hitung_so)
-                        return SalesOrderResponse(success=True, message="Sales order updated", data=hasil)
+                        return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
+                            success=True, message="Sales order updated", data=hasil), order["id"])
                     raise HTTPException(
                         status_code=400, detail="Only draft orders can be updated"
                     )
@@ -1176,9 +1221,9 @@ async def update_sales_order(
                         ctx["user_id"], "Pesanan diubah (" + ", ".join(_ubah) + ")", {"fields": _ubah},
                         source="api:sales_orders.update",
                     )
-                return SalesOrderResponse(
+                return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
                     success=True, message="Sales order updated", data={"id": order_id}
-                )
+                ), order["id"])
 
     except HTTPException:
         raise
