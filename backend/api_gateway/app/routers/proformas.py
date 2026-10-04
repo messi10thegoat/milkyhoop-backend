@@ -40,11 +40,6 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
-def _rp2(x) -> str:
-    """Rupiah Indonesia: titik ribuan, koma desimal (mis. 1.000.000,00)."""
-    return f"{float(x):,.2f}".translate(str.maketrans({",": ".", ".": ","}))
-
-
 router = APIRouter()
 so_router = APIRouter()  # dipasang di /api/sales-orders
 
@@ -940,7 +935,7 @@ async def _rencana_batal(conn, ctx: dict, cur, alasan) -> dict:
     terbayar = await compute_paid_amount(conn, tid, pid)  # pagar = uang muka EKSPLISIT (bukan atribusi tampilan)
     if terbayar > 0:
         blocks.append(_blok("PROFORMA_HAS_PAYMENT", 400, (
-            f"Proforma sudah menerima pembayaran Rp {_rp2(terbayar).removesuffix(',00')}. "
+            f"Proforma sudah menerima pembayaran {tg.rp(terbayar)}. "
             f"Tidak bisa dibatalkan — lakukan refund uang muka terlebih dahulu.")))
     order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
     total = _f(order["total_amount"]) or 0.0

@@ -5548,7 +5548,7 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
             + ", ".join(f"{_n(x['quantity_released'])} {x['description']}" for x in release)
             + f" ke SO {so_row['order_number']}, sehingga bisa difakturkan ulang."
             + (" Uang muka " + ", ".join(
-                f"{x['deposit_number']} (sisa Rp" + f"{x['remaining']:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in deposits
+                f"{x['deposit_number']} (sisa {tg.rp(x['remaining'])})" for x in deposits
             ) + " tetap utuh." if deposits else "")
         )
     else:

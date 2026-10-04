@@ -82,11 +82,11 @@ async def test_lengkap_urut_terbaru_dulu():
     assert [e["jenis"] for e in r["events"]] == ["NOTA_KREDIT_DITERBITKAN", "NOTA_KREDIT_DIBUAT", "PEMBAYARAN_DITERIMA",
                                                  "UANG_MUKA_DITERAPKAN", "SURAT_JALAN_DIBUAT", "FAKTUR_DITERBITKAN", "FAKTUR_DIBUAT"]
     dibuat = r["events"][-1]
-    assert dibuat["ringkas"] == "Faktur INV-9 Rp300.000 dibuat dari pesanan SO-9"
+    assert dibuat["ringkas"] == "Faktur INV-9 Rp 300.000 dibuat dari pesanan SO-9"
     assert dibuat["aktor"] == {"id": U1, "nama": "Anton"} and dibuat["at"].endswith("+07:00")
     assert r["sales_order"] == {"id": str(SOID), "order_number": "SO-9"} and r["omitted"] == [] and r["total"] == 7
     dp = [e for e in r["events"] if e["jenis"] == "UANG_MUKA_DITERAPKAN"][0]
-    assert dp["dokumen"] == {"tipe": "customer_deposit", "id": str(DP), "nomor": "DEP-9"} and "Rp50.000" in dp["ringkas"]
+    assert dp["dokumen"] == {"tipe": "customer_deposit", "id": str(DP), "nomor": "DEP-9"} and "Rp 50.000" in dp["ringkas"]
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_izin_baca_menyaring_dan_dilaporkan():
     jenis = [e["jenis"] for e in r["events"]]
     assert not any(j.startswith(("NOTA_KREDIT", "UANG_MUKA")) for j in jenis)
     assert r["omitted"] == ["credit_note", "customer_deposit", "sales_order"]
-    assert r["sales_order"] is None and r["events"][-1]["ringkas"] == "Faktur INV-9 Rp300.000 dibuat"
+    assert r["sales_order"] is None and r["events"][-1]["ringkas"] == "Faktur INV-9 Rp 300.000 dibuat"
     assert not any("FROM credit_notes" in s or "customer_deposit_applications" in s for s, _ in c.q)
 
 

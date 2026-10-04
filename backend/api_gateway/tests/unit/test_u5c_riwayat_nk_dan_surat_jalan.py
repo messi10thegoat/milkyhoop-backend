@@ -78,10 +78,10 @@ def test_riwayat_nk_siklus_lengkap_terbaru_dulu_dan_berlabel():
     assert jenis == ["NOTA_KREDIT_DIBATALKAN", "NOTA_KREDIT_DIKEMBALIKAN", "NOTA_KREDIT_DILEPAS", "NOTA_KREDIT_DITERAPKAN",
                      "NOTA_KREDIT_DITERBITKAN", "NOTA_KREDIT_DIBUAT"]
     teks = {e["jenis"]: e["ringkas"] for e in d["events"]}
-    assert teks["NOTA_KREDIT_DIBUAT"] == "Nota kredit CN-2610-0001 Rp100.000 dibuat atas faktur INV-2610-0007"
-    assert teks["NOTA_KREDIT_DITERAPKAN"] == "Nota kredit CN-2610-0001 Rp40.000 diterapkan ke faktur INV-2610-0008"
+    assert teks["NOTA_KREDIT_DIBUAT"] == "Nota kredit CN-2610-0001 Rp 100.000 dibuat atas faktur INV-2610-0007"
+    assert teks["NOTA_KREDIT_DITERAPKAN"] == "Nota kredit CN-2610-0001 Rp 40.000 diterapkan ke faktur INV-2610-0008"
     assert teks["NOTA_KREDIT_DILEPAS"].endswith("dilepas: salah faktur")
-    assert teks["NOTA_KREDIT_DIKEMBALIKAN"] == "Nota kredit CN-2610-0001 Rp60.000 dikembalikan ke pelanggan"
+    assert teks["NOTA_KREDIT_DIKEMBALIKAN"] == "Nota kredit CN-2610-0001 Rp 60.000 dikembalikan ke pelanggan"
     assert teks["NOTA_KREDIT_DIBATALKAN"].endswith("dibatalkan: batal")
     assert d["events"][0]["aktor"] == {"id": "u1", "nama": "Anton"}
     assert d["total"] == 6 and d["omitted"] == []

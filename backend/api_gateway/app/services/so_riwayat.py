@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
 from ..utils.tanggal_tenant import zona_tenant
+from . import teks_galat as tg
 
 # jenis dokumen -> modul izin BACA
 MODUL = {
@@ -148,14 +149,11 @@ async def catat_riwayat(conn, tenant_id: str, entity_type: str, entity_id, entit
 
 
 def _rp(x) -> str:
+    """Rupiah baku (services/teks_galat.rp: Decimal, sen hanya bila != 0); masukan tak sah -> 'Rp—'."""
     try:
-        v = float(x or 0)
-    except (TypeError, ValueError):
+        return tg.rp(x)
+    except ValueError:
         return "Rp—"
-    s = f"{v:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-    return "Rp" + s.removesuffix(",00")
-
-
 class _Kumpul:
     def __init__(self):
         self.ev = []

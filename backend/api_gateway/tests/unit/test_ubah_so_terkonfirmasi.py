@@ -151,7 +151,7 @@ def test_patch_terkonfirmasi_hanya_lewat_flag():
 
 def test_teks_angka():
     assert SUT._q(Decimal("60.00")) == "60" and SUT._q(Decimal("2.5000")) == "2.5"
-    assert SUT._rp(Decimal("1234567.5")) == "Rp 1.234.568"
+    assert SUT._rp(Decimal("1234567.5")) == "Rp 1.234.567,50"  # Rupiah baku, tak dibulatkan (5 Okt)
 
 
 # ---- X-Idempotency-Key PATCH SO (permintaan WORKSPACE 4 Okt; Law 14: kunci men-SERIAL-kan, idempotensi men-DEDUP) ----

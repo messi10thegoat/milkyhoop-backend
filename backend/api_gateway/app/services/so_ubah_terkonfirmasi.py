@@ -24,6 +24,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import uuid as uuid_module
 
 from fastapi import HTTPException
+from . import teks_galat as tg
 
 FLAG = "so_edit_confirmed"
 STATUS_BOLEH = ("confirmed", "partial_shipped", "shipped", "partial_invoiced", "invoiced")
@@ -44,9 +45,7 @@ def _d(v) -> Decimal:
 
 
 def _rp(x) -> str:
-    return "Rp " + f"{_d(x).quantize(Decimal('1'), rounding=ROUND_HALF_UP):,}".replace(",", ".")
-
-
+    return tg.rp(x)  # Rupiah baku (services/teks_galat); dulu dibulatkan ke rupiah utuh
 def _sama(a, b) -> bool:
     """Perbandingan nilai baris tersimpan vs kiriman (uuid/str/angka)."""
     if a is None or b is None:

@@ -211,7 +211,7 @@ async def test_semua_penghalang_urutan_lama(pasang):
     assert [b["code"] for b in d["blocks"]] == ["SO_REVENUE_NOT_RECOGNIZED", "SO_NOT_FULLY_INVOICED"]
     assert d["can_close"] is False and d["requires_reason"] is True
     assert all("detail" not in b for b in d["blocks"])
-    assert [n["code"] for n in d["notes"]] == ["SO_DEPOSIT_STAYS"] and "DP-1 (sisa Rp250.000)" in d["notes"][0]["message"]
+    assert [n["code"] for n in d["notes"]] == ["SO_DEPOSIT_STAYS"] and "DP-1 (sisa Rp 250.000)" in d["notes"][0]["message"]
     assert d["deposits"] == [{"deposit_id": str(DPID), "deposit_number": "DP-1", "remaining": 250000.0, "after_close": "tetap_saldo"}]
 
 

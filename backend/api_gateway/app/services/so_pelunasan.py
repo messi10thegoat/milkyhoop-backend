@@ -24,6 +24,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+from . import teks_galat as tg
 
 _NOL = Decimal("0")
 
@@ -42,10 +43,7 @@ def _f(v):
 
 
 def _rp(x) -> str:
-    s = f"{float(x):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-    return "Rp" + s.removesuffix(",00")
-
-
+    return tg.rp(x)  # Rupiah baku (services/teks_galat)
 def alokasi_tertua_dulu(faktur: list, jumlah: Decimal) -> list:
     """faktur: [{invoice_id, remaining}] SUDAH urut tertua-dulu. Kembalikan applied per faktur (Decimal)."""
     sisa, keluar = jumlah, []

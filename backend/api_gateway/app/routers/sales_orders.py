@@ -1479,9 +1479,7 @@ SO_TAK_BISA_BATAL = ("cancelled", "completed", "invoiced")
 
 
 def _rp_teks(x) -> str:
-    return "Rp" + f"{float(x):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00")
-
-
+    return tg.rp(x)  # Rupiah baku (services/teks_galat)
 async def _rencana_batal_so(conn, ctx, order_id: str, reason) -> dict:
     """SATU-SATUNYA definisi aturan batal SO: dipakai POST /cancel DAN /cancel/preview (tanpa tulisan).
     SEMUA penghalang, urut = urutan /cancel lama: status -> ada kiriman/faktur -> uang muka DRAF.
@@ -1730,7 +1728,7 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
             "code": "SO_DEPOSIT_STAYS",
             "message": (
                 "Uang muka "
-                + ", ".join(f"{x['deposit_number']} (sisa Rp" + f"{float(x['remaining']):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00") + ")" for x in sisa_dp)
+                + ", ".join(f"{x['deposit_number']} (sisa {tg.rp(x['remaining'])})" for x in sisa_dp)
                 + " tetap menjadi saldo uang muka pelanggan: bisa diterapkan ke faktur lain pelanggan ini atau dikembalikan."
             ),
         })

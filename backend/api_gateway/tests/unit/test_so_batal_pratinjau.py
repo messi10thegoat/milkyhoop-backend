@@ -166,7 +166,7 @@ async def test_uang_muka_posted_bukan_penghalang_tetap_saldo(pasang):
     assert d["can_cancel"] is True and d["blocks"] == [] and d["reason"] == "pelanggan batal"
     assert d["deposits"] == [{"deposit_id": str(DP1), "deposit_number": "DP-1", "remaining": 250000.0, "after_cancel": "tetap_saldo"}]
     n = [x for x in d["notes"] if x["code"] == "SO_DEPOSIT_STAYS"][0]
-    assert "DP-1 (sisa Rp250.000)" in n["message"] and d["total_amount"] == 1500000.0
+    assert "DP-1 (sisa Rp 250.000)" in n["message"] and d["total_amount"] == 1500000.0
 
 
 @pytest.mark.asyncio

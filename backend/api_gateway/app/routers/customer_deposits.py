@@ -198,66 +198,8 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
 
 
 # FIX_P1_DEPOSIT 2026-06-16 (b): journal-derived deposit balance.
-async def compute_customer_deposit_balance(conn, tenant_id: str, customer_id) -> Decimal:
-    """Available customer-deposit balance, journal-derived (Law 1/16/29).
-
-    Computed as the NET MOVEMENT on the CUSTOMER_DEPOSIT_LIABILITY (2-10500)
-    account = SUM(credit) - SUM(debit), over is_effective journals only,
-    scoped to all deposits belonging to this customer.
-
-    Net-account-movement is immune to future source_types (kills the BL-08
-    class by construction). Because is_effective_journal() already drops
-    reversed pairs (reversed_by_id OR reversal_of_id), the net is
-    automatically correct after un-apply — no source_type enumeration.
-
-    Source linkage: the deposit POST and forward DEPOSIT_APPLICATION /
-    DEPOSIT_REFUND journals carry journal_entries.source_id =
-    customer_deposits.id, so we join je.source_id -> customer_deposits.id
-    -> customer_deposits.customer_id. Their is_effective REVERSALS carry
-    source_id = the INVOICE id (Option B obligation reference for the AR
-    guard) and therefore do NOT join customer_deposits here -- but that is
-    harmless and correct: a reversal has reversal_of_id set and its
-    original has reversed_by_id set, so is_effective_journal() drops BOTH.
-    The restored balance comes from is_effective dropping the now-reversed
-    forward journal, leaving only the still-effective POST.
-
-    Liability account is credit-normal:
-      post   : Cr 2-10500  (+available)
-      apply  : Dr 2-10500  (-available)
-      refund : Dr 2-10500  (-available)
-    => available = SUM(credit) - SUM(debit).
-    """
-    deposit_account_id = await resolve_account_id_by_role(
-        conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY
-    )
-    result = await conn.fetchval(
-        """
-        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        WHERE je.tenant_id = $1
-          AND jl.account_id = $3
-          AND is_effective_journal(je.id)
-          AND (
-              je.source_id IN (
-                  SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2
-              )
-              OR je.id IN (
-                  SELECT journal_id FROM receive_payments
-                  WHERE tenant_id = $1 AND journal_id IS NOT NULL
-                    AND created_deposit_id IN (
-                        SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2
-                    )
-              )
-          )
-        """,
-        tenant_id,
-        customer_id,
-        deposit_account_id,
-    )
-    # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
-    return Decimal(str(result or 0))
-
+# compute_customer_deposit_balance DIHAPUS 5 Okt 2026: kode mati (nol pemanggil di repo/FE/fungsi DB), penyaring
+# source_id lama melewatkan RECEIVE_PAYMENT_UNAPPLY. Saldo per uang muka = compute_deposit_remaining_many.
 
 # FIX_P1_DEPOSIT 2026-06-16 (b): per-deposit journal-derived remaining.
 async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> Decimal:

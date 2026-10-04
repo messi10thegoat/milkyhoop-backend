@@ -292,7 +292,7 @@ async def test_uang_muka_so_hanya_info(pasang):
     assert d["can_save"] is True
     assert d["deposits_unapplied"] == [{"deposit_id": str(UUID(int=99)), "deposit_number": "DP-9", "remaining": 50000.0}]
     n = [x for x in d["notes"] if x["code"] == "RP_DEPOSIT_AVAILABLE"][0]
-    assert "DP-9 (sisa Rp50.000)" in n["message"]
+    assert "DP-9 (sisa Rp 50.000)" in n["message"]
     assert all(a.invoice_id != "DP-9" for a in pasang.tangkap["body"].allocations)
 
 

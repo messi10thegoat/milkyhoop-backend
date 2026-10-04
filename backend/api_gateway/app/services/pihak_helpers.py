@@ -15,6 +15,7 @@ from typing import Optional, Union
 from uuid import UUID
 
 from fastapi import HTTPException
+from . import teks_galat as tg
 
 
 def normalisasi_pihak(nilai: Optional[Union[str, UUID]], label: str) -> UUID:
@@ -73,9 +74,8 @@ async def pelanggan_kanonik_tenant(conn, tenant_id: str, nilai: Optional[Union[s
 
 
 def rupiah(nilai) -> str:
-    return "Rp " + f"{Decimal(str(nilai)):,.0f}".replace(",", ".")
-
-
+    """Rupiah baku (services/teks_galat.rp); dulu MEMBULATKAN ke rupiah utuh ('melebihi Rp 100.000' padahal 100.000,40)."""
+    return tg.rp(nilai)
 async def faktur_tenant_untuk_pelanggan(conn, tenant_id: str, invoice_id, pelanggan):
     """Faktur yang akan menerima atribusi nota kredit: harus ada di tenant ini DAN milik pelanggan nota kredit.
 
