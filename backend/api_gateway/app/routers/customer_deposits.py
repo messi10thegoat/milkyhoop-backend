@@ -2267,7 +2267,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     response_model=CustomerDepositResponse,
 )
 async def reverse_customer_deposit_application(
-    request: Request, deposit_id: UUID, application_id: UUID
+    request: Request, deposit_id: UUID, application_id: UUID, response: _Response = None
 ):
     """Reverse (un-apply) a single customer-deposit application.
 
@@ -2299,7 +2299,15 @@ async def reverse_customer_deposit_application(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-                return await reverse_deposit_application_core(conn, ctx, deposit_id, application_id)
+                # X-Idempotency-Key opsional (U3a-b): balasan hilang lalu diulang = respons pertama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_REVERSE", application_id,
+                                                       {"deposit_id": str(deposit_id)}, response)
+                if _lama is not None:
+                    return _lama
+                return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_REVERSE",
+                                        await reverse_deposit_application_core(conn, ctx, deposit_id, application_id),
+                                        deposit_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2868,6 +2876,24 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
     dep = await conn.fetchrow("SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, tid)
     if not dep:
         raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
+    if aksi == "reverse":
+        app = await conn.fetchrow(
+            "SELECT * FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
+            body.application_id, deposit_id, tid)
+        if not app:
+            raise HTTPException(status_code=404, detail="Penerapan uang muka tidak ditemukan.")
+        if (app["status"] or "active") == "reversed" or app["reversed_by_id"]:
+            blok.append(_blok_dp("APPLICATION_ALREADY_REVERSED", 409, "Penerapan ini sudah dilepas."))
+            return blok
+        if not app["journal_id"]:
+            blok.append(_blok_dp("APPLICATION_NO_JOURNAL", 400, "Penerapan uang muka ini tidak punya jurnal untuk dibalik."))
+        tutup = await _periode_tutup(conn, tid, await tanggal_dokumen(conn, tid))
+        if tutup:
+            blok.append(_blok_dp("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
+        if app["journal_id"] and await conn.fetchval(
+                "SELECT reversed_by_id FROM journal_entries WHERE id = $1 AND tenant_id = $2", app["journal_id"], tid):
+            blok.append(_blok_dp("APPLICATION_JOURNAL_REVERSED", 400, "Jurnal penerapan uang muka ini sudah dibalik."))
+        return blok
     if aksi == "void":
         if not (getattr(body, "reason", None) or "").strip():
             blok.append(_blok_dp("VOID_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi."))
@@ -2891,7 +2917,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
                     "dana, atau batalkan pembayarannya.")))
             tutup = await _periode_tutup(conn, tid, await tanggal_dokumen(conn, tid))
             if tutup:
-                blok.append(_blok_dp("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+                blok.append(_blok_dp("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
         return blok
     if dep["status"] not in ("posted", "partial"):
         kata = "refund" if aksi == "refund" else "apply"
@@ -2912,7 +2938,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
             blok.append(_blok_dp("REFUND_ACCOUNT_INVALID", 400, "Rekening pengembalian harus akun kas/bank."))
         tutup = await _periode_tutup(conn, tid, body.refund_date)
         if tutup:
-            blok.append(_blok_dp("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+            blok.append(_blok_dp("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
     else:
         total = sum((a.amount for a in body.applications), Decimal("0"))
         if total > sisa:
@@ -2958,7 +2984,13 @@ class _BatalkanPratinjauDp(Exception):
         self.data = data
 
 
-_INTI_DP = {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core"}
+async def _reverse_inti_dp(conn, ctx, deposit_id, body):
+    """Bentuk (conn, ctx, deposit_id, body) untuk pratinjau; penulisnya SAMA dengan /reverse."""
+    return await reverse_deposit_application_core(conn, ctx, deposit_id, body.application_id)
+
+
+_INTI_DP = {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core",
+            "reverse": "_reverse_inti_dp"}
 
 
 async def _pratinjau_dp(ctx: dict, deposit_id, aksi: str, body) -> dict:
@@ -2972,6 +3004,11 @@ async def _pratinjau_dp(ctx: dict, deposit_id, aksi: str, body) -> dict:
                 blok = await _rencana_dp(conn, ctx, deposit_id, aksi, body)
                 sebelum = await _keadaan_dp(conn, tid, deposit_id)
                 fakt = [a.invoice_id for a in body.applications] if aksi == "apply" else []
+                if aksi == "reverse":
+                    iv = await conn.fetchval(
+                        "SELECT invoice_id FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
+                        body.application_id, deposit_id, tid)
+                    fakt = [iv] if iv else []
                 f0 = {str(i): float(await get_invoice_remaining_from_journal(conn, tid, UUID(str(i)))) for i in fakt}
                 jadi = False
                 if not blok:
@@ -3025,6 +3062,18 @@ async def preview_apply_customer_deposit(request: Request, deposit_id: UUID, bod
     """Pratinjau terapkan: jurnal + sisa faktur sebelum -> sesudah + saldo uang muka."""
     ctx = await _ctx_pratinjau(request)
     return {"success": True, "data": await _pratinjau_dp(ctx, deposit_id, "apply", body)}
+
+
+class PratinjauReverseDp(BaseModel):
+    application_id: UUID
+
+
+@router.post("/{deposit_id}/applications/{application_id}/reverse/preview")
+async def preview_reverse_customer_deposit_application(request: Request, deposit_id: UUID, application_id: UUID):
+    """Pratinjau lepas penerapan (U3a-b): jurnal pembalik + sisa faktur naik + saldo uang muka naik, lalu rollback."""
+    ctx = await _ctx_pratinjau(request)
+    return {"success": True, "data": await _pratinjau_dp(ctx, deposit_id, "reverse",
+                                                         PratinjauReverseDp(application_id=application_id))}
 
 
 @router.get("/{deposit_id}/history")

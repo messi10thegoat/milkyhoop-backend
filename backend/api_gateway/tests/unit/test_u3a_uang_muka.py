@@ -29,7 +29,8 @@ def test_izin_pratinjau_sama_dengan_tulis_dan_riwayat_baca():
 
 
 def test_tulis_dan_pratinjau_memakai_inti_yang_sama():
-    assert CD._INTI_DP == {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core"}
+    assert CD._INTI_DP == {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core",
+                          "reverse": "_reverse_inti_dp"}  # U3a-b
     for h, inti in ((CD.void_customer_deposit, "void_deposit_core"), (CD.refund_customer_deposit, "refund_deposit_core"),
                     (CD.apply_customer_deposit, "apply_deposit_core")):
         s = inspect.getsource(h)

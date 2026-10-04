@@ -138,7 +138,7 @@ def pindai(sumber: str) -> list:
             kunci = {k.value for k in n.keys if isinstance(k, ast.Constant)}
             if "code" in kunci and kunci & {"message", "detail"}:
                 hasil += [(n.lineno, x) for x in _langgar_teks(n)]
-        elif isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("_blok_void", "_blok"):
+        elif isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("_blok_void", "_blok", "_blok_dp"):
             hasil += [(n.lineno, x) for a in n.args[2:] for x in _langgar_teks(a)]
     return sorted(set(hasil))  # dict ber-code di dalam HTTPException terpindai dua jalur -> satu temuan
 
