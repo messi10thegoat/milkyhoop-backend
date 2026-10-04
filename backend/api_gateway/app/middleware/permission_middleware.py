@@ -290,6 +290,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customer-deposits/[^/]+/applications/[^/]+/reverse$", ["POST"], "customer_deposit", "V"),
     (r"^/api/customer-deposits/[^/]+/refund$", ["POST"], "customer_deposit", "V"),
     (r"^/api/customer-deposits/[^/]+/void$", ["POST"], "customer_deposit", "V"),
+    # U3a (4 Okt 2026): pratinjau = izin rute tulisnya; riwayat = baca (GET tak-terpetakan = tertutup)
+    (r"^/api/customer-deposits/[^/]+/apply/preview$", ["POST"], "customer_deposit", "P"),
+    (r"^/api/customer-deposits/[^/]+/refund/preview$", ["POST"], "customer_deposit", "V"),
+    (r"^/api/customer-deposits/[^/]+/void/preview$", ["POST"], "customer_deposit", "V"),
+    (r"^/api/customer-deposits/[^/]+/history$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/[^/]+$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/[^/]+$", ["PATCH", "PUT"], "customer_deposit", "U"),
     (r"^/api/customer-deposits/[^/]+$", ["DELETE"], "customer_deposit", "D"),

@@ -53,3 +53,21 @@ async def simpan(conn, ctx: dict, kunci_penuh, sidik, source_type: str, resp, re
     if kunci_penuh:
         await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, source_type, sidik, resp, result_id=result_id)
     return resp
+
+
+async def mulai_aksi(conn, ctx: dict, kunci_klien, prefix: str, doc_id, isi: dict, response=None):
+    """Idempotensi AKSI pada dokumen yang sudah ada (void/refund/apply/terbit...): kunci {PREFIX}:{user}:{doc}:{kunci},
+    sidik isi, IDEM lock + replay. Kunci sama + isi beda -> 409. -> (kunci_penuh, sidik, respons_lama|None)."""
+    if not kunci_klien:
+        return None, None, None
+    kunci_penuh = f"{prefix}:{ctx['user_id']}:{doc_id}:{kunci_klien}"
+    sidik = hash_payload(isi)
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
+    try:
+        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
+    except LookupError:
+        raise HTTPException(status_code=409, detail={
+            "code": "IDEMPOTENCY_KEY_REUSED", "message": "Idempotency-Key sudah dipakai untuk aksi dengan isi berbeda"})
+    if lama is not None and response is not None:
+        response.headers["X-Idempotent-Replay"] = "true"
+    return kunci_penuh, sidik, lama

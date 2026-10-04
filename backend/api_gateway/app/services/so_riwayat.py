@@ -442,6 +442,63 @@ async def riwayat_faktur(conn, tenant_id: str, invoice_id, boleh: Callable[[str]
 MODUL_PENAWARAN = {"quote": "quote", "sales_order": "sales_order"}
 
 
+MODUL_UANG_MUKA = {"customer_deposit": "customer_deposit", "sales_order": "sales_order", "proforma": "proforma",
+                   "sales_invoice": "sales_invoice"}
+
+
+async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[str], Awaitable[bool]],
+                            limit: int = 200) -> Optional[dict]:
+    """Riwayat UANG MUKA (U3a CW, 4 Okt 2026), bentuk SAMA dengan riwayat_so. Kolom siklus (dibuat, diterima/diposting,
+    dibatalkan) + penerapan ke faktur (diterapkan/dilepas) + pengembalian dana + audit_logs beraktor.
+    None = tak ada di tenant ini."""
+    d = await conn.fetchrow(
+        """SELECT d.id, d.deposit_number, d.amount, d.created_at, d.created_by, d.posted_at, d.posted_by, d.voided_at,
+                  d.voided_by, d.voided_reason, d.sales_order_id, d.proforma_id, so.order_number, p.proforma_number
+           FROM customer_deposits d
+           LEFT JOIN sales_orders so ON so.id = d.sales_order_id AND so.tenant_id = d.tenant_id
+           LEFT JOIN proformas p ON p.id = d.proforma_id AND p.tenant_id = d.tenant_id
+           WHERE d.id = $1 AND d.tenant_id = $2""", deposit_id, tenant_id)
+    if not d:
+        return None
+    izin = {}
+    for jenis, modul in MODUL_UANG_MUKA.items():
+        if modul not in izin:
+            izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_UANG_MUKA.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+    k = _Kumpul()
+    n = d["deposit_number"]
+    k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"Uang muka {n} {_rp(d['amount'])} dibuat", d["created_by"],
+             "customer_deposit", d["id"], n)
+    k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"Uang muka {n} {_rp(d['amount'])} diterima (diposting)",
+             d["posted_by"], "customer_deposit", d["id"], n)
+    al = f": {d['voided_reason']}" if d["voided_reason"] else ""
+    k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"Uang muka {n} dibatalkan{al}", d["voided_by"],
+             "customer_deposit", d["id"], n)
+    for a in await conn.fetch(
+            """SELECT invoice_number, amount_applied, created_at, created_by, reversed_at FROM customer_deposit_applications
+               WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
+        fk = f" ke faktur {a['invoice_number']}" if lihat["sales_invoice"] else ""
+        k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan{fk}",
+                 a["created_by"], "customer_deposit", d["id"], n)
+        k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan uang muka {n}{fk} dilepas", None,
+                 "customer_deposit", d["id"], n)
+    for r in await conn.fetch(
+            """SELECT amount, refund_date, created_at, created_by FROM customer_deposit_refunds
+               WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
+        k.tambah(r["created_at"], "UANG_MUKA_DIKEMBALIKAN", f"Uang muka {n} {_rp(r['amount'])} dikembalikan ke pelanggan",
+                 r["created_by"], "customer_deposit", d["id"], n)
+    keluar, total = await _selesaikan(conn, tenant_id, k, {"customer_deposit": [d["id"]]}, lihat, limit)
+    return {
+        "deposit_id": str(d["id"]), "deposit_number": n,
+        "sales_order": ({"id": str(d["sales_order_id"]), "order_number": d["order_number"]}
+                        if lihat["sales_order"] and d["sales_order_id"] else None),
+        "proforma": ({"id": str(d["proforma_id"]), "proforma_number": d["proforma_number"]}
+                     if lihat["proforma"] and d["proforma_id"] else None),
+        "events": keluar, "total": total, "omitted": omitted,
+    }
+
+
 MODUL_PROFORMA = {"proforma": "proforma", "customer_deposit": "customer_deposit", "sales_order": "sales_order"}
 
 

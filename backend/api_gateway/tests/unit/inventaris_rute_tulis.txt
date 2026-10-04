@@ -239,10 +239,13 @@ POST /api/currencies/{currency_id}/set-base
 POST /api/customer-deposits
 POST /api/customer-deposits/{deposit_id}/applications/{application_id}/reverse
 POST /api/customer-deposits/{deposit_id}/apply
+POST /api/customer-deposits/{deposit_id}/apply/preview
 POST /api/customer-deposits/{deposit_id}/attachments
 POST /api/customer-deposits/{deposit_id}/post
 POST /api/customer-deposits/{deposit_id}/refund
+POST /api/customer-deposits/{deposit_id}/refund/preview
 POST /api/customer-deposits/{deposit_id}/void
+POST /api/customer-deposits/{deposit_id}/void/preview
 POST /api/customers
 POST /api/customers/merge
 POST /api/customers/merge/preview
