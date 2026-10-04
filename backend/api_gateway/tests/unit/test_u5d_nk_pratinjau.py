@@ -58,10 +58,10 @@ def test_idempotensi_aksi_pada_post_dan_void():
 
 
 @pytest.mark.parametrize("path,izin", [
-    ("/api/credit-notes/X/post/preview", ("credit_note", "C")),
-    ("/api/credit-notes/X/void/preview", ("credit_note", "C")),
-    ("/api/credit-notes/X/post", ("credit_note", "C")),
-    ("/api/credit-notes/X/void", ("credit_note", "C")),
+    ("/api/credit-notes/X/post/preview", ("credit_note", "P")),   # U5-E: post=P, void=V (dulu semua C)
+    ("/api/credit-notes/X/void/preview", ("credit_note", "V")),
+    ("/api/credit-notes/X/post", ("credit_note", "P")),
+    ("/api/credit-notes/X/void", ("credit_note", "V")),
 ])
 def test_izin_pratinjau_sama_dengan_tulisnya(path, izin):
     assert PM.PermissionMiddleware(lambda *a: None, False)._find_permission(path, "POST") == izin

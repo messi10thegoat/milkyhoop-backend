@@ -378,7 +378,13 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+", ["GET"], "sales_order", "R"),
     (r"^/api/sales-orders/[^/]+", ["PATCH", "PUT"], "sales_order", "U"),
     (r"^/api/sales-orders/[^/]+", ["DELETE"], "sales_order", "D"),
-    # Credit Notes
+    # Credit Notes. U5-E (4 Okt 2026, pemilik LANGSUNG memilih "Pola standar"): aksi bertingkat PER LANGKAH (dulu semua
+    # POST jatuh ke prefiks = C, jadi STORE_STAFF/SALES yang hanya punya C bisa menerbitkan/membatalkan NK). Pratinjau =
+    # izin tulisnya (aturan pratinjau CW). Buat draf (POST /api/credit-notes, /preview) + create-tax-invoice tetap C
+    # lewat prefiks di bawah. Pola SPESIFIK harus DI ATAS prefiks umum (urutan pertama-cocok).
+    (r"^/api/credit-notes/[^/]+/(post|post/preview|refund)$", ["POST"], "credit_note", "P"),
+    (r"^/api/credit-notes/[^/]+/(void|void/preview|unapply)$", ["POST"], "credit_note", "V"),
+    (r"^/api/credit-notes/[^/]+/apply$", ["POST"], "credit_note", "A"),
     (r"^/api/credit-notes", ["GET"], "credit_note", "R"),
     (r"^/api/credit-notes", ["POST"], "credit_note", "C"),
     (r"^/api/credit-notes/[^/]+", ["GET"], "credit_note", "R"),
