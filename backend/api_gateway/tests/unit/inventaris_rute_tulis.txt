@@ -551,3 +551,6 @@ POST /api/documents/{kind}/{doc_id}/shares/{share_id}/revoke
 POST /api/public/d/{token}/view
 POST /api/credit-notes/{credit_note_id}/post/preview
 POST /api/credit-notes/{credit_note_id}/void/preview
+POST /api/credit-notes/{credit_note_id}/apply/preview
+POST /api/credit-notes/{credit_note_id}/unapply/preview
+POST /api/credit-notes/{credit_note_id}/refund/preview

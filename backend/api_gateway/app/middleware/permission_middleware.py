@@ -383,9 +383,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # POST jatuh ke prefiks = C, jadi STORE_STAFF/SALES yang hanya punya C bisa menerbitkan/membatalkan NK). Pratinjau =
     # izin tulisnya (aturan pratinjau CW). Buat draf (POST /api/credit-notes, /preview) + create-tax-invoice tetap C
     # lewat prefiks di bawah. Pola SPESIFIK harus DI ATAS prefiks umum (urutan pertama-cocok).
-    (r"^/api/credit-notes/[^/]+/(post|post/preview|refund)$", ["POST"], "credit_note", "P"),
-    (r"^/api/credit-notes/[^/]+/(void|void/preview|unapply)$", ["POST"], "credit_note", "V"),
-    (r"^/api/credit-notes/[^/]+/apply$", ["POST"], "credit_note", "A"),
+    (r"^/api/credit-notes/[^/]+/(post|post/preview|refund|refund/preview)$", ["POST"], "credit_note", "P"),
+    (r"^/api/credit-notes/[^/]+/(void|void/preview|unapply|unapply/preview)$", ["POST"], "credit_note", "V"),
+    (r"^/api/credit-notes/[^/]+/(apply|apply/preview)$", ["POST"], "credit_note", "A"),
     (r"^/api/credit-notes", ["GET"], "credit_note", "R"),
     (r"^/api/credit-notes", ["POST"], "credit_note", "C"),
     (r"^/api/credit-notes/[^/]+", ["GET"], "credit_note", "R"),

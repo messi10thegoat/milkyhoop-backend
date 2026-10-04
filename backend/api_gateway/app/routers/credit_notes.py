@@ -2205,18 +2205,126 @@ async def post_credit_note(request: Request, credit_note_id: UUID, response: _Re
 
 # =============================================================================
 # APPLY CREDIT NOTE TO INVOICE(S)
+# U10 (5 Okt 2026): isi transaksi rute DIPINDAH ke apply_nota_kredit_core (pola void_nota_kredit_core) supaya rute DAN
+# pratinjau menjalankan penulis YANG SAMA; ditambah idempotensi aksi (X-Idempotency-Key opsional, CN_APPLY).
 # =============================================================================
+
+
+async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -> dict:
+    """Inti POST /credit-notes/{id}/apply, di transaksi PEMANGGIL (kunci CREDIT_NOTE_APPLY + semua pemeriksaan di sini).
+    Isi = isi transaksi rute lama tanpa perubahan (hanya dipindah dari handler)."""
+    # Law 13: Advisory lock
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"CREDIT_NOTE_APPLY:{credit_note_id}",
+    )
+
+    # UNIT B (14 Sep 2026) — satu nota kredit, satu faktur, SELURUH nilainya.
+    # Atribusi piutang = credit_notes.original_invoice_id (cabang 2 compute_ar_outstanding membaca
+    # SELURUH kredit jurnal CN), maka penerapan sebagian tak bisa direpresentasikan. Nol jurnal baru:
+    # piutang sudah dikredit saat CN dibukukan; apply hanya MENGATRIBUSI. Cache dihitung ulang dari
+    # compute_ar_outstanding. Lihat backend/docs/TIKET-nota-kredit-apply-mati-20260913.md.
+    if len(body.applications) != 1:
+        raise HTTPException(status_code=400, detail="Nota kredit hanya bisa diterapkan ke satu faktur.")
+    app = body.applications[0]
+
+    cn = await conn.fetchrow(
+        "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
+        raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
+    if cn["status"] != "posted" or cn["journal_id"] is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Hanya nota kredit yang sudah dibukukan yang bisa diterapkan ke faktur.",
+        )
+    if (cn["amount_refunded"] or 0) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Nota kredit yang dananya sudah dikembalikan tidak bisa diterapkan ke faktur.",
+        )
+    total_cn = Decimal(str(cn["total_amount"]))
+    if Decimal(str(app.amount)) != total_cn:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur.",
+        )
+
+    invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
+    await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], invoice, total_cn)
+
+    import uuid as uuid_module
+
+    app_id = uuid_module.uuid4()
+    application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    await conn.execute(
+        """
+        INSERT INTO credit_note_applications (
+            id, tenant_id, credit_note_id, invoice_id, invoice_number,
+            amount_applied, application_date, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    """,
+        app_id,
+        ctx["tenant_id"],
+        credit_note_id,
+        invoice["id"],
+        invoice["invoice_number"],
+        total_cn,
+        application_date,
+        ctx["user_id"],
+    )
+
+    # V250: aplikasi aktif ditulis DULU — pagar DB hanya mengizinkan kaitan NULL->faktur bila aplikasi
+    # aktifnya sudah ada. Gagal compare-and-set -> HTTPException -> transaksi batal (aplikasi ikut batal).
+    terikat = await conn.execute(
+        """
+        UPDATE credit_notes
+        SET original_invoice_id = $1, original_invoice_number = $2, updated_at = NOW()
+        WHERE id = $3 AND tenant_id = $4 AND original_invoice_id IS NULL
+    """,
+        invoice["id"],
+        invoice["invoice_number"],
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+    if terikat != "UPDATE 1":
+        raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
+
+    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], invoice["id"])
+
+    applications_created = [
+        {"application_id": str(app_id), "invoice_id": str(invoice["id"]), "amount": float(total_cn)}
+    ]
+
+    # Credit note status will be updated by trigger
+    logger.info(
+        f"Credit note applied: {credit_note_id}, applications={len(applications_created)}"
+    )
+
+    return {
+        "success": True,
+        "message": f"Credit note applied to {len(applications_created)} invoice(s)",
+        "data": {
+            "id": str(credit_note_id),
+            "applications": applications_created,
+        },
+    }
 
 
 @router.post("/{credit_note_id}/apply", response_model=CreditNoteResponse)
 async def apply_credit_note(
-    request: Request, credit_note_id: UUID, body: ApplyCreditNoteRequest
+    request: Request, credit_note_id: UUID, body: ApplyCreditNoteRequest, response: _Response = None
 ):
     """
     Apply credit note to one or more invoices.
 
     Reduces the invoice's outstanding balance.
     Credit note must be in 'posted' or 'partial' status.
+    X-Idempotency-Key opsional (U10): balasan hilang lalu diulang = respons pertama; isi beda = 409.
     """
     try:
         ctx = get_user_context(request)
@@ -2227,106 +2335,13 @@ async def apply_credit_note(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CREDIT_NOTE_APPLY:{credit_note_id}",
-                )
-
-                # UNIT B (14 Sep 2026) — satu nota kredit, satu faktur, SELURUH nilainya.
-                # Atribusi piutang = credit_notes.original_invoice_id (cabang 2 compute_ar_outstanding membaca
-                # SELURUH kredit jurnal CN), maka penerapan sebagian tak bisa direpresentasikan. Nol jurnal baru:
-                # piutang sudah dikredit saat CN dibukukan; apply hanya MENGATRIBUSI. Cache dihitung ulang dari
-                # compute_ar_outstanding. Lihat backend/docs/TIKET-nota-kredit-apply-mati-20260913.md.
-                if len(body.applications) != 1:
-                    raise HTTPException(status_code=400, detail="Nota kredit hanya bisa diterapkan ke satu faktur.")
-                app = body.applications[0]
-
-                cn = await conn.fetchrow(
-                    "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-                if not cn:
-                    raise HTTPException(status_code=404, detail="Credit note not found")
-                if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
-                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
-                if cn["status"] != "posted" or cn["journal_id"] is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Hanya nota kredit yang sudah dibukukan yang bisa diterapkan ke faktur.",
-                    )
-                if (cn["amount_refunded"] or 0) > 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Nota kredit yang dananya sudah dikembalikan tidak bisa diterapkan ke faktur.",
-                    )
-                total_cn = Decimal(str(cn["total_amount"]))
-                if Decimal(str(app.amount)) != total_cn:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur.",
-                    )
-
-                invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
-                await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], invoice, total_cn)
-
-                import uuid as uuid_module
-
-                app_id = uuid_module.uuid4()
-                application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await conn.execute(
-                    """
-                    INSERT INTO credit_note_applications (
-                        id, tenant_id, credit_note_id, invoice_id, invoice_number,
-                        amount_applied, application_date, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                    app_id,
-                    ctx["tenant_id"],
-                    credit_note_id,
-                    invoice["id"],
-                    invoice["invoice_number"],
-                    total_cn,
-                    application_date,
-                    ctx["user_id"],
-                )
-
-                # V250: aplikasi aktif ditulis DULU — pagar DB hanya mengizinkan kaitan NULL->faktur bila aplikasi
-                # aktifnya sudah ada. Gagal compare-and-set -> HTTPException -> transaksi batal (aplikasi ikut batal).
-                terikat = await conn.execute(
-                    """
-                    UPDATE credit_notes
-                    SET original_invoice_id = $1, original_invoice_number = $2, updated_at = NOW()
-                    WHERE id = $3 AND tenant_id = $4 AND original_invoice_id IS NULL
-                """,
-                    invoice["id"],
-                    invoice["invoice_number"],
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-                if terikat != "UPDATE 1":
-                    raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
-
-                await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], invoice["id"])
-
-                applications_created = [
-                    {"application_id": str(app_id), "invoice_id": str(invoice["id"]), "amount": float(total_cn)}
-                ]
-
-                # Credit note status will be updated by trigger
-                logger.info(
-                    f"Credit note applied: {credit_note_id}, applications={len(applications_created)}"
-                )
-
-                return {
-                    "success": True,
-                    "message": f"Credit note applied to {len(applications_created)} invoice(s)",
-                    "data": {
-                        "id": str(credit_note_id),
-                        "applications": applications_created,
-                    },
-                }
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_APPLY", credit_note_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+                return await _ib.simpan(conn, ctx, _kp, _sd, "CN_APPLY",
+                                        await apply_nota_kredit_core(conn, ctx, credit_note_id, body), credit_note_id)
 
     except HTTPException:
         raise
@@ -2337,133 +2352,149 @@ async def apply_credit_note(
 
 # =============================================================================
 # UNAPPLY CREDIT NOTE (batalkan penerapan ke faktur) — 14 Sep 2026, unit (2)
+# U10 (5 Okt 2026): inti diekstrak (unapply_nota_kredit_core) + idempotensi CN_UNAPPLY.
 # =============================================================================
 
 
-@router.post("/{credit_note_id}/unapply", response_model=CreditNoteResponse)
-async def unapply_credit_note(
-    request: Request, credit_note_id: UUID, body: UnapplyCreditNoteRequest
-):
-    """
-    Batalkan penerapan nota kredit ke faktur (kebalikan unit B).
+async def unapply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason) -> dict:
+    """Inti POST /credit-notes/{id}/unapply, di transaksi PEMANGGIL (kunci CREDIT_NOTE_APPLY + semua pemeriksaan di sini).
+    Isi = isi transaksi rute lama tanpa perubahan (hanya dipindah dari handler; `body.reason` -> `reason`).
 
     TANPA jurnal: apply juga tanpa jurnal (piutang sudah dikredit saat CN dibukukan; apply hanya mengatribusi).
     original_invoice_id kembali NULL lewat compare-and-set dari faktur yang tepat; baris aplikasi menjadi 'reversed'
     (riwayat, tak dihapus); cache faktur dihitung ulang dari compute_ar_outstanding; audit tercatat.
     Putusan pemilik: alasan WAJIB; periode tanggal penerapan TUTUP -> tolak.
-    Sesudahnya void faktur dan void CN terbuka dengan sendirinya (penjaga keduanya membaca kaitan/aplikasi aktif).
-    """
+    Sesudahnya void faktur dan void CN terbuka dengan sendirinya (penjaga keduanya membaca kaitan/aplikasi aktif)."""
+    alasan = (reason or "").strip()
+    if not alasan:
+        raise HTTPException(status_code=400, detail="Alasan pembatalan penerapan wajib diisi.")
+
+    # Kunci SAMA dengan apply: apply dan unapply satu CN ter-serialkan
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"CREDIT_NOTE_APPLY:{credit_note_id}",
+    )
+    cn = await conn.fetchrow(
+        "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+
+    aktif = await conn.fetch(
+        """
+        SELECT id, invoice_id, invoice_number, amount_applied, application_date
+        FROM credit_note_applications
+        WHERE credit_note_id = $1 AND tenant_id = $2 AND status = 'active'
+    """,
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+    if not aktif or cn["original_invoice_id"] is None:
+        raise HTTPException(status_code=400, detail="Nota kredit ini belum diterapkan ke faktur mana pun.")
+    if len(aktif) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Nota kredit ini punya lebih dari satu penerapan aktif; hubungi dukungan.",
+        )
+    app = aktif[0]
+
+    # Law 5 (putusan pemilik): tanggal penerapan di periode TUTUP -> tolak (pola void_credit_note)
+    period_row = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        ctx["tenant_id"],
+        app["application_date"],
+    )
+    if period_row and period_row["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {period_row['status']}; penerapan nota kredit tidak bisa dibatalkan.",
+        )
+
+    balik = await conn.execute(
+        """
+        UPDATE credit_note_applications
+        SET status = 'reversed', reversed_at = NOW(), reversed_by = $2, reversal_reason = $3
+        WHERE id = $1 AND status = 'active'
+    """,
+        app["id"],
+        ctx["user_id"],
+        alasan,
+    )
+    if balik != "UPDATE 1":
+        raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
+
+    # V250: aplikasi dibatalkan DULU — pagar DB hanya mengizinkan kaitan faktur->NULL bila aplikasinya
+    # dibatalkan di transaksi yang sama.
+    lepas = await conn.execute(
+        """
+        UPDATE credit_notes
+        SET original_invoice_id = NULL, original_invoice_number = NULL, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2 AND original_invoice_id = $3
+    """,
+        credit_note_id,
+        ctx["tenant_id"],
+        app["invoice_id"],
+    )
+    if lepas != "UPDATE 1":
+        raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
+
+    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], app["invoice_id"])
+
+    await conn.execute(
+        """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+           VALUES (gen_random_uuid()::text, 'CREDIT_NOTE_UNAPPLIED', 'credit_note', $1, $2, $3, 'api:credit_notes.unapply',
+                   jsonb_build_object('invoice_id', $4::text, 'invoice_number', $5::text, 'amount', $6::text,
+                                      'application_id', $7::text, 'reason', $8::text, 'user_id', $9::text), true, now())""",
+        credit_note_id,
+        cn["credit_note_number"],
+        ctx["tenant_id"],
+        str(app["invoice_id"]),
+        app["invoice_number"],
+        str(app["amount_applied"]),
+        str(app["id"]),
+        alasan,
+        str(ctx["user_id"]),
+    )
+
+    logger.info(f"Credit note unapplied: {credit_note_id} from invoice {app['invoice_id']}")
+    return {
+        "success": True,
+        "message": "Penerapan nota kredit dibatalkan",
+        "data": {
+            "id": str(credit_note_id),
+            "invoice_id": str(app["invoice_id"]),
+            "invoice_number": app["invoice_number"],
+            "amount": float(app["amount_applied"]),
+        },
+    }
+
+
+@router.post("/{credit_note_id}/unapply", response_model=CreditNoteResponse)
+async def unapply_credit_note(
+    request: Request, credit_note_id: UUID, body: UnapplyCreditNoteRequest, response: _Response = None
+):
+    """Batalkan penerapan nota kredit ke faktur (kebalikan unit B). Isi + aturan: unapply_nota_kredit_core.
+    X-Idempotency-Key opsional (U10): balasan hilang lalu diulang = respons pertama; isi beda = 409."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
-        alasan = (body.reason or "").strip()
-        if not alasan:
+        if not (body.reason or "").strip():  # sebelum transaksi, seperti rute lama
             raise HTTPException(status_code=400, detail="Alasan pembatalan penerapan wajib diisi.")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Kunci SAMA dengan apply: apply dan unapply satu CN ter-serialkan
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CREDIT_NOTE_APPLY:{credit_note_id}",
-                )
-                cn = await conn.fetchrow(
-                    "SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2",
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-                if not cn:
-                    raise HTTPException(status_code=404, detail="Credit note not found")
-
-                aktif = await conn.fetch(
-                    """
-                    SELECT id, invoice_id, invoice_number, amount_applied, application_date
-                    FROM credit_note_applications
-                    WHERE credit_note_id = $1 AND tenant_id = $2 AND status = 'active'
-                """,
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-                if not aktif or cn["original_invoice_id"] is None:
-                    raise HTTPException(status_code=400, detail="Nota kredit ini belum diterapkan ke faktur mana pun.")
-                if len(aktif) > 1:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Nota kredit ini punya lebih dari satu penerapan aktif; hubungi dukungan.",
-                    )
-                app = aktif[0]
-
-                # Law 5 (putusan pemilik): tanggal penerapan di periode TUTUP -> tolak (pola void_credit_note)
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    app["application_date"],
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {period_row['status']}; penerapan nota kredit tidak bisa dibatalkan.",
-                    )
-
-                balik = await conn.execute(
-                    """
-                    UPDATE credit_note_applications
-                    SET status = 'reversed', reversed_at = NOW(), reversed_by = $2, reversal_reason = $3
-                    WHERE id = $1 AND status = 'active'
-                """,
-                    app["id"],
-                    ctx["user_id"],
-                    alasan,
-                )
-                if balik != "UPDATE 1":
-                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
-
-                # V250: aplikasi dibatalkan DULU — pagar DB hanya mengizinkan kaitan faktur->NULL bila aplikasinya
-                # dibatalkan di transaksi yang sama.
-                lepas = await conn.execute(
-                    """
-                    UPDATE credit_notes
-                    SET original_invoice_id = NULL, original_invoice_number = NULL, updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2 AND original_invoice_id = $3
-                """,
-                    credit_note_id,
-                    ctx["tenant_id"],
-                    app["invoice_id"],
-                )
-                if lepas != "UPDATE 1":
-                    raise HTTPException(status_code=409, detail="Penerapan nota kredit berubah bersamaan; muat ulang lalu coba lagi.")
-
-                await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], app["invoice_id"])
-
-                await conn.execute(
-                    """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
-                       VALUES (gen_random_uuid()::text, 'CREDIT_NOTE_UNAPPLIED', 'credit_note', $1, $2, $3, 'api:credit_notes.unapply',
-                               jsonb_build_object('invoice_id', $4::text, 'invoice_number', $5::text, 'amount', $6::text,
-                                                  'application_id', $7::text, 'reason', $8::text, 'user_id', $9::text), true, now())""",
-                    credit_note_id,
-                    cn["credit_note_number"],
-                    ctx["tenant_id"],
-                    str(app["invoice_id"]),
-                    app["invoice_number"],
-                    str(app["amount_applied"]),
-                    str(app["id"]),
-                    alasan,
-                    str(ctx["user_id"]),
-                )
-
-                logger.info(f"Credit note unapplied: {credit_note_id} from invoice {app['invoice_id']}")
-                return {
-                    "success": True,
-                    "message": "Penerapan nota kredit dibatalkan",
-                    "data": {
-                        "id": str(credit_note_id),
-                        "invoice_id": str(app["invoice_id"]),
-                        "invoice_number": app["invoice_number"],
-                        "amount": float(app["amount_applied"]),
-                    },
-                }
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_UNAPPLY", credit_note_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+                return await _ib.simpan(conn, ctx, _kp, _sd, "CN_UNAPPLY",
+                                        await unapply_nota_kredit_core(conn, ctx, credit_note_id, body.reason),
+                                        credit_note_id)
 
     except HTTPException:
         raise
@@ -2474,21 +2505,278 @@ async def unapply_credit_note(
 
 # =============================================================================
 # REFUND CREDIT NOTE
+# U10 (5 Okt 2026): inti diekstrak (refund_nota_kredit_core) + idempotensi CN_REFUND + DUA perbaikan cacat terukur:
+#  (1) cermin bank_transactions (BankSync Rule 1) -- dulu NOL: refund ke akun bank-linked = jurnal Cr bank tanpa baris
+#      bank_txn (celah R9). Cermin diturunkan dari CoA YANG DIKREDIT jurnal lewat reverse-lookup (pola Customer Deposit
+#      FIX_R9_REFUND), satu transaksi dengan jurnal.
+#  (2) akun kredit jurnal = akun TERPECAHKAN (resolusi_akun_refund), bukan UUID(body.account_id) mentah -- dulu hanya
+#      bank_account_id -> UUID(None) -> TypeError -> 500. Empat kombinasi account_id/bank_account_id dijawab tegas.
 # =============================================================================
 
 
-@router.post("/{credit_note_id}/refund", response_model=CreditNoteResponse)
-async def refund_credit_note(
-    request: Request, credit_note_id: UUID, body: RefundCreditNoteRequest
-):
-    """
-    Issue a cash refund from credit note.
+async def resolusi_akun_refund(conn, tid: str, body):
+    """-> (coa_id UUID, bank_account_id UUID|None). SATU sumber untuk inti refund DAN pratinjau.
+    bank_account_id saja -> CoA rekening itu; account_id saja -> akun itu; keduanya -> HARUS menunjuk akun yang sama
+    (beda = 422); tak satu pun = 422. Akun harus milik tenant."""
+    ba_id = None
+    if body.bank_account_id:
+        try:
+            ba_id = UUID(str(body.bank_account_id))
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "CN_REFUND_REKENING_TAK_VALID",
+                                                         "message": "Rekening bank tidak valid."})
+        bank_acc = await conn.fetchrow(
+            "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+            ba_id,
+            tid,
+        )
+        if not bank_acc:
+            raise HTTPException(status_code=400, detail="Bank account not found")
+        coa_id = bank_acc["coa_id"]
+        if body.account_id:
+            try:
+                eksplisit = UUID(str(body.account_id))
+            except ValueError:
+                raise HTTPException(status_code=422, detail={"code": "CN_REFUND_AKUN_TAK_VALID",
+                                                             "message": "Akun pembayaran tidak valid."})
+            if eksplisit != coa_id:
+                raise HTTPException(status_code=422, detail={
+                    "code": "CN_REFUND_AKUN_TAK_COCOK",
+                    "message": "Akun pembayaran tidak cocok dengan rekening bank yang dipilih. Pilih salah satu saja."})
+    elif body.account_id:
+        try:
+            coa_id = UUID(str(body.account_id))
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "CN_REFUND_AKUN_TAK_VALID",
+                                                         "message": "Akun pembayaran tidak valid."})
+    else:
+        raise HTTPException(status_code=422, detail={
+            "code": "CN_REFUND_AKUN_WAJIB",
+            "message": "Pilih rekening bank atau akun kas/bank untuk pengembalian dana."})
+
+    account = await conn.fetchrow(
+        """
+        SELECT id, account_code as code, name FROM chart_of_accounts
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        coa_id,
+        tid,
+    )
+    if not account:
+        raise HTTPException(status_code=400, detail="Payment account not found")
+    return coa_id, ba_id
+
+
+async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -> dict:
+    """Inti POST /credit-notes/{id}/refund, di transaksi PEMANGGIL (kunci CREDIT_NOTE_REFUND + semua pemeriksaan di sini).
 
     Creates journal entry:
     - Dr. Accounts Receivable
     - Cr. Cash/Bank
+    + (U10) baris bank_transactions 'withdrawal' bila akun yang dikredit adalah akun bank-linked."""
+    # Law 13: Advisory lock
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"CREDIT_NOTE_REFUND:{credit_note_id}",
+    )
 
-    Credit note must be in 'posted' or 'partial' status.
+    # Get credit note
+    cn = await conn.fetchrow(
+        """
+        SELECT * FROM credit_notes
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        credit_note_id,
+        ctx["tenant_id"],
+    )
+
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+
+    if cn["status"] not in ("posted", "partial"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot refund credit note with status '{cn['status']}'",
+        )
+
+    # Check remaining
+    remaining = (
+        cn["total_amount"]
+        - (cn["amount_applied"] or 0)
+        - (cn["amount_refunded"] or 0)
+    )
+
+    if body.amount > remaining:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
+        )
+
+    # Validate account (U10: satu resolusi bersama pratinjau; kredit jurnal = akun terpecahkan)
+    resolved_account_id, resolved_bank_id = await resolusi_akun_refund(conn, ctx["tenant_id"], body)
+
+    # U10 (BankSync Rule 1): akun bank-linked -> cermin bank_transactions (reverse-lookup CoA, pola Customer Deposit)
+    mirror_bank_id = resolved_bank_id or await conn.fetchval(
+        "SELECT id FROM bank_accounts WHERE tenant_id = $1 AND coa_id = $2 AND is_active = true",
+        ctx["tenant_id"],
+        resolved_account_id,
+    )
+    if mirror_bank_id and Decimal(str(body.amount)) != Decimal(str(body.amount)).to_integral_value():
+        raise HTTPException(status_code=422, detail={
+            "code": "CN_REFUND_BUKAN_BULAT",
+            "message": "Jumlah pengembalian lewat rekening bank harus bilangan bulat rupiah."})
+
+    import uuid as uuid_module
+
+    refund_id = uuid_module.uuid4()
+    journal_id = uuid_module.uuid4()
+    trace_id = uuid_module.uuid4()
+
+    # Law 5: Period lock check
+    period_row = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        ctx["tenant_id"],
+        body.refund_date,
+    )
+    if period_row and period_row["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Periode akuntansi sudah {period_row['status']}",
+        )
+
+    # Create refund journal
+    journal_number = (
+        await conn.fetchval(
+            "SELECT get_next_journal_number($1, 'RF')", ctx["tenant_id"]
+        )
+        or f"RF-{cn['credit_note_number']}"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, trace_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_REFUND', $6, $7, 'DRAFT', $8, $8, $9)
+    """,
+        journal_id,
+        ctx["tenant_id"],
+        journal_number,
+        body.refund_date,
+        f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
+        credit_note_id,
+        str(trace_id),
+        body.amount,
+        ctx["user_id"],
+    )
+
+    # Get AR account
+    # Law 27: Resolve AR account dynamically
+    ar_account_id = await resolve_account_id(
+        conn, ctx["tenant_id"], AR_ACCOUNT_CODE
+    )
+
+    # Dr. AR (reverse the credit)
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (
+            id, journal_id, line_number, account_id, debit, credit, memo
+        ) VALUES ($1, $2, 1, $3, $4, 0, $5)
+    """,
+        uuid_module.uuid4(),
+        journal_id,
+        ar_account_id,
+        body.amount,
+        f"Refund Piutang - {cn['credit_note_number']}",
+    )
+
+    # Cr. Cash/Bank
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (
+            id, journal_id, line_number, account_id, debit, credit, memo
+        ) VALUES ($1, $2, 2, $3, 0, $4, $5)
+    """,
+        uuid_module.uuid4(),
+        journal_id,
+        resolved_account_id,
+        body.amount,
+        f"Pembayaran Refund - {cn['credit_note_number']}",
+    )
+
+    # Law 20: Promote DRAFT -> POSTED after all lines inserted
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal_id,
+    )
+
+    # U10: cermin bank (BankSync Rule 1) -- helper kanonik, satu transaksi dengan jurnal; uang KELUAR = negatif
+    if mirror_bank_id:
+        from ..services.bank_sync import create_bank_transaction_for_journal
+        await create_bank_transaction_for_journal(
+            conn,
+            tenant_id=ctx["tenant_id"],
+            bank_account_id=mirror_bank_id,
+            journal_id=journal_id,
+            transaction_date=body.refund_date,
+            transaction_type="withdrawal",
+            amount=-int(Decimal(str(body.amount))),
+            reference_type="CREDIT_NOTE_REFUND",
+            reference_id=refund_id,
+            reference_number=body.reference,
+            description=f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
+            payee_payer=cn["customer_name"],
+            created_by=ctx["user_id"],
+        )
+
+    # Create refund record
+    await conn.execute(
+        """
+        INSERT INTO credit_note_refunds (
+            id, tenant_id, credit_note_id, amount, refund_date,
+            payment_method, account_id, bank_account_id,
+            reference, notes, journal_id, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    """,
+        refund_id,
+        ctx["tenant_id"],
+        credit_note_id,
+        body.amount,
+        body.refund_date,
+        body.payment_method,
+        resolved_account_id,
+        resolved_bank_id,
+        body.reference,
+        body.notes,
+        journal_id,
+        ctx["user_id"],
+    )
+
+    # Status will be updated by trigger
+    logger.info(
+        f"Credit note refunded: {credit_note_id}, amount={body.amount}"
+    )
+
+    return {
+        "success": True,
+        "message": "Refund issued successfully",
+        "data": {
+            "id": str(credit_note_id),
+            "refund_id": str(refund_id),
+            "journal_id": str(journal_id),
+            "amount": body.amount,
+        },
+    }
+
+
+@router.post("/{credit_note_id}/refund", response_model=CreditNoteResponse)
+async def refund_credit_note(
+    request: Request, credit_note_id: UUID, body: RefundCreditNoteRequest, response: _Response = None
+):
+    """
+    Issue a cash refund from credit note. Isi + aturan: refund_nota_kredit_core.
+    X-Idempotency-Key opsional (U10): balasan hilang lalu diulang = respons pertama (SATU uang keluar); isi beda = 409.
     """
     try:
         ctx = get_user_context(request)
@@ -2499,201 +2787,13 @@ async def refund_credit_note(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CREDIT_NOTE_REFUND:{credit_note_id}",
-                )
-
-                # Get credit note
-                cn = await conn.fetchrow(
-                    """
-                    SELECT * FROM credit_notes
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    credit_note_id,
-                    ctx["tenant_id"],
-                )
-
-                if not cn:
-                    raise HTTPException(status_code=404, detail="Credit note not found")
-
-                if cn["status"] not in ("posted", "partial"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot refund credit note with status '{cn['status']}'",
-                    )
-
-                # Check remaining
-                remaining = (
-                    cn["total_amount"]
-                    - (cn["amount_applied"] or 0)
-                    - (cn["amount_refunded"] or 0)
-                )
-
-                if body.amount > remaining:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
-                    )
-
-                # Validate account — resolve from bank_account_id if provided
-                if body.bank_account_id:
-                    bank_acc = await conn.fetchrow(
-                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.bank_account_id),
-                        ctx["tenant_id"],
-                    )
-                    if not bank_acc:
-                        raise HTTPException(
-                            status_code=400, detail="Bank account not found"
-                        )
-                    resolved_account_id = bank_acc["coa_id"]
-                elif body.account_id:
-                    resolved_account_id = UUID(body.account_id)
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Either account_id or bank_account_id is required",
-                    )
-
-                account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code as code, name FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    resolved_account_id,
-                    ctx["tenant_id"],
-                )
-
-                if not account:
-                    raise HTTPException(
-                        status_code=400, detail="Payment account not found"
-                    )
-
-                import uuid as uuid_module
-
-                refund_id = uuid_module.uuid4()
-                journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
-
-                # Law 5: Period lock check
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    body.refund_date,
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
-                    )
-
-                # Create refund journal
-                journal_number = (
-                    await conn.fetchval(
-                        "SELECT get_next_journal_number($1, 'RF')", ctx["tenant_id"]
-                    )
-                    or f"RF-{cn['credit_note_number']}"
-                )
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'CREDIT_NOTE_REFUND', $6, $7, 'DRAFT', $8, $8, $9)
-                """,
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    body.refund_date,
-                    f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
-                    credit_note_id,
-                    str(trace_id),
-                    body.amount,
-                    ctx["user_id"],
-                )
-
-                # Get AR account
-                # Law 27: Resolve AR account dynamically
-                ar_account_id = await resolve_account_id(
-                    conn, ctx["tenant_id"], AR_ACCOUNT_CODE
-                )
-
-                # Dr. AR (reverse the credit)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    ar_account_id,
-                    body.amount,
-                    f"Refund Piutang - {cn['credit_note_number']}",
-                )
-
-                # Cr. Cash/Bank
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    UUID(body.account_id),
-                    body.amount,
-                    f"Pembayaran Refund - {cn['credit_note_number']}",
-                )
-
-                # Law 20: Promote DRAFT -> POSTED after all lines inserted
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # Create refund record
-                await conn.execute(
-                    """
-                    INSERT INTO credit_note_refunds (
-                        id, tenant_id, credit_note_id, amount, refund_date,
-                        payment_method, account_id, bank_account_id,
-                        reference, notes, journal_id, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                """,
-                    refund_id,
-                    ctx["tenant_id"],
-                    credit_note_id,
-                    body.amount,
-                    body.refund_date,
-                    body.payment_method,
-                    UUID(body.account_id),
-                    UUID(body.bank_account_id) if body.bank_account_id else None,
-                    body.reference,
-                    body.notes,
-                    journal_id,
-                    ctx["user_id"],
-                )
-
-                # Status will be updated by trigger
-                logger.info(
-                    f"Credit note refunded: {credit_note_id}, amount={body.amount}"
-                )
-
-                return {
-                    "success": True,
-                    "message": "Refund issued successfully",
-                    "data": {
-                        "id": str(credit_note_id),
-                        "refund_id": str(refund_id),
-                        "journal_id": str(journal_id),
-                        "amount": body.amount,
-                    },
-                }
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_REFUND", credit_note_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+                return await _ib.simpan(conn, ctx, _kp, _sd, "CN_REFUND",
+                                        await refund_nota_kredit_core(conn, ctx, credit_note_id, body), credit_note_id)
 
     except HTTPException:
         raise
@@ -3270,3 +3370,200 @@ async def preview_void_credit_note(request: Request, credit_note_id: UUID, body:
         raise HTTPException(status_code=401, detail="User ID required")
     return {"success": True, "data": await _pratinjau_nk(ctx, credit_note_id, "void", (body.reason if body else None))}
 
+
+
+# =============================================================================
+# PRATINJAU apply / unapply / refund (U10, 5 Okt 2026, MASTER GO). Pola SAMA dengan pratinjau post/void di atas:
+# penentu MENGUMPULKAN semua blok yang terbaca tanpa menulis, lalu INTI YANG SAMA (apply_nota_kredit_core /
+# unapply_nota_kredit_core / refund_nota_kredit_core) dijalankan di savepoint dan SELURUHNYA di-rollback. Keluaran:
+# keadaan NK sebelum -> sesudah (status, diterapkan, dikembalikan, sisa, saldo kredit), sisa piutang faktur
+# (compute_ar_outstanding, Rule 12), jurnal yang AKAN terbentuk, dan untuk refund: akun yang dikredit + SALDO jurnal
+# (Rule 6: dari journal_lines, bukan cache) sebelum -> sesudah + baris bank_transactions yang AKAN dibuat (BankSync).
+# Nol tulis. Galat inti yang tak tertangkap penentu ikut sebagai blok terakhir (<AKSI>_REJECTED).
+# =============================================================================
+
+class PratinjauUnapplyNk(BaseModel):
+    reason: Optional[str] = None  # opsional DI PRATINJAU supaya "alasan wajib" tampil sebagai blok
+
+
+async def _saldo_akun_nk(conn, tid: str, coa_id) -> float:
+    """Saldo akun dari JURNAL efektif (Law 1/16, BankSync Rule 6). Tenant eksplisit di join jurnal."""
+    v = await conn.fetchval(
+        """SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) FROM journal_lines jl
+           JOIN journal_entries je ON je.id = jl.journal_id AND je.tenant_id = $1
+           WHERE jl.account_id = $2 AND is_effective_journal(je.id)""", tid, coa_id)
+    return float(v or 0)
+
+
+async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
+    """Blok apply/unapply/refund yang terbaca tanpa menulis; urutan & pesan = pemeriksaan inti. 404 bila NK tak ada."""
+    tid = ctx["tenant_id"]
+    blok = []
+    cn = await conn.fetchrow("SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2", cn_id, tid)
+    if not cn:
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
+    if aksi == "apply":
+        if len(body.applications) != 1:
+            blok.append(_blok_nk("CN_APPLY_SATU_FAKTUR", 400, "Nota kredit hanya bisa diterapkan ke satu faktur."))
+        if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
+            blok.append(_blok_nk("CN_SUDAH_TERKAIT", 400, "Nota kredit ini sudah terkait ke faktur."))
+        if cn["status"] != "posted" or cn["journal_id"] is None:
+            blok.append(_blok_nk("CN_BELUM_TERBIT", 400, "Hanya nota kredit yang sudah dibukukan yang bisa diterapkan ke faktur."))
+        if (cn["amount_refunded"] or 0) > 0:
+            blok.append(_blok_nk("CN_SUDAH_DIKEMBALIKAN", 400,
+                                 "Nota kredit yang dananya sudah dikembalikan tidak bisa diterapkan ke faktur."))
+        if len(body.applications) == 1:
+            app = body.applications[0]
+            total_cn = Decimal(str(cn["total_amount"]))
+            if Decimal(str(app.amount)) != total_cn:
+                blok.append(_blok_nk("CN_APPLY_PENUH", 400,
+                                     f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur."))
+            try:
+                faktur = await faktur_tenant_untuk_pelanggan(conn, tid, app.invoice_id, cn["customer_id"])
+                await pastikan_cn_muat_faktur(conn, tid, faktur, total_cn)
+            except HTTPException as e:
+                blok.append(_blok_nk("CN_FAKTUR", e.status_code, e.detail))
+        return blok
+    if aksi == "unapply":
+        if not (body or "").strip():
+            blok.append(_blok_nk("CN_ALASAN_WAJIB", 400, "Alasan pembatalan penerapan wajib diisi."))
+        aktif = await conn.fetch(
+            """SELECT application_date FROM credit_note_applications
+               WHERE credit_note_id = $1 AND tenant_id = $2 AND status = 'active'""", cn_id, tid)
+        if not aktif or cn["original_invoice_id"] is None:
+            blok.append(_blok_nk("CN_BELUM_DITERAPKAN", 400, "Nota kredit ini belum diterapkan ke faktur mana pun."))
+        elif len(aktif) > 1:
+            blok.append(_blok_nk("CN_PENERAPAN_GANDA", 409,
+                                 "Nota kredit ini punya lebih dari satu penerapan aktif; hubungi dukungan."))
+        else:
+            tutup = await _periode_tutup_nk(conn, tid, aktif[0]["application_date"])
+            if tutup:
+                blok.append(_blok_nk("PERIOD_CLOSED", 400, (
+                    f"Periode akuntansi penerapan ({aktif[0]['application_date']:%d-%m-%Y}) sudah {tutup}; "
+                    "penerapan nota kredit tidak bisa dibatalkan.")))
+        return blok
+    # refund
+    if cn["status"] not in ("posted", "partial"):
+        blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, f"Cannot refund credit note with status '{cn['status']}'"))
+        return blok
+    sisa = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
+    if body.amount > sisa:
+        blok.append(_blok_nk("CN_REFUND_MELEBIHI_SISA", 400,
+                             f"Refund amount ({body.amount}) exceeds remaining balance ({sisa})"))
+    try:
+        coa_id, ba_id = await resolusi_akun_refund(conn, tid, body)
+        mirror_id = ba_id or await conn.fetchval(
+            "SELECT id FROM bank_accounts WHERE tenant_id = $1 AND coa_id = $2 AND is_active = true", tid, coa_id)
+        if mirror_id and Decimal(str(body.amount)) != Decimal(str(body.amount)).to_integral_value():
+            blok.append(_blok_nk("CN_REFUND_BUKAN_BULAT", 422,
+                                 "Jumlah pengembalian lewat rekening bank harus bilangan bulat rupiah."))
+    except HTTPException as e:
+        blok.append(_blok_nk("CN_REFUND_AKUN", e.status_code, e.detail))
+    tutup = await _periode_tutup_nk(conn, tid, body.refund_date)
+    if tutup:
+        blok.append(_blok_nk("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+    return blok
+
+
+async def _pratinjau_nk_aksi(ctx: dict, cn_id, aksi: str, body) -> dict:
+    """aksi in (apply, unapply, refund); body = ApplyCreditNoteRequest | alasan(str|None) | RefundCreditNoteRequest."""
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                blok = await _rencana_nk_aksi(conn, ctx, cn_id, aksi, body)
+                sebelum = await _keadaan_nk(conn, tid, cn_id)
+                if aksi == "apply":
+                    try:
+                        fid = UUID(str(body.applications[0].invoice_id)) if len(body.applications) == 1 else None
+                    except ValueError:
+                        fid = None
+                else:
+                    fid = sebelum.get("original_invoice_id")
+                f0 = await _sisa_faktur_nk(conn, tid, fid)
+                coa_id, akun, s0 = None, None, None
+                if aksi == "refund":
+                    try:
+                        coa_id, _ba = await resolusi_akun_refund(conn, tid, body)
+                        akun = await conn.fetchrow(
+                            "SELECT account_code, name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2", coa_id, tid)
+                        s0 = await _saldo_akun_nk(conn, tid, coa_id)
+                    except HTTPException:
+                        coa_id = None  # sudah menjadi blok di penentu
+                jadi = False
+                if not blok:
+                    try:
+                        async with conn.transaction():  # savepoint: galat inti tak merusak transaksi pratinjau
+                            if aksi == "apply":
+                                await apply_nota_kredit_core(conn, ctx, cn_id, body)
+                            elif aksi == "unapply":
+                                await unapply_nota_kredit_core(conn, ctx, cn_id, body)
+                            else:
+                                await refund_nota_kredit_core(conn, ctx, cn_id, body)
+                            jadi = True
+                    except HTTPException as e:
+                        blok.append(_blok_nk(f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
+                jurnal = await _jurnal_tx_ini_nk(conn, tid, cn_id) if jadi else []
+                sesudah = await _keadaan_nk(conn, tid, cn_id) if jadi else sebelum
+                f1 = (await _sisa_faktur_nk(conn, tid, fid)) if jadi else f0  # fid = faktur target / yang dilepas / asal
+                bank = None
+                if aksi == "refund" and coa_id is not None:
+                    baris = await conn.fetch(
+                        """SELECT bt.bank_account_id, ba.account_name, bt.transaction_type, bt.amount
+                           FROM bank_transactions bt
+                           JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = $1
+                           JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.tenant_id = $1
+                           WHERE bt.tenant_id = $1 AND je.source_id = $2 AND je.created_at = now()""",
+                        tid, cn_id) if jadi else []
+                    bank = {"account_id": str(coa_id), "account_code": akun["account_code"] if akun else None,
+                            "account_name": akun["name"] if akun else None, "balance_before": s0,
+                            "balance_after": (await _saldo_akun_nk(conn, tid, coa_id)) if jadi else s0,
+                            "bank_transactions": [{"bank_account_id": str(r["bank_account_id"]),
+                                                   "bank_account_name": r["account_name"],
+                                                   "transaction_type": r["transaction_type"],
+                                                   "amount": float(r["amount"])} for r in baris]}
+                for k in (sebelum, sesudah):
+                    k.pop("original_invoice_id", None)
+                if aksi == "apply":
+                    payload = body.model_dump(mode="json")
+                elif aksi == "unapply":
+                    payload = {"reason": (body or "").strip() or None}
+                else:
+                    payload = body.model_dump(mode="json")
+                raise _BatalkanPratinjauNk({
+                    "credit_note_id": str(cn_id), "action": aksi, "can_proceed": not blok,
+                    "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
+                    "before": sebelum, "after": sesudah, "journals": jurnal, "bank": bank,
+                    "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
+                    "payload": payload, "preview": True})
+    except _BatalkanPratinjauNk as b:
+        return b.data
+
+
+@router.post("/{credit_note_id}/apply/preview")
+async def preview_apply_credit_note(request: Request, credit_note_id: UUID, body: ApplyCreditNoteRequest):
+    """Pratinjau terapkan: penentu + apply_nota_kredit_core YANG SAMA lalu rollback (sisa faktur sebelum -> sesudah)."""
+    ctx = get_user_context(request)
+    if not ctx["user_id"]:
+        raise HTTPException(status_code=401, detail="User ID required")
+    return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "apply", body)}
+
+
+@router.post("/{credit_note_id}/unapply/preview")
+async def preview_unapply_credit_note(request: Request, credit_note_id: UUID, body: Optional[PratinjauUnapplyNk] = None):
+    """Pratinjau lepas penerapan: penentu + unapply_nota_kredit_core YANG SAMA lalu rollback."""
+    ctx = get_user_context(request)
+    if not ctx["user_id"]:
+        raise HTTPException(status_code=401, detail="User ID required")
+    return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "unapply", (body.reason if body else None))}
+
+
+@router.post("/{credit_note_id}/refund/preview")
+async def preview_refund_credit_note(request: Request, credit_note_id: UUID, body: RefundCreditNoteRequest):
+    """Pratinjau pengembalian dana: penentu + refund_nota_kredit_core YANG SAMA lalu rollback (jurnal, akun + saldo
+    sebelum -> sesudah, baris bank_transactions yang AKAN dibuat)."""
+    ctx = get_user_context(request)
+    if not ctx["user_id"]:
+        raise HTTPException(status_code=401, detail="User ID required")
+    return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "refund", body)}

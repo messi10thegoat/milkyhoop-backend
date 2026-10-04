@@ -25,6 +25,9 @@ PETA = [
     ("POST", "/api/credit-notes/X/refund", "P"),
     ("POST", "/api/credit-notes/X/void", "V"),
     ("POST", "/api/credit-notes/X/void/preview", "V"),
+    ("POST", "/api/credit-notes/X/apply/preview", "A"),    # U10: pratinjau ikut izin tulisnya
+    ("POST", "/api/credit-notes/X/unapply/preview", "V"),
+    ("POST", "/api/credit-notes/X/refund/preview", "P"),
     ("POST", "/api/credit-notes/X/unapply", "V"),
     ("POST", "/api/credit-notes/X/apply", "A"),
     ("POST", "/api/credit-notes/X/create-tax-invoice", "C"),  # tak disebut pemilik -> tetap prefiks C (lihat catatan)
@@ -98,7 +101,8 @@ def test_perubahan_nyata_peran_yang_hanya_punya_c_tak_lagi_bisa_terbitkan_batalk
 def test_setiap_rute_tulis_nk_di_inventaris_punya_keputusan_eksplisit():
     """Rute POST /api/credit-notes/* baru TANPA keputusan huruf = merah (dulu diam-diam jatuh ke C)."""
     diputuskan = {"post": "P", "post/preview": "P", "refund": "P", "void": "V", "void/preview": "V", "unapply": "V",
-                  "apply": "A", "create-tax-invoice": "C"}
+                  "apply": "A", "create-tax-invoice": "C",
+                  "apply/preview": "A", "unapply/preview": "V", "refund/preview": "P"}  # U10: pratinjau = izin tulisnya
     inv = [b.strip() for b in INV.read_text(encoding="utf-8").splitlines() if b.strip() and not b.lstrip().startswith("#")]
     nk = [b for b in inv if b.startswith("POST /api/credit-notes")]
     assert len(nk) >= 8, nk  # kontrol positif: inventaris terbaca
