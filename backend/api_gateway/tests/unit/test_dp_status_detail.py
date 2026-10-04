@@ -52,3 +52,18 @@ def test_label_layar():
 def test_medan_ada_di_daftar_detail_pratinjau():
     for f in (CD.list_customer_deposits, CD.list_customer_deposits_by_customer, CD.get_customer_deposit, CD._keadaan_dp):
         assert '"status_detail": status_detail_dp(' in inspect.getsource(f), f.__name__
+
+
+def test_satu_definisi_dipakai_router_dan_detail_so():
+    from app.services import proforma_atribusi as PA, status_uang_muka as SU
+    assert CD.status_detail_dp is SU.status_detail_dp and CD._SQL_STATUS_DETAIL is SU.SQL_STATUS_DETAIL
+    assert PA.status_detail_dp is SU.status_detail_dp
+    src = inspect.getsource(PA.uang_muka_so)
+    assert '"status_detail": status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"])' in src
+    assert 'cd.amount_applied, cd.amount_refunded' in PA.SQL_UANG_MUKA_SO
+
+
+def test_skema_detail_so_mendeklarasikan_status_detail():
+    """response_model membuang medan tak dideklarasikan DIAM-DIAM -- tanpa ini status_detail tak sampai ke FE."""
+    from app.schemas.sales_orders import SalesOrderDepositSummary
+    assert "status_detail" in SalesOrderDepositSummary.model_fields
