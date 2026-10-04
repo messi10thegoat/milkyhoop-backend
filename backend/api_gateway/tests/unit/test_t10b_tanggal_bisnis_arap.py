@@ -29,7 +29,9 @@ KASUS = [(MALAM_UTC, date(2026, 10, 1)), (SIANG_UTC, date(2026, 9, 30))]
 
 # Fungsi yang menulis/memeriksa TANGGAL AKUNTANSI (bukan cap waktu).
 FUNGSI = {
-    "routers/credit_notes.py": ["apply_credit_note", "void_credit_note"],
+    # U10 (5 Okt): isi apply/unapply/refund pindah ke inti; void sudah ke inti sejak U5-D (daftar lama menjaga handler kosong)
+    "routers/credit_notes.py": ["apply_credit_note", "void_credit_note", "apply_nota_kredit_core", "unapply_nota_kredit_core",
+                                "refund_nota_kredit_core", "void_nota_kredit_core"],
     "routers/bill_payments.py": ["generate_payment_number", "void_bill_payment"],
     "routers/vendor_deposits.py": ["apply_vendor_deposit", "void_vendor_deposit"],
     "routers/vendor_credits.py": ["apply_vendor_credit", "void_vendor_credit"],
@@ -47,7 +49,7 @@ FUNGSI = {
 }
 # Default saat klien kosong: tanggal bisnis HANYA boleh jadi cabang cadangan.
 DEFAULT_KLIEN = {
-    "routers/credit_notes.py": ["apply_credit_note"],
+    "routers/credit_notes.py": ["apply_nota_kredit_core"],
     "routers/vendor_deposits.py": ["apply_vendor_deposit"],
     "routers/vendor_credits.py": ["apply_vendor_credit"],
     "routers/sales_orders.py": ["_buat_faktur_dari_so"],
