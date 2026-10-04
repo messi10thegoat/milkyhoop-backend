@@ -581,6 +581,26 @@ async def list_customer_deposits(
 # =============================================================================
 
 
+async def saldo_buku_uang_muka(conn, tenant_id: str):
+    """Saldo uang muka pelanggan tersisa = Σ(kredit − debit) akun peran CUSTOMER_DEPOSIT_LIABILITY atas jurnal
+    efektif tenant ini. TANPA penyaring source_id: semua jalur yang menyentuh akun (buat, terapkan, refund, lepas
+    bayar jadi uang muka, jalur ke-N berikutnya) ikut terhitung. Diukur 4 Okt: akun hanya disentuh jurnal
+    CUSTOMER_DEPOSIT / DEPOSIT_APPLICATION / DEPOSIT_REFUND / RECEIVE_PAYMENT_UNAPPLY, nol jurnal manual."""
+    akun = await resolve_account_id_by_role(conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+    return await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_id
+        WHERE je.tenant_id = $1
+          AND jl.account_id = $2
+          AND is_effective_journal(je.id)
+        """,
+        tenant_id,
+        akun,
+    )
+
+
 @router.get("/summary", response_model=CustomerDepositSummaryResponse)
 async def get_customer_deposits_summary(request: Request):
     """Get summary statistics for customer deposits."""
@@ -606,33 +626,11 @@ async def get_customer_deposits_summary(request: Request):
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
 
-            # FIX_P1_DEPOSIT 2026-06-16 (b): authoritative available_balance is
-            # journal-derived (net movement on CUSTOMER_DEPOSIT_LIABILITY over
-            # is_effective journals), NOT the cache-column subtraction. Immune
-            # to reversed/un-applied pairs by construction (Law 1/16).
-            deposit_account_id = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
-            )
-            available_balance = await conn.fetchval(
-                """
-                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                WHERE je.tenant_id = $1
-                  AND jl.account_id = $2
-                  AND is_effective_journal(je.id)
-                  AND (
-                      je.source_id IN (SELECT id FROM customer_deposits WHERE tenant_id = $1)
-                      OR je.id IN (
-                          SELECT journal_id FROM receive_payments
-                          WHERE tenant_id = $1 AND journal_id IS NOT NULL
-                            AND created_deposit_id IS NOT NULL
-                      )
-                  )
-                """,
-                ctx["tenant_id"],
-                deposit_account_id,
-            )
+            # 4 Okt 2026 (MASTER): saldo tersedia = saldo BUKU PENUH akun peran CUSTOMER_DEPOSIT_LIABILITY
+            # (Law 1/16/29). Penyaring source_id lama (jurnal uang muka + receive_payments.created_deposit_id)
+            # melewatkan RECEIVE_PAYMENT_UNAPPLY (lepas bayar -> uang muka) padahal pemakaiannya terhitung ->
+            # kaos tampil -1.079.570; buku penuh = 15.095.030 = sisa per dokumen (diukur).
+            available_balance = await saldo_buku_uang_muka(conn, ctx["tenant_id"])
 
             return {
                 "success": True,
