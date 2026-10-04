@@ -93,6 +93,20 @@ def _fungsi_void(src, rute):
 def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
     src = open(os.path.join(APP, "routers", berkas + ".py")).read()
     fn = _fungsi_void(src, rute)
+    if berkas == "receive_payments":
+        # U3b (4 Okt 2026): pemeriksaan pindah ke penentu bersama _rencana_void_pembayaran (dipakai /void DAN
+        # /void/preview). Syarat Law 13 tetap: rute void WAJIB mengambil lock SEBELUM memanggil penentu.
+        kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr)
+                      and kunci in ast.get_source_segment(src, n)]
+        plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", "") == "_rencana_void_pembayaran"]
+        assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
+        kunci_prev = [n.lineno for n in ast.walk(_fungsi_void(src, '"/{payment_id}/void/preview"'))
+                      if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        assert kunci_prev, "pratinjau mengambil lock yang sama"
+        fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef)
+                  and n.name == "_rencana_void_pembayaran")
+        kunci = "_TANPA_KUNCI_DI_PENENTU_"  # kunci dipegang pemanggil; lewati cek lock-di-dalam di bawah
     panggil = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
                and getattr(n.func, "id", "") == "tolak_void_bila_terekonsiliasi"]
     assert len(panggil) == 1, berkas
@@ -105,7 +119,8 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
     doc = fn.body[0].value if isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) else None
     tulis = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n is not doc
              and any(k in n.value.upper() for k in ("UPDATE ", "INSERT INTO"))]
-    assert lock and kunci_baris and min(kunci_baris) < c.lineno, (berkas, "harus SESUDAH lock (Law 13)")
+    if berkas != "receive_payments":
+        assert lock and kunci_baris and min(kunci_baris) < c.lineno, (berkas, "harus SESUDAH lock (Law 13)")
     assert not tulis or c.lineno < min(tulis), (berkas, "harus SEBELUM tulisan pertama", min(tulis))
 
 

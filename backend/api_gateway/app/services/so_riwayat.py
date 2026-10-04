@@ -612,3 +612,72 @@ async def riwayat_penawaran(conn, tenant_id: str, quote_id, boleh: Callable[[str
         "total": total,
         "omitted": omitted,
     }
+
+
+MODUL_PEMBAYARAN = {"receive_payment": "receive_payment", "sales_invoice": "sales_invoice",
+                    "customer_deposit": "customer_deposit"}
+
+
+async def riwayat_pembayaran(conn, tenant_id: str, payment_id, boleh: Callable[[str], Awaitable[bool]],
+                             limit: int = 200) -> Optional[dict]:
+    """Riwayat PEMBAYARAN (penerimaan) — U3b, 4 Okt 2026, bentuk SAMA dengan riwayat_so / riwayat_proforma.
+    Turunan kolom (dibuat, diposting, void: aktor+waktu sudah ada di kolom) + alokasi yang dilepas + uang muka kelebihan
+    bayar + audit_logs beraktor. None = tak ada di tenant ini."""
+    from ..utils.metode_pembayaran import label_metode
+    p = await conn.fetchrow(
+        """SELECT id, payment_number, customer_name, total_amount, payment_method, bank_account_name, status,
+                  created_at, created_by, posted_at, posted_by, voided_at, voided_by, void_reason, created_deposit_id
+           FROM receive_payments WHERE id = $1 AND tenant_id = $2""", payment_id, tenant_id)
+    if not p:
+        return None
+    izin = {}
+    for jenis, modul in MODUL_PEMBAYARAN.items():
+        if modul not in izin:
+            izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_PEMBAYARAN.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+    k = _Kumpul()
+    n = p["payment_number"] or "Pembayaran"
+    nomor = p["payment_number"]
+    k.tambah(p["created_at"], "PEMBAYARAN_DIBUAT", f"Pembayaran {n} {_rp(p['total_amount'])} dibuat", p["created_by"],
+             "receive_payment", p["id"], nomor)
+    alok = await conn.fetch(
+        """SELECT invoice_number, amount_applied, reversed_at, reversed_by, unapply_reason
+           FROM receive_payment_allocations WHERE payment_id = $1 AND tenant_id = $2 ORDER BY created_at""",
+        p["id"], tenant_id)
+    via = label_metode(p["payment_method"]) + (f" ({p['bank_account_name']})" if p["bank_account_name"] else "")
+    if lihat["sales_invoice"] and alok:
+        nomor_f = [a["invoice_number"] for a in alok if a["invoice_number"]]
+        untuk = ", ".join(nomor_f[:3]) + (f" dan {len(nomor_f) - 3} lainnya" if len(nomor_f) > 3 else "")
+        untuk = f", untuk faktur {untuk}" if untuk else ""
+    else:
+        untuk = f", untuk {len(alok)} faktur" if alok else ""
+    k.tambah(p["posted_at"], "PEMBAYARAN_DITERIMA", f"Pembayaran {n} {_rp(p['total_amount'])} diterima via {via}{untuk}",
+             p["posted_by"], "receive_payment", p["id"], nomor)
+    for a in alok:
+        al = f": {a['unapply_reason']}" if a["unapply_reason"] else ""
+        k.tambah(a["reversed_at"], "ALOKASI_DILEPAS",
+                 f"Alokasi {_rp(a['amount_applied'])} ke faktur {a['invoice_number']} dilepas{al}", a["reversed_by"],
+                 "receive_payment", p["id"], nomor)
+    entitas_audit = {"receive_payment": [p["id"]]}
+    if lihat["customer_deposit"] and p["created_deposit_id"]:
+        d = await conn.fetchrow(
+            "SELECT id, deposit_number, amount FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+            p["created_deposit_id"], tenant_id)
+        if d:
+            k.tambah(p["posted_at"], "UANG_MUKA_DARI_KELEBIHAN",
+                     f"Kelebihan bayar {_rp(d['amount'])} dicatat sebagai uang muka {d['deposit_number']}",
+                     p["posted_by"], "customer_deposit", d["id"], d["deposit_number"])
+    al = f": {p['void_reason']}" if p["void_reason"] else ""
+    k.tambah(p["voided_at"], "PEMBAYARAN_DIBATALKAN", f"Pembayaran {n} dibatalkan{al}", p["voided_by"],
+             "receive_payment", p["id"], nomor)
+    keluar, total = await _selesaikan(conn, tenant_id, k, entitas_audit, lihat, limit)
+    return {
+        "payment_id": str(p["id"]),
+        "payment_number": p["payment_number"],
+        "customer_name": p["customer_name"],
+        "status": p["status"],
+        "events": keluar,
+        "total": total,
+        "omitted": omitted,
+    }

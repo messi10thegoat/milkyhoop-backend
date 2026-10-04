@@ -397,6 +397,7 @@ POST /api/receive-payments/preview-journal
 POST /api/receive-payments/{payment_id}/allocations/{allocation_id}/unapply
 POST /api/receive-payments/{payment_id}/post
 POST /api/receive-payments/{payment_id}/void
+POST /api/receive-payments/{payment_id}/void/preview
 POST /api/recipes/categories
 POST /api/recipes/menu-items
 POST /api/recipes/modifiers

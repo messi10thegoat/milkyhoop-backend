@@ -68,6 +68,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/receive-payments/[^/]+$", ["DELETE"], "receive_payment", "D"),
     (r"^/api/receive-payments/[^/]+/post$", ["POST"], "receive_payment", "P"),
     (r"^/api/receive-payments/[^/]+/void$", ["POST"], "receive_payment", "V"),
+    (r"^/api/receive-payments/[^/]+/void/preview$", ["POST"], "receive_payment", "V"),  # U3b 4 Okt 2026
+    (r"^/api/receive-payments/[^/]+/history$", ["GET"], "receive_payment", "R"),  # U3b (GET tak-terpetakan = tertutup)
     # #53 "Lepas" alokasi (24 Sep 2026, putusan MASTER): menulis jurnal
     # PEMBALIK = setara void -> V. Sebelumnya tanpa pola: default-tertutup
     # (staf 403 PERMISSION_UNMAPPED, OWNER lolos) -> fitur mati untuk staf.

@@ -64,6 +64,8 @@ HARAP = [
     ("sales_orders.py", "POST", "/{order_id}/to-invoice/preview", "preview_to_invoice"),
     ("sales_orders.py", "GET", "/summary", "get_sales_order_summary"),
     ("receive_payments.py", "POST", "/{payment_id}/void", "void_receive_payment"),
+    ("receive_payments.py", "POST", "/{payment_id}/void/preview", "preview_void_receive_payment"),
+    ("receive_payments.py", "GET", "/{payment_id}/history", "get_receive_payment_history"),
     # 29 Sep: inti create dipindah ke helper buat_penerimaan(conn, ctx, body) -- kelas insiden 27 Sep
     ("receive_payments.py", "POST", "", "create_receive_payment"),
     ("receive_payments.py", "POST", "/{payment_id}/post", "post_receive_payment"),

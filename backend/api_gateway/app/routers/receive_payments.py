@@ -28,10 +28,13 @@ Endpoints:
 - PUT    /receive-payments/{id}         - Update draft payment
 - DELETE /receive-payments/{id}         - Delete draft payment
 - POST   /receive-payments/{id}/post    - Post to accounting
-- POST   /receive-payments/{id}/void    - Void payment
+- POST   /receive-payments/{id}/void    - Void payment (X-Idempotency-Key opsional)
+- POST   /receive-payments/{id}/void/preview - Pratinjau void (rollback, nol tulis)
+- GET    /receive-payments/{id}/history - Riwayat
 """
 
-from fastapi import APIRouter, Body, HTTPException, Request, Query
+from fastapi import APIRouter, Body, HTTPException, Request, Query, Response as _Response
+from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from uuid import UUID
 import uuid as uuid_module
@@ -41,6 +44,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services.idem_buat import kunci_dari as idem_kunci_dari, mulai_aksi as idem_mulai_aksi, simpan as idem_simpan
 from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 
 from ..schemas.receive_payments import (
@@ -2407,9 +2411,338 @@ async def unapply_receive_payment_allocation(
     }
 
 
+# =============================================================================
+# VOID — satu definisi (penentu + penulis), dipakai POST /{id}/void dan /{id}/void/preview (U3b, 4 Okt 2026)
+# =============================================================================
+
+
+def _blok_void(code: str, status: int, message: str, detail=None) -> dict:
+    """Penghalang: `detail` = isi HTTPException PERSIS yang dinaikkan rute void lama (galat lama tak berubah)."""
+    return {"code": code, "status": status, "message": message, "detail": detail if detail is not None else message}
+
+
+def _teks_galat(d) -> str:
+    return d if isinstance(d, str) else str((d or {}).get("message") or d)
+
+
+def _f_void(v):
+    return float(v) if v is not None else None
+
+
+class PratinjauVoidPembayaranRequest(BaseModel):
+    void_reason: Optional[str] = Field(None, max_length=500)  # opsional DI PRATINJAU: "alasan wajib" tampil sebagai blok
+
+
+async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: bool = False) -> dict:
+    """SEMUA penghalang void (urutan = galat rute lama). 404 dinaikkan langsung. Nol tulisan.
+    Pemanggil WAJIB sudah memegang kunci RECEIVE_PAYMENT_VOID:{id} di dalam transaksi."""
+    tid = ctx["tenant_id"]
+    blocks = []
+    if wajib_alasan and not (reason or "").strip():
+        blocks.append(_blok_void("VOID_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi"))
+    try:
+        await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], payment_id)  # rekon bank: 409 sebelum tulisan
+    except HTTPException as e:
+        blocks.append(_blok_void("BANK_RECONCILED", e.status_code, _teks_galat(e.detail), e.detail))
+    # Law 5: periode tanggal bisnis HARI INI (tanggal jurnal pembalik) harus terbuka
+    hari_ini = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis
+    try:
+        await check_period_is_open(conn, tid, hari_ini)
+    except HTTPException as e:
+        blocks.append(_blok_void("PERIOD_CLOSED", e.status_code, _teks_galat(e.detail), e.detail))
+    payment = await conn.fetchrow(
+        "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE", payment_id, tid
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Receive payment not found")
+    lepas, uang_muka, sumber_dep, orig_bt, alokasi = [], None, None, None, []
+    if payment["status"] == "voided":
+        blocks.append(_blok_void("RP_ALREADY_VOIDED", 400, "Payment already voided"))
+    elif payment["status"] == "draft":
+        blocks.append(_blok_void("RP_IS_DRAFT", 400, "Cannot void draft payment. Delete it instead."))
+    else:
+        # V299 Lepas Pembayaran: alokasi yang sudah DILEPAS punya jurnal lepas + uang muka LPS.
+        lepas = await conn.fetch(
+            """
+            SELECT rpa.id, rpa.unapply_journal_id, rpa.unapply_deposit_id, cd.deposit_number
+            FROM receive_payment_allocations rpa
+            JOIN customer_deposits cd ON cd.id = rpa.unapply_deposit_id
+            WHERE rpa.payment_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'reversed'
+              AND rpa.unapply_journal_id IS NOT NULL AND is_effective_journal(rpa.unapply_journal_id)
+            """,
+            payment_id, tid,
+        )
+        # Law 13: penulis uang muka (apply/refund/void) memakai kunci DEPOSIT:{id}; cek "sudah dipakai" di bawah WAJIB
+        # dibaca di bawah kunci itu juga, kalau tidak pemakaian bisa commit di antara cek dan pembatalan.
+        # Urutan tetap: VOID (pemanggil) -> DEPOSIT terurut. Tak ada jalur lain yang mengambil DEPOSIT lalu VOID.
+        dep_ids = sorted({str(x) for x in ([payment["created_deposit_id"]] if payment["created_deposit_id"] else [])}
+                         | {str(r["unapply_deposit_id"]) for r in lepas})
+        for did in dep_ids:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPOSIT:{did}")
+        # Option B: uang muka overpay yang SUDAH dipakai/dikembalikan tak boleh divoid lewat void RP.
+        if payment["created_deposit_id"]:
+            uang_muka = await conn.fetchrow(
+                "SELECT deposit_number, amount, amount_applied, amount_refunded "
+                "FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+                payment["created_deposit_id"], tid,
+            )
+            if uang_muka and ((uang_muka["amount_applied"] or 0) > 0 or (uang_muka["amount_refunded"] or 0) > 0):
+                blocks.append(_blok_void(
+                    "RP_OVERPAY_DEPOSIT_USED", 400,
+                    f"Uang muka {uang_muka['deposit_number']} dari kelebihan bayar ini "
+                    "sudah dipakai/dikembalikan. Batalkan pemakaian/pengembalian uang muka "
+                    "itu dulu sebelum membatalkan pembayaran."))
+        if lepas:
+            from .customer_deposits import compute_deposit_remaining_many
+            _sisa_lps = await compute_deposit_remaining_many(conn, tid, [r["unapply_deposit_id"] for r in lepas])
+            for _r in lepas:
+                _amt_lps = await conn.fetchval(
+                    "SELECT COALESCE(SUM(credit), 0) FROM journal_lines WHERE journal_id = $1", _r["unapply_journal_id"])
+                if _sisa_lps[str(_r["unapply_deposit_id"])] < Decimal(str(_amt_lps)):
+                    blocks.append(_blok_void(
+                        "RP_UNAPPLY_CREDIT_USED", 400,
+                        f"Kredit {_r['deposit_number']} dari lepas pembayaran ini sudah dipakai/dikembalikan. "
+                        "Batalkan pemakaian/pengembalian itu dulu sebelum membatalkan pembayaran."))
+        if payment["source_type"] == "deposit" and payment["source_deposit_id"]:
+            sumber_dep = await conn.fetchrow(
+                "SELECT deposit_number FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+                payment["source_deposit_id"], tid)
+        alokasi = await conn.fetch(
+            """SELECT invoice_id, invoice_number, amount_applied, status
+               FROM receive_payment_allocations WHERE payment_id = $1 AND tenant_id = $2 ORDER BY created_at""",
+            payment_id, tid)
+        if payment["journal_id"]:
+            orig_bt = await conn.fetchrow(
+                """SELECT bt.id, bt.bank_account_id, bt.amount, ba.account_name FROM bank_transactions bt
+                   LEFT JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+                   WHERE bt.journal_id = $1 AND bt.tenant_id = $2 ORDER BY bt.created_at ASC LIMIT 1""",
+                payment["journal_id"], tid)
+    return {"blocks": blocks, "payment": payment, "lepas": lepas, "uang_muka": uang_muka, "sumber_dep": sumber_dep,
+            "orig_bt": orig_bt, "alokasi": alokasi, "hari_ini": hari_ini}
+
+
+async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) -> dict:
+    """PENULIS void (isi lama dipindah utuh). Di transaksi PEMANGGIL; satu-satunya penulis untuk /void dan pratinjau."""
+    payment, _lepas, hari_ini = r["payment"], r["lepas"], r["hari_ini"]
+    # Create reversal journal
+    void_journal_id = uuid_module.uuid4()
+
+    if payment["journal_id"]:
+        # Get original journal lines
+        original_lines = await conn.fetch(
+            """
+            SELECT * FROM journal_lines WHERE journal_id = $1
+        """,
+            payment["journal_id"],
+        )
+
+        journal_number = (
+            await conn.fetchval(
+                "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
+            )
+            or f"VD-{payment['payment_number']}"
+        )
+
+        # Get original total
+        original_journal = await conn.fetchrow(
+            "SELECT total_debit FROM journal_entries WHERE id = $1",
+            payment["journal_id"],
+        )
+
+        # Create reversal header
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, reversal_of_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT', $5, $6, 'DRAFT', $7, $7, $8)
+        """,
+            void_journal_id,
+            ctx["tenant_id"],
+            journal_number,
+            f"Void {payment['payment_number']} - {payment['customer_name']} - {reason}",
+            payment_id,
+            payment["journal_id"],
+            original_journal["total_debit"],
+            ctx["user_id"],
+            hari_ini,  # t10-tanggal-bisnis
+        )
+
+        # Create reversed lines (swap debit/credit)
+        for idx, line in enumerate(original_lines, 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                uuid_module.uuid4(),
+                void_journal_id,
+                idx,
+                line["account_id"],
+                line["credit"],  # Swap
+                line["debit"],  # Swap
+                f"Reversal - {line['memo'] or ''}",
+            )
+
+        # Law 20: DRAFT->POSTED after all reversal journal lines are inserted
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            void_journal_id,
+        )
+        # Mark original journal as reversed -- Law 2: keep the
+        # original POSTED + reversed_by_id/reversed_at (NEVER flip to
+        # VOID: that excludes it from the POSTED ledger sum and breaks
+        # BankSync R9 against the negating bank mirror, and collides on
+        # chain_sequence). Matches customer_deposits / sales_invoices
+        # void. is_effective_journal() drops it via reversed_by_id.
+        await conn.execute(
+            """
+            UPDATE journal_entries
+            SET reversed_by_id = $2, reversed_at = NOW()
+            WHERE id = $1
+        """,
+            payment["journal_id"],
+            void_journal_id,
+        )
+
+        # === Bank mirror reversal (BankSync Rule 3, R9) ===
+        # FIX_R9_RCV_MIRROR: if the original post created a bank_txn
+        # (cash pelunasan on a bank-linked CoA), the void MUST create a
+        # negating mirror linked to the reversal journal, else the void
+        # re-introduces an R9 gap. Locate the original by journal_id
+        # (reliable); canonical helper inserts the negating mirror.
+        orig_bank_txn = await conn.fetchrow(
+            """
+            SELECT id FROM bank_transactions
+            WHERE journal_id = $1 AND tenant_id = $2
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            payment["journal_id"],
+            ctx["tenant_id"],
+        )
+        if orig_bank_txn:
+            await create_reversal_bank_transaction(
+                conn,
+                tenant_id=ctx["tenant_id"],
+                original_bank_transaction_id=orig_bank_txn["id"],
+                reversal_journal_id=void_journal_id,
+                created_by=ctx["user_id"],
+                description_prefix="[VOID]",
+            )
+
+    # V299: reverse each still-effective unapply journal (new entries, Law 2) and void its LPS deposit
+    for _r in _lepas:
+        _rev = uuid_module.uuid4()
+        _orig = await conn.fetchrow("SELECT source_id, total_debit FROM journal_entries WHERE id = $1", _r["unapply_journal_id"])
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, reversal_of_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT_UNAPPLY', $5, $6, 'DRAFT', $7, $7, $8)
+            """,
+            _rev, ctx["tenant_id"],
+            (await conn.fetchval("SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"])) or f"VD-LPS-{payment['payment_number']}",
+            f"Void {payment['payment_number']}: batal lepas pembayaran ({_r['deposit_number']})",
+            _orig["source_id"], _r["unapply_journal_id"], _orig["total_debit"], ctx["user_id"],
+            hari_ini,  # t10-tanggal-bisnis
+        )
+        for _i, _ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"]), 1):
+            await conn.execute(
+                "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                uuid_module.uuid4(), _rev, _i, _ln["account_id"], _ln["credit"], _ln["debit"], f"Reversal - {_ln['memo'] or ''}",
+            )
+        await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", _rev)
+        await conn.execute("UPDATE journal_entries SET reversed_by_id = $2, reversed_at = NOW() WHERE id = $1", _r["unapply_journal_id"], _rev)
+        await conn.execute(
+            "UPDATE customer_deposits SET status = 'void', voided_at = NOW(), voided_reason = $2 WHERE id = $1",
+            _r["unapply_deposit_id"], f"Pembayaran {payment['payment_number']} dibatalkan",
+        )
+
+    # Restore invoice balances
+    allocations = await conn.fetch(
+        "SELECT * FROM receive_payment_allocations WHERE payment_id = $1",
+        payment_id,
+    )
+
+    for alloc in allocations:
+        # V299: a DILEPAS allocation already gave its effect back at unapply time (cache included);
+        # its invoice may even be void by now -- never rewrite it here.
+        if alloc["status"] == "reversed":
+            continue
+        # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
+        # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
+        # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
+        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], alloc["invoice_id"])
+
+    # Void auto-created deposit if exists
+    if payment["created_deposit_id"]:
+        await conn.execute(
+            """
+            UPDATE customer_deposits
+            SET status = 'void',
+                voided_at = NOW(),
+                voided_by = $2,
+                voided_reason = $3,
+                updated_at = NOW()
+            WHERE id = $1
+        """,
+            payment["created_deposit_id"],
+            ctx["user_id"],
+            f"Payment {payment['payment_number']} voided",
+        )
+
+    # Restore source deposit if paid from deposit
+    if payment["source_type"] == "deposit" and payment["source_deposit_id"]:
+        # Remove deposit applications created by this payment
+        await conn.execute(
+            """
+            DELETE FROM customer_deposit_applications
+            WHERE deposit_id = $1 AND journal_id = $2
+        """,
+            payment["source_deposit_id"],
+            payment["journal_id"],
+        )
+        # Deposit status will be updated by trigger
+
+    # Update payment status
+    await conn.execute(
+        """
+        UPDATE receive_payments
+        SET status = 'voided',
+            void_journal_id = $2,
+            voided_at = NOW(),
+            voided_by = $3,
+            void_reason = $4,
+            updated_at = NOW()
+        WHERE id = $1
+    """,
+        payment_id,
+        void_journal_id,
+        ctx["user_id"],
+        reason,
+    )
+
+    logger.info(f"Receive payment voided: {payment_id}")
+
+    return {
+        "success": True,
+        "message": "Receive payment voided successfully",
+        "data": {
+            "id": str(payment_id),
+            "void_journal_id": str(void_journal_id),
+            "status": "voided",
+        },
+    }
+
+
 @router.post("/{payment_id}/void", response_model=ReceivePaymentResponse)
 async def void_receive_payment(
-    request: Request, payment_id: UUID, body: VoidPaymentRequest
+    request: Request, payment_id: UUID, body: VoidPaymentRequest, response: _Response = None
 ):
     """
     Void a posted receive payment.
@@ -2418,6 +2751,9 @@ async def void_receive_payment(
     Restores invoice balances.
     Voids any auto-created deposit from overpayment.
     Restores source deposit balance if paid from deposit.
+    Aturan = _rencana_void_pembayaran, penulis = _tulis_void_pembayaran (dipakai juga /void/preview);
+    penghalang pertama -> galat lama. X-Idempotency-Key opsional (pola W0): retry sesudah balasan hilang =
+    respons pertama (bukan 400 'already voided'); kunci sama + isi beda -> 409.
     """
     try:
         ctx = get_user_context(request)
@@ -2429,313 +2765,136 @@ async def void_receive_payment(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                kp, sd, lama = await idem_mulai_aksi(
+                    conn, ctx, idem_kunci_dari(request), "RECEIVE_PAYMENT_VOID", payment_id,
+                    {"payment_id": str(payment_id), "void_reason": body.void_reason}, response)
+                if lama is not None:
+                    return lama
 
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"RECEIVE_PAYMENT_VOID:{payment_id}",
                 )
-                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], payment_id)  # rekon bank: 409 sebelum tulisan
-
-                # Law 5: periode tanggal bisnis HARI INI (tanggal jurnal pembalik) harus terbuka
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
-
-                # Get payment
-                payment = await conn.fetchrow(
-                    """
-                    SELECT * FROM receive_payments
-                    WHERE id = $1 AND tenant_id = $2 FOR UPDATE
-                """,
-                    payment_id,
-                    ctx["tenant_id"],
-                )
-
-                if not payment:
-                    raise HTTPException(
-                        status_code=404, detail="Receive payment not found"
-                    )
-
-                if payment["status"] == "voided":
-                    raise HTTPException(
-                        status_code=400, detail="Payment already voided"
-                    )
-
-                if payment["status"] == "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot void draft payment. Delete it instead.",
-                    )
-
-                # Option B: uang muka overpay yang SUDAH dipakai/dikembalikan tak boleh divoid lewat
-                # void RP (pemakaian/refund uang muka = jurnal terpisah). Tolak; batalkan pemakaian dulu.
-                if payment["created_deposit_id"]:
-                    _dep_used = await conn.fetchrow(
-                        "SELECT deposit_number, amount_applied, amount_refunded "
-                        "FROM customer_deposits WHERE id = $1",
-                        payment["created_deposit_id"],
-                    )
-                    if _dep_used and (
-                        (_dep_used["amount_applied"] or 0) > 0
-                        or (_dep_used["amount_refunded"] or 0) > 0
-                    ):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Uang muka {_dep_used['deposit_number']} dari kelebihan bayar ini "
-                                "sudah dipakai/dikembalikan. Batalkan pemakaian/pengembalian uang muka "
-                                "itu dulu sebelum membatalkan pembayaran."
-                            ),
-                        )
-
-                # V299 Lepas Pembayaran: alokasi yang sudah DILEPAS punya jurnal lepas + uang muka LPS. Void
-                # pembayaran membatalkan keduanya di transaksi yang sama -- kecuali kreditnya sudah
-                # dipakai/dikembalikan (pola Option B di atas: tolak, batalkan pemakaian dulu).
-                _lepas = await conn.fetch(
-                    """
-                    SELECT rpa.id, rpa.unapply_journal_id, rpa.unapply_deposit_id, cd.deposit_number
-                    FROM receive_payment_allocations rpa
-                    JOIN customer_deposits cd ON cd.id = rpa.unapply_deposit_id
-                    WHERE rpa.payment_id = $1 AND rpa.tenant_id = $2 AND rpa.status = 'reversed'
-                      AND rpa.unapply_journal_id IS NOT NULL AND is_effective_journal(rpa.unapply_journal_id)
-                    """,
-                    payment_id, ctx["tenant_id"],
-                )
-                if _lepas:
-                    from .customer_deposits import compute_deposit_remaining_many
-                    _sisa_lps = await compute_deposit_remaining_many(conn, ctx["tenant_id"], [r["unapply_deposit_id"] for r in _lepas])
-                    for _r in _lepas:
-                        _amt_lps = await conn.fetchval("SELECT COALESCE(SUM(credit), 0) FROM journal_lines WHERE journal_id = $1", _r["unapply_journal_id"])
-                        if _sisa_lps[str(_r["unapply_deposit_id"])] < Decimal(str(_amt_lps)):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"Kredit {_r['deposit_number']} dari lepas pembayaran ini sudah dipakai/dikembalikan. "
-                                    "Batalkan pemakaian/pengembalian itu dulu sebelum membatalkan pembayaran."
-                                ),
-                            )
-
-                # Create reversal journal
-                void_journal_id = uuid_module.uuid4()
-
-                if payment["journal_id"]:
-                    # Get original journal lines
-                    original_lines = await conn.fetch(
-                        """
-                        SELECT * FROM journal_lines WHERE journal_id = $1
-                    """,
-                        payment["journal_id"],
-                    )
-
-                    journal_number = (
-                        await conn.fetchval(
-                            "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
-                        )
-                        or f"VD-{payment['payment_number']}"
-                    )
-
-                    # Get original total
-                    original_journal = await conn.fetchrow(
-                        "SELECT total_debit FROM journal_entries WHERE id = $1",
-                        payment["journal_id"],
-                    )
-
-                    # Create reversal header
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT', $5, $6, 'DRAFT', $7, $7, $8)
-                    """,
-                        void_journal_id,
-                        ctx["tenant_id"],
-                        journal_number,
-                        f"Void {payment['payment_number']} - {payment['customer_name']} - {body.void_reason}",
-                        payment_id,
-                        payment["journal_id"],
-                        original_journal["total_debit"],
-                        ctx["user_id"],
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-
-                    # Create reversed lines (swap debit/credit)
-                    for idx, line in enumerate(original_lines, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                            uuid_module.uuid4(),
-                            void_journal_id,
-                            idx,
-                            line["account_id"],
-                            line["credit"],  # Swap
-                            line["debit"],  # Swap
-                            f"Reversal - {line['memo'] or ''}",
-                        )
-
-                    # Law 20: DRAFT->POSTED after all reversal journal lines are inserted
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        void_journal_id,
-                    )
-                    # Mark original journal as reversed -- Law 2: keep the
-                    # original POSTED + reversed_by_id/reversed_at (NEVER flip to
-                    # VOID: that excludes it from the POSTED ledger sum and breaks
-                    # BankSync R9 against the negating bank mirror, and collides on
-                    # chain_sequence). Matches customer_deposits / sales_invoices
-                    # void. is_effective_journal() drops it via reversed_by_id.
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET reversed_by_id = $2, reversed_at = NOW()
-                        WHERE id = $1
-                    """,
-                        payment["journal_id"],
-                        void_journal_id,
-                    )
-
-                    # === Bank mirror reversal (BankSync Rule 3, R9) ===
-                    # FIX_R9_RCV_MIRROR: if the original post created a bank_txn
-                    # (cash pelunasan on a bank-linked CoA), the void MUST create a
-                    # negating mirror linked to the reversal journal, else the void
-                    # re-introduces an R9 gap. Locate the original by journal_id
-                    # (reliable); canonical helper inserts the negating mirror.
-                    orig_bank_txn = await conn.fetchrow(
-                        """
-                        SELECT id FROM bank_transactions
-                        WHERE journal_id = $1 AND tenant_id = $2
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                        """,
-                        payment["journal_id"],
-                        ctx["tenant_id"],
-                    )
-                    if orig_bank_txn:
-                        await create_reversal_bank_transaction(
-                            conn,
-                            tenant_id=ctx["tenant_id"],
-                            original_bank_transaction_id=orig_bank_txn["id"],
-                            reversal_journal_id=void_journal_id,
-                            created_by=ctx["user_id"],
-                            description_prefix="[VOID]",
-                        )
-
-                # V299: reverse each still-effective unapply journal (new entries, Law 2) and void its LPS deposit
-                for _r in _lepas:
-                    _rev = uuid_module.uuid4()
-                    _orig = await conn.fetchrow("SELECT source_id, total_debit FROM journal_entries WHERE id = $1", _r["unapply_journal_id"])
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $9, $4, 'RECEIVE_PAYMENT_UNAPPLY', $5, $6, 'DRAFT', $7, $7, $8)
-                        """,
-                        _rev, ctx["tenant_id"],
-                        (await conn.fetchval("SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"])) or f"VD-LPS-{payment['payment_number']}",
-                        f"Void {payment['payment_number']}: batal lepas pembayaran ({_r['deposit_number']})",
-                        _orig["source_id"], _r["unapply_journal_id"], _orig["total_debit"], ctx["user_id"],
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-                    for _i, _ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"]), 1):
-                        await conn.execute(
-                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                            uuid_module.uuid4(), _rev, _i, _ln["account_id"], _ln["credit"], _ln["debit"], f"Reversal - {_ln['memo'] or ''}",
-                        )
-                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", _rev)
-                    await conn.execute("UPDATE journal_entries SET reversed_by_id = $2, reversed_at = NOW() WHERE id = $1", _r["unapply_journal_id"], _rev)
-                    await conn.execute(
-                        "UPDATE customer_deposits SET status = 'void', voided_at = NOW(), voided_reason = $2 WHERE id = $1",
-                        _r["unapply_deposit_id"], f"Pembayaran {payment['payment_number']} dibatalkan",
-                    )
-
-                # Restore invoice balances
-                allocations = await conn.fetch(
-                    "SELECT * FROM receive_payment_allocations WHERE payment_id = $1",
-                    payment_id,
-                )
-
-                for alloc in allocations:
-                    # V299: a DILEPAS allocation already gave its effect back at unapply time (cache included);
-                    # its invoice may even be void by now -- never rewrite it here.
-                    if alloc["status"] == "reversed":
-                        continue
-                    # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
-                    # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
-                    # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
-                    await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], alloc["invoice_id"])
-
-                # Void auto-created deposit if exists
-                if payment["created_deposit_id"]:
-                    await conn.execute(
-                        """
-                        UPDATE customer_deposits
-                        SET status = 'void',
-                            voided_at = NOW(),
-                            voided_by = $2,
-                            voided_reason = $3,
-                            updated_at = NOW()
-                        WHERE id = $1
-                    """,
-                        payment["created_deposit_id"],
-                        ctx["user_id"],
-                        f"Payment {payment['payment_number']} voided",
-                    )
-
-                # Restore source deposit if paid from deposit
-                if payment["source_type"] == "deposit" and payment["source_deposit_id"]:
-                    # Remove deposit applications created by this payment
-                    await conn.execute(
-                        """
-                        DELETE FROM customer_deposit_applications
-                        WHERE deposit_id = $1 AND journal_id = $2
-                    """,
-                        payment["source_deposit_id"],
-                        payment["journal_id"],
-                    )
-                    # Deposit status will be updated by trigger
-
-                # Update payment status
-                await conn.execute(
-                    """
-                    UPDATE receive_payments
-                    SET status = 'voided',
-                        void_journal_id = $2,
-                        voided_at = NOW(),
-                        voided_by = $3,
-                        void_reason = $4,
-                        updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    payment_id,
-                    void_journal_id,
-                    ctx["user_id"],
-                    body.void_reason,
-                )
-
-                logger.info(f"Receive payment voided: {payment_id}")
-
-                return {
-                    "success": True,
-                    "message": "Receive payment voided successfully",
-                    "data": {
-                        "id": str(payment_id),
-                        "void_journal_id": str(void_journal_id),
-                        "status": "voided",
-                    },
-                }
+                r = await _rencana_void_pembayaran(conn, ctx, payment_id, body.void_reason)
+                if r["blocks"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=b["status"], detail=b["detail"])
+                hasil = await _tulis_void_pembayaran(conn, ctx, payment_id, body.void_reason, r)
+                return await idem_simpan(conn, ctx, kp, sd, "RECEIVE_PAYMENT_VOID", hasil, payment_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error voiding receive payment {payment_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void receive payment")
+
+
+async def _keadaan_faktur(conn, tid: str, ids: list) -> dict:
+    """status + sisa tagih (compute_ar_outstanding, dibaca SEKALI) per faktur; tanpa baris = sisa 0."""
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        """WITH o AS (SELECT invoice_id, SUM(outstanding) AS outstanding FROM compute_ar_outstanding($1) GROUP BY invoice_id)
+           SELECT si.id, si.invoice_number, si.total_amount, si.status, COALESCE(o.outstanding, 0) AS outstanding
+           FROM sales_invoices si LEFT JOIN o ON o.invoice_id = si.id
+           WHERE si.tenant_id = $1 AND si.id = ANY($2::uuid[])""",
+        tid, ids)
+    return {str(x["id"]): x for x in rows}
+
+
+@router.post("/{payment_id}/void/preview")
+async def preview_void_receive_payment(
+    request: Request, payment_id: UUID, body: Optional[PratinjauVoidPembayaranRequest] = None
+):
+    """PRATINJAU void pembayaran: penentu + penulis YANG SAMA dengan /void, transaksi SELALU di-ROLLBACK (nol tulis),
+    SEMUA penghalang, faktur yang terbuka lagi (status + sisa sebelum/sesudah), baris jurnal balik, cermin bank,
+    uang muka yang ikut batal."""
+    ctx = get_user_context(request)
+    if not ctx["user_id"]:
+        raise HTTPException(status_code=401, detail="User ID required")
+    alasan = ((body.void_reason if body else None) or "").strip() or None
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    await _ensure_receive_payments_role_preconditions(pool, tid)
+    baris, sesudah = [], {}
+    async with pool.acquire() as conn:
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"RECEIVE_PAYMENT_VOID:{payment_id}")
+            r = await _rencana_void_pembayaran(conn, ctx, payment_id, alasan, wajib_alasan=True)
+            ids = [a["invoice_id"] for a in r["alokasi"] if a["status"] != "reversed"]
+            sebelum = await _keadaan_faktur(conn, tid, ids)
+            sesudah = sebelum
+            if not r["blocks"]:
+                try:
+                    async with conn.transaction():  # savepoint
+                        h = await _tulis_void_pembayaran(conn, ctx, payment_id, alasan, r)
+                        baris = [dict(x) for x in await conn.fetch(
+                            """SELECT coa.account_code, coa.name AS account_name, jl.debit, jl.credit
+                               FROM journal_lines jl JOIN chart_of_accounts coa ON coa.id = jl.account_id
+                               WHERE jl.journal_id = $1 ORDER BY jl.line_number""",
+                            UUID(h["data"]["void_journal_id"]))]
+                        sesudah = await _keadaan_faktur(conn, tid, ids)
+                except HTTPException as e:
+                    r["blocks"].append(_blok_void("VOID_REJECTED", e.status_code, _teks_galat(e.detail), e.detail))
+        finally:
+            await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+    p, ok, bt = r["payment"], not r["blocks"], r["orig_bt"]
+    terbuka = []
+    for a in r["alokasi"]:
+        if a["status"] == "reversed":
+            continue  # sudah dilepas: efeknya sudah dikembalikan saat lepas, void tak menyentuhnya
+        k = str(a["invoice_id"])
+        sb, sa = sebelum.get(k), sesudah.get(k)
+        terbuka.append({
+            "invoice_id": k,
+            "invoice_number": (sb["invoice_number"] if sb else a["invoice_number"]),
+            "amount_applied": _f_void(a["amount_applied"]),
+            "status_before": sb["status"] if sb else None,
+            "status_after": sa["status"] if sa else None,
+            "outstanding_before": _f_void(sb["outstanding"]) if sb else None,
+            "outstanding_after": _f_void(sa["outstanding"]) if sa else None,
+        })
+    um = r["uang_muka"]
+    return {"success": True, "data": {
+        "payment_id": str(p["id"]),
+        "payment_number": p["payment_number"],
+        "customer_name": p["customer_name"],
+        "total_amount": _f_void(p["total_amount"]),
+        "payment_date": p["payment_date"].isoformat() if p["payment_date"] else None,
+        "status": p["status"],
+        "can_void": ok,
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "reversal_date": r["hari_ini"].isoformat(),
+        "journal_lines": [{"account_code": x["account_code"], "account_name": x["account_name"],
+                           "debit": _f_void(x["debit"]), "credit": _f_void(x["credit"])} for x in baris],
+        "invoices_reopened": terbuka,
+        "overpay_deposit": ({"deposit_number": um["deposit_number"], "amount": _f_void(um["amount"])} if um else None),
+        "unapply_deposits": [{"deposit_number": x["deposit_number"]} for x in r["lepas"]],
+        "source_deposit": ({"deposit_number": r["sumber_dep"]["deposit_number"]} if r["sumber_dep"] else None),
+        "bank_reversal": ({"bank_account_id": str(bt["bank_account_id"]), "bank_account_name": bt["account_name"],
+                           "amount": _f_void(-bt["amount"])} if bt else None),
+        "preview": True,
+    }}
+
+
+@router.get("/{payment_id}/history")
+async def get_receive_payment_history(request: Request, payment_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat pembayaran, bentuk SAMA dengan GET /sales-orders/{id}/history (services/so_riwayat.riwayat_pembayaran):
+    {events[{at (zona tenant), jenis, ringkas, aktor{id,nama}|null, dokumen, sumber}], total, omitted}, terbaru dulu."""
+    ctx = get_user_context(request)
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.so_riwayat import riwayat_pembayaran
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_pembayaran(conn, ctx["tenant_id"], payment_id, lambda m: boleh_baca(request, m), limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Receive payment not found")
+    return {"success": True, "data": data}
 
 
 @router.get("/{payment_id}/journal-entries")

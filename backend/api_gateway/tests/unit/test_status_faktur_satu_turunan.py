@@ -18,7 +18,7 @@ from app.services import pihak_helpers as PH
 APP = Path(__file__).resolve().parents[2] / "app"
 PENULIS = {
     "routers/customer_deposits.py": ["apply_deposit_core", "reverse_deposit_application_core"],
-    "routers/receive_payments.py": ["_post_payment", "unapply_receive_payment_allocation", "void_receive_payment"],
+    "routers/receive_payments.py": ["_post_payment", "unapply_receive_payment_allocation", "_tulis_void_pembayaran"]  # U3b: isi void pindah ke penulis bersama,
 }
 # 29 Sep: record_payment TIDAK lagi menulis sendiri -- ia mendelegasikan ke buat_penerimaan -> _post_payment
 # (yang ada di PENULIS). Penjaga delegasinya di test_penulis_faktur_lewat_inti di bawah.
