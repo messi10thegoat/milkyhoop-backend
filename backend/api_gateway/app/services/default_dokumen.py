@@ -52,6 +52,24 @@ async def default_pesanan(conn, tenant_id: str, customer_id: Optional[str] = Non
     }
 
 
+async def default_faktur(conn, tenant_id: str, invoice_date, customer_id: Optional[str] = None) -> dict:
+    """Default form Faktur Penjualan (U1c CW, 4 Okt 2026; pemilik LANGSUNG ke WORKSPACE: "Default dari server").
+    SATU penentu: rekening penerimaan UTAMA = default_pesanan (bendera is_default eksplisit, bukan urutan); jatuh tempo
+    = services/termin_bayar.tentukan_jatuh_tempo YANG SAMA dengan to-invoice/buat faktur (termin pelanggan -> default
+    = tanggal faktur; tingkat perusahaan TIDAK ada di aturan itu, jadi tak dikarang di sini). Nol tulis; FE mengirim
+    nilainya (snapshot). invoice_date = isian FE atau tanggal usaha zona tenant (pemanggil)."""
+    from .termin_bayar import tentukan_jatuh_tempo, termin_hari
+    d = await default_pesanan(conn, tenant_id, customer_id)
+    n, _ = await termin_hari(conn, tenant_id, None, customer_id)
+    jt, sumber = await tentukan_jatuh_tempo(conn, tenant_id, invoice_date, None, None, customer_id)
+    return {
+        "receiving_account": d["receiving_account"],
+        "invoice_date": invoice_date.isoformat(),
+        "due_date": {"value": jt.isoformat(), "source": sumber, "terms_days": n},
+        "payment_terms_label": f"NET {n}" if n > 0 else None,
+    }
+
+
 # Masa berlaku penawaran bawaan SISTEM (MASTER 3 Okt: 14 hari = yang dipakai sekarang). Tahap berikut: ditimpa per
 # tenant/pelanggan (pola "default bisa ditimpa"); source berubah dari 'system' ke 'company'/'customer'.
 MASA_BERLAKU_PENAWARAN_HARI = 14

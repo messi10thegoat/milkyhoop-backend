@@ -906,6 +906,28 @@ def _syarat_jatuh_tempo(p_hari: str) -> str:
     return f"(si.status IN ('posted', 'partial') AND si.due_date < {p_hari}::date AND {_SISA_AR_POSITIF})"
 
 
+from datetime import date as _date  # noqa: E402  (anotasi query /defaults; modul tak mengimpor date di atas)
+
+
+@router.get("/defaults")
+async def get_sales_invoice_defaults(request: Request, customer_id: Optional[str] = None,
+                                     invoice_date: Optional[_date] = None):
+    """Default form Faktur Penjualan (U1c CW, 4 Okt 2026), pola /sales-orders/defaults: rekening penerimaan UTAMA +
+    jatuh tempo dari termin (penentu SAMA dengan to-invoice). null = tak ada default. DI ATAS /{invoice_id}."""
+    ctx = get_user_context(request)
+    if customer_id:
+        try:
+            customer_id = str(UUID(str(customer_id)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="customer_id bukan UUID")
+    from ..services.default_dokumen import default_faktur
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tgl = invoice_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+        data = await default_faktur(conn, ctx["tenant_id"], tgl, customer_id)
+    return {"success": True, "data": data}
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     request: Request,
