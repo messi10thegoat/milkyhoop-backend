@@ -159,3 +159,15 @@ def test_keadaan_pratinjau_membawa_status_detail(st, ap, rf, harap):
 def test_detail_membawa_status_detail_dari_baris_tersimpan():
     src = " ".join(inspect.getsource(C.get_credit_note).split())
     assert '"status_detail": status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"])' in src
+
+
+def test_pesan_galat_status_memakai_status_detail_label_layar():
+    """Pesan 'tak bisa diterbitkan/dikembalikan' menyebut status LAYAR (status_detail): NK yang hanya direfund = 'Sebagian dikembalikan'."""
+    src = " ".join(inspect.getsource(C)).replace("  ", " ")
+    import app.services.teks_galat as tg
+    assert tg.status_id("cn", C.status_detail_nk("partial", 0, 4000)) == "Sebagian dikembalikan"
+    assert tg.status_id("cn", C.status_detail_nk("applied", 0, 10000)) == "Dikembalikan"
+    assert tg.status_id("cn", C.status_detail_nk("applied", 10000, 0)) == "Terpakai"
+    full = inspect.getsource(C)
+    assert full.count('tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"])') == 3
+    assert 'tg.tak_bisa_status("cn", cn["status"]' not in full

@@ -1630,7 +1630,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     if cn["status"] != "draft":
         raise HTTPException(
             status_code=400,
-            detail=tg.tak_bisa_status("cn", cn["status"], "diterbitkan"),
+            detail=tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "diterbitkan"),
         )
 
     # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
@@ -2632,7 +2632,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
     if cn["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=tg.tak_bisa_status("cn", cn["status"], "dikembalikan dananya"),
+            detail=tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya"),
         )
 
     # Check remaining
@@ -3481,7 +3481,7 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
         return blok
     # refund
     if cn["status"] not in ("posted", "partial"):
-        blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, tg.tak_bisa_status("cn", cn["status"], "dikembalikan dananya")))
+        blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya")))
         return blok
     sisa = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
     if body.amount > sisa:
