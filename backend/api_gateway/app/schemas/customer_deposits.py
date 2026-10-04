@@ -167,6 +167,7 @@ class CustomerDepositListItem(BaseModel):
     remaining_amount: Optional[float] = 0
     remaining_state: str = "posted"  # "posted" | "draft_belum_diposting"
     status: str
+    status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     payment_method: str
     reference: Optional[str] = None
     created_at: str
@@ -202,6 +203,7 @@ class CustomerDepositDetail(BaseModel):
 
     # Status
     status: str
+    status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
 
     # Accounting links
     journal_id: Optional[str] = None

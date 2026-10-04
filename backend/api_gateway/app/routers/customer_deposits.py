@@ -88,8 +88,30 @@ from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
 
+# status_detail (MASTER GO 5 Okt, opsi B): TURUNAN TAMPILAN. Status tersimpan (trigger) dan SEMUA penjaga uang
+# (status IN ('posted','partial')) TIDAK disentuh -- uang muka yang direfund sebagian tetap 'partial' dan tetap bisa
+# dipakai/direfund. Python (pemetaan baris) dan SQL (filter/summary) WAJIB sama: dikunci tes + harness nyata.
+_SQL_STATUS_DETAIL = (
+    "(CASE WHEN status = 'partial' AND COALESCE(amount_applied, 0) = 0 AND COALESCE(amount_refunded, 0) > 0 "
+    "THEN 'partially_refunded' "
+    "WHEN status = 'applied' AND COALESCE(amount_applied, 0) = 0 AND COALESCE(amount_refunded, 0) > 0 "
+    "THEN 'refunded' ELSE status END)"
+)
+
+
+def status_detail_dp(status, amount_applied, amount_refunded) -> str:
+    """'partially_refunded' = refund sebagian, belum dipakai; 'refunded' = habis karena refund saja; selain itu = status."""
+    dipakai, kembali = (amount_applied or 0), (amount_refunded or 0)
+    if dipakai == 0 and kembali > 0:
+        if status == "partial":
+            return "partially_refunded"
+        if status == "applied":
+            return "refunded"
+    return status
+
+
 def _status_dp(s) -> str:
-    """Label status uang muka = label layar CW (services/teks_galat)."""
+    """Label status uang muka = label layar CW (services/teks_galat). Beri status_detail_dp(...) bila ada."""
     return tg.status_id("dp", s)
 
 
@@ -431,7 +453,7 @@ async def _assert_ar_side_is_ar_trade(conn, tenant_id: str, ar_line_account_id) 
 async def list_customer_deposits(
     request: Request,
     status: Optional[
-        Literal["all", "draft", "posted", "partial", "applied", "void"]
+        Literal["all", "draft", "posted", "partial", "applied", "void", "partially_refunded", "refunded"]
     ] = Query("all"),
     customer_id: Optional[str] = Query(None),
     sales_order_id: Optional[str] = Query(
@@ -465,7 +487,7 @@ async def list_customer_deposits(
             param_idx = 2
 
             if status and status != "all":
-                conditions.append(f"status = ${param_idx}")
+                conditions.append(f"{_SQL_STATUS_DETAIL} = ${param_idx}")  # filter = status layar (status_detail)
                 params.append(status)
                 param_idx += 1
 
@@ -559,6 +581,7 @@ async def list_customer_deposits(
                     else float(_sisa.get(str(row["id"]), 0)),
                     "remaining_state": "draft_belum_diposting" if row["status"] == "draft" else "posted",
                     "status": row["status"],
+                    "status_detail": status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
@@ -612,13 +635,15 @@ async def get_customer_deposits_summary(request: Request):
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-            query = """
+            query = f"""
                 SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
                     COUNT(*) FILTER (WHERE status = 'posted') as posted_count,
                     COUNT(*) FILTER (WHERE status = 'partial') as partial_count,
                     COUNT(*) FILTER (WHERE status = 'applied') as applied_count,
+                    COUNT(*) FILTER (WHERE {_SQL_STATUS_DETAIL} = 'partially_refunded') as partially_refunded_count,
+                    COUNT(*) FILTER (WHERE {_SQL_STATUS_DETAIL} = 'refunded') as refunded_count,
                     COALESCE(SUM(amount), 0) as total_value,
                     COALESCE(SUM(amount_applied), 0) as total_applied,
                     COALESCE(SUM(amount_refunded), 0) as total_refunded
@@ -641,6 +666,8 @@ async def get_customer_deposits_summary(request: Request):
                     "posted_count": row["posted_count"] or 0,
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
+                    "partially_refunded_count": row["partially_refunded_count"] or 0,
+                    "refunded_count": row["refunded_count"] or 0,
                     "total_value": float(row["total_value"] or 0),
                     "total_applied": float(row["total_applied"] or 0),
                     "total_refunded": float(row["total_refunded"] or 0),
@@ -753,6 +780,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "reference": dep["reference"],
                     "notes": dep["notes"],
                     "status": dep["status"],
+                    "status_detail": status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"]),
                     "journal_id": str(dep["journal_id"]) if dep["journal_id"] else None,
                     "journal_number": dep["journal_number"],
                     "applications": [
@@ -1764,7 +1792,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa diterapkan.",
+            detail=f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa diterapkan.",
         )
 
     # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
@@ -2379,7 +2407,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa dikembalikan.",
+            detail=f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa dikembalikan.",
         )
 
     # Check remaining (Option B: journal-derived, SATU SUMBER dgn apply; bukan cache)
@@ -2962,7 +2990,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         return blok
     if dep["status"] not in ("posted", "partial"):
         kata = "refund" if aksi == "refund" else "apply"
-        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
+        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
     sisa = await compute_deposit_remaining(conn, tid, deposit_id)
     if aksi == "refund":
         if body.amount > sisa:
@@ -2994,7 +3022,8 @@ async def _keadaan_dp(conn, tid: str, deposit_id) -> dict:
            WHERE id = $1 AND tenant_id = $2""", deposit_id, tid)
     if not r:
         return {"exists": False}
-    return {"exists": True, "status": r["status"], "amount": float(r["amount"] or 0),
+    return {"exists": True, "status": r["status"],
+            "status_detail": status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"]), "amount": float(r["amount"] or 0),
             "amount_applied": float(r["amount_applied"] or 0), "amount_refunded": float(r["amount_refunded"] or 0),
             "remaining": float(await compute_deposit_remaining(conn, tid, deposit_id))}
 
@@ -3204,6 +3233,7 @@ async def list_customer_deposits_by_customer(
                     else float(_sisa.get(str(row["id"]), 0)),
                     "remaining_state": "draft_belum_diposting" if row["status"] == "draft" else "posted",
                     "status": row["status"],
+                    "status_detail": status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "payment_method": row["payment_method"],
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),

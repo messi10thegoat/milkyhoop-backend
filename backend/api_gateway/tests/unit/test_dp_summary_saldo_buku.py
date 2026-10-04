@@ -41,7 +41,8 @@ class _Konn:
 
     async def fetchrow(self, sql, *a):
         return {"total": 3, "draft_count": 0, "posted_count": 1, "partial_count": 1, "applied_count": 1,
-                "total_value": 300, "total_applied": 250, "total_refunded": 10}
+                "total_value": 300, "total_applied": 250, "total_refunded": 10,
+                "partially_refunded_count": 0, "refunded_count": 0}
 
     async def fetchval(self, sql, *a):
         self.sql.append((" ".join(sql.split()), a))

@@ -23,7 +23,8 @@ INGGRIS = re.compile(r"\b(not found|cannot|can't|must|only|already|exceeds?|inva
                      r"unable|allowed|should|successfully)\b", re.I)
 UANG_QTY = re.compile(r"(amount|total|balance|outstanding|sisa|remaining|paid|price|harga|nilai|saldo|available|"
                       r"subtotal|disc|qty|quantity|_rem\b)", re.I)
-PEMFORMAT = ("tg.rp", "tg.qty", "_rp_dp", "tg.status_id", "tg.tak_bisa_status", "tg.periode_tertutup")
+PEMFORMAT = ("tg.rp", "tg.qty", "_rp_dp", "tg.status_id", "tg.tak_bisa_status", "tg.periode_tertutup",
+             "_status_dp")  # _status_dp = label status (lewat tg.status_id), bukan angka
 
 
 # ---------- helper ----------

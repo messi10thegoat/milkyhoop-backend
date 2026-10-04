@@ -60,7 +60,7 @@ _STATUS = {
     "rp": {"draft": "Draf", "posted": "Diterima", "void": "Batal", "voided": "Batal", "cancelled": "Batal"},
     # Label tunggal uang muka = putusan MASTER 4 Okt (FE menyatukan konstantanya di rilis U3a).
     "dp": {"draft": "Draf", "posted": "Diterima", "partial": "Sebagian terpakai", "applied": "Terpakai",
-           "refunded": "Dikembalikan", "void": "Batal"},
+           "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan", "void": "Batal"},
 }
 
 _DOKUMEN = {"so": "Pesanan", "si": "Faktur", "quote": "Penawaran", "proforma": "Proforma",
