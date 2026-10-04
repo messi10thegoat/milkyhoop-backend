@@ -20,6 +20,8 @@ from ..services.so_riwayat import catat_riwayat, riwayat_faktur
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
+from fastapi import Response as _Response
+from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
     CreateInvoiceRequest,
@@ -3009,11 +3011,31 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     }
 
 
+async def _simpan_idem_buat(conn, ctx: dict, kunci_penuh, sidik, resp: dict, invoice_id) -> dict:
+    """Respons SUKSES buat faktur -> bentuk JSON yang SAMA untuk jawaban pertama dan replay (Decimal -> angka
+    seperti yang dikirim FastAPI), dicatat di tx yang SAMA dengan fakturnya (gagal = ikut rollback)."""
+    from fastapi.encoders import jsonable_encoder
+    resp = jsonable_encoder(resp)
+    if kunci_penuh:
+        await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "SI_CREATE", sidik, resp,
+                                  result_id=invoice_id)
+    return resp
+
+
 @router.post("", response_model=InvoiceResponse, status_code=201)
-async def create_invoice(request: Request, body: CreateInvoiceRequest):
-    """Create a new sales invoice as draft."""
+async def create_invoice(request: Request, body: CreateInvoiceRequest, response: _Response = None):
+    """Create a new sales invoice as draft (atau langsung posted bila auto_post).
+
+    X-Idempotency-Key opsional (4 Okt 2026, MASTER GO; temuan uji nyata U1c: header dikirim form CW tapi DIABAIKAN ->
+    klik ganda / retry / balasan hilang = DUA faktur, dengan auto_post = dua piutang terposting). Kunci sama + badan
+    sama -> respons PERTAMA tanpa tulis (X-Idempotent-Replay: true); badan beda -> 409 IDEMPOTENCY_KEY_REUSED (+ id
+    & nomor faktur tersimpan, pola SO_CREATE Q-006). Tanpa kunci: perilaku lama. Pola PATCH SO / POST SO."""
     try:
         ctx = get_user_context(request)
+        try:
+            _kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         pool = await get_pool()
 
         # Fase C1.1: fail-loud if any tenant lacks required role mapping
@@ -3022,6 +3044,32 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14: idempotensi SEBELUM nomor terbit (pengulangan tak menghabiskan nomor / tak ditolak "nomor dipakai")
+                _kunci_penuh = _sidik = None
+                if _kunci_klien:
+                    _kunci_penuh = f"SI_CREATE:{ctx['user_id']}:{_kunci_klien}"
+                    _sidik = hash_payload(body.model_dump(mode="json"))
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
+                                       f"IDEM:{ctx['tenant_id']}:{_kunci_penuh}")
+                    try:
+                        _lama = await ambil_replay_klien(conn, ctx["tenant_id"], _kunci_penuh, _sidik)
+                    except LookupError as _e:
+                        _asli = (getattr(_e, "respons", None) or {}).get("data") or {}
+                        _fk = None
+                        if _asli.get("id"):
+                            _fk = await conn.fetchrow(
+                                "SELECT id, invoice_number FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                                UUID(str(_asli["id"])), ctx["tenant_id"])
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Idempotency-Key sudah dipakai untuk faktur dengan isi berbeda",
+                            "invoice_id": str(_fk["id"]) if _fk else None,
+                            "invoice_number": _fk["invoice_number"] if _fk else None})
+                    if _lama is not None:
+                        if response is not None:
+                            response.headers["X-Idempotent-Replay"] = "true"
+                        return _lama
+
                 # Generate invoice number
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
@@ -3327,7 +3375,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         total_amount,
                     )
 
-                    return {
+                    return await _simpan_idem_buat(conn, ctx, _kunci_penuh, _sidik, {
                         "success": True,
                         "message": "Invoice created and posted successfully",
                         "data": {
@@ -3343,9 +3391,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                             "fulfillment_status": post_result.get("fulfillment_status"),
                             "warnings": post_result.get("warnings", []),
                         },
-                    }
+                    }, invoice_id)
 
-                return {
+                return await _simpan_idem_buat(conn, ctx, _kunci_penuh, _sidik, {
                     "success": True,
                     "message": "Invoice created successfully",
                     "data": {
@@ -3361,7 +3409,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest):
                         "due_date_source": due_date_source,
                         "created_at": None,
                     },
-                }
+                }, invoice_id)
 
     except HTTPException:
         raise
