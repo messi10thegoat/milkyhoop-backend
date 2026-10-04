@@ -204,6 +204,12 @@ class CreditNoteListItem(BaseModel):
     status: str
     reason: str
     created_at: str
+    original_invoice_id: Optional[str] = None  # U9 (5 Okt)
+    original_invoice_number: Optional[str] = None
+    sales_order_id: Optional[str] = None
+    sales_order_number: Optional[str] = None
+    voided_at: Optional[str] = None
+    void_reason: Optional[str] = None
 
 
 class CreditNoteDetail(BaseModel):
@@ -217,6 +223,8 @@ class CreditNoteDetail(BaseModel):
     customer_name: str
     original_invoice_id: Optional[str] = None
     original_invoice_number: Optional[str] = None
+    sales_order_id: Optional[str] = None  # U9 (5 Okt): SO induk lewat faktur asal
+    sales_order_number: Optional[str] = None
 
     # Amounts
     subtotal: float

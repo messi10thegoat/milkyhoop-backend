@@ -7,6 +7,7 @@ Create still uses POST /api/sales-invoices/{id}/fulfill.
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
+from datetime import date
 import logging
 from io import BytesIO
 from fastapi.responses import StreamingResponse
@@ -69,6 +70,8 @@ async def list_deliveries(
     status: Optional[Literal["posted", "voided"]] = Query(None),
     customer_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    date_from: Optional[date] = Query(None),  # U9: filter tanggal kirim (aditif)
+    date_to: Optional[date] = Query(None),
     sort_by: str = Query("delivery_date"),
     sort_order: str = Query("desc"),
     page: int = Query(1, ge=1),
@@ -116,6 +119,16 @@ async def list_deliveries(
         params.append(f"%{search}%")
         idx += 1
 
+    if date_from:
+        conditions.append(f"f.fulfillment_date >= ${idx}")
+        params.append(date_from)
+        idx += 1
+
+    if date_to:
+        conditions.append(f"f.fulfillment_date <= ${idx}")
+        params.append(date_to)
+        idx += 1
+
     where_clause = " AND ".join(conditions)
     offset = (page - 1) * per_page
 
@@ -150,6 +163,8 @@ async def list_deliveries(
                 si.id AS invoice_id,
                 si.invoice_number,
                 si.customer_id,
+                si.sales_order_id,
+                so.order_number AS sales_order_number,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
                 c.alamat AS customer_address,
@@ -160,6 +175,7 @@ async def list_deliveries(
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
+            LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
             WHERE {where_clause}
             ORDER BY {db_sort} {direction}
             LIMIT ${idx} OFFSET ${idx + 1}
@@ -185,6 +201,8 @@ async def list_deliveries(
             "invoice_id": str(r["invoice_id"]),
             "invoice_number": r["invoice_number"],
             "customer_id": str(r["customer_id"]) if r["customer_id"] else None,
+            "sales_order_id": str(r["sales_order_id"]) if r["sales_order_id"] else None,
+            "sales_order_number": r["sales_order_number"],
             "customer_name": r["customer_name"],
             "customer_phone": r["customer_phone"],
             "customer_address": r["customer_address"],
@@ -234,6 +252,8 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 si.id AS invoice_id,
                 si.invoice_number,
                 si.customer_id,
+                si.sales_order_id,
+                so.order_number AS sales_order_number,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
                 c.alamat AS customer_address,
@@ -244,6 +264,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
             JOIN sales_invoices si ON si.id = f.invoice_id
             LEFT JOIN customers c ON c.id = si.customer_id
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
+            LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
             WHERE f.id = $1 AND f.tenant_id = $2
             """,
             delivery_id,
@@ -331,6 +352,8 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         "revenue_journal_id": str(row["revenue_journal_id"])
         if row["revenue_journal_id"]
         else None,
+        "sales_order_id": str(row["sales_order_id"]) if row["sales_order_id"] else None,
+        "sales_order_number": row["sales_order_number"],
         "invoice_id": str(row["invoice_id"]),
         "invoice_number": row["invoice_number"],
         "customer_id": str(row["customer_id"]) if row["customer_id"] else None,

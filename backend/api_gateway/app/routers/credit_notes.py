@@ -373,7 +373,8 @@ async def list_credit_notes(
             query = f"""
                 SELECT id, credit_note_number, customer_id, customer_name,
                        credit_note_date, total_amount, amount_applied, amount_refunded,
-                       status, reason, created_at
+                       status, reason, created_at,
+                       original_invoice_id, original_invoice_number, voided_at, voided_reason
                 FROM credit_notes
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -382,6 +383,18 @@ async def list_credit_notes(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+
+            # U9: SO induk lewat faktur asal (NK tak punya sales_order_id) -- satu kueri per halaman, tenant eksplisit
+            _inv_ids = [r["original_invoice_id"] for r in rows if r["original_invoice_id"]]
+            _so_of = {}
+            if _inv_ids:
+                for _r in await conn.fetch(
+                        """SELECT si.id, si.sales_order_id, so.order_number
+                           FROM sales_invoices si
+                           LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
+                           WHERE si.tenant_id = $1 AND si.id = ANY($2::uuid[])""",
+                        ctx["tenant_id"], _inv_ids):
+                    _so_of[_r["id"]] = (_r["sales_order_id"], _r["order_number"])
 
             items = [
                 {
@@ -405,6 +418,13 @@ async def list_credit_notes(
                     "status": row["status"],
                     "reason": row["reason"],
                     "created_at": row["created_at"].isoformat(),
+                    "original_invoice_id": str(row["original_invoice_id"]) if row["original_invoice_id"] else None,
+                    "original_invoice_number": row["original_invoice_number"],
+                    "sales_order_id": str(_so_of[row["original_invoice_id"]][0])
+                    if _so_of.get(row["original_invoice_id"]) and _so_of[row["original_invoice_id"]][0] else None,
+                    "sales_order_number": (_so_of.get(row["original_invoice_id"]) or (None, None))[1],
+                    "voided_at": row["voided_at"].isoformat() if row["voided_at"] else None,
+                    "void_reason": row["voided_reason"],
                 }
                 for row in rows
             ]
@@ -462,10 +482,14 @@ async def get_credit_notes_summary(request: Request):
                 WHERE cn.tenant_id = $1 AND cn.status != 'void'
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
+            # U9: hitungan void TERPISAH -- total/nilai di atas tetap TANPA void (arti lama tak berubah)
+            void_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM credit_notes WHERE tenant_id = $1 AND status = 'void'", ctx["tenant_id"])
 
             return {
                 "success": True,
                 "data": {
+                    "void_count": void_count or 0,
                     "total": row["total"] or 0,
                     "draft_count": row["draft_count"] or 0,
                     "posted_count": row["posted_count"] or 0,
@@ -571,10 +595,18 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
             from ..services.kode_order import tempel_kode as _tempel_kode
             _kode = (await _tempel_kode(conn, ctx["tenant_id"], "credit_note", [{"id": cn["id"]}]))[0]
             _kode.pop("id")
+            # U9: SO induk lewat faktur asal (sama dgn daftar); tenant eksplisit
+            _so = await conn.fetchrow(
+                """SELECT si.sales_order_id, so.order_number FROM sales_invoices si
+                   LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
+                   WHERE si.tenant_id = $1 AND si.id = $2""",
+                ctx["tenant_id"], cn["original_invoice_id"]) if cn["original_invoice_id"] else None
             return {
                 "success": True,
                 "data": {
                     **_kode,
+                    "sales_order_id": str(_so["sales_order_id"]) if _so and _so["sales_order_id"] else None,
+                    "sales_order_number": _so["order_number"] if _so else None,
                     "id": str(cn["id"]),
                     "credit_note_number": cn["credit_note_number"],
                     "customer_id": str(cn["customer_id"])
