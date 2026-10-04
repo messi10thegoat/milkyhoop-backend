@@ -379,11 +379,13 @@ async def list_proformas(
                 params.append(_uuid_or_404(sales_order_id, "Sales Order"))
                 idx += 1
             if search:
+                from ..services.kode_order import sql_cari_so_induk
                 extras.append(
                     f"(p.proforma_number ILIKE ${idx} OR p.customer_name ILIKE ${idx} "
                     f"OR p.search_text ILIKE ${idx} OR p.customer_id::text IN "
                     f"(SELECT c.id::text FROM customers c WHERE c.tenant_id = p.tenant_id "
-                    f"AND c.search_text ILIKE ${idx}))"
+                    f"AND c.search_text ILIKE ${idx}) OR "
+                    + sql_cari_so_induk("proforma", "p", "$1", f"${idx}") + ")"
                 )
                 params.append(f"%{search}%")
                 idx += 1

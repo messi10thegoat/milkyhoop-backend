@@ -472,10 +472,11 @@ async def list_customer_deposits(
                 param_idx += 1
 
             if search:
+                from ..services.kode_order import sql_cari_so_induk
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                        f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("customer_deposit", "customer_deposits", "$1", f"${param_idx}") + ")"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -483,7 +484,7 @@ async def list_customer_deposits(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                            f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("customer_deposit", "customer_deposits", "$1", f"${param_idx}") + ")"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1

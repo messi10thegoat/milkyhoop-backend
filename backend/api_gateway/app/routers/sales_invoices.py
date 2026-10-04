@@ -949,10 +949,11 @@ async def list_invoices(
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             if search:
+                from ..services.kode_order import sql_cari_so_induk
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR si.sales_order_id IN (SELECT so2.id FROM sales_orders so2 WHERE so2.tenant_id = $1 AND so2.order_number ILIKE ${param_idx}))"
+                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("sales_invoice", "si", "$1", f"${param_idx}") + ")"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -960,7 +961,7 @@ async def list_invoices(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR si.sales_order_id IN (SELECT so2.id FROM sales_orders so2 WHERE so2.tenant_id = $1 AND so2.order_number ILIKE ${param_idx}))"
+                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("sales_invoice", "si", "$1", f"${param_idx}") + ")"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1

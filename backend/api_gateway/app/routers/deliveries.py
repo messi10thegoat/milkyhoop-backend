@@ -108,8 +108,10 @@ async def list_deliveries(
         idx += 1
 
     if search:
+        from ..services.kode_order import sql_cari_so_induk
         conditions.append(
-            f"(f.fulfillment_number ILIKE ${idx} OR c.nama ILIKE ${idx} OR si.invoice_number ILIKE ${idx} OR c.search_text ILIKE ${idx})"
+            f"(f.fulfillment_number ILIKE ${idx} OR c.nama ILIKE ${idx} OR si.invoice_number ILIKE ${idx} OR c.search_text ILIKE ${idx} OR "
+            + sql_cari_so_induk("delivery", "f", "$1", f"${idx}") + ")"
         )
         params.append(f"%{search}%")
         idx += 1

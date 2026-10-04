@@ -464,6 +464,32 @@ SUMBER_SO = {
 }
 
 
+# Pencarian dokumen anak lewat SO INDUK: nomor, kode order, ATAU judul order (4 Okt 2026). Jalur induk SAMA dengan
+# SUMBER_SO di atas; tenant = parameter {t} eksplisit di SETIAP subkueri (koneksi BYPASSRLS, set_config bukan pagar).
+_SO_COCOK = ("SELECT so_c.id FROM sales_orders so_c WHERE so_c.tenant_id = {t} AND (so_c.order_number ILIKE {p} "
+             "OR so_c.order_code ILIKE {p} OR so_c.order_title ILIKE {p})")
+
+
+def sql_cari_so_induk(jenis: str, alias: str, t: str, p: str) -> str:
+    """Predikat SQL: dokumen `alias` (jenis SUMBER_SO) milik SO yang nomor/kode/judulnya ILIKE {p}.
+    t/p = placeholder ($1, $5, ...) tenant dan pola."""
+    so = _SO_COCOK.format(t=t, p=p)
+    if jenis in ("sales_invoice", "proforma"):
+        return f"{alias}.sales_order_id IN ({so})"
+    if jenis == "customer_deposit":
+        return (f"COALESCE({alias}.sales_order_id, (SELECT p_c.sales_order_id FROM proformas p_c "
+                f"WHERE p_c.id = {alias}.proforma_id AND p_c.tenant_id = {t})) IN ({so})")
+    if jenis in ("delivery", "credit_note"):
+        kol = "invoice_id" if jenis == "delivery" else "original_invoice_id"
+        return (f"{alias}.{kol} IN (SELECT si_c.id FROM sales_invoices si_c WHERE si_c.tenant_id = {t} "
+                f"AND si_c.sales_order_id IN ({so}))")
+    if jenis == "receive_payment":
+        return (f"EXISTS (SELECT 1 FROM receive_payment_allocations rpa_c JOIN sales_invoices si_c "
+                f"ON si_c.id = rpa_c.invoice_id AND si_c.tenant_id = {t} WHERE rpa_c.payment_id = {alias}.id "
+                f"AND rpa_c.tenant_id = {t} AND rpa_c.status = 'active' AND si_c.sales_order_id IN ({so}))")
+    raise ValueError(jenis)
+
+
 async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
     """{str(id): {order_code, order_title, order_code_label}}; receive_payment: {order_codes: [{order_code, order_title,
     order_number}], order_code_label}. SO tanpa kode / tanpa SO -> null / []. Label selalu terisi (setelan tenant).
