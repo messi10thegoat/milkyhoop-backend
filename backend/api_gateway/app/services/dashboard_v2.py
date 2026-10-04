@@ -506,6 +506,39 @@ def _str_atau_none(v) -> Optional[str]:
     return str(v) if v is not None else None
 
 
+# ─── SATU SUMBER kartu "Perlu dikerjakan" ↔ daftar tujuan (MASTER 5 Okt 2026) ───
+# Kartu dan filter daftar ?tugas= memanggil PEMILIH YANG SAMA (bukan salinan predikat): angka kartu == baris daftar.
+TUGAS_FAKTUR = ("telat", "jatuh_tempo_hari_ini")
+TUGAS_SO = ("harus_kirim", "dp_belum_diterima")
+
+
+def akhir_minggu(hari_ini: date) -> date:
+    return hari_ini + timedelta(days=6 - hari_ini.weekday())
+
+
+def pilih_faktur_telat(ar_rows, hari_ini: date) -> list:
+    """Kartu ar_overdue: sisa > 0 (compute_ar_outstanding) DAN jatuh tempo lewat (due NULL = telat, ember 90+)."""
+    return [r for r in ar_rows if d(r["outstanding"]) > NOL and _jatuh_tempo_lewat(r["due_date"], hari_ini)]
+
+
+def pilih_jatuh_tempo_hari_ini(ar_rows, hari_ini: date) -> list:
+    """Kartu ar_due_today: sisa > 0 DAN jatuh tempo = hari ini."""
+    return [r for r in ar_rows if d(r["outstanding"]) > NOL and r["due_date"] == hari_ini]
+
+
+async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
+    """id dokumen di balik kartu `tugas` -- dipakai filter daftar ?tugas= (faktur / pesanan)."""
+    if tugas in TUGAS_FAKTUR:
+        ar = await conn.fetch("SELECT * FROM compute_ar_outstanding($1)", tenant_id)
+        pilih = pilih_faktur_telat if tugas == "telat" else pilih_jatuh_tempo_hari_ini
+        return [r["invoice_id"] for r in pilih(ar, hari_ini)]
+    if tugas == "harus_kirim":
+        return [r["id"] for r in await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))]
+    if tugas == "dp_belum_diterima":
+        return [r["id"] for r in await so_dp_belum(conn, tenant_id)]
+    raise ValueError(f"tugas tak dikenal: {tugas!r}")
+
+
 def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, rekon_rows,
                 kontak: dict, rekening: Optional[str], usaha: str, rek_faktur: Optional[dict] = None) -> list:
     """Murni (tanpa DB) — diuji per jenis tugas dengan fixture."""
@@ -513,7 +546,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
     ar = [r for r in ar_rows if d(r["outstanding"]) > NOL]
 
     # ar_due_today — satu kartu per faktur
-    for f in sorted((r for r in ar if r["due_date"] == hari_ini), key=lambda r: r["invoice_number"]):
+    for f in sorted(pilih_jatuh_tempo_hari_ini(ar, hari_ini), key=lambda r: r["invoice_number"]):
         tugas.append({
             "key": f"ar_due_today:{f['invoice_number']}:{hari_ini.isoformat()}:{uang(f['outstanding'])}",
             "type": "ar_due_today", "lane": "now",
@@ -530,8 +563,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
         })
 
     # ar_overdue — digabung satu kartu
-    telat = sorted((r for r in ar if _jatuh_tempo_lewat(r["due_date"], hari_ini)),
-                   key=lambda r: (r["due_date"] or date.min, r["invoice_number"]))
+    telat = sorted(pilih_faktur_telat(ar, hari_ini), key=lambda r: (r["due_date"] or date.min, r["invoice_number"]))
     if telat:
         total = sum((d(r["outstanding"]) for r in telat), NOL)
         nama = []
@@ -548,7 +580,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
                 {"kind": "wa_remind", "label": "Ingatkan semua", "primary": True,
                  "payload": {"invoice_ids": [str(r["invoice_id"]) for r in telat]}},
                 {"kind": "open_list", "label": "Lihat", "primary": False,
-                 "payload": {"list": "sales_invoices", "filter": "overdue"}},
+                 "payload": {"list": "sales_invoices", "filter": "overdue", "tugas": "telat"}},
             ],
             "wa_targets": _wa_targets(telat, kontak, hari_ini, rekening, usaha, rek_faktur),
         })
@@ -653,7 +685,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
             "amount": uang(total),
             "refs": [{"kind": "sales_order", "id": str(r["id"]), "number": r["order_number"]} for r in so],
             "actions": [{"kind": "open_list", "label": "Lihat", "primary": True,
-                         "payload": {"list": "sales_orders", "filter": "dp_pending",
+                         "payload": {"list": "sales_orders", "filter": "dp_pending", "tugas": "dp_belum_diterima",
                                      "ids": [str(r["id"]) for r in so]}}],
         })
 
@@ -810,11 +842,10 @@ async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
     """Semua tugas tenant (belum disaring izin / dismiss) — ini yang di-cache."""
     ar_rows = await conn.fetch("SELECT * FROM compute_ar_outstanding($1)", tenant_id)
     ap_rows = await conn.fetch("SELECT * FROM compute_ap_outstanding($1)", tenant_id)
-    akhir_minggu = hari_ini + timedelta(days=6 - hari_ini.weekday())
     usaha = await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', tenant_id) or ""
     return susun_tugas(
         hari_ini=hari_ini, ar_rows=ar_rows, ap_rows=ap_rows,
-        so_kirim_rows=await so_harus_kirim(conn, tenant_id, akhir_minggu),
+        so_kirim_rows=await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini)),
         so_dp_rows=await so_dp_belum(conn, tenant_id),
         rekon_rows=await rekening_belum_rekon(conn, tenant_id, hari_ini),
         kontak=await kontak_pelanggan(conn, tenant_id, (r["customer_id"] for r in ar_rows)),

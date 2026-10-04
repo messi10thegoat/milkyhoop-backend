@@ -132,6 +132,8 @@ async def list_sales_orders(
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
+    tugas: Optional[Literal["harus_kirim", "dp_belum_diterima"]] = Query(None),
 ):
     """List sales orders with filters."""
     try:
@@ -146,6 +148,12 @@ async def list_sales_orders(
             if status != "all":
                 conditions.append(f"status = ${param_idx}")
                 params.append(status)
+                param_idx += 1
+
+            if tugas:
+                from ..services.dashboard_v2 import id_tugas
+                conditions.append(f"id = ANY(${param_idx}::uuid[])")
+                params.append(await id_tugas(conn, ctx["tenant_id"], tugas, await tanggal_dokumen(conn, ctx["tenant_id"])))
                 param_idx += 1
 
             if customer_id:

@@ -960,6 +960,8 @@ async def list_invoices(
     sort_order: Literal["asc", "desc"] = Query("desc"),
     amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
     amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
+    # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
+    tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini"]] = Query(None),
 ):
     """List invoices with search, filtering, and pagination."""
     try:
@@ -1024,6 +1026,12 @@ async def list_invoices(
                     conditions.append(f"si.status = ${param_idx}")
                     params.append(status)
                     param_idx += 1
+
+            if tugas:
+                from ..services.dashboard_v2 import id_tugas
+                conditions.append(f"si.id = ANY(${param_idx}::uuid[])")
+                params.append(await id_tugas(conn, ctx["tenant_id"], tugas, hari_ini))
+                param_idx += 1
 
             if customer_id:
                 # sales_invoices.customer_id = UUID (terverifikasi [SQL] 2026-08-09).

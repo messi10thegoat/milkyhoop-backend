@@ -77,7 +77,7 @@ async def _daftar(monkeypatch, rows, status=None, skip=0, limit=20):
     req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": None}), headers={})
     out = await SI.list_invoices(req, skip=skip, limit=limit, search=None, status=status, customer_id=None,
                                  start_date=None, end_date=None, sort_by="created_at", sort_order="desc",
-                                 amount_min=None, amount_max=None)
+                                 amount_min=None, amount_max=None, tugas=None)
     return db, out
 
 
