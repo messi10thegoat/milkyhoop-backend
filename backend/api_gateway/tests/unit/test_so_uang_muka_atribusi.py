@@ -85,7 +85,7 @@ class _Conn:
 
 def _baris(i, amt, status="posted", pf_id=None, bank=None, nomor=None, holder=None, akun=None, coa=None, metode="transfer"):
     return {"id": i, "deposit_number": f"UM-{i}", "deposit_date": date(2026, 9, 20), "amount": D(str(amt)),
-            "status": status, "payment_method": metode, "proforma_id": pf_id, "account_name": akun, "bank_name": bank,
+            "status": status, "amount_applied": 0, "amount_refunded": 0, "payment_method": metode, "proforma_id": pf_id, "account_name": akun, "bank_name": bank,
             "account_number": nomor, "account_holder_name": holder, "coa_name": coa}
 
 
