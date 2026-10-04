@@ -156,8 +156,11 @@ async def test_c3_tanpa_kunci_tetap_jalan_tanpa_catatan_replay(pf):
 
 
 def test_c3_terbit_mengunci_so_sebelum_plafon_dalam_tx():
-    s = _src(PF.issue_proforma)
-    assert s.index("async with conn.transaction()") < s.index("PROFORMA_SO:") < s.index("assert_within_order_total(")
+    # 4 Okt 2026 (U2): kunci + pagar plafon dipindah ke _kunci_proforma / _rencana_terbit (dipakai /issue DAN pratinjau)
+    assert "PROFORMA_SO:" in _src(PF._kunci_proforma) and "assert_within_order_total(" in _src(PF._rencana_terbit)
+    for fn in (PF.issue_proforma, PF._pratinjau):
+        s = _src(fn)
+        assert s.index("async with conn.transaction()") < s.index("_kunci_proforma(") < s.index("_rencana_terbit(")
 
 
 # ---------------- race SO ----------------
