@@ -125,7 +125,8 @@ class _KonnNK:
     async def fetchrow(self, sql, *a):
         self.sql.append(("row", sql, a))
         return {"total": 3, "draft_count": 1, "posted_count": 1, "partial_count": 1, "applied_count": 0,
-                "total_value": 300, "total_applied": 10, "total_refunded": 0, "available_balance": 290}
+                "total_value": 300, "total_applied": 10, "total_refunded": 0, "available_balance": 290,
+                "partially_refunded_count": 0, "refunded_count": 0}
 
 
 def _baris_nk(inv=INV, status="posted"):

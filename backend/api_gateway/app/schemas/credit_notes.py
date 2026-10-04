@@ -202,6 +202,7 @@ class CreditNoteListItem(BaseModel):
     amount_refunded: float = 0
     remaining_amount: float = 0
     status: str
+    status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     reason: str
     created_at: str
     original_invoice_id: Optional[str] = None  # U9 (5 Okt)
@@ -239,6 +240,7 @@ class CreditNoteDetail(BaseModel):
 
     # Status & dates
     status: str
+    status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     credit_note_date: str
     reason: str
     reason_detail: Optional[str] = None

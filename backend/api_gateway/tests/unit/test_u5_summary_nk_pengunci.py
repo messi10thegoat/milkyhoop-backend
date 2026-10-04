@@ -13,7 +13,8 @@ from app.routers import credit_notes as C
 
 
 MEDAN = {"total", "draft_count", "posted_count", "partial_count", "applied_count", "total_value", "total_applied",
-         "total_refunded", "available_balance", "void_count"}  # void_count: U9 (5 Okt), kueri TERPISAH
+         "total_refunded", "available_balance", "void_count", "partially_refunded_count", "refunded_count"}
+# void_count: U9 (kueri TERPISAH); partially_refunded_count/refunded_count: U11 (status_detail turunan, 5 Okt)
 
 
 def test_summary_terdaftar_sebelum_rute_parameter():
@@ -79,7 +80,8 @@ def _panggil(monkeypatch, baris, void=None):
 
 def test_bentuk_respons_sama_dengan_skema_dan_none_jadi_nol(monkeypatch):
     kosong = {k: None for k in ("total", "draft_count", "posted_count", "partial_count", "applied_count", "total_value",
-                                "total_applied", "total_refunded", "available_balance")}
+                                "total_applied", "total_refunded", "available_balance", "partially_refunded_count",
+                                "refunded_count")}
     k, out = _panggil(monkeypatch, kosong)
     assert k.args == ("t1",)  # tenant dari JWT, satu-satunya parameter
     data = out["data"]
@@ -88,7 +90,7 @@ def test_bentuk_respons_sama_dengan_skema_dan_none_jadi_nol(monkeypatch):
     assert all(v == 0 for v in data.values())
     assert all(isinstance(data[x], float) for x in ("total_value", "total_applied", "total_refunded", "available_balance"))
     assert all(isinstance(data[x], int) for x in ("total", "draft_count", "posted_count", "partial_count", "applied_count",
-                                                  "void_count"))
+                                                  "void_count", "partially_refunded_count", "refunded_count"))
     assert k.args_void == ("t1",)  # kueri void juga bertenant eksplisit
 
 
@@ -96,7 +98,7 @@ def test_angka_dilewatkan_apa_adanya(monkeypatch):
     from decimal import Decimal
     baris = {"total": 5, "draft_count": 1, "posted_count": 2, "partial_count": 1, "applied_count": 1,
              "total_value": Decimal("1234567.50"), "total_applied": Decimal("200000.25"), "total_refunded": Decimal("0"),
-             "available_balance": Decimal("1034367.25")}
+             "available_balance": Decimal("1034367.25"), "partially_refunded_count": 1, "refunded_count": 0}
     _, out = _panggil(monkeypatch, baris, void=4)
     d = out["data"]
     assert d["void_count"] == 4 and d["total"] == 5 and d["total_value"] == 1234567.5 and d["available_balance"] == 1034367.25

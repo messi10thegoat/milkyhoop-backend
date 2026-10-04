@@ -285,11 +285,40 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
 # =============================================================================
 
 
+# status_detail NK (MASTER+WORKSPACE 5 Okt): TURUNAN TAMPILAN, pola uang muka (status_detail_dp). Status tersimpan (trigger
+# update_credit_note_status) dan SEMUA penjaga (status in posted/partial, remaining) TIDAK disentuh. 'partially_refunded' =
+# ada refund, belum diterapkan ke faktur, sisa > 0; 'refunded' = habis karena refund saja. Kasus campuran (diterapkan DAN
+# dikembalikan) = status tersimpan: apply menuntut refund 0 dan menerapkan SELURUH nilai, refund menuntut sisa > 0, jadi
+# praktis tak terjadi. Python (pemetaan baris) dan SQL (filter/summary) WAJIB sama: dikunci tes + harness nyata.
+def _sql_status_detail_nk(a: str = "") -> str:
+    """Ungkapan SQL status_detail; `a` = awalan alias kolom (mis. 'cn.'). Padanan persis status_detail_nk()."""
+    return (
+        f"(CASE WHEN {a}status = 'partial' AND COALESCE({a}amount_applied, 0) = 0 AND COALESCE({a}amount_refunded, 0) > 0 "
+        "THEN 'partially_refunded' "
+        f"WHEN {a}status = 'applied' AND COALESCE({a}amount_applied, 0) = 0 AND COALESCE({a}amount_refunded, 0) > 0 "
+        f"THEN 'refunded' ELSE {a}status END)"
+    )
+
+
+_SQL_STATUS_DETAIL_NK = _sql_status_detail_nk()
+
+
+def status_detail_nk(status, amount_applied, amount_refunded) -> str:
+    """'partially_refunded' = refund sebagian, belum diterapkan; 'refunded' = habis karena refund saja; selain itu = status."""
+    dipakai, kembali = (amount_applied or 0), (amount_refunded or 0)
+    if dipakai == 0 and kembali > 0:
+        if status == "partial":
+            return "partially_refunded"
+        if status == "applied":
+            return "refunded"
+    return status
+
+
 @router.get("", response_model=CreditNoteListResponse)
 async def list_credit_notes(
     request: Request,
     status: Optional[
-        Literal["all", "draft", "posted", "partial", "applied", "void"]
+        Literal["all", "draft", "posted", "partial", "applied", "void", "partially_refunded", "refunded"]
     ] = Query("all"),
     customer_id: Optional[str] = Query(None),
     search: Optional[str] = Query(
@@ -316,7 +345,7 @@ async def list_credit_notes(
             param_idx = 2
 
             if status and status != "all":
-                conditions.append(f"status = ${param_idx}")
+                conditions.append(f"{_SQL_STATUS_DETAIL_NK} = ${param_idx}")  # filter = status layar (status_detail)
                 params.append(status)
                 param_idx += 1
 
@@ -417,6 +446,7 @@ async def list_credit_notes(
                         - (row["amount_refunded"] or 0)
                     ),
                     "status": row["status"],
+                    "status_detail": status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "reason": row["reason"],
                     "created_at": row["created_at"].isoformat(),
                     "original_invoice_id": str(row["original_invoice_id"]) if row["original_invoice_id"] else None,
@@ -455,7 +485,7 @@ async def get_credit_notes_summary(request: Request):
 
         async with pool.acquire() as conn:
             # Law 16: Counts from table, amounts from journal (truth)
-            query = """
+            query = f"""
                 WITH cn_journal AS (
                     SELECT cn.id,
                            COALESCE(SUM(CASE WHEN coa.account_type = 'RECEIVABLE' AND jl.credit > 0 THEN jl.credit ELSE 0 END), 0) as journal_value
@@ -473,6 +503,8 @@ async def get_credit_notes_summary(request: Request):
                     COUNT(*) FILTER (WHERE cn.status = 'posted') as posted_count,
                     COUNT(*) FILTER (WHERE cn.status = 'partial') as partial_count,
                     COUNT(*) FILTER (WHERE cn.status = 'applied') as applied_count,
+                    COUNT(*) FILTER (WHERE {_sql_status_detail_nk('cn.')} = 'partially_refunded') as partially_refunded_count,
+                    COUNT(*) FILTER (WHERE {_sql_status_detail_nk('cn.')} = 'refunded') as refunded_count,
                     COALESCE(SUM(cnj.journal_value), 0) as total_value,
                     COALESCE(SUM(cn.amount_applied), 0) as total_applied,
                     COALESCE(SUM(cn.amount_refunded), 0) as total_refunded,
@@ -496,6 +528,8 @@ async def get_credit_notes_summary(request: Request):
                     "posted_count": row["posted_count"] or 0,
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
+                    "partially_refunded_count": row["partially_refunded_count"] or 0,
+                    "refunded_count": row["refunded_count"] or 0,
                     "total_value": float(row["total_value"] or 0),
                     "total_applied": float(row["total_applied"] or 0),
                     "total_refunded": float(row["total_refunded"] or 0),
@@ -628,6 +662,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     "amount_refunded": cn["amount_refunded"] or 0,
                     "remaining_amount": remaining,
                     "status": cn["status"],
+                    "status_detail": status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
                     "credit_note_date": cn["credit_note_date"].isoformat(),
                     "reason": cn["reason"],
                     "reason_detail": cn["reason_detail"],
@@ -3232,7 +3267,8 @@ async def _keadaan_nk(conn, tid: str, cn_id) -> dict:
     total = Decimal(str(r["total_amount"] or 0))
     # SAMA dengan GET /credit-notes/{id}: sisa = total - diterapkan - dikembalikan (0 bila void)
     sisa = Decimal("0") if r["status"] == "void" else total - Decimal(str(r["amount_applied"] or 0)) - Decimal(str(r["amount_refunded"] or 0))
-    ke = {"exists": True, "status": r["status"], "total_amount": float(total),
+    ke = {"exists": True, "status": r["status"],
+          "status_detail": status_detail_nk(r["status"], r["amount_applied"], r["amount_refunded"]), "total_amount": float(total),
           "amount_applied": float(r["amount_applied"] or 0), "amount_refunded": float(r["amount_refunded"] or 0),
           "remaining": float(sisa), "original_invoice_id": r["original_invoice_id"], "customer_credit": None}
     if r["created_deposit_id"]:
