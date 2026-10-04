@@ -272,7 +272,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         )
 
         if not row:
-            raise HTTPException(status_code=404, detail="Delivery not found")
+            raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
 
         items_rows = await conn.fetch(
             """
@@ -452,7 +452,7 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
     )
 
     if not row:
-        raise HTTPException(status_code=404, detail="Delivery not found")
+        raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
 
     items_rows = await conn.fetch(
         """

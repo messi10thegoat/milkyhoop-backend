@@ -198,13 +198,13 @@ def test_refund_jumlah_pecahan_lewat_bank_ditolak_sebelum_menulis(refund_env):
 def test_refund_pemeriksaan_lama_tetap(refund_env):
     with pytest.raises(HTTPException) as e:
         _jalan(C.refund_nota_kredit_core(_Konn(cn=_cn(status="draft")), CTX, CN, _body(account_id=str(COA))))
-    assert e.value.status_code == 400 and "status 'draft'" in e.value.detail
+    assert e.value.status_code == 400 and "berstatus Draf" in e.value.detail
     with pytest.raises(HTTPException) as e2:
         _jalan(C.refund_nota_kredit_core(_Konn(), CTX, CN, _body(account_id=str(COA), amount=Decimal("100001"))))
-    assert "exceeds remaining" in e2.value.detail
+    assert "melebihi sisa nota kredit" in e2.value.detail
     with pytest.raises(HTTPException) as e3:
         _jalan(C.refund_nota_kredit_core(_Konn(periode="CLOSED"), CTX, CN, _body(account_id=str(COA))))
-    assert "CLOSED" in e3.value.detail
+    assert "sudah ditutup" in e3.value.detail and "CLOSED" not in e3.value.detail
     k = _Konn()
     with pytest.raises(HTTPException) as e4:
         _jalan(C.refund_nota_kredit_core(k, CTX, CN, _body()))

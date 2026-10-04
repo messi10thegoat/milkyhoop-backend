@@ -243,4 +243,4 @@ def test_inti_posting_memegang_kunci_dan_cek_periode():
     src = open(CN.__file__, encoding="utf-8").read()
     s = " ".join(ast.get_source_segment(src, _fungsi("posting_nota_kredit")).split())
     assert "CREDIT_NOTE:{credit_note_id}" in s and "pg_advisory_xact_lock" in s
-    assert "Periode akuntansi sudah" in s and "UPDATE credit_notes SET status = 'posted'" in s
+    assert 'tg.periode_tertutup(None, period_row["status"])' in s and "UPDATE credit_notes SET status = 'posted'" in s

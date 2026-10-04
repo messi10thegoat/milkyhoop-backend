@@ -59,12 +59,15 @@ _STATUS = {
     "proforma": {"draft": "Draf", "issued": "Terbit", "expired": "Kedaluwarsa", "cancelled": "Batal", "void": "Batal"},
     "rp": {"draft": "Draf", "posted": "Diterima", "void": "Batal", "voided": "Batal", "cancelled": "Batal"},
     # Label tunggal uang muka = putusan MASTER 4 Okt (FE menyatukan konstantanya di rilis U3a).
+    # Nota kredit: DISETUJUI MASTER 5 Okt (FE: recipes/statusNotaKredit.ts, satu konstanta bersama).
+    "cn": {"draft": "Draf", "posted": "Terbit", "partial": "Sebagian terpakai", "applied": "Terpakai", "void": "Batal",
+           "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan"},
     "dp": {"draft": "Draf", "posted": "Diterima", "partial": "Sebagian terpakai", "applied": "Terpakai",
            "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan", "void": "Batal"},
 }
 
 _DOKUMEN = {"so": "Pesanan", "si": "Faktur", "quote": "Penawaran", "proforma": "Proforma",
-            "rp": "Penerimaan", "dp": "Uang muka"}
+            "rp": "Penerimaan", "dp": "Uang muka", "cn": "Nota kredit"}
 
 _PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
 
@@ -79,6 +82,11 @@ def tak_bisa_status(jenis: str, s, aksi: str, nomor: str | None = None) -> str:
     """'Penawaran QUO-2610-0001 berstatus Diterima — tidak bisa dikirim.'"""
     dok = _DOKUMEN[jenis] + (f" {nomor}" if nomor else "")
     return f"{dok} berstatus {status_id(jenis, s)} — tidak bisa {aksi}."
+
+
+def kata_periode(status) -> str:
+    """'CLOSED' -> 'ditutup', 'LOCKED' -> 'dikunci' (status periode TAK pernah tampil mentah)."""
+    return _PERIODE.get(str(status or "").upper(), "ditutup")
 
 
 def periode_tertutup(nama, status) -> str:

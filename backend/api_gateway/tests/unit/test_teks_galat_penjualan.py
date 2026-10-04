@@ -18,7 +18,7 @@ APP = Path(tg.__file__).resolve().parents[1]
 BERKAS = ["routers/sales_orders.py", "routers/sales_invoices.py", "routers/quotes.py", "routers/proformas.py",
           "routers/receive_payments.py", "routers/customer_deposits.py", "routers/sales_invoice_link_order.py",
           "routers/sales_order_lampiran.py", "services/so_pelunasan.py", "services/so_pengiriman.py",
-          "services/sales_doc_calc.py"]
+          "services/sales_doc_calc.py", "routers/credit_notes.py", "routers/deliveries.py"]
 INGGRIS = re.compile(r"\b(not found|cannot|can't|must|only|already|exceeds?|invalid|required|failed|please|"
                      r"unable|allowed|should|successfully)\b", re.I)
 UANG_QTY = re.compile(r"(amount|total|balance|outstanding|sisa|remaining|paid|price|harga|nilai|saldo|available|"
@@ -62,6 +62,9 @@ LABEL_FE = {
     ("rp", "draft"): "Draf", ("rp", "posted"): "Diterima", ("rp", "voided"): "Batal", ("rp", "void"): "Batal",
     ("dp", "draft"): "Draf", ("dp", "posted"): "Diterima", ("dp", "partial"): "Sebagian terpakai", ("dp", "applied"): "Terpakai",
     ("dp", "void"): "Batal", ("dp", "refunded"): "Dikembalikan",
+    ("cn", "draft"): "Draf", ("cn", "posted"): "Terbit", ("cn", "partial"): "Sebagian terpakai",
+    ("cn", "applied"): "Terpakai", ("cn", "void"): "Batal", ("cn", "partially_refunded"): "Sebagian dikembalikan",
+    ("cn", "refunded"): "Dikembalikan",
 }
 
 
@@ -139,7 +142,7 @@ def pindai(sumber: str) -> list:
             kunci = {k.value for k in n.keys if isinstance(k, ast.Constant)}
             if "code" in kunci and kunci & {"message", "detail"}:
                 hasil += [(n.lineno, x) for x in _langgar_teks(n)]
-        elif isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("_blok_void", "_blok", "_blok_dp"):
+        elif isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("_blok_void", "_blok", "_blok_dp", "_blok_nk"):
             hasil += [(n.lineno, x) for a in n.args[2:] for x in _langgar_teks(a)]
     return sorted(set(hasil))  # dict ber-code di dalam HTTPException terpindai dua jalur -> satu temuan
 

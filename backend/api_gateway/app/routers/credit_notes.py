@@ -29,6 +29,7 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from uuid import UUID
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import teks_galat as tg
 from ..services.pihak_helpers import (
     pelanggan_kanonik_tenant,
     faktur_tenant_untuk_pelanggan,
@@ -547,7 +548,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
             )
 
             if not cn:
-                raise HTTPException(status_code=404, detail="Credit note not found")
+                raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
             # Get items
             items = await conn.fetch(
@@ -963,7 +964,7 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
         "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
         tid, body.credit_note_date)
     if periode and periode["status"] != "OPEN":
-        blocks.append({"code": "CN_PERIOD_CLOSED", "message": f"Periode akuntansi sudah {periode['status']}"})
+        blocks.append({"code": "CN_PERIOD_CLOSED", "message": tg.periode_tertutup(None, periode["status"])})
     return {"blocks": blocks, "doc": doc, "faktur": faktur}
 
 
@@ -1047,12 +1048,12 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
     ok = not blocks
     if ok and kredit:
         notes.append({"code": "CN_EXCESS_TO_CUSTOMER_CREDIT",
-                      "message": f"{rupiah(kredit['amount'])} melebihi sisa tagihan -> jadi saldo kredit pelanggan "
+                      "message": f"{tg.rp(kredit['amount'])} melebihi sisa tagihan -> jadi saldo kredit pelanggan "
                                  f"{kredit['deposit_number']} (bisa dipakai untuk faktur lain atau dikembalikan)."})
     if ok and faktur is not None and sisa_sesudah is not None and Decimal(str(sisa_sesudah)) != Decimal(str(sisa)):
         notes.append({"code": "CN_REDUCES_INVOICE",
                       "message": f"Sesudah diposting, sisa tagihan {faktur['invoice_number']} menjadi "
-                                 f"{rupiah(sisa_sesudah)} (dari {rupiah(sisa)})."})
+                                 f"{tg.rp(sisa_sesudah)} (dari {tg.rp(sisa)})."})
     return {
         "ok": ok,
         "can_save": ok,
@@ -1252,11 +1253,11 @@ async def update_credit_note(
                 )
 
                 if not cn:
-                    raise HTTPException(status_code=404, detail="Credit note not found")
+                    raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
                 if cn["status"] != "draft":
                     raise HTTPException(
-                        status_code=400, detail="Only draft credit notes can be updated"
+                        status_code=400, detail="Hanya nota kredit berstatus Draf yang bisa diubah."
                     )
 
                 # Build update data
@@ -1461,12 +1462,12 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
             )
 
             if not cn:
-                raise HTTPException(status_code=404, detail="Credit note not found")
+                raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
             if cn["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft credit notes can be deleted. Use void for posted.",
+                    detail="Hanya nota kredit berstatus Draf yang bisa dihapus. Nota kredit yang sudah terbit dibatalkan, bukan dihapus.",
                 )
 
             # Delete (cascade will delete items)
@@ -1589,12 +1590,12 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     )
 
     if not cn:
-        raise HTTPException(status_code=404, detail="Credit note not found")
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
     if cn["status"] != "draft":
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot post credit note with status '{cn['status']}'",
+            detail=tg.tak_bisa_status("cn", cn["status"], "diterbitkan"),
         )
 
     # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
@@ -1619,7 +1620,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # Get account IDs
@@ -1906,8 +1907,8 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Retur {nama_brg} {qty_dec.normalize():f} melebihi yang "
-                        f"terkirim dan belum diretur ({max(sisa, Decimal('0')).normalize():f})."
+                        f"Retur {nama_brg} {tg.qty(qty_dec)} melebihi yang "
+                        f"terkirim dan belum diretur ({tg.qty(max(sisa, Decimal('0')))})."
                     ),
                 )
         else:
@@ -2234,7 +2235,7 @@ async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) ->
         ctx["tenant_id"],
     )
     if not cn:
-        raise HTTPException(status_code=404, detail="Credit note not found")
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
     if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
         raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
     if cn["status"] != "posted" or cn["journal_id"] is None:
@@ -2251,7 +2252,7 @@ async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) ->
     if Decimal(str(app.amount)) != total_cn:
         raise HTTPException(
             status_code=400,
-            detail=f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur.",
+            detail=f"Nota kredit harus diterapkan seluruhnya ({tg.rp(total_cn)}) ke satu faktur.",
         )
 
     invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
@@ -2380,7 +2381,7 @@ async def unapply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason
         ctx["tenant_id"],
     )
     if not cn:
-        raise HTTPException(status_code=404, detail="Credit note not found")
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
     aktif = await conn.fetch(
         """
@@ -2409,7 +2410,7 @@ async def unapply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {period_row['status']}; penerapan nota kredit tidak bisa dibatalkan.",
+            detail=f"Periode akuntansi penerapan ({app['application_date']:%d-%m-%Y}) sudah {tg.kata_periode(period_row['status'])}; penerapan nota kredit tidak bisa dibatalkan.",
         )
 
     balik = await conn.execute(
@@ -2531,7 +2532,7 @@ async def resolusi_akun_refund(conn, tid: str, body):
             tid,
         )
         if not bank_acc:
-            raise HTTPException(status_code=400, detail="Bank account not found")
+            raise HTTPException(status_code=400, detail="Rekening tidak ditemukan.")
         coa_id = bank_acc["coa_id"]
         if body.account_id:
             try:
@@ -2563,7 +2564,7 @@ async def resolusi_akun_refund(conn, tid: str, body):
         tid,
     )
     if not account:
-        raise HTTPException(status_code=400, detail="Payment account not found")
+        raise HTTPException(status_code=400, detail="Rekening pembayaran tidak ditemukan.")
     return coa_id, ba_id
 
 
@@ -2591,12 +2592,12 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
     )
 
     if not cn:
-        raise HTTPException(status_code=404, detail="Credit note not found")
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
     if cn["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot refund credit note with status '{cn['status']}'",
+            detail=tg.tak_bisa_status("cn", cn["status"], "dikembalikan dananya"),
         )
 
     # Check remaining
@@ -2609,7 +2610,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
     if body.amount > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
+            detail=f"Pengembalian {tg.rp(body.amount)} melebihi sisa nota kredit {tg.rp(remaining)}.",
         )
 
     # Validate account (U10: satu resolusi bersama pratinjau; kredit jurnal = akun terpecahkan)
@@ -2641,7 +2642,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # Create refund journal
@@ -2830,11 +2831,11 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
     )
 
     if not cn:
-        raise HTTPException(status_code=404, detail="Credit note not found")
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
     if cn["status"] == "void":
         raise HTTPException(
-            status_code=400, detail="Credit note already voided"
+            status_code=400, detail="Nota kredit ini sudah dibatalkan."
         )
 
     if cn["status"] == "draft":
@@ -2852,13 +2853,13 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
     if (cn["amount_applied"] or 0) > 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot void credit note with applications. Reverse applications first.",
+            detail="Nota kredit sudah diterapkan ke faktur. Lepas penerapannya dulu.",
         )
 
     if (cn["amount_refunded"] or 0) > 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot void credit note with refunds. Reverse refunds first.",
+            detail="Dana nota kredit ini sudah dikembalikan ke pelanggan, jadi tidak bisa dibatalkan.",
         )
 
     # 30 Sep 2026: NK yang kelebihannya jadi saldo kredit pelanggan -> saldo itu ikut dibatalkan; bila
@@ -2888,7 +2889,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # V312: porsi tertunda NK ini bisa dikembalikan? (409 bila barang terkirim sesudah NK)
@@ -3269,7 +3270,7 @@ async def _rencana_nk(conn, ctx: dict, cn_id, aksi: str, reason) -> list:
                 blok.append(_blok_nk("CN_FAKTUR_ASAL", e.status_code, e.detail))
         tutup = await _periode_tutup_nk(conn, tid, cn["credit_note_date"])
         if tutup:
-            blok.append(_blok_nk("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+            blok.append(_blok_nk("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
         return blok
     # void
     if not (reason or "").strip():
@@ -3292,7 +3293,7 @@ async def _rencana_nk(conn, ctx: dict, cn_id, aksi: str, reason) -> list:
                     "dikembalikan). Lepaskan pemakaiannya dulu.")))
         tutup = await _periode_tutup_nk(conn, tid, await tanggal_dokumen(conn, tid))
         if tutup:
-            blok.append(_blok_nk("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+            blok.append(_blok_nk("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
         try:
             await cn_tertunda.pulihkan_saat_void(conn, tid, cn, periksa_saja=True)
         except HTTPException as e:
@@ -3417,7 +3418,7 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
             total_cn = Decimal(str(cn["total_amount"]))
             if Decimal(str(app.amount)) != total_cn:
                 blok.append(_blok_nk("CN_APPLY_PENUH", 400,
-                                     f"Nota kredit harus diterapkan seluruhnya ({rupiah(total_cn)}) ke satu faktur."))
+                                     f"Nota kredit harus diterapkan seluruhnya ({tg.rp(total_cn)}) ke satu faktur."))
             try:
                 faktur = await faktur_tenant_untuk_pelanggan(conn, tid, app.invoice_id, cn["customer_id"])
                 await pastikan_cn_muat_faktur(conn, tid, faktur, total_cn)
@@ -3439,17 +3440,17 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
             tutup = await _periode_tutup_nk(conn, tid, aktif[0]["application_date"])
             if tutup:
                 blok.append(_blok_nk("PERIOD_CLOSED", 400, (
-                    f"Periode akuntansi penerapan ({aktif[0]['application_date']:%d-%m-%Y}) sudah {tutup}; "
+                    f"Periode akuntansi penerapan ({aktif[0]['application_date']:%d-%m-%Y}) sudah {tg.kata_periode(tutup)}; "
                     "penerapan nota kredit tidak bisa dibatalkan.")))
         return blok
     # refund
     if cn["status"] not in ("posted", "partial"):
-        blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, f"Cannot refund credit note with status '{cn['status']}'"))
+        blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, tg.tak_bisa_status("cn", cn["status"], "dikembalikan dananya")))
         return blok
     sisa = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
     if body.amount > sisa:
         blok.append(_blok_nk("CN_REFUND_MELEBIHI_SISA", 400,
-                             f"Refund amount ({body.amount}) exceeds remaining balance ({sisa})"))
+                             f"Pengembalian {tg.rp(body.amount)} melebihi sisa nota kredit {tg.rp(sisa)}."))
     try:
         coa_id, ba_id = await resolusi_akun_refund(conn, tid, body)
         mirror_id = ba_id or await conn.fetchval(
@@ -3461,7 +3462,7 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
         blok.append(_blok_nk("CN_REFUND_AKUN", e.status_code, e.detail))
     tutup = await _periode_tutup_nk(conn, tid, body.refund_date)
     if tutup:
-        blok.append(_blok_nk("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
+        blok.append(_blok_nk("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
     return blok
 
 
