@@ -822,6 +822,22 @@ class PDFService:
         )
         return Render(html_content, CSS_DOKUMEN, font=True)
 
+    def generate_credit_note_pdf(self, credit_note_data: dict, tenant_info: dict) -> bytes:
+        return self.tulis_pdf(self.render_credit_note(credit_note_data, tenant_info))
+
+    def render_credit_note(self, credit_note_data: dict, tenant_info: dict) -> Render:
+        """Nota Kredit (U5-B) -- konteks dari services/nota_kredit_dokumen.muat_pdf_nota_kredit. Gaya = proforma/faktur
+        (CSS_DOKUMEN + font Inter berkas); tanda DIBATALKAN / DRAF memakai partial yang sama."""
+        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
+                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
+                   "logo_base64": tenant_info.get("logo_data")}
+        status = str(credit_note_data.get("status") or "draft").lower()
+        html_content = self.jinja_env.get_template("credit_note.html").render(
+            credit_note=credit_note_data, company=company, generated_at=datetime.now(),
+            batal=self._tanda_batal(credit_note_data), draf=status == "draft",
+        )
+        return Render(html_content, CSS_DOKUMEN, font=True)
+
     def render_rekap_pesanan(self, rekap: dict, tenant_info: dict) -> Render:
         """Rekap Pesanan (P3 SO-dokumen) -- konteks dari services/rekap_pesanan.muat_rekap_pesanan."""
         company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),

@@ -7,7 +7,7 @@
   GET /api/public/fonts/{nama}                  font Inter untuk HTML layar (publik: unduhan font CSS tak membawa JWT)
 
 SATU sumber: konteks dari PEMUAT yang sama dengan rute /pdf lama (muat_pdf_*), render dari pdf_service.render_*.
-kind: rekap | quotation | proforma | receipt | delivery | invoice. Izin per kind dipetakan di permission_middleware;
+kind: rekap | quotation | proforma | receipt | delivery | invoice | credit_note (U5-B, 4 Okt). Izin per kind dipetakan di permission_middleware;
 kwitansi UANG MUKA juga wajib customer_deposit R (satu rute melayani dua sumber kwitansi).
 """
 import base64
@@ -28,7 +28,7 @@ from ..services.pdf_service import TEMPLATE_DIR, Render, get_pdf_service
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-JENIS = ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice")
+JENIS = ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice", "credit_note")
 FONT_SAH = {f"Inter-{b}.ttf" for b in ("Regular", "Medium", "SemiBold", "Bold", "Italic")}
 VERSI_RENDER = "p3-1"  # naikkan bila mesin/aturan render berubah tanpa mengubah HTML
 NOL = Decimal("0")
@@ -99,6 +99,11 @@ async def _render(conn, ctx: dict, request: Request, jenis: str, did: str, cek_i
         from . import sales_invoices as SI
         m = await SI.muat_pdf_faktur(conn, ctx, uid, None)
         return ps.render_sales_invoice(m["invoice_data"], m["tpl"]), m["invoice_data"]["invoice_number"]
+    if jenis == "credit_note":
+        from ..services.nota_kredit_dokumen import muat_pdf_nota_kredit
+        m = await muat_pdf_nota_kredit(conn, ctx, uid)
+        return (ps.render_credit_note(m["credit_note_data"], m["tenant_info"]),
+                m["credit_note_data"]["credit_note_number"])
     raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
 
 
@@ -203,7 +208,7 @@ def _tgl(v) -> Optional[str]:
     return v.isoformat() if isinstance(v, date) else (str(v)[:10] if v else None)
 
 
-async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
+async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False) -> dict:
     """Bundel per skema so-documents. Kelompok hanya yang berisi (Rekap selalu). Angka dari sumber yang sama dengan
     Rekap/Posisi (ringkasan_pesanan, terbayar_proforma, compute_ar_outstanding). Filter tenant eksplisit."""
     from ..services.proforma_terbayar import ringkasan_pesanan, terbayar_proforma
@@ -319,6 +324,19 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
             "sent": {"state": "none", "sent_at": None, "viewed_at": None}} for f in fak]
     if ki:
         kelompok.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
+    if sertakan_nk:
+        # Nota kredit atas faktur SO ini (lewat faktur asal); draf & void tak masuk panel (sama dengan faktur).
+        nk = [{"kind": "credit_note", "id": str(c["id"]), "number": c["credit_note_number"],
+               "date": _tgl(c["credit_note_date"]), "amount": _uang(c["total_amount"]), "paper": "A4",
+               "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
+              for c in await conn.fetch(
+                  """SELECT cn.id, cn.credit_note_number, cn.credit_note_date, cn.total_amount
+                     FROM credit_notes cn
+                     JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
+                     WHERE cn.tenant_id = $1 AND si.sales_order_id = $2 AND cn.status NOT IN ('draft', 'void')
+                     ORDER BY cn.credit_note_date, cn.credit_note_number""", tid, sid)]
+        if nk:
+            kelompok.append({"key": "nk", "label": "Nota Kredit", "docs": nk})
 
     # P5: status kirim dari document_shares (tautan publik); penawaran tanpa tautan tetap memakai quotes.sent_at.
     from ..services.dokumen_bagikan import keadaan_kirim
@@ -361,11 +379,11 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID) -> dict:
 
 
 @router.get("/sales-orders/{order_id}/documents")
-async def dokumen_pesanan(request: Request, order_id: str):
+async def dokumen_pesanan(request: Request, order_id: str, sertakan: Optional[str] = Query(None)):
     ctx = _ctx(request)
     pool = await _pool()
     async with pool.acquire() as conn:
-        return await susun_dokumen(conn, ctx, _uuid(order_id))
+        return await susun_dokumen(conn, ctx, _uuid(order_id), sertakan_nk=(sertakan == "nota_kredit"))
 
 
 # ── P5: tautan publik + lacak (02-DATA-DAN-API §Kirim & lacak) ─────────────────────────────────────────────────
@@ -377,9 +395,10 @@ _DOKUMEN_TABEL = {
     "proforma": ("SELECT proforma_number AS nomor, status FROM proformas WHERE id = $1 AND tenant_id = $2", "draft"),
     "delivery": ("SELECT fulfillment_number AS nomor, status FROM invoice_fulfillments WHERE id = $1 AND tenant_id = $2", None),
     "invoice": ("SELECT invoice_number AS nomor, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2", "draft"),
+    "credit_note": ("SELECT credit_note_number AS nomor, status FROM credit_notes WHERE id = $1 AND tenant_id = $2", "draft"),
 }
 LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "Proforma", "receipt": "Kwitansi",
-               "delivery": "Surat Jalan", "invoice": "Faktur"}
+               "delivery": "Surat Jalan", "invoice": "Faktur", "credit_note": "Nota Kredit"}
 
 
 async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:

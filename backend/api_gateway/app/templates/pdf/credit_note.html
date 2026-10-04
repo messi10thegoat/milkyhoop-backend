@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Nota Kredit {{ credit_note.credit_note_number or '-' }}</title>
+<style>
+  /* Pola yang sama dengan proforma.html: "Dicetak…" ke kotak margin @page (running element) supaya tak mendorong isi
+     ke halaman 2; !important krn invoice.css dimuat sesudah. */
+  .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
+  @page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }
+  .header { margin-bottom: 18px !important; }
+  .meta-block { margin-bottom: 18px !important; }
+  .parties { margin-bottom: 22px !important; }
+  .company-logo { max-height: 60px !important; }
+  .meta-table { border-spacing: 20px 3px !important; }
+  .notes-section { margin-bottom: 10px !important; }
+</style>
+</head>
+<body>
+{% include "_partials/tanda_batal.html" %}
+{% include "_partials/tanda_draf.html" %}
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Nota Kredit</h1>
+        </div>
+        {% if company and company.logo_base64 %}
+        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
+
+    <!-- 2. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">Nomor Nota Kredit</td>
+                <td class="meta-value">{{ credit_note.credit_note_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ credit_note.credit_note_date | date_id }}</td>
+            </tr>
+            {% if credit_note.original_invoice_number %}
+            <tr>
+                <td class="meta-label">Faktur Asal</td>
+                <td class="meta-value">{{ credit_note.original_invoice_number }}{% if credit_note.original_invoice_date %} ({{ credit_note.original_invoice_date | date_id }}){% endif %}</td>
+            </tr>
+            {% endif %}
+            {% if credit_note.sales_order_number %}
+            <tr>
+                <td class="meta-label">Sales Order</td>
+                <td class="meta-value"{% if credit_note.order_code_cetak %} style="white-space: nowrap"{% endif %}>{{ credit_note.sales_order_number }}{% if credit_note.order_code_cetak %} · {{ credit_note.order_code_cetak }}{% endif %}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="meta-label">Alasan</td>
+                <td class="meta-value">{{ credit_note.reason_label or '-' }}</td>
+            </tr>
+            {% if credit_note.ref_no %}
+            <tr>
+                <td class="meta-label">Referensi</td>
+                <td class="meta-value">{{ credit_note.ref_no }}</td>
+            </tr>
+            {% endif %}
+        </table>
+    </div>
+
+    <!-- 3. Parties -->
+    <div class="parties">
+        {% if company %}
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
+            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+            {% if company.email %}<div class="party-detail">{{ company.email }}</div>{% endif %}
+        </div>
+        {% endif %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ credit_note.customer_name or '-' }}</div>
+        </div>
+    </div>
+
+    <!-- 4. Hero: nilai kredit yang diberikan -->
+    <div class="hero">
+        <div class="hero-amount">Rp {{ credit_note.total_amount | currency }}</div>
+        <div class="hero-due">Kredit untuk pelanggan{% if credit_note.original_invoice_number %} atas faktur {{ credit_note.original_invoice_number }}{% endif %}</div>
+    </div>
+
+    <div style="height: 16px;"></div>
+
+    <!-- 5. Rincian -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Keterangan</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {# bracket notation: credit_note["items"] (dot = dict.items()) #}
+            {% for item in credit_note["items"] %}
+            <tr>
+                <td class="col-desc">{{ item.description or '-' }}{% if item.discount_amount and item.discount_amount|float > 0 %}<br><span class="text-muted">Diskon -Rp {{ item.discount_amount | currency }}</span>{% endif %}</td>
+                <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+                <td class="col-price">Rp {{ item.unit_price | currency }}</td>
+                <td class="col-amount">Rp {{ item.net | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {# 6. Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Subtotal</td>
+                <td class="value">Rp {{ credit_note.subtotal | currency }}</td>
+            </tr>
+            {% if credit_note.item_discount_total and credit_note.item_discount_total|float > 0 %}
+            <tr>
+                <td class="label">Diskon item</td>
+                <td class="value">-Rp {{ credit_note.item_discount_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if credit_note.discount_amount and credit_note.discount_amount|float > 0 %}
+            <tr>
+                <td class="label">Diskon</td>
+                <td class="value">-Rp {{ credit_note.discount_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if credit_note.tax_amount and credit_note.tax_amount|float > 0 %}
+            <tr>
+                <td class="label">PPN{% if credit_note.tax_rate and credit_note.tax_rate|float > 0 %} ({{ "%g" % (credit_note.tax_rate|float) }}%){% endif %}</td>
+                <td class="value">Rp {{ credit_note.tax_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label"><strong>Total Nota Kredit</strong></td>
+                <td class="value"><strong>Rp {{ credit_note.total_amount | currency }}</strong></td>
+            </tr>
+        </table>
+    </div>
+
+    {% if credit_note.reason_detail %}
+    <div class="notes-section">
+        <div class="notes-label">Keterangan Alasan</div>
+        <div class="notes-text">{{ credit_note.reason_detail }}</div>
+    </div>
+    {% endif %}
+
+    {% if credit_note.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ credit_note.notes }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 7. Footer (running element -> kotak margin @page) -->
+    <div class="footer-running">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
+</body>
+</html>

@@ -181,6 +181,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/proforma/[^/]+/(html|pdf)$", ["GET"], "proforma", "R"),
     (r"^/api/documents/receipt/[^/]+/(html|pdf)$", ["GET"], "receive_payment", "R"),
     (r"^/api/documents/delivery/[^/]+/(html|pdf)$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/documents/credit_note/[^/]+/(html|pdf)$", ["GET"], "credit_note", "R"),
     (r"^/api/documents/invoice/[^/]+/(html|pdf)$", ["GET"], "sales_invoice", "R"),
     (r"^/api/documents/receipts/pdf$", ["GET"], "receive_payment", "R"),
     (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
@@ -191,11 +192,13 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/proforma/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "proforma", "E"),
     (r"^/api/documents/receipt/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "receive_payment", "E"),
     (r"^/api/documents/(delivery|invoice)/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_invoice", "E"),
+    (r"^/api/documents/credit_note/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "credit_note", "E"),
     (r"^/api/documents/rekap/[^/]+/shares$", ["GET"], "sales_order", "R"),
     (r"^/api/documents/quotation/[^/]+/shares$", ["GET"], "quote", "R"),
     (r"^/api/documents/proforma/[^/]+/shares$", ["GET"], "proforma", "R"),
     (r"^/api/documents/receipt/[^/]+/shares$", ["GET"], "receive_payment", "R"),
     (r"^/api/documents/(delivery|invoice)/[^/]+/shares$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/documents/credit_note/[^/]+/shares$", ["GET"], "credit_note", "R"),
     # Jenis tak dikenal: handler menolak 404 SEBELUM menulis apa pun; pola penampung ini hanya supaya rute tulis tak
     # pernah jatuh ke default-tertutup tanpa pola (penjaga test_pagar_rute_izin). Jenis sah dipetakan di atas.
     (r"^/api/documents/[^/]+/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),
