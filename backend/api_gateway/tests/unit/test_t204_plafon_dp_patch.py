@@ -50,6 +50,9 @@ class _Conn:
     async def fetchrow(self, sql, *args):
         self.sqls.append(sql)
         self.args.append(args)
+        if sql.startswith("SELECT deposit_number, "):  # nilai lama untuk audit DEPOSIT_UPDATED (5 Okt)
+            from collections import defaultdict
+            return defaultdict(lambda: None, deposit_number="DP-T204")
         return self._rows.pop(0) if self._rows else None
 
     async def execute(self, sql, *args):

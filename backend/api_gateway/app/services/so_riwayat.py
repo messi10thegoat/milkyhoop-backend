@@ -71,6 +71,8 @@ LABEL_MEDAN = [
     ("terms", "syarat pembayaran"), ("payment_terms", "syarat pembayaran"),
     ("opening_text", "teks pembuka"), ("closing_text", "teks penutup"),
     ("notes", "catatan"), ("internal_notes", "catatan internal"), ("footer", "catatan kaki"),
+    ("deposit_date", "tanggal"), ("payment_method", "cara bayar"), ("account_id", "rekening"),
+    ("bank_account_id", "rekening"),
 ]
 _PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
 _LABEL = dict(LABEL_MEDAN)
@@ -102,6 +104,11 @@ RINGKAS_AUDIT = {
     "SALES_INVOICE_VOIDED": "Faktur dibatalkan (void)",
     "FULFILLMENT_VOIDED": "Surat Jalan dibatalkan",
     "DOCUMENT_DELETED": "Dokumen dihapus",
+    "DEPOSIT_VOIDED": "Uang muka dibatalkan",
+    "DEPOSIT_APPLIED": "Uang muka diterapkan",
+    "DEPOSIT_APPLICATION_REVERSED": "Penerapan uang muka dilepas",
+    "DEPOSIT_REFUNDED": "Uang muka dikembalikan",
+    "DEPOSIT_UPDATED": "Uang muka diubah",
 }
 
 
@@ -136,13 +143,15 @@ class _Kumpul:
     def __init__(self):
         self.ev = []
 
-    def tambah(self, at, jenis, ringkas, aktor, dok_tipe=None, dok_id=None, dok_nomor=None, sumber="dokumen"):
+    def tambah(self, at, jenis, ringkas, aktor, dok_tipe=None, dok_id=None, dok_nomor=None, sumber="dokumen",
+               kunci=None):
+        """kunci = id BARIS anak (penerapan/refund uang muka) untuk padanan audit per baris; tak ikut keluaran."""
         if at is None:
             return
         self.ev.append({
             "at": at, "jenis": jenis, "ringkas": ringkas, "aktor_id": str(aktor) if aktor else None,
             "dokumen": ({"tipe": dok_tipe, "id": str(dok_id), "nomor": dok_nomor} if dok_tipe else None),
-            "sumber": sumber,
+            "sumber": sumber, "kunci": str(kunci) if kunci else None,
         })
 
 
@@ -212,7 +221,7 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
             for i in ids:
                 kueri_ent.append(e)
                 kueri_id.append(str(i))
-    audit_ada = set()
+    audit_ada, audit_baris = set(), set()
     if kueri_ent:
         for r in await conn.fetch(
             """SELECT a.id, a."createdAt", a."eventType", a."userId", a.entity_type, a.entity_id,
@@ -236,15 +245,24 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
                 aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)
             k.tambah(r["createdAt"], r["eventType"], ringkas, aktor, jenis, r["entity_id"], r["entity_number"], sumber="audit")
             audit_ada.add((r["eventType"], str(r["entity_id"])))
+            if meta.get("kunci"):
+                audit_baris.add((r["eventType"], str(r["entity_id"]), str(meta["kunci"])))
 
     # kolom tanpa aktor yang punya padanan audit (beraktor) -> pakai yang audit saja
     PADANAN = {"PROFORMA_DITERBITKAN": "PROFORMA_ISSUED", "PROFORMA_DIBATALKAN": "PROFORMA_CANCELLED",
                "PENAWARAN_DIKIRIM": "QUOTE_SENT", "PENAWARAN_DISETUJUI": "QUOTE_ACCEPTED",
                "PENAWARAN_DITOLAK": "QUOTE_DECLINED", "PENAWARAN_DIBATALKAN": "QUOTE_VOIDED",
                "PENAWARAN_JADI_PESANAN": "QUOTE_CONVERTED",
-               "FAKTUR_DIBATALKAN": "SALES_INVOICE_VOIDED", "SURAT_JALAN_DIBATALKAN": "FULFILLMENT_VOIDED"}
+               "FAKTUR_DIBATALKAN": "SALES_INVOICE_VOIDED", "SURAT_JALAN_DIBATALKAN": "FULFILLMENT_VOIDED",
+               "UANG_MUKA_DIBATALKAN": "DEPOSIT_VOIDED"}
+    # Padanan PER BARIS (kejadian yang bisa berkali-kali per dokumen): kolom hanya dibuang bila audit dengan KUNCI
+    # baris yang sama ada -- padanan per dokumen akan membuang SEMUA penerapan lama karena satu audit baru.
+    PADANAN_BARIS = {"UANG_MUKA_DITERAPKAN": "DEPOSIT_APPLIED", "UANG_MUKA_DILEPAS": "DEPOSIT_APPLICATION_REVERSED",
+                     "UANG_MUKA_DIKEMBALIKAN": "DEPOSIT_REFUNDED"}
     ev = [e for e in k.ev if not (e["jenis"] in PADANAN and e["dokumen"]
-                                  and (PADANAN[e["jenis"]], e["dokumen"]["id"]) in audit_ada)]
+                                  and (PADANAN[e["jenis"]], e["dokumen"]["id"]) in audit_ada)
+          and not (e["jenis"] in PADANAN_BARIS and e["dokumen"] and e.get("kunci")
+                   and (PADANAN_BARIS[e["jenis"]], e["dokumen"]["id"], e["kunci"]) in audit_baris)]
 
     # nama aktor (satu kueri)
     ids = sorted({e["aktor_id"] for e in ev if e["aktor_id"] and e["aktor_id"] != AKTOR_SISTEM})
@@ -326,10 +344,10 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
                 n = a["deposit_number"]
                 k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN",
                          f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan ke faktur {a['invoice_number']}",
-                         a["created_by"], "customer_deposit", a["deposit_id"], n)
+                         a["created_by"], "customer_deposit", a["deposit_id"], n, kunci=a["id"])
                 k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS",
                          f"Penerapan uang muka {n} ke faktur {a['invoice_number']} dilepas",
-                         None, "customer_deposit", a["deposit_id"], n)
+                         None, "customer_deposit", a["deposit_id"], n, kunci=a["id"])
 
     # ---- proforma ----
     if lihat["proforma"]:
@@ -399,7 +417,7 @@ async def riwayat_faktur(conn, tenant_id: str, invoice_id, boleh: Callable[[str]
     # ---- uang muka yang diterapkan ke faktur INI ----
     if lihat["customer_deposit"]:
         for a in await conn.fetch(
-            """SELECT a.deposit_id, d.deposit_number, a.amount_applied, a.created_at, a.created_by, a.reversed_at
+            """SELECT a.id, a.deposit_id, d.deposit_number, a.amount_applied, a.created_at, a.created_by, a.reversed_at
                FROM customer_deposit_applications a
                JOIN customer_deposits d ON d.id = a.deposit_id AND d.tenant_id = $1
                WHERE a.tenant_id = $1 AND a.invoice_id = $2""",
@@ -407,9 +425,9 @@ async def riwayat_faktur(conn, tenant_id: str, invoice_id, boleh: Callable[[str]
         ):
             n = a["deposit_number"]
             k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan ke faktur ini",
-                     a["created_by"], "customer_deposit", a["deposit_id"], n)
+                     a["created_by"], "customer_deposit", a["deposit_id"], n, kunci=a["id"])
             k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan uang muka {n} dilepas", None,
-                     "customer_deposit", a["deposit_id"], n)
+                     "customer_deposit", a["deposit_id"], n, kunci=a["id"])
 
     # ---- nota kredit atas faktur INI ----
     if lihat["credit_note"]:
@@ -476,18 +494,18 @@ async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"Uang muka {n} dibatalkan{al}", d["voided_by"],
              "customer_deposit", d["id"], n)
     for a in await conn.fetch(
-            """SELECT invoice_number, amount_applied, created_at, created_by, reversed_at FROM customer_deposit_applications
+            """SELECT id, invoice_number, amount_applied, created_at, created_by, reversed_at FROM customer_deposit_applications
                WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
         fk = f" ke faktur {a['invoice_number']}" if lihat["sales_invoice"] else ""
         k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan{fk}",
-                 a["created_by"], "customer_deposit", d["id"], n)
+                 a["created_by"], "customer_deposit", d["id"], n, kunci=a["id"])
         k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan uang muka {n}{fk} dilepas", None,
-                 "customer_deposit", d["id"], n)
+                 "customer_deposit", d["id"], n, kunci=a["id"])
     for r in await conn.fetch(
-            """SELECT amount, refund_date, created_at, created_by FROM customer_deposit_refunds
+            """SELECT id, amount, refund_date, created_at, created_by FROM customer_deposit_refunds
                WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
         k.tambah(r["created_at"], "UANG_MUKA_DIKEMBALIKAN", f"Uang muka {n} {_rp(r['amount'])} dikembalikan ke pelanggan",
-                 r["created_by"], "customer_deposit", d["id"], n)
+                 r["created_by"], "customer_deposit", d["id"], n, kunci=r["id"])
     keluar, total = await _selesaikan(conn, tenant_id, k, {"customer_deposit": [d["id"]]}, lihat, limit)
     return {
         "deposit_id": str(d["id"]), "deposit_number": n,

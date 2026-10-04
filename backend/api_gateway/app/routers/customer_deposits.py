@@ -51,6 +51,7 @@ from fastapi import Response as _Response
 from pydantic import BaseModel
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services import teks_galat as tg
+from ..services.so_riwayat import catat_riwayat
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -1359,6 +1360,10 @@ async def update_customer_deposit(
                         params.append(value)
                     param_idx += 1
 
+                lama = await conn.fetchrow(
+                    "SELECT deposit_number, " + ", ".join(f'"{m}"' for m in update_data)
+                    + " FROM customer_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, ctx["tenant_id"])
+
                 params.extend([deposit_id, ctx["tenant_id"]])
                 query = f"""
                     UPDATE customer_deposits
@@ -1366,6 +1371,15 @@ async def update_customer_deposit(
                     WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
                 """
                 await conn.execute(query, *params)
+
+                berubah = {m: {"lama": None if lama[m] is None else str(lama[m]), "baru": None if v is None else str(v)}
+                           for m, v in update_data.items() if str(lama[m]) != str(v)}
+                if berubah:
+                    from ..services.so_riwayat import label_medan
+                    await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, lama["deposit_number"],
+                                        "DEPOSIT_UPDATED", ctx["user_id"],
+                                        f"Uang muka {lama['deposit_number']} diubah: {label_medan(list(berubah))}",
+                                        {"fields": sorted(berubah), "perubahan": berubah})
 
                 logger.info(f"Customer deposit updated: {deposit_id}")
 
@@ -1954,6 +1968,11 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
         # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
         await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], UUID(app.invoice_id))
+        await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_APPLIED",
+                            ctx["user_id"],
+                            f"Uang muka {dep['deposit_number']} {tg.rp(app.amount)} diterapkan ke faktur {invoice['invoice_number']}",
+                            {"kunci": str(app_id), "application_id": str(app_id), "invoice_id": str(app.invoice_id),
+                             "invoice_number": invoice["invoice_number"], "amount": str(app.amount)})
 
         applications_created.append(
             {
@@ -2243,6 +2262,14 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
     # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
     await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], inv_id)
+    no_dp = await conn.fetchval("SELECT deposit_number FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+                                deposit_id, ctx["tenant_id"])
+    await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, no_dp, "DEPOSIT_APPLICATION_REVERSED",
+                        ctx["user_id"],
+                        f"Penerapan uang muka {no_dp} {tg.rp(reversal_amount)} ke faktur {app_row['invoice_number']} dilepas",
+                        {"kunci": str(application_id), "application_id": str(application_id),
+                         "invoice_id": str(inv_id), "invoice_number": app_row["invoice_number"],
+                         "amount": str(reversal_amount), "reversal_journal_id": str(reversal_journal_id)})
 
     logger.info(
         f"Customer deposit application reversed: deposit={deposit_id}, "
@@ -2524,6 +2551,15 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
         ctx["user_id"],
     )
 
+    rek = await conn.fetchval("SELECT name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                              UUID(body.account_id), ctx["tenant_id"])
+    await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_REFUNDED",
+                        ctx["user_id"],
+                        f"Uang muka {dep['deposit_number']} {tg.rp(body.amount)} dikembalikan ke pelanggan"
+                        + (f" dari {rek}" if rek else ""),
+                        {"kunci": str(refund_id), "refund_id": str(refund_id), "account_id": str(body.account_id),
+                         "account_name": rek, "amount": str(body.amount), "refund_date": str(body.refund_date)})
+
     # Status will be updated by trigger
     logger.info(
         f"Customer deposit refund issued: {deposit_id}, amount={body.amount}"
@@ -2626,7 +2662,9 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
         )
 
     if dep["status"] == "draft":
-        # Just delete draft (bersyarat status + tenant: dibaca di bawah kunci, tetap jangan percaya baca lama)
+        # Just delete draft (bersyarat status + tenant: dibaca di bawah kunci, tetap jangan percaya baca lama).
+        # Aktor untuk trigger trg_log_deletion (DOCUMENT_DELETED) -- GUC hanya hidup di transaksi ini.
+        await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"]))
         n = await conn.execute(
             "DELETE FROM customer_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'",
             deposit_id, ctx["tenant_id"],
@@ -2800,6 +2838,9 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
         body.reason,
     )
 
+    await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_VOIDED",
+                        ctx["user_id"], f"Uang muka {dep['deposit_number']} {tg.rp(dep['amount'])} dibatalkan: {body.reason}",
+                        {"reason": body.reason, "amount": str(dep["amount"])})
     logger.info(f"Customer deposit voided: {deposit_id}")
 
     return {
