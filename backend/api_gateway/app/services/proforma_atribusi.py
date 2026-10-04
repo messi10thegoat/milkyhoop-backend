@@ -13,6 +13,7 @@ Perbaikan sejati = MENAUTKAN saat uang muka dicatat (tiket FE/WORKSPACE); tak ad
 Uang = Decimal (Law 25). Murni: tanpa DB; pemuat ada di muat_atribusi().
 """
 from decimal import Decimal
+from .status_uang_muka import status_detail_dp
 
 NOL = Decimal("0")
 TOL = Decimal("0.005")
@@ -78,7 +79,8 @@ def atribusi_uang_muka(hasil: dict, dep_id) -> dict:
 
 
 SQL_UANG_MUKA_SO = """
-SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.status, cd.payment_method, cd.proforma_id,
+SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.status, cd.amount_applied, cd.amount_refunded,
+       cd.payment_method, cd.proforma_id,
        b.account_name, b.bank_name, b.account_number, b.account_holder_name, coa.name AS coa_name
 FROM customer_deposits cd
 LEFT JOIN LATERAL (
@@ -116,6 +118,7 @@ async def uang_muka_so(conn, tenant_id: str, so_id) -> list:
             {"tautan": {}, "pasangan": {}, "nomor": {}}, r["id"])
         out.append({
             "id": str(r["id"]), "deposit_number": r["deposit_number"], "amount": r["amount"], "status": r["status"],
+            "status_detail": status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"]),
             "deposit_date": r["deposit_date"].isoformat() if r["deposit_date"] else None,
             "payment_method": r["payment_method"], "account_name": label_rekening(r),
             "proforma_id": str(r["proforma_id"]) if r["proforma_id"] else None,

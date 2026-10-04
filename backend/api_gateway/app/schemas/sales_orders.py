@@ -329,6 +329,7 @@ class SalesOrderDepositSummary(BaseModel):
     deposit_number: str
     amount: Decimal
     status: str
+    status_detail: Optional[str] = None  # turunan tampilan (services/status_uang_muka), 5 Okt: tanpa ini DIBUANG model
     deposit_date: Optional[str] = None
     payment_method: Optional[str] = None
     account_name: Optional[str] = None        # format blok bayar PDF: 'BCA 123 a.n. <pemilik>' / nama kas

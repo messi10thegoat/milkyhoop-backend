@@ -51,6 +51,7 @@ from fastapi import Response as _Response
 from pydantic import BaseModel
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services import teks_galat as tg
+from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
 from ..services.so_riwayat import catat_riwayat
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
@@ -88,26 +89,7 @@ from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
 
-# status_detail (MASTER GO 5 Okt, opsi B): TURUNAN TAMPILAN. Status tersimpan (trigger) dan SEMUA penjaga uang
-# (status IN ('posted','partial')) TIDAK disentuh -- uang muka yang direfund sebagian tetap 'partial' dan tetap bisa
-# dipakai/direfund. Python (pemetaan baris) dan SQL (filter/summary) WAJIB sama: dikunci tes + harness nyata.
-_SQL_STATUS_DETAIL = (
-    "(CASE WHEN status = 'partial' AND COALESCE(amount_applied, 0) = 0 AND COALESCE(amount_refunded, 0) > 0 "
-    "THEN 'partially_refunded' "
-    "WHEN status = 'applied' AND COALESCE(amount_applied, 0) = 0 AND COALESCE(amount_refunded, 0) > 0 "
-    "THEN 'refunded' ELSE status END)"
-)
-
-
-def status_detail_dp(status, amount_applied, amount_refunded) -> str:
-    """'partially_refunded' = refund sebagian, belum dipakai; 'refunded' = habis karena refund saja; selain itu = status."""
-    dipakai, kembali = (amount_applied or 0), (amount_refunded or 0)
-    if dipakai == 0 and kembali > 0:
-        if status == "partial":
-            return "partially_refunded"
-        if status == "applied":
-            return "refunded"
-    return status
+# status_detail: satu definisi di services/status_uang_muka (dipakai juga detail SO).
 
 
 def _status_dp(s) -> str:
