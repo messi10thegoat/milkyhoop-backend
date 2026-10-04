@@ -119,7 +119,8 @@ def test_patch_hanya_judul_lolos_di_so_confirmed(monkeypatch):
     monkeypatch.setattr(SO, "get_user_context", lambda r: {"tenant_id": "t1", "user_id": None})
     monkeypatch.setattr(OC, "assert_if_match_row", lolos)
     monkeypatch.setattr(KO, "ubah_judul", judul)
-    r = asyncio.run(SO.update_sales_order(object(), str(sid), UpdateSalesOrderRequest(order_title="kemeja")))
+    from types import SimpleNamespace  # PATCH membaca X-Idempotency-Key (4 Okt) -> permintaan tiruan tanpa kunci
+    r = asyncio.run(SO.update_sales_order(SimpleNamespace(headers={}), str(sid), UpdateSalesOrderRequest(order_title="kemeja")))
     assert r.success and dipanggil == ["kemeja"] and not any("UPDATE sales_orders SET" in s for s in tulis)
 
 
