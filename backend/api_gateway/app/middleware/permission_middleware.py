@@ -784,6 +784,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/deliveries/summary$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+/pdf$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/deliveries/[^/]+/history$", ["GET"], "sales_invoice", "R"),  # U4 riwayat Surat Jalan
     (r"^/api/djp/kode\-barang\-jasa$", ["GET"], "tax", "R"),
     (r"^/api/djp/kode\-transaksi$", ["GET"], "tax", "R"),
     (r"^/api/djp/satuan\-ukur$", ["GET"], "tax", "R"),

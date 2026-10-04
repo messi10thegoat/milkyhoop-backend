@@ -502,6 +502,25 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
     return {"delivery_data": delivery_data, "row": row}
 
 
+@router.get("/{delivery_id}/history")
+async def get_delivery_history(delivery_id: str, request: Request, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat Surat Jalan, bentuk SAMA dengan GET /sales-orders/{id}/history (so_riwayat.riwayat_surat_jalan)."""
+    import uuid as _uuid
+    ctx = get_user_context(request)
+    try:
+        uid = _uuid.UUID(str(delivery_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Pengiriman tidak ditemukan")
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.so_riwayat import riwayat_surat_jalan
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_surat_jalan(conn, ctx["tenant_id"], uid, lambda m: boleh_baca(request, m), limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Pengiriman tidak ditemukan")
+    return {"success": True, "data": data}
+
+
 @router.get("/{delivery_id}/pdf")
 async def get_delivery_pdf(
     delivery_id: str,

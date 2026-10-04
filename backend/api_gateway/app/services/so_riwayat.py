@@ -681,3 +681,105 @@ async def riwayat_pembayaran(conn, tenant_id: str, payment_id, boleh: Callable[[
         "total": total,
         "omitted": omitted,
     }
+
+
+MODUL_NOTA_KREDIT = {"credit_note": "credit_note", "sales_invoice": "sales_invoice", "sales_order": "sales_order"}
+
+
+async def riwayat_nota_kredit(conn, tenant_id: str, cn_id, boleh: Callable[[str], Awaitable[bool]],
+                              limit: int = 200) -> Optional[dict]:
+    """Riwayat NOTA KREDIT (U5-C, 4 Okt 2026), bentuk SAMA dengan riwayat_so. Siklus (dibuat, diterbitkan, dibatalkan) +
+    penerapan ke faktur (diterapkan/dilepas) + pengembalian dana + audit_logs beraktor. Nomor faktur asal/pesanan hanya bila
+    pemanggil boleh membaca modulnya (`omitted`). None = tak ada di tenant ini (draf yang di-void sudah DIHAPUS -> 404)."""
+    c = await conn.fetchrow(
+        """SELECT cn.id, cn.credit_note_number, cn.total_amount, cn.created_at, cn.created_by, cn.posted_at, cn.posted_by,
+                  cn.voided_at, cn.voided_by, cn.voided_reason, cn.original_invoice_id, si.invoice_number,
+                  si.sales_order_id, so.order_number
+           FROM credit_notes cn
+           LEFT JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
+           LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = cn.tenant_id
+           WHERE cn.id = $1 AND cn.tenant_id = $2""", cn_id, tenant_id)
+    if not c:
+        return None
+    izin = {}
+    for jenis, modul in MODUL_NOTA_KREDIT.items():
+        if modul not in izin:
+            izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_NOTA_KREDIT.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+    k = _Kumpul()
+    n = c["credit_note_number"]
+    asal = f" atas faktur {c['invoice_number']}" if c["invoice_number"] and lihat["sales_invoice"] else ""
+    k.tambah(c["created_at"], "NOTA_KREDIT_DIBUAT", f"Nota kredit {n} {_rp(c['total_amount'])} dibuat{asal}", c["created_by"],
+             "credit_note", c["id"], n)
+    k.tambah(c["posted_at"], "NOTA_KREDIT_DITERBITKAN", f"Nota kredit {n} diterbitkan (diposting)", c["posted_by"],
+             "credit_note", c["id"], n)
+    al = f": {c['voided_reason']}" if c["voided_reason"] else ""
+    k.tambah(c["voided_at"], "NOTA_KREDIT_DIBATALKAN", f"Nota kredit {n} dibatalkan{al}", c["voided_by"],
+             "credit_note", c["id"], n)
+    for a in await conn.fetch(
+            """SELECT invoice_number, amount_applied, created_at, created_by, reversed_at, reversed_by, reversal_reason
+               FROM credit_note_applications WHERE tenant_id = $1 AND credit_note_id = $2""", tenant_id, c["id"]):
+        fk = f" ke faktur {a['invoice_number']}" if a["invoice_number"] and lihat["sales_invoice"] else ""
+        k.tambah(a["created_at"], "NOTA_KREDIT_DITERAPKAN", f"Nota kredit {n} {_rp(a['amount_applied'])} diterapkan{fk}",
+                 a["created_by"], "credit_note", c["id"], n)
+        al = f": {a['reversal_reason']}" if a["reversal_reason"] else ""
+        k.tambah(a["reversed_at"], "NOTA_KREDIT_DILEPAS", f"Penerapan nota kredit {n}{fk} dilepas{al}", a["reversed_by"],
+                 "credit_note", c["id"], n)
+    for r in await conn.fetch(
+            """SELECT amount, created_at, created_by FROM credit_note_refunds
+               WHERE tenant_id = $1 AND credit_note_id = $2""", tenant_id, c["id"]):
+        k.tambah(r["created_at"], "NOTA_KREDIT_DIKEMBALIKAN", f"Nota kredit {n} {_rp(r['amount'])} dikembalikan ke pelanggan",
+                 r["created_by"], "credit_note", c["id"], n)
+    keluar, total = await _selesaikan(conn, tenant_id, k, {"credit_note": [c["id"]]}, lihat, limit)
+    return {
+        "credit_note_id": str(c["id"]), "credit_note_number": n,
+        "sales_invoice": ({"id": str(c["original_invoice_id"]), "invoice_number": c["invoice_number"]}
+                          if lihat["sales_invoice"] and c["original_invoice_id"] else None),
+        "sales_order": ({"id": str(c["sales_order_id"]), "order_number": c["order_number"]}
+                        if lihat["sales_order"] and c["sales_order_id"] else None),
+        "events": keluar, "total": total, "omitted": omitted,
+    }
+
+
+MODUL_SURAT_JALAN = {"fulfillment": "sales_invoice", "sales_invoice": "sales_invoice", "sales_order": "sales_order"}
+
+
+async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable[[str], Awaitable[bool]],
+                              limit: int = 200) -> Optional[dict]:
+    """Riwayat SURAT JALAN / pengiriman (U4, 4 Okt 2026), bentuk SAMA dengan riwayat_so. Dibuat, barang keluar (diposting,
+    hanya bila beda dari saat dibuat), dibatalkan (alasan; aktor dari audit FULFILLMENT_VOIDED). Surat Jalan tak punya void
+    mandiri -- pembatalan = turunan void faktur. None = tak ada di tenant ini."""
+    f = await conn.fetchrow(
+        """SELECT f.id, f.fulfillment_number, f.created_at, f.created_by, f.posted_at, f.posted_by, f.voided_at,
+                  f.voided_reason, si.id AS invoice_id, si.invoice_number, si.sales_order_id, so.order_number
+           FROM invoice_fulfillments f
+           JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+           LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = f.tenant_id
+           WHERE f.id = $1 AND f.tenant_id = $2""", delivery_id, tenant_id)
+    if not f:
+        return None
+    izin = {}
+    for jenis, modul in MODUL_SURAT_JALAN.items():
+        if modul not in izin:
+            izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_SURAT_JALAN.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+    k = _Kumpul()
+    n = f["fulfillment_number"]
+    asal = f" (faktur {f['invoice_number']})" if lihat["sales_invoice"] else ""
+    k.tambah(f["created_at"], "SURAT_JALAN_DIBUAT", f"Surat Jalan {n} dibuat{asal}", f["created_by"], "fulfillment", f["id"], n)
+    if f["posted_at"] and f["created_at"] and abs((f["posted_at"] - f["created_at"]).total_seconds()) > 1:
+        k.tambah(f["posted_at"], "SURAT_JALAN_DIPOSTING", f"Surat Jalan {n} diposting (barang keluar)", f["posted_by"],
+                 "fulfillment", f["id"], n)
+    al = f": {f['voided_reason']}" if f["voided_reason"] else ""
+    k.tambah(f["voided_at"], "SURAT_JALAN_DIBATALKAN", f"Surat Jalan {n} dibatalkan{al}", None, "fulfillment", f["id"], n)
+    keluar, total = await _selesaikan(conn, tenant_id, k, {"fulfillment": [f["id"]]}, lihat, limit)
+    return {
+        "delivery_id": str(f["id"]), "delivery_number": n,
+        "sales_invoice": ({"id": str(f["invoice_id"]), "invoice_number": f["invoice_number"]}
+                          if lihat["sales_invoice"] else None),
+        "sales_order": ({"id": str(f["sales_order_id"]), "order_number": f["order_number"]}
+                        if lihat["sales_order"] and f["sales_order_id"] else None),
+        "events": keluar, "total": total, "omitted": omitted,
+    }

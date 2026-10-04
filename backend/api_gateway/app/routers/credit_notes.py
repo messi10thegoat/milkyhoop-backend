@@ -485,6 +485,20 @@ async def get_credit_notes_summary(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get summary")
 
 
+@router.get("/{credit_note_id}/history")
+async def get_credit_note_history(request: Request, credit_note_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat nota kredit, bentuk SAMA dengan GET /sales-orders/{id}/history (so_riwayat.riwayat_nota_kredit)."""
+    ctx = get_user_context(request)
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.so_riwayat import riwayat_nota_kredit
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_nota_kredit(conn, ctx["tenant_id"], credit_note_id, lambda m: boleh_baca(request, m), limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan")
+    return {"success": True, "data": data}
+
+
 # =============================================================================
 # GET CREDIT NOTE DETAIL
 # =============================================================================
