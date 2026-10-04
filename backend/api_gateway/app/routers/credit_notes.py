@@ -24,6 +24,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import Response as _Response
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from uuid import UUID
@@ -836,22 +837,30 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
 
 
 @router.post("", response_model=CreditNoteResponse, status_code=201)
-async def create_credit_note(request: Request, body: CreateCreditNoteRequest):
+async def create_credit_note(request: Request, body: CreateCreditNoteRequest, response: _Response = None):
     """
     Create a new credit note in draft status.
 
     Draft credit notes can be edited before posting.
+    X-Idempotency-Key opsional (4 Okt 2026, MASTER GO): klik ganda = 1 draf NK; badan beda = 409 (services/idem_buat).
     """
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="User ID required")
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)
 
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                return await buat_nota_kredit(conn, ctx, body)
+                _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "CN_CREATE", body, "credit_notes",
+                                                        "credit_note", response)
+                if _lama is not None:
+                    return _lama
+                hasil = await buat_nota_kredit(conn, ctx, body)
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "CN_CREATE", hasil, hasil["data"]["id"])
 
     except HTTPException:
         raise

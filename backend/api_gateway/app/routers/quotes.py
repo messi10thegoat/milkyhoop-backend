@@ -4,6 +4,7 @@ Pre-sale quotes before conversion to Invoice or Sales Order.
 NO journal entries - accounting impact happens on conversion.
 """
 from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import Response as _Response
 from typing import Optional, Literal
 from datetime import date, datetime
 
@@ -630,14 +631,21 @@ async def get_quote_detail(request: Request, quote_id: str):
 
 
 @router.post("", response_model=QuoteResponse)
-async def create_quote(request: Request, body: CreateQuoteRequest):
-    """Create a new quote (draft status)."""
+async def create_quote(request: Request, body: CreateQuoteRequest, response: _Response = None):
+    """Create a new quote (draft status).
+    X-Idempotency-Key opsional (4 Okt 2026, MASTER GO): klik ganda = 1 draf; badan beda = 409 (services/idem_buat)."""
     try:
         ctx = get_user_context(request)
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "QUOTE_CREATE", body, "quotes", "quote",
+                                                        response)
+                if _lama is not None:
+                    return _lama
                 # Generate quote number
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
                 _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
@@ -771,7 +779,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         item.get("sort_order", idx),
                     )
 
-                return QuoteResponse(
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_CREATE", QuoteResponse(
                     success=True,
                     message="Quote created successfully",
                     data={
@@ -782,7 +790,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest):
                         "dp_amount": dp["dp_amount"],
                         "dp_percent": dp["dp_percent"],
                     },
-                )
+                ), quote_id)
 
     except HTTPException:
         raise
