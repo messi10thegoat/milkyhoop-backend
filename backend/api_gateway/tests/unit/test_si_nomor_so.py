@@ -156,10 +156,12 @@ async def test_daftar_membawa_nomor_so_lewat_response_model(monkeypatch):
 async def test_pencarian_cocok_nomor_so_berpagar_tenant(monkeypatch, search, n_kata):
     db, _ = await _daftar(monkeypatch, [], search=search)
     for sql in db.sql:                                          # COUNT dan SELECT memakai WHERE yang sama
-        klausa = re.findall(r"si\.sales_order_id IN \(SELECT so2\.id FROM sales_orders so2 WHERE "
-                            r"so2\.tenant_id = \$1 AND so2\.order_number ILIKE \$(\d+)\)", sql)
+        # 4 Okt 2026: helper kode_order.sql_cari_so_induk -- nomor ATAU kode ATAU judul SO induk, $N yang sama
+        klausa = re.findall(r"si\.sales_order_id IN \(SELECT so_c\.id FROM sales_orders so_c WHERE "
+                            r"so_c\.tenant_id = \$1 AND \(so_c\.order_number ILIKE \$(\d+) "
+                            r"OR so_c\.order_code ILIKE \$\1 OR so_c\.order_title ILIKE \$\1\)\)", sql)
         assert len(klausa) == n_kata, sql
     args = db.args[0]
     assert args[0] == TENANT
-    for nomor in re.findall(r"so2\.order_number ILIKE \$(\d+)", db.sql[0]):
+    for nomor in re.findall(r"so_c\.order_number ILIKE \$(\d+)", db.sql[0]):
         assert args[int(nomor) - 1].strip("%") in search.split()   # $N menunjuk kata yang benar
