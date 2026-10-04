@@ -48,13 +48,19 @@ def test_kunci_void_dan_delete_urutan_sama_dengan_post():
     assert d.index("async with conn.transaction():") < d.index("SELECT id, status, deposit_number FROM customer_deposits")
 
 
-def test_pesan_penentu_sama_dengan_inti():
+def test_pesan_penentu_sama_dengan_inti_dan_berbahasa_indonesia():
+    """Permintaan WORKSPACE: FE menampilkan pesan server APA ADANYA -> bahasa Indonesia + Rupiah; penentu == inti."""
     r = inspect.getsource(CD._rencana_dp)
-    for f, pesan in ((CD.void_deposit_core, "Cannot void deposit with applications. Reverse applications first."),
-                     (CD.void_deposit_core, "Cannot void deposit with refunds. Reverse refunds first."),
-                     (CD.void_deposit_core, "Deposit already voided"),
-                     (CD.refund_deposit_core, "Payment account not found"),
-                     (CD.refund_deposit_core, "Payment account must be an asset account")):
+    for f, pesan in ((CD.void_deposit_core, "Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu."),
+                     (CD.void_deposit_core, "Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan."),
+                     (CD.void_deposit_core, "Uang muka sudah dibatalkan."),
+                     (CD.refund_deposit_core, "Rekening pengembalian tidak ditemukan."),
+                     (CD.refund_deposit_core, "Rekening pengembalian harus akun kas/bank.")):
         assert pesan in inspect.getsource(f) and pesan in r, pesan
-    assert re.search(r"Refund amount \(\{body\.amount\}\) exceeds remaining balance", inspect.getsource(CD.refund_deposit_core))
+    for f in (CD.void_deposit_core, CD.refund_deposit_core, CD.apply_deposit_core, CD._rencana_dp):
+        src = inspect.getsource(f)
+        for inggris in ("Cannot ", "exceeds", "not found", "already applied", "must be an asset"):
+            assert inggris not in src, (f.__name__, inggris)
     assert "Alasan pembatalan wajib diisi." in inspect.getsource(CD.void_deposit_core)
+    assert CD._rp_dp(100000) == "Rp 100.000" and CD._rp_dp(1250.5) == "Rp 1.250,50"
+    assert CD._status_dp("applied") == "terpakai penuh" and CD._status_dp("x") == "x"

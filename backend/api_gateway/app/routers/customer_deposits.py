@@ -86,6 +86,19 @@ from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
 
+_STATUS_DP = {"draft": "draf", "posted": "diterima", "partial": "terpakai sebagian", "applied": "terpakai penuh",
+              "refunded": "dikembalikan", "void": "batal"}
+
+
+def _status_dp(s) -> str:
+    return _STATUS_DP.get(s, s)
+
+
+def _rp_dp(x) -> str:
+    """Rupiah untuk pesan galat uang muka (FE menampilkan apa adanya): 'Rp 100.000' / 'Rp 1.250,50'."""
+    return "Rp " + _rp2(x).removesuffix(",00")
+
+
 def _rp2(x) -> str:
     """Rupiah Indonesia: titik ribuan, koma desimal (mis. 1.000.000,00)."""
     return f"{float(x):,.2f}".translate(str.maketrans({",": ".", ".": ","}))
@@ -1741,13 +1754,13 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
 
     if not dep:
         raise HTTPException(
-            status_code=404, detail="Customer deposit not found"
+            status_code=404, detail="Uang muka tidak ditemukan."
         )
 
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot apply deposit with status '{dep['status']}'",
+            detail=f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa diterapkan.",
         )
 
     # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
@@ -1764,7 +1777,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         if not _inv:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invoice {_app.invoice_id} not found",
+                detail="Faktur tidak ditemukan.",
             )
         pastikan_pihak_sama(
             pelanggan_dp, _inv["customer_id"], f"Faktur {_inv['invoice_number']}"
@@ -1782,7 +1795,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
     if total_to_apply > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
+            detail=f"Nilai penerapan {_rp_dp(total_to_apply)} melebihi sisa uang muka {_rp_dp(remaining)}.",
         )
 
     application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
@@ -1826,7 +1839,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         if not invoice:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invoice {app.invoice_id} not found",
+                detail="Faktur tidak ditemukan.",
             )
 
         # Check invoice has balance (Law 16: journal-based)
@@ -1836,7 +1849,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         if app.amount > invoice_remaining:
             raise HTTPException(
                 status_code=400,
-                detail="Application amount exceeds invoice remaining balance",
+                detail="Nilai penerapan melebihi sisa tagihan faktur.",
             )
 
         # Check for existing application.
@@ -1856,7 +1869,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail=f"Deposit already applied to invoice {app.invoice_id}",
+                detail="Uang muka ini sudah diterapkan ke faktur itu.",
             )
 
         # Create journal entry for application
@@ -2335,13 +2348,13 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
 
     if not dep:
         raise HTTPException(
-            status_code=404, detail="Customer deposit not found"
+            status_code=404, detail="Uang muka tidak ditemukan."
         )
 
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot refund deposit with status '{dep['status']}'",
+            detail=f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa dikembalikan.",
         )
 
     # Check remaining (Option B: journal-derived, SATU SUMBER dgn apply; bukan cache)
@@ -2352,7 +2365,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     if body.amount > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
+            detail=f"Pengembalian {_rp_dp(body.amount)} melebihi sisa uang muka {_rp_dp(remaining)}.",
         )
 
     # Validate account
@@ -2367,13 +2380,13 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
 
     if not account:
         raise HTTPException(
-            status_code=400, detail="Payment account not found"
+            status_code=400, detail="Rekening pengembalian tidak ditemukan."
         )
 
     if account["account_type"] != "ASSET":
         raise HTTPException(
             status_code=400,
-            detail="Payment account must be an asset account",
+            detail="Rekening pengembalian harus akun kas/bank.",
         )
 
     # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role
@@ -2606,12 +2619,12 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
 
     if not dep:
         raise HTTPException(
-            status_code=404, detail="Customer deposit not found"
+            status_code=404, detail="Uang muka tidak ditemukan."
         )
 
     if dep["status"] == "void":
         raise HTTPException(
-            status_code=400, detail="Deposit already voided"
+            status_code=400, detail="Uang muka sudah dibatalkan."
         )
 
     if dep["status"] == "draft":
@@ -2632,13 +2645,13 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
     if (dep["amount_applied"] or 0) > 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot void deposit with applications. Reverse applications first.",
+            detail="Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu.",
         )
 
     if (dep["amount_refunded"] or 0) > 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot void deposit with refunds. Reverse refunds first.",
+            detail="Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan.",
         )
 
     # Option B: uang muka dari kelebihan bayar (created via RP) -> liabilitasnya di jurnal
@@ -2864,7 +2877,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
     blok = []
     dep = await conn.fetchrow("SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, tid)
     if not dep:
-        raise HTTPException(status_code=404, detail="Customer deposit not found")
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
     if aksi == "void":
         if not (getattr(body, "reason", None) or "").strip():
             blok.append(_blok_dp("VOID_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi."))
@@ -2873,13 +2886,13 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         except HTTPException as e:
             blok.append(_blok_dp("DEPOSIT_RECONCILED", e.status_code, e.detail))
         if dep["status"] == "void":
-            blok.append(_blok_dp("DEPOSIT_ALREADY_VOID", 400, "Deposit already voided"))
+            blok.append(_blok_dp("DEPOSIT_ALREADY_VOID", 400, "Uang muka sudah dibatalkan."))
         elif dep["status"] != "draft":
             if (dep["amount_applied"] or 0) > 0:
                 blok.append(_blok_dp("DEPOSIT_HAS_APPLICATIONS", 400,
-                                     "Cannot void deposit with applications. Reverse applications first."))
+                                     "Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu."))
             if (dep["amount_refunded"] or 0) > 0:
-                blok.append(_blok_dp("DEPOSIT_HAS_REFUNDS", 400, "Cannot void deposit with refunds. Reverse refunds first."))
+                blok.append(_blok_dp("DEPOSIT_HAS_REFUNDS", 400, "Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan."))
             rp = await conn.fetchrow("SELECT payment_number FROM receive_payments WHERE tenant_id = $1 AND created_deposit_id = $2",
                                      tid, deposit_id)
             if rp:
@@ -2892,21 +2905,21 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         return blok
     if dep["status"] not in ("posted", "partial"):
         kata = "refund" if aksi == "refund" else "apply"
-        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"Cannot {kata} deposit with status '{dep['status']}'"))
+        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"Uang muka berstatus {_status_dp(dep['status'])} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
     sisa = await compute_deposit_remaining(conn, tid, deposit_id)
     if aksi == "refund":
         if body.amount > sisa:
             blok.append(_blok_dp("REFUND_EXCEEDS_REMAINING", 400,
-                                 f"Refund amount ({body.amount}) exceeds remaining balance ({sisa})"))
+                                 f"Pengembalian {_rp_dp(body.amount)} melebihi sisa uang muka {_rp_dp(sisa)}."))
         try:
             akun = await conn.fetchrow("SELECT account_type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
                                        UUID(body.account_id), tid)
         except ValueError:
             akun = None
         if not akun:
-            blok.append(_blok_dp("REFUND_ACCOUNT_INVALID", 400, "Payment account not found"))
+            blok.append(_blok_dp("REFUND_ACCOUNT_INVALID", 400, "Rekening pengembalian tidak ditemukan."))
         elif akun["account_type"] != "ASSET":
-            blok.append(_blok_dp("REFUND_ACCOUNT_INVALID", 400, "Payment account must be an asset account"))
+            blok.append(_blok_dp("REFUND_ACCOUNT_INVALID", 400, "Rekening pengembalian harus akun kas/bank."))
         tutup = await _periode_tutup(conn, tid, body.refund_date)
         if tutup:
             blok.append(_blok_dp("PERIOD_CLOSED", 400, f"Periode akuntansi sudah {tutup}"))
@@ -2914,7 +2927,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         total = sum((a.amount for a in body.applications), Decimal("0"))
         if total > sisa:
             blok.append(_blok_dp("APPLY_EXCEEDS_REMAINING", 400,
-                                 f"Application amount ({total}) exceeds remaining balance ({sisa})"))
+                                 f"Nilai penerapan {_rp_dp(total)} melebihi sisa uang muka {_rp_dp(sisa)}."))
     return blok
 
 
