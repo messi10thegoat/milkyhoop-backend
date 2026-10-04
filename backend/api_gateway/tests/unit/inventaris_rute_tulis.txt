@@ -548,3 +548,5 @@ POST /api/documents/{kind}/{doc_id}/share
 POST /api/documents/{kind}/{doc_id}/share/preview
 POST /api/documents/{kind}/{doc_id}/shares/{share_id}/revoke
 POST /api/public/d/{token}/view
+POST /api/credit-notes/{credit_note_id}/post/preview
+POST /api/credit-notes/{credit_note_id}/void/preview
