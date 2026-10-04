@@ -182,11 +182,13 @@ def _pemanggil(nama_fungsi_dipanggil):
 
 
 def test_pagar_batal_tetap_eksplisit_tampilan_pakai_turunan():
-    assert _pemanggil("compute_paid_amount") == {"cancel_proforma"}
+    # 4 Okt 2026: pagar batal pindah ke penentu bersama _rencana_batal (dipakai /cancel DAN /cancel/preview)
+    assert _pemanggil("compute_paid_amount") == {"_rencana_batal"}
+    assert {"cancel_proforma", "_pratinjau"} <= _pemanggil("_rencana_batal")  # _pratinjau = /cancel/preview
     tampil = _pemanggil("terbayar_satu") | _pemanggil("terbayar_proforma")
     assert {"list_proformas", "get_proforma_detail", "list_proformas_for_order", "update_proforma",
             "issue_proforma", "muat_pdf_proforma"} <= tampil, tampil  # P3: konteks PDF di pemuat bersama
-    assert "cancel_proforma" not in tampil
+    assert "cancel_proforma" not in tampil and "_rencana_batal" not in tampil
     assert "SUM(cd.amount) FROM customer_deposits cd" not in Path(PF.__file__).read_text()
 
 

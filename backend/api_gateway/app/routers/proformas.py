@@ -33,6 +33,7 @@ from ..services.proforma_atribusi import muat_atribusi
 from ..services.so_riwayat import catat_riwayat
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from fastapi.responses import StreamingResponse
+from fastapi import Response as _Response
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -440,6 +441,64 @@ async def list_proformas(
         raise HTTPException(status_code=500, detail="Failed to list proformas")
 
 
+@router.get("/summary")
+async def get_proforma_summary(request: Request):
+    """Kartu ringkasan Proforma (U2 CW, 4 Okt 2026), pola /sales-orders/summary. Terbayar = SUMBER YANG SAMA dengan
+    daftar (services/proforma_terbayar.terbayar_proforma, atribusi bersama plafon & PDF) dan RUMUS yang sama dengan
+    serialize_proforma (lunas = terbayar + 0,005 >= nominal; sisa = nominal - terbayar). Tenant eksplisit. DI ATAS
+    /{proforma_id}."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, sales_order_id, status, amount FROM proformas WHERE tenant_id = $1", tid)
+        terbit = [r for r in rows if r["status"] == "issued"]
+        tb = await terbayar_proforma(conn, tid, [r["sales_order_id"] for r in terbit])
+    per = {}
+    for r in rows:
+        n, j = per.get(r["status"], (0, Decimal("0")))
+        per[r["status"]] = (n + 1, j + Decimal(str(r["amount"] or 0)))
+    terbayar = sisa = Decimal("0")
+    lunas = sebagian = belum = 0
+    for r in terbit:
+        nominal = Decimal(str(r["amount"] or 0))
+        bayar = Decimal(str(tb[r["id"]]["paid"])) if r["id"] in tb else Decimal("0")
+        terbayar += bayar
+        sisa += max(Decimal("0"), nominal - bayar)
+        if bayar + Decimal("0.005") >= nominal:
+            lunas += 1
+        elif bayar > 0:
+            sebagian += 1
+        else:
+            belum += 1
+    def _n(s): return per.get(s, (0, Decimal("0")))[0]
+    def _j(s): return float(per.get(s, (0, Decimal("0")))[1])
+    return {"success": True, "data": {
+        "total_count": len(rows),
+        "draft_count": _n("draft"), "draft_amount": _j("draft"),
+        "issued_count": _n("issued"), "issued_amount": _j("issued"),
+        "issued_paid_amount": float(terbayar), "issued_outstanding_amount": float(sisa),
+        "issued_paid_count": lunas, "issued_partially_paid_count": sebagian, "issued_unpaid_count": belum,
+        "cancelled_count": _n("cancelled"), "cancelled_amount": _j("cancelled"),
+        "expired_count": _n("expired"),
+    }}
+
+
+@router.get("/{proforma_id}/history")
+async def get_proforma_history(request: Request, proforma_id: str, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat proforma, bentuk SAMA dengan GET /sales-orders/{id}/history (services/so_riwayat.riwayat_proforma)."""
+    ctx = get_user_context(request)
+    pid = _uuid_or_404(proforma_id)
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.so_riwayat import riwayat_proforma
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_proforma(conn, ctx["tenant_id"], pid, lambda m: boleh_baca(request, m), limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Proforma not found")
+    return {"success": True, "data": data}
+
+
 @router.get("/{proforma_id}")
 async def get_proforma_detail(request: Request, proforma_id: str):
     """Get one proforma. `paid_amount` adalah TURUNAN dari customer_deposits."""
@@ -790,9 +849,209 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
         raise HTTPException(status_code=500, detail="Failed to update proforma")
 
 
+# ============================================================================
+# TERBIT / BATAL -- SATU penentu untuk TULIS dan PRATINJAU (U2 Proforma CW, 4 Okt 2026, MASTER GO).
+# Penentu MENGUMPULKAN semua blok; jalur tulis mengangkat blok PERTAMA dengan status + detail yang SAMA seperti
+# sebelumnya (urutan sama: status -> SO -> plafon; batal: status -> alasan -> terbayar). NON-POSTING: nol jurnal.
+# ============================================================================
+
+def _blok(code: str, status: int, detail) -> dict:
+    pesan = detail if isinstance(detail, str) else (detail.get("message") if isinstance(detail, dict) else str(detail))
+    return {"code": code, "status": status, "detail": detail, "message": pesan}
+
+
+def _angkat_blok_pertama(r: dict) -> None:
+    if r["blocks"]:
+        b = r["blocks"][0]
+        raise HTTPException(status_code=b["status"], detail=b["detail"])
+
+
+async def _kunci_proforma(conn, ctx: dict, pid):
+    """Proforma tenant ini + kunci SO yang SAMA dengan buat/terbit (C3 PROFORMA_SO), lalu baca ULANG di bawah kunci."""
+    cur = await conn.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, ctx["tenant_id"])
+    if not cur:
+        raise HTTPException(status_code=404, detail="Proforma not found")
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
+                       f"PROFORMA_SO:{ctx['tenant_id']}:{cur['sales_order_id']}")
+    return await conn.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, ctx["tenant_id"])
+
+
+def _ringkas_tagih(r: dict) -> dict:
+    return {k: r[k] for k in ("order_total", "issued_total", "received_total", "received_not_billed",
+                              "billable_remaining")}
+
+
+async def _rencana_terbit(conn, ctx: dict, cur) -> dict:
+    tid, pid = ctx["tenant_id"], cur["id"]
+    blocks = []
+    if cur["status"] != "draft":
+        blocks.append(_blok("PROFORMA_NOT_DRAFT", 400,
+                            f"Hanya proforma 'draft' yang bisa diterbitkan (sekarang '{cur['status']}')."))
+    order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
+    if order["status"] not in SO_BILLABLE_STATUSES:
+        blocks.append(_blok("SO_NOT_BILLABLE", 400, {
+            "code": "SO_NOT_BILLABLE", "message": f"Sales Order berstatus '{order['status']}' tidak bisa ditagih."}))
+    total, nominal = _f(order["total_amount"]) or 0.0, _f(cur["amount"]) or 0.0
+    try:  # pagar plafon YANG SAMA dengan buat/ubah (assert_within_order_total)
+        await assert_within_order_total(conn, tid, cur["sales_order_id"], total, nominal, exclude_id=pid)
+    except HTTPException as e:
+        blocks.append(_blok("PROFORMA_EXCEEDS_BILLABLE", e.status_code, e.detail))
+    sebelum = await rincian_tagih(conn, tid, cur["sales_order_id"], total, exclude_id=pid)
+    return {"order": order, "blocks": blocks, "linked_deposits": [],
+            "impact": {"amount": nominal, "before": _ringkas_tagih(sebelum)}}
+
+
+async def _rencana_batal(conn, ctx: dict, cur, alasan) -> dict:
+    tid, pid = ctx["tenant_id"], cur["id"]
+    blocks = []
+    if cur["status"] == "cancelled":
+        blocks.append(_blok("PROFORMA_ALREADY_CANCELLED", 400, "Proforma sudah dibatalkan."))
+    if not (alasan or "").strip():
+        blocks.append(_blok("CANCEL_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi."))
+    dps = await conn.fetch(
+        """SELECT id, deposit_number, amount, status FROM customer_deposits
+           WHERE proforma_id = $1 AND tenant_id = $2 AND status <> 'void' ORDER BY created_at""", pid, tid)
+    terbayar = await compute_paid_amount(conn, tid, pid)  # pagar = uang muka EKSPLISIT (bukan atribusi tampilan)
+    if terbayar > 0:
+        blocks.append(_blok("PROFORMA_HAS_PAYMENT", 400, (
+            f"Proforma sudah menerima pembayaran {terbayar:,.2f}. "
+            f"Tidak bisa dibatalkan — lakukan refund uang muka terlebih dahulu.")))
+    order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
+    total = _f(order["total_amount"]) or 0.0
+    sebelum = await rincian_tagih(conn, tid, cur["sales_order_id"], total)
+    return {"order": order, "blocks": blocks,
+            "linked_deposits": [{"id": str(d["id"]), "deposit_number": d["deposit_number"],
+                                 "amount": float(d["amount"]), "status": d["status"]} for d in dps],
+            "impact": {"amount": _f(cur["amount"]) or 0.0, "before": _ringkas_tagih(sebelum)}}
+
+
+def _bentuk_pratinjau(cur, r: dict) -> dict:
+    return {"proforma_id": str(cur["id"]), "proforma_number": cur["proforma_number"], "status_now": cur["status"],
+            "can_proceed": not r["blocks"],
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+            "sales_order": {"id": str(r["order"]["id"]), "order_number": r["order"]["order_number"]},
+            "impact": r["impact"], "linked_deposits": r["linked_deposits"], "preview": True}
+
+
+async def _idem_aksi(conn, ctx: dict, request, aksi: str, pid, isi: dict, response):
+    """X-Idempotency-Key opsional (pola W0): (kunci_penuh, sidik, respons_lama|None). Kunci sama + isi beda -> 409."""
+    try:
+        kunci = kunci_idempotensi_klien(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not kunci:
+        return None, None, None
+    kp = f"PROFORMA_{aksi}:{ctx['user_id']}:{pid}:{kunci}"
+    sidik = hash_payload(isi)
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{kp}")
+    try:
+        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kp, sidik)
+    except LookupError:
+        raise HTTPException(status_code=409, detail={
+            "code": "IDEMPOTENCY_KEY_REUSED",
+            "message": "Idempotency-Key sudah dipakai untuk aksi proforma dengan isi berbeda"})
+    if lama is not None and response is not None:
+        response.headers["X-Idempotent-Replay"] = "true"
+    return kp, sidik, lama
+
+
+async def _simpan_idem_aksi(conn, ctx: dict, kp, sidik, sumber: str, resp: dict, pid) -> dict:
+    from fastapi.encoders import jsonable_encoder
+    resp = jsonable_encoder(resp)
+    if kp:
+        await simpan_replay_klien(conn, ctx["tenant_id"], kp, sumber, sidik, resp, result_id=pid)
+    return resp
+
+
+async def _tulis_terbit(conn, ctx: dict, cur):
+    """draft -> issued + riwayat, satu savepoint. SATU penulis untuk /issue DAN pratinjau (yang di-rollback)."""
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            """UPDATE proformas SET status = 'issued', issued_at = NOW()
+               WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING *""", cur["id"], ctx["tenant_id"])
+        if not row:
+            raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+        # Riwayat SO: issued_at tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
+        await catat_riwayat(
+            conn, ctx["tenant_id"], "proformas", cur["id"], row["proforma_number"], "PROFORMA_ISSUED",
+            ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diterbitkan".replace("  ", " "),
+            {"sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.issue",
+        )
+    return row
+
+
+async def _tulis_batal(conn, ctx: dict, cur, alasan: str):
+    """-> cancelled + riwayat, satu savepoint. SATU penulis untuk /cancel DAN pratinjau (yang di-rollback)."""
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            """UPDATE proformas SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = $3
+               WHERE id = $1 AND tenant_id = $2 AND status <> 'cancelled' RETURNING *""",
+            cur["id"], ctx["tenant_id"], alasan)
+        if not row:
+            raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+        await catat_riwayat(
+            conn, ctx["tenant_id"], "proformas", cur["id"], row["proforma_number"], "PROFORMA_CANCELLED",
+            ctx.get("user_id"),
+            f"Proforma {row['proforma_number'] or ''} dibatalkan".replace("  ", " ") + (f": {alasan}" if alasan else ""),
+            {"reason": alasan, "sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.cancel",
+        )
+    return row
+
+
+class _BatalkanPratinjau(Exception):
+    def __init__(self, data):
+        self.data = data
+
+
+async def _pratinjau(ctx: dict, pid, aksi: str, alasan=None) -> dict:
+    """Penentu YANG SAMA + (bila tak terblok) PENULIS YANG SAMA, lalu ROLLBACK. Dampak 'sesudah' = rincian tagih
+    NYATA sesudah tulis: atribusi uang muka bisa berpindah (uang muka tak tertaut dicocokkan nominal ke proforma yang
+    baru terbit; terukur 4 Okt PRO-2609-0028: di luar tagihan 400rb -> 0), jadi tak bisa dihitung dengan menambah."""
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cur = await _kunci_proforma(conn, ctx, pid)
+                r = await (_rencana_terbit(conn, ctx, cur) if aksi == "issue" else _rencana_batal(conn, ctx, cur, alasan))
+                r["impact"]["after"] = r["impact"]["before"]
+                if not r["blocks"]:
+                    if aksi == "issue":
+                        await _tulis_terbit(conn, ctx, cur)
+                    else:
+                        await _tulis_batal(conn, ctx, cur, alasan)
+                    total = _f(r["order"]["total_amount"]) or 0.0
+                    r["impact"]["after"] = _ringkas_tagih(
+                        await rincian_tagih(conn, ctx["tenant_id"], cur["sales_order_id"], total))
+                raise _BatalkanPratinjau(_bentuk_pratinjau(cur, r))
+    except _BatalkanPratinjau as b:
+        return b.data
+
+
+class PratinjauBatalProforma(BaseModel):
+    reason: Optional[str] = None  # opsional DI PRATINJAU supaya "alasan wajib" tampil sebagai blok, bukan 422 skema
+
+
+@router.post("/{proforma_id}/issue/preview")
+async def preview_issue_proforma(request: Request, proforma_id: str):
+    """Pratinjau terbit: penentu + penulis YANG SAMA dengan /issue lalu ROLLBACK (nol tulis), semua blok + dampak
+    plafon tagih SO sebelum/sesudah (sesudah = nyata, lihat _pratinjau)."""
+    ctx = get_user_context(request)
+    return {"success": True, "data": await _pratinjau(ctx, _uuid_or_404(proforma_id), "issue")}
+
+
+@router.post("/{proforma_id}/cancel/preview")
+async def preview_cancel_proforma(request: Request, proforma_id: str, body: Optional[PratinjauBatalProforma] = None):
+    """Pratinjau batal: penentu + penulis YANG SAMA dengan /cancel lalu ROLLBACK, semua blok (sudah batal, alasan
+    wajib, uang muka tertaut) + uang muka tertaut + dampak plafon tagih SO sebelum/sesudah."""
+    ctx = get_user_context(request)
+    return {"success": True, "data": await _pratinjau(ctx, _uuid_or_404(proforma_id), "cancel",
+                                                       body.reason if body else None)}
+
+
 @router.post("/{proforma_id}/issue")
-async def issue_proforma(request: Request, proforma_id: str):
-    """draft -> issued. NON-POSTING: tidak ada jurnal yang dibuat."""
+async def issue_proforma(request: Request, proforma_id: str, response: _Response = None):
+    """draft -> issued. NON-POSTING: tidak ada jurnal yang dibuat. Penentu = _rencana_terbit (sama dengan pratinjau).
+    X-Idempotency-Key opsional: retry sesudah balasan hilang = respons pertama (bukan 400 'bukan draf')."""
     try:
         ctx = get_user_context(request)
         pid = _uuid_or_404(proforma_id)
@@ -800,65 +1059,21 @@ async def issue_proforma(request: Request, proforma_id: str):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                cur = await conn.fetchrow(
-                    "SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2",
-                    pid,
-                    ctx["tenant_id"],
-                )
-                if not cur:
-                    raise HTTPException(status_code=404, detail="Proforma not found")
-                # C3: kunci SO yang SAMA dengan create -> dua terbit bersamaan tak bisa sama-sama lolos plafon
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"PROFORMA_SO:{ctx['tenant_id']}:{cur['sales_order_id']}",
-                )
-                if cur["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Hanya proforma 'draft' yang bisa diterbitkan (sekarang '{cur['status']}').",
-                    )
+                kp, sd, lama = await _idem_aksi(conn, ctx, request, "ISSUE", pid, {"proforma_id": str(pid)}, response)
+                if lama is not None:
+                    return lama
+                cur = await _kunci_proforma(conn, ctx, pid)
+                r = await _rencana_terbit(conn, ctx, cur)
+                _angkat_blok_pertama(r)
+                order = r["order"]
 
-                order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
-                if order["status"] not in SO_BILLABLE_STATUSES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={"code": "SO_NOT_BILLABLE",
-                                "message": f"Sales Order berstatus '{order['status']}' tidak bisa ditagih."},
-                    )
-
-                await assert_within_order_total(
-                    conn,
-                    ctx["tenant_id"],
-                    cur["sales_order_id"],
-                    _f(order["total_amount"]) or 0.0,
-                    _f(cur["amount"]) or 0.0,
-                    exclude_id=pid,
-                )
-
-                async with conn.transaction():
-                    row = await conn.fetchrow(
-                        """
-                        UPDATE proformas SET status = 'issued', issued_at = NOW()
-                        WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
-                        RETURNING *
-                        """,
-                        pid,
-                        ctx["tenant_id"],
-                    )
-                    if not row:
-                        raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
-                    # Riwayat SO: issued_at tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_ISSUED",
-                        ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diterbitkan".replace("  ", " "),
-                        {"sales_order_id": str(cur["sales_order_id"])}, source="api:proformas.issue",
-                    )
+                row = await _tulis_terbit(conn, ctx, cur)
 
                 paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
-                return {
+                return await _simpan_idem_aksi(conn, ctx, kp, sd, "PROFORMA_ISSUE", {
                     "success": True,
                     "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
-                }
+                }, pid)
 
     except HTTPException:
         raise
@@ -868,62 +1083,34 @@ async def issue_proforma(request: Request, proforma_id: str):
 
 
 @router.post("/{proforma_id}/cancel")
-async def cancel_proforma(request: Request, proforma_id: str, body: CancelProformaRequest):
-    """Batalkan proforma. DITOLAK bila sudah ada deposit yang menunjuk padanya."""
+async def cancel_proforma(request: Request, proforma_id: str, body: CancelProformaRequest,
+                          response: _Response = None):
+    """Batalkan proforma. DITOLAK bila sudah ada deposit yang menunjuk padanya. Penentu = _rencana_batal (sama dengan
+    pratinjau). 4 Okt 2026: SELURUHNYA satu transaksi + kunci PROFORMA_SO + FOR UPDATE baris SO (mutex dengan BUAT
+    uang muka, yang mengunci baris SO yang sama) -- dulu cek terbayar di LUAR transaksi: uang muka yang menaut proforma
+    bisa masuk di antara cek dan UPDATE. X-Idempotency-Key opsional (pola W0)."""
     try:
         ctx = get_user_context(request)
         pid = _uuid_or_404(proforma_id)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            cur = await conn.fetchrow(
-                "SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2",
-                pid,
-                ctx["tenant_id"],
-            )
-            if not cur:
-                raise HTTPException(status_code=404, detail="Proforma not found")
-            if cur["status"] == "cancelled":
-                raise HTTPException(status_code=400, detail="Proforma sudah dibatalkan.")
-
-            paid = await compute_paid_amount(conn, ctx["tenant_id"], pid)
-            if paid > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Proforma sudah menerima pembayaran {paid:,.2f}. "
-                        f"Tidak bisa dibatalkan — lakukan refund uang muka terlebih dahulu."
-                    ),
-                )
-
-            order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
-
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    """
-                    UPDATE proformas
-                    SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = $3
-                    WHERE id = $1 AND tenant_id = $2 AND status <> 'cancelled'
-                    RETURNING *
-                    """,
-                    pid,
-                    ctx["tenant_id"],
-                    body.reason,
-                )
-                if not row:
-                    raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
-                await catat_riwayat(
-                    conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_CANCELLED",
-                    ctx.get("user_id"),
-                    f"Proforma {row['proforma_number'] or ''} dibatalkan".replace("  ", " ")
-                    + (f": {body.reason}" if body.reason else ""),
-                    {"reason": body.reason, "sales_order_id": str(cur["sales_order_id"])},
-                    source="api:proformas.cancel",
-                )
-            return {
-                "success": True,
-                "data": serialize_proforma(row, order["order_number"], 0.0),
-            }
+                kp, sd, lama = await _idem_aksi(conn, ctx, request, "CANCEL", pid, body.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
+                cur = await _kunci_proforma(conn, ctx, pid)
+                await conn.execute("SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                                   cur["sales_order_id"], ctx["tenant_id"])
+                r = await _rencana_batal(conn, ctx, cur, body.reason)
+                _angkat_blok_pertama(r)
+                order = r["order"]
+
+                row = await _tulis_batal(conn, ctx, cur, body.reason)
+                return await _simpan_idem_aksi(conn, ctx, kp, sd, "PROFORMA_CANCEL", {
+                    "success": True,
+                    "data": serialize_proforma(row, order["order_number"], 0.0),
+                }, pid)
 
     except HTTPException:
         raise

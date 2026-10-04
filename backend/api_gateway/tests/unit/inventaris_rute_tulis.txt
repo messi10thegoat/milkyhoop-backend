@@ -370,7 +370,9 @@ POST /api/production/{order_id}/report-output
 POST /api/production/{order_id}/start
 POST /api/proformas
 POST /api/proformas/{proforma_id}/cancel
+POST /api/proformas/{proforma_id}/cancel/preview
 POST /api/proformas/{proforma_id}/issue
+POST /api/proformas/{proforma_id}/issue/preview
 POST /api/purchase-orders
 POST /api/purchase-orders/{po_id}/cancel
 POST /api/purchase-orders/{po_id}/close

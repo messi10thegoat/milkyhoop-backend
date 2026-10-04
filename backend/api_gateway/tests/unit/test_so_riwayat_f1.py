@@ -352,9 +352,11 @@ def _src(fn):
 
 
 def test_penulis_audit_di_tx_sesudah_update():
-    for fn, upd in ((PF.issue_proforma, "UPDATE proformas SET status = 'issued'"),
-                    (PF.cancel_proforma, "UPDATE proformas SET status = 'cancelled'")):
-        s = _src(fn)
+    # 4 Okt 2026 (U2): penulis terbit/batal dipindah ke _tulis_terbit/_tulis_batal (dipakai tulis DAN pratinjau)
+    for fn, tulis, upd in ((PF.issue_proforma, PF._tulis_terbit, "UPDATE proformas SET status = 'issued'"),
+                           (PF.cancel_proforma, PF._tulis_batal, "UPDATE proformas SET status = 'cancelled'")):
+        assert tulis.__name__ + "(" in _src(fn)
+        s = _src(tulis)
         assert s.index("async with conn.transaction()") < s.index(upd) < s.index("catat_riwayat(")
     s = _src(SO.update_sales_order)
     assert s.index("UPDATE sales_orders SET") < s.index("\"SALES_ORDER_UPDATED\"")
