@@ -125,6 +125,7 @@ class AllocationResponse(BaseModel):
     id: str
     # L3: alokasi yang dilepas (Lepas Pembayaran) = 'reversed'; riwayat, bukan pelunasan berlaku
     status: str = "active"
+    status_detail: Optional[str] = None  # active | reversed (dilepas) | voided (penerimaan dibatalkan), 5 Okt
     reversed_at: Optional[str] = None
     unapply_journal_number: Optional[str] = None
     invoice_id: str

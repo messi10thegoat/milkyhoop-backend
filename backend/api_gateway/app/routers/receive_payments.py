@@ -1154,6 +1154,10 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                         {
                             "id": str(alloc["id"]),
                             "status": "reversed" if alloc["status"] == "reversed" else "active",
+                            # turunan TAMPILAN (MASTER 5 Okt): alokasi penerimaan void tetap 'active' di DB (angka
+                            # piutang dari jurnal, tak bergantung status ini) -> layar 'voided'; dilepas tetap 'reversed'.
+                            "status_detail": ("reversed" if alloc["status"] == "reversed"
+                                              else "voided" if payment["status"] in ("void", "voided") else "active"),
                             "reversed_at": alloc["reversed_at"].isoformat() if alloc["reversed_at"] else None,
                             "unapply_journal_number": alloc["unapply_journal_number"],
                             "invoice_id": str(alloc["invoice_id"]),
