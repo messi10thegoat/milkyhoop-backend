@@ -365,6 +365,35 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         return {"journal_lines": lines}
 
 
+# U8: CTE penerimaan VOIDED (wrapper receive_payments.status='voided'); kolom SAMA dgn posted_items/draft_items + voided_at/void_reason.
+_SQL_PENERIMAAN_VOIDED = """
+                voided_items AS (
+                    SELECT
+                        rp.id,
+                        rp.payment_number,
+                        COALESCE(rp.customer_id::text, '') AS customer_id,
+                        rp.customer_name,
+                        rp.payment_date,
+                        rp.payment_method,
+                        rp.source_type,
+                        rp.total_amount,
+                        COALESCE(rp.allocated_amount, 0) AS allocated_amount,
+                        COALESCE(rp.unapplied_amount, 0) AS unapplied_amount,
+                        rp.status,
+                        rp.created_at,
+                        (SELECT COUNT(*) FROM receive_payment_allocations WHERE payment_id = rp.id) AS invoice_count,
+                        'RECEIVE_PAYMENT' AS settlement_type,
+                        NULL::text AS source_document_type,
+                        NULL::text AS source_document_id,
+                        NULL::text AS source_document_number,
+                        rp.voided_at AS voided_at,
+                        rp.void_reason AS void_reason
+                    FROM receive_payments rp
+                    WHERE rp.tenant_id = $1
+                      AND rp.status = 'voided'
+                ),"""
+
+
 @router.get("", response_model=ReceivePaymentListResponse)
 async def list_receive_payments(
     request: Request,
@@ -383,6 +412,8 @@ async def list_receive_payments(
         "payment_date", "payment_number", "customer_name", "total_amount", "created_at"
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    include_voided: bool = Query(
+        False, description="U8: sertakan penerimaan VOIDED (wrapper) di daftar; bawaan false = perilaku lama PERSIS"),
 ):
     """
     List receive payments with filters and pagination.
@@ -402,6 +433,14 @@ async def list_receive_payments(
             # ---------------------------------------------------------------
             # Build dynamic WHERE conditions for outer query
             # ---------------------------------------------------------------
+            # U8 (5 Okt, GO MASTER): penerimaan VOIDED dulu TAK PERNAH tampil (jurnalnya dibalik -> hilang dari daftar jurnal
+            # efektif; daftar kas 35 != summary 40). Aditif: baris voided HANYA bila status=voided atau include_voided=true;
+            # tanpa itu SQL + respons sama persis dengan sebelumnya. `is True` (bukan truthy): pemanggil langsung tanpa
+            # argumen memegang objek Query() yang truthy.
+            incl_void = status == "voided" or include_voided is True
+            _x_cols = ",\n                        NULL::timestamptz AS voided_at, NULL::text AS void_reason" if incl_void else ""
+            _x_cte = _SQL_PENERIMAAN_VOIDED if incl_void else ""
+            _x_union = "\n                    UNION ALL\n                    SELECT * FROM voided_items" if incl_void else ""
             outer_conditions = []
             params: list = [ctx["tenant_id"]]  # $1 = tenant_id (used in CTE)
             param_idx = 2
@@ -525,7 +564,7 @@ async def list_receive_payments(
                              WHEN rp.id IS NULL AND s.je_source_type = 'CREDIT_NOTE' THEN 'credit_note'
                         END AS source_document_type,
                         CASE WHEN rp.id IS NULL THEN COALESCE(cdep.id::text, cn.id::text) END AS source_document_id,
-                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number{_x_cols}
                     FROM settlements s
                     LEFT JOIN receive_payments rp
                         ON (rp.journal_id = s.journal_id OR rp.id = s.source_id)
@@ -555,15 +594,15 @@ async def list_receive_payments(
                         'RECEIVE_PAYMENT' AS settlement_type,
                         NULL::text AS source_document_type,
                         NULL::text AS source_document_id,
-                        NULL::text AS source_document_number
+                        NULL::text AS source_document_number{_x_cols}
                     FROM receive_payments rp
                     WHERE rp.tenant_id = $1
                       AND rp.status = 'draft'
-                ),
+                ),{_x_cte}
                 unified AS (
                     SELECT * FROM posted_items
                     UNION ALL
-                    SELECT * FROM draft_items
+                    SELECT * FROM draft_items{_x_union}
                 )
                 SELECT * FROM unified q
                 WHERE TRUE {outer_where}
@@ -620,7 +659,7 @@ async def list_receive_payments(
                              WHEN rp.id IS NULL AND s.je_source_type = 'CREDIT_NOTE' THEN 'credit_note'
                         END AS source_document_type,
                         CASE WHEN rp.id IS NULL THEN COALESCE(cdep.id::text, cn.id::text) END AS source_document_id,
-                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number
+                        CASE WHEN rp.id IS NULL THEN COALESCE(cdep.deposit_number, cn.credit_note_number) END AS source_document_number{_x_cols}
                     FROM settlements s
                     LEFT JOIN receive_payments rp
                         ON (rp.journal_id = s.journal_id OR rp.id = s.source_id)
@@ -650,15 +689,15 @@ async def list_receive_payments(
                         'RECEIVE_PAYMENT' AS settlement_type,
                         NULL::text AS source_document_type,
                         NULL::text AS source_document_id,
-                        NULL::text AS source_document_number
+                        NULL::text AS source_document_number{_x_cols}
                     FROM receive_payments rp
                     WHERE rp.tenant_id = $1
                       AND rp.status = 'draft'
-                ),
+                ),{_x_cte}
                 unified AS (
                     SELECT * FROM posted_items
                     UNION ALL
-                    SELECT * FROM draft_items
+                    SELECT * FROM draft_items{_x_union}
                 )
                 SELECT COUNT(*) FROM unified q
                 WHERE TRUE {outer_where}
@@ -702,11 +741,20 @@ async def list_receive_payments(
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "receive_payment", items)
-            return {
+            hasil = {
                 "items": items,
                 "total": total or 0,
                 "has_more": (skip + limit) < (total or 0),
             }
+            if not incl_void:
+                return hasil  # bentuk lama PERSIS (response_model lama)
+            # U8: koersi angka SAMA dgn response_model (model_dump json), lalu tambah voided_at + void_reason per baris
+            from fastapi.responses import JSONResponse
+            keluar = ReceivePaymentListResponse(**hasil).model_dump(mode="json")
+            for it, row in zip(keluar["items"], rows):
+                it["voided_at"] = row["voided_at"].isoformat() if row["voided_at"] else None
+                it["void_reason"] = row["void_reason"]
+            return JSONResponse(keluar)
 
     except HTTPException:
         raise
