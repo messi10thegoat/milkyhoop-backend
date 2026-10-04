@@ -236,6 +236,12 @@ class QuoteListItem(BaseModel):
     converted_to_id: Optional[str] = None
     created_at: str
     is_expired: bool = False
+    # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
+    sales_order_id: Optional[str] = None
+    sales_order_number: Optional[str] = None
+    order_code: Optional[str] = None
+    order_title: Optional[str] = None
+    order_code_label: Optional[str] = None
 
 
 class QuoteDetail(BaseModel):
@@ -282,6 +288,12 @@ class QuoteDetail(BaseModel):
     is_expired: bool = False
     customer_phone: Optional[str] = None  # Q5: kontak pelanggan (bundel SO /documents)
     business_name: Optional[str] = None   # Q5: nama usaha = kop dokumen
+    # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
+    sales_order_id: Optional[str] = None
+    sales_order_number: Optional[str] = None
+    order_code: Optional[str] = None
+    order_title: Optional[str] = None
+    order_code_label: Optional[str] = None
 
 
 class QuoteListResponse(BaseModel):

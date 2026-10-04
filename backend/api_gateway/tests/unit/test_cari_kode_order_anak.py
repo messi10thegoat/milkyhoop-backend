@@ -9,7 +9,7 @@ import pytest
 from app.routers import credit_notes, customer_deposits, deliveries, proformas, receive_payments, sales_invoices
 from app.services import kode_order as KO
 
-JENIS = ["sales_invoice", "proforma", "customer_deposit", "delivery", "credit_note", "receive_payment"]
+JENIS = ["sales_invoice", "proforma", "customer_deposit", "delivery", "credit_note", "receive_payment", "quote"]  # quote: U1e
 
 
 @pytest.mark.parametrize("jenis", JENIS)
@@ -34,8 +34,9 @@ def test_jalur_induk_sama_dengan_sumber_so():
     assert "proforma_id" in KO.sql_cari_so_induk("customer_deposit", "d", "$1", "$2")  # DP lewat proforma
     assert "original_invoice_id" in KO.sql_cari_so_induk("credit_note", "d", "$1", "$2")  # NK lewat faktur asal
     assert "rpa_c.status = 'active'" in KO.sql_cari_so_induk("receive_payment", "d", "$1", "$2")
+    assert "converted_to_id" in KO.sql_cari_so_induk("quote", "d", "$1", "$2")  # penawaran lewat SO hasil konversi (U1e)
     with pytest.raises(ValueError):
-        KO.sql_cari_so_induk("quote", "d", "$1", "$2")
+        KO.sql_cari_so_induk("jenis_asing", "d", "$1", "$2")
 
 
 @pytest.mark.parametrize("modul,fungsi,jenis", [

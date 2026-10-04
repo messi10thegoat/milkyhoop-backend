@@ -284,11 +284,14 @@ async def list_quotes(
                 params.append(end_date)
                 param_idx += 1
 
+            # U1e: ?search= juga mencocokkan nomor/kode/judul SO HASIL konversi (helper sama dgn 6 modul lain)
+            from ..services.kode_order import sql_cari_so_induk as _cari_so
+
             if search:
                 words = search.strip().split()
                 if len(words) == 1:
                     conditions.append(
-                        f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                        f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}) OR {_cari_so('quote', 'quotes', '$1', f'${param_idx}')})"
                     )
                     params.append(f"%{words[0]}%")
                     param_idx += 1
@@ -296,7 +299,7 @@ async def list_quotes(
                     word_conds = []
                     for word in words:
                         word_conds.append(
-                            f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}))"
+                            f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}) OR {_cari_so('quote', 'quotes', '$1', f'${param_idx}')})"
                         )
                         params.append(f"%{word}%")
                         param_idx += 1
@@ -323,6 +326,8 @@ async def list_quotes(
             rows = await conn.fetch(list_query, *params)
             # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            from ..services.kode_order import so_hasil_penawaran as _so_hasil
+            so_hasil = await _so_hasil(conn, ctx["tenant_id"], [r["id"] for r in rows])  # batch, nol N+1
 
             items = []
             for row in rows:
@@ -352,6 +357,7 @@ async def list_quotes(
                         else None,
                         created_at=row["created_at"].isoformat(),
                         is_expired=is_expired,
+                        **so_hasil[str(row["id"])],
                     )
                 )
 
@@ -537,6 +543,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                 quote["customer_id"], ctx["tenant_id"]) if quote["customer_id"] else None
             _usaha = (await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', ctx["tenant_id"])) \
                 or ctx["tenant_id"]
+            from ..services.kode_order import so_hasil_penawaran as _so_hasil
+            _so = (await _so_hasil(conn, ctx["tenant_id"], [quote["id"]]))[str(quote["id"])]
 
             return QuoteDetailResponse(
                 success=True,
@@ -616,6 +624,7 @@ async def get_quote_detail(request: Request, quote_id: str):
                     is_expired=is_expired,
                     customer_phone=_telp or None,
                     business_name=_usaha,
+                    **_so,
                 ),
             )
 

@@ -451,6 +451,11 @@ SUMBER_SO = {
     "customer_deposit": """SELECT d.id, COALESCE(d.sales_order_id, p.sales_order_id) AS so_id FROM customer_deposits d
                            LEFT JOIN proformas p ON p.id = d.proforma_id AND p.tenant_id = d.tenant_id
                            WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
+    # penawaran (U1e, 4 Okt 2026): SO HASIL konversi = quotes.converted_to_id bila converted_to_type = 'sales_order'
+    # (konversi ke faktur / belum dikonversi -> tanpa kode). Selaras sales_orders.quote_id (1:1, diukur kaos).
+    "quote": """SELECT q.id, q.converted_to_id AS so_id FROM quotes q
+                WHERE q.tenant_id = $1 AND q.id = ANY($2::uuid[]) AND q.converted_to_type = 'sales_order'
+                  AND q.converted_to_id IS NOT NULL""",
     # nota kredit tak punya sales_order_id: lewat faktur asalnya (tanpa faktur asal -> tanpa kode)
     "credit_note": """SELECT d.id, si.sales_order_id AS so_id FROM credit_notes d
                       LEFT JOIN sales_invoices si ON si.id = d.original_invoice_id AND si.tenant_id = d.tenant_id
@@ -479,6 +484,8 @@ def sql_cari_so_induk(jenis: str, alias: str, t: str, p: str) -> str:
     if jenis == "customer_deposit":
         return (f"COALESCE({alias}.sales_order_id, (SELECT p_c.sales_order_id FROM proformas p_c "
                 f"WHERE p_c.id = {alias}.proforma_id AND p_c.tenant_id = {t})) IN ({so})")
+    if jenis == "quote":  # SO hasil konversi (U1e)
+        return f"({alias}.converted_to_type = 'sales_order' AND {alias}.converted_to_id IN ({so}))"
     if jenis in ("delivery", "credit_note"):
         kol = "invoice_id" if jenis == "delivery" else "original_invoice_id"
         return (f"{alias}.{kol} IN (SELECT si_c.id FROM sales_invoices si_c WHERE si_c.tenant_id = {t} "
@@ -542,3 +549,36 @@ async def tempel_kode(conn, tenant_id: str, jenis: str, dokumen: list, kunci: st
     for d in dokumen:
         d.update(k.get(str(d.get(kunci)), kosong))
     return dokumen
+
+
+async def so_hasil_penawaran(conn, tenant_id: str, quote_ids) -> dict:
+    """{str(quote_id): {sales_order_id, sales_order_number, order_code, order_title, order_code_label}} untuk SO HASIL
+    konversi penawaran (U1e, 4 Okt 2026). Nama field SAMA dengan dokumen anak U0 (sales_order_id, sales_order_number,
+    order_code, order_title) + order_code_label. Tak dikonversi / konversi ke faktur / SO hilang -> nilai None (label
+    SELALU terisi, setelan tenant). Kode/judul/label lewat kode_untuk_dokumen (satu aturan dgn modul lain); id+nomor SO
+    satu kueri tambahan -- konstan per halaman (nol N+1), tenant eksplisit di kedua sisi join."""
+    import uuid as _uuid
+    ids = []
+    for q in quote_ids:
+        try:
+            ids.append(q if isinstance(q, _uuid.UUID) else _uuid.UUID(str(q)))
+        except (ValueError, TypeError):
+            pass
+    label = (await muat_setelan(conn, tenant_id))["label"]
+    hasil = {str(i): {"sales_order_id": None, "sales_order_number": None, "order_code": None, "order_title": None,
+                      "order_code_label": label} for i in ids}
+    if not ids:
+        return hasil
+    kode = await kode_untuk_dokumen(conn, tenant_id, "quote", ids)
+    for r in await conn.fetch(
+            """SELECT q.id AS qid, so.id AS so_id, so.order_number
+               FROM quotes q JOIN sales_orders so ON so.id = q.converted_to_id AND so.tenant_id = q.tenant_id
+               WHERE q.tenant_id = $1 AND q.id = ANY($2::uuid[]) AND q.converted_to_type = 'sales_order'""",
+            tenant_id, ids):
+        h = hasil[str(r["qid"])]
+        h["sales_order_id"], h["sales_order_number"] = str(r["so_id"]), r["order_number"]
+        k = kode.get(str(r["qid"]))
+        if k:
+            h["order_code"], h["order_title"], h["order_code_label"] = k["order_code"], k["order_title"], k["order_code_label"]
+    return hasil
+
