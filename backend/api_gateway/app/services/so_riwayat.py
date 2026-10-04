@@ -112,6 +112,23 @@ RINGKAS_AUDIT = {
 }
 
 
+EVENT_KODE_ORDER = ("ORDER_CODE_ISSUED", "ORDER_CODE_OVERRIDDEN", "ORDER_CODE_IMPORTED")
+
+
+def teks_riwayat_kode(event: str, label: str, meta: dict, tersimpan: str) -> str:
+    """Ringkas peristiwa kode order DIRENDER SAAT BACA dgn label tenant SEKARANG (U7, 5 Okt): baris lama ikut berganti
+    ("Kode order …" -> "No. SPK …") karena teks tersimpan membeku di label saat kejadian. Sumber nilai = metadata old/new
+    yang SUDAH tersimpan (tanpa 'new' -> teks tersimpan dipakai apa adanya, tak dikarang)."""
+    baru = meta.get("new")
+    if not baru:
+        return tersimpan
+    if event == "ORDER_CODE_ISSUED":
+        return f"{label} {baru} terbit" + (" (manual)" if (tersimpan or "").rstrip().endswith("(manual)") else "")
+    if event == "ORDER_CODE_OVERRIDDEN":
+        return f"{label}: {meta.get('old') or '—'} → {baru}"
+    return f"{label} {baru} diimpor"
+
+
 async def catat_riwayat(conn, tenant_id: str, entity_type: str, entity_id, entity_number: Optional[str],
                         event: str, user_id, ringkas: str, meta: Optional[dict] = None,
                         source: str = "api") -> None:
@@ -222,6 +239,7 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
                 kueri_ent.append(e)
                 kueri_id.append(str(i))
     audit_ada, audit_baris = set(), set()
+    label_kode = None  # label kode order tenant: dibaca SEKALI, hanya bila ada peristiwa kode order (U7)
     if kueri_ent:
         for r in await conn.fetch(
             """SELECT a.id, a."createdAt", a."eventType", a."userId", a.entity_type, a.entity_id,
@@ -240,6 +258,11 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
             if (r["eventType"].endswith("_UPDATED") and r["eventType"] in RINGKAS_AUDIT and isinstance(_medan, list)
                     and _medan):
                 ringkas = f"{RINGKAS_AUDIT[r['eventType']]}: {label_medan(_medan)}"
+            if r["eventType"] in EVENT_KODE_ORDER:
+                if label_kode is None:
+                    from .kode_order import muat_setelan as _muat_setelan_kode
+                    label_kode = (await _muat_setelan_kode(conn, tenant_id))["label"]
+                ringkas = teks_riwayat_kode(r["eventType"], label_kode, meta, ringkas)
             aktor = r["userId"] or meta.get("user_id")
             if not aktor and str(r["source"] or "").startswith("db:"):
                 aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)

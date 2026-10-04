@@ -18,8 +18,17 @@ TOKEN = re.compile(r"\{(SEQ|MM|YY|YYYY)\}")
 RESET = ("never", "yearly", "monthly")
 PEMICU = ("so_confirmed", "manual_only")  # putusan pemilik 2 Okt: murni SAP/NetSuite -- terbit saat SO dikonfirmasi
 PERAN_UBAH = ("OWNER", "ADMIN")
+LABEL_BAWAAN = "Kode order"  # label generik tenant baru (putusan 2 Okt); tenant mengganti lewat setelan (mis. "No. SPK")
+
+
+def label_kalimat(label: str) -> str:
+    """Label di TENGAH kalimat: bawaan generik "Kode order" -> "kode order" (kalimat lama tak berubah); label tenant lain
+    (mis. "No. SPK") apa adanya. SEMUA teks ke pengguna WAJIB memakai label setelan tenant, bukan teks tetap (U7, 5 Okt)."""
+    return label.lower() if label == LABEL_BAWAAN else label
+
+
 BAWAAN = {"enabled": False, "template": "{SEQ}", "min_digits": 4, "reset": "never",
-          "trigger": "so_confirmed", "allow_override": False, "label": "Kode order"}
+          "trigger": "so_confirmed", "allow_override": False, "label": LABEL_BAWAAN}
 MAKS_KODE, MAKS_JUDUL, MAKS_LABEL = 40, 60, 30
 # PDF: judul dipotong supaya "{SO} · {label} {kode} · {judul}" tetap SEBARIS di baris yang sudah ada
 MAKS_JUDUL_CETAK = 24
@@ -105,14 +114,14 @@ def periode_dari_urai(reset: str, u: dict) -> Optional[str]:
     return f"{tahun:04d}-{u['MM']:02d}" if "MM" in u else None
 
 
-def normal_kode(kode) -> str:
+def normal_kode(kode, label: str = LABEL_BAWAAN) -> str:
     if not isinstance(kode, str):
-        raise KodeOrderGalat("Kode order wajib berupa teks.")
+        raise KodeOrderGalat(f"{label} wajib berupa teks.")
     k = kode.strip()
     if not k:
-        raise KodeOrderGalat("Kode order tidak boleh dikosongkan.")
+        raise KodeOrderGalat(f"{label} tidak boleh dikosongkan.")
     if len(k) > MAKS_KODE or any(ord(c) < 32 for c in k):
-        raise KodeOrderGalat(f"Kode order maksimal {MAKS_KODE} karakter tanpa karakter kontrol.")
+        raise KodeOrderGalat(f"{label} maksimal {MAKS_KODE} karakter tanpa karakter kontrol.")
     return k
 
 
@@ -248,7 +257,8 @@ async def terbitkan_berikutnya(conn, tenant_id: str, so_id, tanggal: date, aktor
 
 async def ganti_kode(conn, tenant_id: str, so_id, kode_baru: str, aktor) -> dict:
     """Ganti manual (NetSuite 'Allow Override'). Pemanggil sudah memeriksa boleh_ganti_kode."""
-    kode = normal_kode(kode_baru)
+    s = await muat_setelan(conn, tenant_id)
+    kode = normal_kode(kode_baru, s["label"])
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
     so = await conn.fetchrow(
         "SELECT id, order_number, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
@@ -259,7 +269,6 @@ async def ganti_kode(conn, tenant_id: str, so_id, kode_baru: str, aktor) -> dict
     if await conn.fetchval("SELECT 1 FROM sales_orders WHERE tenant_id = $1 AND order_code = $2 AND id <> $3",
                            tenant_id, kode, so_id):
         return {"status": 409}
-    s = await muat_setelan(conn, tenant_id)
     await conn.execute(
         """UPDATE sales_orders SET order_code = $3, order_code_source = 'manual', updated_at = NOW()
            WHERE id = $1 AND tenant_id = $2""", so_id, tenant_id, kode)
@@ -354,14 +363,14 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
         b = b if isinstance(b, dict) else {}
         hasil = {"row": i, "order_number": b.get("order_number"), "order_code": b.get("order_code")}
         try:
-            kode = normal_kode(b.get("order_code"))
+            kode = normal_kode(b.get("order_code"), s["label"])
             judul = normal_judul(b.get("order_title")) if b.get("order_title") is not None else None
         except KodeOrderGalat as e:
             laporan.append({**hasil, "status": "error", "message": str(e)})
             continue
         hasil["order_code"] = kode
         if kode in dipakai:
-            laporan.append({**hasil, "status": "error", "message": f"Kode {kode} ganda di berkas (baris {dipakai[kode]})"})
+            laporan.append({**hasil, "status": "error", "message": f"{s['label']} {kode} ganda di berkas (baris {dipakai[kode]})"})
             continue
         dipakai[kode] = i
         so, galat = await _cari_so(conn, tenant_id, b)
@@ -371,7 +380,7 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
         lain = await conn.fetchval("""SELECT order_number FROM sales_orders WHERE tenant_id = $1 AND order_code = $2
                                         AND ($3::uuid IS NULL OR id <> $3)""", tenant_id, kode, so["id"] if so else None)
         if lain:
-            laporan.append({**hasil, "status": "error", "message": f"Kode {kode} sudah dipakai pesanan {lain}"})
+            laporan.append({**hasil, "status": "error", "message": f"{s['label']} {kode} sudah dipakai pesanan {lain}"})
             continue
         u = urai(s["template"], kode)
         pk = periode_dari_urai(s["reset"], u) if u and "SEQ" in u else None
@@ -387,11 +396,11 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
             continue
         if so["order_code"] and so["order_code"] != kode:
             laporan.append({**hasil, "status": "error",
-                            "message": f"Pesanan {so['order_number']} sudah berkode {so['order_code']} (ubah lewat ganti manual)"})
+                            "message": f"Pesanan {so['order_number']} sudah memakai {label_kalimat(s['label'])} {so['order_code']} (ubah lewat ganti manual)"})
             continue
         per_so[so["id"]] = (i, kode, judul, so)
         laporan.append({**hasil, "status": "unchanged" if so["order_code"] == kode else "ok",
-                        "message": "Sudah berkode sama" if so["order_code"] == kode else
+                        "message": f"{s['label']} sudah sama" if so["order_code"] == kode else
                                    ("Cocok templat" if u else "Tak cocok templat: diterima, penghitung tak berubah")})
     galat_n = sum(1 for x in laporan if x["status"] == "error")
     ringkas = {"rows": len(baris), "ok": sum(1 for x in laporan if x["status"] == "ok"),
@@ -411,7 +420,7 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
         sekarang = await conn.fetchrow(
             "SELECT order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
         if sekarang["order_code"] not in (None, kode):
-            raise KodeOrderGalat(f"Pesanan {so['order_number']} berubah kodenya selama impor; ulangi pratinjau.")
+            raise KodeOrderGalat(f"{s['label']} pesanan {so['order_number']} berubah selama impor; ulangi pratinjau.")
         await conn.execute(
             """UPDATE sales_orders SET order_code = $3, order_code_source = CASE WHEN order_code IS NULL THEN 'import'
                                                                                ELSE order_code_source END,

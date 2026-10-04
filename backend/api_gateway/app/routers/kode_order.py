@@ -95,7 +95,8 @@ async def simpan_setelan(request: Request):
     async with pool.acquire() as conn:
         from ..services.role_resolution import try_resolve_business_role
         if await try_resolve_business_role(conn, str(ctx["user_id"]), ctx["tenant_id"]) != "OWNER":
-            raise HTTPException(status_code=403, detail="Hanya pemilik usaha yang dapat mengubah pengaturan kode order.")
+            _lbl = KO.label_kalimat((await KO.muat_setelan(conn, ctx["tenant_id"]))["label"])
+            raise HTTPException(status_code=403, detail=f"Hanya pemilik usaha yang dapat mengubah pengaturan {_lbl}.")
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SETTINGS:{ctx['tenant_id']}")
             lama = await KO.muat_setelan(conn, ctx["tenant_id"])
@@ -127,7 +128,8 @@ async def ganti_kode_order(request: Request, order_id: str):
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         if not await KO.boleh_ganti_kode(conn, ctx["tenant_id"], ctx["user_id"]):
-            raise HTTPException(status_code=403, detail="Kode order tidak dapat diganti manual untuk peran/pengaturan ini.")
+            _lbl = (await KO.muat_setelan(conn, ctx["tenant_id"]))["label"]
+            raise HTTPException(status_code=403, detail=f"{_lbl} tidak dapat diganti manual untuk peran/pengaturan ini.")
         mode = (b or {}).get("mode") or "manual"
         if mode not in ("manual", "next"):
             raise HTTPException(status_code=422, detail="mode harus 'manual' atau 'next'.")
@@ -145,8 +147,10 @@ async def ganti_kode_order(request: Request, order_id: str):
     if h["status"] == 404:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if h["status"] == 409:
-        raise HTTPException(status_code=409, detail=(f"Pesanan sudah berkode {h['order_code']}." if mode == "next"
-                                                     else "Kode order sudah dipakai pesanan lain."))
+        async with pool.acquire() as _c:
+            _lbl = (await KO.muat_setelan(_c, ctx["tenant_id"]))["label"]
+        raise HTTPException(status_code=409, detail=(f"Pesanan sudah memakai {KO.label_kalimat(_lbl)} {h['order_code']}."
+                                                     if mode == "next" else f"{_lbl} sudah dipakai pesanan lain."))
     return {"success": True, "data": {k: v for k, v in h.items() if k != "status"}}
 
 
@@ -162,7 +166,8 @@ async def impor_kode_order(request: Request):
     async with pool.acquire() as conn:
         from ..services.role_resolution import try_resolve_business_role
         if await try_resolve_business_role(conn, str(ctx["user_id"]), ctx["tenant_id"]) != "OWNER":
-            raise HTTPException(status_code=403, detail="Hanya pemilik usaha yang dapat mengimpor kode order.")
+            _lbl = KO.label_kalimat((await KO.muat_setelan(conn, ctx["tenant_id"]))["label"])
+            raise HTTPException(status_code=403, detail=f"Hanya pemilik usaha yang dapat mengimpor {_lbl}.")
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_IMPORT:{ctx['tenant_id']}")
             try:
