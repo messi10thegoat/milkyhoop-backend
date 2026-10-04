@@ -245,6 +245,13 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     else:
         src = [{**{k: r[k] for k in ("id", "tax_rate") + MEDAN_BARIS}, "_turunkan": False} for r in lama]
 
+    # badan PATCH yang DINORMALKAN server (permintaan WORKSPACE 4 Okt, pola Terima pelunasan): FE mengirim balik apa
+    # adanya; baris lengkap ber-id (baris lama) / tanpa id (baru), header hanya medan yang dikirim.
+    payload = {k: _js(getattr(body, k)) for k in sorted(fs - {"items"})}
+    if body.items is not None:
+        payload["items"] = [{**({"id": str(x["id"])} if x["id"] else {}),
+                             **{k: _js(x.get(k)) for k in MEDAN_BARIS}} for x in src]
+
     # ---- hitung ulang dengan kalkulator SO yang sama ----
     disc = body.discount_amount if "discount_amount" in fs else so["discount_amount"]
     ship = body.shipping_amount if "shipping_amount" in fs else so["shipping_amount"]
@@ -396,7 +403,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                         "changed": [{"id": str(x["id"]), "description": x["description"],
                                      "changes": {k: [_js(a), _js(b)] for k, (a, b) in x["changes"].items()}} for x in ubahan],
                         "fields": medan},
-            "lines": baris_akhir, "warnings": peringatan}
+            "lines": baris_akhir, "warnings": peringatan, "payload": payload}
 
 
 def _q(x) -> str:
@@ -405,7 +412,9 @@ def _q(x) -> str:
 
 def _js(v):
     if isinstance(v, Decimal):
-        return float(v)
+        return int(v) if v == v.to_integral_value() else float(v)
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
     if isinstance(v, uuid_module.UUID):
         return str(v)
     return v
