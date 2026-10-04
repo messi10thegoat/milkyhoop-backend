@@ -936,7 +936,7 @@ async def _rencana_batal(conn, ctx: dict, cur, alasan) -> dict:
     terbayar = await compute_paid_amount(conn, tid, pid)  # pagar = uang muka EKSPLISIT (bukan atribusi tampilan)
     if terbayar > 0:
         blocks.append(_blok("PROFORMA_HAS_PAYMENT", 400, (
-            f"Proforma sudah menerima pembayaran {terbayar:,.2f}. "
+            f"Proforma sudah menerima pembayaran Rp {_rp2(terbayar).removesuffix(',00')}. "
             f"Tidak bisa dibatalkan — lakukan refund uang muka terlebih dahulu.")))
     order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
     total = _f(order["total_amount"]) or 0.0

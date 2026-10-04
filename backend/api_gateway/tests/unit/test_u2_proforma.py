@@ -84,3 +84,11 @@ def test_pratinjau_batal_alasan_opsional_tapi_tulis_wajib():
     with pytest.raises(Exception):
         PF.CancelProformaRequest(reason="")
     assert "CANCEL_REASON_REQUIRED" in inspect.getsource(PF._rencana_batal)
+
+
+def test_pesan_terbayar_format_rupiah():
+    """Temuan uji nyata U2 (WORKSPACE): dulu "162,000.00" (format Inggris) di kalimat Indonesia; FE menampilkan apa adanya."""
+    src = inspect.getsource(PF._rencana_batal)
+    assert "Rp {_rp2(terbayar).removesuffix(',00')}" in src and ":,.2f}" not in src
+    assert PF._rp2(162000).removesuffix(",00") == "162.000"
+    assert PF._rp2(162000.5).removesuffix(",00") == "162.000,50"
