@@ -2021,7 +2021,7 @@ async def apply_customer_deposit(
                 # X-Idempotency-Key opsional (U3a 4 Okt 2026, pola W0): balasan hilang lalu diulang = respons pertama.
                 from ..services import idem_buat as _ib
                 _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_APPLY", deposit_id,
-                                                       body.model_dump(mode="json"), response)
+                                                       lambda: body.model_dump(mode="json"), response)
                 if _lama is not None:
                     return _lama
                 return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_APPLY",
@@ -2572,7 +2572,7 @@ async def refund_customer_deposit(
                 # X-Idempotency-Key opsional (U3a 4 Okt 2026, pola W0): balasan hilang lalu diulang = respons pertama.
                 from ..services import idem_buat as _ib
                 _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_REFUND", deposit_id,
-                                                       body.model_dump(mode="json"), response)
+                                                       lambda: body.model_dump(mode="json"), response)
                 if _lama is not None:
                     return _lama
                 return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_REFUND",
@@ -2841,7 +2841,7 @@ async def void_customer_deposit(
                 # X-Idempotency-Key opsional (U3a 4 Okt 2026, pola W0): balasan hilang lalu diulang = respons pertama.
                 from ..services import idem_buat as _ib
                 _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_VOID", deposit_id,
-                                                       body.model_dump(mode="json"), response)
+                                                       lambda: body.model_dump(mode="json"), response)
                 if _lama is not None:
                     return _lama
                 return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_VOID",

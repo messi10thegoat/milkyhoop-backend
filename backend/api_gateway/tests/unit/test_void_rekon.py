@@ -80,7 +80,12 @@ def _fungsi_void(src, rute):
             for d in n.decorator_list:
                 if isinstance(d, ast.Call) and d.args and ast.get_source_segment(src, d.args[0]) == rute \
                         and getattr(d.func, "attr", "") == "post":
-                    return n
+                    # 4 Okt 2026 (U3a): handler bisa mendelegasikan ke inti di modul yang sama (void_deposit_core,
+                    # dipakai /void DAN /void/preview) -> periksa INTI itu; invarian (cek sesudah kunci, sebelum tulis) tetap.
+                    inti = {f.name: f for f in t.body if isinstance(f, ast.AsyncFunctionDef) and f.name.endswith("_core")}
+                    dipanggil = [c.func.id for c in ast.walk(n) if isinstance(c, ast.Call)
+                                 and getattr(c.func, "id", "") in inti]
+                    return inti[dipanggil[0]] if dipanggil else n
     raise AssertionError(f"rute {rute} tak ditemukan")
 
 

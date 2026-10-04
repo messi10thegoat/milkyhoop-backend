@@ -28,8 +28,9 @@ DPID = UUID("20000000-0000-0000-0000-0000000000d1")
 
 
 def _req():
+    # headers kosong: /refund kini membaca X-Idempotency-Key (U3a 4 Okt 2026); tanpa kunci = perilaku lama
     return SimpleNamespace(state=SimpleNamespace(user={"user_id": "00000000-0000-0000-0000-0000000000a1",
-                                                       "tenant_id": T, "role": "OWNER"}))
+                                                       "tenant_id": T, "role": "OWNER"}), headers={})
 
 
 def _baris(on_a=0, on_b=0):

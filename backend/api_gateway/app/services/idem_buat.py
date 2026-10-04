@@ -55,13 +55,13 @@ async def simpan(conn, ctx: dict, kunci_penuh, sidik, source_type: str, resp, re
     return resp
 
 
-async def mulai_aksi(conn, ctx: dict, kunci_klien, prefix: str, doc_id, isi: dict, response=None):
+async def mulai_aksi(conn, ctx: dict, kunci_klien, prefix: str, doc_id, isi, response=None):
     """Idempotensi AKSI pada dokumen yang sudah ada (void/refund/apply/terbit...): kunci {PREFIX}:{user}:{doc}:{kunci},
     sidik isi, IDEM lock + replay. Kunci sama + isi beda -> 409. -> (kunci_penuh, sidik, respons_lama|None)."""
     if not kunci_klien:
         return None, None, None
     kunci_penuh = f"{prefix}:{ctx['user_id']}:{doc_id}:{kunci_klien}"
-    sidik = hash_payload(isi)
+    sidik = hash_payload(isi() if callable(isi) else isi)  # isi boleh callable: dihitung HANYA bila ada kunci
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
     try:
         lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
