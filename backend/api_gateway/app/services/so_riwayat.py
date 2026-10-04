@@ -66,6 +66,8 @@ LABEL_MEDAN = [
     ("shipping_address", "alamat kirim"), ("shipping_method", "cara kirim"), ("shipping_amount", "ongkir"),
     ("shipping_tax_code_id", "ongkir"), ("dp_percent", "uang muka"), ("dp_amount", "uang muka"),
     ("payment_bank_name", "rekening"), ("payment_account_number", "rekening"), ("payment_account_holder", "rekening"),
+    ("purpose", "tujuan"), ("percent_of_order", "nominal"), ("amount", "nominal"),
+    ("proforma_date", "tanggal"), ("due_date", "jatuh tempo"),
     ("terms", "syarat pembayaran"), ("payment_terms", "syarat pembayaran"),
     ("opening_text", "teks pembuka"), ("closing_text", "teks penutup"),
     ("notes", "catatan"), ("internal_notes", "catatan internal"), ("footer", "catatan kaki"),

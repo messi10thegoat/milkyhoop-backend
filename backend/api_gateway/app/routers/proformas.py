@@ -153,6 +153,19 @@ class UpdateProformaRequest(BaseModel):
     payment_account_holder: Optional[str] = None
 
 
+# medan proforma yang bisa diubah PATCH (urutan = urutan kolom di UPDATE) -> riwayat PROFORMA_UPDATED
+MEDAN_UBAH_PROFORMA = ("purpose", "percent_of_order", "amount", "proforma_date", "due_date", "terms", "notes",
+                       "payment_bank_name", "payment_account_number", "payment_account_holder")
+
+
+def _js_pf(v):
+    if isinstance(v, Decimal):
+        return float(v)
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return v
+
+
 class CancelProformaRequest(BaseModel):
     reason: str = Field(..., min_length=1)
 
@@ -755,92 +768,101 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
 
 @router.patch("/{proforma_id}")
 async def update_proforma(request: Request, proforma_id: str, body: UpdateProformaRequest):
-    """Ubah proforma. HANYA saat status 'draft'."""
+    """Ubah proforma. HANYA saat status 'draft'.
+    4 Okt 2026 (MASTER GO, U2): SATU transaksi + kunci PROFORMA_SO yang sama dengan buat/terbit (dulu tanpa transaksi
+    dan tanpa kunci -> pagar plafon bisa balapan dengan terbit), dan riwayat PROFORMA_UPDATED (medan yang BERUBAH,
+    lama -> baru, + nominal lama -> baru) di transaksi yang sama (Law 12). Tanpa perubahan nyata -> tanpa baris riwayat."""
     try:
         ctx = get_user_context(request)
         pid = _uuid_or_404(proforma_id)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            cur = await conn.fetchrow(
-                "SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2",
-                pid,
-                ctx["tenant_id"],
-            )
-            if not cur:
-                raise HTTPException(status_code=404, detail="Proforma not found")
-            if cur["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Proforma berstatus '{cur['status']}' tidak bisa diubah. Hanya 'draft'.",
-                )
-
-            order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
-            order_total = _f(order["total_amount"]) or 0.0
-
-            _purpose = _normalisasi_purpose(body.purpose)
-            if _purpose is not None and _purpose not in VALID_PURPOSES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
-                )
-
-            percent = _f(body.percent_of_order)
-            amount = _f(body.amount)
-            if percent is not None:
-                if percent <= 0 or percent > 100:
+            async with conn.transaction():
+                cur = await _kunci_proforma(conn, ctx, pid)
+                if cur["status"] != "draft":
                     raise HTTPException(
-                        status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                        status_code=400,
+                        detail=f"Proforma berstatus '{cur['status']}' tidak bisa diubah. Hanya 'draft'.",
                     )
-                amount = round(order_total * percent / 100.0, 2)
-            if amount is not None:
-                if amount <= 0:
+
+                order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
+                order_total = _f(order["total_amount"]) or 0.0
+
+                _purpose = _normalisasi_purpose(body.purpose)
+                if _purpose is not None and _purpose not in VALID_PURPOSES:
                     raise HTTPException(
-                        status_code=400, detail="amount harus lebih besar dari 0."
+                        status_code=400,
+                        detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
                     )
-                await assert_within_order_total(
-                    conn, ctx["tenant_id"], cur["sales_order_id"], order_total, amount,
-                    exclude_id=pid,
+
+                percent = _f(body.percent_of_order)
+                amount = _f(body.amount)
+                if percent is not None:
+                    if percent <= 0 or percent > 100:
+                        raise HTTPException(
+                            status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                        )
+                    amount = round(order_total * percent / 100.0, 2)
+                if amount is not None:
+                    if amount <= 0:
+                        raise HTTPException(
+                            status_code=400, detail="amount harus lebih besar dari 0."
+                        )
+                    await assert_within_order_total(
+                        conn, ctx["tenant_id"], cur["sales_order_id"], order_total, amount,
+                        exclude_id=pid,
+                    )
+
+                row = await conn.fetchrow(
+                    """
+                    UPDATE proformas SET
+                        purpose = COALESCE($3, purpose),
+                        percent_of_order = CASE WHEN $4::numeric IS NOT NULL THEN $4::numeric
+                                                WHEN $5::numeric IS NOT NULL THEN NULL
+                                                ELSE percent_of_order END,
+                        amount = COALESCE($6::numeric, amount),
+                        proforma_date = COALESCE($7::date, proforma_date),
+                        due_date = COALESCE($8::date, due_date),
+                        terms = COALESCE($9, terms),
+                        notes = COALESCE($10, notes),
+                        payment_bank_name = COALESCE($11, payment_bank_name),
+                        payment_account_number = COALESCE($12, payment_account_number),
+                        payment_account_holder = COALESCE($13, payment_account_holder)
+                    WHERE id = $1 AND tenant_id = $2
+                    RETURNING *
+                    """,
+                    pid,
+                    ctx["tenant_id"],
+                    _purpose,
+                    Decimal(str(percent)) if percent is not None else None,
+                    Decimal(str(body.amount)) if body.amount is not None else None,
+                    Decimal(str(amount)) if amount is not None else None,
+                    body.proforma_date,
+                    body.due_date,
+                    body.terms,
+                    body.notes,
+                    body.payment_bank_name,
+                    body.payment_account_number,
+                    body.payment_account_holder,
                 )
 
-            row = await conn.fetchrow(
-                """
-                UPDATE proformas SET
-                    purpose = COALESCE($3, purpose),
-                    percent_of_order = CASE WHEN $4::numeric IS NOT NULL THEN $4::numeric
-                                            WHEN $5::numeric IS NOT NULL THEN NULL
-                                            ELSE percent_of_order END,
-                    amount = COALESCE($6::numeric, amount),
-                    proforma_date = COALESCE($7::date, proforma_date),
-                    due_date = COALESCE($8::date, due_date),
-                    terms = COALESCE($9, terms),
-                    notes = COALESCE($10, notes),
-                    payment_bank_name = COALESCE($11, payment_bank_name),
-                    payment_account_number = COALESCE($12, payment_account_number),
-                    payment_account_holder = COALESCE($13, payment_account_holder)
-                WHERE id = $1 AND tenant_id = $2
-                RETURNING *
-                """,
-                pid,
-                ctx["tenant_id"],
-                _purpose,
-                Decimal(str(percent)) if percent is not None else None,
-                Decimal(str(body.amount)) if body.amount is not None else None,
-                Decimal(str(amount)) if amount is not None else None,
-                body.proforma_date,
-                body.due_date,
-                body.terms,
-                body.notes,
-                body.payment_bank_name,
-                body.payment_account_number,
-                body.payment_account_holder,
-            )
+                ubah = {m: [_js_pf(cur[m]), _js_pf(row[m])] for m in MEDAN_UBAH_PROFORMA if cur[m] != row[m]}
+                if ubah:
+                    medan = sorted(ubah)
+                    await catat_riwayat(
+                        conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_UPDATED",
+                        ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diubah ({', '.join(medan)})".replace("  ", " "),
+                        {"fields": medan, "changes": ubah, "total": [_js_pf(cur["amount"]), _js_pf(row["amount"])],
+                         "sales_order_id": str(cur["sales_order_id"])},
+                        source="api:proformas.update",
+                    )
 
-            paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
-            return {
-                "success": True,
-                "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
-            }
+                paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
+                return {
+                    "success": True,
+                    "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
+                }
 
     except HTTPException:
         raise
