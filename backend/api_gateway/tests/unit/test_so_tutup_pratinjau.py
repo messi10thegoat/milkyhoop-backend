@@ -262,7 +262,7 @@ async def test_close_status_salah_detail_string_lama(pasang):
     pasang(_C(status="completed"))
     with pytest.raises(HTTPException) as e:
         await _tutup("x")
-    assert e.value.detail == "Cannot close order with status 'completed'"
+    assert e.value.detail.endswith(" berstatus Selesai — tidak bisa ditutup.")
 
 
 SKENARIO = [
@@ -302,7 +302,7 @@ async def test_pratinjau_sama_dengan_hasil_close(pasang, sk):
         b0 = p["blocks"][0]
         assert e.value.status_code == 400
         if b0["code"] == "SO_STATUS_NOT_CLOSABLE":
-            assert e.value.detail == f"Cannot close order with status '{p['status']}'"
+            assert e.value.detail == b0["message"]
         else:
             assert e.value.detail == b0
         assert c.tulis == []

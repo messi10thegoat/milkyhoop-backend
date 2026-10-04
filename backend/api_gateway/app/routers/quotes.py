@@ -11,6 +11,7 @@ from datetime import date, datetime
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services import faktur_cetak as _fc_snap
+from ..services import teks_galat as tg
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.sales_doc_calc import (
@@ -516,7 +517,7 @@ async def get_quote_detail(request: Request, quote_id: str):
             )
 
             if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
             # Get items
             items_query = """
@@ -833,14 +834,14 @@ async def get_quote_history(request: Request, quote_id: str, limit: int = Query(
     try:
         qid = uuid_module.UUID(quote_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Quote not found")
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
     from ..services.dashboard_izin import boleh_baca
     from ..services.so_riwayat import riwayat_penawaran
     pool = await get_pool()
     async with pool.acquire() as conn:
         data = await riwayat_penawaran(conn, ctx["tenant_id"], qid, lambda m: boleh_baca(request, m), limit)
     if data is None:
-        raise HTTPException(status_code=404, detail="Quote not found")
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -897,7 +898,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 )
 
                 if not quote:
-                    raise HTTPException(status_code=404, detail="Quote not found")
+                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
                 # 2 Okt 2026 (MASTER, praktik umum): "Perpanjang" = HANYA expiry_date, pada penawaran terkirim/
                 # dilihat. Field lain tetap hanya draf (penjaga di bawah).
@@ -919,7 +920,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
 
                 if quote["status"] != "draft":
                     raise HTTPException(
-                        status_code=400, detail="Only draft quotes can be updated"
+                        status_code=400, detail="Hanya penawaran berstatus Draf yang bisa diubah."
                     )
 
                 # Build update query
@@ -1125,7 +1126,7 @@ async def alasan_tak_bisa_hapus(conn, tenant_id: str, quote) -> Optional[str]:
     -> None (boleh) atau kalimat alasan."""
     n = quote["quote_number"]
     if quote["status"] != "draft":
-        return f"Penawaran {n} berstatus {quote['status']}; hanya draf yang bisa dihapus. Batalkan saja."
+        return f"Penawaran {n} berstatus {tg.status_id('quote', quote['status'])}; hanya draf yang bisa dihapus. Batalkan saja."
     if quote["sent_at"] is not None:
         return f"Penawaran {n} sudah pernah ditandai terkirim. Batalkan saja."
     if await conn.fetchval("""SELECT 1 FROM document_shares WHERE tenant_id = $1 AND kind = 'quotation' AND doc_id = $2
@@ -1164,7 +1165,7 @@ async def delete_quote(request: Request, quote_id: str):
                 )
 
                 if not quote:
-                    raise HTTPException(status_code=404, detail="Quote not found")
+                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
                 alasan = await alasan_tak_bisa_hapus(conn, ctx["tenant_id"], quote)
                 if alasan:
@@ -1221,12 +1222,12 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
             )
 
             if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
             if quote["status"] not in ("draft", "sent"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot send quote with status '{quote['status']}'",
+                    detail=tg.tak_bisa_status("quote", quote["status"], "dikirim", quote["quote_number"]),
                 )
 
             # SUREL PENAWARAN BELUM ADA -- DAN JALUR INI DULU BERPURA-PURA.
@@ -1292,12 +1293,12 @@ async def accept_quote(request: Request, quote_id: str):
             )
 
             if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
             if quote["status"] not in ("sent", "viewed"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot accept quote with status '{quote['status']}'",
+                    detail=tg.tak_bisa_status("quote", quote["status"], "diterima", quote["quote_number"]),
                 )
 
             await conn.execute(
@@ -1369,12 +1370,12 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
             )
 
             if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
             if quote["status"] not in ("sent", "viewed"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot decline quote with status '{quote['status']}'",
+                    detail=tg.tak_bisa_status("quote", quote["status"], "ditolak", quote["quote_number"]),
                 )
 
             await _tolak_bila_ada_uang_muka_aktif(
@@ -1439,12 +1440,13 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
             )
 
             if not quote:
-                raise HTTPException(status_code=404, detail="Quote not found")
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
             if quote["status"] not in ("draft", "sent"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot void quote with status '{quote['status']}'. Only draft or sent quotes can be voided.",
+                    detail=tg.tak_bisa_status("quote", quote["status"], "dibatalkan", quote["quote_number"])
+                + " Hanya penawaran berstatus Draf atau Terkirim yang bisa dibatalkan.",
                 )
 
             await _tolak_bila_ada_uang_muka_aktif(
@@ -1512,7 +1514,7 @@ async def duplicate_quote(
                 )
 
                 if not quote:
-                    raise HTTPException(status_code=404, detail="Quote not found")
+                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
                 # Get original items
                 items = await conn.fetch(
@@ -1669,12 +1671,12 @@ async def convert_to_invoice(
                 )
 
                 if not quote:
-                    raise HTTPException(status_code=404, detail="Quote not found")
+                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
                 if quote["status"] not in ("sent", "accepted", "viewed"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot convert quote with status '{quote['status']}'",
+                        detail=tg.tak_bisa_status("quote", quote["status"], "dijadikan pesanan", quote["quote_number"]),
                     )
 
                 # Get items
@@ -1690,7 +1692,7 @@ async def convert_to_invoice(
                     items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
 
                 if not items:
-                    raise HTTPException(status_code=400, detail="No items to convert")
+                    raise HTTPException(status_code=400, detail="Penawaran tidak punya barang untuk dijadikan pesanan.")
 
                 # Generate invoice number
                 invoice_number = await conn.fetchval(
@@ -1847,7 +1849,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
     )
 
     if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
     if (quote["status"] == "converted" and quote.get("converted_to_type") == "sales_order"
             and quote.get("converted_to_id")):
@@ -1866,7 +1868,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
     if quote["status"] not in ("sent", "accepted", "viewed"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot convert quote with status '{quote['status']}'",
+            detail=tg.tak_bisa_status("quote", quote["status"], "dijadikan pesanan", quote["quote_number"]),
         )
 
     # Get items
@@ -1882,7 +1884,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
         items = await conn.fetch(items_query, uuid_module.UUID(quote_id))
 
     if not items:
-        raise HTTPException(status_code=400, detail="No items to convert")
+        raise HTTPException(status_code=400, detail="Penawaran tidak punya barang untuk dijadikan pesanan.")
 
     # Generate SO number
     so_number = await conn.fetchval(
@@ -2148,7 +2150,7 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
     )
 
     if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
 
     # Fetch items
     items = await conn.fetch(

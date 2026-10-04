@@ -283,7 +283,7 @@ async def unduh_lampiran_so(request: Request, order_id: UUID, attachment_id: UUI
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             row = await conn.fetchrow(_SQL_UNDUH, attachment_id, order_id, tenant_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
     return stream_lampiran(row, get_storage_service())
 
 
@@ -302,6 +302,6 @@ async def lepas_lampiran_so(request: Request, order_id: UUID, attachment_id: UUI
             )
             lepas = await conn.fetchval(_SQL_LEPAS, attachment_id, order_id, tenant_id)
             if not lepas:
-                raise HTTPException(status_code=404, detail="Attachment not found")
+                raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
             terpakai = await hitung_lampiran_tersedia(conn, tenant_id, _ENTITAS, order_id)
     return {"success": True, "kuota": _kuota(terpakai)}

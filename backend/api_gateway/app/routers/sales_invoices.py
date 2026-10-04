@@ -14,6 +14,7 @@ import logging
 import asyncpg
 
 from ..services import faktur_cetak as _fc_snap
+from ..services import teks_galat as tg
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 from ..services.so_riwayat import catat_riwayat, riwayat_faktur
@@ -137,7 +138,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})",
+            detail=tg.periode_tertutup(period_name, period_status),
         )
 
 
@@ -1168,7 +1169,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Get items (+ nama master sebagai product_name; description = teks dokumen)
             items = await conn.fetch(
@@ -1698,7 +1699,7 @@ async def _execute_fulfillment(
         remaining_qty = quantity_total - fulfilled_so_far
         if req_qty > remaining_qty:
             raise HTTPException(
-                409, f"Sisa qty {description} hanya {remaining_qty}, diminta {req_qty}"
+                409, f"Sisa {description} hanya {tg.qty(remaining_qty)}, diminta {tg.qty(req_qty)}."
             )
 
         # P4 (26 Sep 2026): nilai baris SUDAH habis dikreditkan nota kredit atas pendapatan tertunda (V312:
@@ -1912,7 +1913,7 @@ async def _execute_fulfillment(
                 )
                 raise HTTPException(
                     400,
-                    f"Stok batch tidak cukup. Tersedia: {available}, diminta: {req_qty}",
+                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(req_qty)}.",
                 )
 
             await conn.execute(
@@ -3123,7 +3124,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         UUID(customer_id_str)  # Validate format
                     except ValueError:
                         raise HTTPException(
-                            status_code=400, detail="Invalid customer_id format"
+                            status_code=400, detail="Pelanggan tidak sah."
                         )
 
                 # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID).
@@ -3502,7 +3503,7 @@ async def update_invoice(
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Optimistic concurrency (opt-in): reject a stale write (lost-update guard).
             from ..services.optimistic_concurrency import assert_if_match
@@ -3524,14 +3525,14 @@ async def update_invoice(
             # Guard: Cannot update voided invoices
             if invoice["status"] == "void":
                 raise HTTPException(
-                    status_code=400, detail="Cannot update voided invoice"
+                    status_code=400, detail="Faktur berstatus Batal tidak bisa diubah."
                 )
 
             # Guard: Cannot update non-draft invoices
             if invoice["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot edit posted invoice. Only draft invoices can be edited.",
+                    detail="Faktur yang sudah diterbitkan tidak bisa diubah. Hanya faktur berstatus Draf yang bisa diubah.",
                 )
 
             # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID) -- SEBELUM tulisan apa pun.
@@ -3920,11 +3921,11 @@ async def post_invoice(
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             if invoice["status"] != "draft":
                 raise HTTPException(
-                    status_code=400, detail="Only draft invoices can be posted"
+                    status_code=400, detail="Hanya faktur berstatus Draf yang bisa diterbitkan."
                 )
 
             async with conn.transaction():
@@ -4041,11 +4042,11 @@ async def record_payment(
                 )
 
                 if not invoice:
-                    raise HTTPException(status_code=404, detail="Invoice not found")
+                    raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
                 if invoice["status"] not in ("posted", "partial", "overdue"):
                     raise HTTPException(
                         status_code=400,
-                        detail="Invoice must be posted before recording payment",
+                        detail="Terbitkan faktur dulu sebelum mencatat pembayaran.",
                     )
 
                 # Law 16/29: sisa = compute_ar_outstanding, lewat helper yang SAMA dengan validator
@@ -4058,8 +4059,7 @@ async def record_payment(
                 if body.amount > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail="Payment amount exceeds remaining balance of Rp "
-                        + f"{remaining:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".").removesuffix(",00"),
+                        detail=f"Jumlah bayar melebihi sisa tagihan {tg.rp(remaining)}.",
                     )
 
                 # --- Resolve bank account ---
@@ -4106,7 +4106,7 @@ async def record_payment(
                 if not bank_account_uuid:
                     raise HTTPException(
                         status_code=400,
-                        detail="Could not resolve bank account from account_id",
+                        detail="Rekening untuk akun yang dipilih tidak ditemukan.",
                     )
 
                 # === PENCATATAN = inti create yang SAMA dengan POST /receive-payments ===
@@ -4114,7 +4114,7 @@ async def record_payment(
                 from .receive_payments import buat_penerimaan
                 from ..schemas.receive_payments import CreateReceivePaymentRequest
                 if not invoice["customer_id"]:
-                    raise HTTPException(status_code=400, detail="Invoice has no customer")
+                    raise HTTPException(status_code=400, detail="Faktur belum punya pelanggan.")
                 # kosakata lama (transfer/check/other) = "turunkan dari jenis akun" (#29) -> None di inti
                 metode_klien = body.payment_method if body.payment_method in ("cash", "bank_transfer", "e_wallet") else None
                 pay_amount = body.amount
@@ -4202,7 +4202,7 @@ async def _rencana_void_faktur(conn, ctx: dict, invoice_id: UUID) -> dict:
     )
 
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
     if invoice["status"] == "void":
         d = f"Faktur {invoice['invoice_number']} sudah dibatalkan."
@@ -5190,7 +5190,7 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
                 ctx["tenant_id"],
             )
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
             if invoice["customer_id"] is None:
                 return {"items": [], "total": 0}
 
@@ -5319,20 +5319,20 @@ async def delete_invoice(request: Request, invoice_id: UUID):
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Guard: Cannot delete voided invoices
             if invoice["status"] == "void":
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot delete voided invoice",
+                    detail="Faktur berstatus Batal tidak bisa dihapus.",
                 )
 
             # Guard: Cannot delete non-draft invoices
             if invoice["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot delete posted invoice. Use void instead.",
+                    detail="Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya.",
                 )
 
             # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
@@ -5411,7 +5411,7 @@ async def get_invoice_history(
             async with pool.acquire() as conn:
                 data = await riwayat_faktur(conn, ctx["tenant_id"], invoice_id, lambda m: boleh_baca(request, m), limit)
             if data is None:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
             return {"success": True, "data": data}
 
         async with pool.acquire() as conn:
@@ -5426,7 +5426,7 @@ async def get_invoice_history(
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Get history from audit_logs
             # Note: audit_logs table uses camelCase columns and metadata JSONB
@@ -5504,7 +5504,7 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
             invoice_id, ctx["tenant_id"],
         )
         if not inv:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+            raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
         can_delete = inv["status"] == "draft"
         blocked = None
         if not can_delete:
@@ -5587,7 +5587,7 @@ async def get_invoice_deposit_plan(
             invoice_id, ctx["tenant_id"],
         )
         if not inv:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+            raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
         outstanding = (
             Decimal(str(inv["total_amount"] or 0)) if inv["status"] == "draft"
             else await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id)
@@ -5630,7 +5630,7 @@ async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
     )
 
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
     # Cabang dan alamat bank untuk blok pembayaran.
     #
@@ -5999,7 +5999,7 @@ async def get_invoice_activity(
                 ctx["tenant_id"],
             )
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Helper: resolve user name from user_id (table is "User" with capital U)
             async def resolve_actor(user_id):
@@ -6146,7 +6146,7 @@ async def get_invoice_journals(
             )
 
             if not invoice:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             # Get journal entries that reference this invoice
             entries = await conn.fetch(
@@ -6352,7 +6352,7 @@ async def upload_invoice_attachment(
                 tenant_id,
             )
             if not inv:
-                raise HTTPException(status_code=404, detail="Invoice not found")
+                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
             storage = get_storage_service()
             result = await storage.upload_file(
@@ -6419,7 +6419,7 @@ async def list_invoice_attachments(
             tenant_id,
         )
         if not inv:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+            raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
         rows = await conn.fetch(
             'SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name FROM sales_invoice_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text WHERE sa.invoice_id = $1 ORDER BY sa.uploaded_at DESC',
@@ -6513,7 +6513,7 @@ async def delete_invoice_attachment(
                 tenant_id,
             )
             if not lepas:
-                raise HTTPException(status_code=404, detail="Attachment not found")
+                raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
             return {"success": True, "message": "Attachment unlinked"}
 
         storage = get_storage_service()
@@ -6559,7 +6559,7 @@ async def download_invoice_attachment(
                     _SI_ATT_SQL_UNDUH_DOKUMEN, attachment_id, invoice_id, tenant_id
                 )
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())
 
@@ -6589,7 +6589,7 @@ async def _akui_pendapatan_nonstok(conn, tenant_id: str, invoice_id, user_id, jo
     if not inv:
         raise HTTPException(404, "Faktur tidak ditemukan")
     if inv["status"] not in ("posted", "partial", "paid"):
-        raise HTTPException(409, f"Faktur berstatus {inv['status']} — hanya faktur terbit yang bisa diakui pendapatannya")
+        raise HTTPException(409, f"Faktur berstatus {tg.status_id('si', inv['status'])} — hanya faktur terbit yang bisa diakui pendapatannya")
     baris = await conn.fetch(
         """SELECT sii.id, sii.allocated_amount, sii.recognized_amount, sii.description
            FROM sales_invoice_items sii
@@ -6700,9 +6700,9 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         req_items = body.get("items", [])
 
         if not warehouse_id_str:
-            raise HTTPException(400, "warehouse_id required")
+            raise HTTPException(400, "Gudang wajib dipilih.")
         if not req_items:
-            raise HTTPException(400, "items required")
+            raise HTTPException(400, "Barang wajib diisi.")
 
         warehouse_id = UUID(warehouse_id_str)
         fulfillment_date = (
@@ -6731,7 +6731,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                     ctx["tenant_id"],
                 )
                 if not invoice:
-                    raise HTTPException(404, "Invoice not found")
+                    raise HTTPException(404, "Faktur tidak ditemukan.")
 
                 # C5 (26 Sep 2026): hash + idempotensi SEBELUM guard status — replay sesudah terkirim penuh
                 # (fulfillment_status 'fulfilled') mengembalikan hasil lama, bukan 400.
@@ -6843,7 +6843,7 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
                 ctx["tenant_id"],
             )
             if not invoice:
-                raise HTTPException(404, "Invoice not found")
+                raise HTTPException(404, "Faktur tidak ditemukan.")
 
             # Get fulfillments
             fulfillments = await conn.fetch(

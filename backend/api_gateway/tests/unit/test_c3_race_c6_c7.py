@@ -316,4 +316,4 @@ async def test_c6_buat_so_customer_id_buruk_422_tanpa_db(monkeypatch):
                                       items=[{"description": "a", "quantity": 1, "unit_price": 1}])
     with pytest.raises(HTTPException) as e:
         await SO.create_sales_order(_req(), body, SimpleNamespace(headers={}))
-    assert e.value.status_code == 422 and "customer_id" in str(e.value.detail)
+    assert e.value.status_code == 422 and "Pelanggan" in str(e.value.detail)

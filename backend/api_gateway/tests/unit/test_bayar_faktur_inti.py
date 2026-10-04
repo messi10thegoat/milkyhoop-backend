@@ -178,7 +178,7 @@ async def test_rekening_wajib_baris_bank_accounts(pasang):
     pasang(_C(bank=False))
     with pytest.raises(HTTPException) as e:
         await _bayar()
-    assert e.value.detail == "Could not resolve bank account from account_id" and "body" not in pasang.tangkap
+    assert e.value.detail == "Rekening untuk akun yang dipilih tidak ditemukan." and "body" not in pasang.tangkap
 
 
 @pytest.mark.asyncio

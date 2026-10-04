@@ -86,8 +86,8 @@ async def test_draf_bersih_terhapus_satu_transaksi_beraktor(pasang):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kw,kata", [
-    ({"status": "sent"}, "berstatus sent"), ({"status": "void"}, "berstatus void"),
-    ({"status": "converted"}, "berstatus converted"),
+    ({"status": "sent"}, "berstatus Terkirim"), ({"status": "void"}, "berstatus Batal"),
+    ({"status": "converted"}, "berstatus Dikonversi"),
     ({"sent_at": datetime(2026, 10, 3, tzinfo=timezone.utc)}, "ditandai terkirim"),
     ({"tautan": True}, "dibagikan"), ({"so": True}, "dijadikan pesanan"),
 ])

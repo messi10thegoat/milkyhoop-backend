@@ -125,9 +125,9 @@ async def test_patch_pesan_penolakan_menyebut_tiga_angka(monkeypatch):
     with pytest.raises(HTTPException) as ex:
         await _patch(monkeypatch, _rows(5_000_000, 1_600_000), amount=4_000_000)
     detail = ex.value.detail
-    assert "5.000.000,00" in detail, detail
-    assert "1.600.000,00" in detail, detail
-    assert "3.400.000,00" in detail, detail
+    assert "Rp 5.000.000" in detail, detail
+    assert "Rp 1.600.000" in detail, detail
+    assert "Rp 3.400.000." in detail, detail
 
 
 # ------------------------------------------------ KONTROL BATAS: TEPAT SISA

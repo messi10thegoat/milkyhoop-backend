@@ -206,11 +206,11 @@ async def test_batal_detail_galat_lama_identik(pasang):
     c = pasang(_C(status="completed"))
     with pytest.raises(HTTPException) as e:
         await _batal("x")
-    assert e.value.status_code == 400 and e.value.detail == "Cannot cancel order with status 'completed'"
+    assert e.value.status_code == 400 and e.value.detail.startswith("Pesanan ") and e.value.detail.endswith(" berstatus Selesai — tidak bisa dibatalkan.")
     c = pasang(_C(faktur=1))
     with pytest.raises(HTTPException) as e:
         await _batal()
-    assert e.value.detail == "Cannot cancel order with shipments or invoices" and _audit(c) == []
+    assert e.value.detail.endswith(" sudah punya pengiriman atau faktur — tidak bisa dibatalkan.") and _audit(c) == []
 
 
 @pytest.mark.asyncio
@@ -245,11 +245,8 @@ async def test_pratinjau_sama_dengan_hasil_batal(pasang, sk, dp):
     else:
         with pytest.raises(HTTPException) as e:
             await _batal("r")
-        b0 = p["blocks"][0]["code"]
-        harap = {"SO_STATUS_NOT_CANCELLABLE": f"Cannot cancel order with status '{p['status']}'",
-                 "SO_HAS_SHIPMENTS_OR_INVOICES": "Cannot cancel order with shipments or invoices"}.get(b0)
         assert e.value.status_code == 400
-        assert e.value.detail == (harap or p["blocks"][0]["message"])
+        assert e.value.detail == p["blocks"][0]["message"]
         assert _audit(c) == []
 
 

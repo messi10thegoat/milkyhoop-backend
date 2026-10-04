@@ -24,6 +24,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from . import teks_galat as tg
 from . import so_kirim
 
 _NOL = Decimal("0")
@@ -109,7 +110,7 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
         so_id, tid,
     )
     if not so:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     so = dict(so)
     blocks, notes = [], []
 
@@ -192,8 +193,8 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
             tersedia = sum((b["sisa"] for b in calon), _NOL)
             if it.quantity > tersedia:
                 blocks.append({"code": "SO_FULFILL_QTY_EXCEEDS",
-                               "message": (f"'{nama}': diminta {_q(it.quantity)}, yang sudah difakturkan dan belum "
-                                           f"dikirim hanya {_q(tersedia)}."
+                               "message": (f"'{nama}': diminta {tg.qty(it.quantity)}, yang sudah difakturkan dan belum "
+                                           f"dikirim hanya {tg.qty(tersedia)}."
                                            + (" Terbitkan faktur draf " + ", ".join(draf) + " dulu." if draf else "")),
                                "sales_order_item_id": str(sid), "available": _f(tersedia)})
                 continue
@@ -259,7 +260,7 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
             stok = Decimal(str(stok)) if stok is not None else _NOL
             if stok < x["qty"]:
                 blocks.append({"code": "SO_FULFILL_STOCK_SHORT",
-                               "message": f"Stok {x['nama']} di {gudang['name']} {_q(stok)}, dibutuhkan {_q(x['qty'])}.",
+                               "message": f"Stok {x['nama']} di {gudang['name']} {tg.qty(stok)}, dibutuhkan {tg.qty(x['qty'])}.",
                                "item_id": str(pid), "sales_order_item_ids": x["soi"],
                                "sales_order_item_id": x["soi"][0] if len(x["soi"]) == 1 else None,
                                "available": _f(stok), "requested": _f(x["qty"])})

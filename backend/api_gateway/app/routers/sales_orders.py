@@ -11,6 +11,7 @@ import asyncpg
 import logging
 import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
+from ..services import teks_galat as tg
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..services.so_posisi import fakta_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -432,7 +433,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             )
 
             if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
+                raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
             # Get items
             items = await conn.fetch(
@@ -984,7 +985,7 @@ async def update_sales_order(
                 )
 
                 if not order:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
+                    raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
                 # V359 judul order: label, bukan uang -> boleh di SEMUA status. Diterapkan lewat jalur sendiri
                 # (services/kode_order.ubah_judul: normalisasi + riwayat), lalu dibuang dari body supaya penjaga
@@ -1023,7 +1024,7 @@ async def update_sales_order(
                         return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
                             success=True, message="Sales order updated", data=hasil), order["id"])
                     raise HTTPException(
-                        status_code=400, detail="Only draft orders can be updated"
+                        status_code=400, detail="Hanya pesanan berstatus Draf yang bisa diubah."
                     )
 
                 updates = []
@@ -1270,7 +1271,7 @@ async def preview_edit_sales_order(request: Request, order_id: str, body: Update
             async with conn.transaction():
                 so = await _so_untuk_ubah(conn, ctx, oid)
                 if not so:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
+                    raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
                 if so["status"] == "draft":
                     _sut.galat(409, "SO_IS_DRAFT", "Pesanan masih draf: ubah langsung tanpa pratinjau.")
                 if not await _sut.flag_aktif(conn, ctx["tenant_id"]):
@@ -1326,11 +1327,11 @@ async def delete_sales_order(request: Request, order_id: str):
             )
 
             if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
+                raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
             if order["status"] != "draft":
                 raise HTTPException(
-                    status_code=400, detail="Only draft orders can be deleted"
+                    status_code=400, detail="Hanya pesanan berstatus Draf yang bisa dihapus."
                 )
 
             await _tolak_bila_ada_uang_muka_aktif(
@@ -1394,12 +1395,12 @@ async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
     )
 
     if not order:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
     if order["status"] != "draft":
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot confirm order with status '{order['status']}'",
+            detail=tg.tak_bisa_status("so", order["status"], "dikonfirmasi"),
         )
 
     # UPDATE BERSYARAT status='draft': status dibaca di atas tanpa kunci -> tanpa syarat
@@ -1495,19 +1496,19 @@ async def _rencana_batal_so(conn, ctx, order_id: str, reason) -> dict:
         _so_uuid(order_id), ctx["tenant_id"],
     )
     if not order:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     blocks, notes = [], []
     if order["status"] in SO_TAK_BISA_BATAL:
         blocks.append({
             "code": "SO_STATUS_NOT_CANCELLABLE",
-            "message": f"Pesanan {order['order_number']} berstatus '{order['status']}' — tidak bisa dibatalkan.",
-            "detail": f"Cannot cancel order with status '{order['status']}'",
+            "message": tg.tak_bisa_status("so", order["status"], "dibatalkan", order["order_number"]),
+            "detail": tg.tak_bisa_status("so", order["status"], "dibatalkan", order["order_number"]),
         })
     if (order["shipped_qty"] or 0) > 0 or (order["invoiced_qty"] or 0) > 0:
         blocks.append({
             "code": "SO_HAS_SHIPMENTS_OR_INVOICES",
             "message": f"Pesanan {order['order_number']} sudah punya pengiriman atau faktur — tidak bisa dibatalkan.",
-            "detail": "Cannot cancel order with shipments or invoices",
+            "detail": f"Pesanan {order['order_number']} sudah punya pengiriman atau faktur — tidak bisa dibatalkan.",
         })
 
     # uang muka DRAF (tertaut langsung / lewat proforma SO) -- predikat "aktif" dp_guard, status draft
@@ -1576,7 +1577,7 @@ async def cancel_sales_order(
                     _so_uuid(order_id), ctx["tenant_id"],
                 )
                 if not ada:
-                    raise HTTPException(status_code=404, detail="Sales order not found")
+                    raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
                 rencana = await _rencana_batal_so(conn, ctx, order_id, alasan_batal)
                 if rencana["blocks"]:
                     raise HTTPException(status_code=400, detail=rencana["blocks"][0]["detail"])
@@ -1701,7 +1702,7 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
     )
 
     if not order:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
     blocks = []
     # F1 (putusan pemilik 26 Sep): 'confirmed' (0 kirim/0 faktur) boleh ditutup = short close
@@ -1709,8 +1710,8 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
     if order["status"] not in SO_BISA_DITUTUP:
         blocks.append({
             "code": "SO_STATUS_NOT_CLOSABLE",
-            "message": f"SO {order['order_number']} berstatus '{order['status']}' — tidak bisa ditutup.",
-            "detail": f"Cannot close order with status '{order['status']}'",
+            "message": tg.tak_bisa_status("so", order["status"], "ditutup", order["order_number"]),
+            "detail": tg.tak_bisa_status("so", order["status"], "ditutup", order["order_number"]),
         })
 
     from .customer_deposits import compute_deposit_remaining, linked_so_deposits
@@ -2139,7 +2140,7 @@ async def get_order_shipments(request: Request, order_id: str):
             )
 
             if not order:
-                raise HTTPException(status_code=404, detail="Sales order not found")
+                raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
             shipments = await conn.fetch(
                 """
@@ -2199,7 +2200,7 @@ def _so_uuid(order_id) -> uuid_module.UUID:
     try:
         return uuid_module.UUID(str(order_id))
     except (ValueError, TypeError, AttributeError):
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
 
 
 def _baris_tagih(inv_item) -> tuple:
@@ -2211,7 +2212,7 @@ def _baris_tagih(inv_item) -> tuple:
     try:
         sid = uuid_module.UUID(str(inv_item["so_item_id"]))
     except (ValueError, TypeError):
-        raise HTTPException(status_code=422, detail=f"so_item_id tidak sah: {inv_item['so_item_id']}")
+        raise HTTPException(status_code=422, detail="Baris pesanan yang ditagih tidak sah.")
     if inv_item.get("quantity") is None:
         return sid, None
     q = inv_item["quantity"]
@@ -2229,13 +2230,16 @@ def _baris_tagih(inv_item) -> tuple:
 def _cek_uuid_badan_so(body) -> None:
     """C6: medan id di badan buat SO yang bukan UUID -> 422 bernama medan (dulu ValueError di tengah
     transaksi -> 500 "Failed to create sales order"). Dicek SEBELUM kueri apa pun."""
+    _NAMA_MEDAN = {"customer_id": "Pelanggan", "quote_id": "Penawaran", "shipping_tax_code_id": "Pajak ongkos kirim",
+                   "item_id": "Barang", "warehouse_id": "Gudang"}
+
     def cek(nilai, medan):
         if nilai in (None, ""):
             return
         try:
             uuid_module.UUID(str(nilai))
         except (ValueError, TypeError):
-            raise HTTPException(status_code=422, detail=f"{medan} tidak sah: {nilai}")
+            raise HTTPException(status_code=422, detail=f"{_NAMA_MEDAN.get(medan.split('.')[-1], medan)} tidak sah.")
     cek(body.customer_id, "customer_id")
     cek(getattr(body, "quote_id", None), "quote_id")
     cek(getattr(body, "shipping_tax_code_id", None), "shipping_tax_code_id")
@@ -2287,7 +2291,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
     if order["status"] in ("draft", "cancelled", "invoiced", "completed"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot invoice order with status '{order['status']}'",
+            detail=tg.tak_bisa_status("so", order["status"], "ditagih"),
         )
 
     # Get items to invoice
@@ -2307,7 +2311,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
             if not soi:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Item {inv_item['so_item_id']} not found",
+                    detail="Baris pesanan yang ditagih tidak ditemukan.",
                 )
 
             remaining = float(soi["quantity"]) - float(
@@ -2318,7 +2322,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
             if qty > remaining:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Quantity {qty} exceeds uninvoiced {remaining}",
+                    detail=f"Jumlah {tg.qty(qty)} melebihi sisa yang belum ditagih ({tg.qty(remaining)}).",
                 )
 
             items_to_invoice.append({**dict(soi), "invoice_qty": qty})
@@ -2341,7 +2345,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
         ]
 
     if not items_to_invoice:
-        raise HTTPException(status_code=400, detail="No items to invoice")
+        raise HTTPException(status_code=400, detail="Tidak ada barang yang bisa ditagih.")
 
     invoice_number = await conn.fetchval(
         "SELECT generate_sales_invoice_number($1::text, 'INV')",
@@ -2379,7 +2383,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
         if _inv_qty.get(str(r["id"]), _dd(0)) > _rem:
             raise HTTPException(
                 status_code=400,
-                detail=f"Quantity {_inv_qty[str(r['id'])]} exceeds uninvoiced {_rem}",
+                detail=f"Jumlah {tg.qty(_inv_qty[str(r['id'])])} melebihi sisa yang belum ditagih ({tg.qty(_rem)}).",
             )
     _is_last = all(
         _dd(r["quantity_invoiced"]) + _inv_qty.get(str(r["id"]), _dd(0))
@@ -2721,7 +2725,7 @@ async def get_sales_order_history(request: Request, order_id: str, limit: int = 
     try:
         so_id = _so_uuid(order_id)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     try:
         ctx = get_user_context(request)
         _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
@@ -2729,7 +2733,7 @@ async def get_sales_order_history(request: Request, order_id: str, limit: int = 
         async with pool.acquire() as conn:
             data = await riwayat_so(conn, ctx["tenant_id"], so_id, lambda m: boleh_baca(request, m), limit)
         if data is None:
-            raise HTTPException(status_code=404, detail="Sales order not found")
+            raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
         return {"success": True, "data": data}
     except HTTPException:
         raise

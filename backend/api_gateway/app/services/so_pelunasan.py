@@ -99,7 +99,7 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
         so_id, tid,
     )
     if not so:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     so = dict(so)
     blocks, notes = [], []
 
@@ -298,7 +298,7 @@ async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIRe
         invoice_id, tid,
     )
     if not inv:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
     inv = dict(inv)
     blocks, notes = [], []
     if inv["status"] == "draft":

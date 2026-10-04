@@ -69,7 +69,7 @@ def test_penerbitan_kunci_per_so_lalu_periode_dan_tanpa_jurnal():
 def test_patch_judul_jalur_sendiri_sebelum_penjaga_draf():
     from app.routers import sales_orders as SO
     src = inspect.getsource(SO.update_sales_order)
-    assert src.index('"order_title" in body.model_fields_set') < src.index('Only draft orders can be updated')
+    assert src.index('"order_title" in body.model_fields_set') < src.index('Hanya pesanan berstatus Draf yang bisa diubah.')
 
 
 def test_detail_selalu_membawa_kunci_kode_dan_judul():

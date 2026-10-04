@@ -101,14 +101,14 @@ async def test_blok_dikumpulkan_urutan_galat_lama(monkeypatch):
     r = await RP._rencana_void_pembayaran(_Conn(_p("voided")), CTX, "pid", None, True)
     assert [b["code"] for b in r["blocks"]] == ["VOID_REASON_REQUIRED", "BANK_RECONCILED", "PERIOD_CLOSED", "RP_ALREADY_VOIDED"]
     assert r["blocks"][1]["status"] == 409 and r["blocks"][1]["detail"] == {"code": "BANK_TX_RECONCILED", "message": "sudah rekon"}
-    assert r["blocks"][3]["detail"] == "Payment already voided"
+    assert r["blocks"][3]["detail"] == "Penerimaan ini sudah dibatalkan."
 
 
 @pytest.mark.asyncio
 async def test_draft_dan_bersih(monkeypatch):
     _patch(monkeypatch)
     r = await RP._rencana_void_pembayaran(_Conn(_p("draft")), CTX, "pid", "x")
-    assert [b["code"] for b in r["blocks"]] == ["RP_IS_DRAFT"] and r["blocks"][0]["detail"] == "Cannot void draft payment. Delete it instead."
+    assert [b["code"] for b in r["blocks"]] == ["RP_IS_DRAFT"] and r["blocks"][0]["detail"] == "Penerimaan berstatus Draf tidak dibatalkan — hapus saja."
     r = await RP._rencana_void_pembayaran(_Conn(_p("posted")), CTX, "pid", "x")
     assert r["blocks"] == []
 

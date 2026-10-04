@@ -145,7 +145,7 @@ def test_rute_terpasang_ke_handler_yang_benar():
 
 def test_patch_terkonfirmasi_hanya_lewat_flag():
     src = inspect.getsource(SO.update_sales_order)
-    i_flag, i_lama = src.index("_sut.flag_aktif"), src.index("Only draft orders can be updated")
+    i_flag, i_lama = src.index("_sut.flag_aktif"), src.index("Hanya pesanan berstatus Draf yang bisa diubah.")
     assert i_flag < i_lama and SUT.FLAG == "so_edit_confirmed"
 
 

@@ -50,6 +50,7 @@ from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from fastapi import Response as _Response
 from pydantic import BaseModel
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services import teks_galat as tg
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -86,22 +87,14 @@ from ..services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)
 
-_STATUS_DP = {"draft": "draf", "posted": "diterima", "partial": "terpakai sebagian", "applied": "terpakai penuh",
-              "refunded": "dikembalikan", "void": "batal"}
-
-
 def _status_dp(s) -> str:
-    return _STATUS_DP.get(s, s)
+    """Label status uang muka = label layar CW (services/teks_galat)."""
+    return tg.status_id("dp", s)
 
 
 def _rp_dp(x) -> str:
     """Rupiah untuk pesan galat uang muka (FE menampilkan apa adanya): 'Rp 100.000' / 'Rp 1.250,50'."""
-    return "Rp " + _rp2(x).removesuffix(",00")
-
-
-def _rp2(x) -> str:
-    """Rupiah Indonesia: titik ribuan, koma desimal (mis. 1.000.000,00)."""
-    return f"{float(x):,.2f}".translate(str.maketrans({",": ".", ".": ","}))
+    return tg.rp(x)
 
 
 router = APIRouter()
@@ -697,7 +690,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
 
             if not dep:
                 raise HTTPException(
-                    status_code=404, detail="Customer deposit not found"
+                    status_code=404, detail="Uang muka tidak ditemukan."
                 )
 
             # Get applications with invoice numbers
@@ -906,7 +899,7 @@ async def validasi_proforma_dp(conn, tenant_id: str, proforma_id, sales_order_id
     if p["status"] != "issued":
         raise HTTPException(status_code=422, detail={
             "code": "PROFORMA_BUKAN_TERBIT",
-            "message": f"Proforma berstatus '{p['status']}'; uang muka hanya untuk proforma yang sudah diterbitkan"})
+            "message": f"Proforma berstatus {tg.status_id('proforma', p['status'])}; uang muka hanya untuk proforma yang sudah terbit"})
     if sales_order_id and str(p["sales_order_id"]) != str(sales_order_id):
         raise HTTPException(status_code=422, detail={"code": "PROFORMA_BEDA_PESANAN",
                                                      "message": "Proforma bukan milik pesanan ini"})
@@ -939,15 +932,15 @@ async def assert_deposit_within_order_total(
         tenant_id,
     )
     if not order:
-        raise HTTPException(status_code=400, detail="Sales Order not found")
+        raise HTTPException(status_code=400, detail="Pesanan penjualan tidak ditemukan.")
     if order["status"] in SO_TAK_TERIMA_DP:
         raise HTTPException(
             status_code=400,
             detail={
                 "code": "SO_NOT_ACCEPTING_DEPOSIT",
                 "message": (
-                    f"Uang muka tidak bisa dicatat untuk Sales Order {order['order_number']} berstatus "
-                    f"'{order['status']}'. Konfirmasi pesanannya dulu (draf), atau catat tanpa pesanan."
+                    f"Uang muka tidak bisa dicatat untuk pesanan {order['order_number']} berstatus "
+                    f"{tg.status_id('so', order['status'])}. Konfirmasi pesanannya dulu, atau catat tanpa pesanan."
                 ),
             },
         )
@@ -961,9 +954,9 @@ async def assert_deposit_within_order_total(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Uang muka {_rp2(float(amount))} melebihi sisa yang masih dapat "
-                f"diterima. Nilai Sales Order {_rp2(order_total)}, sudah diterima "
-                f"{_rp2(already)}, sisa yang masih dapat diterima {_rp2(sisa)}."
+                f"Uang muka {tg.rp(amount)} melebihi sisa yang masih dapat "
+                f"diterima. Nilai pesanan {tg.rp(order_total)}, sudah diterima "
+                f"{tg.rp(already)}, sisa yang masih dapat diterima {tg.rp(sisa)}."
             ),
         )
 
@@ -1112,13 +1105,13 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
 
                 if not account:
                     raise HTTPException(
-                        status_code=400, detail="Payment account not found"
+                        status_code=400, detail="Rekening pembayaran tidak ditemukan."
                     )
 
                 if account["account_type"] != "ASSET":
                     raise HTTPException(
                         status_code=400,
-                        detail="Payment account must be an asset account (Kas/Bank)",
+                        detail="Rekening pembayaran harus akun Kas/Bank.",
                     )
 
                 # T203 (B-01): plafon uang muka per Sales Order. Akumulasi
@@ -1288,12 +1281,12 @@ async def update_customer_deposit(
 
                 if not dep:
                     raise HTTPException(
-                        status_code=404, detail="Customer deposit not found"
+                        status_code=404, detail="Uang muka tidak ditemukan."
                     )
 
                 if dep["status"] != "draft":
                     raise HTTPException(
-                        status_code=400, detail="Only draft deposits can be updated"
+                        status_code=400, detail="Hanya uang muka berstatus Draf yang bisa diubah."
                     )
 
                 # Build update
@@ -1321,13 +1314,13 @@ async def update_customer_deposit(
 
                     if not account:
                         raise HTTPException(
-                            status_code=400, detail="Payment account not found"
+                            status_code=400, detail="Rekening pembayaran tidak ditemukan."
                         )
 
                     if account["account_type"] != "ASSET":
                         raise HTTPException(
                             status_code=400,
-                            detail="Payment account must be an asset account",
+                            detail="Rekening pembayaran harus akun Kas/Bank.",
                         )
 
                 # T204 2026-09-01: PAGAR PLAFON UANG MUKA — JALUR PATCH.
@@ -1429,13 +1422,13 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
 
             if not dep:
                 raise HTTPException(
-                    status_code=404, detail="Customer deposit not found"
+                    status_code=404, detail="Uang muka tidak ditemukan."
                 )
 
             if dep["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft deposits can be deleted. Use void for posted.",
+                    detail="Hanya uang muka berstatus Draf yang bisa dihapus. Uang muka yang sudah aktif dibatalkan, bukan dihapus.",
                 )
 
             # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
@@ -1496,11 +1489,11 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
     )
 
     if not dep:
-        raise HTTPException(status_code=404, detail="Customer deposit not found")
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
 
     if dep["status"] != "draft":
         raise HTTPException(
-            status_code=400, detail=f"Cannot post deposit with status '{dep['status']}'"
+            status_code=400, detail=tg.tak_bisa_status("dp", dep["status"], "diposting")
         )
 
     # Law 5: Period lock check
@@ -1511,7 +1504,7 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
     )
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
-            status_code=400, detail=f"Periode akuntansi sudah {period_row['status']}"
+            status_code=400, detail=tg.periode_tertutup(None, period_row["status"])
         )
 
     # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role mapping (Law 27).
@@ -1529,8 +1522,7 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Akun kas/bank tidak tersedia untuk customer deposit. "
-                "account_id is required on the deposit record."
+                "Akun kas/bank uang muka ini belum diisi. Pilih rekening penerimaannya dulu."
             ),
         )
 
@@ -2066,7 +2058,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     if not app_row:
         raise HTTPException(
             status_code=404,
-            detail="Deposit application not found",
+            detail="Penerapan uang muka tidak ditemukan.",
         )
 
     # Idempotency guard: already reversed -> return existing reversal.
@@ -2092,7 +2084,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     if not original_journal_id:
         raise HTTPException(
             status_code=400,
-            detail="Application has no journal to reverse",
+            detail="Penerapan uang muka ini tidak punya jurnal untuk dibalik.",
         )
 
     # Law 5: period-open check (reversal posts at today).
@@ -2105,7 +2097,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # Defensive: original must not already be reversed (Law 26).
@@ -2117,7 +2109,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     if orig_je and orig_je["reversed_by_id"]:
         raise HTTPException(
             status_code=400,
-            detail="Original application journal already reversed",
+            detail="Jurnal penerapan uang muka ini sudah dibalik.",
         )
 
     # Fetch original application journal lines (Dr 2-10500 / Cr AR).
@@ -2128,7 +2120,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     if not original_lines:
         raise HTTPException(
             status_code=400,
-            detail="Original application journal has no lines",
+            detail="Jurnal penerapan uang muka ini kosong.",
         )
 
     # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the AR
@@ -2405,7 +2397,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # Create refund journal
@@ -2682,7 +2674,7 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),
         )
 
     # Create reversal journal if original was posted
@@ -3047,7 +3039,7 @@ async def get_customer_deposit_history(request: Request, deposit_id: UUID, limit
     async with pool.acquire() as conn:
         data = await riwayat_uang_muka(conn, ctx["tenant_id"], deposit_id, lambda m: boleh_baca(request, m), limit)
     if data is None:
-        raise HTTPException(status_code=404, detail="Customer deposit not found")
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -3176,7 +3168,7 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
         ctx["tenant_id"],
     )
     if not dep:
-        raise HTTPException(status_code=404, detail="Customer deposit not found")
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
 
     # Bank account name (optional)
     bank_name = None
@@ -3425,7 +3417,7 @@ async def _dep_att_load_deposit(conn, deposit_id: UUID, tenant_id: str):
         tenant_id,
     )
     if not row:
-        raise HTTPException(status_code=404, detail="Customer deposit not found")
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
     return row
 
 
@@ -3621,7 +3613,7 @@ async def download_deposit_attachment(
                 _DEP_ATT_SQL_UNDUH, attachment_id, deposit_id, tenant_id
             )
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())
 
@@ -3668,7 +3660,7 @@ async def delete_deposit_attachment(
                 tenant_id,
             )
             if not row:
-                raise HTTPException(status_code=404, detail="Attachment not found")
+                raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
             await conn.execute(
                 """

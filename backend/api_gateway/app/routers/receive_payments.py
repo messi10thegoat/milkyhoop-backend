@@ -44,6 +44,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services import teks_galat as tg
 from ..services.idem_buat import kunci_dari as idem_kunci_dari, mulai_aksi as idem_mulai_aksi, simpan as idem_simpan
 from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 
@@ -251,7 +252,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})",
+            detail=tg.periode_tertutup(period_name, period_status),
         )
 
 
@@ -843,7 +844,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
 
                 if not journal_row:
                     raise HTTPException(
-                        status_code=404, detail="Receive payment not found"
+                        status_code=404, detail="Penerimaan pembayaran tidak ditemukan."
                     )
 
                 # Try reverse lookup via source_id
@@ -1204,13 +1205,13 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
 
     if not bank_account:
         raise HTTPException(
-            status_code=400, detail="Bank account not found"
+            status_code=400, detail="Rekening tidak ditemukan."
         )
 
     if bank_account["account_type"] != "ASSET":
         raise HTTPException(
             status_code=400,
-            detail="Bank account must be an asset account (Kas/Bank)",
+            detail="Rekening harus akun Kas/Bank.",
         )
 
     # t29-metode-dari-akun: override sah klien, atau turunan jenis akun
@@ -1232,7 +1233,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
     )
 
     if not customer:
-        raise HTTPException(status_code=400, detail="Customer not found")
+        raise HTTPException(status_code=400, detail="Pelanggan tidak ditemukan.")
     # Auto-fill names if not provided
     if not body.customer_name:
         body.customer_name = customer["nama"] or body.customer_id
@@ -1256,13 +1257,13 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
 
         if not deposit:
             raise HTTPException(
-                status_code=400, detail="Source deposit not found"
+                status_code=400, detail="Uang muka sumber tidak ditemukan."
             )
 
         if deposit["status"] not in ("posted", "partial"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot use deposit with status '{deposit['status']}'",
+                detail=tg.tak_bisa_status("dp", deposit["status"], "dipakai"),
             )
 
         deposit_remaining = (
@@ -1273,7 +1274,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         if body.total_amount > deposit_remaining:
             raise HTTPException(
                 status_code=400,
-                detail=f"Payment amount ({body.total_amount}) exceeds deposit remaining ({deposit_remaining})",
+                detail=f"Jumlah bayar {tg.rp(body.total_amount)} melebihi sisa uang muka {tg.rp(deposit_remaining)}.",
             )
 
     # Validate allocations
@@ -1294,7 +1295,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         if not invoice:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invoice {alloc.invoice_id} not found",
+                detail="Faktur yang dialokasikan tidak ditemukan.",
             )
 
         if str(invoice["customer_id"]) != body.customer_id:
@@ -1310,7 +1311,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         if alloc.amount_applied > invoice_remaining:
             raise HTTPException(
                 status_code=400,
-                detail=f"Allocation ({alloc.amount_applied}) exceeds invoice remaining ({invoice_remaining})",
+                detail=f"Alokasi {tg.rp(alloc.amount_applied)} melebihi sisa tagihan faktur {tg.rp(invoice_remaining)}.",
             )
 
         validated_allocations.append(
@@ -1334,7 +1335,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
     if unapplied_amount < 0:
         raise HTTPException(
             status_code=400,
-            detail=f"Total allocation ({allocated_amount}) exceeds payment amount ({effective_amount})",
+            detail=f"Total alokasi {tg.rp(allocated_amount)} melebihi jumlah bayar {tg.rp(effective_amount)}.",
         )
 
     # Generate payment number
@@ -1558,12 +1559,12 @@ async def update_receive_payment(
 
                 if not payment:
                     raise HTTPException(
-                        status_code=404, detail="Receive payment not found"
+                        status_code=404, detail="Penerimaan pembayaran tidak ditemukan."
                     )
 
                 if payment["status"] != "draft":
                     raise HTTPException(
-                        status_code=400, detail="Only draft payments can be updated"
+                        status_code=400, detail="Hanya penerimaan berstatus Draf yang bisa diubah."
                     )
 
                 # Build update data
@@ -1626,7 +1627,7 @@ async def update_receive_payment(
                         if not invoice:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"Invoice {alloc.invoice_id} not found",
+                                detail="Faktur yang dialokasikan tidak ditemukan.",
                             )
 
                         if str(invoice["customer_id"]) != customer_id:
@@ -1642,7 +1643,7 @@ async def update_receive_payment(
                         if alloc.amount_applied > invoice_remaining:
                             raise HTTPException(
                                 status_code=400,
-                                detail="Allocation exceeds invoice remaining",
+                                detail="Alokasi melebihi sisa tagihan faktur.",
                             )
 
                         await conn.execute(
@@ -1761,12 +1762,12 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
             )
 
             if not payment:
-                raise HTTPException(status_code=404, detail="Receive payment not found")
+                raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
 
             if payment["status"] != "draft":
                 raise HTTPException(
                     status_code=400,
-                    detail="Only draft payments can be deleted. Use void for posted.",
+                    detail="Hanya penerimaan berstatus Draf yang bisa dihapus. Penerimaan yang sudah diterima dibatalkan, bukan dihapus.",
                 )
 
             # Delete (cascade will delete allocations)
@@ -1826,12 +1827,12 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     )
 
     if not payment:
-        raise HTTPException(status_code=404, detail="Receive payment not found")
+        raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
 
     if payment["status"] != "draft":
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot post payment with status '{payment['status']}'",
+            detail=tg.tak_bisa_status("rp", payment["status"], "diposting"),
         )
 
     # Get account IDs
@@ -2454,12 +2455,12 @@ async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: 
         "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE", payment_id, tid
     )
     if not payment:
-        raise HTTPException(status_code=404, detail="Receive payment not found")
+        raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
     lepas, uang_muka, sumber_dep, orig_bt, alokasi = [], None, None, None, []
     if payment["status"] == "voided":
-        blocks.append(_blok_void("RP_ALREADY_VOIDED", 400, "Payment already voided"))
+        blocks.append(_blok_void("RP_ALREADY_VOIDED", 400, "Penerimaan ini sudah dibatalkan."))
     elif payment["status"] == "draft":
-        blocks.append(_blok_void("RP_IS_DRAFT", 400, "Cannot void draft payment. Delete it instead."))
+        blocks.append(_blok_void("RP_IS_DRAFT", 400, "Penerimaan berstatus Draf tidak dibatalkan — hapus saja."))
     else:
         # V299 Lepas Pembayaran: alokasi yang sudah DILEPAS punya jurnal lepas + uang muka LPS.
         lepas = await conn.fetch(
@@ -2893,7 +2894,7 @@ async def get_receive_payment_history(request: Request, payment_id: UUID, limit:
     async with pool.acquire() as conn:
         data = await riwayat_pembayaran(conn, ctx["tenant_id"], payment_id, lambda m: boleh_baca(request, m), limit)
     if data is None:
-        raise HTTPException(status_code=404, detail="Receive payment not found")
+        raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -2907,7 +2908,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
         try:
             uuid_module.UUID(payment_id)
         except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="Invalid payment_id format")
+            raise HTTPException(status_code=400, detail="Penerimaan pembayaran tidak ditemukan.")
 
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -2932,7 +2933,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
                 )
                 if not je_exists:
                     raise HTTPException(
-                        status_code=404, detail="Receive payment not found"
+                        status_code=404, detail="Penerimaan pembayaran tidak ditemukan."
                     )
                 # Use payment_id directly as journal_id
                 journal_ids = [je_exists]
@@ -3074,7 +3075,7 @@ async def download_payment_attachment(
                 _RP_ATT_SQL_UNDUH, attachment_id, payment_id, tenant_id
             )
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())
 
@@ -3221,7 +3222,7 @@ async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
         # (bug pemilik grapgrap DA-2609-0026, 24 Sep 2026: 38 DA + 2 CN).
         pay, receipt_data = await _pdf_dari_jurnal(conn, payment_id, ctx["tenant_id"])
         if pay is None and receipt_data is None:
-            raise HTTPException(status_code=404, detail="Receive payment not found")
+            raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
         if pay is not None:
             payment_id = str(pay["id"])  # jurnal RECEIVE_PAYMENT -> pembayaran asalnya
 

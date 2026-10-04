@@ -30,6 +30,8 @@ Modul ini MURNI (tanpa DB, tanpa FastAPI) supaya gerbangnya bisa diulang tanpa e
 """
 from decimal import Decimal, ROUND_HALF_UP
 
+from . import teks_galat as tg
+
 _C = Decimal("0.01")
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
@@ -102,7 +104,7 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         raise DocumentDiscountError("Diskon dokumen tidak boleh negatif.")
     if doc_disc > net_total:
         raise DocumentDiscountError(
-            f"Diskon dokumen {doc_disc} melebihi jumlah baris setelah diskon {net_total}."
+            f"Diskon dokumen {tg.rp(doc_disc)} melebihi jumlah baris setelah diskon {tg.rp(net_total)}."
         )
     allocs = allocate(doc_disc, [ln["net"] for ln in lines])
     tax_total = _ZERO

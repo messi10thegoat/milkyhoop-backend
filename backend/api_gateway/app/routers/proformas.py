@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import faktur_cetak as _fc_snap
+from ..services import teks_galat as tg
 from ..services.proforma_terbayar import terbayar_proforma
 from ..services.proforma_atribusi import muat_atribusi
 from ..services.so_riwayat import catat_riwayat
@@ -105,11 +106,14 @@ def get_user_context(request: Request) -> dict:
     }
 
 
+_NAMA_404 = {"Customer": "Pelanggan", "Sales Order": "Pesanan penjualan"}
+
+
 def _uuid_or_404(value: str, what: str = "Proforma") -> uuid_module.UUID:
     try:
         return uuid_module.UUID(str(value))
     except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status_code=404, detail=f"{what} not found")
+        raise HTTPException(status_code=404, detail=f"{_NAMA_404.get(what, what)} tidak ditemukan.")
 
 
 def _f(value) -> Optional[float]:
@@ -283,11 +287,11 @@ async def assert_within_order_total(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Nilai proforma {_rp2(amount)} melebihi sisa yang bisa ditagih. "
-                f"Nilai Sales Order {_rp2(order_total)}, sudah ditagih (issued) {_rp2(r['issued_total'])}, "
-                f"uang muka diterima {_rp2(r['received_total'])} "
-                f"(di luar tagihan {_rp2(r['received_not_billed'])}), "
-                f"sisa yang bisa ditagih {_rp2(sisa)}."
+                f"Nilai proforma {tg.rp(amount)} melebihi sisa yang bisa ditagih. "
+                f"Nilai pesanan {tg.rp(order_total)}, sudah ditagih {tg.rp(r['issued_total'])}, "
+                f"uang muka diterima {tg.rp(r['received_total'])} "
+                f"(di luar tagihan {tg.rp(r['received_not_billed'])}), "
+                f"sisa yang bisa ditagih {tg.rp(sisa)}."
             ),
         )
 
@@ -304,7 +308,7 @@ async def fetch_order_or_404(conn, tenant_id: str, sales_order_id):
         tenant_id,
     )
     if not order:
-        raise HTTPException(status_code=404, detail="Sales Order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     return order
 
 
@@ -508,7 +512,7 @@ async def get_proforma_history(request: Request, proforma_id: str, limit: int = 
     async with pool.acquire() as conn:
         data = await riwayat_proforma(conn, ctx["tenant_id"], pid, lambda m: boleh_baca(request, m), limit)
     if data is None:
-        raise HTTPException(status_code=404, detail="Proforma not found")
+        raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -533,7 +537,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
                 ctx["tenant_id"],
             )
             if not row:
-                raise HTTPException(status_code=404, detail="Proforma not found")
+                raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
 
             paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
             deposits = await conn.fetch(
@@ -686,8 +690,8 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                     raise HTTPException(  # 3 Okt: kode stabil (bentuk sama dgn SO_NOT_ACCEPTING_DEPOSIT)
                         status_code=400,
                         detail={"code": "SO_NOT_BILLABLE", "message": (
-                            f"Sales Order berstatus '{order['status']}' tidak bisa ditagih "
-                            f"dengan proforma. Harus 'confirmed' ke atas."
+                            f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
+                            f"dengan proforma. Konfirmasi pesanannya dulu."
                         )},
                     )
 
@@ -698,12 +702,12 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 if percent is None and amount is None:
                     raise HTTPException(
                         status_code=400,
-                        detail="Wajib mengisi salah satu: percent_of_order atau amount.",
+                        detail="Isi salah satu: persen dari pesanan atau jumlah.",
                     )
                 if percent is not None:
                     if percent <= 0 or percent > 100:
                         raise HTTPException(
-                            status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                            status_code=400, detail="Persen dari pesanan harus di antara 0 dan 100."
                         )
                     amount = round(order_total * percent / 100.0, 2)
                 if amount is None or amount <= 0:
@@ -783,7 +787,7 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
                 if cur["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Proforma berstatus '{cur['status']}' tidak bisa diubah. Hanya 'draft'.",
+                        detail=f"Proforma berstatus {tg.status_id('proforma', cur['status'])} tidak bisa diubah. Hanya proforma berstatus Draf yang bisa diubah.",
                     )
 
                 order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
@@ -801,7 +805,7 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
                 if percent is not None:
                     if percent <= 0 or percent > 100:
                         raise HTTPException(
-                            status_code=400, detail="percent_of_order harus di antara 0 dan 100."
+                            status_code=400, detail="Persen dari pesanan harus di antara 0 dan 100."
                         )
                     amount = round(order_total * percent / 100.0, 2)
                 if amount is not None:
@@ -892,7 +896,7 @@ async def _kunci_proforma(conn, ctx: dict, pid):
     """Proforma tenant ini + kunci SO yang SAMA dengan buat/terbit (C3 PROFORMA_SO), lalu baca ULANG di bawah kunci."""
     cur = await conn.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, ctx["tenant_id"])
     if not cur:
-        raise HTTPException(status_code=404, detail="Proforma not found")
+        raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
                        f"PROFORMA_SO:{ctx['tenant_id']}:{cur['sales_order_id']}")
     return await conn.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, ctx["tenant_id"])
@@ -908,11 +912,11 @@ async def _rencana_terbit(conn, ctx: dict, cur) -> dict:
     blocks = []
     if cur["status"] != "draft":
         blocks.append(_blok("PROFORMA_NOT_DRAFT", 400,
-                            f"Hanya proforma 'draft' yang bisa diterbitkan (sekarang '{cur['status']}')."))
+                            f"Hanya proforma berstatus Draf yang bisa diterbitkan (sekarang {tg.status_id('proforma', cur['status'])})."))
     order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
     if order["status"] not in SO_BILLABLE_STATUSES:
         blocks.append(_blok("SO_NOT_BILLABLE", 400, {
-            "code": "SO_NOT_BILLABLE", "message": f"Sales Order berstatus '{order['status']}' tidak bisa ditagih."}))
+            "code": "SO_NOT_BILLABLE", "message": f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih."}))
     total, nominal = _f(order["total_amount"]) or 0.0, _f(cur["amount"]) or 0.0
     try:  # pagar plafon YANG SAMA dengan buat/ubah (assert_within_order_total)
         await assert_within_order_total(conn, tid, cur["sales_order_id"], total, nominal, exclude_id=pid)
@@ -1162,7 +1166,7 @@ async def muat_pdf_proforma_id(conn, ctx, pid) -> dict:
     """Pemuat PDF proforma berdasar id (render dokumen P3): baris SQL_PDF_PROFORMA + muat_pdf_proforma; 404 bila tak ada."""
     row = await conn.fetchrow(SQL_PDF_PROFORMA, pid, ctx["tenant_id"])
     if not row:
-        raise HTTPException(status_code=404, detail="Proforma not found")
+        raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
     return await muat_pdf_proforma(conn, ctx, row)
 
 
@@ -1342,7 +1346,7 @@ async def get_proforma_pdf(
         async with pool.acquire() as conn:
             row = await conn.fetchrow(SQL_PDF_PROFORMA, pid, ctx["tenant_id"])
             if not row:
-                raise HTTPException(status_code=404, detail="Proforma not found")
+                raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
             if format == "url":
                 # Pola Unit 2 (utils/pdf_url): path relatif gateway, dirender saat diunduh (izin + pagar tenant
                 # berlaku tiap unduhan), tanpa salinan di MinIO, tanpa kedaluwarsa.

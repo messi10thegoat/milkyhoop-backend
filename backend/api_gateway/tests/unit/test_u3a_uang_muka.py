@@ -63,4 +63,4 @@ def test_pesan_penentu_sama_dengan_inti_dan_berbahasa_indonesia():
             assert inggris not in src, (f.__name__, inggris)
     assert "Alasan pembatalan wajib diisi." in inspect.getsource(CD.void_deposit_core)
     assert CD._rp_dp(100000) == "Rp 100.000" and CD._rp_dp(1250.5) == "Rp 1.250,50"
-    assert CD._status_dp("applied") == "terpakai penuh" and CD._status_dp("x") == "x"
+    assert CD._status_dp("applied") == "Terpakai" and CD._status_dp("x") == "x"
