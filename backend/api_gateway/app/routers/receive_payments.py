@@ -1163,11 +1163,24 @@ def _sidik_penerimaan(body) -> str:
     return hash_payload(d)
 
 
+def tolak_sumber_deposit():
+    """U6 (4 Okt 2026, putusan MASTER 'Opsi A'): penerimaan BERSUMBER uang muka (source_type='deposit') dihentikan.
+    Uang muka dipakai lewat jalur resminya, Terapkan uang muka (POST /customer-deposits/{id}/apply, jurnal
+    DEPOSIT_APPLICATION per penerapan). Alasan terukur: 0 baris prod, tanpa produsen FE/agen, dan jalur BUAT lamanya
+    cacat (satu baris aplikasi per alokasi dgn journal_id yang sama vs UNIQUE uq_cda_journal_id -> 500 bila >=2
+    alokasi). Menambah pagar, bukan mencabutnya."""
+    raise HTTPException(status_code=422, detail={
+        "code": "RP_SUMBER_DEPOSIT_DIHENTIKAN",
+        "message": "Pembayaran dari uang muka tidak lewat Penerimaan. Gunakan Terapkan uang muka pada uang muka itu."})
+
+
 async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
     """Inti POST /receive-payments (validasi -> INSERT draf + alokasi -> posting bila bukan draf), di
     transaksi PEMANGGIL. SATU-SATUNYA definisi: dipakai rute create (dibungkus idempotency) DAN
     POST /sales-orders/{id}/receive-payment/preview (transaksi SELALU di-ROLLBACK). Galat pertama -> 400.
     Lock domain/idempotency tetap milik pemanggil."""
+    if body.source_type == "deposit":  # U6: sebelum kueri/penulisan apa pun
+        tolak_sumber_deposit()
     # Check if accounting period is open (only if not saving as draft)
     if not body.save_as_draft:
         await check_period_is_open(
@@ -1571,6 +1584,8 @@ async def update_receive_payment(
                 update_data = body.model_dump(
                     exclude_unset=True, exclude={"allocations"}
                 )
+                if update_data.get("source_type") == "deposit" or update_data.get("source_deposit_id"):
+                    tolak_sumber_deposit()  # U6: draf pun tak boleh dialihkan ke sumber uang muka
                 if update_data.get("customer_id"):  # pelanggan WAJIB milik tenant ini (30 Sep 2026)
                     update_data["customer_id"] = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
 
@@ -2699,16 +2714,21 @@ async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) ->
 
     # Restore source deposit if paid from deposit
     if payment["source_type"] == "deposit" and payment["source_deposit_id"]:
-        # Remove deposit applications created by this payment
+        # U6: APPEND-ONLY (dulu DELETE -> riwayat DITERAPKAN+DILEPAS lenyap). Cabang ini DEFENSIF: pembuatan baru ditolak
+        # (tolak_sumber_deposit) dan prod punya 0 baris; ia tetap benar bila data warisan muncul. Tanpa jurnal baru: jurnal
+        # pembalik = jurnal void penerimaan ini (void_journal_id). Idempoten (hanya baris 'active'), tenant eksplisit.
         await conn.execute(
             """
-            DELETE FROM customer_deposit_applications
-            WHERE deposit_id = $1 AND journal_id = $2
+            UPDATE customer_deposit_applications
+            SET status = 'reversed', reversed_by_id = $3, reversed_at = NOW()
+            WHERE deposit_id = $1 AND journal_id = $2 AND tenant_id = $4 AND status = 'active'
         """,
             payment["source_deposit_id"],
             payment["journal_id"],
+            void_journal_id,
+            ctx["tenant_id"],
         )
-        # Deposit status will be updated by trigger
+        # Deposit status/cache diturunkan ulang oleh trigger (baris reversed dikecualikan)
 
     # Update payment status
     await conn.execute(

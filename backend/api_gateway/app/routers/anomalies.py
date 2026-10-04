@@ -177,7 +177,7 @@ async def _check_deposit_idle(conn, tid, today, tz):
                ($2::date - GREATEST(
                     d.deposit_date,
                     COALESCE((SELECT MAX(a.application_date) FROM customer_deposit_applications a
-                              WHERE a.deposit_id = d.id), d.deposit_date),
+                              WHERE a.deposit_id = d.id AND a.status = 'active'), d.deposit_date),
                     COALESCE((SELECT MAX(f.refund_date) FROM customer_deposit_refunds f
                               WHERE f.deposit_id = d.id), d.deposit_date)
                )) AS idle_days
