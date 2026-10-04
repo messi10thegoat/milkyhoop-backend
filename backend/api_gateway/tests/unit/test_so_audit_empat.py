@@ -26,6 +26,12 @@ AKUN, PELANGGAN, PESANAN = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
 
 # ------------------------------------------------------------------ 1. uang muka
+
+# 4 Okt 2026: POST /customer-deposits kini membaca header X-Idempotency-Key sebagai cadangan body -> permintaan
+# tiruan wajib punya headers (tanpa kunci header = kunci body saja, maksud tes ini).
+from types import SimpleNamespace as _NS
+_TANPA_HEADER = _NS(headers={})
+
 def _tersimpan(**ubah):
     r = {"id": uuid.uuid4(), "deposit_number": "DEP-2609-0009", "amount": D("2000000.00"), "status": "draft",
          "customer_id": PELANGGAN, "customer_name": "Agung", "deposit_date": date(2026, 9, 26),
@@ -107,7 +113,7 @@ def _pasang_dp(monkeypatch, baris):
 async def test_dp_kunci_sama_isi_sama_tetap_idempoten(monkeypatch):
     lama = _tersimpan()
     _pasang_dp(monkeypatch, lama)
-    r = await CD.create_customer_deposit(None, _body())       # reference/notes beda + UUID huruf besar = maksud sama
+    r = await CD.create_customer_deposit(_TANPA_HEADER, _body())       # reference/notes beda + UUID huruf besar = maksud sama
     assert r["success"] is True and r["data"]["deposit_number"] == "DEP-2609-0009"
 
 
@@ -126,7 +132,7 @@ async def test_dp_kunci_sama_isi_beda_409(monkeypatch, ubah, medan):
     lama = _tersimpan()
     _pasang_dp(monkeypatch, lama)
     with pytest.raises(HTTPException) as e:
-        await CD.create_customer_deposit(None, _body(**ubah))
+        await CD.create_customer_deposit(_TANPA_HEADER, _body(**ubah))
     assert e.value.status_code == 409
     d = e.value.detail
     assert d["code"] == "IDEMPOTENCY_KEY_REUSED" and d["fields"] == medan
