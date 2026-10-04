@@ -75,7 +75,7 @@ def test_sisa_uang_muka_mengenal_jurnal_nk():
 
 
 def test_void_nk_menjaga_saldo_kredit():
-    fn = _fn(CN, "void_credit_note")
+    fn = _fn(CN, "void_nota_kredit_core")  # isi void dipindah ke inti (U5-D); handler = idempotensi + inti
     jaga = [n for n in ast.walk(fn) if isinstance(n, ast.If)
             and ast.unparse(n.test) == "_sisa_dep < Decimal(str(dep_nk['amount']))"
             and any(isinstance(b, ast.Raise) for b in n.body)]

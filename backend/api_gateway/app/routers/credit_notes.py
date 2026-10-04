@@ -2134,7 +2134,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
 
 
 @router.post("/{credit_note_id}/post", response_model=CreditNoteResponse)
-async def post_credit_note(request: Request, credit_note_id: UUID, response: _Response):
+async def post_credit_note(request: Request, credit_note_id: UUID, response: _Response = None):
     """
     Post credit note to accounting.
 
@@ -2968,7 +2968,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
 
 @router.post("/{credit_note_id}/void", response_model=CreditNoteResponse)
 async def void_credit_note(
-    request: Request, credit_note_id: UUID, body: VoidCreditNoteRequest, response: _Response
+    request: Request, credit_note_id: UUID, body: VoidCreditNoteRequest, response: _Response = None
 ):
     """
     Void a credit note.

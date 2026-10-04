@@ -128,7 +128,10 @@ async def test_periksa_saja_tak_menulis():
 def test_router_menyambung_post_dan_void():
     src = open(__import__("app.routers.credit_notes", fromlist=["x"]).__file__).read()
     assert "cn_tertunda.hitung_untuk_nk(" in src and "cn_tertunda.catat_porsi(" in src
-    assert src.count("cn_tertunda.pulihkan_saat_void(") == 2        # penjagaan sebelum + pemulihan sesudah pembalik
+    # penjagaan sebelum + pemulihan sesudah pembalik (inti void) + penjagaan di penentu pratinjau void (U5-D) = 3
+    assert src.count("cn_tertunda.pulihkan_saat_void(") == 3
+    inti = src[src.index("async def void_nota_kredit_core"):src.index('@router.post("/{credit_note_id}/void"')]
+    assert inti.count("cn_tertunda.pulihkan_saat_void(") == 2        # urutan di INTI void tak berubah
     assert "AccountRole.REVENUE_DEFERRED" in src                      # Law 27: akun Dimuka lewat peran
 
 

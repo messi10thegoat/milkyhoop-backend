@@ -94,7 +94,7 @@ def jalankan(monkeypatch):
         monkeypatch.setattr(CN, "pastikan_cn_muat_faktur", _nop)
         monkeypatch.setattr(CN, "segarkan_cache_piutang_faktur", _nop)
         monkeypatch.setattr(IH, "record_inventory_inbound", _inbound)
-        req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}))
+        req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}), headers={})  # headers: handler membaca X-Idempotency-Key (U5-D)
         r = await CN.post_credit_note(req, CN_ID)
         return r, masuk
     return _j

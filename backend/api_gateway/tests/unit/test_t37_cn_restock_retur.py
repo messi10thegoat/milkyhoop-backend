@@ -137,7 +137,7 @@ def jalankan(monkeypatch):
         monkeypatch.setattr(CN, "resolve_account_id_by_role", _akun)
         monkeypatch.setattr(CN, "resolve_account_id_by_role_if_pkp", _akun)
         monkeypatch.setattr(IH, "record_inventory_inbound", _inbound)
-        req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}))
+        req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": USER}), headers={})  # headers: handler membaca X-Idempotency-Key (U5-D)
         r = await CN.post_credit_note(req, CN_ID)
         assert r["success"] and r["data"]["status"] == "posted"
         return masuk, db.jurnal
