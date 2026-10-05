@@ -29,7 +29,9 @@ DELETE /api/cheques/{cheque_id}
 DELETE /api/consolidation/entities/{entity_id}
 DELETE /api/consolidation/groups/{group_id}
 DELETE /api/cost-centers/{cost_center_id}
+POST /api/credit-notes/bulk/export
 DELETE /api/credit-notes/{credit_note_id}
+POST /api/customer-deposits/bulk/export
 DELETE /api/customer-deposits/{deposit_id}
 DELETE /api/customer-deposits/{deposit_id}/attachments/{attachment_id}
 DELETE /api/customers/{customer_id}
@@ -52,14 +54,18 @@ DELETE /api/price-lists/{price_list_id}/items/{item_id}
 DELETE /api/product-djp-mapping/{mapping_id}
 DELETE /api/production/{order_id}
 DELETE /api/purchase-orders/{po_id}
+POST /api/quotes/bulk/export
 DELETE /api/quotes/{quote_id}
+POST /api/receive-payments/bulk/export
 DELETE /api/receive-payments/{payment_id}
 DELETE /api/recipes/recipes/{recipe_id}/ingredients/{ingredient_id}
 DELETE /api/recurring-bills/{recurring_bill_id}
 DELETE /api/recurring-expenses/{template_id}
 DELETE /api/salary-components/{component_id}
+POST /api/sales-invoices/bulk/export
 DELETE /api/sales-invoices/{invoice_id}
 DELETE /api/sales-invoices/{invoice_id}/attachments/{attachment_id}
+POST /api/sales-orders/bulk/export
 DELETE /api/sales-orders/{order_id}
 DELETE /api/sales-orders/{order_id}/attachments/{attachment_id}
 DELETE /api/stock-adjustments/{adjustment_id}
@@ -110,6 +116,7 @@ PATCH /api/nsfp-ranges/{range_id}
 PATCH /api/price-lists/{price_list_id}
 PATCH /api/production/{order_id}
 PATCH /api/products/{product_id}/barcode
+POST /api/proformas/bulk/export
 PATCH /api/proformas/{proforma_id}
 PATCH /api/purchase-orders/{po_id}
 PATCH /api/quotes/{quote_id}
@@ -555,3 +562,4 @@ POST /api/credit-notes/{credit_note_id}/void/preview
 POST /api/credit-notes/{credit_note_id}/apply/preview
 POST /api/credit-notes/{credit_note_id}/unapply/preview
 POST /api/credit-notes/{credit_note_id}/refund/preview
+POST /api/deliveries/bulk/export

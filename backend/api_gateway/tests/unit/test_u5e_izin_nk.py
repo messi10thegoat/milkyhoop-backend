@@ -109,6 +109,10 @@ def test_setiap_rute_tulis_nk_di_inventaris_punya_keputusan_eksplisit():
     tak = []
     for b in nk:
         jalur = b.split(" ", 1)[1]
+        if jalur == "/api/credit-notes/bulk/export":  # U1b F1 (5 Okt): ekspor CSV massal = BACA (R), bukan tulis
+            if _izin("POST", jalur) != ("credit_note", "R"):
+                tak.append(b)
+            continue
         m = re.fullmatch(r"/api/credit-notes(?:/preview|/\{credit_note_id\}/(.+))?", jalur)
         if m is None:
             tak.append(b)

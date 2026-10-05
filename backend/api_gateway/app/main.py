@@ -835,6 +835,11 @@ app.include_router(
 )
 app.include_router(efaktur.router, prefix="/api/efaktur", tags=["E-Faktur Export"])
 app.include_router(deliveries.router, prefix="/api/deliveries", tags=["deliveries"])
+# U1b F1 (5 Okt): aksi massal daftar -- POST /api/{modul}/bulk/export (izin R modul; aksi uang tak punya rute massal)
+from .routers import bulk as bulk_router  # noqa: E402
+
+for _m, _r in bulk_router.ROUTERS.items():
+    app.include_router(_r, prefix=f"/api/{_m}", tags=["bulk"])
 app.include_router(units.router, prefix="/api/units", tags=["Units"])
 app.include_router(reports_profitability.router)
 

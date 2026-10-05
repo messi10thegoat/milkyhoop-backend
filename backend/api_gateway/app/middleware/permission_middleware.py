@@ -29,6 +29,15 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-invoices/calculate$", ["POST"], "sales_invoice", "R"),
     (r"^/api/sales-orders/calculate$", ["POST"], "sales_order", "R"),  # 3d pratinjau
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
+    # Aksi massal daftar (U1b F1, 5 Okt): ekspor CSV = BACA (izin R modul), DI ATAS pola POST umum (= C). Pengiriman = izin faktur.
+    (r"^/api/sales-orders/bulk/export$", ["POST"], "sales_order", "R"),
+    (r"^/api/quotes/bulk/export$", ["POST"], "quote", "R"),
+    (r"^/api/proformas/bulk/export$", ["POST"], "proforma", "R"),
+    (r"^/api/sales-invoices/bulk/export$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/customer-deposits/bulk/export$", ["POST"], "customer_deposit", "R"),
+    (r"^/api/receive-payments/bulk/export$", ["POST"], "receive_payment", "R"),
+    (r"^/api/deliveries/bulk/export$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/credit-notes/bulk/export$", ["POST"], "credit_note", "R"),
     # L1 lampiran SO (24 Sep 2026) -- eksplisit, di atas pola umum SO. Tanpa
     # baris ini POST .../attachments jatuh ke `^/api/sales-orders` POST = "C":
     # menambah lampiran ke SO yang SUDAH ADA = mengubahnya ("U").
