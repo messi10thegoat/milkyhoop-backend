@@ -197,7 +197,7 @@ def test_per_item_409_kunci_terpakai_jadi_ditolak(idem, monkeypatch):
 
 # ---------------- (5) daftar putih ----------------
 def test_daftar_putih_hanya_export_dan_rute_bulk_hanya_export():
-    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send"}  # F1 export; F2 SO confirm/delete; F3 Penawaran send (daftar putih eksplisit)
+    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel"}  # F1 export; F2 SO confirm/delete; F3 Penawaran send; F4 Proforma cancel (daftar putih eksplisit)
     assert set(RB.ROUTERS) == set(BE.SPEC) and len(RB.ROUTERS) == 8
     for modul, router in RB.ROUTERS.items():
         jalur = [(r.path, tuple(sorted(r.methods))) for r in router.routes]
@@ -207,7 +207,7 @@ def test_daftar_putih_hanya_export_dan_rute_bulk_hanya_export():
 def test_infra_bulk_tak_mengimpor_atau_memanggil_modul_uang():
     terlarang_impor = ("receive_payments", "customer_deposits", "credit_notes", "sales_invoices", "journal", "posting",
                        "bank_sync", "so_pelunasan", "bill_payments")
-    for berkas in ("routers/bulk.py", "routers/bulk_so.py", "routers/bulk_quote.py", "services/bulk.py"):
+    for berkas in ("routers/bulk.py", "routers/bulk_so.py", "routers/bulk_quote.py", "routers/bulk_proforma.py", "services/bulk.py"):
         pohon = ast.parse((APP / berkas).read_text(encoding="utf-8"))
         impor = [n for n in ast.walk(pohon) if isinstance(n, (ast.Import, ast.ImportFrom))]
         nama = " ".join((getattr(n, "module", None) or "") + " " + " ".join(a.name for a in n.names) for n in impor)

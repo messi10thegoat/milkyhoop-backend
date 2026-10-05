@@ -1139,6 +1139,24 @@ async def issue_proforma(request: Request, proforma_id: str, response: _Response
         raise HTTPException(status_code=500, detail="Failed to issue proforma")
 
 
+async def batal_proforma_core(conn, ctx: dict, pid, alasan, hanya_draf: bool = False) -> dict:
+    """Inti POST /proformas/{id}/cancel, di transaksi PEMANGGIL: rute tunggal DAN batal-draf massal (U1b F4). Isi = langkah rute lama
+    (kunci proforma -> kunci baris SO -> _rencana_batal -> blok pertama -> _tulis_batal) tanpa perubahan; `hanya_draf` (massal) menolak
+    yang bukan draf SEBELUM menulis. -> proforma terserialisasi (data respons)."""
+    cur = await _kunci_proforma(conn, ctx, pid)
+    if hanya_draf and cur["status"] != "draft":
+        raise HTTPException(status_code=400, detail={"code": "PROFORMA_BUKAN_DRAF", "message": (
+            f"Proforma berstatus {tg.status_id('proforma', cur['status'])}; hanya proforma Draf yang bisa dibatalkan massal.")})
+    await conn.execute("SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                       cur["sales_order_id"], ctx["tenant_id"])
+    r = await _rencana_batal(conn, ctx, cur, alasan)
+    _angkat_blok_pertama(r)
+    order = r["order"]
+
+    row = await _tulis_batal(conn, ctx, cur, alasan)
+    return serialize_proforma(row, order["order_number"], 0.0)
+
+
 @router.post("/{proforma_id}/cancel")
 async def cancel_proforma(request: Request, proforma_id: str, body: CancelProformaRequest,
                           response: _Response = None):
@@ -1156,17 +1174,10 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
                 kp, sd, lama = await _idem_aksi(conn, ctx, request, "CANCEL", pid, body.model_dump(mode="json"), response)
                 if lama is not None:
                     return lama
-                cur = await _kunci_proforma(conn, ctx, pid)
-                await conn.execute("SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                                   cur["sales_order_id"], ctx["tenant_id"])
-                r = await _rencana_batal(conn, ctx, cur, body.reason)
-                _angkat_blok_pertama(r)
-                order = r["order"]
-
-                row = await _tulis_batal(conn, ctx, cur, body.reason)
+                data = await batal_proforma_core(conn, ctx, pid, body.reason)
                 return await _simpan_idem_aksi(conn, ctx, kp, sd, "PROFORMA_CANCEL", {
                     "success": True,
-                    "data": serialize_proforma(row, order["order_number"], 0.0),
+                    "data": data,
                 }, pid)
 
     except HTTPException:

@@ -125,6 +125,8 @@ PATCH /api/price-lists/{price_list_id}
 PATCH /api/production/{order_id}
 PATCH /api/products/{product_id}/barcode
 POST /api/proformas/bulk/export
+POST /api/proformas/bulk/cancel
+POST /api/proformas/bulk/cancel/preview
 PATCH /api/proformas/{proforma_id}
 PATCH /api/purchase-orders/{po_id}
 PATCH /api/quotes/{quote_id}

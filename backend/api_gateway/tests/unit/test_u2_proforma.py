@@ -36,6 +36,9 @@ def test_satu_penentu_satu_penulis():
     for tulis, pratinjau, rencana, penulis in (("issue_proforma", "_pratinjau", "_rencana_terbit", "_tulis_terbit"),
                                                ("cancel_proforma", "_pratinjau", "_rencana_batal", "_tulis_batal")):
         st, sp = inspect.getsource(getattr(PF, tulis)), inspect.getsource(getattr(PF, pratinjau))
+        if tulis == "cancel_proforma":  # U1b F4: langkah /cancel pindah ke batal_proforma_core; rute memanggilnya
+            assert "batal_proforma_core(" in st
+            st = inspect.getsource(PF.batal_proforma_core)
         for f in (rencana, penulis):
             assert f + "(" in st and f + "(" in sp, (tulis, f)
     assert "UPDATE proformas SET status = 'issued'" not in inspect.getsource(PF.issue_proforma)
@@ -43,10 +46,11 @@ def test_satu_penentu_satu_penulis():
 
 
 def test_batal_satu_transaksi_dan_mutex_so():
-    src = inspect.getsource(PF.cancel_proforma)
-    i_tx, i_cek = src.index("async with conn.transaction():"), src.index("_rencana_batal(")
-    assert i_tx < i_cek, "cek terbayar DI DALAM transaksi"
-    assert src.index("FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE") < i_cek
+    # U1b F4: isi pindah ke batal_proforma_core; rute memanggilnya DI DALAM transaksi, inti mengunci SO sebelum cek terbayar
+    rute = inspect.getsource(PF.cancel_proforma)
+    assert rute.index("async with conn.transaction():") < rute.index("batal_proforma_core("), "cek terbayar DI DALAM transaksi"
+    src = inspect.getsource(PF.batal_proforma_core)
+    assert src.index("FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE") < src.index("_rencana_batal(")
 
 
 def test_blok_pertama_diangkat_dengan_status_dan_detail_lama():

@@ -39,6 +39,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/quotes/bulk/(send|send/preview)$", ["POST"], "quote", "C"),
     (r"^/api/quotes/bulk/(delete|delete/preview)$", ["POST"], "quote", "D"),
     (r"^/api/proformas/bulk/export$", ["POST"], "proforma", "R"),
+    # F4: izin = izin /cancel tunggal (POST proforma = C); pratinjau ikut tulisnya. TIDAK ada rute terbit massal.
+    (r"^/api/proformas/bulk/(cancel|cancel/preview)$", ["POST"], "proforma", "C"),
     (r"^/api/sales-invoices/bulk/export$", ["POST"], "sales_invoice", "R"),
     (r"^/api/customer-deposits/bulk/export$", ["POST"], "customer_deposit", "R"),
     (r"^/api/receive-payments/bulk/export$", ["POST"], "receive_payment", "R"),

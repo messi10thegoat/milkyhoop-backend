@@ -225,7 +225,9 @@ def test_respons_numerik_float_bukan_decimal_atau_string():
 def test_pembatalan_ditolak_bila_ada_deposit():
     """Ada uang masuk -> batal ditolak, diarahkan ke refund."""
     # 4 Okt 2026: /cancel memakai penentu bersama _rencana_batal (juga dipakai /cancel/preview)
-    assert "_rencana_batal(" in inspect.getsource(pf.cancel_proforma)
+    # U1b F4 (5 Okt): langkah /cancel pindah ke batal_proforma_core (juga batal-draf massal); rute membungkusnya
+    assert "batal_proforma_core(" in inspect.getsource(pf.cancel_proforma)
+    assert "_rencana_batal(" in inspect.getsource(pf.batal_proforma_core)
     src = inspect.getsource(pf._rencana_batal)
     assert "compute_paid_amount" in src
     assert "refund" in src.lower()
