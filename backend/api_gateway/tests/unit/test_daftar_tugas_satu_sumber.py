@@ -42,7 +42,7 @@ def test_daftar_memanggil_id_tugas():
         s = inspect.getsource(f)
         assert f'conditions.append(f"{kolom} = ANY(${{param_idx}}::uuid[])")' in s and "await id_tugas(conn, ctx[\"tenant_id\"], tugas," in s
     assert inspect.signature(SI.list_invoices).parameters["tugas"].annotation is not None
-    assert set(DV.TUGAS_FAKTUR) == {"telat", "jatuh_tempo_hari_ini"} and set(DV.TUGAS_SO) == {"harus_kirim", "dp_belum_diterima"}
+    assert set(DV.TUGAS_FAKTUR) == {"telat", "jatuh_tempo_hari_ini", "belum_lunas"} and set(DV.TUGAS_SO) == {"harus_kirim", "dp_belum_diterima"}
 
 
 def test_aksi_kartu_membawa_kunci_tugas():

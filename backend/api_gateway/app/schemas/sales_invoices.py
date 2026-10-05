@@ -387,6 +387,7 @@ class InvoiceListItem(BaseModel):
     # Q-014: jatuh tempo per baris (aturan SAMA dengan ?status=overdue; tanggal bisnis tenant).
     # `status` tetap nilai kolom (posted/partial/...) -- 'overdue' tak pernah tersimpan.
     is_overdue: bool = False
+    outstanding_amount: Optional[str] = None  # sisa journal-derived, desimal teks; lunas "0.00"; draf/void null (5 Okt)
 
 
 class InvoiceListResponse(BaseModel):

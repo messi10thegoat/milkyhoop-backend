@@ -430,8 +430,13 @@ async def get_outstanding_summary(request: Request):
                     COALESCE(SUM(outstanding), 0) AS total_outstanding,
                     COALESCE(SUM(CASE WHEN due_date < $2::date THEN outstanding ELSE 0 END), 0) AS overdue_amount,
                     COALESCE(SUM(CASE WHEN due_date >= $2::date THEN outstanding ELSE 0 END), 0) AS current_amount,
-                    COUNT(CASE WHEN due_date < $2::date THEN 1 END) AS overdue_count,
-                    COUNT(CASE WHEN due_date >= $2::date THEN 1 END) AS current_count,
+                    -- 5 Okt 2026: hitungan = faktur BELUM LUNAS (dashboard_v2.pilih_belum_lunas: invoice_id ada, sisa > 0;
+                    -- dulu baris NOTA KREDIT ikut terhitung "faktur"). overdue = aturan kartu telat (jatuh tempo lewat ATAU
+                    -- tanpa jatuh tempo) -> ?tugas=belum_lunas == overdue + current, ?tugas=telat == overdue. Nominal TETAP.
+                    COUNT(*) FILTER (WHERE invoice_id IS NOT NULL AND outstanding > 0
+                                       AND (due_date < $2::date OR due_date IS NULL)) AS overdue_count,
+                    COUNT(*) FILTER (WHERE invoice_id IS NOT NULL AND outstanding > 0
+                                       AND due_date >= $2::date) AS current_count,
                     COUNT(DISTINCT customer_id) AS customer_count
                 FROM ar
             """
@@ -954,14 +959,14 @@ async def list_invoices(
     customer_id: Optional[str] = Query(None, description="Filter by customer"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    sort_by: Literal["invoice_date", "due_date", "total_amount", "created_at"] = Query(
+    sort_by: Literal["invoice_date", "due_date", "total_amount", "created_at", "outstanding"] = Query(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
     amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
     amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
     # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
-    tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini"]] = Query(None),
+    tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini", "belum_lunas"]] = Query(None),
 ):
     """List invoices with search, filtering, and pagination."""
     try:
@@ -1068,9 +1073,12 @@ async def list_invoices(
                 "due_date": "si.due_date",
                 "total_amount": "si.total_amount",
                 "created_at": "si.created_at",
+                "outstanding": "sisa_faktur",  # 5 Okt 2026: alias kolom keluaran (draf/void NULL -> paling akhir)
             }
             sort_field = valid_sorts.get(sort_by, "created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
+            if sort_by == "outstanding":
+                sort_dir += " NULLS LAST, si.created_at DESC"
 
             # Count
             total = await conn.fetchval(
@@ -1092,6 +1100,9 @@ async def list_invoices(
                        CASE WHEN si.status IN ('draft','void') THEN 0
                             ELSE si.total_amount - COALESCE(ar_fn.outstanding, 0)
                        END as journal_paid,
+                       -- 5 Okt 2026: sisa tagihan journal-derived (Law 1/16); lunas = 0; draf/void = NULL
+                       CASE WHEN si.status IN ('draft','void') THEN NULL
+                            ELSE COALESCE(ar_fn.outstanding, 0) END AS sisa_faktur,
                        si.status, si.operational_status, si.accounting_status,
                        si.fulfillment_status, si.revenue_status, si.created_at,
                        -- nomor pesanan (permintaan pemilik 25 Sep): JOIN berpagar tenant, NULL bila lepas
@@ -1134,6 +1145,7 @@ async def list_invoices(
                     "sales_order_id": str(row["sales_order_id"]) if row["sales_order_id"] else None,
                     "sales_order_number": row["sales_order_number"],
                     "is_overdue": bool(row["is_overdue"]),
+                    "outstanding_amount": None if row.get("sisa_faktur") is None else f"{Decimal(str(row['sisa_faktur'])):.2f}",
                 }
                 for row in rows
             ]

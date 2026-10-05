@@ -508,7 +508,7 @@ def _str_atau_none(v) -> Optional[str]:
 
 # ─── SATU SUMBER kartu "Perlu dikerjakan" ↔ daftar tujuan (MASTER 5 Okt 2026) ───
 # Kartu dan filter daftar ?tugas= memanggil PEMILIH YANG SAMA (bukan salinan predikat): angka kartu == baris daftar.
-TUGAS_FAKTUR = ("telat", "jatuh_tempo_hari_ini")
+TUGAS_FAKTUR = ("telat", "jatuh_tempo_hari_ini", "belum_lunas")
 TUGAS_SO = ("harus_kirim", "dp_belum_diterima")
 
 
@@ -521,6 +521,13 @@ def pilih_faktur_telat(ar_rows, hari_ini: date) -> list:
     return [r for r in ar_rows if d(r["outstanding"]) > NOL and _jatuh_tempo_lewat(r["due_date"], hari_ini)]
 
 
+def pilih_belum_lunas(ar_rows) -> list:
+    """Faktur BELUM LUNAS (5 Okt 2026, temuan pemilik grapgrap): baris FAKTUR (invoice_id ada) dengan sisa > 0.
+    compute_ar_outstanding juga memuat baris NOTA KREDIT (invoice_id NULL, sisa negatif) -- bukan faktur.
+    SATU aturan untuk ?tugas=belum_lunas DAN hitungan kartu outstanding-summary (overdue_count + current_count)."""
+    return [r for r in ar_rows if r["invoice_id"] is not None and d(r["outstanding"]) > NOL]
+
+
 def pilih_jatuh_tempo_hari_ini(ar_rows, hari_ini: date) -> list:
     """Kartu ar_due_today: sisa > 0 DAN jatuh tempo = hari ini."""
     return [r for r in ar_rows if d(r["outstanding"]) > NOL and r["due_date"] == hari_ini]
@@ -530,6 +537,8 @@ async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
     """id dokumen di balik kartu `tugas` -- dipakai filter daftar ?tugas= (faktur / pesanan)."""
     if tugas in TUGAS_FAKTUR:
         ar = await conn.fetch("SELECT * FROM compute_ar_outstanding($1)", tenant_id)
+        if tugas == "belum_lunas":
+            return [r["invoice_id"] for r in pilih_belum_lunas(ar)]
         pilih = pilih_faktur_telat if tugas == "telat" else pilih_jatuh_tempo_hari_ini
         return [r["invoice_id"] for r in pilih(ar, hari_ini)]
     if tugas == "harus_kirim":
