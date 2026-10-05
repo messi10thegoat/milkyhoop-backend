@@ -67,9 +67,8 @@ from ..services import cn_tertunda
 
 logger = logging.getLogger(__name__)
 
-# Label layar alasan nota kredit (MASTER 5 Okt): nilai server tetap, FE menampilkan reason_label.
-LABEL_ALASAN_NK = {"return": "Retur", "pricing_error": "Salah harga", "discount": "Diskon", "damaged": "Rusak",
-                   "other": "Lainnya"}
+# Label layar alasan nota kredit (MASTER 5 Okt): nilai server tetap, FE menampilkan reason_label (sumber: teks_galat).
+from ..services.teks_galat import ALASAN_NK as LABEL_ALASAN_NK  # noqa: E402
 
 router = APIRouter()
 

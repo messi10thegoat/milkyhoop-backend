@@ -144,6 +144,7 @@ class AllocationResponse(BaseModel):
 class ReceivePaymentListItem(BaseModel):
     """Receive payment item for list responses."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
+    sales_orders: List[Dict[str, Optional[str]]] = []  # SEMUA SO yang dibayar {id, number, order_code, order_title} (5 Okt)
     order_code_label: Optional[str] = None
     order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
 
@@ -181,6 +182,7 @@ class ReceivePaymentListItem(BaseModel):
 class ReceivePaymentDetail(BaseModel):
     """Full receive payment detail."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
+    sales_orders: List[Dict[str, Optional[str]]] = []  # SEMUA SO yang dibayar {id, number, order_code, order_title} (5 Okt)
     order_code_label: Optional[str] = None
     order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
 

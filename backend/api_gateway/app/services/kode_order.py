@@ -519,7 +519,7 @@ async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
     _st = await muat_setelan(conn, tenant_id)
     label, label_judul = _st["label"], _st["title_label"]
     banyak = jenis == "receive_payment"
-    hasil = {str(i): ({"order_codes": [], "order_code_label": label, "order_title_label": label_judul} if banyak
+    hasil = {str(i): ({"order_codes": [], "sales_orders": [], "order_code_label": label, "order_title_label": label_judul} if banyak
                       else {"order_code": None, "order_title": None, "order_code_label": label, "order_title_label": label_judul}) for i in ids}
     if not ids:
         return hasil
@@ -532,6 +532,11 @@ async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
             so[r["id"]] = r
     for p in pasangan:
         s = so.get(p["so_id"])
+        if banyak and s and str(p["id"]) in hasil:
+            # 5 Okt 2026 (WORKSPACE D0): SEMUA SO yang dibayar penerimaan ini (ber-kode atau tidak) + id -> FE memanggil
+            # ?bentuk=terkait per SO. order_codes tetap (hanya SO ber-kode).
+            hasil[str(p["id"])]["sales_orders"].append({"id": str(s["id"]), "number": s["order_number"],
+                                                        "order_code": s["order_code"], "order_title": s["order_title"]})
         if not s or not s["order_code"] or str(p["id"]) not in hasil:
             continue
         h = hasil[str(p["id"])]
@@ -543,6 +548,7 @@ async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
     if banyak:
         for h in hasil.values():
             h["order_codes"].sort(key=lambda x: x["order_code"])
+            h["sales_orders"].sort(key=lambda x: x["number"] or "")
     return hasil
 
 
@@ -563,7 +569,8 @@ async def tempel_kode(conn, tenant_id: str, jenis: str, dokumen: list, kunci: st
     else:
         _st = await muat_setelan(conn, tenant_id)
         label, label_judul = _st["label"], _st["title_label"]
-    kosong = ({"order_codes": [], "order_code_label": label, "order_title_label": label_judul} if jenis == "receive_payment"
+    kosong = ({"order_codes": [], "sales_orders": [], "order_code_label": label, "order_title_label": label_judul}
+              if jenis == "receive_payment"
               else {"order_code": None, "order_title": None, "order_code_label": label, "order_title_label": label_judul})
     for d in dokumen:
         d.update(k.get(str(d.get(kunci)), kosong))

@@ -63,7 +63,12 @@ async def test_penerimaan_banyak_so_daftar_terurut():
     h = await KO.kode_untuk_dokumen(c, T, "receive_payment", [p])
     assert h[str(p)] == {"order_code_label": "Kode order", "order_title_label": "Judul order", "order_codes": [
         {"order_code": "002-10-26", "order_title": "KAOS", "order_number": "SO-2"},
-        {"order_code": "009-10-26", "order_title": "KEMEJA GMIM", "order_number": "SO-9"}]}
+        {"order_code": "009-10-26", "order_title": "KEMEJA GMIM", "order_number": "SO-9"}],
+        # 5 Okt: SEMUA SO (termasuk yang TANPA kode) + id, urut nomor -- FE memanggil ?bentuk=terkait per SO
+        "sales_orders": [
+            {"id": str(s3["id"]), "number": "SO-1", "order_code": None, "order_title": "KEMEJA GMIM"},
+            {"id": str(s2["id"]), "number": "SO-2", "order_code": "002-10-26", "order_title": "KAOS"},
+            {"id": str(s1["id"]), "number": "SO-9", "order_code": "009-10-26", "order_title": "KEMEJA GMIM"}]}
 
 
 @pytest.mark.asyncio
@@ -73,6 +78,7 @@ async def test_tempel_kode_id_bukan_dokumen_jenis_ini_kosong():
     d = [{"id": str(uuid.uuid4())}, {"id": "bukan-uuid"}]
     await KO.tempel_kode(c, T, "receive_payment", d)
     assert d[0]["order_codes"] == [] and d[1]["order_codes"] == [] and d[1]["order_code_label"] == "Kode order"
+    assert d[0]["sales_orders"] == [] and d[1]["sales_orders"] == []
 
 
 def test_tenant_eksplisit_di_kedua_sisi_setiap_join():

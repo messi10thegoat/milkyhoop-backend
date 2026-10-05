@@ -71,6 +71,10 @@ _DOKUMEN = {"so": "Pesanan", "si": "Faktur", "quote": "Penawaran", "proforma": "
 
 _PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
 
+# Label layar alasan nota kredit (credit_notes.reason) -- reason_label NK + info dokumen terkait SO (5 Okt 2026).
+ALASAN_NK = {"return": "Retur", "pricing_error": "Salah harga", "discount": "Diskon", "damaged": "Rusak",
+             "other": "Lainnya"}
+
 
 def status_id(jenis: str, s) -> str:
     """Label layar untuk status server; status tak dikenal dikembalikan apa adanya (jangan menebak)."""
