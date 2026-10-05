@@ -67,6 +67,12 @@ class _Conn:
             raise HTTPException(status_code=418, detail="PAST_GUARD")
         return None
 
+    async def fetch(self, sql, *args):
+        # 5 Okt 2026: pagar akun lawan Uang Muka Pelanggan (services/pagar_uang_muka) membaca account_roles;
+        # akun lawan di tes ini BUKAN akun peran itu -> kosong (perilaku tes ini tak berubah).
+        assert "account_roles" in sql
+        return []
+
     async def fetchval(self, *a, **k):
         raise HTTPException(status_code=418, detail="PAST_GUARD")
 
