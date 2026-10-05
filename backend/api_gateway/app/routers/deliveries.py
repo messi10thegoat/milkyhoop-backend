@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional, Literal
 from datetime import date
 import logging
+from decimal import Decimal
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from ..services.pdf_service import get_pdf_service
@@ -408,7 +409,22 @@ async def get_delivery_detail(delivery_id: str, request: Request):
     from ..services.kode_order import tempel_kode as _tempel_kode
     async with pool.acquire() as _c:
         await _tempel_kode(_c, ctx["tenant_id"], "delivery", [detail])
+        detail.update(await sisa_faktur_sumber(_c, ctx["tenant_id"], row["invoice_id"]))
     return detail
+
+
+async def sisa_faktur_sumber(conn, tenant_id: str, invoice_id) -> dict:
+    """5 Okt 2026 (WORKSPACE D-standar, langkah "Pelunasan faktur"): nilai + sisa faktur sumber surat jalan.
+    Sisa = journal-derived compute_ar_outstanding (Law 1/16); faktur lunas tak punya baris di sana -> "0.00".
+    Faktur draf/void -> keduanya null (FE menyembunyikan langkah)."""
+    f = await conn.fetchrow("SELECT status, total_amount FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                            invoice_id, tenant_id)
+    if not f or f["status"] in ("draft", "void", "voided"):
+        return {"invoice_total": None, "invoice_outstanding": None}
+    sisa = await conn.fetchval("SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
+                               tenant_id, invoice_id)
+    return {"invoice_total": f"{Decimal(str(f['total_amount'] or 0)):.2f}",
+            "invoice_outstanding": f"{Decimal(str(sisa if sisa is not None else 0)):.2f}"}
 
 
 # =============================================================================
