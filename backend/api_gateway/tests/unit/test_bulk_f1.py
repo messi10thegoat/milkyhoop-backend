@@ -27,6 +27,9 @@ U = uuid.UUID("0bccdb25-fdf0-4e99-9024-b9a20846f76c")
 CTX = {"tenant_id": T, "user_id": U}
 
 
+LABEL_KODE = {"v": "Kode order"}
+
+
 def _id(): return uuid.uuid4()
 
 
@@ -298,6 +301,9 @@ def _pool_untuk(monkeypatch, k):
     async def hari(conn, tid): return date(2026, 10, 5)
     monkeypatch.setattr(RB, "tanggal_dokumen", hari)
 
+    async def setelan(conn, tid): return {"label": LABEL_KODE["v"]}
+    monkeypatch.setattr(RB, "muat_setelan", setelan)
+
 
 def _handler(modul): return RB.ROUTERS[modul].routes[0].endpoint
 
@@ -313,7 +319,7 @@ def test_handler_mengembalikan_csv_header_dan_audit(monkeypatch, zona_kode):
         and resp.headers["X-Bulk-Dilewati"] == "1"
     assert resp.headers["Content-Disposition"] == 'attachment; filename="penawaran-2026-10-05.csv"' and resp.headers["Cache-Control"] == "no-store"
     teks = resp.body.decode("utf-8-sig")
-    assert teks.split("\r\n")[0] == "Pelanggan,No. penawaran,Tgl. penawaran,Berlaku sampai,Total,Status,Status (kode),Kode order,Judul order,ID"
+    assert teks.split("\r\n")[0] == "Pelanggan,No. penawaran,Tgl. penawaran,Berlaku sampai,Total,Status,Status (kode),Kode order,Judul pesanan,ID"
     assert "X,QUO-1,2026-10-01,2026-10-30,100,Terkirim,sent,KODE-1,Judul," in teks
     assert any("INSERT INTO audit_logs" in s and a_[0] == "BULK_EXPORT" for s, a_ in k.exec)
 
@@ -330,3 +336,18 @@ def test_handler_tak_ada_404_terlalu_banyak_400_tanpa_login_401(monkeypatch, zon
     with pytest.raises(HTTPException) as e3:
         _jalan(_handler("deliveries")(_Req(None), RB.BulkExportRequest(ids=[str(_id())])))
     assert e3.value.status_code == 401
+
+
+def test_judul_kolom_kode_order_memakai_label_setelan_tenant(monkeypatch, zona_kode):
+    """U7: label kode order = setelan tenant (grapgrap 'No. SPK'); judul kolom CSV tak boleh teks tetap 'Kode order'."""
+    LABEL_KODE["v"] = "No. SPK"
+    try:
+        a = _id()
+        k = _KS([{"id": a, "pelanggan": "X", "nomor": "SO-1", "tgl": date(2026, 10, 1), "kol4": None, "dicatat": None,
+                  "nilai": Decimal("5"), "status": "confirmed", "kode_order": "123", "judul_order": "Judul"}])
+        _pool_untuk(monkeypatch, k)
+        resp = _jalan(_handler("sales-orders")(_Req({"tenant_id": T, "user_id": str(U)}), RB.BulkExportRequest(ids=[str(a)])))
+        kepala = resp.body.decode("utf-8-sig").split("\r\n")[0].split(",")
+        assert kepala[7] == "No. SPK" and "Kode order" not in kepala and kepala[-1] == "ID"
+    finally:
+        LABEL_KODE["v"] = "Kode order"

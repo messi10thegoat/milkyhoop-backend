@@ -92,7 +92,9 @@ SPEC = {
             FROM credit_notes t WHERE t.tenant_id = $1 AND t.id {_ID}""", "credit_note", _nk),
 }
 
-KOLOM_TAMBAHAN = ("Status (kode)", "Kode order", "Judul order", "ID")
+def kolom_tambahan(label_kode: str) -> tuple:
+    """Kolom di kanan kolom resep. Judul kolom kode order = LABEL SETELAN TENANT (U7: grapgrap = "No. SPK"), bukan teks tetap."""
+    return ("Status (kode)", label_kode, "Judul pesanan", "ID")
 
 
 async def susun_baris(conn, tenant_id: str, spec: SpecExport, ids: List[UUID]) -> tuple:

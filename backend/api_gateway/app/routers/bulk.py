@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..services import bulk
-from ..services.bulk_export import KOLOM_TAMBAHAN, SPEC, susun_baris
+from ..services.bulk_export import SPEC, kolom_tambahan, susun_baris
+from ..services.kode_order import muat_setelan
 from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,8 @@ def buat_router(modul: str) -> APIRouter:
                                                                  "message": "Dokumen yang dipilih tidak ditemukan."})
                 await bulk.catat_audit(conn, ctx, AKSI_EXPORT, modul, ids, {"format": "csv", "ditemukan": ada, "dilewati": lewat})
             hari = await tanggal_dokumen(conn, ctx["tenant_id"])
-        isi = bulk.buat_csv(list(spec.kolom) + list(KOLOM_TAMBAHAN), baris)
+            label_kode = (await muat_setelan(conn, ctx["tenant_id"]))["label"]
+        isi = bulk.buat_csv(list(spec.kolom) + list(kolom_tambahan(label_kode)), baris)
         return Response(content=isi, media_type="text/csv; charset=utf-8", headers={
             "Content-Disposition": f'attachment; filename="{spec.berkas}-{hari.isoformat()}.csv"',
             "Cache-Control": "no-store", "X-Bulk-Total": str(len(ids)), "X-Bulk-Ditemukan": str(ada),
