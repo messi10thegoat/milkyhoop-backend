@@ -207,7 +207,8 @@ def test_batal_dan_hapus_so_memakai_pagar_pesanan():
                 pemanggil.add(f.name)
     # 30 Sep (putusan pemilik LANGSUNG, pola SAP/NetSuite): BATAL tak lagi ditolak uang muka posted (tetap
     # saldo pelanggan); HAPUS tetap dijaga -- baris SO lenyap, uang muka jadi yatim.
-    assert "delete_sales_order" in pemanggil and "cancel_sales_order" not in pemanggil
+    # U1b F2: isi hapus pindah ke hapus_so_draf_core (+ penentu baca rencana_hapus_so); rute DELETE membungkus inti
+    assert {"hapus_so_draf_core", "rencana_hapus_so"} <= pemanggil and "cancel_sales_order" not in pemanggil
     pembungkus = next(f for f in pohon.body if isinstance(f, ast.AsyncFunctionDef)
                       and f.name == "_tolak_bila_ada_uang_muka_aktif")
     dipanggil = {getattr(n.func, "id", None) for n in ast.walk(pembungkus) if isinstance(n, ast.Call)}

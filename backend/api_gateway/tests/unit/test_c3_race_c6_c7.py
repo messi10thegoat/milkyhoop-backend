@@ -166,9 +166,11 @@ def test_c3_terbit_mengunci_so_sebelum_plafon_dalam_tx():
 # ---------------- race SO ----------------
 
 def test_race_delete_kunci_guard_dan_bersyarat_di_dalam_tx():
-    s = _src(SO.delete_sales_order)
-    tx = s.index("async with conn.transaction()")
-    assert tx < s.index("FOR UPDATE") < s.index("\"dihapus\")", tx) < s.index("AND status = 'draft' RETURNING id")
+    # U1b F2 (5 Okt): isi DELETE pindah ke hapus_so_draf_core (dipakai juga hapus massal); rute membungkusnya di SATU transaksi.
+    assert "async with conn.transaction()" in _src(SO.delete_sales_order) and "hapus_so_draf_core(" in _src(SO.delete_sales_order)
+    s = _src(SO.hapus_so_draf_core)
+    kunci = s.index("FOR UPDATE")
+    assert kunci < s.index("\"dihapus\")", kunci) < s.index("AND status = 'draft' RETURNING id")
 
 
 def test_race_cancel_kunci_lalu_rencana_di_dalam_tx():

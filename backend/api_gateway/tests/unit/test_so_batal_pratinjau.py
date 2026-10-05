@@ -271,5 +271,7 @@ async def test_404_dan_uuid_buruk(pasang, monkeypatch):
 def test_hapus_so_tetap_menjaga_uang_muka():
     """Putusan pemilik hanya untuk BATAL. Hapus SO tetap ditolak bila ada uang muka aktif (dp_guard)."""
     import inspect
-    assert "_tolak_bila_ada_uang_muka_aktif" in inspect.getsource(SO.delete_sales_order)
+    # U1b F2: isi hapus ada di hapus_so_draf_core (+ penentu baca rencana_hapus_so untuk pratinjau massal)
+    assert "_tolak_bila_ada_uang_muka_aktif" in inspect.getsource(SO.hapus_so_draf_core)
+    assert "_tolak_bila_ada_uang_muka_aktif" in inspect.getsource(SO.rencana_hapus_so)
     assert "_tolak_bila_ada_uang_muka_aktif" not in inspect.getsource(SO.cancel_sales_order)
