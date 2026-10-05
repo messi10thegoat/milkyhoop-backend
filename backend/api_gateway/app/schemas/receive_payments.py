@@ -145,6 +145,7 @@ class ReceivePaymentListItem(BaseModel):
     """Receive payment item for list responses."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
 
     id: str
     payment_number: str
@@ -156,6 +157,7 @@ class ReceivePaymentListItem(BaseModel):
     # COALESCE(..., 'bank_transfer') / COALESCE(..., 'cash'), sehingga pemakaian
     # uang muka dan nota kredit tampil sebagai penerimaan transfer bank.
     payment_method: Optional[str] = None
+    method_label: Optional[str] = None  # label layar (faktur_cetak.label_metode), 5 Okt
     source_type: Optional[str] = None
     total_amount: float
     allocated_amount: float
@@ -180,6 +182,7 @@ class ReceivePaymentDetail(BaseModel):
     """Full receive payment detail."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
 
     id: str
     payment_number: str
@@ -191,6 +194,7 @@ class ReceivePaymentDetail(BaseModel):
     # Opsional: jalur cadangan id-jurnal (bukan receive_payments) dulu
     # MENGARANG "bank_transfer" / "cash" / "" karena medan ini wajib.
     payment_method: Optional[str] = None
+    method_label: Optional[str] = None  # label layar (faktur_cetak.label_metode), 5 Okt
     bank_account_id: Optional[str] = None
     bank_account_name: Optional[str] = None
 

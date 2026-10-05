@@ -66,6 +66,11 @@ from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import cn_tertunda
 
 logger = logging.getLogger(__name__)
+
+# Label layar alasan nota kredit (MASTER 5 Okt): nilai server tetap, FE menampilkan reason_label.
+LABEL_ALASAN_NK = {"return": "Retur", "pricing_error": "Salah harga", "discount": "Diskon", "damaged": "Rusak",
+                   "other": "Lainnya"}
+
 router = APIRouter()
 
 # Connection pool
@@ -448,6 +453,7 @@ async def list_credit_notes(
                     "status": row["status"],
                     "status_detail": status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "reason": row["reason"],
+                    "reason_label": LABEL_ALASAN_NK.get(row["reason"], row["reason"]),
                     "created_at": row["created_at"].isoformat(),
                     "original_invoice_id": str(row["original_invoice_id"]) if row["original_invoice_id"] else None,
                     "original_invoice_number": row["original_invoice_number"],
@@ -665,6 +671,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     "status_detail": status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
                     "credit_note_date": cn["credit_note_date"].isoformat(),
                     "reason": cn["reason"],
+                    "reason_label": LABEL_ALASAN_NK.get(cn["reason"], cn["reason"]),
                     "reason_detail": cn["reason_detail"],
                     "ref_no": cn["ref_no"],
                     "notes": cn["notes"],

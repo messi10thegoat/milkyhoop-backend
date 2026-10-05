@@ -154,6 +154,7 @@ class CustomerDepositListItem(BaseModel):
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
     id: str
     deposit_number: str
     customer_id: Optional[str] = None
@@ -169,6 +170,7 @@ class CustomerDepositListItem(BaseModel):
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     payment_method: str
+    method_label: Optional[str] = None  # label layar (faktur_cetak.label_metode), 5 Okt
     reference: Optional[str] = None
     created_at: str
 
@@ -178,6 +180,7 @@ class CustomerDepositDetail(BaseModel):
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
     id: str
     deposit_number: str
     customer_id: Optional[str] = None
@@ -193,6 +196,7 @@ class CustomerDepositDetail(BaseModel):
     # Payment details
     deposit_date: str
     payment_method: str
+    method_label: Optional[str] = None  # label layar (faktur_cetak.label_metode), 5 Okt
     account_id: str
     account_code: Optional[str] = None
     account_name: Optional[str] = None

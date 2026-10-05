@@ -73,9 +73,9 @@ def test_hanya_so_hasil_konversi_membawa_data():
               idnum=[{"qid": q_so, "so_id": so_id, "order_number": "SO-2610-0007"}])
     h = _j(KO.so_hasil_penawaran(c, T, [q_so, q_inv, q_none]))
     assert h[str(q_so)] == {"sales_order_id": str(so_id), "sales_order_number": "SO-2610-0007",
-                            "order_code": "002-10-26", "order_title": "KAOS", "order_code_label": "Kode order"}
+                            "order_code": "002-10-26", "order_title": "KAOS", "order_code_label": "Kode order", "order_title_label": "Judul order"}
     kosong = {"sales_order_id": None, "sales_order_number": None, "order_code": None, "order_title": None,
-              "order_code_label": "Kode order"}
+              "order_code_label": "Kode order", "order_title_label": "Judul order"}
     assert h[str(q_inv)] == kosong and h[str(q_none)] == kosong  # konversi ke faktur / belum: None, label terisi
 
 

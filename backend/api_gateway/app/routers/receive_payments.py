@@ -722,6 +722,7 @@ async def list_receive_payments(
                     if hasattr(row["payment_date"], "isoformat")
                     else str(row["payment_date"]),
                     "payment_method": row["payment_method"],
+                    "method_label": label_metode(row["payment_method"]),
                     "source_type": row["source_type"],
                     "total_amount": row["total_amount"],
                     "allocated_amount": row["allocated_amount"] or 0,
@@ -1115,6 +1116,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     "customer_name": payment["customer_name"],
                     "payment_date": payment["payment_date"].isoformat(),
                     "payment_method": payment["payment_method"],
+                    "method_label": label_metode(payment["payment_method"]),
                     "bank_account_id": str(payment["bank_account_id"]),
                     "bank_account_name": payment["bank_account_name"],
                     "source_type": payment["source_type"],
