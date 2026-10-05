@@ -35,6 +35,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/bulk/(confirm|confirm/preview)$", ["POST"], "sales_order", "C"),
     (r"^/api/sales-orders/bulk/(delete|delete/preview)$", ["POST"], "sales_order", "D"),
     (r"^/api/quotes/bulk/export$", ["POST"], "quote", "R"),
+    # F3: izin = izin aksi tunggalnya (kirim = POST penawaran = C; hapus = DELETE penawaran = D); pratinjau ikut tulisnya
+    (r"^/api/quotes/bulk/(send|send/preview)$", ["POST"], "quote", "C"),
+    (r"^/api/quotes/bulk/(delete|delete/preview)$", ["POST"], "quote", "D"),
     (r"^/api/proformas/bulk/export$", ["POST"], "proforma", "R"),
     (r"^/api/sales-invoices/bulk/export$", ["POST"], "sales_invoice", "R"),
     (r"^/api/customer-deposits/bulk/export$", ["POST"], "customer_deposit", "R"),

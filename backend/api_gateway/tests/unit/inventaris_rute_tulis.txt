@@ -55,6 +55,10 @@ DELETE /api/product-djp-mapping/{mapping_id}
 DELETE /api/production/{order_id}
 DELETE /api/purchase-orders/{po_id}
 POST /api/quotes/bulk/export
+POST /api/quotes/bulk/send
+POST /api/quotes/bulk/send/preview
+POST /api/quotes/bulk/delete
+POST /api/quotes/bulk/delete/preview
 DELETE /api/quotes/{quote_id}
 POST /api/receive-payments/bulk/export
 DELETE /api/receive-payments/{payment_id}

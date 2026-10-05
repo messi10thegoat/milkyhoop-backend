@@ -160,7 +160,7 @@ def test_penentu_tanggal_hari_ini_masih_berlaku():
 def test_send_quote_dan_share_memakai_penanda_yang_sama():
     import inspect
     from app.routers import quotes as Q
-    assert "tandai_terkirim(" in inspect.getsource(Q.send_quote)
+    assert "tandai_terkirim(" in inspect.getsource(Q.kirim_penawaran_core)  # F3: isi kirim pindah ke inti
     assert "tandai_terkirim(" in inspect.getsource(D._bagikan)
 
 

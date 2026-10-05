@@ -1147,54 +1147,75 @@ async def alasan_tak_bisa_hapus(conn, tenant_id: str, quote) -> Optional[str]:
     return None
 
 
+async def rencana_hapus_penawaran(conn, ctx: dict, quote_id) -> list:
+    """Penentu BACA hapus penawaran (U1b F3, pratinjau massal): tak ada tulisan. Aturan = alasan_tak_bisa_hapus (pola Xero:
+    hanya draf yang belum pernah keluar). -> [] bila boleh, selain itu blok {code,status,message}."""
+    quote = await conn.fetchrow(
+        "SELECT id, status, quote_number, sent_at FROM quotes WHERE id = $1 AND tenant_id = $2",
+        uuid_module.UUID(str(quote_id)), ctx["tenant_id"])
+    if not quote:
+        return [{"code": "QUOTE_TAK_ADA", "status": 404, "message": "Penawaran tidak ditemukan."}]
+    alasan = await alasan_tak_bisa_hapus(conn, ctx["tenant_id"], quote)
+    return [{"code": "QUOTE_NOT_DELETABLE", "status": 409, "message": alasan}] if alasan else []
+
+
+async def hapus_penawaran_core(conn, ctx: dict, quote_id) -> dict:
+    """Inti DELETE /quotes/{id}, di transaksi PEMANGGIL: rute tunggal DAN hapus massal (U1b F3). Isi = isi rute lama tanpa
+    perubahan (hanya dipindah dari handler). -> {quote_number}."""
+    quote_id = str(quote_id)
+    # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca `app.user_id`, dan GUC itu HANYA hidup di
+    # dalam transaksi -- set_config + DELETE di SATU transaksi. 3 Okt: kunci QUOTE + FOR UPDATE di transaksi
+    # yang sama (dulu status dibaca tanpa kunci -> bisa berpacu dengan kirim/bagikan bersamaan).
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+    )
+    quote = await conn.fetchrow(
+        """
+        SELECT id, status, quote_number, sent_at FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+    """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+
+    alasan = await alasan_tak_bisa_hapus(conn, ctx["tenant_id"], quote)
+    if alasan:
+        raise HTTPException(status_code=409, detail={"code": "QUOTE_NOT_DELETABLE", "message": alasan})
+
+    await conn.execute(
+        "SELECT set_config('app.user_id', $1, true)",
+        str(ctx["user_id"] or ""),
+    )
+    # Delete (cascade deletes items)
+    await conn.execute(
+        "DELETE FROM quotes WHERE id = $1 AND tenant_id = $2",
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+    return {"quote_number": quote["quote_number"]}
+
+
 @router.delete("/{quote_id}", response_model=QuoteResponse)
 async def delete_quote(request: Request, quote_id: str):
     """Hapus penawaran: HANYA draf yang belum pernah keluar (alasan_tak_bisa_hapus); selain itu 409
-    QUOTE_NOT_DELETABLE. Hapus keras; jejak = trigger trg_log_deletion (audit DOCUMENT_DELETED beraktor + nomor)."""
+    QUOTE_NOT_DELETABLE. Hapus keras; jejak = trigger trg_log_deletion (audit DOCUMENT_DELETED beraktor + nomor).
+    Isi + aturan: hapus_penawaran_core (juga dipakai hapus massal)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca `app.user_id`, dan GUC itu HANYA hidup di
-            # dalam transaksi -- set_config + DELETE di SATU transaksi. 3 Okt: kunci QUOTE + FOR UPDATE di transaksi
-            # yang sama (dulu status dibaca tanpa kunci -> bisa berpacu dengan kirim/bagikan bersamaan).
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
-                )
-                quote = await conn.fetchrow(
-                    """
-                    SELECT id, status, quote_number, sent_at FROM quotes
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                """,
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                )
-
-                if not quote:
-                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-                alasan = await alasan_tak_bisa_hapus(conn, ctx["tenant_id"], quote)
-                if alasan:
-                    raise HTTPException(status_code=409, detail={"code": "QUOTE_NOT_DELETABLE", "message": alasan})
-
-                await conn.execute(
-                    "SELECT set_config('app.user_id', $1, true)",
-                    str(ctx["user_id"] or ""),
-                )
-                # Delete (cascade deletes items)
-                await conn.execute(
-                    "DELETE FROM quotes WHERE id = $1 AND tenant_id = $2",
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                )
+                data = await hapus_penawaran_core(conn, ctx, quote_id)
 
             return QuoteResponse(
                 success=True,
                 message="Quote deleted successfully",
-                data={"quote_number": quote["quote_number"]},
+                data=data,
             )
 
     except HTTPException:
@@ -1209,69 +1230,76 @@ async def delete_quote(request: Request, quote_id: str):
 # ============================================================================
 
 
+async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = False) -> dict:
+    """Inti POST /quotes/{id}/send ("tandai terkirim"), di transaksi PEMANGGIL: rute tunggal DAN kirim massal (U1b F3). Isi = isi rute
+    lama tanpa perubahan (hanya dipindah dari handler; `body.send_email` -> `send_email`). -> {quote_number, status}."""
+    quote_id = str(quote_id)
+    # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
+    # Check quote
+    quote = await conn.fetchrow(
+        """
+        SELECT id, status, quote_number FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+    """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+
+    if quote["status"] not in ("draft", "sent"):
+        raise HTTPException(
+            status_code=400,
+            detail=tg.tak_bisa_status("quote", quote["status"], "dikirim", quote["quote_number"]),
+        )
+
+    # SUREL PENAWARAN BELUM ADA -- DAN JALUR INI DULU BERPURA-PURA.
+    # Sampai 12 Sep 2026, `send_email=true` mengubah status jadi
+    # 'sent', mencatat log "Quote email notification queued", lalu
+    # menjawab "Quote sent successfully" -- tanpa satu surel pun keluar
+    # (panggilan pengirimnya dikomentari; `email_service` tak punya
+    # pengirim penawaran). Pemilik bisa mengira pelanggannya sudah
+    # menerima penawaran. Kepura-puraan lebih buruk daripada fitur yang
+    # tak ada.
+    #
+    # Penolakan diletakkan SEBELUM `UPDATE status`: permintaan yang
+    # ditolak tak boleh diam-diam menandai penawaran "terkirim".
+    # Fitur surel sungguhan = tiket terpisah (kunci Resend terpasang di
+    # produksi; yang belum ada templat, lampiran PDF, domain pengirim).
+    if send_email:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Pengiriman penawaran lewat surel belum tersedia. "
+                "Penawaran TIDAK ditandai terkirim. Kirim tanpa surel "
+                "(send_email=false) untuk menandainya terkirim, lalu "
+                "bagikan PDF-nya lewat saluran lain."
+            ),
+        )
+
+    # 3 Okt (Q5): penanda bersama dengan POST /documents/quotation/{id}/share
+    from ..services.penawaran_bagikan import tandai_terkirim
+    await tandai_terkirim(conn, ctx["tenant_id"], quote["id"], quote["quote_number"], ctx.get("user_id"),
+                          "api:quotes")
+    return {"quote_number": quote["quote_number"], "status": "sent"}
+
+
 @router.post("/{quote_id}/send", response_model=QuoteResponse)
 async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = None):
-    """Mark quote as sent."""
+    """Mark quote as sent. Isi + aturan: kirim_penawaran_core (juga dipakai kirim massal)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn, conn.transaction():
-            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
-            # Check quote
-            quote = await conn.fetchrow(
-                """
-                SELECT id, status, quote_number FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-                FOR UPDATE
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-            if quote["status"] not in ("draft", "sent"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=tg.tak_bisa_status("quote", quote["status"], "dikirim", quote["quote_number"]),
-                )
-
-            # SUREL PENAWARAN BELUM ADA -- DAN JALUR INI DULU BERPURA-PURA.
-            # Sampai 12 Sep 2026, `send_email=true` mengubah status jadi
-            # 'sent', mencatat log "Quote email notification queued", lalu
-            # menjawab "Quote sent successfully" -- tanpa satu surel pun keluar
-            # (panggilan pengirimnya dikomentari; `email_service` tak punya
-            # pengirim penawaran). Pemilik bisa mengira pelanggannya sudah
-            # menerima penawaran. Kepura-puraan lebih buruk daripada fitur yang
-            # tak ada.
-            #
-            # Penolakan diletakkan SEBELUM `UPDATE status`: permintaan yang
-            # ditolak tak boleh diam-diam menandai penawaran "terkirim".
-            # Fitur surel sungguhan = tiket terpisah (kunci Resend terpasang di
-            # produksi; yang belum ada templat, lampiran PDF, domain pengirim).
-            if body and body.send_email:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "Pengiriman penawaran lewat surel belum tersedia. "
-                        "Penawaran TIDAK ditandai terkirim. Kirim tanpa surel "
-                        "(send_email=false) untuk menandainya terkirim, lalu "
-                        "bagikan PDF-nya lewat saluran lain."
-                    ),
-                )
-
-            # 3 Okt (Q5): penanda bersama dengan POST /documents/quotation/{id}/share
-            from ..services.penawaran_bagikan import tandai_terkirim
-            await tandai_terkirim(conn, ctx["tenant_id"], quote["id"], quote["quote_number"], ctx.get("user_id"),
-                                  "api:quotes")
-
+            data = await kirim_penawaran_core(conn, ctx, quote_id, bool(body and body.send_email))
             return QuoteResponse(
                 success=True,
                 message="Quote sent successfully",
-                data={"quote_number": quote["quote_number"], "status": "sent"},
+                data=data,
             )
 
     except HTTPException:
