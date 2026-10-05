@@ -11,14 +11,16 @@ from app.services.so_riwayat import label_medan
 
 def test_satu_transaksi_kunci_lalu_update_lalu_riwayat():
     s = inspect.getsource(PF.update_proforma)
-    tx, kunci = s.index("async with conn.transaction():"), s.index("_kunci_proforma(")
-    upd, riw = s.index("UPDATE proformas SET"), s.index('"PROFORMA_UPDATED"')
-    assert tx < kunci < upd < riw
-    assert "if ubah:" in s, "tanpa perubahan nyata -> tanpa baris riwayat"
+    tx, kunci, tulis = s.index("async with conn.transaction():"), s.index("_kunci_proforma("), s.index("_tulis_ubah(")
+    assert tx < kunci < tulis  # penulis bersama PATCH + /update/preview (U2b 5 Okt)
+    w = inspect.getsource(PF._tulis_ubah)
+    upd, riw = w.index("UPDATE proformas SET"), w.index('"PROFORMA_UPDATED"')
+    assert upd < riw
+    assert "if ubah:" in w, "tanpa perubahan nyata -> tanpa baris riwayat"
 
 
 def test_medan_ubah_sama_dengan_kolom_update():
-    s = inspect.getsource(PF.update_proforma)
+    s = inspect.getsource(PF._tulis_ubah)
     for m in PF.MEDAN_UBAH_PROFORMA:
         assert f"{m} = " in s, m
 

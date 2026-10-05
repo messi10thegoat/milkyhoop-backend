@@ -766,11 +766,11 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
 
 
 @router.patch("/{proforma_id}")
-async def update_proforma(request: Request, proforma_id: str, body: UpdateProformaRequest):
-    """Ubah proforma. HANYA saat status 'draft'.
-    4 Okt 2026 (MASTER GO, U2): SATU transaksi + kunci PROFORMA_SO yang sama dengan buat/terbit (dulu tanpa transaksi
-    dan tanpa kunci -> pagar plafon bisa balapan dengan terbit), dan riwayat PROFORMA_UPDATED (medan yang BERUBAH,
-    lama -> baru, + nominal lama -> baru) di transaksi yang sama (Law 12). Tanpa perubahan nyata -> tanpa baris riwayat."""
+async def update_proforma(request: Request, proforma_id: str, body: UpdateProformaRequest, response: _Response = None):
+    """Ubah proforma. HANYA saat status 'draft'. Penentu = _rencana_ubah (SAMA dengan /update/preview), penulis =
+    _tulis_ubah: SATU transaksi + kunci PROFORMA_SO yang sama dengan buat/terbit + riwayat PROFORMA_UPDATED (medan
+    yang BERUBAH, lama -> baru) di transaksi yang sama (Law 12). X-Idempotency-Key opsional (U2b 5 Okt): balasan
+    hilang lalu diulang = respons pertama; kunci sama + isi beda -> 409."""
     try:
         ctx = get_user_context(request)
         pid = _uuid_or_404(proforma_id)
@@ -778,90 +778,19 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                kp, sd, lama = await _idem_aksi(conn, ctx, request, "UPDATE", pid,
+                                                body.model_dump(mode="json", exclude_unset=True), response)
+                if lama is not None:
+                    return lama
                 cur = await _kunci_proforma(conn, ctx, pid)
-                if cur["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Proforma berstatus {tg.status_id('proforma', cur['status'])} tidak bisa diubah. Hanya proforma berstatus Draf yang bisa diubah.",
-                    )
-
-                order = await fetch_order_or_404(conn, ctx["tenant_id"], cur["sales_order_id"])
-                order_total = _f(order["total_amount"]) or 0.0
-
-                _purpose = _normalisasi_purpose(body.purpose)
-                if _purpose is not None and _purpose not in VALID_PURPOSES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
-                    )
-
-                percent = _f(body.percent_of_order)
-                amount = _f(body.amount)
-                if percent is not None:
-                    if percent <= 0 or percent > 100:
-                        raise HTTPException(
-                            status_code=400, detail="Persen dari pesanan harus di antara 0 dan 100."
-                        )
-                    amount = round(order_total * percent / 100.0, 2)
-                if amount is not None:
-                    if amount <= 0:
-                        raise HTTPException(
-                            status_code=400, detail="amount harus lebih besar dari 0."
-                        )
-                    await assert_within_order_total(
-                        conn, ctx["tenant_id"], cur["sales_order_id"], order_total, amount,
-                        exclude_id=pid,
-                    )
-
-                row = await conn.fetchrow(
-                    """
-                    UPDATE proformas SET
-                        purpose = COALESCE($3, purpose),
-                        percent_of_order = CASE WHEN $4::numeric IS NOT NULL THEN $4::numeric
-                                                WHEN $5::numeric IS NOT NULL THEN NULL
-                                                ELSE percent_of_order END,
-                        amount = COALESCE($6::numeric, amount),
-                        proforma_date = COALESCE($7::date, proforma_date),
-                        due_date = COALESCE($8::date, due_date),
-                        terms = COALESCE($9, terms),
-                        notes = COALESCE($10, notes),
-                        payment_bank_name = COALESCE($11, payment_bank_name),
-                        payment_account_number = COALESCE($12, payment_account_number),
-                        payment_account_holder = COALESCE($13, payment_account_holder)
-                    WHERE id = $1 AND tenant_id = $2
-                    RETURNING *
-                    """,
-                    pid,
-                    ctx["tenant_id"],
-                    _purpose,
-                    Decimal(str(percent)) if percent is not None else None,
-                    Decimal(str(body.amount)) if body.amount is not None else None,
-                    Decimal(str(amount)) if amount is not None else None,
-                    body.proforma_date,
-                    body.due_date,
-                    body.terms,
-                    body.notes,
-                    body.payment_bank_name,
-                    body.payment_account_number,
-                    body.payment_account_holder,
-                )
-
-                ubah = {m: [_js_pf(cur[m]), _js_pf(row[m])] for m in MEDAN_UBAH_PROFORMA if cur[m] != row[m]}
-                if ubah:
-                    medan = sorted(ubah)
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_UPDATED",
-                        ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diubah ({', '.join(medan)})".replace("  ", " "),
-                        {"fields": medan, "changes": ubah, "total": [_js_pf(cur["amount"]), _js_pf(row["amount"])],
-                         "sales_order_id": str(cur["sales_order_id"])},
-                        source="api:proformas.update",
-                    )
-
+                r = await _rencana_ubah(conn, ctx, cur, body)
+                _angkat_blok_pertama(r)
+                row = await _tulis_ubah(conn, ctx, cur, body, r)
                 paid, paid_breakdown = await terbayar_satu(conn, ctx["tenant_id"], row)
-                return {
+                return await _simpan_idem_aksi(conn, ctx, kp, sd, "PROFORMA_UPDATE", {
                     "success": True,
-                    "data": serialize_proforma(row, order["order_number"], paid, paid_breakdown),
-                }
+                    "data": serialize_proforma(row, r["order"]["order_number"], paid, paid_breakdown),
+                }, pid)
 
     except HTTPException:
         raise
@@ -946,6 +875,97 @@ async def _rencana_batal(conn, ctx: dict, cur, alasan) -> dict:
             "impact": {"amount": _f(cur["amount"]) or 0.0, "before": _ringkas_tagih(sebelum)}}
 
 
+async def _rencana_ubah(conn, ctx: dict, cur, body) -> dict:
+    """Penentu ubah draf (U2b 5 Okt): SEMUA blok, urutan & pesan = pemeriksaan PATCH lama (status -> tujuan -> persen ->
+    nominal -> plafon). Nominal hasil persen dihitung SERVER (sama dengan PATCH)."""
+    tid, pid = ctx["tenant_id"], cur["id"]
+    blocks = []
+    if cur["status"] != "draft":
+        blocks.append(_blok("PROFORMA_NOT_DRAFT", 400, (
+            f"Proforma berstatus {tg.status_id('proforma', cur['status'])} tidak bisa diubah. "
+            "Hanya proforma berstatus Draf yang bisa diubah.")))
+    order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
+    total = _f(order["total_amount"]) or 0.0
+    purpose = _normalisasi_purpose(body.purpose)
+    if purpose is not None and purpose not in VALID_PURPOSES:
+        blocks.append(_blok("PROFORMA_PURPOSE_INVALID", 400, "Tujuan proforma tidak dikenal."))
+    percent, amount = _f(body.percent_of_order), _f(body.amount)
+    if percent is not None:
+        if percent <= 0 or percent > 100:
+            blocks.append(_blok("PROFORMA_PERCENT_INVALID", 400, "Persen dari pesanan harus di antara 0 dan 100."))
+            amount = None
+        else:
+            amount = round(total * percent / 100.0, 2)
+    if amount is not None:
+        if amount <= 0:
+            blocks.append(_blok("PROFORMA_AMOUNT_INVALID", 400, "Nilai proforma harus lebih dari Rp 0."))
+        else:
+            try:  # pagar plafon YANG SAMA dengan buat/terbit
+                await assert_within_order_total(conn, tid, cur["sales_order_id"], total, amount, exclude_id=pid)
+            except HTTPException as e:
+                blocks.append(_blok("PROFORMA_EXCEEDS_BILLABLE", e.status_code, e.detail))
+    sebelum = await rincian_tagih(conn, tid, cur["sales_order_id"], total, exclude_id=pid)
+    return {"order": order, "blocks": blocks, "linked_deposits": [], "purpose": purpose, "percent": percent,
+            "amount": amount,
+            "impact": {"amount_before": _f(cur["amount"]) or 0.0,
+                       "amount": amount if amount is not None else (_f(cur["amount"]) or 0.0),
+                       "before": _ringkas_tagih(sebelum)}}
+
+
+async def _tulis_ubah(conn, ctx: dict, cur, body, r: dict):
+    """SATU penulis ubah draf untuk PATCH DAN /update/preview (yang di-rollback); savepoint."""
+    percent, amount, pid = r["percent"], r["amount"], cur["id"]
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            """
+            UPDATE proformas SET
+                purpose = COALESCE($3, purpose),
+                percent_of_order = CASE WHEN $4::numeric IS NOT NULL THEN $4::numeric
+                                        WHEN $5::numeric IS NOT NULL THEN NULL
+                                        ELSE percent_of_order END,
+                amount = COALESCE($6::numeric, amount),
+                proforma_date = COALESCE($7::date, proforma_date),
+                due_date = COALESCE($8::date, due_date),
+                terms = COALESCE($9, terms),
+                notes = COALESCE($10, notes),
+                payment_bank_name = COALESCE($11, payment_bank_name),
+                payment_account_number = COALESCE($12, payment_account_number),
+                payment_account_holder = COALESCE($13, payment_account_holder)
+            WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+            RETURNING *
+            """,
+            pid, ctx["tenant_id"], r["purpose"],
+            Decimal(str(percent)) if percent is not None else None,
+            Decimal(str(body.amount)) if body.amount is not None else None,
+            Decimal(str(amount)) if amount is not None else None,
+            body.proforma_date, body.due_date, body.terms, body.notes,
+            body.payment_bank_name, body.payment_account_number, body.payment_account_holder,
+        )
+        if not row:
+            raise HTTPException(status_code=409, detail="Proforma sudah berubah status.")
+        ubah = {m: [_js_pf(cur[m]), _js_pf(row[m])] for m in MEDAN_UBAH_PROFORMA if cur[m] != row[m]}
+        if ubah:
+            medan = sorted(ubah)
+            await catat_riwayat(
+                conn, ctx["tenant_id"], "proformas", pid, row["proforma_number"], "PROFORMA_UPDATED",
+                ctx.get("user_id"), f"Proforma {row['proforma_number'] or ''} diubah ({', '.join(medan)})".replace("  ", " "),
+                {"fields": medan, "changes": ubah, "total": [_js_pf(cur["amount"]), _js_pf(row["amount"])],
+                 "sales_order_id": str(cur["sales_order_id"])},
+                source="api:proformas.update",
+            )
+    return row
+
+
+def _payload_ubah(body, r: dict) -> dict:
+    """Badan PATCH ternormalisasi (FE mengirimnya APA ADANYA): hanya medan yang diisi; persen menang atas nominal."""
+    p = body.model_dump(mode="json", exclude_unset=True)
+    if "purpose" in p:
+        p["purpose"] = r["purpose"]
+    if r["percent"] is not None:
+        p.pop("amount", None)
+    return p
+
+
 def _bentuk_pratinjau(cur, r: dict) -> dict:
     return {"proforma_id": str(cur["id"]), "proforma_number": cur["proforma_number"], "status_now": cur["status"],
             "can_proceed": not r["blocks"],
@@ -1024,7 +1044,7 @@ class _BatalkanPratinjau(Exception):
         self.data = data
 
 
-async def _pratinjau(ctx: dict, pid, aksi: str, alasan=None) -> dict:
+async def _pratinjau(ctx: dict, pid, aksi: str, alasan=None, body=None) -> dict:
     """Penentu YANG SAMA + (bila tak terblok) PENULIS YANG SAMA, lalu ROLLBACK. Dampak 'sesudah' = rincian tagih
     NYATA sesudah tulis: atribusi uang muka bisa berpindah (uang muka tak tertaut dicocokkan nominal ke proforma yang
     baru terbit; terukur 4 Okt PRO-2609-0028: di luar tagihan 400rb -> 0), jadi tak bisa dihitung dengan menambah."""
@@ -1033,23 +1053,39 @@ async def _pratinjau(ctx: dict, pid, aksi: str, alasan=None) -> dict:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 cur = await _kunci_proforma(conn, ctx, pid)
-                r = await (_rencana_terbit(conn, ctx, cur) if aksi == "issue" else _rencana_batal(conn, ctx, cur, alasan))
+                if aksi == "update":
+                    r = await _rencana_ubah(conn, ctx, cur, body)
+                else:
+                    r = await (_rencana_terbit(conn, ctx, cur) if aksi == "issue" else _rencana_batal(conn, ctx, cur, alasan))
                 r["impact"]["after"] = r["impact"]["before"]
                 if not r["blocks"]:
                     if aksi == "issue":
                         await _tulis_terbit(conn, ctx, cur)
+                    elif aksi == "update":
+                        await _tulis_ubah(conn, ctx, cur, body, r)
                     else:
                         await _tulis_batal(conn, ctx, cur, alasan)
                     total = _f(r["order"]["total_amount"]) or 0.0
                     r["impact"]["after"] = _ringkas_tagih(
                         await rincian_tagih(conn, ctx["tenant_id"], cur["sales_order_id"], total))
-                raise _BatalkanPratinjau(_bentuk_pratinjau(cur, r))
+                data = _bentuk_pratinjau(cur, r)
+                if aksi == "update":
+                    data["payload"] = _payload_ubah(body, r)
+                raise _BatalkanPratinjau(data)
     except _BatalkanPratinjau as b:
         return b.data
 
 
 class PratinjauBatalProforma(BaseModel):
     reason: Optional[str] = None  # opsional DI PRATINJAU supaya "alasan wajib" tampil sebagai blok, bukan 422 skema
+
+
+@router.post("/{proforma_id}/update/preview")
+async def preview_update_proforma(request: Request, proforma_id: str, body: UpdateProformaRequest):
+    """Pratinjau ubah draf (U2b 5 Okt): penentu + penulis YANG SAMA dengan PATCH lalu ROLLBACK (nol tulis); semua blok,
+    nominal hasil (persen -> nominal server), plafon tagih SO sebelum/sesudah, payload PATCH ternormalisasi."""
+    ctx = get_user_context(request)
+    return {"success": True, "data": await _pratinjau(ctx, _uuid_or_404(proforma_id), "update", body=body)}
 
 
 @router.post("/{proforma_id}/issue/preview")
