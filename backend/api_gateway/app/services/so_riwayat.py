@@ -256,11 +256,17 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
             if (r["eventType"].endswith("_UPDATED") and r["eventType"] in RINGKAS_AUDIT and isinstance(_medan, list)
                     and _medan):
                 ringkas = f"{RINGKAS_AUDIT[r['eventType']]}: {label_medan(_medan)}"
-            if r["eventType"] in EVENT_KODE_ORDER:
+            if r["eventType"] in EVENT_KODE_ORDER or r["eventType"] == "ORDER_TITLE_CHANGED":
                 if label_kode is None:
                     from .kode_order import muat_setelan as _muat_setelan_kode
-                    label_kode = (await _muat_setelan_kode(conn, tenant_id))["label"]
-                ringkas = teks_riwayat_kode(r["eventType"], label_kode, meta, ringkas)
+                    _st_kode = await _muat_setelan_kode(conn, tenant_id)
+                    label_kode, label_judul = _st_kode["label"], _st_kode["title_label"]
+                if r["eventType"] == "ORDER_TITLE_CHANGED":
+                    # V390: label judul tenant SEKARANG (pola U7 kode): "Judul order: a → b" -> "Judul SPK: a → b"
+                    if "new" in meta:
+                        ringkas = f"{label_judul}: {meta.get('old') or '—'} → {meta.get('new') or '—'}"
+                else:
+                    ringkas = teks_riwayat_kode(r["eventType"], label_kode, meta, ringkas)
             aktor = r["userId"] or meta.get("user_id")
             if not aktor and str(r["source"] or "").startswith("db:"):
                 aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)

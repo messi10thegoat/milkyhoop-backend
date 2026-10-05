@@ -192,6 +192,7 @@ class CreditNoteListItem(BaseModel):
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
     id: str
     credit_note_number: str
     customer_id: Optional[str] = None
@@ -204,6 +205,7 @@ class CreditNoteListItem(BaseModel):
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     reason: str
+    reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
     created_at: str
     original_invoice_id: Optional[str] = None  # U9 (5 Okt)
     original_invoice_number: Optional[str] = None
@@ -218,6 +220,7 @@ class CreditNoteDetail(BaseModel):
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
     id: str
     credit_note_number: str
     customer_id: Optional[str] = None
@@ -243,6 +246,7 @@ class CreditNoteDetail(BaseModel):
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     credit_note_date: str
     reason: str
+    reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
     reason_detail: Optional[str] = None
     ref_no: Optional[str] = None
     notes: Optional[str] = None

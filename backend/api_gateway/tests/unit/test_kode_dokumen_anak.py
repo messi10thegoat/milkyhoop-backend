@@ -20,7 +20,7 @@ class _Conn:
         self.kueri.append(q)
         assert "order_code_settings" in q and a[0] == T
         return {"enabled": True, "template": "{SEQ}", "min_digits": 3, "reset": "never", "trigger": "so_confirmed",
-                "allow_override": True, "label": "Kode order"}
+                "allow_override": True, "label": "Kode order", "title_label": "Judul order"}
 
     async def fetch(self, q, *a):
         self.kueri.append(q)
@@ -42,7 +42,7 @@ async def test_tiga_kueri_tetap_tanpa_n_plus_1(n):
     c = _Conn([{"id": i, "so_id": s["id"]} for i in ids], [s])
     h = await KO.kode_untuk_dokumen(c, T, "sales_invoice", ids)
     assert len(c.kueri) == 3, len(c.kueri)
-    assert all(h[str(i)] == {"order_code": "005-10-26", "order_title": "KEMEJA GMIM", "order_code_label": "Kode order"}
+    assert all(h[str(i)] == {"order_code": "005-10-26", "order_title": "KEMEJA GMIM", "order_code_label": "Kode order", "order_title_label": "Judul order"}
                for i in ids)
 
 
@@ -52,7 +52,7 @@ async def test_tanpa_so_atau_tanpa_kode_null_label_tetap():
     a, b = uuid.uuid4(), uuid.uuid4()
     c = _Conn([{"id": a, "so_id": s["id"]}, {"id": b, "so_id": None}], [s])
     h = await KO.kode_untuk_dokumen(c, T, "proforma", [a, b])
-    assert h[str(a)] == h[str(b)] == {"order_code": None, "order_title": None, "order_code_label": "Kode order"}
+    assert h[str(a)] == h[str(b)] == {"order_code": None, "order_title": None, "order_code_label": "Kode order", "order_title_label": "Judul order"}
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_penerimaan_banyak_so_daftar_terurut():
     p = uuid.uuid4()
     c = _Conn([{"id": p, "so_id": s1["id"]}, {"id": p, "so_id": s2["id"]}, {"id": p, "so_id": s3["id"]}], [s1, s2, s3])
     h = await KO.kode_untuk_dokumen(c, T, "receive_payment", [p])
-    assert h[str(p)] == {"order_code_label": "Kode order", "order_codes": [
+    assert h[str(p)] == {"order_code_label": "Kode order", "order_title_label": "Judul order", "order_codes": [
         {"order_code": "002-10-26", "order_title": "KAOS", "order_number": "SO-2"},
         {"order_code": "009-10-26", "order_title": "KEMEJA GMIM", "order_number": "SO-9"}]}
 

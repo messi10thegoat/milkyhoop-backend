@@ -354,6 +354,7 @@ class InvoiceListItem(BaseModel):
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
+    order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
 
     id: str
     invoice_number: str

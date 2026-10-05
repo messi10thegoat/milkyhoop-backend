@@ -34,6 +34,11 @@ LABEL_METODE = {
     "cash": "Tunai",
     "bank_transfer": "Transfer Bank",
     "e_wallet": "E-Wallet",
+    # 5 Okt 2026: nilai metode UANG MUKA (customer_deposits: cash|transfer|check|other) -- label layar method_label.
+    # Penerimaan tak terdampak (CHECK receive_payments = cash|bank_transfer|e_wallet).
+    "transfer": "Transfer Bank",
+    "check": "Cek",
+    "other": "Lainnya",
 }
 
 

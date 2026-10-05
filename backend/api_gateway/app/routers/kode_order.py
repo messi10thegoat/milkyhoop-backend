@@ -29,15 +29,17 @@ def _ctx(request: Request) -> dict:
 
 
 def _keluaran(s: dict) -> dict:
-    return {k: s[k] for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label")}
+    return {k: s[k] for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label",
+                              "title_label")}
 
 
 def _badan(b: dict, lama: dict) -> dict:
     s = dict(lama)
-    for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label"):
+    for k in ("enabled", "template", "min_digits", "reset", "trigger", "allow_override", "label", "title_label"):
         if k in b:
             s[k] = b[k]
     s["label"] = KO.normal_label(s.get("label") or KO.BAWAAN["label"])
+    s["title_label"] = KO.normal_label(s.get("title_label") or KO.BAWAAN["title_label"], "Label judul")
     for k in ("enabled", "allow_override"):
         if not isinstance(s[k], bool):
             raise KO.KodeOrderGalat(f"{k} wajib boolean.")
@@ -106,14 +108,14 @@ async def simpan_setelan(request: Request):
                 raise HTTPException(status_code=422, detail=str(e))
             await conn.execute(
                 """INSERT INTO order_code_settings (tenant_id, enabled, template, min_digits, reset, trigger,
-                                                    allow_override, label, updated_at, updated_by)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9)
+                                                    allow_override, label, title_label, updated_at, updated_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, now(), $9)
                    ON CONFLICT (tenant_id) DO UPDATE SET enabled = EXCLUDED.enabled, template = EXCLUDED.template,
                      min_digits = EXCLUDED.min_digits, reset = EXCLUDED.reset, trigger = EXCLUDED.trigger,
-                     allow_override = EXCLUDED.allow_override, label = EXCLUDED.label, updated_at = now(),
+                     allow_override = EXCLUDED.allow_override, label = EXCLUDED.label, title_label = EXCLUDED.title_label, updated_at = now(),
                      updated_by = EXCLUDED.updated_by""",
                 ctx["tenant_id"], baru["enabled"], baru["template"], baru["min_digits"], baru["reset"],
-                baru["trigger"], baru["allow_override"], baru["label"], str(ctx["user_id"]))
+                baru["trigger"], baru["allow_override"], baru["label"], str(ctx["user_id"]), baru["title_label"])
     return {"success": True, "data": _keluaran(baru)}
 
 

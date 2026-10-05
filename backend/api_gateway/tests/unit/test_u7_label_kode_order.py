@@ -51,7 +51,7 @@ class _Conn:
         self.sql.append(sql)
         if "FROM order_code_settings" in sql:
             return {"enabled": True, "template": "{SEQ}-{MM}-{YY}", "min_digits": 3, "reset": "yearly",
-                    "trigger": "so_confirmed", "allow_override": True, "label": self.label}
+                    "trigger": "so_confirmed", "allow_override": True, "label": self.label, "title_label": "Judul order"}
         if "FROM sales_orders" in sql and self.so:
             return self.so
         return None

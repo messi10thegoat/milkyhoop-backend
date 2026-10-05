@@ -210,7 +210,8 @@ async def list_sales_orders(
             # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
             posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, await tanggal_dokumen(conn, ctx["tenant_id"]))
             from ..services.kode_order import muat_setelan as _setelan_kode
-            _label_kode = (await _setelan_kode(conn, ctx["tenant_id"]))["label"]
+            _st_kode = await _setelan_kode(conn, ctx["tenant_id"])
+            _label_kode, _label_judul = _st_kode["label"], _st_kode["title_label"]
 
             items = [
                 SalesOrderListItem(
@@ -219,6 +220,7 @@ async def list_sales_orders(
                     order_code=row["order_code"],
                     order_title=row["order_title"],
                     order_code_label=_label_kode,
+                    order_title_label=_label_judul,
                     order_date=row["order_date"].isoformat(),
                     expected_ship_date=row["expected_ship_date"].isoformat()
                     if row["expected_ship_date"]
@@ -539,6 +541,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     order_code_source=order.get("order_code_source"),
                     order_code_can_override=_boleh_kode,
                     order_code_label=_set_kode["label"],
+                    order_title_label=_set_kode["title_label"],
                     completed_source=order.get("completed_source"),  # V315 (.get: kode aman sebelum migrasi)
                     payment_terms_days=termin_n,
                     payment_terms_source=termin_sumber,
@@ -1457,9 +1460,10 @@ async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
     from ..services.kode_order import terbitkan as _terbitkan_kode, muat_setelan as _setelan_kode
     kode = await _terbitkan_kode(conn, ctx["tenant_id"], ok, await tanggal_dokumen(conn, ctx["tenant_id"]),
                                  "so_confirmed", ctx["user_id"], order["order_number"])
+    _st_kode = await _setelan_kode(conn, ctx["tenant_id"])
     return {"order_number": order["order_number"], "status": "confirmed",
             "order_code": kode or order["order_code"], "order_code_issued": kode is not None,
-            "order_code_label": (await _setelan_kode(conn, ctx["tenant_id"]))["label"]}
+            "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"]}
 
 
 class _BatalkanKonfirmasi(Exception):

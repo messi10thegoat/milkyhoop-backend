@@ -17,7 +17,7 @@ class _Conn:
     async def fetchrow(self, q, *a):
         if "order_code_settings" in q:
             return {"enabled": True, "template": "{SEQ}-{MM}-{YY}", "min_digits": 3, "reset": "monthly",
-                    "trigger": "so_confirmed", "allow_override": True, "label": "Kode order"}
+                    "trigger": "so_confirmed", "allow_override": True, "label": "Kode order", "title_label": "Judul order"}
         if q.strip().startswith("SELECT id, order_number, order_code FROM sales_orders"):
             return {"id": SID, "order_number": "SO-1", "order_code": self.kode}
         if "SELECT order_code, order_title FROM sales_orders" in " ".join(q.split()):

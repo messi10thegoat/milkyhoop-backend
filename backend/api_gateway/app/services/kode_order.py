@@ -19,6 +19,7 @@ RESET = ("never", "yearly", "monthly")
 PEMICU = ("so_confirmed", "manual_only")  # putusan pemilik 2 Okt: murni SAP/NetSuite -- terbit saat SO dikonfirmasi
 PERAN_UBAH = ("OWNER", "ADMIN")
 LABEL_BAWAAN = "Kode order"  # label generik tenant baru (putusan 2 Okt); tenant mengganti lewat setelan (mis. "No. SPK")
+LABEL_JUDUL_BAWAAN = "Judul order"  # V390 (pemilik 5 Okt): label judul juga setelan tenant (mis. "Judul SPK")
 
 
 def label_kalimat(label: str) -> str:
@@ -28,7 +29,7 @@ def label_kalimat(label: str) -> str:
 
 
 BAWAAN = {"enabled": False, "template": "{SEQ}", "min_digits": 4, "reset": "never",
-          "trigger": "so_confirmed", "allow_override": False, "label": LABEL_BAWAAN}
+          "trigger": "so_confirmed", "allow_override": False, "label": LABEL_BAWAAN, "title_label": LABEL_JUDUL_BAWAAN}
 MAKS_KODE, MAKS_JUDUL, MAKS_LABEL = 40, 60, 30
 # PDF: judul dipotong supaya "{SO} · {label} {kode} · {judul}" tetap SEBARIS di baris yang sudah ada
 MAKS_JUDUL_CETAK = 24
@@ -65,12 +66,13 @@ def validasi_setelan(template: str, min_digits: int, reset: str, trigger: str,
         raise KodeOrderGalat("Reset tahunan wajib memuat {YY} atau {YYYY} supaya kode tak bentrok antartahun.")
 
 
-def normal_label(label) -> str:
+def normal_label(label, nama: str = "Label") -> str:
+    """Label kode ATAU label judul (V390): aturan SAMA -- teks, dipangkas, 1..MAKS_LABEL, tanpa karakter kontrol."""
     if not isinstance(label, str):
-        raise KodeOrderGalat("Label wajib berupa teks.")
+        raise KodeOrderGalat(f"{nama} wajib berupa teks.")
     lb = " ".join(label.split())
     if not lb or len(lb) > MAKS_LABEL or any(ord(c) < 32 for c in lb):
-        raise KodeOrderGalat(f"Label 1 sampai {MAKS_LABEL} karakter.")
+        raise KodeOrderGalat(f"{nama} 1 sampai {MAKS_LABEL} karakter.")
     return lb
 
 
@@ -125,23 +127,24 @@ def normal_kode(kode, label: str = LABEL_BAWAAN) -> str:
     return k
 
 
-def normal_judul(judul) -> Optional[str]:
-    """Judul order: dipangkas, HURUF BESAR (seperti folder worksheet pemilik), maks 60; kosong -> None."""
+def normal_judul(judul, label: str = LABEL_JUDUL_BAWAAN) -> Optional[str]:
+    """Judul order: dipangkas, HURUF BESAR (seperti folder worksheet pemilik), maks 60; kosong -> None.
+    `label` = label judul setelan tenant (V390) untuk teks galat."""
     if judul is None:
         return None
     if not isinstance(judul, str):
-        raise KodeOrderGalat("Judul order wajib berupa teks.")
+        raise KodeOrderGalat(f"{label} wajib berupa teks.")
     j = " ".join(judul.split()).upper()
     if not j:
         return None
     if len(j) > MAKS_JUDUL:
-        raise KodeOrderGalat(f"Judul order maksimal {MAKS_JUDUL} karakter.")
+        raise KodeOrderGalat(f"{label} maksimal {MAKS_JUDUL} karakter.")
     return j
 
 
 async def muat_setelan(conn, tenant_id: str) -> dict:
     row = await conn.fetchrow(
-        """SELECT enabled, template, min_digits, reset, trigger, allow_override, label FROM order_code_settings
+        """SELECT enabled, template, min_digits, reset, trigger, allow_override, label, title_label FROM order_code_settings
            WHERE tenant_id = $1""", tenant_id)
     return dict(row) if row else dict(BAWAAN)
 
@@ -280,7 +283,8 @@ async def ganti_kode(conn, tenant_id: str, so_id, kode_baru: str, aktor) -> dict
 
 
 async def ubah_judul(conn, tenant_id: str, so_id, judul, aktor) -> dict:
-    baru = normal_judul(judul)
+    label_judul = (await muat_setelan(conn, tenant_id))["title_label"]
+    baru = normal_judul(judul, label_judul)
     so = await conn.fetchrow(
         "SELECT id, order_number, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
         so_id, tenant_id)
@@ -292,7 +296,7 @@ async def ubah_judul(conn, tenant_id: str, so_id, judul, aktor) -> dict:
                        so_id, tenant_id, baru)
     from .so_riwayat import catat_riwayat
     await catat_riwayat(conn, tenant_id, "sales_order", so_id, so["order_number"], "ORDER_TITLE_CHANGED", aktor,
-                        f"Judul order: {so['order_title'] or '—'} → {baru or '—'}",
+                        f"{label_judul}: {so['order_title'] or '—'} → {baru or '—'}",
                         {"old": so["order_title"], "new": baru}, source="api:kode_order")
     return {"status": 200, "order_title": baru}
 
@@ -364,7 +368,7 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
         hasil = {"row": i, "order_number": b.get("order_number"), "order_code": b.get("order_code")}
         try:
             kode = normal_kode(b.get("order_code"), s["label"])
-            judul = normal_judul(b.get("order_title")) if b.get("order_title") is not None else None
+            judul = normal_judul(b.get("order_title"), s["title_label"]) if b.get("order_title") is not None else None
         except KodeOrderGalat as e:
             laporan.append({**hasil, "status": "error", "message": str(e)})
             continue
@@ -433,7 +437,7 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
             # 3 Okt (pemilik): SETIAP perubahan judul tampil di riwayat SO "dari -> ke" -- impor juga (bentuk = ubah_judul)
             from .so_riwayat import catat_riwayat
             await catat_riwayat(conn, tenant_id, "sales_order", so_id, so["order_number"], "ORDER_TITLE_CHANGED", aktor,
-                                f"Judul order: {sekarang['order_title'] or '—'} → {judul}",
+                                f"{s['title_label']}: {sekarang['order_title'] or '—'} → {judul}",
                                 {"old": sekarang["order_title"], "new": judul}, source="api:kode_order.impor")
     for pk, seq in penghitung.items():
         await conn.execute(
@@ -512,10 +516,11 @@ async def kode_untuk_dokumen(conn, tenant_id: str, jenis: str, ids) -> dict:
     TIGA kueri tetap per panggilan (setelan, pasangan dokumen->SO, SO) berapa pun jumlah dokumennya -- tanpa N+1."""
     import uuid as _uuid
     ids = [i if isinstance(i, _uuid.UUID) else _uuid.UUID(str(i)) for i in ids if i]
-    label = (await muat_setelan(conn, tenant_id))["label"]
+    _st = await muat_setelan(conn, tenant_id)
+    label, label_judul = _st["label"], _st["title_label"]
     banyak = jenis == "receive_payment"
-    hasil = {str(i): ({"order_codes": [], "order_code_label": label} if banyak
-                      else {"order_code": None, "order_title": None, "order_code_label": label}) for i in ids}
+    hasil = {str(i): ({"order_codes": [], "order_code_label": label, "order_title_label": label_judul} if banyak
+                      else {"order_code": None, "order_title": None, "order_code_label": label, "order_title_label": label_judul}) for i in ids}
     if not ids:
         return hasil
     pasangan = await conn.fetch(SUMBER_SO[jenis], tenant_id, ids)
@@ -552,9 +557,14 @@ async def tempel_kode(conn, tenant_id: str, jenis: str, dokumen: list, kunci: st
         except (ValueError, TypeError, KeyError):
             pass
     k = await kode_untuk_dokumen(conn, tenant_id, jenis, ok)
-    label = (await muat_setelan(conn, tenant_id))["label"] if not k else next(iter(k.values()))["order_code_label"]
-    kosong = ({"order_codes": [], "order_code_label": label} if jenis == "receive_payment"
-              else {"order_code": None, "order_title": None, "order_code_label": label})
+    if k:
+        _v = next(iter(k.values()))
+        label, label_judul = _v["order_code_label"], _v["order_title_label"]
+    else:
+        _st = await muat_setelan(conn, tenant_id)
+        label, label_judul = _st["label"], _st["title_label"]
+    kosong = ({"order_codes": [], "order_code_label": label, "order_title_label": label_judul} if jenis == "receive_payment"
+              else {"order_code": None, "order_title": None, "order_code_label": label, "order_title_label": label_judul})
     for d in dokumen:
         d.update(k.get(str(d.get(kunci)), kosong))
     return dokumen
@@ -573,9 +583,10 @@ async def so_hasil_penawaran(conn, tenant_id: str, quote_ids) -> dict:
             ids.append(q if isinstance(q, _uuid.UUID) else _uuid.UUID(str(q)))
         except (ValueError, TypeError):
             pass
-    label = (await muat_setelan(conn, tenant_id))["label"]
+    _st = await muat_setelan(conn, tenant_id)
+    label, label_judul = _st["label"], _st["title_label"]
     hasil = {str(i): {"sales_order_id": None, "sales_order_number": None, "order_code": None, "order_title": None,
-                      "order_code_label": label} for i in ids}
+                      "order_code_label": label, "order_title_label": label_judul} for i in ids}
     if not ids:
         return hasil
     kode = await kode_untuk_dokumen(conn, tenant_id, "quote", ids)
@@ -589,5 +600,6 @@ async def so_hasil_penawaran(conn, tenant_id: str, quote_ids) -> dict:
         k = kode.get(str(r["qid"]))
         if k:
             h["order_code"], h["order_title"], h["order_code_label"] = k["order_code"], k["order_title"], k["order_code_label"]
+            h["order_title_label"] = k["order_title_label"]
     return hasil
 

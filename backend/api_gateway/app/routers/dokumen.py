@@ -359,11 +359,12 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
             bawaan = {"group": "pro", "index": i}
             break
     from ..services.kode_order import muat_setelan as _setelan_kode
-    _label_kode = (await _setelan_kode(conn, tid))["label"]
+    _st_kode = await _setelan_kode(conn, tid)
+    _label_kode, _label_judul = _st_kode["label"], _st_kode["title_label"]
     return {
         "so": {"id": str(sid), "number": so["order_number"], "customer": so["customer_name"] or "",
                "order_code": so["order_code"], "order_title": so["order_title"],  # V359 kode order
-               "order_code_label": _label_kode,
+               "order_code_label": _label_kode, "order_title_label": _label_judul,
                "position_text": posisi["position_text"], "total": _uang(total),
                "paid": _uang(r["tertutup"] - r["credit_note"]), "balance": _uang(sisa),
                # P5: untuk wa.me / email di FE (tambahan; skema so tak membatasi medan tambahan)
