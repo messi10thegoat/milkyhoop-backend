@@ -86,73 +86,9 @@ async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
     """
     account_ids = [UUID(line.account_id) for line in lines]
 
-    # 5 Okt 2026: akun peran Uang Muka Pelanggan (LIABILITY, jadi tak tertangkap cek tipe AR/AP di bawah)
-    from ..services.pagar_uang_muka import tolak_jurnal_manual
-    await tolak_jurnal_manual(conn, tenant_id, account_ids)
-
-    # Check RECEIVABLE and PAYABLE accounts
-    ar_ap_accounts = await conn.fetch(
-        """
-        SELECT id, account_code, name, account_type
-        FROM chart_of_accounts
-        WHERE id = ANY($1) AND account_type IN ('RECEIVABLE', 'PAYABLE')
-          AND tenant_id = $2
-    """,
-        account_ids,
-        tenant_id,
-    )
-
-    if ar_ap_accounts:
-        names = ", ".join(f"{a['account_code']} {a['name']}" for a in ar_ap_accounts)
-        acct_type = ar_ap_accounts[0]["account_type"]
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Manual journal tidak boleh menyentuh akun {acct_type}. "
-                f"Akun: {names}. "
-                f"Gunakan modul Payment/Settlement untuk transaksi piutang/hutang."
-            ),
-        )
-
-    # Check inventory/COGS accounts (default + product-level overrides)
-    inventory_cogs_rows = await conn.fetch(
-        """
-        SELECT DISTINCT coa_id FROM (
-            SELECT id AS coa_id FROM chart_of_accounts
-            WHERE account_code IN ('1-10600', '5-10100') AND tenant_id = $1
-            UNION
-            SELECT inventory_account_id AS coa_id FROM products
-            WHERE tenant_id = $1 AND inventory_account_id IS NOT NULL
-            UNION
-            SELECT cogs_account_id AS coa_id FROM products
-            WHERE tenant_id = $1 AND cogs_account_id IS NOT NULL
-        ) sub WHERE coa_id IS NOT NULL
-    """,
-        tenant_id,
-    )
-
-    blocked_ids = {row["coa_id"] for row in inventory_cogs_rows}
-    blocked_lines = [aid for aid in account_ids if aid in blocked_ids]
-
-    if blocked_lines:
-        blocked_accounts = await conn.fetch(
-            """
-            SELECT account_code, name FROM chart_of_accounts
-            WHERE id = ANY($1) AND tenant_id = $2
-        """,
-            blocked_lines,
-            tenant_id,
-        )
-        names = ", ".join(f"{a['account_code']} {a['name']}" for a in blocked_accounts)
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Manual journal tidak boleh menyentuh akun Persediaan/HPP. "
-                f"Akun: {names}. "
-                f"Gunakan modul Stock Adjustment untuk transaksi inventory."
-            ),
-        )
-
+    # 5 Okt 2026: isi pagar dipindah ke services/pagar_akun_modul (dipakai juga oleh jalur legacy chat intake)
+    from ..services.pagar_akun_modul import pagar_akun_modul
+    await pagar_akun_modul(conn, tenant_id, account_ids)
 
 # =============================================================================
 # LIST JOURNALS

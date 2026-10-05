@@ -510,6 +510,16 @@ class KernelDocumentExecutor:
                         f"Account resolution failed: {e}",
                     )
 
+                # 5 Okt 2026 (MASTER): pagar SAMA dengan jurnal manual (AR/AP + Uang Muka Pelanggan) lewat SATU fungsi;
+                # Persediaan/HPP tidak (jalur ini menulis inventory_movements sendiri). Akun dari draf AI -> tolak, bukan posting.
+                from fastapi import HTTPException as _HTTPException
+                from .pagar_akun_modul import pagar_akun_modul
+                try:
+                    await pagar_akun_modul(conn, tenant_id, [uuid.UUID(str(v)) for v in code_to_id.values()],
+                                           persediaan=False)
+                except _HTTPException as e:
+                    return await self._mark_failed(conn, doc_uuid, tenant_id, str(e.detail))
+
                 # Get next journal number
                 journal_number = await self._next_journal_number(
                     conn, tenant_id, "DI", journal_date

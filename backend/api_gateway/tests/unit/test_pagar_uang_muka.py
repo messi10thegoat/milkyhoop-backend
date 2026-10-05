@@ -91,7 +91,8 @@ def test_kontrol_jurnal_sistem_tak_melewati_pagar():
     """Penulis jurnal SISTEM (uang muka terima/terapkan/refund/lepas, NK, unapply penerimaan) TIDAK boleh memanggil
     pagar ini -- hanya jalur yang akunnya dipilih pengguna."""
     app = pathlib.Path(J.__file__).resolve().parents[1]
-    boleh = {"routers/journals.py", "routers/bank_accounts.py", "services/pagar_uang_muka.py"}
+    boleh = {"routers/journals.py", "routers/bank_accounts.py", "services/pagar_uang_muka.py",
+             "services/pagar_akun_modul.py", "services/kernel_document_executor.py"}  # intake legacy: akun dari draf AI
     pemakai = sorted(str(p.relative_to(app)) for p in app.rglob("*.py")
                      if ("pagar_uang_muka" in p.read_text(errors="ignore")
                          or "validate_no_derived_layer_accounts" in p.read_text(errors="ignore")))
