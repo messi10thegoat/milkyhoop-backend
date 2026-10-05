@@ -107,7 +107,7 @@ async def bulk_cancel_preview(request: Request, body: BulkBatalRequest):
 async def bulk_cancel(request: Request, body: BulkBatalRequest):
     ctx = _ctx(request)
     kunci = _kunci_wajib(request)
-    if False:
+    if not (body.reason or "").strip():
         raise HTTPException(status_code=400, detail={"code": "BULK_ALASAN_WAJIB", "message": "Alasan pembatalan wajib diisi."})
     ids = bulk.validasi_ids(body.ids, "tulis")
     pool = await get_pool()

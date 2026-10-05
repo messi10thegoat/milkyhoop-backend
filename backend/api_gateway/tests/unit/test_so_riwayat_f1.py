@@ -355,7 +355,10 @@ def test_penulis_audit_di_tx_sesudah_update():
     # 4 Okt 2026 (U2): penulis terbit/batal dipindah ke _tulis_terbit/_tulis_batal (dipakai tulis DAN pratinjau)
     for fn, tulis, upd in ((PF.issue_proforma, PF._tulis_terbit, "UPDATE proformas SET status = 'issued'"),
                            (PF.cancel_proforma, PF._tulis_batal, "UPDATE proformas SET status = 'cancelled'")):
-        assert tulis.__name__ + "(" in _src(fn)
+        if fn is PF.cancel_proforma:  # U1b F4: rute /cancel memanggil batal_proforma_core yang menulis lewat _tulis_batal
+            assert "batal_proforma_core(" in _src(fn) and tulis.__name__ + "(" in _src(PF.batal_proforma_core)
+        else:
+            assert tulis.__name__ + "(" in _src(fn)
         s = _src(tulis)
         assert s.index("async with conn.transaction()") < s.index(upd) < s.index("catat_riwayat(")
     s = _src(SO.update_sales_order)
