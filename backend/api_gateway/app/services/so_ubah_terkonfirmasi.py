@@ -97,10 +97,16 @@ async def pemakaian_baris(conn, tenant_id: str, so_id) -> dict:
            WHERE si.status = 'void' ORDER BY si.invoice_number""",
         tenant_id, so_id)
     terkirim, tanpa_tautan = await so_kirim.terkirim_per_baris(conn, tenant_id, [so_id])
+    draf_per_baris = {}
+    for x in draf:
+        draf_per_baris[x["soi_id"]] = draf_per_baris.get(x["soi_id"], NOL) + _d(x["quantity"])
     hasil = {}
     for r in rows:
         k = _d(terkirim.get(r["id"]))
-        f = max(_d(r["quantity_invoiced"]), _d(r["tertaut"]))
+        # 5 Okt 2026 (MASTER GO): kolom quantity_invoiced SUDAH memuat qty faktur DRAF bertaut (SO jadi 'invoiced' sejak
+        # draf, pola Q-016) -- dulu draf terhitung DUA KALI (kolom + draf_qty): SO-2609-0166 kaos min 126 utk qty 63.
+        # Aturan pemilik: qty >= max(terfaktur HIDUP, terkirim) + draf. Kolom tetap jadi pagar faktur lama tak bertaut.
+        f = max(_d(r["quantity_invoiced"]) - draf_per_baris.get(r["id"], NOL), _d(r["tertaut"]))
         hasil[r["id"]] = {"terfaktur": f, "terkirim": k, "terpakai": max(f, k), "draf": [], "draf_qty": NOL, "batal": []}
     for x in draf:
         h = hasil.get(x["soi_id"])
