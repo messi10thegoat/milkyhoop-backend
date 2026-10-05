@@ -54,6 +54,12 @@ def label_metode(metode: Optional[str]) -> str:
     return LABEL_METODE.get((metode or "").strip().lower(), "Transfer Bank")
 
 
+def label_metode_layar(metode: Optional[str]) -> Optional[str]:
+    """method_label layar (5 Okt 2026): metode KOSONG -> None, bukan "Transfer Bank". Baris pemakaian uang muka /
+    nota kredit di daftar penerimaan tak punya metode bayar; label bawaan membuat mereka menyamar jadi transfer."""
+    return label_metode(metode) if (metode or "").strip() else None
+
+
 def metode_klien_sah(metode: Optional[str]) -> Optional[str]:
     """Nilai klien yang DIHORMATI sebagai override; selain itu None (= turunkan)."""
     m = (metode or "").strip().lower()
