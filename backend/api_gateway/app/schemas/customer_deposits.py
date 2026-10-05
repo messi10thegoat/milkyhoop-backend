@@ -181,6 +181,8 @@ class CustomerDepositDetail(BaseModel):
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
     order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
+    sales_order_id: Optional[str] = None  # SO tempat uang muka menempel (5 Okt); null bila tak bertaut
+    sales_order_number: Optional[str] = None
     id: str
     deposit_number: str
     customer_id: Optional[str] = None

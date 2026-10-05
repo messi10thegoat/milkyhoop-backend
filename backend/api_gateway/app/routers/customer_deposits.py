@@ -613,6 +613,17 @@ async def get_customer_deposits_summary(request: Request):
 # =============================================================================
 
 
+async def so_induk_uang_muka(conn, tenant_id: str, dep) -> Optional[dict]:
+    """SO tempat uang muka menempel (U1b D-standar, 5 Okt): sales_order_id uang muka, kalau kosong SO milik proformanya -- ATURAN SAMA
+    dengan kode_order.SUMBER_SO['customer_deposit'] dan resolve_order_id_for_deposit. -> {id, order_number} atau None. Tenant eksplisit."""
+    r = await conn.fetchrow(
+        """SELECT so.id, so.order_number FROM sales_orders so
+           WHERE so.tenant_id = $1 AND so.id = COALESCE(
+               $2::uuid, (SELECT p.sales_order_id FROM proformas p WHERE p.id = $3::uuid AND p.tenant_id = $1))""",
+        tenant_id, dep["sales_order_id"], dep["proforma_id"])
+    return dict(r) if r else None
+
+
 @router.get("/{deposit_id}", response_model=CustomerDepositDetailResponse)
 async def get_customer_deposit(request: Request, deposit_id: UUID):
     """Get detailed information for a customer deposit."""
@@ -680,10 +691,13 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
             from ..services.kode_order import tempel_kode as _tempel_kode
             _kode = (await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", [{"id": dep["id"]}]))[0]
             _kode.pop("id")
+            _so = await so_induk_uang_muka(conn, ctx["tenant_id"], dep)
             return {
                 "success": True,
                 "data": {
                     **_kode,
+                    "sales_order_id": str(_so["id"]) if _so else None,
+                    "sales_order_number": _so["order_number"] if _so else None,
                     "id": str(dep["id"]),
                     "deposit_number": dep["deposit_number"],
                     # V247: str() -- kolom menjadi uuid; model respons Optional[str] menolak uuid.UUID
