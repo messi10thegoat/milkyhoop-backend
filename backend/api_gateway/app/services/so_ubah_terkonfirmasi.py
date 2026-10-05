@@ -398,7 +398,8 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                                    ("faktur_draf", bool(p["draf"]))) if ada]
         baris_akhir.append({"id": str(r["id"]), "description": r["description"], "quantity": float(r["quantity"]),
                             "min_quantity": float(p["terpakai"] + p["draf_qty"]), "locked": bool(alasan),
-                            "locked_reasons": alasan, "quantity_invoiced": float(p["terfaktur"]),
+                            "locked_reasons": alasan, "locked_reasons_label": label_alasan(alasan, p),
+                            "quantity_invoiced": float(p["terfaktur"]),
                             "quantity_shipped": float(p["terkirim"]), "draft_invoices": p["draf"],
                             "void_invoices": p["batal"], "deletable": not alasan and not p["batal"]})
     return {"id": str(so_id), "order_number": so["order_number"], "status": akhir["status"],
@@ -423,6 +424,14 @@ def _js(v):
     if isinstance(v, uuid_module.UUID):
         return str(v)
     return v
+
+
+def label_alasan(alasan: list, p: dict) -> list:
+    """Label LAYAR per kode locked_reasons (kode tetap untuk logika FE): 'Terfaktur 63' · 'Terkirim 2' ·
+    'Faktur draf INV-2609-0136' (5 Okt 2026 -- dulu FE menampilkan kode mentah 'faktur_draf')."""
+    teks = {"terfaktur": f"Terfaktur {tg.qty(p['terfaktur'])}", "terkirim": f"Terkirim {tg.qty(p['terkirim'])}",
+            "faktur_draf": "Faktur draf " + ", ".join(x["invoice_number"] for x in p["draf"])}
+    return [teks[a] for a in alasan]
 
 
 def _alasan_teks(alasan: list, p: dict) -> str:

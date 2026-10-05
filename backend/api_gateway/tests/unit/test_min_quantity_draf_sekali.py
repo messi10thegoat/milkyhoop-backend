@@ -54,3 +54,13 @@ def test_properti_invarian(monkeypatch):
         assert m == D(max(h + u, k) + d), (h, d, u, k, m)       # rumus aturan pemilik, draf SEKALI
         assert m >= D(max(h, k) + d)                            # tak pernah di bawah pemakaian nyata (pagar uang)
         assert m <= D(max(kolom, k) + d)                        # tak pernah lebih ketat dari kolom+draf (cacat lama)
+
+
+def test_label_alasan_terkunci_kata_bukan_kode():
+    from decimal import Decimal
+    from app.services.so_ubah_terkonfirmasi import label_alasan
+    p = {"terfaktur": Decimal("63"), "terkirim": Decimal("2.5"),
+         "draf": [{"invoice_number": "INV-2609-0136"}, {"invoice_number": "INV-2609-0137"}]}
+    assert label_alasan(["terfaktur", "terkirim", "faktur_draf"], p) == [
+        "Terfaktur 63", "Terkirim 2,5", "Faktur draf INV-2609-0136, INV-2609-0137"]
+    assert label_alasan([], p) == []

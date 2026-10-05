@@ -119,8 +119,9 @@ async def susun_terkait(conn, tid: str, so_id: UUID) -> dict:
         "SELECT invoice_id, outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = ANY($2::uuid[])",
         tid, hidup_f)} if hidup_f else {}
     g["invoice"] = [_dok("invoice", f["id"], f["invoice_number"], f["invoice_date"],
-                         None if f["status"] in BATAL else (
-                             "Lunas" if sisa_f.get(f["id"], NOL) <= NOL else f"Sisa {tg.rp(sisa_f[f['id']])}"),
+                         # lunas -> None: status_label sudah "Lunas" (WORKSPACE 5 Okt: info ganda)
+                         None if f["status"] in BATAL or sisa_f.get(f["id"], NOL) <= NOL
+                         else f"Sisa {tg.rp(sisa_f[f['id']])}",
                          f["total_amount"], f["status"], tg.status_id("si", f["status"]), f["status"] in BATAL)
                     for f in fak]
 

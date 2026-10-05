@@ -170,3 +170,19 @@ def test_rute_bentuk_terkait_aditif_bundel_lama_tetap():
     src = inspect.getsource(D.dokumen_pesanan)
     assert 'bentuk == "terkait"' in src and "susun_terkait" in src
     assert "return await susun_dokumen(conn, ctx, _uuid(order_id), sertakan_nk=(sertakan == \"nota_kredit\"))" in src
+
+
+def test_faktur_lunas_info_null_karena_status_label_sudah_lunas():
+    c = Conn(n=1)
+    asli = c._jawab
+
+    async def jawab(sql, args):
+        if "compute_ar_outstanding" in sql:
+            c.q.append((sql, args))
+            return []  # faktur lunas: tak punya baris di compute_ar_outstanding
+        return await asli(sql, args)
+    c._jawab = jawab
+    h = {g["key"]: g for g in _jalan(c)["groups"]}
+    d = h["invoice"]["docs"][0]
+    assert d["info"] is None
+    assert h["invoice"]["summary"][1] == {"label": "Sisa tagihan", "value": "Rp 0"}
