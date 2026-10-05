@@ -1864,6 +1864,10 @@ async def create_manual_transaction(
                         ),
                     )
 
+                # 5 Okt 2026: akun lawan Uang Muka Pelanggan -> modul Uang Muka (pola Law 29 di atas)
+                from ..services.pagar_uang_muka import tolak_akun_lawan_bank
+                await tolak_akun_lawan_bank(conn, ctx["tenant_id"], contra_coa["id"])
+
                 # Guard akun-lawan == akun bank ini sendiri. Jurnal Dr X / Cr X pada
                 # akun yang sama seimbang (Law 4 header) TAPI ekonomis NOL: bank_transaction
                 # tercatat sementara jurnal tak menggerakkan saldo mana pun -> drift bank

@@ -86,6 +86,10 @@ async def validate_no_derived_layer_accounts(conn, tenant_id: str, lines: list):
     """
     account_ids = [UUID(line.account_id) for line in lines]
 
+    # 5 Okt 2026: akun peran Uang Muka Pelanggan (LIABILITY, jadi tak tertangkap cek tipe AR/AP di bawah)
+    from ..services.pagar_uang_muka import tolak_jurnal_manual
+    await tolak_jurnal_manual(conn, tenant_id, account_ids)
+
     # Check RECEIVABLE and PAYABLE accounts
     ar_ap_accounts = await conn.fetch(
         """
@@ -557,7 +561,7 @@ async def post_journal(request: Request, journal_id: UUID):
             # Check journal exists and is draft
             journal = await conn.fetchrow(
                 """
-                SELECT id, status, journal_date FROM journal_entries
+                SELECT id, status, journal_date, source_type FROM journal_entries
                 WHERE id = $1 AND tenant_id = $2
             """,
                 journal_id,
@@ -566,6 +570,15 @@ async def post_journal(request: Request, journal_id: UUID):
 
             if not journal:
                 raise HTTPException(status_code=404, detail="Journal not found")
+
+            if journal["status"] == "DRAFT" and journal["source_type"] == "MANUAL":
+                # 5 Okt 2026: pagar yang sama dengan saat membuat -- draf lama (dibuat sebelum pagar ada) tak lolos
+                # lewat posting. Diukur: 0 draf manual di semua tenant.
+                class _L:
+                    def __init__(self, aid):
+                        self.account_id = str(aid)
+                _baris = await conn.fetch("SELECT account_id FROM journal_lines WHERE journal_id = $1", journal_id)
+                await validate_no_derived_layer_accounts(conn, ctx["tenant_id"], [_L(b["account_id"]) for b in _baris])
 
             if journal["status"] != "DRAFT":
                 raise HTTPException(
