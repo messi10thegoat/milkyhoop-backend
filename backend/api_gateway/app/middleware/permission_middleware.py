@@ -46,6 +46,23 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/receive-payments/bulk/export$", ["POST"], "receive_payment", "R"),
     (r"^/api/deliveries/bulk/export$", ["POST"], "sales_invoice", "R"),
     (r"^/api/credit-notes/bulk/export$", ["POST"], "credit_note", "R"),
+    # F5: PDF massal = izin PDF tunggal (R modul); tautan bagikan massal (+pratinjau) = izin share tunggal (E modul)
+    (r"^/api/sales-orders/bulk/pdf$", ["POST"], "sales_order", "R"),
+    (r"^/api/sales-orders/bulk/(share|share/preview)$", ["POST"], "sales_order", "E"),
+    (r"^/api/quotes/bulk/pdf$", ["POST"], "quote", "R"),
+    (r"^/api/quotes/bulk/(share|share/preview)$", ["POST"], "quote", "E"),
+    (r"^/api/proformas/bulk/pdf$", ["POST"], "proforma", "R"),
+    (r"^/api/proformas/bulk/(share|share/preview)$", ["POST"], "proforma", "E"),
+    (r"^/api/sales-invoices/bulk/pdf$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/sales-invoices/bulk/(share|share/preview)$", ["POST"], "sales_invoice", "E"),
+    (r"^/api/customer-deposits/bulk/pdf$", ["POST"], "customer_deposit", "R"),
+    (r"^/api/customer-deposits/bulk/(share|share/preview)$", ["POST"], "customer_deposit", "E"),
+    (r"^/api/receive-payments/bulk/pdf$", ["POST"], "receive_payment", "R"),
+    (r"^/api/receive-payments/bulk/(share|share/preview)$", ["POST"], "receive_payment", "E"),
+    (r"^/api/deliveries/bulk/pdf$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/deliveries/bulk/(share|share/preview)$", ["POST"], "sales_invoice", "E"),
+    (r"^/api/credit-notes/bulk/pdf$", ["POST"], "credit_note", "R"),
+    (r"^/api/credit-notes/bulk/(share|share/preview)$", ["POST"], "credit_note", "E"),
     # L1 lampiran SO (24 Sep 2026) -- eksplisit, di atas pola umum SO. Tanpa
     # baris ini POST .../attachments jatuh ke `^/api/sales-orders` POST = "C":
     # menambah lampiran ke SO yang SUDAH ADA = mengubahnya ("U").

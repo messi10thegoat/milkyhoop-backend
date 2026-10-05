@@ -25,7 +25,7 @@ BATAS = {"tulis": 50, "csv": 500, "pdf": 25}
 
 # DAFTAR PUTIH aksi massal. Tambah aksi = sengaja, lewat putusan; aksi uang (terbit faktur, penerimaan, uang muka, refund,
 # void/apply NK, terbit proforma) TIDAK BOLEH ada di sini -- test_bulk_f1 memindai rute + impor.
-AKSI_DIIZINKAN = frozenset({"export", "confirm", "delete", "send", "cancel"})  # F2: SO confirm/delete; F3: Penawaran delete + send; F4: Proforma cancel (BUKAN terbit)
+AKSI_DIIZINKAN = frozenset({"export", "confirm", "delete", "send", "cancel", "pdf", "share"})  # F2: SO confirm/delete; F3: Penawaran delete + send; F4: Proforma cancel (BUKAN terbit)
 
 _RAWAN_RUMUS = ("=", "+", "-", "@", "\t", "\r")
 
@@ -151,7 +151,12 @@ async def jalankan_per_item(pool, ctx: dict, aksi: str, modul: str, ids: List[UU
                         item["replay"], item["result"] = True, lama
                     else:
                         resp = await fn(conn, ctx, i)
+                        # RAHASIA (mis. URL tautan bagikan; di DB hanya hash-nya): dikembalikan ke pemanggil TETAPI tak disimpan di tabel
+                        # idempotensi -> replay mengembalikan hasil tanpa rahasia (F5).
+                        rahasia = resp.pop("_rahasia", None) if isinstance(resp, dict) else None
                         item["result"] = await _ib.simpan(conn, ctx, kp, sd, kode_aksi, resp, i)
+                        if rahasia:
+                            item["result"] = {**item["result"], **rahasia}
         except HTTPException as e:
             kode, pesan = _pesan(e)
             item.update(status="rejected" if 400 <= e.status_code < 500 else "error", http=e.status_code, code=kode,
