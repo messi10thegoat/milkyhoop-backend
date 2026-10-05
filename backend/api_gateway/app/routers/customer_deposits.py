@@ -50,7 +50,7 @@ from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from fastapi import Response as _Response
 from pydantic import BaseModel
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
-from ..utils.metode_pembayaran import label_metode
+from ..utils.metode_pembayaran import label_metode_layar
 from ..services import teks_galat as tg
 from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
 from ..services.so_riwayat import catat_riwayat
@@ -508,7 +508,7 @@ async def list_customer_deposits(
                     "status": row["status"],
                     "status_detail": status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "payment_method": row["payment_method"],
-                    "method_label": label_metode(row["payment_method"]),
+                    "method_label": label_metode_layar(row["payment_method"]),
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
                 }
@@ -696,7 +696,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "remaining_state": remaining_state,
                     "deposit_date": dep["deposit_date"].isoformat(),
                     "payment_method": dep["payment_method"],
-                    "method_label": label_metode(dep["payment_method"]),
+                    "method_label": label_metode_layar(dep["payment_method"]),
                     "account_id": str(dep["account_id"]) if dep["account_id"] else None,
                     "account_code": dep["account_code"],
                     "account_name": dep["account_name"],
@@ -3162,7 +3162,7 @@ async def list_customer_deposits_by_customer(
                     "status": row["status"],
                     "status_detail": status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "payment_method": row["payment_method"],
-                    "method_label": label_metode(row["payment_method"]),
+                    "method_label": label_metode_layar(row["payment_method"]),
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
                 }

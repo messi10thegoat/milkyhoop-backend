@@ -11,7 +11,7 @@ import pytest
 from app.routers import credit_notes as CN, customer_deposits as CD, kode_order as RK, receive_payments as RP
 from app.schemas import credit_notes as SCN, customer_deposits as SCD, receive_payments as SRP
 from app.services import kode_order as KO, so_riwayat as SR
-from app.utils.metode_pembayaran import label_metode
+from app.utils.metode_pembayaran import label_metode, label_metode_layar
 
 APP = Path(KO.__file__).resolve().parents[1]
 
@@ -93,8 +93,21 @@ def test_label_metode_satu_aturan(m, harap):
 
 
 def test_method_label_di_daftar_dan_detail():
-    assert inspect.getsource(RP).count('"method_label": label_metode(') == 2
-    assert inspect.getsource(CD).count('"method_label": label_metode(') == 3
+    assert inspect.getsource(RP).count('"method_label": label_metode_layar(') == 2
+    assert inspect.getsource(CD).count('"method_label": label_metode_layar(') == 3
+    assert '"method_label": label_metode(' not in inspect.getsource(RP) + inspect.getsource(CD)
+
+
+@pytest.mark.parametrize("m", [None, "", "  "])
+def test_method_label_kosong_tetap_kosong(m):
+    # baris pemakaian uang muka / NK di daftar penerimaan (payment_method NULL) -- diukur kaos 5 Okt: dulu "Transfer Bank"
+    assert label_metode_layar(m) is None
+    assert label_metode(m) == "Transfer Bank"  # kwitansi/PDF tetap perilaku lama
+
+
+def test_method_label_berisi_sama_dengan_label_metode():
+    for m in ("cash", "bank_transfer", "e_wallet", "transfer", "check", "other", "aneh"):
+        assert label_metode_layar(m) == label_metode(m)
     for kelas in (SRP.ReceivePaymentListItem, SRP.ReceivePaymentDetail, SCD.CustomerDepositListItem, SCD.CustomerDepositDetail):
         assert "method_label" in kelas.model_fields, kelas.__name__
 
