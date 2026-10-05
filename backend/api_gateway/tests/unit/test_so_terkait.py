@@ -33,7 +33,8 @@ class Conn:
         if "SUM(quantity)" in sql:
             return Decimal("10")
         if "FROM sales_orders\n" in sql or "FROM sales_orders WHERE" in sql:
-            return {"id": SO, "order_number": "SO-1", "order_code": "001-10-26", "order_title": "KAOS", "quote_id": None} if self.so else None
+            return {"id": SO, "order_number": "SO-1", "order_code": "001-10-26", "order_title": "KAOS", "quote_id": None,
+                    "order_date": d, "total_amount": Decimal("500"), "status": "cancelled" if self.batal else "confirmed"} if self.so else None
         if "FROM quotes" in sql:
             return _rows(n, lambda i: {"id": uuid.uuid4(), "quote_number": f"Q-{i}", "quote_date": d, "total_amount": Decimal("100"), "status": st(i, "converted", "void")})
         if "FROM proformas" in sql:
@@ -82,13 +83,13 @@ def _tambal(monkeypatch):
     monkeypatch.setattr(PT, "terbayar_proforma", terbayar)
 
 
-def _jalan(c):
-    return asyncio.run(ST.susun_terkait(c, T, SO))
+def _jalan(c, **k):
+    return asyncio.run(ST.susun_terkait(c, T, SO, **k))
 
 
 def test_urutan_alur_dan_setiap_kelompok_membawa_summary_teks():
     h = _jalan(Conn(n=2))
-    assert [g["key"] for g in h["groups"]] == list(ST.URUTAN)
+    assert [g["key"] for g in h["groups"]] == [k for k in ST.URUTAN if k != "order"]  # tanpa opt-in: TANPA 'order'
     for g in h["groups"]:
         assert g["docs"] and isinstance(g["summary"], list) and g["summary"]
         assert all(isinstance(x["label"], str) and isinstance(x["value"], str) for x in g["summary"])
@@ -149,7 +150,7 @@ def test_filter_tenant_eksplisit_di_setiap_kueri_dan_draf_tak_ikut():
              "FROM customer_deposits cd": "cd.tenant_id = $1", "FROM invoice_fulfillments f": "f.tenant_id = $1",
              "FROM receive_payments rp": "rp.tenant_id = $1", "FROM credit_notes cn": "cn.tenant_id = $1",
              "invoice_number, invoice_date, total_amount, status FROM sales_invoices": "WHERE tenant_id = $1",
-             "quote_id FROM sales_orders": "tenant_id = $2"}
+             "status FROM sales_orders": "tenant_id = $2"}
     for kunci, pred in wajib.items():
         sql = next(s for s, _ in c.q if kunci in s)
         assert pred in sql, kunci
@@ -170,6 +171,7 @@ def test_rute_bentuk_terkait_aditif_bundel_lama_tetap():
     src = inspect.getsource(D.dokumen_pesanan)
     assert 'bentuk == "terkait"' in src and "susun_terkait" in src
     assert "return await susun_dokumen(conn, ctx, _uuid(order_id), sertakan_nk=(sertakan == \"nota_kredit\"))" in src
+    assert 'sertakan_order=(sertakan == "order")' in src
 
 
 def test_faktur_lunas_info_null_karena_status_label_sudah_lunas():
@@ -186,3 +188,24 @@ def test_faktur_lunas_info_null_karena_status_label_sudah_lunas():
     d = h["invoice"]["docs"][0]
     assert d["info"] is None
     assert h["invoice"]["summary"][1] == {"label": "Sisa tagihan", "value": "Rp 0"}
+
+
+def test_opt_in_order_posisi_alur_dan_bentuk():
+    h = _jalan(Conn(n=1), sertakan_order=True)
+    kunci = [g["key"] for g in h["groups"]]
+    assert kunci == list(ST.URUTAN) and kunci[:3] == ["quote", "order", "proforma"]
+    o = h["groups"][1]
+    assert o["label"] == "Pesanan"
+    assert o["summary"] == [{"label": "Total", "value": "Rp 500"}, {"label": "Status", "value": "Dikonfirmasi"}]
+    assert o["docs"] == [{"kind": "order", "id": str(SO), "number": "SO-1", "date": "2026-10-01",
+                          "info": "001-10-26 · KAOS", "amount": "500.00", "status": "confirmed",
+                          "status_label": "Dikonfirmasi", "voided": False}]
+
+
+def test_opt_in_order_batal_voided_dan_tanpa_kueri_tambahan():
+    a, b = Conn(n=2), Conn(n=2, batal=True)
+    tanpa = _jalan(a)
+    h = {g["key"]: g for g in _jalan(b, sertakan_order=True)["groups"]}
+    assert h["order"]["docs"][0]["voided"] is True and h["order"]["docs"][0]["status_label"] == "Batal"
+    assert len(a.q) == len(b.q)  # kelompok order dari baris SO yang SUDAH dibaca
+    assert all(g["key"] != "order" for g in tanpa["groups"])

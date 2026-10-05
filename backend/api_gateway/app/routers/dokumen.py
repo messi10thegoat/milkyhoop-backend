@@ -387,7 +387,8 @@ async def dokumen_pesanan(request: Request, order_id: str, sertakan: Optional[st
     async with pool.acquire() as conn:
         if bentuk == "terkait":  # 5 Okt 2026: bentuk BARU aditif (WORKSPACE D0); bundel lama di bawah tak berubah
             from ..services.so_terkait import susun_terkait
-            return {"data": await susun_terkait(conn, ctx["tenant_id"], _uuid(order_id))}
+            return {"data": await susun_terkait(conn, ctx["tenant_id"], _uuid(order_id),
+                                                sertakan_order=(sertakan == "order"))}
         return await susun_dokumen(conn, ctx, _uuid(order_id), sertakan_nk=(sertakan == "nota_kredit"))
 
 

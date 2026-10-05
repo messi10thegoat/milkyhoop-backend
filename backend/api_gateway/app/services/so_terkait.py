@@ -18,8 +18,8 @@ from .status_uang_muka import status_detail_dp
 from ..utils.metode_pembayaran import label_metode_layar
 
 NOL = Decimal("0")
-URUTAN = ("quote", "proforma", "deposit", "invoice", "delivery", "receipt", "credit_note")
-LABEL_KELOMPOK = {"quote": "Penawaran", "proforma": "Proforma", "deposit": "Uang muka", "invoice": "Faktur",
+URUTAN = ("quote", "order", "proforma", "deposit", "invoice", "delivery", "receipt", "credit_note")
+LABEL_KELOMPOK = {"quote": "Penawaran", "order": "Pesanan", "proforma": "Proforma", "deposit": "Uang muka", "invoice": "Faktur",
                   "delivery": "Pengiriman", "receipt": "Penerimaan", "credit_note": "Nota kredit"}
 BATAL = {"void", "voided", "cancelled"}
 STATUS_KIRIM = {"posted": "Terkirim", "voided": "Batal"}
@@ -51,14 +51,16 @@ def _jumlah(docs) -> Decimal:
     return sum((_d(d["amount"]) for d in _hidup(docs)), NOL)
 
 
-async def susun_terkait(conn, tid: str, so_id: UUID) -> dict:
+async def susun_terkait(conn, tid: str, so_id: UUID, sertakan_order: bool = False) -> dict:
+    """sertakan_order (5 Okt 2026, OPT-IN `&sertakan=order`): kelompok 'order' = SO induk sendiri di posisi alur
+    sesudah penawaran. Tanpa opt-in keluaran IDENTIK dengan sebelumnya (pembaca ketat FE r217 menolak kunci asing)."""
     from .kode_order import muat_setelan
     from .proforma_terbayar import terbayar_proforma
     from .so_kirim import _AKTIF
     from .teks_galat import ALASAN_NK
 
     so = await conn.fetchrow(
-        """SELECT id, order_number, order_code, order_title, quote_id FROM sales_orders
+        """SELECT id, order_number, order_code, order_title, quote_id, order_date, total_amount, status FROM sales_orders
            WHERE id = $1 AND tenant_id = $2""", so_id, tid)
     if not so:
         raise HTTPException(status_code=404, detail="Pesanan tidak ditemukan.")
@@ -74,6 +76,10 @@ async def susun_terkait(conn, tid: str, so_id: UUID) -> dict:
                          WHERE tenant_id = $1 AND status <> 'draft'
                            AND (id = $3 OR (converted_to_type = 'sales_order' AND converted_to_id = $2))
                          ORDER BY quote_date, quote_number""", tid, sid, so["quote_id"])]
+
+    g["order"] = [_dok("order", so["id"], so["order_number"], so["order_date"],
+                       " · ".join(x for x in (so["order_code"], so["order_title"]) if x) or None, so["total_amount"],
+                       so["status"], tg.status_id("so", so["status"]), so["status"] == "cancelled")] if sertakan_order else []
 
     pros = await conn.fetch(
         """SELECT id, proforma_number, proforma_date, purpose, amount, status FROM proformas
@@ -184,6 +190,8 @@ async def susun_terkait(conn, tid: str, so_id: UUID) -> dict:
 
     ringkas = {
         "quote": [{"label": "Nilai", "value": tg.rp(_jumlah(g["quote"]))}],
+        "order": [{"label": "Total", "value": tg.rp(_d(so["total_amount"]))},
+                  {"label": "Status", "value": tg.status_id("so", so["status"])}],
         "proforma": [{"label": "Ditagihkan", "value": tg.rp(_jumlah(g["proforma"]))},
                      {"label": "Terbayar", "value": tg.rp(bayar_pro)}],
         "deposit": [{"label": "Diterima", "value": tg.rp(_jumlah(g["deposit"]))},
