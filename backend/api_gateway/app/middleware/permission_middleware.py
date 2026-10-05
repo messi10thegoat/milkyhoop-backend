@@ -31,6 +31,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     # Aksi massal daftar (U1b F1, 5 Okt): ekspor CSV = BACA (izin R modul), DI ATAS pola POST umum (= C). Pengiriman = izin faktur.
     (r"^/api/sales-orders/bulk/export$", ["POST"], "sales_order", "R"),
+    # F2: izin = izin aksi tunggalnya (confirm = POST SO = C; hapus = DELETE SO = D); pratinjau ikut tulisnya
+    (r"^/api/sales-orders/bulk/(confirm|confirm/preview)$", ["POST"], "sales_order", "C"),
+    (r"^/api/sales-orders/bulk/(delete|delete/preview)$", ["POST"], "sales_order", "D"),
     (r"^/api/quotes/bulk/export$", ["POST"], "quote", "R"),
     (r"^/api/proformas/bulk/export$", ["POST"], "proforma", "R"),
     (r"^/api/sales-invoices/bulk/export$", ["POST"], "sales_invoice", "R"),

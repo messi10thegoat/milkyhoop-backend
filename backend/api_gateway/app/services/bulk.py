@@ -25,7 +25,7 @@ BATAS = {"tulis": 50, "csv": 500, "pdf": 25}
 
 # DAFTAR PUTIH aksi massal. Tambah aksi = sengaja, lewat putusan; aksi uang (terbit faktur, penerimaan, uang muka, refund,
 # void/apply NK, terbit proforma) TIDAK BOLEH ada di sini -- test_bulk_f1 memindai rute + impor.
-AKSI_DIIZINKAN = frozenset({"export"})
+AKSI_DIIZINKAN = frozenset({"export", "confirm", "delete"})  # F2: SO Konfirmasi draf + Hapus draf (putusan MASTER 5 Okt)
 
 _RAWAN_RUMUS = ("=", "+", "-", "@", "\t", "\r")
 
@@ -100,9 +100,41 @@ def _pesan(e: HTTPException) -> tuple:
     return None, str(d)
 
 
+async def pratinjau_per_item(pool, ctx: dict, aksi: str, ids: List[UUID],
+                             fn: Callable[[object, dict, UUID], Awaitable[tuple]], nomor: Optional[dict] = None) -> dict:
+    """Pratinjau massal: fn(conn, ctx, id) -> (blok: list[{code,message,...}], ringkasan|None) memakai penentu + inti tunggal YANG
+    SAMA. SEMUA item berurutan di SATU transaksi lalu di-ROLLBACK (efek item sebelumnya terlihat oleh yang sesudahnya, mis. kode order
+    berurutan, persis tulis nyata); tiap item di savepoint sendiri (HTTPException = blok, tak merusak item lain). Nol tulis."""
+    items = []
+    async with pool.acquire() as conn:
+        luar = conn.transaction()
+        await luar.start()
+        try:
+            for i in ids:
+                blok, ringkas = [], None
+                try:
+                    async with conn.transaction():
+                        blok, ringkas = await fn(conn, ctx, i)
+                except HTTPException as e:
+                    kode, pesan = _pesan(e)
+                    blok, ringkas = [{"code": kode or f"HTTP_{e.status_code}", "message": pesan}], None
+                except Exception:
+                    logger.error("bulk preview %s item %s gagal", aksi, i, exc_info=True)
+                    blok, ringkas = [{"code": "BULK_ITEM_GALAT", "message": "Item ini gagal dianalisis."}], None
+                blok = [{"code": b["code"], "message": b["message"]} for b in blok]
+                items.append({"id": str(i), "number": (nomor or {}).get(str(i)), "ok": not blok, "blocks": blok,
+                              "preview": ringkas if not blok else None})
+        finally:
+            await luar.rollback()
+    ok = sum(1 for x in items if x["ok"])
+    return {"action": aksi, "total": len(items), "can_run_any": ok > 0, "ok_count": ok, "rejected_count": len(items) - ok,
+            "items": items, "preview": True}
+
+
 async def jalankan_per_item(pool, ctx: dict, aksi: str, modul: str, ids: List[UUID],
                             fn: Callable[[object, dict, UUID], Awaitable[dict]],
-                            kunci_batch: Optional[str] = None, payload: Optional[dict] = None) -> dict:
+                            kunci_batch: Optional[str] = None, payload: Optional[dict] = None,
+                            nomor: Optional[dict] = None) -> dict:
     """Tulis massal: tiap item di transaksi SENDIRI (+ idempotensi per item). fn(conn, ctx, id) -> respons item (dict) atau
     HTTPException (4xx = ditolak, 409 kunci terpakai = ditolak, selain itu = galat). Hasil: urutan = urutan ids.
     Audit BULK_{AKSI} ditulis SESUDAH semua item (satu baris ringkas). Dipakai F2+."""
@@ -110,7 +142,7 @@ async def jalankan_per_item(pool, ctx: dict, aksi: str, modul: str, ids: List[UU
     kode_aksi = f"BULK_{aksi.upper()}"
     hasil = []
     for i in ids:
-        item = {"id": str(i), "status": "ok", "http": 200, "code": None, "message": None, "replay": False, "result": None}
+        item = {"id": str(i), "number": (nomor or {}).get(str(i)), "status": "ok", "http": 200, "code": None, "message": None, "replay": False, "result": None}
         try:
             async with pool.acquire() as conn:
                 async with conn.transaction():

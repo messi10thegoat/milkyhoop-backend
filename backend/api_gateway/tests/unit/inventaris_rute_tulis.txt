@@ -66,6 +66,10 @@ POST /api/sales-invoices/bulk/export
 DELETE /api/sales-invoices/{invoice_id}
 DELETE /api/sales-invoices/{invoice_id}/attachments/{attachment_id}
 POST /api/sales-orders/bulk/export
+POST /api/sales-orders/bulk/confirm
+POST /api/sales-orders/bulk/confirm/preview
+POST /api/sales-orders/bulk/delete
+POST /api/sales-orders/bulk/delete/preview
 DELETE /api/sales-orders/{order_id}
 DELETE /api/sales-orders/{order_id}/attachments/{attachment_id}
 DELETE /api/stock-adjustments/{adjustment_id}

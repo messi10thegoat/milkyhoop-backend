@@ -840,6 +840,9 @@ from .routers import bulk as bulk_router  # noqa: E402
 
 for _m, _r in bulk_router.ROUTERS.items():
     app.include_router(_r, prefix=f"/api/{_m}", tags=["bulk"])
+from .routers import bulk_so as bulk_so_router  # noqa: E402  (U1b F2: SO Konfirmasi/Hapus draf massal)
+
+app.include_router(bulk_so_router.router, prefix="/api/sales-orders", tags=["bulk"])
 app.include_router(units.router, prefix="/api/units", tags=["Units"])
 app.include_router(reports_profitability.router)
 

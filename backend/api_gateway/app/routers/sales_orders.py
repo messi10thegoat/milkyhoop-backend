@@ -1317,66 +1317,92 @@ async def _tolak_bila_ada_uang_muka_aktif(conn, order_id, tenant_id, aksi: str):
     await tolak_bila_ada_uang_muka_aktif_pesanan(conn, order_id, tenant_id, aksi)
 
 
+async def rencana_hapus_so(conn, ctx: dict, order_id) -> list:
+    """Penentu BACA hapus draf SO (U1b F2, dipakai pratinjau massal): semua penghalang yang terbaca TANPA menulis, urutan = inti
+    hapus_so_draf_core. Tak ada penghalang -> []. Tenant eksplisit."""
+    blok = []
+    order = await conn.fetchrow(
+        "SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2", _so_uuid(order_id), ctx["tenant_id"])
+    if not order:
+        return [{"code": "SO_TAK_ADA", "status": 404, "message": "Pesanan penjualan tidak ditemukan."}]
+    if order["status"] != "draft":
+        blok.append({"code": "SO_BUKAN_DRAF", "status": 400, "message": "Hanya pesanan berstatus Draf yang bisa dihapus."})
+        return blok
+    try:
+        await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus")
+    except HTTPException as e:
+        d = e.detail
+        blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or "SO_ADA_UANG_MUKA", "status": e.status_code,
+                     "message": d.get("message") if isinstance(d, dict) else str(d)})
+    return blok
+
+
+async def hapus_so_draf_core(conn, ctx: dict, order_id) -> dict:
+    """Inti DELETE /sales-orders/{id} (draf saja), di transaksi PEMANGGIL: rute tunggal DAN hapus massal (U1b F2). Isi = isi rute
+    lama tanpa perubahan (hanya dipindah dari handler). -> {order_number}."""
+    order = await conn.fetchrow(
+        """
+        SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
+    """,
+        _so_uuid(order_id),
+        ctx["tenant_id"],
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
+
+    if order["status"] != "draft":
+        raise HTTPException(
+            status_code=400, detail="Hanya pesanan berstatus Draf yang bisa dihapus."
+        )
+
+    await _tolak_bila_ada_uang_muka_aktif(
+        conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus"
+    )
+
+    # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
+    # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
+    # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
+    # menghasilkan WARNING "SET LOCAL can only be used in transaction
+    # blocks" dan statement berikutnya membaca kosong. Karena itu SET
+    # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
+    # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
+    # sehingga tak ada interpolasi string ke dalam SQL.
+    # RACE (audit CW SO 26 Sep): cek status + guard DP dulu DI LUAR transaksi -> SO yang
+    # dikonfirmasi / diberi DP di antaranya tetap terhapus. Kini baris SO DIKUNCI (mutex
+    # bersama dengan cancel & pembuatan uang muka), guard diulang, DELETE bersyarat draft.
+    await conn.execute(
+        "SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        _so_uuid(order_id), ctx["tenant_id"],
+    )
+    await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus")
+    await conn.execute(
+        "SELECT set_config('app.user_id', $1, true)",
+        str(ctx["user_id"] or ""),
+    )
+    if not await conn.fetchval(
+        "DELETE FROM sales_orders WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+        _so_uuid(order_id), ctx["tenant_id"],
+    ):
+        raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
+    return {"order_number": order["order_number"]}
+
+
 @router.delete("/{order_id}", response_model=SalesOrderResponse)
 async def delete_sales_order(request: Request, order_id: str):
-    """Delete a sales order (draft only)."""
+    """Delete a sales order (draft only). Isi + aturan: hapus_so_draf_core (juga dipakai hapus massal)."""
     try:
         ctx = get_user_context(request)
         _so_uuid(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            order = await conn.fetchrow(
-                """
-                SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
-            """,
-                _so_uuid(order_id),
-                ctx["tenant_id"],
-            )
-
-            if not order:
-                raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
-
-            if order["status"] != "draft":
-                raise HTTPException(
-                    status_code=400, detail="Hanya pesanan berstatus Draf yang bisa dihapus."
-                )
-
-            await _tolak_bila_ada_uang_muka_aktif(
-                conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus"
-            )
-
-            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
-            # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
-            # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
-            # menghasilkan WARNING "SET LOCAL can only be used in transaction
-            # blocks" dan statement berikutnya membaca kosong. Karena itu SET
-            # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
-            # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
-            # sehingga tak ada interpolasi string ke dalam SQL.
             async with conn.transaction():
-                # RACE (audit CW SO 26 Sep): cek status + guard DP dulu DI LUAR transaksi -> SO yang
-                # dikonfirmasi / diberi DP di antaranya tetap terhapus. Kini baris SO DIKUNCI (mutex
-                # bersama dengan cancel & pembuatan uang muka), guard diulang, DELETE bersyarat draft.
-                await conn.execute(
-                    "SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                    _so_uuid(order_id), ctx["tenant_id"],
-                )
-                await _tolak_bila_ada_uang_muka_aktif(conn, _so_uuid(order_id), ctx["tenant_id"], "dihapus")
-                await conn.execute(
-                    "SELECT set_config('app.user_id', $1, true)",
-                    str(ctx["user_id"] or ""),
-                )
-                if not await conn.fetchval(
-                    "DELETE FROM sales_orders WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
-                    _so_uuid(order_id), ctx["tenant_id"],
-                ):
-                    raise HTTPException(status_code=409, detail="Pesanan sudah berubah status. Muat ulang halaman.")
-
+                data = await hapus_so_draf_core(conn, ctx, order_id)
             return SalesOrderResponse(
                 success=True,
                 message="Sales order deleted",
-                data={"order_number": order["order_number"]},
+                data=data,
             )
 
     except HTTPException:
