@@ -509,7 +509,7 @@ def _str_atau_none(v) -> Optional[str]:
 # ─── SATU SUMBER kartu "Perlu dikerjakan" ↔ daftar tujuan (MASTER 5 Okt 2026) ───
 # Kartu dan filter daftar ?tugas= memanggil PEMILIH YANG SAMA (bukan salinan predikat): angka kartu == baris daftar.
 TUGAS_FAKTUR = ("telat", "jatuh_tempo_hari_ini", "belum_lunas")
-TUGAS_SO = ("harus_kirim", "dp_belum_diterima")
+TUGAS_SO = ("harus_kirim", "dp_belum_diterima", "menunggu_tagih", "selesai")
 
 
 def akhir_minggu(hari_ini: date) -> date:
@@ -545,6 +545,9 @@ async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
         return [r["id"] for r in await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))]
     if tugas == "dp_belum_diterima":
         return [r["id"] for r in await so_dp_belum(conn, tenant_id)]
+    if tugas in ("menunggu_tagih", "selesai"):  # 5 Okt 2026: predikat PERSIS kartu daftar SO (so_agregat)
+        from . import so_agregat as _sa
+        return await (_sa.id_belum_ditagih if tugas == "menunggu_tagih" else _sa.id_selesai)(conn, tenant_id)
     raise ValueError(f"tugas tak dikenal: {tugas!r}")
 
 

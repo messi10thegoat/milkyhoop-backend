@@ -79,7 +79,18 @@ async def _belum_ditagih_per_so(conn, tenant_id: str, rows: list) -> dict:
     return {r["id"]: belum_ditagih(r["total_amount"], ring[r["id"]]) for r in rows}
 
 
-async def uninvoiced(conn, tenant_id: str) -> dict:
+STATUS_SELESAI = "completed"   # kartu "Selesai" (summary completed_count) == ?tugas=selesai
+
+
+async def id_selesai(conn, tenant_id: str) -> list:
+    """SO kartu "Selesai" -- SATU predikat dengan summary.completed_count (5 Okt 2026)."""
+    return [r["id"] for r in await conn.fetch(
+        "SELECT id FROM sales_orders WHERE tenant_id = $1 AND status = $2", tenant_id, STATUS_SELESAI)]
+
+
+async def _isi_belum_ditagih(conn, tenant_id: str):
+    """SO berjalan dgn sisa belum ditagih > 0 (SEMUA, tak terpotong) + peta sisa -- SATU pemilih untuk kartu
+    "Menunggu tagih" (uninvoiced_count/value) DAN ?tugas=menunggu_tagih (5 Okt 2026)."""
     rows = await conn.fetch(
         f"""SELECT so.id, so.order_number, so.customer_id, {_NAMA} AS customer_name, so.order_date,
                    so.status, so.total_amount,
@@ -93,6 +104,16 @@ async def uninvoiced(conn, tenant_id: str) -> dict:
     belum = await _belum_ditagih_per_so(conn, tenant_id, rows)
     isi = sorted((r for r in rows if belum[r["id"]] > NOL),
                  key=lambda r: (-belum[r["id"]], r["order_number"]))
+    return isi, belum
+
+
+async def id_belum_ditagih(conn, tenant_id: str) -> list:
+    isi, _ = await _isi_belum_ditagih(conn, tenant_id)
+    return [r["id"] for r in isi]
+
+
+async def uninvoiced(conn, tenant_id: str) -> dict:
+    isi, belum = await _isi_belum_ditagih(conn, tenant_id)
     return {
         "total": _f(sum((belum[r["id"]] for r in isi), NOL)),
         "count": len(isi),

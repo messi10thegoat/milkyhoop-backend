@@ -412,6 +412,7 @@ class InvoiceSummary(BaseModel):
     partial_count: int
     paid_count: int
     overdue_count: int
+    unpaid_count: Optional[int] = None  # belum lunas = dashboard_v2.pilih_belum_lunas (5 Okt 2026)
     total_outstanding: int
     total_overdue: int
 

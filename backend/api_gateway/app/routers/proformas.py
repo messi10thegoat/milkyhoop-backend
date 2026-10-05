@@ -367,6 +367,8 @@ async def list_proformas(
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    # 5 Okt 2026: SATU pemilih dengan kartu "Terbit belum lunas" (kelas_bayar_terbit), aditif terhadap filter lain
+    tugas: Optional[Literal["terbit_belum_lunas"]] = Query(None),
 ):
     """List proformas with filters."""
     try:
@@ -382,6 +384,10 @@ async def list_proformas(
             if status and status != "all":
                 extras.append(f"p.status = ${idx}")
                 params.append(status)
+                idx += 1
+            if tugas:
+                extras.append(f"p.id = ANY(${idx}::uuid[])")
+                params.append(await id_terbit_belum_lunas(conn, ctx["tenant_id"]))
                 idx += 1
             if customer_id:
                 extras.append(f"p.customer_id = ${idx}::uuid")
@@ -453,6 +459,26 @@ async def list_proformas(
         raise HTTPException(status_code=500, detail="Failed to list proformas")
 
 
+async def kelas_bayar_terbit(conn, tid: str, rows) -> dict:
+    """{id proforma TERBIT: (kelas 'lunas'|'sebagian'|'belum', nominal, terbayar)} -- SATU pemilih untuk kartu
+    "Terbit belum lunas" (summary issued_unpaid + issued_partially_paid) DAN ?tugas=terbit_belum_lunas (5 Okt 2026).
+    Rumus = serialize_proforma: lunas = terbayar + 0,005 >= nominal."""
+    terbit = [r for r in rows if r["status"] == "issued"]
+    tb = await terbayar_proforma(conn, tid, [r["sales_order_id"] for r in terbit]) if terbit else {}
+    hasil = {}
+    for r in terbit:
+        nominal = Decimal(str(r["amount"] or 0))
+        bayar = Decimal(str(tb[r["id"]]["paid"])) if r["id"] in tb else Decimal("0")
+        kelas = "lunas" if bayar + Decimal("0.005") >= nominal else ("sebagian" if bayar > 0 else "belum")
+        hasil[r["id"]] = (kelas, nominal, bayar)
+    return hasil
+
+
+async def id_terbit_belum_lunas(conn, tid: str) -> list:
+    rows = await conn.fetch("SELECT id, sales_order_id, status, amount FROM proformas WHERE tenant_id = $1", tid)
+    return [pid for pid, (k, _, _) in (await kelas_bayar_terbit(conn, tid, rows)).items() if k != "lunas"]
+
+
 @router.get("/summary")
 async def get_proforma_summary(request: Request):
     """Kartu ringkasan Proforma (U2 CW, 4 Okt 2026), pola /sales-orders/summary. Terbayar = SUMBER YANG SAMA dengan
@@ -464,22 +490,19 @@ async def get_proforma_summary(request: Request):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT id, sales_order_id, status, amount FROM proformas WHERE tenant_id = $1", tid)
-        terbit = [r for r in rows if r["status"] == "issued"]
-        tb = await terbayar_proforma(conn, tid, [r["sales_order_id"] for r in terbit])
+        kelas = await kelas_bayar_terbit(conn, tid, rows)
     per = {}
     for r in rows:
         n, j = per.get(r["status"], (0, Decimal("0")))
         per[r["status"]] = (n + 1, j + Decimal(str(r["amount"] or 0)))
     terbayar = sisa = Decimal("0")
     lunas = sebagian = belum = 0
-    for r in terbit:
-        nominal = Decimal(str(r["amount"] or 0))
-        bayar = Decimal(str(tb[r["id"]]["paid"])) if r["id"] in tb else Decimal("0")
+    for k, nominal, bayar in kelas.values():
         terbayar += bayar
         sisa += max(Decimal("0"), nominal - bayar)
-        if bayar + Decimal("0.005") >= nominal:
+        if k == "lunas":
             lunas += 1
-        elif bayar > 0:
+        elif k == "sebagian":
             sebagian += 1
         else:
             belum += 1

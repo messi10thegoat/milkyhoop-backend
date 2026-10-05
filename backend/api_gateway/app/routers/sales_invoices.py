@@ -355,7 +355,7 @@ async def get_invoice_summary(request: Request):
             # Pure Ledger: Summary via compute_ar_outstanding() DB function
             query = """
                 WITH ar_fn AS (
-                    SELECT invoice_id, outstanding
+                    SELECT invoice_id, outstanding, due_date
                     FROM compute_ar_outstanding($1)
                 )
                 SELECT
@@ -364,20 +364,14 @@ async def get_invoice_summary(request: Request):
                     (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'posted') as posted_count,
                     (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'partial') as partial_count,
                     (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'paid') as paid_count,
-                    (SELECT COUNT(*) FROM sales_invoices si3
-                     LEFT JOIN ar_fn aw ON aw.invoice_id = si3.id
-                     WHERE si3.tenant_id = $1
-                       AND (si3.status = 'overdue' OR (si3.status IN ('posted', 'partial') AND si3.due_date < $2::date))
-                       AND aw.outstanding > 0
-                    ) as overdue_count,
+                    -- 5 Okt 2026 (MASTER): overdue = aturan kartu TELAT (dashboard_v2.pilih_faktur_telat) == outstanding-summary
+                    -- overdue_count == ?tugas=telat; dulu berbasis status. Dipakai layar lama (pill Jatuh tempo, DebtPanel).
+                    (SELECT COUNT(*) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0
+                       AND (due_date < $2::date OR due_date IS NULL)) as overdue_count,
+                    (SELECT COUNT(*) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0) as unpaid_count,
                     COALESCE((SELECT SUM(outstanding) FROM ar_fn), 0) as total_outstanding,
-                    COALESCE((
-                        SELECT SUM(aw.outstanding)
-                        FROM ar_fn aw
-                        JOIN sales_invoices si3 ON si3.id = aw.invoice_id
-                        WHERE si3.status = 'overdue'
-                           OR (si3.status IN ('posted', 'partial') AND si3.due_date < $2::date)
-                    ), 0) as total_overdue
+                    COALESCE((SELECT SUM(outstanding) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0
+                                AND (due_date < $2::date OR due_date IS NULL)), 0) as total_overdue
             """
             # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
@@ -393,6 +387,7 @@ async def get_invoice_summary(request: Request):
                     "partial_count": row["partial_count"],
                     "paid_count": row["paid_count"],
                     "overdue_count": row["overdue_count"],
+                    "unpaid_count": row["unpaid_count"],  # belum lunas = pilih_belum_lunas (5 Okt 2026)
                     "total_outstanding": float(row["total_outstanding"]),
                     "total_overdue": float(row["total_overdue"]),
                 },

@@ -133,7 +133,7 @@ async def list_sales_orders(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
-    tugas: Optional[Literal["harus_kirim", "dp_belum_diterima"]] = Query(None),
+    tugas: Optional[Literal["harus_kirim", "dp_belum_diterima", "menunggu_tagih", "selesai"]] = Query(None),
 ):
     """List sales orders with filters."""
     try:
@@ -343,14 +343,14 @@ async def get_sales_order_summary(request: Request):
                     COUNT(*) FILTER (WHERE status = 'shipped') as shipped_count,
                     COUNT(*) FILTER (WHERE status = 'partial_invoiced') as partial_invoiced_count,
                     COUNT(*) FILTER (WHERE status = 'invoiced') as invoiced_count,
-                    COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
+                    COUNT(*) FILTER (WHERE status = $2) as completed_count,  -- so_agregat.STATUS_SELESAI
                     COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_count,
                     COALESCE(SUM(total_amount), 0) as total_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status IN ('shipped', 'partial_invoiced')), 0) as pending_invoice_value
                 FROM sales_orders
                 WHERE tenant_id = $1
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], so_agregat.STATUS_SELESAI)
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
             kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
             menunggu = await so_kirim.ringkasan_menunggu_kirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
