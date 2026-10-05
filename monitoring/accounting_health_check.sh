@@ -918,6 +918,37 @@ check_13_status_desync() {
     fi
 }
 
+check_20_ar_status_turunan() {
+    # AR_STATUS_TURUNAN -- Check 20 (MASTER 5 Okt 2026): status PEMBAYARAN faktur (posted/partial/paid) vs sisa jurnal
+    # compute_ar_outstanding (Law 1/16: status kolom = cache, jurnal = kebenaran). Check 13 hanya status AKUNTANSI.
+    # Turunan: sisa <= 0,005 -> paid; < total -> partial; = total -> posted; 'overdue' cocok bila jurnal posted/partial.
+    # Diukur 5 Okt kaos+grapgrap: 0 baris. Kontrol merah: faktur partial diubah 'paid' (BEGIN..ROLLBACK) -> 1 baris.
+    # WARNING (angka tetap dari jurnal; yang salah hanya label/filter berbasis kolom status).
+    local tenant="$1"
+    local cnt
+    cnt=$(psql_cmd "WITH ar AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding('$tenant'))
+        SELECT count(*) FROM sales_invoices si LEFT JOIN ar ON ar.invoice_id = si.id
+        WHERE si.tenant_id = '$tenant' AND si.status NOT IN ('draft', 'void')
+          AND NOT (si.status = CASE WHEN COALESCE(ar.outstanding, 0) <= 0.005 THEN 'paid'
+                                    WHEN COALESCE(ar.outstanding, 0) < si.total_amount - 0.005 THEN 'partial'
+                                    ELSE 'posted' END
+                   OR (si.status = 'overdue' AND COALESCE(ar.outstanding, 0) > 0.005));")
+    if [ "$cnt" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$cnt" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    elif [[ "$cnt" =~ ^[0-9]+$ ]]; then
+        CHK_PASS=0
+        CHK_DETAIL="status bayar faktur != sisa jurnal: $cnt faktur"
+        detail "[CHECK 20] $tenant: $CHK_DETAIL"
+    else
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt"
+    fi
+}
+
 check_12_negative_balance() {
     local tenant="$1"
     local count
@@ -1249,6 +1280,18 @@ for TENANT in $TENANTS; do
     else
         WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
         log "  WARNING [13] Status Desync: $CHK_DETAIL"
+    fi
+
+    # Check 20: status bayar faktur vs sisa jurnal (5 Okt 2026) -- WARNING
+    check_20_ar_status_turunan "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 20 "AR Status Turunan" "$CHK_DETAIL"
+    else
+        WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
+        log "  WARNING [20] AR Status Turunan: $CHK_DETAIL"
     fi
 
     # ---- Build per-tenant Discord block ----
