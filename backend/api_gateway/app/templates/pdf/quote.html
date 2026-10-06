@@ -1,258 +1,93 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Penawaran {{ quote.quote_number or '-' }}</title>
-<style>
-/* 6 Okt 2026 (surat Penawaran, acuan Accurate): kotak isian + blok tanda tangan. Warna teks tetap #1a1a1a. */
-.surat-kotak { border: 1px solid #e5e7eb; border-radius: 4px; padding: 6px 10px; margin-top: 8px; page-break-inside: avoid; }
-.surat-kotak .notes-label { margin-bottom: 2px; }
-.surat-terbilang { font-size: 9.5pt; font-style: italic; text-align: left; margin-top: 6px; margin-bottom: 14px; }
-.invoice .prose-section, .surat-kotak .notes-text { white-space: pre-line; }  /* baris baru isian tetap (pembuka/penutup/catatan/S&K) */
-.surat-kontak { margin-top: 10px; font-size: 8.5pt; }
-.surat-ttd { margin-top: 8px; page-break-inside: avoid; font-size: 9.5pt; }
-.surat-ttd .ruang { height: 56px; }  /* ruang tanda tangan (pemilik 6 Okt: 28px tak terlihat sebagai ruang) */
-/* rapatkan khusus Penawaran (invoice.css dipakai bersama -- tak diubah; awalan .invoice WAJIB: stylesheet
-   WeasyPrint dimuat SESUDAH <style> dokumen, spesifisitas sama = invoice.css menang): 3 baris + semua bagian surat = 1 halaman */
-.invoice .summary { margin-bottom: 8px; }
-.invoice .prose-section { margin-bottom: 8px; }
-.invoice .footer-line { margin-top: 16px; padding-top: 8px; }
-.invoice .header { margin-bottom: 24px; }
-.invoice .meta-block { margin-bottom: 20px; }
-.invoice .parties { margin-bottom: 24px; }
-.surat-kotak + .prose-section { margin-top: 10px; }
-.surat-ttd .nama { font-weight: 600; }
-/* 6 Okt 2026: "Dicetak" pindah ke margin box bawah-kiri (sejajar nomor halaman @bottom-right di invoice.css). Dulu baris kaki di
-   badan dokumen -- penawaran nyata grapgrap (alamat panjang + pembuka 2 baris) tumpah ke halaman 2 berisi "Dicetak" saja. */
-@page { @bottom-left { content: "Dicetak {{ generated_at | date_id }}"; font-family: Inter, DejaVu Sans, sans-serif; font-size: 8pt; color: #1a1a1a; } }
-</style></head>
+<head><meta charset="UTF-8"><title>Penawaran {{ quote.quote_number or '-' }}</title></head>
+{#
+  PDF Penawaran -- templat BARU (7 Okt 2026). Spesifikasi: SPEC pemilik "template-penawaran" (acuan-penawaran.pdf +
+  acuan-cetak-A4.html); gaya di penawaran.css (KHUSUS penawaran, tanpa invoice.css). Putusan pemilik 7 Okt:
+  - Kontak = baris di blok info atas (nama penanda tangan · HP · email; bagian kosong dilewati); blok tanda tangan TANPA kontak.
+  - Tanpa "Dengan hormat," tetap: opening_text dicetak apa adanya. Teks kosong = tidak dicetak (tanpa teks bawaan di templat).
+  - Catatan khusus (notes) = teks abu di atas Ketentuan. Stempel DRAF tetap untuk status draft.
+  - TIDAK ADA: rekening pembayaran, angka total besar, "Berlaku s/d" dobel, kotak kontak, "Up." yang mengulang nama, hitungan DP.
+  Keputusan tampilan turunan (format telepon, Up., Kontak, label PPN) = services/penawaran_cetak.siapkan -> `tampil`.
+#}
 <body>
 {% include "_partials/tanda_draf.html" %}
-<div class="invoice">
+<div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
+<div class="doc">
 
-    <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">Penawaran Harga</h1>
-            <div class="doc-subtitle">Quote</div>
-        </div>
-        {% if company and company.logo_base64 %}
-        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
-        {% endif %}
-    </div>
+<header>
+  <div><h1>Penawaran Harga</h1><div class="en">Quotation</div></div>
+  {% if company and company.logo_base64 %}<img class="logo" src="{{ company.logo_base64 }}" alt="">{% endif %}
+</header>
 
-    <!-- 2. Meta -->
-    <div class="meta-block">
-        <table class="meta-table">
-            <tr>
-                <td class="meta-label">Nomor</td>
-                <td class="meta-value">{{ quote.quote_number or '-' }}</td>
-            </tr>
-            <tr>
-                <td class="meta-label">Tanggal</td>
-                <td class="meta-value">{{ quote.quote_date | date_id }}</td>
-            </tr>
-            {% if quote.expiry_date %}
-            <tr>
-                <td class="meta-label">Berlaku s/d</td>
-                <td class="meta-value">{{ quote.expiry_date | date_id }}</td>
-            </tr>
-            {% endif %}
-            {% if quote.reference %}
-            <tr>
-                <td class="meta-label">Referensi</td>
-                <td class="meta-value">{{ quote.reference }}</td>
-            </tr>
-            {% endif %}
-            {% if quote.subject %}
-            <tr>
-                <td class="meta-label">Perihal</td>
-                <td class="meta-value">{{ quote.subject }}</td>
-            </tr>
-            {% endif %}
-        </table>
-    </div>
+<div class="meta">
+  <b>Nomor</b><span>{{ quote.quote_number or '-' }}</span>
+  <b>Tanggal</b><span>{{ quote.quote_date | date_id }}</span>
+  {% if quote.expiry_date %}<b>Berlaku s/d</b><span>{{ quote.expiry_date | date_id }}</span>{% endif %}
+  {% if quote.subject %}<b>Perihal</b><span>{{ quote.subject }}</span>{% endif %}
+  {% if quote.reference %}<b>Referensi</b><span>{{ quote.reference }}</span>{% endif %}
+  {% if tampil.kontak %}<b>Kontak</b><span>{% for jenis, nilai in tampil.kontak %}{% if not loop.first %} · {% endif %}{% if jenis == "email" %}<!--email_off-->{{ nilai }}<!--/email_off-->{% else %}{{ nilai }}{% endif %}{% endfor %}</span>{% endif %}
+</div>
 
-    <!-- 3. Parties -->
-    <div class="parties">
-        {% if company %}
-        <div class="party">
-            <div class="party-label">Dari</div>
-            <div class="party-name">{{ company.name }}</div>
-            {% if company.address %}
-            <div class="party-detail">{{ company.address }}</div>
-            {% endif %}
-            {% if company.phone %}
-            <div class="party-detail">{{ company.phone }}</div>
-            {% endif %}
-            {% if company.email %}
-            <div class="party-detail"><!--email_off-->{{ company.email }}<!--/email_off--></div>
-            {% endif %}
-        </div>
-        {% endif %}
-        <div class="party">
-            <div class="party-label">Kepada Yth.</div>
-            <div class="party-name">{{ quote.customer_name or '-' }}</div>
-            {% if quote.attention_name %}
-            <div class="party-detail">Up. {{ quote.attention_name }}{% if quote.attention_title %}, {{ quote.attention_title }}{% endif %}</div>
-            {% endif %}
-            {% if quote.customer_email %}
-            <div class="party-detail"><!--email_off-->{{ quote.customer_email }}<!--/email_off--></div>
-            {% endif %}
-            {% if quote.customer_phone %}
-            <div class="party-detail">{{ quote.customer_phone }}</div>
-            {% endif %}
-        </div>
-    </div>
-
-    <!-- 4. Hero Amount -->
-    <div class="hero">
-        <div class="hero-amount">Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</div>
-        {% if quote.expiry_date %}
-        <div class="hero-due">Berlaku s/d {{ quote.expiry_date | date_id }}</div>
-        {% endif %}
-    </div>
-
-    <div style="height: 12px;"></div>
-
-    <!-- Opening text -->
-    {% if quote.opening_text %}
-    <div class="prose-section">{{ quote.opening_text }}</div>
+<div class="parties">
+  <div>
+    <b>Dari</b>
+    <div>{{ company.name if company else '' }}</div>
+    {% if (company and company.address) or tampil.telepon_usaha %}
+    <div class="mut">{% if company and company.address %}{{ company.address }}{% endif %}{% if company and company.address and tampil.telepon_usaha %}<br>{% endif %}{% if tampil.telepon_usaha %}{{ tampil.telepon_usaha }}{% endif %}</div>
     {% endif %}
+  </div>
+  <div>
+    <b>Kepada Yth.</b>
+    <div>{{ quote.customer_name or '-' }}</div>
+    {% if tampil.up %}<div class="mut">{{ tampil.up }}</div>{% endif %}
+    {% if tampil.alamat_pelanggan %}<div class="mut">{{ tampil.alamat_pelanggan }}</div>{% endif %}
+  </div>
+</div>
 
-    <!-- 5. Line Items -->
-    <table class="items-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Deskripsi</th>
-                <th class="col-qty">Qty</th>
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in quote["items"] %}
-            <tr>
-                <td class="col-desc">
-                    {{ item.description or '-' }}
-                    {% if item.discount_percent and item.discount_percent|float > 0 %}
-                    <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
-                    {% endif %}
-                </td>
-                <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                <td class="col-price">Rp {{ item.unit_price | rupiah(quote.has_cents) }}</td>
-                <td class="col-amount">Rp {{ item.line_total | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+{% if quote.opening_text %}<p class="intro pre">{{ quote.opening_text }}</p>{% endif %}
 
-    <!-- 6. Summary -->
-    <div class="summary">
-        <table class="summary-table">
-            <tr>
-                <td class="label">Subtotal</td>
-                <td class="value">Rp {{ quote.subtotal | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% if quote.discount_amount and quote.discount_amount|float > 0 %}
-            <tr>
-                <td class="label">Diskon{% if quote.discount_type == "percentage" %} ({{ quote.discount_value }}%){% endif %}</td>
-                <td class="value">-Rp {{ quote.discount_amount | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if quote.shipping_charges and quote.shipping_charges|float > 0 %}
-            <tr>
-                <td class="label">Pengiriman</td>
-                <td class="value">Rp {{ quote.shipping_charges | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if quote.tax_amount and quote.tax_amount|float > 0 %}
-            {# Resolve nominal tax rate from items (majority) #}
-            {% set trs = namespace(rate=0, mixed=false, found=false) %}
-            {% for it in quote["items"] %}
-                {% set r = (it.tax_rate or 0)|float %}
-                {% if r > 0 %}
-                    {% if not trs.found %}
-                        {% set trs.rate = r %}
-                        {% set trs.found = true %}
-                    {% elif r != trs.rate %}
-                        {% set trs.mixed = true %}
-                    {% endif %}
-                {% endif %}
-            {% endfor %}
-            <tr>
-                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
-                <td class="value">Rp {{ quote.tax_amount | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if quote.adjustment and quote.adjustment|float != 0 %}
-            <tr>
-                <td class="label">{{ quote.adjustment_label or "Penyesuaian" }}</td>
-                <td class="value">Rp {{ quote.adjustment | rupiah(quote.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            <tr class="total-row">
-                <td class="label">Total</td>
-                <td class="value">Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</td>
-            </tr>
-        </table>
-    </div>
-    {% if quote.total_in_words %}
-    <div class="surat-terbilang">Terbilang: {{ quote.total_in_words }}</div>
+<table>
+  <colgroup><col style="width:52%"><col style="width:14%"><col style="width:16%"><col style="width:18%"></colgroup>
+  <thead><tr><th>Deskripsi</th><th class="r">Qty</th><th class="r">Harga satuan</th><th class="r">Jumlah</th></tr></thead>
+  <tbody>
+  {% for item in quote["items"] %}
+    <tr>
+      <td><div>{{ item.description or '-' }}</div>{% if item.discount_percent and item.discount_percent|float > 0 %}<div class="dt">Diskon {{ "%g" % (item.discount_percent|float) }}%</div>{% endif %}</td>
+      <td class="r">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+      <td class="r">Rp {{ item.unit_price | rupiah(quote.has_cents) }}</td>
+      <td class="r">Rp {{ item.line_total | rupiah(quote.has_cents) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="akhir">
+  <div class="sum">
+    <div><span>Subtotal</span><span>Rp {{ quote.subtotal | rupiah(quote.has_cents) }}</span></div>
+    {% if quote.discount_amount and quote.discount_amount|float > 0 %}
+    <div><span>Diskon{% if quote.discount_type == "percentage" %} {{ "%g" % (quote.discount_value|float) }}%{% endif %}</span><span>-Rp {{ quote.discount_amount | rupiah(quote.has_cents) }}</span></div>
     {% endif %}
-{#- FIX_P2_QUOTEDP 2026-06-16 — Jadwal Pembayaran (down-payment schedule). Gated on
-   dp_amount > 0. When DP is null/0 the block emits NOTHING and the rendered PDF is
-   byte-identical to pre-change (whitespace-trimmed). NO-LEDGER, display only. -#}
-{%- if quote.dp_amount and quote.dp_amount|float > 0 %}
-
-    <div class="summary">
-        <table class="summary-table">
-            <tr>
-                <td class="label">Uang Muka{% if quote.dp_percent and quote.dp_percent|float > 0 %} ({{ quote.dp_percent|round(0)|int }}%){% endif %}</td>
-                <td class="value">Rp {{ quote.dp_amount | rupiah(quote.has_cents) }}</td>
-            </tr>
-            <tr class="total-row">
-                <td class="label">Sisa Pembayaran</td>
-                <td class="value">Rp {{ quote.dp_remaining | rupiah(quote.has_cents) }}</td>
-            </tr>
-        </table>
-    </div>
-{%- endif %}
-
-    {% with dok = quote %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
-
-    {# 6 Okt 2026 (surat): kotak hanya tercetak bila berisi; urutan acuan Accurate #}
-    {% if quote.notes %}
-    <div class="surat-kotak">
-        <div class="notes-label">Catatan khusus</div>
-        <div class="notes-text">{{ quote.notes }}</div>
-    </div>
+    {% if quote.tax_amount and quote.tax_amount|float > 0 %}
+    <div><span>{{ tampil.label_pajak }}</span><span>Rp {{ quote.tax_amount | rupiah(quote.has_cents) }}</span></div>
     {% endif %}
+    <div class="tot"><span>Total</span><span>Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</span></div>
+  </div>
+  {% if quote.total_in_words %}<div class="terb">{{ quote.total_in_words }}</div>{% endif %}
 
-    {% if quote.terms %}
-    <div class="surat-kotak">
-        <div class="notes-label">Syarat & ketentuan</div>
-        <div class="notes-text">{{ quote.terms }}</div>
-    </div>
-    {% endif %}
+  {% if quote.notes %}<div class="blk"><b>Catatan khusus</b><div class="mut pre">{{ quote.notes }}</div></div>{% endif %}
+  {% if quote.terms %}<div class="blk"><b>Ketentuan</b><div class="mut pre">{{ quote.terms }}</div></div>{% endif %}
 
-    {# 6 Okt 2026 (pemilik, "mirip Accurate"): penutup TEPAT di atas "Hormat kami,"; nama tebal + jabatan; kontak = baris kecil
-       di bawah tanda tangan TANPA mengulang nama #}
-    <!-- Closing text -->
-    {% if quote.closing_text %}
-    <div class="prose-section">{{ quote.closing_text }}</div>
-    {% endif %}
+  {% if quote.closing_text %}<p class="closing pre">{{ quote.closing_text }}</p>{% endif %}
 
-    <div class="surat-ttd">
-        <div>Hormat kami,</div>
-        {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
-        <div class="ruang"></div>
-        {% if quote.signer_name %}<div class="nama">{{ quote.signer_name }}</div>{% endif %}
-        {% if quote.signer_title %}<div>{{ quote.signer_title }}</div>{% endif %}
-        {% if quote.signer_phone or quote.signer_email %}
-        <div class="surat-kontak">Kontak: {% if quote.signer_phone %}HP {{ quote.signer_phone }}{% endif %}{% if quote.signer_phone and quote.signer_email %} · {% endif %}{% if quote.signer_email %}<!--email_off-->{{ quote.signer_email }}<!--/email_off-->{% endif %}</div>
-        {% endif %}
-    </div>
-
-    {# 7. Footer: "Dicetak ..." di margin box @page (lihat <style>) -- tak memakan ruang isi, tak bisa membuat halaman kosong sendiri #}
+  <div class="sign">
+    <div>Hormat kami,</div>
+    {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
+    <div class="sp"></div>
+    {% if quote.signer_name %}<b>{{ quote.signer_name }}</b>{% endif %}
+    {% if quote.signer_title %}<div class="mut">{{ quote.signer_title }}</div>{% endif %}
+  </div>
+</div>
 
 </div>
 </body>

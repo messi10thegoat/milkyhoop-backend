@@ -152,7 +152,6 @@ def _render_quote(**quote_extra):
     # yang di produksi justru meledak.
     from app.services.pdf_service import PDFService
 
-    tpl = PDFService().jinja_env.get_template("quote.html")
     quote = {
         "quote_number": "QUO-2609-0001",
         "quote_date": "2026-09-01",
@@ -165,14 +164,17 @@ def _render_quote(**quote_extra):
         "dp_remaining": None,
     }
     quote.update(quote_extra)
-    return tpl.render(quote=quote, tenant={}, company={})
+    # 7 Okt 2026: lewat render_quote NYATA (templat baru butuh `tampil` dari services/penawaran_cetak)
+    return PDFService().render_quote(quote, {}).html
 
 
-def test_u5_template_menampilkan_baris_dp():
+def test_u5_template_tak_mencetak_hitungan_dp():
+    # 7 Okt 2026 (SPEC pemilik templat Penawaran baru): hitungan DP / sisa TIDAK dicetak di PDF penawaran (penawaran bukan
+    # tagihan; DP ditagih lewat Proforma). Data dp_* tetap di dokumen (tak diubah) -- hanya tampilan.
     html = _render_quote(dp_amount=162000, dp_percent=60, dp_remaining=108000)
-    assert "Uang Muka" in html
-    assert "(60%)" in html
-    assert "162.000" in html
+    assert "Uang Muka" not in html
+    assert "(60%)" not in html
+    assert "162.000" not in html
 
 
 def test_u5b_template_tanpa_dp_tidak_memuat_baris_dp():

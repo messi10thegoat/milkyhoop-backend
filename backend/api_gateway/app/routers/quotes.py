@@ -2214,6 +2214,15 @@ import base64
 from pathlib import Path as _Path
 
 
+async def _alamat_pelanggan_cetak(conn, tenant_id: str, customer_id) -> dict:
+    if not customer_id:
+        return {"customer_alamat": None, "customer_address": None, "customer_city": None}
+    r = await conn.fetchrow("SELECT alamat, address, city FROM customers WHERE id = $1::uuid AND tenant_id = $2",
+                            str(customer_id), tenant_id)
+    return {"customer_alamat": r["alamat"] if r else None, "customer_address": r["address"] if r else None,
+            "customer_city": r["city"] if r else None}
+
+
 async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
     """Konteks PDF penawaran (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari get_quote_pdf
     (+ has_cents). -> {quote_data, tenant_info, quote}."""
@@ -2319,6 +2328,8 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
         "footer": quote["footer"],
         # 6 Okt 2026: surat Penawaran -- up., penanda tangan/kontak (SNAPSHOT dokumen), terbilang total
         **_surat_keluaran(quote),
+        # 7 Okt 2026 (templat baru): alamat pelanggan untuk "Kepada Yth." -- baca saja, tenant eksplisit
+        **(await _alamat_pelanggan_cetak(conn, ctx["tenant_id"], quote["customer_id"])),
         "payment_bank_name": quote.get("payment_bank_name"),
         "payment_account_number": quote.get("payment_account_number"),
         "payment_account_holder": quote.get("payment_account_holder"),

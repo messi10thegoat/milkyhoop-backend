@@ -70,36 +70,6 @@ def test_setelan_bawaan_surat_terdeklarasi():
         assert k in AS.AccountingSettingsResponse.model_fields and k in AS.UpdateAccountingSettingsRequest.model_fields
 
 
-def _html(**q):
-    from app.services.pdf_service import get_pdf_service
-    ps = get_pdf_service()
-    dasar = {"quote_number": "QUO-1", "quote_date": "2026-10-06", "customer_name": "PT Contoh", "total_amount": 1500000,
-             "subtotal": 1500000, "items": [{"description": "Kaos", "quantity": 3, "unit": "pcs", "unit_price": 500000,
-                                              "line_total": 1500000}], "has_cents": False}
-    dasar.update(q)
-    return ps.render_quote(dasar, {"name": "Kaos Biru Konveksi"}).html
-
-
-def test_pdf_bagian_tercetak_hanya_bila_berisi():
-    lama = _html(status="sent")  # bukan draf (status kosong = draft -> stempel DRAF)
-    for kata in ("Up. ", "Catatan khusus", "Syarat & ketentuan", "Kontak:", "Terbilang:", "DRAF"):
-        assert kata not in lama, kata
-    assert "Hormat kami," in lama and "Kaos Biru Konveksi" in lama
-    isi = _html(attention_name="Bu Rina", attention_title="Purchasing", notes="N1", terms="T1", signer_name="Anton",
-                signer_title="Direktur", signer_phone="0812", signer_email="a@x.id",
-                total_in_words="Satu Juta Lima Ratus Ribu Rupiah", opening_text="Dengan hormat,", closing_text="Terima kasih.")
-    for kata in ("Kepada Yth.", "Up. Bu Rina, Purchasing", "Catatan khusus", "Syarat & ketentuan",
-                 "Kontak: HP 0812 · <!--email_off-->a@x.id<!--/email_off-->", "Terbilang: Satu Juta Lima Ratus Ribu Rupiah",
-                 "Dengan hormat,", "Terima kasih."):
-        assert kata in isi, kata
-    # 6 Okt 2026 (pemilik, mirip Accurate): pembuka < tabel < terbilang < catatan < S&K < PENUTUP < Hormat kami < nama < jabatan
-    # < baris Kontak (tanpa mengulang nama)
-    urut = ["Dengan hormat,", "items-table", "Terbilang:", "Catatan khusus", "Syarat & ketentuan", "Terima kasih.",
-            "Hormat kami,", '<div class="nama">Anton</div>', "<div>Direktur</div>", "Kontak:"]
-    pos = [isi.index(k) for k in urut]
-    assert pos == sorted(pos)
-
-
 def test_detail_tak_mengoper_medan_dobel():
     src = inspect.getsource(Q.get_quote_detail)
     i = src.index("QuoteDetail(")
@@ -123,29 +93,4 @@ def test_terapkan_tolak_penanda_tangan_bukan_anggota():
         asyncio.run(PS.terapkan(c, "t-uji", "q1", body, {}, buat=False))
     assert e.value.status_code == 422 and c.tulis == []  # ditolak SEBELUM menulis
 
-
-
-def test_kontak_tak_mengulang_nama_dan_baris_baru_dipertahankan():
-    isi = _html(signer_name="Anton", signer_phone="0812", opening_text="Dengan hormat,\n\nBaris dua")
-    kontak = isi[isi.index("Kontak:"):isi.index("</div>", isi.index("Kontak:"))]
-    assert "Anton" not in kontak
-    assert "white-space: pre-line" in isi and "Dengan hormat,\n\nBaris dua" in isi
-
-
-def test_stempel_draf_hanya_untuk_draft():
-    assert "DRAF" in _html(status="draft") and "bukan penawaran resmi" in _html(status="draft")
-    assert "DRAF" not in _html(status="sent")
-
-
-def test_semua_email_cetak_terbungkus_email_off():
-    import re
-    app = pathlib.Path(Q.__file__).resolve().parents[1] / "templates" / "pdf"
-    telanjang = [(f.name, m.group(0)) for f in app.rglob("*.html")
-                 for m in re.finditer(r"\{\{ [a-z_.]*email \}\}", f.read_text())
-                 if "<!--email_off-->" + m.group(0) not in f.read_text()]
-    assert not telanjang, telanjang
-
-
-def test_dicetak_di_margin_halaman_bukan_badan():
-    isi = _html()
-    assert "@bottom-left" in isi and 'class="footer-line"' not in isi
+# 7 Okt 2026: tes tampilan PDF pindah ke test_templat_penawaran.py (templat BARU sesuai SPEC pemilik).

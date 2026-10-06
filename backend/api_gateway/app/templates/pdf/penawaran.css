@@ -1,0 +1,49 @@
+/* PDF Penawaran -- templat baru (7 Okt 2026). Nilai DISALIN dari acuan-cetak-A4.html (SPEC pemilik "template-penawaran");
+   KHUSUS penawaran: invoice.css bersama TIDAK dimuat (render_quote: fonts.css + penawaran.css). Warna abu SPEC (#63635E/#8E8E89)
+   menimpa aturan lama "semua teks #1a1a1a" -- putusan pemilik. Footer = margin box @page (tak memakan ruang isi; tak ada
+   halaman kosong karena footer). */
+@page {
+    size: A4;
+    margin: 70px 76px 60px 76px;   /* acuan: footer 40px dari dasar (teks footer di margin box) */
+    @bottom-left { content: element(kakiKiri); vertical-align: top; }
+    @bottom-right { content: "Halaman " counter(page) " dari " counter(pages); vertical-align: top;
+                    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11px; color: #8E8E89; padding-top: 6px; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; }  /* juga stempel DRAF (di luar .doc) */
+.doc { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; color: #1A1A1A; font-size: 12.5px; line-height: 1.55;
+       font-feature-settings: "tnum" 1; }
+.kaki-kiri { position: running(kakiKiri); font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11px;
+             color: #8E8E89; padding-top: 6px; }
+b { font-weight: 600; }
+.mut { color: #63635E; }
+.pre { white-space: pre-line; }
+header { display: flex; justify-content: space-between; align-items: flex-start; }
+header > div:first-child { flex: 1 1 auto; }
+h1 { white-space: nowrap; }
+h1 { font-size: 30px; font-weight: 700; letter-spacing: -.6px; margin: 0; line-height: 1.1; }
+.en { font-size: 14px; color: #63635E; margin-top: 4px; }
+.logo { height: 64px; width: auto; max-width: 200px; }  /* logo tenant persegi (mis. grapgrap 295x295): merek setara .brand acuan (~90px) */
+.brand { font-weight: 800; font-size: 21px; line-height: .92; letter-spacing: -.8px; }
+.meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 28px; margin-top: 30px; }
+.parties { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; margin-top: 24px; }
+.parties b { display: block; margin-bottom: 3px; }
+.intro { margin: 24px 0 0; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 18px; }
+thead { display: table-header-group; }   /* header tabel diulang di tiap halaman */
+tr { break-inside: avoid; }
+th { font-weight: 400; font-size: 12px; color: #63635E; text-align: left; padding: 0 0 10px; border-bottom: 1.2px solid #1A1A1A; }
+td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
+.dt { font-size: 12px; color: #8E8E89; }
+.r { text-align: right; }
+.akhir { break-inside: avoid; }          /* ringkasan + ketentuan + penutup + tanda tangan tak dipecah */
+.sum { margin: 14px 0 0 auto; width: 42%; }
+.sum div { display: flex; justify-content: space-between; padding: 4px 0; }
+.sum .tot { border-top: 1px solid #E6E3DC; margin-top: 4px; padding-top: 10px; font-weight: 700; font-size: 15px; }
+.terb { text-align: right; font-style: italic; color: #8E8E89; font-size: 12px; margin-top: 2px; }
+.blk { margin-top: 18px; }
+.blk b { display: block; margin-bottom: 4px; }
+.blk + .blk { margin-top: 14px; }
+.closing { margin: 20px 0 0; }
+.sign { margin: 18px 0 0 auto; width: max-content; min-width: 200px; text-align: right; }
+.sign .sp { height: 40px; }

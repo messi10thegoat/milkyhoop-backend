@@ -76,6 +76,8 @@ def pilih_template(bawaan_tenant, override=None) -> str:
 # P3b (putusan pemilik 1 Okt 2026): font Inter untuk SEMUA dokumen SO lewat fonts.css + FontConfiguration.
 # Template faktur B (gaya industri, metrik Arial -> Liberation Sans) dan laporan keuangan (DejaVu) TIDAK berubah.
 CSS_DOKUMEN = ("fonts.css", "invoice.css")
+# 7 Okt 2026: PDF Penawaran templat BARU (SPEC pemilik) -- gaya sendiri, invoice.css bersama TIDAK dimuat.
+CSS_PENAWARAN = ("fonts.css", "penawaran.css")
 CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)
 
 
@@ -542,6 +544,7 @@ class PDFService:
         }
 
         # Render HTML
+        from .penawaran_cetak import siapkan
         html_content = template.render(
             quote=quote_data,
             company=company,
@@ -550,8 +553,9 @@ class PDFService:
             # 6 Okt 2026: stempel DRAF (pola proforma/NK) -- penawaran draf bukan penawaran resmi
             draf=str(status).lower() == "draft",
             draf_keterangan="Belum dikirim — bukan penawaran resmi",
+            tampil=siapkan(quote_data, company),  # 7 Okt: format telepon, Up., Kontak, label PPN, alamat pelanggan
         )
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        return Render(html_content, CSS_PENAWARAN, font=True)
 
     # Judul dokumen per tujuan (1 Okt 2026, pemilik: proforma PELUNASAN tercetak "Tagihan Uang Muka").
     PROFORMA_JUDUL = {
