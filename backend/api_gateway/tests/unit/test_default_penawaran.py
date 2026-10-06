@@ -29,7 +29,9 @@ class _Conn:
 async def test_default_penawaran_14_hari_dan_bentuk_sama_pesanan():
     d = await DD.default_penawaran(_Conn(), "t-uji", date(2026, 10, 3))
     assert d == {"dp_percent": None, "receiving_account": None, "opening_text": None, "closing_text": None,
-                 "validity_days": {"value": 14, "source": "system", "expiry_date": "2026-10-17"}}
+                 "validity_days": {"value": 14, "source": "system", "expiry_date": "2026-10-17"},
+                 # 6 Okt 2026 (surat Penawaran): tanpa bawaan -> null (tak dikarang)
+                 "notes": None, "terms": None, "attention_name": None, "attention_title": None, "signer": None}
     p = await DD.default_pesanan(_Conn(30, None), "t-uji")
     q = await DD.default_penawaran(_Conn(30, None), "t-uji", date(2026, 12, 25))
     assert {k: v for k, v in q.items() if k in p} == p

@@ -95,6 +95,24 @@ class CreateQuoteRequest(BaseModel):
     # FIX_P2_QUOTEDP 2026-06-16 — adjustable down-payment (NO-LEDGER, just a number on the quote)
     dp_amount: Optional[int] = Field(None, ge=0, description="Down-payment in rupiah (CANONICAL, source of truth)")
     dp_percent: Optional[float] = Field(None, ge=0, le=100, description="Down-payment percent (helper/display)")
+    # 6 Okt 2026 (surat Penawaran; SNAPSHOT + sumber per medan, services/penawaran_surat)
+    attention_name: Optional[str] = None
+    attention_title: Optional[str] = None
+    signer_user_id: Optional[str] = None
+    signer_name: Optional[str] = None
+    signer_title: Optional[str] = None
+    signer_phone: Optional[str] = None
+    signer_email: Optional[str] = None
+    attention_name_source: Optional[Literal['default', 'manual']] = None
+    attention_title_source: Optional[Literal['default', 'manual']] = None
+    opening_text_source: Optional[Literal['default', 'manual']] = None
+    closing_text_source: Optional[Literal['default', 'manual']] = None
+    notes_source: Optional[Literal['default', 'manual']] = None
+    terms_source: Optional[Literal['default', 'manual']] = None
+    signer_name_source: Optional[Literal['default', 'manual']] = None
+    signer_title_source: Optional[Literal['default', 'manual']] = None
+    signer_phone_source: Optional[Literal['default', 'manual']] = None
+    signer_email_source: Optional[Literal['default', 'manual']] = None
     items: List[QuoteItemCreate] = Field(..., min_length=1, description="Quote line items")
 
     @field_validator('customer_name')
@@ -136,6 +154,24 @@ class UpdateQuoteRequest(BaseModel):
     # FIX_P2_QUOTEDP 2026-06-16 — adjustable down-payment (NO-LEDGER)
     dp_amount: Optional[int] = Field(None, ge=0)
     dp_percent: Optional[float] = Field(None, ge=0, le=100)
+    # 6 Okt 2026 (surat Penawaran; SNAPSHOT + sumber per medan, services/penawaran_surat)
+    attention_name: Optional[str] = None
+    attention_title: Optional[str] = None
+    signer_user_id: Optional[str] = None
+    signer_name: Optional[str] = None
+    signer_title: Optional[str] = None
+    signer_phone: Optional[str] = None
+    signer_email: Optional[str] = None
+    attention_name_source: Optional[Literal['default', 'manual']] = None
+    attention_title_source: Optional[Literal['default', 'manual']] = None
+    opening_text_source: Optional[Literal['default', 'manual']] = None
+    closing_text_source: Optional[Literal['default', 'manual']] = None
+    notes_source: Optional[Literal['default', 'manual']] = None
+    terms_source: Optional[Literal['default', 'manual']] = None
+    signer_name_source: Optional[Literal['default', 'manual']] = None
+    signer_title_source: Optional[Literal['default', 'manual']] = None
+    signer_phone_source: Optional[Literal['default', 'manual']] = None
+    signer_email_source: Optional[Literal['default', 'manual']] = None
     items: Optional[List[QuoteItemUpdate]] = None
 
     # Cermin f1ce3564 (SO) dan fd5a9dc5 (faktur): "" dari form dinormalisasi
@@ -155,6 +191,12 @@ class UpdateQuoteRequest(BaseModel):
         "payment_bank_name",
         "payment_account_number",
         "payment_account_holder",
+        "attention_name",
+        "attention_title",
+        "signer_name",
+        "signer_title",
+        "signer_phone",
+        "signer_email",
     )
     @classmethod
     def _kosongkan_teks_quote(cls, v):
@@ -296,6 +338,25 @@ class QuoteDetail(BaseModel):
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None
     order_title_label: Optional[str] = None  # V390: label judul setelan tenant (mis. "Judul SPK")
+    # 6 Okt 2026 (surat Penawaran; SNAPSHOT + sumber per medan, services/penawaran_surat)
+    attention_name: Optional[str] = None
+    attention_title: Optional[str] = None
+    signer_user_id: Optional[str] = None
+    signer_name: Optional[str] = None
+    signer_title: Optional[str] = None
+    signer_phone: Optional[str] = None
+    signer_email: Optional[str] = None
+    attention_name_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    attention_title_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    opening_text_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    closing_text_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    notes_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    terms_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    signer_name_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    signer_title_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    signer_phone_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    signer_email_source: Optional[str] = None  # 'default'|'manual'|null (lama)
+    total_in_words: Optional[str] = None  # terbilang total (utils/terbilang, sama dengan kwitansi)
 
 
 class QuoteListResponse(BaseModel):

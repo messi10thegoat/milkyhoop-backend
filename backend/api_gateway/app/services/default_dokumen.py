@@ -82,11 +82,35 @@ async def default_penawaran(conn, tenant_id: str, hari_ini, customer_id: Optiona
     from datetime import timedelta
     d = await default_pesanan(conn, tenant_id, customer_id)
     teks = await conn.fetchrow(
-        """SELECT default_quote_opening_text, default_quote_closing_text FROM accounting_settings
-           WHERE tenant_id = $1""", tenant_id)
-    for k, kol in (("opening_text", "default_quote_opening_text"), ("closing_text", "default_quote_closing_text")):
-        v = (teks[kol] if teks else None) or ""
+        """SELECT default_quote_opening_text, default_quote_closing_text, default_quote_notes, default_quote_terms,
+                  default_quote_signer_user_id, default_quote_signer_title, default_quote_signer_phone
+           FROM accounting_settings WHERE tenant_id = $1""", tenant_id)
+    for k, kol in (("opening_text", "default_quote_opening_text"), ("closing_text", "default_quote_closing_text"),
+                   ("notes", "default_quote_notes"), ("terms", "default_quote_terms")):  # notes/terms: 6 Okt (surat)
+        v = (teks.get(kol) if teks else None) or ""
         d[k] = {"value": v, "source": "company"} if v.strip() else None  # kosong = tanpa default (tak dikarang)
+    # 6 Okt 2026 (surat Penawaran): up. = kontak pelanggan (jabatan tak ada kolomnya -> null); penanda tangan = pengguna
+    # tenant terpilih di setelan (nama + email dari profil; jabatan + HP dari setelan -- profil tak punya HP).
+    kp = None
+    if customer_id:
+        try:
+            kp = await conn.fetchval("SELECT contact_person FROM customers WHERE id = $1::uuid AND tenant_id = $2",
+                                     str(customer_id), tenant_id)
+        except Exception:  # id bukan UUID -> tanpa default (bukan galat form)
+            kp = None
+    d["attention_name"] = {"value": kp.strip(), "source": "customer"} if kp and kp.strip() else None
+    d["attention_title"] = None
+    d["signer"] = None
+    if teks and teks.get("default_quote_signer_user_id"):
+        u = await conn.fetchrow(
+            """SELECT u.id, COALESCE(NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), '')) AS nama, u.email
+               FROM "User" u JOIN user_tenant_roles r ON r.user_id::text = u.id AND r.tenant_id = $2
+               WHERE u.id = $1 AND upper(COALESCE(r.status, 'ACTIVE')) = 'ACTIVE' LIMIT 1""",
+            str(teks["default_quote_signer_user_id"]), tenant_id)
+        if u:
+            d["signer"] = {"user_id": str(u["id"]), "name": u["nama"], "title": teks.get("default_quote_signer_title") or None,
+                           "phone": teks.get("default_quote_signer_phone") or None, "email": u["email"] or None,
+                           "source": "company"}
     d["validity_days"] = {"value": MASA_BERLAKU_PENAWARAN_HARI, "source": "system",
                           "expiry_date": (hari_ini + timedelta(days=MASA_BERLAKU_PENAWARAN_HARI)).isoformat()}
     return d

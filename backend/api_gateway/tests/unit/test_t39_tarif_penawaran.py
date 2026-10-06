@@ -35,6 +35,9 @@ class DBQ(DB):
             return None
         if s.startswith("SELECT quote_number FROM quotes"):  # audit QUOTE_UPDATED (3 Okt)
             return "QUO-UJI-0001"
+        # 6 Okt 2026: create membaca bawaan surat (default_penawaran) -- tenant uji tanpa bawaan
+        if s.startswith("SELECT default_dp_percent FROM accounting_settings") or s.startswith("SELECT contact_person FROM customers"):
+            return None
         return await super().fetchval(sql, *a)
 
     async def fetchrow(self, sql, *a):
@@ -45,6 +48,8 @@ class DBQ(DB):
             return {"discount_type": "fixed", "discount_value": 0}
         if s.startswith("SELECT total_amount FROM quotes"):
             return {"total_amount": 0}
+        if "FROM bank_accounts WHERE tenant_id = $1 AND is_default" in s or "default_quote_opening_text" in s:
+            return None  # 6 Okt 2026: bawaan surat kosong
         return await super().fetchrow(sql, *a)
 
     async def fetch(self, sql, *a):

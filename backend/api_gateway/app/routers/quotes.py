@@ -586,6 +586,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                     payment_bank_name=quote["payment_bank_name"],
                     payment_account_number=quote["payment_account_number"],
                     payment_account_holder=quote["payment_account_holder"],
+                    # 4 medan teks lama sudah dioper eksplisit di atas -> jangan dobel (TypeError, ditangkap nyata kaos)
+                    **{k: v for k, v in _surat_keluaran(quote).items() if k not in _TEKS_LAMA},
                     items=[
                         QuoteItemResponse(
                             id=str(item["id"]),
@@ -638,6 +640,18 @@ async def get_quote_detail(request: Request, quote_id: str):
 # ============================================================================
 # CREATE, UPDATE, DELETE ENDPOINTS
 # ============================================================================
+
+
+_TEKS_LAMA = ("opening_text", "closing_text", "notes", "terms")
+
+
+def _surat_keluaran(quote) -> dict:
+    """6 Okt 2026: medan surat + `<medan>_source` + terbilang total untuk GET detail."""
+    from ..services.penawaran_surat import keluaran
+    from ..utils.terbilang import terbilang
+    out = keluaran(quote)
+    out["total_in_words"] = terbilang(int(quote["total_amount"] or 0))  # sudah berakhiran "Rupiah"
+    return out
 
 
 @router.post("", response_model=QuoteResponse)
@@ -755,6 +769,13 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                     Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
                     Decimal(str(dp["dp_percent"])) if dp["dp_percent"] is not None else None,
                 )
+
+                # 6 Okt 2026: isian SURAT (up., pembuka/penutup, catatan khusus, S&K, penanda tangan) -- SNAPSHOT dari
+                # bawaan (default_penawaran) untuk medan yang tak dikirim; sumber per medan (services/penawaran_surat).
+                from ..services import penawaran_surat as _surat
+                from ..services.default_dokumen import default_penawaran as _bawaan_pnw
+                await _surat.terapkan(conn, ctx["tenant_id"], quote_id, body, await _bawaan_pnw(
+                    conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), body.customer_id), buat=True)
 
                 # Create items
                 for idx, item in enumerate(calculated_items):
@@ -954,8 +975,10 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                 #
                 # Sama dengan PATCH Pesanan (f1ce3564) dan faktur (fd5a9dc5).
                 # `items` dan field DP ditangani blok tersendiri di bawah.
+                from ..services import penawaran_surat as _surat
                 update_data = body.model_dump(
-                    exclude_unset=True, exclude={"items", "dp_amount", "dp_percent"}
+                    exclude_unset=True, exclude={"items", "dp_amount", "dp_percent", "signer_user_id",
+                                                 *_surat.MEDAN, *(m + "_source" for m in _surat.MEDAN)}
                 )
 
                 for field, value in update_data.items():
@@ -1102,7 +1125,17 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     """
                     await conn.execute(update_query, *params)
 
-                _ubah = sorted(set(update_data) | ({"items"} if body.items is not None else set())
+                # 6 Okt 2026: isian surat (snapshot + sumber); bawaan dibaca HANYA bila ada `_source:'default'` tanpa nilai
+                _perlu = any(getattr(body, m + "_source") == "default" and m not in body.model_fields_set for m in _surat.MEDAN)
+                _bwn = {}
+                if _perlu:
+                    from ..services.default_dokumen import default_penawaran as _bawaan_pnw
+                    _cid = await conn.fetchval("SELECT customer_id::text FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                               uuid_module.UUID(quote_id), ctx["tenant_id"])
+                    _bwn = await _bawaan_pnw(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), _cid)
+                _ubah_surat = await _surat.terapkan(conn, ctx["tenant_id"], uuid_module.UUID(quote_id), body, _bwn, buat=False)
+
+                _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
                                | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
                 if _ubah:
                     # 3 Okt 2026 (MASTER): riwayat Penawaran 'diubah' -- pola SO (SALES_ORDER_UPDATED): tak punya kolom
@@ -1620,6 +1653,13 @@ async def duplicate_quote(
                     quote["closing_text"],
                     ctx["user_id"],
                 )
+                # 6 Okt 2026: salin isian surat + sumbernya (snapshot dokumen asal, bukan bawaan saat ini)
+                await conn.execute(
+                    """UPDATE quotes q SET attention_name = s.attention_name, attention_title = s.attention_title,
+                              signer_user_id = s.signer_user_id, signer_name = s.signer_name, signer_title = s.signer_title,
+                              signer_phone = s.signer_phone, signer_email = s.signer_email, field_sources = s.field_sources
+                       FROM quotes s WHERE q.id = $1 AND q.tenant_id = $3 AND s.id = $2 AND s.tenant_id = $3""",
+                    new_id, quote["id"], ctx["tenant_id"])
 
                 # Copy items
                 for item in items:
@@ -2275,6 +2315,8 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
         "notes": quote["notes"],
         "terms": quote["terms"],
         "footer": quote["footer"],
+        # 6 Okt 2026: surat Penawaran -- up., penanda tangan/kontak (SNAPSHOT dokumen), terbilang total
+        **_surat_keluaran(quote),
         "payment_bank_name": quote.get("payment_bank_name"),
         "payment_account_number": quote.get("payment_account_number"),
         "payment_account_holder": quote.get("payment_account_holder"),

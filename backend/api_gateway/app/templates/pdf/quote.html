@@ -1,6 +1,24 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Penawaran {{ quote.quote_number or '-' }}</title></head>
+<head><meta charset="UTF-8"><title>Penawaran {{ quote.quote_number or '-' }}</title>
+<style>
+/* 6 Okt 2026 (surat Penawaran, acuan Accurate): kotak isian + blok tanda tangan. Warna teks tetap #1a1a1a. */
+.surat-kotak { border: 1px solid #e5e7eb; border-radius: 4px; padding: 6px 10px; margin-top: 8px; page-break-inside: avoid; }
+.surat-kotak .notes-label { margin-bottom: 2px; }
+.surat-terbilang { font-size: 9.5pt; font-style: italic; text-align: right; margin-top: 4px; }
+.surat-ttd { margin-top: 8px; page-break-inside: avoid; font-size: 9.5pt; }
+.surat-ttd .ruang { height: 28px; }
+/* rapatkan khusus Penawaran (invoice.css dipakai bersama -- tak diubah; awalan .invoice WAJIB: stylesheet
+   WeasyPrint dimuat SESUDAH <style> dokumen, spesifisitas sama = invoice.css menang): 3 baris + semua bagian surat = 1 halaman */
+.invoice .summary { margin-bottom: 8px; }
+.invoice .prose-section { margin-bottom: 8px; }
+.invoice .footer-line { margin-top: 16px; padding-top: 8px; }
+.invoice .header { margin-bottom: 24px; }
+.invoice .meta-block { margin-bottom: 20px; }
+.invoice .parties { margin-bottom: 24px; }
+.surat-kotak + .prose-section { margin-top: 10px; }
+.surat-ttd .nama { font-weight: 600; }
+</style></head>
 <body>
 <div class="invoice">
 
@@ -65,8 +83,11 @@
         </div>
         {% endif %}
         <div class="party">
-            <div class="party-label">Kepada</div>
+            <div class="party-label">Kepada Yth.</div>
             <div class="party-name">{{ quote.customer_name or '-' }}</div>
+            {% if quote.attention_name %}
+            <div class="party-detail">Up. {{ quote.attention_name }}{% if quote.attention_title %}, {{ quote.attention_title }}{% endif %}</div>
+            {% endif %}
             {% if quote.customer_email %}
             <div class="party-detail">{{ quote.customer_email }}</div>
             {% endif %}
@@ -84,7 +105,7 @@
         {% endif %}
     </div>
 
-    <div style="height: 28px;"></div>
+    <div style="height: 12px;"></div>
 
     <!-- Opening text -->
     {% if quote.opening_text %}
@@ -168,6 +189,9 @@
             </tr>
         </table>
     </div>
+    {% if quote.total_in_words %}
+    <div class="surat-terbilang">Terbilang: {{ quote.total_in_words }}</div>
+    {% endif %}
 {#- FIX_P2_QUOTEDP 2026-06-16 — Jadwal Pembayaran (down-payment schedule). Gated on
    dp_amount > 0. When DP is null/0 the block emits NOTHING and the rendered PDF is
    byte-identical to pre-change (whitespace-trimmed). NO-LEDGER, display only. -#}
@@ -189,24 +213,44 @@
 
     {% with dok = quote %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
 
-    <!-- Closing text -->
-    {% if quote.closing_text %}
-    <div class="prose-section">{{ quote.closing_text }}</div>
-    {% endif %}
-
+    {# 6 Okt 2026 (surat): kotak hanya tercetak bila berisi; urutan acuan Accurate #}
     {% if quote.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
+    <div class="surat-kotak">
+        <div class="notes-label">Catatan khusus</div>
         <div class="notes-text">{{ quote.notes }}</div>
     </div>
     {% endif %}
 
     {% if quote.terms %}
-    <div class="notes-section">
-        <div class="notes-label">Syarat & Ketentuan</div>
+    <div class="surat-kotak">
+        <div class="notes-label">Syarat & ketentuan</div>
         <div class="notes-text">{{ quote.terms }}</div>
     </div>
     {% endif %}
+
+    {% if quote.signer_name or quote.signer_title or quote.signer_phone or quote.signer_email %}
+    <div class="surat-kotak">
+        <div class="notes-label">Kontak</div>
+        <div class="notes-text">
+            {% if quote.signer_name %}{{ quote.signer_name }}{% if quote.signer_title %}, {{ quote.signer_title }}{% endif %}<br>{% endif %}
+            {% if quote.signer_phone %}HP {{ quote.signer_phone }}<br>{% endif %}
+            {% if quote.signer_email %}{{ quote.signer_email }}{% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Closing text -->
+    {% if quote.closing_text %}
+    <div class="prose-section">{{ quote.closing_text }}</div>
+    {% endif %}
+
+    <div class="surat-ttd">
+        <div>Hormat kami,</div>
+        {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
+        <div class="ruang"></div>
+        {% if quote.signer_name %}<div class="nama">{{ quote.signer_name }}</div>{% endif %}
+        {% if quote.signer_title %}<div>{{ quote.signer_title }}</div>{% endif %}
+    </div>
 
     <!-- 7. Footer -->
     <div class="footer-line">

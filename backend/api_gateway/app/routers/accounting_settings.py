@@ -55,7 +55,25 @@ BAWAAN = {
     "default_uang_muka_account_id": None,
     "default_quote_opening_text": None,
     "default_quote_closing_text": None,
+    # 6 Okt 2026 (surat Penawaran): bawaan catatan khusus, S&K, penanda tangan (pengguna tenant) + jabatan + HP
+    "default_quote_notes": None,
+    "default_quote_terms": None,
+    "default_quote_signer_user_id": None,
+    "default_quote_signer_title": None,
+    "default_quote_signer_phone": None,
 }
+
+
+_BARU_SURAT = ('default_quote_notes', 'default_quote_terms', 'default_quote_signer_user_id', 'default_quote_signer_title', 'default_quote_signer_phone')
+
+
+def _bawaan_surat(row) -> dict:
+    """6 Okt 2026: medan bawaan surat Penawaran untuk respons (baris DB atau kamus bawaan)."""
+    out = {}
+    for k in _BARU_SURAT:
+        v = row.get(k) if hasattr(row, "get") else row[k]
+        out[k] = str(v) if v is not None else None
+    return out
 
 
 class AccountingSettingsResponse(BaseModel):
@@ -74,6 +92,11 @@ class AccountingSettingsResponse(BaseModel):
     default_uang_muka_account_id: Optional[str] = None
     default_quote_opening_text: Optional[str] = None
     default_quote_closing_text: Optional[str] = None
+    default_quote_notes: Optional[str] = None
+    default_quote_terms: Optional[str] = None
+    default_quote_signer_user_id: Optional[str] = None
+    default_quote_signer_title: Optional[str] = None
+    default_quote_signer_phone: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -97,6 +120,12 @@ class UpdateAccountingSettingsRequest(BaseModel):
     default_uang_muka_account_id: Optional[str] = None
     default_quote_opening_text: Optional[str] = None
     default_quote_closing_text: Optional[str] = None
+    # 6 Okt 2026: medan baru DAPAT dikosongkan (null) -- dibedakan lewat model_fields_set, bukan `is not None`
+    default_quote_notes: Optional[str] = None
+    default_quote_terms: Optional[str] = None
+    default_quote_signer_user_id: Optional[str] = None
+    default_quote_signer_title: Optional[str] = None
+    default_quote_signer_phone: Optional[str] = None
 
     @field_validator("default_dp_percent")
     @classmethod
@@ -184,6 +213,7 @@ async def get_accounting_settings(request: Request):
                     else None,
                     default_quote_opening_text=row["default_quote_opening_text"],
                     default_quote_closing_text=row["default_quote_closing_text"],
+                    **_bawaan_surat(row),
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -268,6 +298,7 @@ async def create_accounting_settings(
                     else None,
                     default_quote_opening_text=row["default_quote_opening_text"],
                     default_quote_closing_text=row["default_quote_closing_text"],
+                    **_bawaan_surat(row),
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
@@ -381,6 +412,25 @@ async def update_accounting_settings(
                 params.append(data.default_quote_closing_text)
                 param_idx += 1
 
+            # 6 Okt 2026: bawaan surat Penawaran (bisa dikosongkan); penanda tangan = pengguna AKTIF tenant ini
+            for _k in _BARU_SURAT:
+                if _k not in data.model_fields_set:
+                    continue
+                _v = getattr(data, _k)
+                _v = _v.strip() if isinstance(_v, str) else _v
+                _v = _v or None
+                if _k == "default_quote_signer_user_id" and _v is not None:
+                    from ..services.penawaran_surat import anggota_aktif
+                    try:
+                        uuid.UUID(_v)
+                    except ValueError:
+                        raise HTTPException(status_code=422, detail="Penanda tangan tidak valid.")
+                    if not await anggota_aktif(conn, tenant_id, _v):
+                        raise HTTPException(status_code=422, detail="Penanda tangan harus pengguna aktif di usaha ini.")
+                updates.append(f"{_k} = ${param_idx}" + ("::uuid" if _k.endswith("_user_id") else ""))
+                params.append(_v)
+                param_idx += 1
+
             if updates:
                 updates.append("updated_at = NOW()")
                 update_sql = f"""
@@ -415,6 +465,7 @@ async def update_accounting_settings(
                     else None,
                     default_quote_opening_text=row["default_quote_opening_text"],
                     default_quote_closing_text=row["default_quote_closing_text"],
+                    **_bawaan_surat(row),
                     created_at=row["created_at"].isoformat()
                     if row["created_at"]
                     else "",
