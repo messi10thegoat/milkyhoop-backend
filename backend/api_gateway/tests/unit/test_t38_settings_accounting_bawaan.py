@@ -78,6 +78,9 @@ def test_bawaan_sama_dengan_default_kolom_terukur():
         "decimal_places": 0, "thousand_separator": ".", "decimal_separator": ",",
         "date_format": "DD/MM/YYYY", "default_dp_percent": None, "default_uang_muka_account_id": None,
         "default_quote_opening_text": None, "default_quote_closing_text": None,
+        # V398 (6 Okt 2026): bawaan surat Penawaran, default kolom NULL
+        "default_quote_notes": None, "default_quote_terms": None, "default_quote_signer_user_id": None,
+        "default_quote_signer_title": None, "default_quote_signer_phone": None,
     }
 
 
