@@ -828,6 +828,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     _judul_order,
                 )
 
+                from ..utils.urutan_baris import urutan_isian
+                _urut = urutan_isian(body.items)
                 for idx, item in enumerate(calculated_items):
                     await conn.execute(
                         """
@@ -857,7 +859,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         uuid_module.UUID(item["warehouse_id"])
                         if item.get("warehouse_id")
                         else None,
-                        item.get("sort_order", idx),
+                        _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
                         item["dpp"],
                     )
 

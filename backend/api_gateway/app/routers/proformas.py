@@ -1252,7 +1252,7 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
             SELECT description, quantity, unit, unit_price, line_total, tax_amount
             FROM sales_order_items
             WHERE sales_order_id = $1
-            ORDER BY sort_order, description
+            ORDER BY sort_order, id  -- 6 Okt 2026: penentu stabil = id (dulu description = urut abjad, beda dari isian)
             """,
             row["sales_order_id"],
         )

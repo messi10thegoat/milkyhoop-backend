@@ -402,14 +402,14 @@ async def update_accounting_settings(
                 params.append(uuid.UUID(data.default_uang_muka_account_id))
                 param_idx += 1
 
-            if data.default_quote_opening_text is not None:
+            if "default_quote_opening_text" in data.model_fields_set:  # 6 Okt 2026: bisa dikosongkan (null/"") seperti medan bawaan surat
                 updates.append(f"default_quote_opening_text = ${param_idx}")
-                params.append(data.default_quote_opening_text)
+                params.append((data.default_quote_opening_text or "").strip() or None)
                 param_idx += 1
 
-            if data.default_quote_closing_text is not None:
+            if "default_quote_closing_text" in data.model_fields_set:  # 6 Okt 2026: bisa dikosongkan (null/"") seperti medan bawaan surat
                 updates.append(f"default_quote_closing_text = ${param_idx}")
-                params.append(data.default_quote_closing_text)
+                params.append((data.default_quote_closing_text or "").strip() or None)
                 param_idx += 1
 
             # 6 Okt 2026: bawaan surat Penawaran (bisa dikosongkan); penanda tangan = pengguna AKTIF tenant ini

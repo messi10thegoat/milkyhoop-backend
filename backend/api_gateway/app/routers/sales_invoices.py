@@ -5535,7 +5535,7 @@ async def get_invoice_delete_impact(request: Request, invoice_id: UUID):
                 f"""SELECT v.soi_id, v.qty, soi.description, soi.quantity, soi.quantity_invoiced
                     FROM ({SO_RELEASE_SQL}) v
                     JOIN sales_order_items soi ON soi.id = v.soi_id
-                    ORDER BY soi.sort_order""",
+                    ORDER BY soi.sort_order, soi.id""",
                 invoice_id,
             )
             release = [{

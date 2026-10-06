@@ -91,7 +91,7 @@ async def _check_so_invoiced_mismatch(conn, tid, today, tz):
         LEFT JOIN linked l ON l.soi = soi.id
         WHERE so.tenant_id = $1
           AND soi.quantity_invoiced <> COALESCE(l.q, 0)
-        ORDER BY so.order_date, so.order_number, soi.sort_order
+        ORDER BY so.order_date, so.order_number, soi.sort_order, soi.id
         """,
         tid,
         today,

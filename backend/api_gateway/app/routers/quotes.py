@@ -777,6 +777,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                 await _surat.terapkan(conn, ctx["tenant_id"], quote_id, body, await _bawaan_pnw(
                     conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), body.customer_id), buat=True)
 
+                from ..utils.urutan_baris import urutan_isian
+                _urut = urutan_isian(body.items)
                 # Create items
                 for idx, item in enumerate(calculated_items):
                     await conn.execute(
@@ -807,7 +809,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                         item["tax_amount"],
                         item["line_total"],
                         item.get("group_name"),
-                        item.get("sort_order", idx),
+                        _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
                     )
 
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_CREATE", QuoteResponse(
@@ -1589,7 +1591,7 @@ async def duplicate_quote(
                 # Get original items
                 items = await conn.fetch(
                     """
-                    SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order
+                    SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id
                 """,
                     uuid_module.UUID(quote_id),
                 )
@@ -2167,7 +2169,7 @@ async def preview_convert_to_sales_order(
                        FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, ctx["tenant_id"])
                 baris = await conn.fetch(
                     """SELECT description, quantity, unit, unit_price, discount_percent, tax_rate, tax_amount,
-                              line_total, dpp FROM sales_order_items WHERE sales_order_id = $1 ORDER BY sort_order""",
+                              line_total, dpp FROM sales_order_items WHERE sales_order_id = $1 ORDER BY sort_order, id""",
                     so_id)
                 dep = await conn.fetchval(
                     """SELECT count(*) FROM customer_deposits WHERE tenant_id = $1 AND quote_id = $2
