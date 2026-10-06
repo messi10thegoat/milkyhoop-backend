@@ -95,7 +95,7 @@
             <div class="party-detail">{{ invoice.customer.address }}</div>
             {% endif %}
             {% if invoice.customer and invoice.customer.email %}
-            <div class="party-detail">{{ invoice.customer.email }}</div>
+            <div class="party-detail"><!--email_off-->{{ invoice.customer.email }}<!--/email_off--></div>
             {% endif %}
         </div>
     </div>

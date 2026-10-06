@@ -1,5 +1,6 @@
 """Surat Penawaran (6 Okt 2026, MASTER): isian SNAPSHOT + sumber per medan + bagian PDF hanya bila berisi."""
 import inspect
+import pathlib
 
 import pytest
 from fastapi import HTTPException
@@ -80,19 +81,21 @@ def _html(**q):
 
 
 def test_pdf_bagian_tercetak_hanya_bila_berisi():
-    lama = _html()
-    for kata in ("Up. ", "Catatan khusus", "Syarat & ketentuan", "Kontak", "Terbilang:"):
+    lama = _html(status="sent")  # bukan draf (status kosong = draft -> stempel DRAF)
+    for kata in ("Up. ", "Catatan khusus", "Syarat & ketentuan", "Kontak:", "Terbilang:", "DRAF"):
         assert kata not in lama, kata
     assert "Hormat kami," in lama and "Kaos Biru Konveksi" in lama
     isi = _html(attention_name="Bu Rina", attention_title="Purchasing", notes="N1", terms="T1", signer_name="Anton",
                 signer_title="Direktur", signer_phone="0812", signer_email="a@x.id",
                 total_in_words="Satu Juta Lima Ratus Ribu Rupiah", opening_text="Dengan hormat,", closing_text="Terima kasih.")
-    for kata in ("Kepada Yth.", "Up. Bu Rina, Purchasing", "Catatan khusus", "Syarat & ketentuan", "Kontak",
-                 "HP 0812", "a@x.id", "Terbilang: Satu Juta Lima Ratus Ribu Rupiah", "Dengan hormat,", "Terima kasih."):
+    for kata in ("Kepada Yth.", "Up. Bu Rina, Purchasing", "Catatan khusus", "Syarat & ketentuan",
+                 "Kontak: HP 0812 · <!--email_off-->a@x.id<!--/email_off-->", "Terbilang: Satu Juta Lima Ratus Ribu Rupiah",
+                 "Dengan hormat,", "Terima kasih."):
         assert kata in isi, kata
-    # urutan: pembuka < tabel < terbilang < catatan < S&K < kontak < penutup < Hormat kami
-    urut = ["Dengan hormat,", "items-table", "Terbilang:", "Catatan khusus", "Syarat & ketentuan", "Kontak",
-            "Terima kasih.", "Hormat kami,"]
+    # 6 Okt 2026 (pemilik, mirip Accurate): pembuka < tabel < terbilang < catatan < S&K < PENUTUP < Hormat kami < nama < jabatan
+    # < baris Kontak (tanpa mengulang nama)
+    urut = ["Dengan hormat,", "items-table", "Terbilang:", "Catatan khusus", "Syarat & ketentuan", "Terima kasih.",
+            "Hormat kami,", '<div class="nama">Anton</div>', "<div>Direktur</div>", "Kontak:"]
     pos = [isi.index(k) for k in urut]
     assert pos == sorted(pos)
 
@@ -119,3 +122,30 @@ def test_terapkan_tolak_penanda_tangan_bukan_anggota():
     with pytest.raises(HTTPException) as e:
         asyncio.run(PS.terapkan(c, "t-uji", "q1", body, {}, buat=False))
     assert e.value.status_code == 422 and c.tulis == []  # ditolak SEBELUM menulis
+
+
+
+def test_kontak_tak_mengulang_nama_dan_baris_baru_dipertahankan():
+    isi = _html(signer_name="Anton", signer_phone="0812", opening_text="Dengan hormat,\n\nBaris dua")
+    kontak = isi[isi.index("Kontak:"):isi.index("</div>", isi.index("Kontak:"))]
+    assert "Anton" not in kontak
+    assert "white-space: pre-line" in isi and "Dengan hormat,\n\nBaris dua" in isi
+
+
+def test_stempel_draf_hanya_untuk_draft():
+    assert "DRAF" in _html(status="draft") and "bukan penawaran resmi" in _html(status="draft")
+    assert "DRAF" not in _html(status="sent")
+
+
+def test_semua_email_cetak_terbungkus_email_off():
+    import re
+    app = pathlib.Path(Q.__file__).resolve().parents[1] / "templates" / "pdf"
+    telanjang = [(f.name, m.group(0)) for f in app.rglob("*.html")
+                 for m in re.finditer(r"\{\{ [a-z_.]*email \}\}", f.read_text())
+                 if "<!--email_off-->" + m.group(0) not in f.read_text()]
+    assert not telanjang, telanjang
+
+
+def test_dicetak_di_margin_halaman_bukan_badan():
+    isi = _html()
+    assert "@bottom-left" in isi and 'class="footer-line"' not in isi

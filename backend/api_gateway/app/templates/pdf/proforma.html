@@ -75,7 +75,7 @@
             <div class="party-name">{{ company.name }}</div>
             {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
             {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
-            {% if company.email %}<div class="party-detail">{{ company.email }}</div>{% endif %}
+            {% if company.email %}<div class="party-detail"><!--email_off-->{{ company.email }}<!--/email_off--></div>{% endif %}
         </div>
         {% endif %}
         <div class="party">

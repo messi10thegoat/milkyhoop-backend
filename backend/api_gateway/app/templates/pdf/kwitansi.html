@@ -19,7 +19,7 @@
             <div class="kw-usaha-nama">{{ company.name }}</div>
             {% if company.address %}<div>{{ company.address }}</div>{% endif %}
             {% if company.phone %}<div>{{ company.phone }}</div>{% endif %}
-            {% if company.email %}<div>{{ company.email }}</div>{% endif %}
+            {% if company.email %}<div><!--email_off-->{{ company.email }}<!--/email_off--></div>{% endif %}
             {% endif %}
         </td>
         {% if company and company.logo_base64 %}

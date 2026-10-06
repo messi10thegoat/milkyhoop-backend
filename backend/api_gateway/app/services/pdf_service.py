@@ -547,6 +547,9 @@ class PDFService:
             company=company,
             status_label=status_label,
             generated_at=datetime.now(),
+            # 6 Okt 2026: stempel DRAF (pola proforma/NK) -- penawaran draf bukan penawaran resmi
+            draf=str(status).lower() == "draft",
+            draf_keterangan="Belum dikirim — bukan penawaran resmi",
         )
         return Render(html_content, CSS_DOKUMEN, font=True)
 
