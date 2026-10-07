@@ -135,6 +135,8 @@ async def test_setiap_kueri_berpredikat_tenant():
         assert "tenant_id" in sql and T in a, sql[:80]
     # JOIN ke tabel induk juga bertenant (id dari server bukan alasan melepas pagar)
     for sql, _ in k.q:
+        if 'FROM "User"' in sql:
+            continue  # 7 Okt: pencarian NAMA aktor (User + user_profiles = identitas global; id dari baris audit yang SUDAH bertenant)
         if "JOIN" in sql and "unnest" not in sql:
             assert "AND d.tenant_id = $1" in sql or "AND si.tenant_id = $1" in sql or "AND rp.tenant_id = $1" in sql, sql[:80]
 
