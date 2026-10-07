@@ -538,6 +538,8 @@ for _m, _r in bulk_router.ROUTERS.items():
 from .routers import bulk_so as bulk_so_router  # noqa: E402  (U1b F2: SO Konfirmasi/Hapus draf massal)
 
 app.include_router(bulk_so_router.router, prefix="/api/sales-orders", tags=["bulk"])
+from .routers import so_fase_lokasi as so_fase_lokasi_router  # noqa: E402  (7 Okt 2026: fase lokasi pesanan; data operasional, nol jurnal/stok)
+app.include_router(so_fase_lokasi_router.router, prefix="/api/sales-orders", tags=["sales-orders"])
 from .routers import bulk_quote as bulk_quote_router  # noqa: E402  (U1b F3: Penawaran Hapus draf + Kirim massal)
 
 app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"])

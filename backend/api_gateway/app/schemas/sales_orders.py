@@ -316,6 +316,11 @@ class SalesOrderListItem(BaseModel):
     posted_invoiced_qty: float = 0
     # P1 SO-dokumen (1 Okt 2026): dihitung server (services/so_posisi), zona tenant. Tak mengubah filter/urut/kartu.
     position_text: Optional[str] = None
+    # 7 Okt 2026: "Sisa" = total - tertutup (journal-derived; null utk draf/batal) + fase lokasi (Tersedia / Dikirim ke)
+    outstanding_amount: Optional[float] = None
+    fase_lokasi: Optional[str] = None
+    fase_gudang_id: Optional[str] = None
+    fase_gudang_nama: Optional[str] = None
     position_muted: bool = False
     ship_text: Optional[str] = None
     ship_style: Optional[Literal["normal", "muted", "strong"]] = None
@@ -350,6 +355,11 @@ class SalesOrderDetail(BaseModel):
     order_code_source: Optional[str] = None
     order_code_can_override: bool = False  # keputusan SERVER: allow_override tenant DAN peran OWNER/ADMIN
     order_code_label: str = "Kode order"  # label tenant (setelan) -- "No. Job" / "Kode Proyek" / ...
+    # 7 Okt 2026: fase lokasi (null = belum ada)
+    fase_lokasi: Optional[str] = None
+    fase_gudang_id: Optional[str] = None
+    fase_gudang_nama: Optional[str] = None
+    fase_at: Optional[str] = None
     order_title_label: str = "Judul order"  # V390: label judul setelan tenant (mis. "Judul SPK")
     order_date: str
     expected_ship_date: Optional[str] = None
@@ -461,6 +471,7 @@ class SalesOrderSummary(BaseModel):
     unshipped_value: float = 0
     unshipped_count: int = 0
     fulfillment_count: int = 0  # Surat Jalan aktif tenant; 0 = pengiriman tak dicatat -> unshipped_value tak bermakna
+    tersedia_count: int = 0  # 7 Okt 2026: SO fase "Tersedia" yang berjalan (= ?tugas=tersedia, so_agregat.PREDIKAT_TERSEDIA)
 
 
 class SalesOrderSummaryResponse(BaseModel):

@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
+from .so_fase_lokasi import STATUS_TERTUTUP as _FASE_TUTUP, teks_fase
 from .so_kirim import _AKTIF, belum_dikirim, terkirim_per_baris
 
 NOL = Decimal("0")
@@ -24,7 +25,7 @@ BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "
 
 
 def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa_faktur: Decimal,
-           ada_surat_jalan: bool, dp_diterima: Decimal) -> tuple:
+           ada_surat_jalan: bool, dp_diterima: Decimal, fase_teks=None) -> tuple:
     """-> (teks, muted). Aturan 02 §Posisi, yang PERTAMA cocok.
 
     belum_bayar: proforma issued yang belum lunas, urut issued_at: [{"purpose", "termin_ke"}].
@@ -35,6 +36,8 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
         return "Batal", True
     if sisa <= NOL:
         return "Lunas", True
+    if fase_teks:  # 7 Okt 2026: fase lokasi ("Tersedia di Toko Manado") di depan aturan pembayaran; Batal/Lunas tetap menang
+        return fase_teks, False
     for p in belum_bayar:
         if p["purpose"] == "PELUNASAN" and ada_faktur:
             continue  # putusan pemilik #3: tagihan faktur yang sama -> aturan 5
@@ -145,6 +148,11 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         tenant_id, ids,
     )}
 
+    # 7 Okt 2026: nama gudang fase lokasi (satu kueri, hanya bila ada SO berfase; tenant eksplisit)
+    gid = list({r.get("fase_gudang_id") for r in rows if r.get("fase_gudang_id")})
+    nama_gudang = {g["id"]: g["name"] for g in await conn.fetch(
+        "SELECT id, name FROM warehouses WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tenant_id, gid)} if gid else {}
+
     per_so_pf, per_so_baris = {}, {}
     for p in pfs:
         per_so_pf.setdefault(p["sales_order_id"], []).append(p)
@@ -164,8 +172,10 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         belum_bayar = [{"purpose": p["purpose"], "termin_ke": (termin.index(p["id"]) + 1) if p["id"] in termin else None}
                        for p in issued if terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))]
         n_faktur = faktur.get(sid, 0)
+        fase = r.get("fase_lokasi") if r["status"] not in _FASE_TUTUP else None
+        nama_g = nama_gudang.get(r.get("fase_gudang_id")) if fase else None
         teks_pos, muted = posisi(r["status"], sisa, belum_bayar, n_faktur > 0, o["invoice_outstanding"],
-                                 sj.get(sid, 0) > 0, o["dp_received"])
+                                 sj.get(sid, 0) > 0, o["dp_received"], teks_fase(fase, nama_g))
         bk = per_so_baris.get(sid, [])
         semua = bool(bk) and all(belum_dikirim(b["quantity"], per_baris.get(b["id"])) == NOL for b in bk)
         teks_kirim, gaya = kirim(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
@@ -175,5 +185,26 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
                        and (p["status"] != "cancelled" or r["status"] == "cancelled"))
                  + kw.get(sid, 0) + sj.get(sid, 0) + n_faktur)
         hasil[str(sid)] = {"position_text": teks_pos, "position_muted": muted,
-                           "ship_text": teks_kirim, "ship_style": gaya, "doc_count": n_dok}
+                           "ship_text": teks_kirim, "ship_style": gaya, "doc_count": n_dok,
+                           # "Sisa" (7 Okt): total - ringkasan_pesanan.tertutup (journal-derived, Law 1/16/29), tak negatif; draf/batal = null
+                           "outstanding_amount": None if r["status"] in ("draft", "cancelled") else float(max(sisa, NOL)),
+                           "fase_lokasi": fase, "fase_gudang_id": str(r["fase_gudang_id"]) if fase and r.get("fase_gudang_id") else None,
+                           "fase_gudang_nama": nama_g}
     return hasil
+
+
+async def urut_outstanding(conn, tenant_id: str, rows: list, arah: str = "desc") -> list:
+    """sort_by=outstanding (7 Okt 2026): id SO terurut menurut "Sisa" (total - ringkasan_pesanan.tertutup, sumber SAMA dengan kolom
+    outstanding_amount). rows = {id, total_amount, status} SEMUA yang cocok filter (urut dasar deterministik dari pemanggil);
+    draf/batal (tanpa sisa) selalu di ujung. Ringkasan dihitung ber-batch 200."""
+    nilai = {}
+    for i in range(0, len(rows), 200):
+        potong = rows[i:i + 200]
+        rg = await ringkasan_pesanan(conn, tenant_id, [r["id"] for r in potong])
+        for r in potong:
+            nilai[r["id"]] = (None if r["status"] in ("draft", "cancelled")
+                              else max(Decimal(str(r["total_amount"] or 0)) - rg[r["id"]]["tertutup"], NOL))
+    ada = [r["id"] for r in rows if nilai[r["id"]] is not None]
+    tak = [r["id"] for r in rows if nilai[r["id"]] is None]
+    ada.sort(key=lambda i: nilai[i], reverse=(arah == "desc"))   # sort stabil: seri mengikuti urutan dasar
+    return ada + tak

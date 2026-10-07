@@ -468,6 +468,7 @@ POST /api/sales-orders/{order_id}/attachments
 POST /api/sales-orders/{order_id}/cancel
 POST /api/sales-orders/{order_id}/close
 POST /api/sales-orders/{order_id}/confirm
+POST /api/sales-orders/{order_id}/fase-lokasi
 POST /api/sales-orders/{order_id}/ship
 POST /api/sales-orders/{order_id}/to-invoice
 POST /api/sales-receipts
@@ -577,6 +578,7 @@ POST /api/sales-invoices/{invoice_id}/void/preview
 POST /api/sales-orders/{order_id}/cancel/preview
 POST /api/sales-orders/{order_id}/confirm/preview
 POST /api/sales-orders/{order_id}/edit/preview
+POST /api/sales-orders/{order_id}/fase-lokasi/preview
 POST /api/sales-orders/{order_id}/close/preview
 POST /api/sales-orders/{order_id}/fulfill
 POST /api/sales-orders/{order_id}/fulfill/preview

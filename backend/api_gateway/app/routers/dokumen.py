@@ -218,7 +218,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
         """SELECT id, order_number, customer_name, customer_id, status, total_amount, expected_ship_date, quote_id,
-                  order_code, order_title
+                  order_code, order_title, fase_lokasi, fase_gudang_id
            FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, tid)
     if not so:
         raise HTTPException(status_code=404, detail="Sales order not found")

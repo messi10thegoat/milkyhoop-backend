@@ -223,3 +223,17 @@ async def agregat(conn, tenant_id: str, q, dari=None, sampai=None, customer_id=N
         data = await ship_window(conn, tenant_id, dari, sampai)
     return {"success": True, "q": q, "data": data}
 
+
+
+PREDIKAT_TERSEDIA = "fase_lokasi = 'tersedia' AND status <> ALL($2::text[])"  # SATU predikat: kartu (summary) = ?tugas=tersedia = baris
+
+
+async def id_tersedia(conn, tenant_id: str) -> list:
+    """SO fase "Tersedia" yang masih berjalan (7 Okt 2026) -- ?tugas=tersedia."""
+    return [r["id"] for r in await conn.fetch(
+        f"SELECT id FROM sales_orders WHERE tenant_id = $1 AND {PREDIKAT_TERSEDIA}", tenant_id, list(AKTIF_TIDAK))]
+
+
+async def jumlah_tersedia(conn, tenant_id: str) -> int:
+    return await conn.fetchval(
+        f"SELECT COUNT(*) FROM sales_orders WHERE tenant_id = $1 AND {PREDIKAT_TERSEDIA}", tenant_id, list(AKTIF_TIDAK))

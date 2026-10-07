@@ -133,7 +133,10 @@ async def list_sales_orders(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
-    tugas: Optional[Literal["harus_kirim", "dp_belum_diterima", "menunggu_tagih", "selesai"]] = Query(None),
+    tugas: Optional[Literal["harus_kirim", "dp_belum_diterima", "menunggu_tagih", "selesai", "tersedia"]] = Query(None),
+    # 7 Okt 2026: urut menurut "Sisa" (outstanding_amount) -- dihitung server atas SEMUA yang cocok filter, bukan hanya halaman
+    sort_by: Optional[Literal["outstanding"]] = Query(None),
+    sort_dir: Literal["asc", "desc"] = Query("desc"),
 ):
     """List sales orders with filters."""
     try:
@@ -194,17 +197,29 @@ async def list_sales_orders(
             count_query = f"SELECT COUNT(*) FROM sales_orders WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
 
-            list_query = f"""
-                SELECT id, order_number, order_date, expected_ship_date, customer_id, customer_name,
+            _kolom_daftar = """id, order_number, order_date, expected_ship_date, customer_id, customer_name,
                        subtotal, discount_amount, tax_amount, shipping_amount, total_amount,
-                       status, shipped_qty, invoiced_qty, created_at, quote_id, order_code, order_title
-                FROM sales_orders
-                WHERE {where_clause}
-                ORDER BY created_at DESC
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([limit, skip])
-            rows = await conn.fetch(list_query, *params)
+                       status, shipped_qty, invoiced_qty, created_at, quote_id, order_code, order_title,
+                       fase_lokasi, fase_gudang_id"""
+            if sort_by == "outstanding":
+                from ..services.so_posisi import urut_outstanding
+                semua = await conn.fetch(
+                    f"SELECT id, total_amount, status FROM sales_orders WHERE {where_clause} ORDER BY created_at DESC, id", *params)
+                urut = (await urut_outstanding(conn, ctx["tenant_id"], semua, sort_dir))[skip:skip + limit]
+                dasar = {r["id"]: r for r in await conn.fetch(
+                    f"SELECT {_kolom_daftar} FROM sales_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                    ctx["tenant_id"], urut)}
+                rows = [dasar[i] for i in urut if i in dasar]
+            else:
+                list_query = f"""
+                    SELECT {_kolom_daftar}
+                    FROM sales_orders
+                    WHERE {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """
+                params.extend([limit, skip])
+                rows = await conn.fetch(list_query, *params)
             # Q-016 (a): penanda faktur DRAF per SO (status tetap) — satu kueri, sumber = quantity_invoiced
             penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
             # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
@@ -376,6 +391,7 @@ async def get_sales_order_summary(request: Request):
                     "unshipped_value": float(kirim["total"]),
                     "unshipped_count": kirim["count"],
                     "fulfillment_count": await so_kirim.jumlah_surat_jalan(conn, ctx["tenant_id"]),
+                    "tersedia_count": await so_agregat.jumlah_tersedia(conn, ctx["tenant_id"]),
                 },
             )
 
@@ -542,6 +558,12 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     order_code_can_override=_boleh_kode,
                     order_code_label=_set_kode["label"],
                     order_title_label=_set_kode["title_label"],
+                    fase_lokasi=order.get("fase_lokasi"),
+                    fase_gudang_id=str(order["fase_gudang_id"]) if order.get("fase_gudang_id") else None,
+                    fase_gudang_nama=(await conn.fetchval(
+                        "SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2",
+                        order["fase_gudang_id"], ctx["tenant_id"])) if order.get("fase_gudang_id") else None,
+                    fase_at=order["fase_at"].isoformat() if order.get("fase_at") else None,
                     completed_source=order.get("completed_source"),  # V315 (.get: kode aman sebelum migrasi)
                     payment_terms_days=termin_n,
                     payment_terms_source=termin_sumber,

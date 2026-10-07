@@ -96,6 +96,7 @@ RINGKAS_AUDIT = {
     "SALES_ORDER_FORCE_CLOSED": "Pesanan ditutup (sisa dibatalkan)",
     "SALES_ORDER_AUTO_COMPLETED": "Pesanan selesai otomatis",
     "SALES_ORDER_REOPENED": "Pesanan dibuka kembali",
+    "SO_FASE_LOKASI_CHANGED": "Posisi lokasi pesanan diubah",
     "PROFORMA_ISSUED": "Proforma diterbitkan",
     "PROFORMA_CANCELLED": "Proforma dibatalkan",
     "PROFORMA_UPDATED": "Proforma diubah",

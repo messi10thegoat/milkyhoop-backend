@@ -545,6 +545,9 @@ async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
         return [r["id"] for r in await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))]
     if tugas == "dp_belum_diterima":
         return [r["id"] for r in await so_dp_belum(conn, tenant_id)]
+    if tugas == "tersedia":  # 7 Okt 2026: SO fase "Tersedia" (so_agregat.PREDIKAT_TERSEDIA = kartu summary = baris)
+        from . import so_agregat as _sa
+        return await _sa.id_tersedia(conn, tenant_id)
     if tugas in ("menunggu_tagih", "selesai"):  # 5 Okt 2026: predikat PERSIS kartu daftar SO (so_agregat)
         from . import so_agregat as _sa
         return await (_sa.id_belum_ditagih if tugas == "menunggu_tagih" else _sa.id_selesai)(conn, tenant_id)
