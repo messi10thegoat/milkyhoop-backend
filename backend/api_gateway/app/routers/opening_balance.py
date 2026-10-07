@@ -61,6 +61,7 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.pagar_uang_muka import galat_saldo_awal, tolak_saldo_awal
 
 logger = structlog.get_logger()
 
@@ -223,6 +224,11 @@ async def validate_opening_balance_request(
             warnings.append(
                 f"Account '{line.account_code}' has both debit and credit amounts"
             )
+
+    # 7 Okt 2026 (putusan pemilik): saldo awal ke akun Uang Muka Pelanggan tanpa subledger per pelanggan DITOLAK
+    galat_uang_muka = await galat_saldo_awal(conn, tenant_id, request.accounts)
+    if galat_uang_muka:
+        errors.append(galat_uang_muka)
 
     imbalance = total_debit - total_credit
     equity_adjustment = abs(imbalance)
@@ -620,6 +626,8 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
                 status_code=400,
                 detail="Active opening balance already exists. Use PUT to supersede it.",
             )
+
+        await tolak_saldo_awal(conn, tenant_id, body.accounts)  # 7 Okt: kode SALDO_AWAL_UANG_MUKA_DITOLAK
 
         # Validate request
         validation = await validate_opening_balance_request(conn, tenant_id, body)
@@ -1023,6 +1031,7 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
             inventory_balances=body.inventory_balances,
         )
 
+        await tolak_saldo_awal(conn, tenant_id, body.accounts)  # 7 Okt: kode SALDO_AWAL_UANG_MUKA_DITOLAK
         validation = await validate_opening_balance_request(
             conn, tenant_id, create_request
         )

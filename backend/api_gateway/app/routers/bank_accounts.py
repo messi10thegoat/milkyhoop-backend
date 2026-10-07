@@ -523,6 +523,10 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                             status_code=400, detail="Chart of Accounts entry not found"
                         )
 
+                    # 7 Okt 2026 (putusan pemilik): akun Uang Muka Pelanggan (LIABILITY) tak boleh jadi kartu kredit/bank
+                    from ..services.pagar_uang_muka import tolak_rekening_bank
+                    await tolak_rekening_bank(conn, ctx["tenant_id"], coa["id"])
+
                     # Validate CoA type matches account type
                     if body.account_type == "credit_card":
                         if coa["account_type"] != "LIABILITY":

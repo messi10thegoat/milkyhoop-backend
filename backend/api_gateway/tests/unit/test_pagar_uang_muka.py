@@ -26,6 +26,8 @@ class Conn:
         self.q.append((sql, a))
         if "account_roles" in sql:
             assert a[0] == T and a[1] == "CUSTOMER_DEPOSIT_LIABILITY"
+            if "coa.account_code = ANY" in sql:  # varian kode (modul Saldo Awal)
+                return [{"account_code": "2-10500", "name": "Uang Muka Pelanggan"}] if "2-10500" in a[2] else []
             return [{"account_code": "2-10500", "name": "Uang Muka Pelanggan"}] if DP in a[2] else []
         return []  # cek AR/AP & persediaan: tak ada
 
@@ -92,6 +94,7 @@ def test_kontrol_jurnal_sistem_tak_melewati_pagar():
     pagar ini -- hanya jalur yang akunnya dipilih pengguna."""
     app = pathlib.Path(J.__file__).resolve().parents[1]
     boleh = {"routers/journals.py", "routers/bank_accounts.py", "services/pagar_uang_muka.py",
+             "routers/opening_balance.py",  # 7 Okt: saldo awal = akun dipilih pengguna
              "services/pagar_akun_modul.py", "services/kernel_document_executor.py"}  # intake legacy: akun dari draf AI
     pemakai = sorted(str(p.relative_to(app)) for p in app.rglob("*.py")
                      if ("pagar_uang_muka" in p.read_text(errors="ignore")
@@ -99,3 +102,70 @@ def test_kontrol_jurnal_sistem_tak_melewati_pagar():
     assert set(pemakai) <= boleh, pemakai
     for sistem in ("routers/customer_deposits.py", "routers/receive_payments.py", "routers/credit_notes.py"):
         assert (app / sistem).exists()
+
+
+# ---- 7 Okt 2026: SALDO AWAL ke akun Uang Muka (putusan pemilik = TOLAK) ----
+from app.routers import opening_balance as OB
+from app.schemas.opening_balance import AccountBalanceLine as Baris
+
+
+def test_saldo_awal_ke_uang_muka_ditolak_berkode_pesan_indonesia():
+    for b in (Baris(account_code="2-10500", credit=5_000_000), Baris(account_code="2-10500", debit=1)):
+        with pytest.raises(HTTPException) as e:
+            _j(PU.tolak_saldo_awal(Conn(), T, [Baris(account_code="1-10100", debit=5_000_000), b]))
+        assert e.value.status_code == 400
+        d = e.value.detail
+        assert d["code"] == "SALDO_AWAL_UANG_MUKA_DITOLAK"
+        assert "2-10500 Uang Muka Pelanggan" in d["message"] and "modul Uang Muka Pelanggan" in d["message"]
+
+
+def test_saldo_awal_baris_nol_dan_akun_lain_lolos():
+    c = Conn()
+    _j(PU.tolak_saldo_awal(c, T, [Baris(account_code="1-10100", debit=5), Baris(account_code="2-10500")]))
+    assert c.q[0][1][2] == ["1-10100"]  # baris nol tak ikut ditanyakan
+    c = Conn()
+    _j(PU.tolak_saldo_awal(c, T, [Baris(account_code="2-10500")]))
+    assert c.q == []  # tak ada baris bernilai -> tak bertanya ke DB
+
+
+def test_kueri_kode_filter_tenant_di_kedua_tabel():
+    c = Conn()
+    _j(PU.akun_uang_muka_dari_kode(c, T, ["2-10500"]))
+    sql = c.q[0][0]
+    assert "ar.tenant_id = $1" in sql and "coa.tenant_id = ar.tenant_id" in sql and "ar.role_key = $2" in sql
+
+
+def test_rekening_bank_ke_uang_muka_ditolak_berkode():
+    with pytest.raises(HTTPException) as e:
+        _j(PU.tolak_rekening_bank(Conn(), T, DP))
+    assert e.value.status_code == 400 and e.value.detail["code"] == "REKENING_BANK_UANG_MUKA_DITOLAK"
+    _j(PU.tolak_rekening_bank(Conn(), T, LAIN))
+
+
+def test_validasi_saldo_awal_menampilkan_galat_uang_muka(monkeypatch):
+    async def akun(conn, tid, kode):
+        return {"id": 1, "code": kode, "name": kode, "type": "X", "normal_balance": "DEBIT"}
+
+    async def peran(conn, tid, role):
+        return {"code": "zz-" + role}
+    monkeypatch.setattr(OB, "get_account_by_code", akun)
+    monkeypatch.setattr(OB, "_resolve_role_account", peran)
+    req = OB.CreateOpeningBalanceRequest(opening_date="2026-01-01", accounts=[
+        Baris(account_code="1-10100", debit=100), Baris(account_code="2-10500", credit=100)])
+    v = _j(OB.validate_opening_balance_request(Conn(), T, req))
+    assert not v.is_valid and any("Uang Muka Pelanggan" in g for g in v.errors)
+    req = OB.CreateOpeningBalanceRequest(opening_date="2026-01-01", accounts=[
+        Baris(account_code="1-10100", debit=100), Baris(account_code="3-10000", credit=100)])
+    assert not any("Uang Muka" in g for g in _j(OB.validate_opening_balance_request(Conn(), T, req)).errors)
+
+
+def test_buat_dan_ubah_saldo_awal_menolak_sebelum_transaksi():
+    for f in (OB.create_opening_balance, OB.update_opening_balance):
+        src = inspect.getsource(f)
+        assert src.count("tolak_saldo_awal(conn, tenant_id, body.accounts)") == 1, f.__name__
+        assert src.index("tolak_saldo_awal(") < src.index("async with conn.transaction()")
+
+
+def test_buat_rekening_bank_menolak_sebelum_insert():
+    src = inspect.getsource(BA.create_bank_account)
+    assert src.index("tolak_rekening_bank(") < src.index("INSERT INTO bank_accounts")
