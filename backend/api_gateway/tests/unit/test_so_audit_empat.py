@@ -236,6 +236,9 @@ async def test_ringkasan_so_mengirim_unshipped(monkeypatch):
     monkeypatch.setattr(SO, "get_pool", gp)
     monkeypatch.setattr(SO, "get_user_context", lambda r: {"tenant_id": TENANT})
     monkeypatch.setattr(SO.so_agregat, "uninvoiced", belum)
+    async def _tersedia(conn, t):  # 7 Okt 2026: hitungan fase "Tersedia" (so_agregat.jumlah_tersedia) -- bukan objek tes ini
+        return 0
+    monkeypatch.setattr(SO.so_agregat, "jumlah_tersedia", _tersedia)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", kirim)
 
     async def menunggu(conn, t, st):
