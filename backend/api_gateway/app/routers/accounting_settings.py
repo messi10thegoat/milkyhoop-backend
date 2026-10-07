@@ -15,6 +15,7 @@ from enum import Enum
 
 from ..config import settings
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.audit_setelan import catat_audit_setelan, ringkas_perubahan
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,10 @@ BAWAAN = {
     "default_quote_signer_phone": None,
 }
 
+
+# 7 Okt 2026 (audit): medan teks bebas dicatat NAMANYA saja di audit_logs (isi panjang / data pribadi)
+TEKS_BEBAS_AUDIT = ('default_quote_opening_text', 'default_quote_closing_text', 'default_quote_notes', 'default_quote_terms',
+                    'default_quote_signer_title', 'default_quote_signer_phone')
 
 _BARU_SURAT = ('default_quote_notes', 'default_quote_terms', 'default_quote_signer_user_id', 'default_quote_signer_title', 'default_quote_signer_phone')
 
@@ -259,24 +264,32 @@ async def create_accounting_settings(
                 )
 
             new_id = str(uuid.uuid4())
-            await conn.execute(
-                """
-                INSERT INTO accounting_settings (
-                    id, tenant_id, default_report_basis,
-                    fiscal_year_start_month, base_currency_code
-                ) VALUES ($1, $2, $3, $4, $5)
-                """,
-                new_id,
-                tenant_id,
-                data.default_report_basis,
-                data.fiscal_year_start_month,
-                data.base_currency_code,
-            )
+            async with conn.transaction():  # 7 Okt: INSERT + jejak audit atomik
+                await conn.execute(
+                    """
+                    INSERT INTO accounting_settings (
+                        id, tenant_id, default_report_basis,
+                        fiscal_year_start_month, base_currency_code
+                    ) VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    new_id,
+                    tenant_id,
+                    data.default_report_basis,
+                    data.fiscal_year_start_month,
+                    data.base_currency_code,
+                )
 
-            row = await conn.fetchrow(
-                "SELECT * FROM accounting_settings WHERE tenant_id = $1",
-                tenant_id,
-            )
+                row = await conn.fetchrow(
+                    "SELECT * FROM accounting_settings WHERE tenant_id = $1",
+                    tenant_id,
+                )
+                await catat_audit_setelan(
+                    conn, tenant_id, request.state.user.get("user_id"), "SETTINGS_ACCOUNTING_CREATED",
+                    "accounting_settings", row["id"],
+                    {"changed": ["default_report_basis", "fiscal_year_start_month", "base_currency_code"],
+                     "diff": {"default_report_basis": {"lama": None, "baru": data.default_report_basis},
+                              "fiscal_year_start_month": {"lama": None, "baru": data.fiscal_year_start_month},
+                              "base_currency_code": {"lama": None, "baru": data.base_currency_code}}})
 
             return AccountingSettingsDetailResponse(
                 success=True,
@@ -350,6 +363,10 @@ async def update_accounting_settings(
                     str(uuid.uuid4()),
                     tenant_id,
                 )
+
+            lama = await conn.fetchrow(  # 7 Okt: keadaan SEBELUM untuk audit lama->baru
+                "SELECT * FROM accounting_settings WHERE tenant_id = $1", tenant_id
+            )
 
             updates = []
             params = [tenant_id]
@@ -431,19 +448,25 @@ async def update_accounting_settings(
                 params.append(_v)
                 param_idx += 1
 
-            if updates:
-                updates.append("updated_at = NOW()")
-                update_sql = f"""
-                    UPDATE accounting_settings
-                    SET {", ".join(updates)}
-                    WHERE tenant_id = $1
-                """
-                await conn.execute(update_sql, *params)
+            async with conn.transaction():  # 7 Okt: UPDATE + jejak audit atomik
+                if updates:
+                    updates.append("updated_at = NOW()")
+                    update_sql = f"""
+                        UPDATE accounting_settings
+                        SET {", ".join(updates)}
+                        WHERE tenant_id = $1
+                    """
+                    await conn.execute(update_sql, *params)
 
-            row = await conn.fetchrow(
-                "SELECT * FROM accounting_settings WHERE tenant_id = $1",
-                tenant_id,
-            )
+                row = await conn.fetchrow(
+                    "SELECT * FROM accounting_settings WHERE tenant_id = $1",
+                    tenant_id,
+                )
+                ringkas = ringkas_perubahan(lama, row, TEKS_BEBAS_AUDIT)
+                if ringkas:  # PATCH tanpa perubahan nyata = tanpa baris audit
+                    await catat_audit_setelan(
+                        conn, tenant_id, request.state.user.get("user_id"), "SETTINGS_ACCOUNTING_UPDATED",
+                        "accounting_settings", row["id"], ringkas)
 
             return AccountingSettingsDetailResponse(
                 success=True,
