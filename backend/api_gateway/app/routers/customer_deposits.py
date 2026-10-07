@@ -3611,10 +3611,11 @@ async def list_deposit_attachments(
                 """
                 SELECT d.id, d.file_name, d.file_path, d.file_size,
                        d.file_type, d.uploaded_at, d.uploaded_by, d.storage_type,
-                       COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name
+                       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), ''), u.email) AS uploaded_by_name
                 FROM document_attachments da
                 JOIN documents d ON d.id = da.document_id
                 LEFT JOIN "User" u ON u.id = d.uploaded_by::text
+                LEFT JOIN user_profiles up ON up.user_id = u.id
                 WHERE da.entity_type = $1
                   AND da.entity_id = $2
                   AND da.tenant_id = $3

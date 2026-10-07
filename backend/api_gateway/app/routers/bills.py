@@ -16,6 +16,7 @@ import base64
 from pathlib import Path as _Path
 import asyncpg
 
+from ..services.nama_pengguna import nama_pengguna, nama_untuk
 from ..utils.sorting import parse_sort_param
 
 # Import schemas
@@ -1398,7 +1399,7 @@ async def list_bill_attachments(
             raise HTTPException(status_code=404, detail="Bill not found")
 
         rows = await conn.fetch(
-            'SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name FROM bill_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text WHERE sa.bill_id = $1 ORDER BY sa.uploaded_at DESC',
+            """SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), ''), u.email) AS uploaded_by_name FROM bill_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text LEFT JOIN user_profiles up ON up.user_id = u.id WHERE sa.bill_id = $1 ORDER BY sa.uploaded_at DESC""",
             bill_id,
         )
 
@@ -1768,9 +1769,10 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                     b.id, b.invoice_number, b.created_at, b.updated_at,
                     b.voided_at, b.voided_reason, b.created_by,
                     b.status_v2, b.posted_at, b.posted_by, b.amount,
-                    u.name as creator_name, u.fullname as creator_fullname
+                    u.name as creator_name, u.fullname as creator_fullname, up.display_name AS creator_profil
                 FROM bills b
                 LEFT JOIN "User" u ON b.created_by::text = u.id
+                LEFT JOIN user_profiles up ON up.user_id = u.id
                 WHERE b.id = $1 AND b.tenant_id = $2
                 """,
                 bill_id,
@@ -1783,7 +1785,7 @@ async def get_bill_activity(request: Request, bill_id: UUID):
             activities = []
 
             # 1. Bill created activity
-            creator_name = bill["creator_fullname"] or bill["creator_name"] or "System"
+            creator_name = nama_pengguna(bill["creator_profil"], bill["creator_fullname"], bill["creator_name"]) or "System"
             activities.append(
                 BillActivity(
                     id=f"{bill_id}-created",
@@ -1800,13 +1802,8 @@ async def get_bill_activity(request: Request, bill_id: UUID):
 
             # 2. Bill posted activity (if status_v2 is posted and posted_at exists)
             if bill["posted_at"] and bill["posted_at"] != bill["created_at"]:
-                poster = await conn.fetchrow(
-                    """SELECT name, fullname FROM "User" WHERE id = $1""",
-                    str(bill["posted_by"]) if bill["posted_by"] else None,
-                )
-                poster_name = "System"
-                if poster:
-                    poster_name = poster["fullname"] or poster["name"] or "System"
+                poster_name = (await nama_untuk(conn, [bill["posted_by"]], cadangan_email=False)).get(
+                    str(bill["posted_by"])) or "System"  # 7 Okt: rantai SATU
 
                 activities.append(
                     BillActivity(
@@ -1828,10 +1825,11 @@ async def get_bill_activity(request: Request, bill_id: UUID):
                 SELECT
                     bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
                     bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
-                    u.name as payer_name, u.fullname as payer_fullname
+                    u.name as payer_name, u.fullname as payer_fullname, up.display_name AS payer_profil
                 FROM bill_payments_v2 bp
                 JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
                 LEFT JOIN "User" u ON bp.created_by::text = u.id
+                LEFT JOIN user_profiles up ON up.user_id = u.id
                 WHERE bp.status != 'voided'
                 ORDER BY bp.created_at ASC
                 """,
@@ -1840,7 +1838,7 @@ async def get_bill_activity(request: Request, bill_id: UUID):
 
             for payment in payments:
                 payer_name = (
-                    payment["payer_fullname"] or payment["payer_name"] or "System"
+                    nama_pengguna(payment["payer_profil"], payment["payer_fullname"], payment["payer_name"]) or "System"
                 )
                 method_display = {
                     "cash": "tunai",

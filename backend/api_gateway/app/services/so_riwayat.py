@@ -23,6 +23,7 @@ import json
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
+from .nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import zona_tenant
 from . import teks_galat as tg
 
@@ -296,11 +297,7 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
     ids = sorted({e["aktor_id"] for e in ev if e["aktor_id"] and e["aktor_id"] != AKTOR_SISTEM})
     nama = {}
     if ids:
-        for u in await conn.fetch(
-            """SELECT id, COALESCE(NULLIF(fullname, ''), NULLIF(name, ''), email) AS nama
-               FROM "User" WHERE id = ANY($1::text[])""", ids,
-        ):
-            nama[u["id"]] = u["nama"]
+        nama.update(await nama_untuk(conn, ids))  # 7 Okt 2026: rantai SATU (profil -> fullname -> name -> surel)
 
     zona = await zona_tenant(conn, tenant_id)
     # terbaru dulu; waktu SAMA (buat+posting satu transaksi) -> yang dicatat belakangan di atas

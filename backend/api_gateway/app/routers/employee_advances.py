@@ -29,6 +29,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..services.nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import tanggal_dokumen, zona_tenant
 from ..services.bank_sync import create_bank_transaction_for_journal, create_reversal_bank_transaction
 from ..services.role_resolver import (
@@ -517,12 +518,7 @@ async def _muat_kasbon(conn, ctx, advance_id) -> dict:
 
 
 async def _nama_pengguna(conn, ids) -> dict:
-    ids = sorted({str(i) for i in ids if i})
-    if not ids:
-        return {}
-    return {u["id"]: u["nama"] for u in await conn.fetch(
-        """SELECT id, COALESCE(NULLIF(fullname, ''), NULLIF(name, ''), email) AS nama FROM "User" WHERE id = ANY($1::text[])""",
-        ids)}
+    return await nama_untuk(conn, ids)  # 7 Okt 2026: rantai SATU (profil -> fullname -> name -> surel)
 
 
 async def _gerakan(conn, ctx, advance_id) -> list:

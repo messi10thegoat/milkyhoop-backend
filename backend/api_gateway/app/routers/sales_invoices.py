@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import logging
 import asyncpg
 
+from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.jatuh_tempo import hari_terlambat
@@ -1210,8 +1211,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                        ba.account_name AS bank_account_name,
                        rpa.id AS allocation_id, rpa.amount_applied AS allocated_amount,
                        rpa.status AS allocation_status, rpa.reversed_at AS allocation_reversed_at,
-                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
-                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
+                       COALESCE(NULLIF(trim(up_c.display_name), ''), NULLIF(trim(u_created.fullname), ''), NULLIF(trim(u_created.name), ''), u_created.email) AS created_by_name,
+                       COALESCE(NULLIF(trim(up_p.display_name), ''), NULLIF(trim(u_posted.fullname), ''), NULLIF(trim(u_posted.name), ''), u_posted.email) AS posted_by_name
                 FROM receive_payment_allocations rpa
                 JOIN receive_payments rp ON rp.id = rpa.payment_id
                 LEFT JOIN LATERAL (
@@ -1221,7 +1222,9 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     ORDER BY (b.id = rp.bank_account_id) DESC LIMIT 1
                 ) ba ON true
                 LEFT JOIN "User" u_created ON u_created.id = rp.created_by::text
+                LEFT JOIN user_profiles up_c ON up_c.user_id = u_created.id
                 LEFT JOIN "User" u_posted ON u_posted.id = rp.posted_by::text
+                LEFT JOIN user_profiles up_p ON up_p.user_id = u_posted.id
                 WHERE rpa.invoice_id = $1
                   AND rp.tenant_id = $2
                   AND rp.status = 'posted'
@@ -6021,13 +6024,7 @@ async def get_invoice_activity(
                 if not user_id:
                     return None
                 try:
-                    user = await conn.fetchrow(
-                        'SELECT name, fullname FROM "User" WHERE id = $1',
-                        str(user_id),
-                    )
-                    if user:
-                        return user["fullname"] or user["name"] or None
-                    return None
+                    return (await nama_untuk(conn, [user_id], cadangan_email=False)).get(str(user_id)) or None  # 7 Okt: rantai SATU
                 except Exception:
                     return None
 
@@ -6437,7 +6434,7 @@ async def list_invoice_attachments(
             raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
         rows = await conn.fetch(
-            'SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(u.name, u.fullname, u.email) AS uploaded_by_name FROM sales_invoice_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text WHERE sa.invoice_id = $1 ORDER BY sa.uploaded_at DESC',
+            """SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), ''), u.email) AS uploaded_by_name FROM sales_invoice_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text LEFT JOIN user_profiles up ON up.user_id = u.id WHERE sa.invoice_id = $1 ORDER BY sa.uploaded_at DESC""",
             invoice_id,
         )
 

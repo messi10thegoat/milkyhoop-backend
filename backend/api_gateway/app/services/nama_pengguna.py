@@ -19,6 +19,19 @@ def nama_pengguna(profil_display_name=None, fullname=None, name=None) -> Optiona
 
 
 # Padanan SQL rantai di atas; alias tabel diberikan pemanggil ("User" u, user_profiles p).
-def nama_pengguna_sql(profil: str = "p", user: str = "u") -> str:
+def nama_pengguna_sql(profil: str = "p", user: str = "u", email: bool = False) -> str:
+    """email=True: surel jadi cadangan terakhir (tampilan riwayat/lampiran); False: NULL bila ketiganya kosong."""
     return (f"COALESCE(NULLIF(trim({profil}.display_name), ''), NULLIF(trim({user}.fullname), ''), "
-            f"NULLIF(trim({user}.name), ''))")
+            f"NULLIF(trim({user}.name), '')" + (f", {user}.email)" if email else ")"))
+
+
+async def nama_untuk(conn, user_ids, cadangan_email: bool = True) -> dict:
+    """{user_id(str): nama} untuk tampilan aktor (riwayat, aktivitas dokumen). SATU kueri, rantai SAMA dgn dropdown/me/penanda tangan.
+    user_id tak dikenal tak muncul di hasil."""
+    ids = sorted({str(i) for i in user_ids if i})
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        f'''SELECT u.id, {nama_pengguna_sql("p", "u", cadangan_email)} AS nama
+            FROM "User" u LEFT JOIN user_profiles p ON p.user_id = u.id WHERE u.id = ANY($1::text[])''', ids)
+    return {r["id"]: r["nama"] for r in rows}

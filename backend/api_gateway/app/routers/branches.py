@@ -10,6 +10,7 @@ Journal Entries (Branch Transfer):
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from ..services.penawaran_surat import anggota_aktif
 from ..services.audit_setelan import catat_audit_setelan, ringkas_perubahan
 
 # 7 Okt 2026: medan izin cabang yang dicatat di audit
@@ -787,6 +788,9 @@ async def grant_permission(
             if not exists:
                 raise HTTPException(status_code=404, detail="Branch not found")
 
+            # 7 Okt 2026: penerima izin HARUS anggota AKTIF usaha ini (tenant eksplisit). Tabel izin kosong saat diukur -> tak ada data lama yang dilanggar.
+            if not await anggota_aktif(conn, ctx["tenant_id"], body.user_id):
+                raise HTTPException(status_code=422, detail="Pengguna itu bukan anggota aktif usaha ini, jadi tak bisa diberi izin cabang.")
             async with conn.transaction():  # 7 Okt (audit gelombang 2): tulis + jejak atomik
               lama = await conn.fetchrow(
                   f"SELECT {', '.join(IZIN_CABANG_MEDAN)} FROM branch_permissions "

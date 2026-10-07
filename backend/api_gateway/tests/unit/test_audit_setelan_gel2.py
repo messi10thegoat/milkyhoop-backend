@@ -165,7 +165,7 @@ def test_grant_baru_dan_ubah_dicatat_lama_baru(monkeypatch):
     k = _K(fetchval=1, baca=[None])
     k.fv = 1
     # fetchval dipakai dua kali: exists-cabang (1) lalu perm_id (RETURNING id)
-    vals = iter([1, PERM_ID])
+    vals = iter([1, 1, PERM_ID])  # exists-cabang, anggota aktif, RETURNING id
     async def fv(sql, *a): return next(vals)
     k.fetchval = fv
     _cabang(monkeypatch, k)
@@ -177,7 +177,7 @@ def test_grant_baru_dan_ubah_dicatat_lama_baru(monkeypatch):
     assert m["diff"]["can_edit"] == {"lama": None, "baru": True}
 
     k2 = _K(baca=[_flag()])
-    vals2 = iter([1, PERM_ID])
+    vals2 = iter([1, 1, PERM_ID])
     async def fv2(sql, *a): return next(vals2)
     k2.fetchval = fv2
     _cabang(monkeypatch, k2)
@@ -188,7 +188,7 @@ def test_grant_baru_dan_ubah_dicatat_lama_baru(monkeypatch):
 
 def test_grant_identik_tanpa_audit(monkeypatch):
     k = _K(baca=[_flag()])
-    vals = iter([1, PERM_ID])
+    vals = iter([1, 1, PERM_ID])  # exists-cabang, anggota aktif, RETURNING id
     async def fv(sql, *a): return next(vals)
     k.fetchval = fv
     _cabang(monkeypatch, k)

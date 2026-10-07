@@ -719,13 +719,15 @@ class BillsService:
                        bp.created_at, bpa.amount_applied,
                        bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
                        ba.account_name AS bank_account_name,
-                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
-                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
+                       COALESCE(NULLIF(trim(up_c.display_name), ''), NULLIF(trim(u_created.fullname), ''), NULLIF(trim(u_created.name), ''), u_created.email) AS created_by_name,
+                       COALESCE(NULLIF(trim(up_p.display_name), ''), NULLIF(trim(u_posted.fullname), ''), NULLIF(trim(u_posted.name), ''), u_posted.email) AS posted_by_name
                 FROM bill_payments_v2 bp
                 INNER JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
                 LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
                 LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
+                LEFT JOIN user_profiles up_c ON up_c.user_id = u_created.id
                 LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
+                LEFT JOIN user_profiles up_p ON up_p.user_id = u_posted.id
                 WHERE bpa.bill_id = $1
                 ORDER BY bp.payment_date DESC
             """
@@ -4349,13 +4351,15 @@ class BillsService:
                        bp.payment_number, bp.status,
                        bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
                        ba.account_name AS bank_account_name,
-                       COALESCE(u_created.name, u_created.fullname, u_created.email) AS created_by_name,
-                       COALESCE(u_posted.name, u_posted.fullname, u_posted.email) AS posted_by_name
+                       COALESCE(NULLIF(trim(up_c.display_name), ''), NULLIF(trim(u_created.fullname), ''), NULLIF(trim(u_created.name), ''), u_created.email) AS created_by_name,
+                       COALESCE(NULLIF(trim(up_p.display_name), ''), NULLIF(trim(u_posted.fullname), ''), NULLIF(trim(u_posted.name), ''), u_posted.email) AS posted_by_name
                 FROM bill_payments_v2 bp
                 JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
                 LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
                 LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
+                LEFT JOIN user_profiles up_c ON up_c.user_id = u_created.id
                 LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
+                LEFT JOIN user_profiles up_p ON up_p.user_id = u_posted.id
                 WHERE bp.status != 'voided'
                 ORDER BY bp.created_at ASC
             """
