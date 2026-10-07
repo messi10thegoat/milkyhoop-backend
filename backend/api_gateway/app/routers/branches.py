@@ -10,6 +10,11 @@ Journal Entries (Branch Transfer):
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from ..services.audit_setelan import catat_audit_setelan, ringkas_perubahan
+
+# 7 Okt 2026: medan izin cabang yang dicatat di audit
+IZIN_CABANG_MEDAN = ('can_view', 'can_create', 'can_edit', 'can_delete', 'can_approve', 'is_default')
+
 from ..services.fitur_parkir import fitur_belum_tersedia_dengan
 from typing import Optional, Literal
 from uuid import UUID
@@ -782,16 +787,21 @@ async def grant_permission(
             if not exists:
                 raise HTTPException(status_code=404, detail="Branch not found")
 
-            # If setting as default, clear other defaults for user
-            if body.is_default:
+            async with conn.transaction():  # 7 Okt (audit gelombang 2): tulis + jejak atomik
+              lama = await conn.fetchrow(
+                  f"SELECT {', '.join(IZIN_CABANG_MEDAN)} FROM branch_permissions "
+                  "WHERE tenant_id = $1 AND user_id = $2 AND branch_id = $3",
+                  ctx["tenant_id"], body.user_id, branch_id)
+              # If setting as default, clear other defaults for user
+              if body.is_default:
                 await conn.execute(
                     "UPDATE branch_permissions SET is_default = false WHERE tenant_id = $1 AND user_id = $2",
                     ctx["tenant_id"],
                     body.user_id,
                 )
 
-            # Upsert permission
-            perm_id = await conn.fetchval(
+              # Upsert permission
+              perm_id = await conn.fetchval(
                 """
                 INSERT INTO branch_permissions (
                     tenant_id, user_id, branch_id, can_view, can_create,
@@ -813,7 +823,12 @@ async def grant_permission(
                 body.can_approve,
                 body.is_default,
                 ctx["user_id"],
-            )
+              )
+              ringkas = ringkas_perubahan(lama, {m: getattr(body, m) for m in IZIN_CABANG_MEDAN})
+              if ringkas:  # re-grant identik = tanpa baris audit
+                ringkas.update(user_id=str(body.user_id), branch_id=str(branch_id))
+                await catat_audit_setelan(conn, ctx["tenant_id"], ctx["user_id"], "SETTINGS_BRANCH_PERMISSION_GRANTED",
+                                          "branch_permission", perm_id, ringkas)
 
             return {
                 "success": True,
@@ -836,13 +851,21 @@ async def revoke_permission(request: Request, permission_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM branch_permissions WHERE tenant_id = $1 AND id = $2",
-                ctx["tenant_id"],
-                permission_id,
-            )
-            if result == "DELETE 0":
-                raise HTTPException(status_code=404, detail="Permission not found")
+            async with conn.transaction():  # 7 Okt (audit gelombang 2): hapus + jejak atomik
+                lama = await conn.fetchrow(
+                    f"SELECT user_id, branch_id, {', '.join(IZIN_CABANG_MEDAN)} FROM branch_permissions "
+                    "WHERE tenant_id = $1 AND id = $2", ctx["tenant_id"], permission_id)
+                result = await conn.execute(
+                    "DELETE FROM branch_permissions WHERE tenant_id = $1 AND id = $2",
+                    ctx["tenant_id"],
+                    permission_id,
+                )
+                if result == "DELETE 0":
+                    raise HTTPException(status_code=404, detail="Permission not found")
+                ringkas = ringkas_perubahan(lama, {m: None for m in IZIN_CABANG_MEDAN})
+                ringkas.update(user_id=str(lama["user_id"]), branch_id=str(lama["branch_id"]))
+                await catat_audit_setelan(conn, ctx["tenant_id"], ctx["user_id"], "SETTINGS_BRANCH_PERMISSION_REVOKED",
+                                          "branch_permission", permission_id, ringkas)
 
             return {"success": True, "message": "Permission revoked"}
 

@@ -42,4 +42,22 @@ async def catat_audit_setelan(conn, tenant_id: str, user_id, event_type: str, en
     await conn.execute(
         """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, tenant_id, source, metadata, success, "createdAt", "userId")
            VALUES (gen_random_uuid()::text, $1, $2, $3::uuid, $4, 'api:settings', $5::jsonb, true, now(), $6)""",
-        event_type, entity_type, str(entity_id), tenant_id, json.dumps(ringkas), str(user_id or "") or None)
+        event_type, entity_type, str(entity_id) if entity_id else None, tenant_id, json.dumps(ringkas), str(user_id or "") or None)
+
+
+def ringkas_konfigurasi_gaji(lama: dict, configs) -> Optional[dict]:
+    """Murni. lama = {(component_id:str, effective_date:iso): baris|None dgn amount/percentage}; configs = daftar item PUT.
+    Catat NAMA medan saja (amount/percentage) + komponen + tanggal efektif; ANGKA GAJI TIDAK PERNAH masuk metadata (sensitif).
+    -> None bila tak ada yang berubah/baru."""
+    out = []
+    for c in configs:
+        kunci = (str(c.component_id), c.effective_date.isoformat())
+        r = lama.get(kunci)
+        if r is None:
+            out.append({"component_id": kunci[0], "effective_date": kunci[1], "aksi": "tambah", "medan": ["amount", "percentage"]})
+            continue
+        medan = [m for m, baru in (("amount", c.amount), ("percentage", c.percentage))
+                 if (None if r[m] is None else Decimal(str(r[m]))) != (None if baru is None else Decimal(str(baru)))]
+        if medan:
+            out.append({"component_id": kunci[0], "effective_date": kunci[1], "aksi": "ubah", "medan": medan})
+    return {"configs": out, "jumlah": len(out)} if out else None

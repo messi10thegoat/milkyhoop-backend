@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import asyncpg
+from ..services.audit_setelan import catat_audit_setelan, ringkas_perubahan
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,25 @@ def _build_profile_dict(row) -> dict:
         "currency": row["currency"],
         "logo_url": row["logo_url"],
     }
+
+
+# 7 Okt 2026 (audit gelombang 2): teks bebas/identitas dicatat NAMA medannya saja; pdf_template & logo_url boleh lama->baru
+TEKS_BEBAS_PROFIL = ("display_name", "address", "phone", "tax_id", "workshop_address", "signatory_name")
+
+
+def _get_user_id(request: Request):
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        return user.get("user_id") or user.get("id")
+    return getattr(user, "user_id", None) or getattr(user, "id", None)
+
+
+async def _audit_profil(conn, request: Request, tenant_id: str, lama, baru, via: str = "profil") -> None:
+    ringkas = ringkas_perubahan(lama, baru, TEKS_BEBAS_PROFIL)
+    if ringkas:  # tanpa perubahan nyata = tanpa baris audit
+        ringkas.update(tenant=tenant_id, via=via)
+        await catat_audit_setelan(conn, tenant_id, _get_user_id(request), "SETTINGS_TENANT_PROFILE_UPDATED",
+                                  "tenant", None, ringkas)  # Tenant.id = slug (bukan uuid) -> entity_id NULL, tenant di metadata
 
 
 PROFILE_SELECT = """
@@ -186,11 +206,14 @@ async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Reque
 
     conn = await get_db_connection()
     try:
-        await conn.execute(
-            f'UPDATE "Tenant" SET {set_clause}, updated_at = NOW() WHERE id = {tenant_param}',
-            *params,
-        )
-        row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+        async with conn.transaction():  # 7 Okt (audit gelombang 2): tulis + jejak atomik
+            lama = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await conn.execute(
+                f'UPDATE "Tenant" SET {set_clause}, updated_at = NOW() WHERE id = {tenant_param}',
+                *params,
+            )
+            row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await _audit_profil(conn, request, tenant_id, lama, row)
         return TenantProfileResponse(success=True, data=_build_profile_dict(row))
     except HTTPException:
         raise
@@ -246,12 +269,15 @@ async def upload_tenant_logo(request: Request, file: UploadFile = File(...)):
     # Update DB
     conn = await get_db_connection()
     try:
-        await conn.execute(
-            'UPDATE "Tenant" SET logo_url = $1, updated_at = NOW() WHERE id = $2',
-            filename,
-            tenant_id,
-        )
-        row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+        async with conn.transaction():  # 7 Okt (audit gelombang 2)
+            lama = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await conn.execute(
+                'UPDATE "Tenant" SET logo_url = $1, updated_at = NOW() WHERE id = $2',
+                filename,
+                tenant_id,
+            )
+            row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await _audit_profil(conn, request, tenant_id, lama, row, via="logo")
         return TenantProfileResponse(success=True, data=_build_profile_dict(row))
     except Exception as e:
         logger.error(f"[tenant/profile/logo] POST error: {e}")
@@ -278,11 +304,14 @@ async def delete_tenant_logo(request: Request):
 
     conn = await get_db_connection()
     try:
-        await conn.execute(
-            'UPDATE "Tenant" SET logo_url = NULL, updated_at = NOW() WHERE id = $1',
-            tenant_id,
-        )
-        row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+        async with conn.transaction():  # 7 Okt (audit gelombang 2)
+            lama = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await conn.execute(
+                'UPDATE "Tenant" SET logo_url = NULL, updated_at = NOW() WHERE id = $1',
+                tenant_id,
+            )
+            row = await conn.fetchrow(PROFILE_SELECT, tenant_id)
+            await _audit_profil(conn, request, tenant_id, lama, row, via="logo")
         return TenantProfileResponse(success=True, data=_build_profile_dict(row))
     except Exception as e:
         logger.error(f"[tenant/profile/logo] DELETE error: {e}")

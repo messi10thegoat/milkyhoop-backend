@@ -9,6 +9,7 @@ from uuid import UUID
 import logging
 import asyncpg
 
+from ..services.audit_setelan import catat_audit_setelan, ringkas_konfigurasi_gaji
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.employees import (
     CreateEmployeeRequest,
@@ -390,6 +391,12 @@ async def set_salary_config(
             raise HTTPException(404, detail="Employee not found")
 
         async with conn.transaction():
+            lama = {}  # 7 Okt (audit gelombang 2): keadaan SEBELUM per (komponen, tanggal efektif); angka tak dicatat
+            for cfg in body.configs:
+                lama[(str(cfg.component_id), cfg.effective_date.isoformat())] = await conn.fetchrow(
+                    """SELECT amount, percentage FROM employee_salary_config
+                       WHERE tenant_id = $1 AND employee_id = $2 AND component_id = $3 AND effective_date = $4""",
+                    ctx["tenant_id"], employee_id, cfg.component_id, cfg.effective_date)
             for cfg in body.configs:
                 await conn.execute(
                     """INSERT INTO employee_salary_config
@@ -404,5 +411,9 @@ async def set_salary_config(
                     cfg.percentage,
                     cfg.effective_date,
                 )
+            ringkas = ringkas_konfigurasi_gaji(lama, body.configs)
+            if ringkas:  # tanpa perubahan nyata = tanpa baris audit
+                await catat_audit_setelan(conn, ctx["tenant_id"], ctx["user_id"], "SETTINGS_SALARY_CONFIG_UPDATED",
+                                          "employee", employee_id, ringkas)
 
         return {"success": True, "message": f"{len(body.configs)} salary configs saved"}
