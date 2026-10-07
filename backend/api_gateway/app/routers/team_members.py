@@ -18,6 +18,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Request, Query, HTTPException
 from pydantic import BaseModel
 import asyncpg
+from ..services.nama_pengguna import nama_pengguna
 from ..services.email_service import send_invitation_email, EmailDeliveryUnavailable
 from ..services.tenant_features import fitur_aktif
 
@@ -62,6 +63,7 @@ class TeamMemberResponse(BaseModel):
     email: Optional[str] = None
     name: Optional[str] = None
     fullname: Optional[str] = None
+    display_name: Optional[str] = None  # rantai satu-sumber (services/nama_pengguna)
     avatar_url: Optional[str] = None
     role_id: str
     role_code: str
@@ -221,12 +223,13 @@ async def list_team_members(
 
             query = f"""
                 SELECT
-                    utr.id, utr.user_id, u.email, u.name, u.fullname,
+                    utr.id, utr.user_id, u.email, u.name, u.fullname, up.display_name AS profil_nama,
                     u."avatarUrl" as avatar_url, utr.role_id,
                     r.code as role_code, r.name as role_name,
                     r.hierarchy_level, utr.is_primary, utr.assigned_at, utr.assigned_by
                 FROM user_tenant_roles utr
                 LEFT JOIN "User" u ON u.id = utr.user_id::text
+                LEFT JOIN user_profiles up ON up.user_id = u.id
                 LEFT JOIN roles r ON r.id = utr.role_id
                 {where_clause}
                 ORDER BY r.hierarchy_level ASC, u.name ASC
@@ -264,6 +267,7 @@ async def list_team_members(
                     email=row["email"],
                     name=row["name"],
                     fullname=row["fullname"],
+                    display_name=nama_pengguna(row["profil_nama"], row["fullname"], row["name"]),
                     avatar_url=row["avatar_url"],
                     role_id=str(row["role_id"]),
                     role_code=row["role_code"] or "",
@@ -487,12 +491,13 @@ async def get_team_member(request: Request, member_id: str):
             row = await conn.fetchrow(
                 """
                 SELECT
-                    utr.id, utr.user_id, u.email, u.name, u.fullname,
+                    utr.id, utr.user_id, u.email, u.name, u.fullname, up.display_name AS profil_nama,
                     u."avatarUrl" as avatar_url, utr.role_id,
                     r.code as role_code, r.name as role_name,
                     r.hierarchy_level, utr.is_primary, utr.assigned_at, utr.assigned_by
                 FROM user_tenant_roles utr
                 LEFT JOIN "User" u ON u.id = utr.user_id::text
+                LEFT JOIN user_profiles up ON up.user_id = u.id
                 LEFT JOIN roles r ON r.id = utr.role_id
                 WHERE utr.id = $1 AND utr.tenant_id = $2
             """,
@@ -511,6 +516,7 @@ async def get_team_member(request: Request, member_id: str):
                     email=row["email"],
                     name=row["name"],
                     fullname=row["fullname"],
+                    display_name=nama_pengguna(row["profil_nama"], row["fullname"], row["name"]),
                     avatar_url=row["avatar_url"],
                     role_id=str(row["role_id"]),
                     role_code=row["role_code"] or "",

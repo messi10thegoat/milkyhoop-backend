@@ -17,6 +17,8 @@ menyalin (snapshot) -- setelan diubah tak menyentuh dokumen lama.
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
+from .nama_pengguna import nama_pengguna_sql
+
 _SERATUS = Decimal("100")
 
 
@@ -103,8 +105,9 @@ async def default_penawaran(conn, tenant_id: str, hari_ini, customer_id: Optiona
     d["signer"] = None
     if teks and teks.get("default_quote_signer_user_id"):
         u = await conn.fetchrow(
-            """SELECT u.id, COALESCE(NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), '')) AS nama, u.email
+            f"""SELECT u.id, {nama_pengguna_sql('p', 'u')} AS nama, u.email
                FROM "User" u JOIN user_tenant_roles r ON r.user_id::text = u.id AND r.tenant_id = $2
+               LEFT JOIN user_profiles p ON p.user_id = u.id
                WHERE u.id = $1 AND upper(COALESCE(r.status, 'ACTIVE')) = 'ACTIVE' LIMIT 1""",
             str(teks["default_quote_signer_user_id"]), tenant_id)
         if u:

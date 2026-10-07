@@ -11,6 +11,8 @@ pendaftaran) -> can_create_tenant = False. Kota tak tersimpan di "Tenant" -> cit
 """
 from typing import Optional
 
+from .nama_pengguna import nama_pengguna
+
 PAKET = {"BASE": "Paket Dasar", "PRO": "Paket Pro", "FREE": "Gratis", "ENTERPRISE": "Paket Enterprise"}
 
 
@@ -67,10 +69,10 @@ async def usaha_saya(conn, user_id: str, tenant_aktif: Optional[str]) -> dict:
 async def akun_saya(conn, user_id: str, email: Optional[str], tenant_aktif: Optional[str]) -> dict:
     from .role_resolution import try_resolve_business_role
 
-    u = await conn.fetchrow('SELECT name, email FROM "User" WHERE id = $1', user_id)
+    u = await conn.fetchrow('SELECT name, fullname, email FROM "User" WHERE id = $1', user_id)
     p = await conn.fetchrow("SELECT display_name FROM user_profiles WHERE user_id = $1", user_id)
     surel = (u["email"] if u and u["email"] else None) or email
-    nama = (p["display_name"] if p and p["display_name"] else None) or (u["name"] if u and u["name"] else None) \
+    nama = nama_pengguna(p["display_name"] if p else None, u.get("fullname") if u else None, u["name"] if u else None) \
         or ((surel or "").split("@")[0] or None)
     kode = await try_resolve_business_role(conn, user_id, tenant_aktif) if tenant_aktif else None
     t = await conn.fetchrow('SELECT id, display_name, alias, plan_tier FROM "Tenant" WHERE id = $1', tenant_aktif) \
