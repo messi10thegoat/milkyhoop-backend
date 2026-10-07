@@ -43,6 +43,15 @@ class Conn:
                 self.row = {**self.row, "default_quote_opening_text": a[1]}
         return "OK"
 
+    def transaction(self):  # 7 Okt (audit setelan): UPDATE + audit satu transaksi
+        class _Tx:
+            async def __aenter__(s):
+                return None
+
+            async def __aexit__(s, *e):
+                return False
+        return _Tx()
+
     async def close(self):
         pass
 
@@ -101,4 +110,6 @@ async def test_patch_tanpa_baris_membuat_lalu_menyimpan(pasang):
     )
     assert r.data.default_quote_opening_text == "Dengan hormat"
     assert r.data.is_default is False and r.data.id
-    assert [t.split(" ")[0] for t in c.tulis] == ["INSERT", "UPDATE"]
+    # 7 Okt (audit setelan): INSERT baris bawaan, UPDATE, lalu SATU baris audit_logs untuk perubahan nyata itu
+    assert [t.split(" ")[0] for t in c.tulis] == ["INSERT", "UPDATE", "INSERT"]
+    assert c.tulis[2].startswith("INSERT INTO audit_logs")
