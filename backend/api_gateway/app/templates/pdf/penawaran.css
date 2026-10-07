@@ -23,7 +23,7 @@ header > div:first-child { flex: 1 1 auto; }
 h1 { white-space: nowrap; }
 h1 { font-size: 30px; font-weight: 700; letter-spacing: -.6px; margin: 0; line-height: 1.1; }
 .en { font-size: 14px; color: #63635E; margin-top: 4px; }
-.logo { height: 64px; width: auto; max-width: 200px; }  /* logo tenant persegi (mis. grapgrap 295x295): merek setara .brand acuan (~90px) */
+.logo { height: 96px; width: auto; max-width: 180px; object-fit: contain; object-position: right top; }  /* putusan pemilik 7 Okt: 64→96px (+50%); lebar maks 180px agar logo melebar tak kebablasan */
 .brand { font-weight: 800; font-size: 21px; line-height: .92; letter-spacing: -.8px; }
 .meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 28px; margin-top: 30px; }
 .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; margin-top: 24px; }
