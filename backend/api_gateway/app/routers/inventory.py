@@ -13,6 +13,7 @@ import asyncpg
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..services.periode_laporan import rentang_periode
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -495,9 +496,10 @@ async def add_product(request: Request, body: AddProductRequest):
 
             # Gudang diperiksa SEBELUM produk dibuat. Kalau 409-nya
             # dilempar sesudahnya, produk terlanjur berdiri tanpa saldo awal
-            # sementara pemanggil menerima galat -- dan handler ini TIDAK
-            # dibungkus `conn.transaction()` (celah Law 23 yang sudah ada dan
-            # tidak kuperbaiki di tiket ini), jadi tak ada yang menggulungnya.
+            # sementara pemanggil menerima galat. Sejak 10 Okt 2026 produk +
+            # saldo awal (jurnal + kartu) berada di SATU `conn.transaction()`
+            # (Law 23), jadi galat apa pun menggulung semuanya.
+            await periksa_saldo_awal(conn, tenant_id, body.stok_awal, body.nilai_per_unit)  # harga pokok + usaha belum berjalan, SEBELUM produk berdiri
             ob_warehouse = None
             if body.stok_awal and body.stok_awal > 0:
                 ob_warehouse = await conn.fetchval(
@@ -519,59 +521,55 @@ async def add_product(request: Request, body: AddProductRequest):
                         ),
                     )
 
-            # Insert product
-            insert_query = """
-                INSERT INTO public.products (
-                    tenant_id, nama_produk, satuan, kategori, barcode, harga_jual, deskripsi
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                RETURNING id, nama_produk
-            """
-            row = await conn.fetchrow(
-                insert_query,
-                tenant_id,
-                body.nama_produk.strip(),
-                body.satuan.strip(),
-                body.kategori,
-                body.barcode,
-                body.harga_jual,
-                body.deskripsi,
-            )
-
-            product_id = str(row["id"])
-
-            # If initial stock provided, create inventory_ledger opening balance entry
-            if body.stok_awal and body.stok_awal > 0:
-                # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026). Titik ini
-                # tak pernah menyebut `warehouse_id` sama sekali, jadi ia
-                # menulis NULL SECARA STRUKTURAL -- bukan lewat rantai cadangan
-                # yang kebetulan kosong. Barisnya masuk buku, lalu trigger
-                # `trg_update_warehouse_stock` (yang mencocokkan
-                # `warehouse_id = NEW.warehouse_id`) tak pernah cocok: stok awal
-                # terlihat di layar dan ditolak saat dikirim. Baris saldo awal
-                # yang SUDAH tercatat tidak disentuh di sini -- itu koreksi
-                # data, tiket tersendiri, dan `inventory_ledger` bersifat
-                # hanya-tambah (Rule 8).
-                opening_balance_query = """
-                    INSERT INTO inventory_ledger (
-                        tenant_id, product_id, product_name, movement_type, movement_date,
-                        source_type, quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost, warehouse_id, notes
-                    ) VALUES (
-                        $1, $2::uuid, $3, 'IN', $7,
-                        'OPENING_BALANCE', $4, 0, $4,
-                        $5, $4 * $5, $5, $6, 'Initial stock from product creation'
-                    )
+            # Produk + saldo awal (jurnal + kartu) ATOMIK -- sebelumnya tanpa transaksi (Law 23).
+            async with conn.transaction():
+                # Insert product
+                insert_query = """
+                    INSERT INTO public.products (
+                        tenant_id, nama_produk, satuan, kategori, barcode, harga_jual, deskripsi
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING id, nama_produk
                 """
-                await conn.execute(
-                    opening_balance_query,
+                row = await conn.fetchrow(
+                    insert_query,
                     tenant_id,
-                    product_id,
                     body.nama_produk.strip(),
-                    body.stok_awal,
-                    body.nilai_per_unit or 0,
-                    ob_warehouse,
-                    await tanggal_dokumen(conn, tenant_id),  # t10-tanggal-bisnis
+                    body.satuan.strip(),
+                    body.kategori,
+                    body.barcode,
+                    body.harga_jual,
+                    body.deskripsi,
                 )
+
+                product_id = str(row["id"])
+
+                # If initial stock provided, create inventory_ledger opening balance entry
+                if body.stok_awal and body.stok_awal > 0:
+                    # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026). Titik ini
+                    # tak pernah menyebut `warehouse_id` sama sekali, jadi ia
+                    # menulis NULL SECARA STRUKTURAL -- bukan lewat rantai cadangan
+                    # yang kebetulan kosong. Barisnya masuk buku, lalu trigger
+                    # `trg_update_warehouse_stock` (yang mencocokkan
+                    # `warehouse_id = NEW.warehouse_id`) tak pernah cocok: stok awal
+                    # terlihat di layar dan ditolak saat dikirim. Baris saldo awal
+                    # yang SUDAH tercatat tidak disentuh di sini -- itu koreksi
+                    # data, tiket tersendiri, dan `inventory_ledger` bersifat
+                    # hanya-tambah (Rule 8).
+                    # Audit F1 (10 Okt 2026): jurnal saldo awal + kartu stok di SATU transaksi (Law 1/4/6/16/23).
+                    await catat_saldo_awal_stok(
+                        conn,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        product_id=product_id,
+                        product_code=None,
+                        product_name=body.nama_produk.strip(),
+                        tanggal=await tanggal_dokumen(conn, tenant_id),  # t10-tanggal-bisnis
+                        qty=body.stok_awal,
+                        rate=body.nilai_per_unit or 0,
+                        warehouse_id=ob_warehouse,
+                        movement_type="IN",
+                        catatan="Initial stock from product creation",
+                    )
 
             logger.info(
                 f"Product created: id={product_id}, name={body.nama_produk}, tenant={tenant_id}"

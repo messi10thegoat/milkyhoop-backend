@@ -677,6 +677,14 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
     """
     try:
         ctx = get_user_context(request)
+        # Audit F1 (10 Okt 2026, Law 1/16): angka piutang awal HANYA lewat POST /customers/{id}/opening-balance
+        # (jurnal Dr Piutang / Cr Modal Saldo Awal). Menyimpan angkanya di kolom tanpa jurnal = angka tak berbuku.
+        if (body.ar_opening_balance or 0) > 0:
+            raise HTTPException(
+                status_code=422,
+                detail="Saldo awal piutang tidak bisa diisi saat membuat pelanggan. "
+                       "Simpan pelanggan dulu, lalu isi lewat Saldo awal di halaman pelanggan.",
+            )
         pool = await get_pool()
 
         async with pool.acquire() as conn:

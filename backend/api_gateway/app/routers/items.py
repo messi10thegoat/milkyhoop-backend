@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
 from ..schemas.items import (
     CreateItemRequest,
     UpdateItemRequest,
@@ -586,6 +587,15 @@ async def create_item(request: Request, body: CreateItemRequest):
             body.cogs_account_id,
         )
 
+        # Saldo awal stok: harga pokok diperiksa SEBELUM produk berdiri (audit F1 10 Okt 2026; services/saldo_awal_stok.py).
+        if body.track_inventory and body.item_type == "goods":
+            await periksa_saldo_awal(
+                conn,
+                tenant_id,
+                body.opening_stock,
+                body.opening_stock_rate if body.opening_stock_rate else (body.purchase_price or 0),
+            )
+
         # Start transaction
         async with conn.transaction():
             # Insert item
@@ -754,34 +764,20 @@ async def create_item(request: Request, body: CreateItemRequest):
                                 "atau simpan barang tanpa saldo awal."
                             ),
                         )
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            id, tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date,
-                            source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, notes, created_at
-                        ) VALUES (
-                            gen_random_uuid(), $1, $2, $3, $4,
-                            'OPENING_BALANCE', $5,
-                            'OPENING_BALANCE', gen_random_uuid(), $6,
-                            $7, 0, $7,
-                            $8, $9, $8,
-                            $10, 'Saldo awal inventaris', NOW()
-                        )
-                        """,
-                        ctx["tenant_id"],
-                        item_id,
-                        item_code_to_use,
-                        body.name,
-                        ob_date,
-                        f"OB-{item_code_to_use}",
-                        initial_qty,
-                        initial_rate,
-                        initial_value,
-                        ob_warehouse,
+                    # Audit F1 (10 Okt 2026): saldo awal = JURNAL (Dr Persediaan / Cr Modal Saldo Awal) + kartu stok di
+                    # transaksi ini. Dulu hanya baris kartu -> kartu bernilai, buku besar tidak (Law 1/4/6/16/23).
+                    await catat_saldo_awal_stok(
+                        conn,
+                        tenant_id=ctx["tenant_id"],
+                        user_id=ctx.get("user_id"),
+                        product_id=item_id,
+                        product_code=item_code_to_use,
+                        product_name=body.name,
+                        tanggal=ob_date,
+                        qty=initial_qty,
+                        rate=initial_rate,
+                        warehouse_id=ob_warehouse,
+                        inventory_account_id=body.inventory_account_id,
                     )
 
             # Log activity

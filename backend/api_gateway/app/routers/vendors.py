@@ -755,6 +755,14 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
 
     try:
         ctx = get_user_context(request)
+        # Audit F1 (10 Okt 2026, Law 1/16): hutang awal HANYA lewat POST /vendors/{id}/opening-balance (jurnal Dr Hutang /
+        # Cr Modal Saldo Awal). Angka di kolom tanpa jurnal = angka tak berbuku.
+        if (getattr(body, "opening_balance", 0) or 0) > 0:
+            raise HTTPException(
+                status_code=422,
+                detail="Saldo awal hutang tidak bisa diisi saat membuat vendor. "
+                       "Simpan vendor dulu, lalu isi lewat Saldo awal di halaman vendor.",
+            )
         pool = await get_pool()
 
         async with pool.acquire() as conn:
