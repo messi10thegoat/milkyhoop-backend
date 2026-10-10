@@ -12,6 +12,7 @@ import logging
 import asyncpg
 
 from ..services.termin_bayar import termin_hari
+from ..services.pelanggan_unik import tolak_nama_dipakai, tolak_nomor_dipakai
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -679,30 +680,9 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check for duplicate name
-            existing = await conn.fetchval(
-                "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND is_active = true",
-                ctx["tenant_id"],
-                body.name,
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Customer with name '{body.name}' already exists",
-                )
-
-            # Check for duplicate code if provided
-            if body.code:
-                existing_code = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND nomor_member = $2 AND is_active = true",
-                    ctx["tenant_id"],
-                    body.code,
-                )
-                if existing_code:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Customer with code '{body.code}' already exists",
-                    )
+            # 10 Okt (B2): nama aktif persis sama / kode belum-dihapus -> 409 {code, message}
+            await tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)
+            await tolak_nomor_dipakai(conn, ctx["tenant_id"], body.code)
 
             # Generate UUID for customer ID
             import uuid as uuid_mod
@@ -846,17 +826,9 @@ async def update_customer(
 
             # Check for duplicate name if name is being changed
             if body.name and body.name != existing["nama"]:
-                duplicate = await conn.fetchval(
-                    "SELECT id FROM customers WHERE tenant_id = $1 AND nama = $2 AND id != $3 AND is_active = true",
-                    ctx["tenant_id"],
-                    body.name,
-                    customer_id,
-                )
-                if duplicate:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Customer with name '{body.name}' already exists",
-                    )
+                await tolak_nama_dipakai(conn, ctx["tenant_id"], body.name, kecuali_id=customer_id)
+            # 10 Okt (B2): `code` -> nomor_member dulu ditulis TANPA cek; V402 kini menjaganya di DB
+            await tolak_nomor_dipakai(conn, ctx["tenant_id"], body.code, kecuali_id=customer_id)
 
             # Get current values for change tracking
             current = await conn.fetchrow(
@@ -1082,7 +1054,7 @@ async def reactivate_customer(request: Request, customer_id: str):
         async with pool.acquire() as conn:
             # Check customer exists and is inactive
             existing = await conn.fetchrow(
-                "SELECT id, nama, is_active, deleted_at FROM customers WHERE id = $1 AND tenant_id = $2",
+                "SELECT id, nama, nomor_member, is_active, deleted_at FROM customers WHERE id = $1 AND tenant_id = $2",
                 customer_id,
                 ctx["tenant_id"],
             )
@@ -1091,6 +1063,9 @@ async def reactivate_customer(request: Request, customer_id: str):
 
             if existing["is_active"] and existing["deleted_at"] is None:
                 raise HTTPException(status_code=400, detail="Pelanggan sudah aktif.")
+
+            # 10 Okt (B2): kodenya mungkin sudah dipakai pelanggan lain sejak dihapus (V402 unik parsial)
+            await tolak_nomor_dipakai(conn, ctx["tenant_id"], existing["nomor_member"], kecuali_id=customer_id)
 
             await conn.execute(
                 """

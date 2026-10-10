@@ -438,6 +438,37 @@ async def list_items(
 # =============================================================================
 
 
+# Urutan pemecah seri jenis bawaan (jumlah sama): goods > non_inventory > service.
+_URUT_JENIS = ("goods", "non_inventory", "service")
+
+
+def pilih_jenis_bawaan(hitungan: dict) -> str:
+    """Jenis item bawaan tenant = jenis TERBANYAK di item aktif; tenant tanpa item -> 'goods'. Murni (diuji)."""
+    calon = [(hitungan.get(j, 0), -i, j) for i, j in enumerate(_URUT_JENIS) if hitungan.get(j, 0) > 0]
+    return max(calon)[2] if calon else "goods"
+
+
+async def bawaan_panel_barang(conn, tenant_id: str) -> dict:
+    """10 Okt 2026 (MASTER, F3 panel Barang inline): belum ada setelan tenant eksplisit (diukur: tak ada kolom), jadi
+    diturunkan dari item AKTIF tenant -- grapgrap -> non_inventory + bisa_dikirim (pemilik sengaja), kaos -> goods.
+    default_bisa_dikirim = MAYORITAS (lebih dari separuh) item non_inventory aktif bisa_dikirim; tanpa non_inventory -> False."""
+    rows = await conn.fetch(
+        """SELECT item_type, count(*) AS n, count(*) FILTER (WHERE bisa_dikirim) AS kirim
+           FROM products WHERE tenant_id = $1 AND deleted_at IS NULL GROUP BY item_type""",
+        tenant_id)
+    jenis = pilih_jenis_bawaan({r["item_type"]: r["n"] for r in rows if r["item_type"]})
+    ni = next((r for r in rows if r["item_type"] == "non_inventory"), None)
+    return {"default_item_type": jenis, "default_bisa_dikirim": bool(ni and ni["kirim"] * 2 > ni["n"])}
+
+
+def tanpa_stok_bila_bukan_barang(body) -> None:
+    """non_inventory/service = TANPA stok: track_inventory dipaksa False. Skema berdefault True dan validatornya hanya
+    menolkan jasa (dan tak jalan untuk nilai default) -> POST non_inventory tanpa medan ini dulu tersimpan
+    track_inventory=true, padahal faktur memilih jalur stok/HPP/penyerahan dari track_inventory. 10 Okt."""
+    if body.item_type != "goods":
+        body.track_inventory = False
+
+
 @router.post("/items", response_model=CreateItemResponse)
 async def create_item(request: Request, body: CreateItemRequest):
     """
@@ -449,11 +480,12 @@ async def create_item(request: Request, body: CreateItemRequest):
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     conn = None
+    tanpa_stok_bila_bukan_barang(body)  # 10 Okt: non_inventory/service tak pernah track_inventory
 
     try:
         conn = await get_db_connection()
 
-        # Check for duplicate name
+        # Check for duplicate name (barang aktif saja: V402 indeks unik nama parsial WHERE deleted_at IS NULL)
         existing = await conn.fetchrow(
             "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
             tenant_id,
@@ -2353,6 +2385,8 @@ async def get_default_accounts(request: Request):
                 "default_inventory_account": inventory,
                 "default_cogs_account_id": cogs["id"] if cogs else None,
                 "default_cogs_account": cogs,
+                # 10 Okt (F3): default_item_type + default_bisa_dikirim panel Barang, diputuskan server per tenant
+                **(await bawaan_panel_barang(conn, tenant_id)),
             },
         }
     except Exception as e:
