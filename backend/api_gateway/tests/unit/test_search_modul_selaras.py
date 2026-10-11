@@ -16,7 +16,7 @@ from app.routers import search as SR
 from app.middleware.permission_middleware import PermissionMiddleware
 
 RUTE_DAFTAR = {
-    "customers": "/api/customers", "vendors": "/api/vendors",
+    "customers": "/api/customers", "vendors": "/api/vendors", "items": "/api/items",
     "sales_invoices": "/api/sales-invoices", "sales_orders": "/api/sales-orders",
     "quotes": "/api/quotes", "proformas": "/api/proformas",
     "deliveries": "/api/deliveries", "receive_payments": "/api/receive-payments",

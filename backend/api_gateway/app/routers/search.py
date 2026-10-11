@@ -58,6 +58,22 @@ GROUPS = {
         WHERE tenant_id=$1 AND search_text LIKE {PAT} AND cardinality($3::text[]) >= 0
         ORDER BY {SIM} DESC, updated_at DESC NULLS LAST
         LIMIT $4"""),
+    # 11 Okt 2026 (pemilik LANGSUNG via MASTER): barang di Cari/⌘K. Modul = rute daftar GET /api/items ("item").
+    # products TANPA kolom search_text -> cari langsung nama/kode/sku/barcode (barang aktif tenant: puluhan-ratusan baris).
+    # deleted_at IS NULL = filter daftar GET /api/items; status 'inactive' hanya ada pada baris terhapus (diukur 11 Okt).
+    "items": ("item", "/persediaan/barang/", f"""
+        SELECT id::text AS id,
+          COALESCE(NULLIF(nama_produk,''), '(tanpa nama)') AS title,
+          NULLIF(concat_ws(' · ', NULLIF(COALESCE(NULLIF(item_code,''), sku),''), NULLIF(base_unit,'')), '') AS subtitle,
+          COALESCE(NULLIF(item_code,''), sku) AS number, NULL::numeric AS amount, NULL::text AS status,
+          NULL::date AS due_date,
+          CASE WHEN lower(unaccent(coalesce(nama_produk,''))) LIKE {PAT} THEN 'name' ELSE 'attribute' END AS matched_field
+        FROM products
+        WHERE tenant_id=$1 AND deleted_at IS NULL AND cardinality($3::text[]) >= 0
+          AND lower(unaccent(concat_ws(' ', nama_produk, item_code, sku, barcode))) LIKE {PAT}
+        ORDER BY similarity(lower(unaccent(coalesce(nama_produk,''))), lower(unaccent($2))) DESC,
+                 updated_at DESC NULLS LAST
+        LIMIT $4"""),
     "sales_invoices": ("sales_invoice", "/penjualan/faktur/", f"""
         SELECT id::text AS id, COALESCE(customer_name,'(tanpa nama)') AS title,
           invoice_number AS subtitle, invoice_number AS number, total_amount AS amount,
@@ -147,7 +163,7 @@ GROUPS = {
         LIMIT $4"""),
 }
 
-GROUP_ORDER = ["customers", "vendors", "sales_invoices", "sales_orders", "quotes", "proformas",
+GROUP_ORDER = ["customers", "vendors", "items", "sales_invoices", "sales_orders", "quotes", "proformas",
                "deliveries", "receive_payments", "customer_deposits", "credit_notes"]
 
 

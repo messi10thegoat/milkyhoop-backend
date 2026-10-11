@@ -41,16 +41,21 @@ amount(number|null), status, due_date(YYYY-MM-DD|null), url_hint, matched_field`
 |---|---|---|---|---|---|---|---|---|
 | customers | customer | name/nama | address + phone | code | — | — | — | /kontak/pelanggan/{id} |
 | vendors | supplier | name | address + phone | code | — | — | — | /kontak/vendor/{id} |
+| items | item | nama_produk | item_code (atau sku) · base_unit | item_code (atau sku) | — | — | — | /persediaan/barang/{id} |
 | sales_invoices | sales_invoice | customer_name | invoice_number | invoice_number | total_amount | status | due_date | /penjualan/faktur/{id} |
-| quotes | sales_order | customer_name | subject | quote_number | total_amount | status | expiry_date | /penjualan/penawaran/{id} |
+| quotes | quote | customer_name | subject | quote_number | total_amount | status | expiry_date | /penjualan/penawaran/{id} |
 | sales_orders | sales_order | customer_name | reference | order_number | total_amount | status | expected_ship_date | /penjualan/pesanan/{id} |
-| deliveries | sales_order | shipment_number | carrier + tracking_number | shipment_number | — | status | shipment_date | /penjualan/pengiriman/{id} |
+| proformas | proforma | (lihat routers/search.py) | | | | | | /penjualan/proforma/{id} |
+| deliveries | sales_invoice | shipment_number | carrier + tracking_number | shipment_number | — | status | shipment_date | /penjualan/pengiriman/{id} |
 | receive_payments | receive_payment | customer_name | payment_number | payment_number | total_amount | status | payment_date | /penjualan/pembayaran/{id} |
-| customer_deposits | receive_payment | customer_name | deposit_number | deposit_number | amount | status | deposit_date | /penjualan/uang-muka/{id} |
-| credit_notes | sales_invoice | customer_name | credit_note_number | credit_note_number | total_amount | status | credit_note_date | /penjualan/nota-kredit/{id} |
+| customer_deposits | customer_deposit | customer_name | deposit_number | deposit_number | amount | status | deposit_date | /penjualan/uang-muka/{id} |
+| credit_notes | credit_note | customer_name | credit_note_number | credit_note_number | total_amount | status | credit_note_date | /penjualan/nota-kredit/{id} |
 
-Group order in `scope=all`: customers, vendors, sales_invoices, sales_orders, quotes,
-deliveries, receive_payments, customer_deposits, credit_notes.
+Group order in `scope=all`: customers, vendors, items, sales_invoices, sales_orders, quotes,
+proformas, deliveries, receive_payments, customer_deposits, credit_notes.
+Authz module per group = module of the group's LIST route in PermissionMiddleware (audit 26 Sep 2026;
+guarded by tests/unit/test_search_modul_selaras.py). items (11 Okt 2026): matches nama_produk, item_code,
+sku, barcode (products has no search_text column); deleted items never appear.
 
 ## Pills: `?search=` on list endpoints → search_text
 List endpoints upgraded so `?search=` matches `search_text` (address/notes/all attrs),
