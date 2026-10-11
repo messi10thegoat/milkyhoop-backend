@@ -158,6 +158,23 @@ async def get_pool():
     return await get_db_pool()
 
 
+# 11 Okt 2026 (MASTER): nama barang ganda (sesama barang belum dihapus, V402 idx_products_tenant_nama) -> 409 berkode.
+# Pesan SENGAJA tanpa nama barang dan tanpa kata kode/sku/barcode/satuan/unit/harga: dua pemeta FE (barang.ts
+# petakanGalatBarang, useDataForm petakanGalatItem) memilih medan dari ISI pesan -- kata itu memindahkan galat ke medan lain.
+KODE_NAMA_BARANG = "NAMA_BARANG_DIPAKAI"
+PESAN_NAMA_BARANG = "Nama ini sudah dipakai barang lain di Persediaan. Gunakan nama lain."
+INDEKS_NAMA_BARANG = "idx_products_tenant_nama"
+
+
+def galat_nama_barang_dipakai() -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": KODE_NAMA_BARANG, "message": PESAN_NAMA_BARANG})
+
+
+def nama_barang_bentrok(e: BaseException) -> bool:
+    """Balapan: cek app lolos, indeks DB menolak -> tetap 409 berkode, bukan 500."""
+    return isinstance(e, asyncpg.UniqueViolationError) and getattr(e, "constraint_name", None) == INDEKS_NAMA_BARANG
+
+
 def get_user_context(request):
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
@@ -493,9 +510,7 @@ async def create_item(request: Request, body: CreateItemRequest):
             body.name,
         )
         if existing:
-            raise HTTPException(
-                status_code=409, detail="Item with this name already exists"
-            )
+            raise galat_nama_barang_dipakai()
 
         # Check for duplicate barcode
         if body.barcode:
@@ -813,6 +828,8 @@ async def create_item(request: Request, body: CreateItemRequest):
     except HTTPException:
         raise
     except Exception as e:
+        if nama_barang_bentrok(e):
+            raise galat_nama_barang_dipakai() from e
         logger.error(f"Error creating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -928,9 +945,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 str(item_id),
             )
             if duplicate:
-                raise HTTPException(
-                    status_code=409, detail="Item with this name already exists"
-                )
+                raise galat_nama_barang_dipakai()
 
         # Check for duplicate barcode (if changing)
         if body.barcode:
@@ -1259,6 +1274,8 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     except HTTPException:
         raise
     except Exception as e:
+        if nama_barang_bentrok(e):
+            raise galat_nama_barang_dipakai() from e
         logger.error(f"Error updating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
