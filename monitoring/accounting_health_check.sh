@@ -7,6 +7,7 @@
 #   Sync Layers:      Check 3 (bank gap), 4 (inventory qty), 7 (AP), 8 (AR)
 #   Value Integrity:  Check 9 (inv value), 10 (COGS), 11 (opening balance)
 #   Anomaly:          Check 12 (negative cash/bank)
+#   Kartu stok:       Check 21 (kartu stok wajib-jurnal tanpa jurnal padanan, 11 Okt 2026)
 #
 # Severity: CRITICAL (exit 2), HIGH (exit 1), WARNING (exit 0)
 # Per-tenant loop, skip cafeanna
@@ -949,6 +950,51 @@ check_20_ar_status_turunan() {
     fi
 }
 
+# ---- Check 21 (MASTER 11 Okt 2026, audit F1 saldo awal stok): kartu stok yang WAJIB berjurnal ----
+# Penjaga HARIAN untuk celah yang ditutup 10 Okt (cc3e6efb): baris `inventory_ledger` dari sumber di bawah yang TIDAK punya
+# jurnal POSTED padanan (journal_id ATAU source_id menunjuk journal_entries POSTED milik tenant yang sama) = kartu bernilai,
+# buku besar tidak (Law 1/16). HIGH. Void membiarkan jurnal asli POSTED (Law 2) sehingga baris asli tetap tertutup.
+# BUKAN cakupan: PRODUCTION_OUTPUT (kaos 5 baris tanpa journal_id -- temuan terpisah, belum diputuskan wajib/tidak) dan
+# RELOKASI_GUDANG (nilai nol bersih, memang tanpa jurnal). Tambah sumber baru HANYA setelah diukur 0 pelanggaran.
+STOK_WAJIB_JURNAL="'OPENING_BALANCE','STOCK_ADJUSTMENT','BILL','INVOICE_FULFILLMENT','MATERIAL_ISSUE'"
+# Kecualian EKSPLISIT per baris kartu (tenant|id|alasan) -- bukan disembunyikan: tiap run mencatat kecualian yang masih berlaku.
+# Entri HANYA boleh ditambah dengan putusan MASTER/pemilik; hapus entri bila barisnya sudah dijurnal.
+STOK_TANPA_JURNAL_DIKECUALIKAN=(
+    "kaos-biru-konveksi|95c594be-4717-4b54-83c6-26bce34d5607|saldo awal Rp128.000 (4 Sep 2026) tanpa jurnal; trigger V114 menolak koreksi OB; tenant uji; dibiarkan putusan MASTER 10 Okt"
+)
+
+check_21_stok_wajib_jurnal() {
+    local tenant="$1"
+    local ids="" e t i alasan kecuali="" cnt nkec
+    for e in "${STOK_TANPA_JURNAL_DIKECUALIKAN[@]}"; do
+        t="${e%%|*}"; i="${e#*|}"; alasan="${i#*|}"; i="${i%%|*}"
+        if [ "$t" = "$tenant" ]; then ids="${ids}${ids:+,}'${i}'"; fi
+    done
+    if [ -n "$ids" ]; then kecuali="AND il.id NOT IN ($ids)"; fi
+    local tanpa="NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.tenant_id = il.tenant_id AND je.status = 'POSTED'
+          AND je.id::text IN (il.journal_id::text, il.source_id::text))"
+    cnt=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant'
+        AND il.source_type IN ($STOK_WAJIB_JURNAL) $kecuali AND $tanpa;")
+    if [ -n "$ids" ]; then
+        nkec=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant' AND il.id IN ($ids) AND $tanpa;")
+        detail "[CHECK 21] $tenant: kecualian eksplisit masih berlaku=$nkec dari $(echo "$ids" | tr ',' '\n' | wc -l) entri (id: $ids)"
+    fi
+    if [ "$cnt" = "__GAGAL__" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__"
+    elif [ "$cnt" = "0" ]; then
+        CHK_PASS=1
+        CHK_DETAIL=""
+    elif [[ "$cnt" =~ ^[0-9]+$ ]]; then
+        CHK_PASS=0
+        CHK_DETAIL="kartu stok tanpa jurnal padanan: $cnt baris"
+        detail "[CHECK 21] $tenant: $CHK_DETAIL"
+    else
+        CHK_PASS=0
+        CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt"
+    fi
+}
+
 check_12_negative_balance() {
     local tenant="$1"
     local count
@@ -1045,6 +1091,7 @@ for TENANT in $TENANTS; do
     SYNC_PASS=0;   SYNC_TOTAL=4;   SYNC_FAILS=""
     VALUE_PASS=0;  VALUE_TOTAL=3;   VALUE_FAILS=""
     ANOMALY_DETAIL=""
+    STOK_DETAIL=""
 
     # ---- LEDGER INTEGRITY (CRITICAL) ----
     # Check 1: Journal Balance
@@ -1294,6 +1341,19 @@ for TENANT in $TENANTS; do
         log "  WARNING [20] AR Status Turunan: $CHK_DETAIL"
     fi
 
+    # Check 21: kartu stok wajib-jurnal tanpa jurnal padanan (11 Okt 2026, audit F1) -- HIGH
+    check_21_stok_wajib_jurnal "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 21 "Kartu Stok Wajib Jurnal" "$CHK_DETAIL"
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        STOK_DETAIL="$CHK_DETAIL"
+        log "  HIGH [21] Kartu Stok Wajib Jurnal: $CHK_DETAIL"
+    fi
+
     # ---- Build per-tenant Discord block ----
     TENANT_BLOCK=""
 
@@ -1319,6 +1379,9 @@ for TENANT in $TENANTS; do
     fi
 
     # Anomaly line
+    if [ -n "$STOK_DETAIL" ]; then
+        TENANT_BLOCK="${TENANT_BLOCK}  ❌ Kartu stok wajib jurnal — $STOK_DETAIL\n"
+    fi
     if [ -n "$ANOMALY_DETAIL" ]; then
         TENANT_BLOCK="${TENANT_BLOCK}  💡 Anomaly: $ANOMALY_DETAIL\n"
     fi
