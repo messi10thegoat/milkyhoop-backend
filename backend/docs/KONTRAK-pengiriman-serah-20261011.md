@@ -1,6 +1,6 @@
-# KONTRAK — Unit Pengiriman generik (serah-terima, resi, lampiran) — DRAF 11 Okt 2026
+# KONTRAK — Unit Pengiriman generik (serah-terima, resi, lampiran) — DISETUJUI MASTER 11 Okt 2026 (+ koreksi implementasi di §11)
 
-Pemilik: BACKEND2. Status: **KONTRAK SAJA, belum ada kode**; menunggu persetujuan MASTER. Pola acuan: NetSuite Item Fulfillment / SAP Delivery.
+Pemilik: BACKEND2. Status: **DISETUJUI** (K1–K6 mengikuti rekomendasi; syarat K2 & K4 di §11). Kode: cabang `feat/pengiriman-serah`. Pola acuan: NetSuite Item Fulfillment / SAP Delivery.
 Semua angka di bagian 1 diukur 11 Okt 2026 pada prod (baca-saja) dan kode master `37d12f32`.
 
 ## 1. Hasil ukur
@@ -145,3 +145,27 @@ Tabel rute app (rute literal sebelum `/{id}`), kontrol merah tiap pagar; 422 kom
 - **Transfer Order**: `RELOKASI_GUDANG` sudah ada. Fase "Tersedia di X" hanyalah label manual; tidak ada tautan ke Transfer Order sehingga barang bisa berfase X padahal stok masih di gudang lain → pengiriman ke X akan 409 stok kurang (fail-loud, benar), tetapi tak ada petunjuk "buat Transfer Order dulu". Usul FE: pesan blok menyebut Transfer Order.
 - `sales_orders.shipping_method` (teks bebas) dan `sales_order_shipments` tetap sebagai peninggalan; tidak dimigrasi.
 - `PATCH /items/{id}/status` tidak memfilter `deleted_at` (lihat butir A di laporan).
+
+## 11. Koreksi implementasi & hasil uji (11 Okt 2026, sesudah persetujuan)
+
+**Perubahan terhadap draf (diukur, bukan selera):**
+1. **Preferensi = tabel `pengiriman_preferensi`**, BUKAN dua kolom `accounting_settings` (§2/§3-6). Alasan terukur: 5 dari 6 tenant
+   tak punya baris `accounting_settings`, GET-nya sengaja baca-saja (#38), dan `response_model` bersama akan memunculkan kunci
+   baru di SEMUA tenant. API: `GET/PUT /api/pengiriman/preferensi`.
+2. **Izin**: `/api/deliveries/*` memakai modul `sales_invoice` di PermissionMiddleware (bukan `delivery`) → serah U, lampiran U/R/D
+   di modul itu. `/api/metode-serah*` + `/api/pengiriman/preferensi` = modul `warehouse`; `/api/default-dokumen/pengiriman` = `sales_order` R.
+3. **Cara serah = daftar per tenant + jenis dasar** (koreksi MASTER 11 Okt), bukan enum tetap — sudah di §2.
+4. Pengiriman memuat `pengiriman_serah` 1:1 + `pengiriman_resi` N; `invoice_fulfillments` TIDAK pernah di-UPDATE.
+5. Migrasi: **V407** (empat tabel) lalu **V408** (flag `pengiriman_serah` + seed 3 cara serah, KAOS saja). V408 hanya sesudah kode hidup.
+
+**Syarat K2 (MASTER):** fase menang atas `sales_orders.warehouse_id` HANYA bila flag ON; pratinjau menampilkan lokasi + sumber
+("dari status pesanan: Tersedia di X" — `warehouse.source_label`); pilihan gudang tak boleh menggeser HPP.
+Bukti: WAC = `get_weighted_average_cost(tenant, produk)` (tanpa gudang) di rencana DAN inti penulis; harness data nyata (salinan
+backup 11 Okt, SO kaos SO-2609-0008, transaksi ROLLBACK): jalur lama vs flag+serah → jurnal (4 baris), kartu stok, stok per
+gudang, Surat Jalan, status SO **identik**; gudang W1 vs W2 → jurnal & unit_cost/total_cost **identik**, stok berkurang di gudang
+yang dipilih; fase "Tersedia di W2" → lokasi W2 bersumber `fase`; flag OFF → fase diabaikan, gudang lama. Kontrol merah harness:
+angka jurnal diubah → pembanding melihat beda; pembanding kartu stok vakum (0 baris) sempat ditangkap dan diperbaiki.
+**Syarat K4:** edit serah di periode tertutup boleh; jejak `audit_logs` (`SJ_SERAH_CHANGED`, `SJ_LAMPIRAN_DILEPAS`) di transaksi yang sama.
+
+**Kompatibilitas:** tenant tanpa flag → field `serah` di badan = 409 `SERAH_NONAKTIF`; respons GET/pratinjau tanpa kunci `serah`;
+cetakan SJ tak berubah; hash idempotensi klien lama tak berubah (`serah` ikut hash hanya bila dikirim).

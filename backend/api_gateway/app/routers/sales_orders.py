@@ -2107,7 +2107,9 @@ async def fulfill_order(request: Request, response: Response, order_id: str, bod
                 kunci_penuh = sidik = None
                 if kunci_klien:
                     kunci_penuh = f"SO_FULFILL:{ctx['user_id']}:{so_id}:{kunci_klien}"
-                    sidik = hash_payload(body.model_dump(mode="json"))
+                    # `serah` ikut hash HANYA bila dikirim: klien lama (tanpa serah) menghasilkan sidik yang SAMA
+                    # dengan sebelum unit ini -> retry yang melintasi rilis tak jadi 409 palsu.
+                    sidik = hash_payload(body.model_dump(mode="json", exclude=None if body.serah is not None else {"serah"}))
                     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
                                        f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
                     try:

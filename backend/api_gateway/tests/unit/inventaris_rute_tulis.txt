@@ -41,6 +41,7 @@ POST /api/customer-deposits/bulk/share/preview
 DELETE /api/customer-deposits/{deposit_id}
 DELETE /api/customer-deposits/{deposit_id}/attachments/{attachment_id}
 DELETE /api/customers/{customer_id}
+DELETE /api/deliveries/{delivery_id}/attachments/{attachment_id}
 DELETE /api/devices/{device_id}
 DELETE /api/documents/{document_id}
 DELETE /api/documents/{document_id}/detach
@@ -60,6 +61,8 @@ DELETE /api/price-lists/{price_list_id}/items/{item_id}
 DELETE /api/product-djp-mapping/{mapping_id}
 DELETE /api/production/{order_id}
 DELETE /api/purchase-orders/{po_id}
+POST /api/deliveries/{delivery_id}/attachments
+POST /api/metode-serah
 POST /api/quotes/bulk/export
 POST /api/quotes/bulk/send
 POST /api/quotes/bulk/send/preview
@@ -138,6 +141,7 @@ PATCH /api/fixed-assets/{asset_id}
 PATCH /api/intercompany/transactions/{transaction_id}
 PATCH /api/item-batches/{batch_id}
 PATCH /api/items/{item_id}/status
+PATCH /api/metode-serah/{metode_id}
 PATCH /api/nsfp-ranges/{range_id}
 PATCH /api/price-lists/{price_list_id}
 PATCH /api/production/{order_id}
@@ -541,6 +545,7 @@ POST /api/vendors/{vendor_id}/opening-balance
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
 POST /{tenant_id}/chat
+PUT /api/deliveries/{delivery_id}/serah
 PUT /api/employees/{employee_id}
 PUT /api/employees/{employee_id}/salary-config
 PUT /api/expense-policy
@@ -551,6 +556,7 @@ PUT /api/pay-groups/access/{member_id}
 PUT /api/pay-groups/{group_id}
 PUT /api/payroll-config/bpjs
 PUT /api/payroll/{run_id}
+PUT /api/pengiriman/preferensi
 PUT /api/periods/{period_id}
 PUT /api/receive-payments/{payment_id}
 PUT /api/recipes/categories/{category_id}

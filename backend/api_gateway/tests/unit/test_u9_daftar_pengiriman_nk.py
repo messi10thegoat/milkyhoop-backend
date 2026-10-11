@@ -62,6 +62,9 @@ class _KonnDL:
         self.sql.append((sql, a))
         return self.rows
 
+    async def fetchval(self, sql, *a):  # 11 Okt 2026: flag pengiriman_serah (OFF); tak dicatat -> kueri DAFTAR tetap yang terakhir
+        return None
+
 
 def _baris_dl(so=True):
     return {"id": "11111111-1111-1111-1111-111111111111", "delivery_number": "DO-1", "delivery_date": date(2026, 10, 1),

@@ -80,6 +80,27 @@
         <td>Telepon</td><td>:</td><td>{{ delivery.customer_phone }}</td>
       </tr>
       {% endif %}
+      {% if delivery.serah %}
+      {% if delivery.serah.metode and delivery.serah.metode.nama %}
+      <tr>
+        <td>Cara serah</td><td>:</td><td>{{ delivery.serah.metode.nama }}</td>
+      </tr>
+      {% endif %}
+      {% if delivery.serah.metode and delivery.serah.metode.jenis == 'ambil_sendiri' %}
+      <tr>
+        <td>Serah</td><td>:</td><td>Diambil sendiri{% if delivery.serah.warehouse_name %} di {{ delivery.serah.warehouse_name }}{% endif %}</td>
+      </tr>
+      {% elif delivery.serah.kirim_ke and delivery.serah.kirim_ke_sumber != 'pelanggan' %}
+      <tr>
+        <td>Kirim ke</td><td>:</td><td>{{ delivery.serah.kirim_ke }}</td>
+      </tr>
+      {% endif %}
+      {% if delivery.serah.resi %}
+      <tr>
+        <td>No. Resi</td><td>:</td><td>{{ delivery.serah.resi | map(attribute='nomor') | join(', ') }}</td>
+      </tr>
+      {% endif %}
+      {% endif %}
     </table>
   </div>
 </div>

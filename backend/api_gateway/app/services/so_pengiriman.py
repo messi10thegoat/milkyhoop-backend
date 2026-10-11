@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from . import teks_galat as tg
 from . import so_kirim
+from . import pengiriman_serah as serah_mod
 
 _NOL = Decimal("0")
 
@@ -40,6 +41,8 @@ class SOFulfillRequest(BaseModel):
     warehouse_id: Optional[str] = None            # kosong -> gudang SO -> gudang bawaan tenant
     fulfillment_date: Optional[date] = None       # kosong -> tanggal bisnis tenant
     notes: Optional[str] = Field(None, max_length=1000)
+    # 11 Okt 2026 (kontrak pengiriman serah): cara serah / alamat / resi. Tanpa flag `pengiriman_serah` -> 409.
+    serah: Optional[serah_mod.SerahIn] = None
 
 
 def _f(v):
@@ -77,7 +80,11 @@ async def kunci_faktur_so(conn, tenant_id: str, so_id: UUID) -> None:
                            tenant_id, f"INVOICE_FULFILL:{str(r['id'])}")
 
 
-async def _gudang(conn, tid: str, diminta: Optional[str], so) -> tuple:
+async def _gudang(conn, tid: str, diminta: Optional[str], so, flag: bool = False, pref_lokasi=None) -> tuple:
+    """Urutan: badan -> [flag: fase 'Tersedia di X'] -> gudang SO -> [flag: bawaan tenant] -> satu-satunya/is_default.
+    Tanpa flag = perilaku lama PERSIS (kamus hasil tanpa kunci baru). Dengan flag, hasil membawa `source_label`
+    (teks untuk pratinjau: dari mana lokasi ini diputuskan). Pilihan gudang TIDAK menggeser HPP: WAC = per barang
+    (get_weighted_average_cost(tenant, produk)), bukan per gudang -- dibuktikan tes."""
     kol = "SELECT id, name, is_active, is_default FROM warehouses WHERE tenant_id = $1"
     if diminta:
         try:
@@ -89,16 +96,38 @@ async def _gudang(conn, tid: str, diminta: Optional[str], so) -> tuple:
             return None, {"code": "SO_FULFILL_WAREHOUSE_INVALID", "message": "Gudang tidak dikenal."}
         if not r["is_active"]:
             return None, {"code": "SO_FULFILL_WAREHOUSE_INACTIVE", "message": f"Gudang {r['name']} tidak aktif."}
-        return {"id": str(r["id"]), "name": r["name"], "source": "body"}, None
+        g = {"id": str(r["id"]), "name": r["name"], "source": "body"}
+        if flag:
+            g["source_label"] = "dipilih di form"
+        return g, None
+    if flag and so.get("fase_lokasi") == "tersedia" and so.get("fase_gudang_id"):
+        r = await conn.fetchrow(kol + " AND id = $2", tid, so["fase_gudang_id"])
+        if r:
+            if not r["is_active"]:
+                return None, {"code": "SO_FULFILL_WAREHOUSE_INACTIVE",
+                              "message": f"Gudang {r['name']} (dari status pesanan) tidak aktif. Pilih gudang lain."}
+            return {"id": str(r["id"]), "name": r["name"], "source": "fase",
+                    "source_label": f"dari status pesanan: Tersedia di {r['name']}"}, None
     if so["warehouse_id"]:
         r = await conn.fetchrow(kol + " AND id = $2 AND is_active", tid, so["warehouse_id"])
         if r:
-            return {"id": str(r["id"]), "name": r["name"], "source": "so"}, None
+            g = {"id": str(r["id"]), "name": r["name"], "source": "so"}
+            if flag:
+                g["source_label"] = f"dari gudang pesanan: {r['name']}"
+            return g, None
+    if flag and pref_lokasi:
+        r = await conn.fetchrow(kol + " AND id = $2 AND is_active", tid, pref_lokasi)
+        if r:
+            return {"id": str(r["id"]), "name": r["name"], "source": "tenant_setting",
+                    "source_label": f"dari pengaturan pengiriman: {r['name']}"}, None
     aktif = await conn.fetch(kol + " AND is_active ORDER BY name", tid)
     for calon in (list(aktif) if len(aktif) == 1 else [], [r for r in aktif if r["is_default"]]):
         if len(calon) == 1:
             r = calon[0]
-            return {"id": str(r["id"]), "name": r["name"], "source": "tenant_default"}, None
+            g = {"id": str(r["id"]), "name": r["name"], "source": "tenant_default"}
+            if flag:
+                g["source_label"] = f"gudang bawaan usaha: {r['name']}"
+            return g, None
     return None, {"code": "SO_FULFILL_WAREHOUSE_REQUIRED", "message": "Pilih gudang pengiriman."}
 
 
@@ -106,13 +135,17 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
     """Lapis 1: alokasi + SEMUA penghalang. Nol tulisan. Pemanggil sudah memegang kunci_faktur_so."""
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
-        "SELECT id, order_number, status, warehouse_id FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+        "SELECT id, order_number, status, warehouse_id, fase_lokasi, fase_gudang_id FROM sales_orders "
+        "WHERE id = $1 AND tenant_id = $2",
         so_id, tid,
     )
     if not so:
         raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     so = dict(so)
     blocks, notes = [], []
+    flag = await serah_mod.aktif(conn, tid)
+    if body.serah is not None and not flag:
+        raise serah_mod.galat_nonaktif()  # bukan diabaikan diam (Law 34)
 
     draf = [r["invoice_number"] for r in await conn.fetch(
         "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND sales_order_id = $2 AND status = 'draft' "
@@ -230,9 +263,17 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
         notes.append({"code": "SO_FULFILL_DRAFT_INVOICES",
                       "message": f"Faktur draf {', '.join(draf)} belum terbit — barangnya belum bisa dikirim."})
 
-    gudang, blok_gudang = await _gudang(conn, tid, body.warehouse_id, so)
+    pref = await serah_mod.preferensi(conn, tid) if flag else {"lokasi_id": None, "metode_id": None}
+    gudang, blok_gudang = await _gudang(conn, tid, body.warehouse_id, so, flag, pref["lokasi_id"])
     if blok_gudang:
         blocks.append(blok_gudang)
+    serah = None
+    if flag:
+        try:
+            serah = await serah_mod.selesaikan(conn, tid, so["id"], body.serah)
+        except HTTPException as e:
+            blocks.append({"code": e.detail["code"] if isinstance(e.detail, dict) else "SERAH_TIDAK_SAH",
+                           "message": serah_mod.pesan_galat(e)})
 
     from ..utils.tanggal_tenant import tanggal_dokumen
     from ..routers.sales_invoices import check_period_is_open
@@ -327,7 +368,14 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
             "fulfillment_date": tgl.isoformat(),
             "notes": body.notes,
         }
-    return {"so": so, "blocks": blocks, "notes": notes, "warehouse": gudang, "fulfillment_date": tgl,
+        if serah is not None:  # payload = yang DITULIS: metode terputus + alamat hanya bila diketik (sumber tak berubah)
+            payload["serah"] = {
+                "metode_serah_id": serah["metode"]["id"] if serah["metode"] else None,
+                "kirim_ke": serah["kirim_ke"] if serah["kirim_ke_sumber"] == "manual" else None,
+                "resi": [{"nomor": x["nomor"], "kurir": x["kurir"]} for x in serah["resi"]],
+                "diterima_pada": serah["diterima_pada"].isoformat() if serah["diterima_pada"] else None,
+            }
+    return {"serah": serah, "serah_aktif": flag, "so": so, "blocks": blocks, "notes": notes, "warehouse": gudang, "fulfillment_date": tgl,
             "lines": lines, "faktur": faktur_kena, "kelompok": kelompok, "fnum": fnum, "soi": soi, "baris": baris,
             "payload": payload}
 
@@ -348,6 +396,8 @@ async def tulis_kirim_so(conn, ctx: dict, r: dict, kunci: Optional[str] = None) 
             raise HTTPException(status_code=409, detail={
                 "code": "IDEMPOTENCY_KEY_REUSED",
                 "message": "Idempotency-Key sudah dipakai untuk pengiriman lain pesanan ini."})
+        if r.get("serah") is not None:  # SJ + serah + resi: SATU transaksi pemanggil (Law 23); nol UPDATE ke SJ
+            await serah_mod.tulis(conn, ctx["tenant_id"], ctx["user_id"], h["fulfillment_id"], r["serah"])
         hasil.append({"invoice_id": f["id"], **h})
     return hasil
 
@@ -401,6 +451,7 @@ def bentuk(r: dict, hasil: Optional[list], so_after: Optional[dict]) -> dict:
                           "invoice_id": a["invoice_id"], "invoice_number": a["invoice_number"]}
                          for a in alok if a["fulfillment_number"]],
         "payload": r["payload"],
+        **({"serah": serah_mod.bentuk(r["serah"]) if r.get("serah") else None} if r.get("serah_aktif") else {}),
     }
 
 

@@ -829,6 +829,19 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/deliveries/[^/]+$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+/pdf$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+/history$", ["GET"], "sales_invoice", "R"),  # U4 riwayat Surat Jalan
+    # Serah-terima Surat Jalan (11 Okt 2026): rute /api/deliveries memakai modul sales_invoice (seperti di atas).
+    (r"^/api/deliveries/[^/]+/serah$", ["PUT"], "sales_invoice", "U"),
+    (r"^/api/deliveries/[^/]+/attachments$", ["POST"], "sales_invoice", "U"),
+    (r"^/api/deliveries/[^/]+/attachments$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/deliveries/[^/]+/attachments/[^/]+/download$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/deliveries/[^/]+/attachments/[^/]+$", ["DELETE"], "sales_invoice", "D"),
+    # Cara serah & preferensi pengiriman = master data lokasi/pengiriman -> modul warehouse; bawaan pratinjau = sales_order R.
+    (r"^/api/metode\-serah$", ["GET"], "warehouse", "R"),
+    (r"^/api/metode\-serah$", ["POST"], "warehouse", "C"),
+    (r"^/api/metode\-serah/[^/]+$", ["PATCH"], "warehouse", "U"),
+    (r"^/api/pengiriman/preferensi$", ["GET"], "warehouse", "R"),
+    (r"^/api/pengiriman/preferensi$", ["PUT"], "warehouse", "U"),
+    (r"^/api/default\-dokumen/pengiriman$", ["GET"], "sales_order", "R"),
     (r"^/api/djp/kode\-barang\-jasa$", ["GET"], "tax", "R"),
     (r"^/api/djp/kode\-transaksi$", ["GET"], "tax", "R"),
     (r"^/api/djp/satuan\-ukur$", ["GET"], "tax", "R"),

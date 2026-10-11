@@ -66,6 +66,7 @@ from .routers import quotes
 from .routers import proformas
 from .routers import sales_orders
 from .routers import sales_order_lampiran  # L1 lampiran SO
+from .routers import metode_serah, delivery_lampiran  # serah-terima Surat Jalan (11 Okt 2026)
 from .routers import currencies
 from .routers import bank_reconciliation
 from backend.api_gateway.app.routers import flow
@@ -650,6 +651,9 @@ app.include_router(
 app.include_router(
     sales_order_lampiran.router, prefix="/api/sales-orders", tags=["sales-orders"]
 )
+# Serah-terima Surat Jalan (kontrak pengiriman serah): cara serah, preferensi, bawaan, lampiran SJ. Flag pengiriman_serah.
+app.include_router(metode_serah.router, prefix="/api", tags=["pengiriman-serah"])
+app.include_router(delivery_lampiran.router, prefix="/api/deliveries", tags=["deliveries"])
 
 # Currencies router (Multi-currency Management)
 app.include_router(currencies.router, prefix="/api/currencies", tags=["currencies"])

@@ -154,6 +154,8 @@ class _C:
             return self.stok.get(a[0])
         if "get_weighted_average_cost" in sql:
             return self.wac.get(a[1])
+        if "FROM tenant_features" in sql:  # 11 Okt 2026: flag pengiriman_serah (kontrak serah) -- OFF = jalur lama persis
+            return None
         raise AssertionError(sql[:80])
 
 
