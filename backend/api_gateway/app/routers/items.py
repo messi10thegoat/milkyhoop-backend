@@ -170,6 +170,17 @@ def galat_nama_barang_dipakai() -> HTTPException:
     return HTTPException(status_code=409, detail={"code": KODE_NAMA_BARANG, "message": PESAN_NAMA_BARANG})
 
 
+# 11 Okt 2026 (MASTER via WORKSPACE): kode/SKU barang dipakai -> detail berkode (pola NAMA_BARANG_DIPAKAI). `terhapus`
+# = pemegang kode itu baris yang sudah dihapus (deleted_at terisi; indeks V072 mencakup baris terhapus, kode TIDAK
+# dipakai ulang -- putusan pemilik). Tanpa nama/id barang pemegang. Pesan teks SENGAJA tetap seperti semula.
+KODE_KODE_BARANG = "KODE_BARANG_DIPAKAI"
+
+
+def galat_kode_barang_dipakai(sku: str, terhapus: bool) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "code": KODE_KODE_BARANG, "message": f"Kode item {sku} sudah digunakan", "terhapus": bool(terhapus)})
+
+
 def nama_barang_bentrok(e: BaseException) -> bool:
     """Balapan: cek app lolos, indeks DB menolak -> tetap 409 berkode, bukan 500."""
     return isinstance(e, asyncpg.UniqueViolationError) and getattr(e, "constraint_name", None) == INDEKS_NAMA_BARANG
@@ -568,14 +579,13 @@ async def create_item(request: Request, body: CreateItemRequest):
 
         # Check for duplicate SKU (after SKU is finalized)
         existing_sku = await conn.fetchrow(
-            "SELECT id FROM products WHERE tenant_id = $1 AND sku = $2",
+            "SELECT id, (deleted_at IS NOT NULL) AS terhapus FROM products "
+            "WHERE tenant_id = $1 AND sku = $2 ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
             tenant_id,
             sku_to_use,
         )
         if existing_sku:
-            raise HTTPException(
-                status_code=409, detail=f"Kode item {sku_to_use} sudah digunakan"
-            )
+            raise galat_kode_barang_dipakai(sku_to_use, existing_sku["terhapus"])
 
         # Check for duplicate item_code (after item_code is finalized)
         existing_item_code = await conn.fetchrow(
@@ -2301,7 +2311,7 @@ async def update_item_status(request: Request, item_id: str):
             result = await conn.execute(
                 """
                 UPDATE products SET status = CASE WHEN $1 THEN 'active' ELSE 'inactive' END, updated_at = NOW()
-                WHERE id = $2::uuid AND tenant_id = $3
+                WHERE id = $2::uuid AND tenant_id = $3 AND deleted_at IS NULL
             """,
                 is_active,
                 item_id,
