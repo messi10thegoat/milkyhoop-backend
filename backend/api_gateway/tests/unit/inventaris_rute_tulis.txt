@@ -419,6 +419,8 @@ POST /api/production/{order_id}/start
 POST /api/proformas
 POST /api/proformas/{proforma_id}/cancel
 POST /api/proformas/{proforma_id}/cancel/preview
+POST /api/proformas/{proforma_id}/correct-amount
+POST /api/proformas/{proforma_id}/correct-amount/preview
 POST /api/proformas/{proforma_id}/issue
 POST /api/proformas/{proforma_id}/issue/preview
 POST /api/proformas/{proforma_id}/update/preview

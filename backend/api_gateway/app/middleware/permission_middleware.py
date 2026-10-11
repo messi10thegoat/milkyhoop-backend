@@ -636,6 +636,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/kds", ["PUT", "PATCH"], "kds", "U"),
     (r"^/api/kds", ["DELETE"], "kds", "D"),
     (r"^/api/proformas/[^/]+/update/preview$", ["POST"], "proforma", "U"),  # U2b: pratinjau ubah = izin ubah
+    # Koreksi nominal proforma TERBIT (11 Okt 2026): rute = proforma:U; handler MENAMBAH proforma:C (= izin batal/terbit)
+    (r"^/api/proformas/[^/]+/correct-amount(/preview)?$", ["POST"], "proforma", "U"),
     (r"^/api/proformas", ["POST"], "proforma", "C"),
     (r"^/api/proformas", ["PUT", "PATCH"], "proforma", "U"),
     (r"^/api/proformas", ["DELETE"], "proforma", "D"),

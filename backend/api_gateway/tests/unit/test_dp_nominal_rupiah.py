@@ -221,3 +221,93 @@ def test_pindah_lebih_dari_sisa_tujuan_boleh_p2():
     # tujuan 1 jt, uang muka 5 jt -> BUKAN blok (kelebihan = uang muka pesanan, tampil excess_amount)
     r, _ = _rencana(_dep(), _pf(amount=Decimal("1000000")))
     assert r["blocks"] == []
+
+
+# ---------------- Koreksi nominal proforma TERBIT (11 Okt; pola SAP down-payment request) ----------------
+def test_koreksi_izin_u_di_rute_dan_c_di_handler_tak_lebih_longgar_dari_batal():
+    t = _src("middleware/permission_middleware.py")
+    assert '(r"^/api/proformas/[^/]+/correct-amount(/preview)?$", ["POST"], "proforma", "U")' in t
+    # batal/terbit = aturan umum POST /api/proformas -> proforma:C; koreksi menuntut C JUGA di handler
+    assert '(r"^/api/proformas", ["POST"], "proforma", "C")' in t
+    assert t.index("correct-amount") < t.index('(r"^/api/proformas", ["POST"], "proforma", "C")')  # aturan spesifik lebih dulu
+    assert 'await _wajib_izin(request, "C", "proforma")' in _fungsi("routers/proformas.py", "_jalankan_koreksi")
+
+
+def test_koreksi_izin_gagal_tertutup(monkeypatch):
+    from starlette.requests import Request
+    import app.services.policy_engine_client as PEC
+
+    class Mesin:
+        async def get_user_context(self, **kw): return object()
+        async def can(self, *a): return False
+    monkeypatch.setattr(PEC, "get_policy_engine", lambda: Mesin())
+    r = Request({"type": "http", "method": "POST", "headers": [], "path": "/", "query_string": b"", "state": {}})
+    r.state.user = {"tenant_id": "t", "user_id": "u"}
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(PF._wajib_izin(r, "C", "proforma"))
+    assert e.value.status_code == 403
+
+    def meledak():
+        raise RuntimeError("engine mati")
+    monkeypatch.setattr(PEC, "get_policy_engine", meledak)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(PF._wajib_izin(r, "C", "proforma"))
+    assert e.value.status_code == 403  # galat -> TOLAK, bukan lolos
+
+
+def test_koreksi_rute_ada_dan_penulis_hanya_proforma_nol_jurnal():
+    jalur = {(m, r.path) for r in PF.router.routes for m in getattr(r, "methods", [])}
+    assert ("POST", "/{proforma_id}/correct-amount") in jalur and ("POST", "/{proforma_id}/correct-amount/preview") in jalur
+    src = _fungsi("routers/proformas.py", "_tulis_koreksi")
+    assert re.findall(r"(INSERT INTO|UPDATE|DELETE FROM)\s+(\w+)", src) == [("UPDATE", "proformas")]
+    assert "percent_of_order = NULL" in src and "status = 'issued' AND amount = $4" in src  # nominal = sumber; cek-lalu-ubah
+    assert 'f"Nominal dikoreksi {tg.rp(r[\'lama\'])} → {tg.rp(r[\'baru\'])}: {alasan}"' in src
+
+
+class KonekKoreksi:
+    def __init__(self, sisa):
+        self.sisa = sisa
+
+    async def fetchrow(self, sql, *a):
+        return {"id": a[0], "order_number": "SO-1", "customer_id": None, "customer_name": "c", "total_amount": Decimal("8025000"),
+                "status": "confirmed", "payment_bank_name": None, "payment_account_number": None, "payment_account_holder": None}
+
+
+def _koreksi(monkeypatch, status="issued", amount="5000000", reason="salah nominal", sisa=Decimal("8025000")):
+    dicatat = {}
+
+    async def pagar(conn, tid, so, total, amt, exclude_id=None):
+        dicatat["exclude_id"], dicatat["amt"] = exclude_id, amt
+        if Decimal(str(amt)) > sisa:
+            raise HTTPException(status_code=400, detail="melebihi sisa yang bisa ditagih")
+    monkeypatch.setattr(PF, "assert_within_order_total", pagar)
+    cur = {"id": uuid.uuid4(), "sales_order_id": uuid.uuid4(), "status": status, "amount": Decimal("5000377.50")}
+    r = asyncio.run(PF._rencana_koreksi(KonekKoreksi(sisa), {"tenant_id": "t"}, cur,
+                                        PF.KoreksiNominalRequest(amount=Decimal(amount), reason=reason)))
+    return r, cur, dicatat
+
+
+def test_koreksi_pergatsi_sah_plafon_mengecualikan_proforma_ini(monkeypatch):
+    r, cur, d = _koreksi(monkeypatch)
+    assert r["blocks"] == [] and r["baru"] == Decimal("5000000") and r["lama"] == Decimal("5000377.50") and not r["noop"]
+    assert d["exclude_id"] == cur["id"]
+
+
+@pytest.mark.parametrize("kw,kode", [
+    ({"status": "draft"}, "PROFORMA_NOT_ISSUED"),
+    ({"status": "cancelled"}, "PROFORMA_NOT_ISSUED"),
+    ({"reason": "   "}, "CORRECT_REASON_REQUIRED"),
+    ({"reason": None}, "CORRECT_REASON_REQUIRED"),
+    ({"amount": "0"}, "PROFORMA_AMOUNT_INVALID"),
+    ({"amount": "9000000", "sisa": Decimal("8025000")}, "PROFORMA_EXCEEDS_BILLABLE"),   # merah: melebihi sisa bisa ditagih
+])
+def test_koreksi_ditolak(monkeypatch, kw, kode):
+    r, _, _ = _koreksi(monkeypatch, **kw)
+    assert kode in [b["code"] for b in r["blocks"]]
+
+
+def test_koreksi_nominal_sama_noop_dan_nominal_dibulatkan(monkeypatch):
+    r, _, _ = _koreksi(monkeypatch, amount="5000377.50")
+    assert r["baru"] == Decimal("5000378") and not r["noop"]          # rupiah penuh, bukan no-op
+    r, _, _ = _koreksi(monkeypatch, amount="5000000.4")
+    assert r["baru"] == Decimal("5000000")

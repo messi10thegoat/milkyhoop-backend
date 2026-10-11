@@ -76,3 +76,21 @@ Bukti: `scripts/ops/uji-cek-harian-proforma-pecahan.sh`.
 **Bukti (11 Okt)**: `tests/unit/test_dp_nominal_rupiah.py` (29; kode master: 28 gagal) + harness nyata kaos
 `scripts/ops/uji-nyata-dp-nominal.py` (handler asli, semua ROLLBACK): worktree 16/16; kode master 5 gagal tepat di S3/S4/S5/S6/S7;
 S6 = tiruan Pergatsi diperbaiki lewat terbit baru → pindah → batal lama, je/jl/bank_tx + isi baris jurnal identik.
+
+**Koreksi nominal proforma TERBIT** (putusan pemilik lewat MASTER 11 Okt; pola SAP down-payment request — dokumen permintaan
+non-posting boleh dikoreksi dengan jejak). Alasan: untuk Pergatsi urutan "terbit baru → pindah → batal" DITOLAK plafon
+(8.025.000 − 5.000.377,50 = 3.024.622,50 < 5.000.000; terukur pada tiruan proporsional), dan proforma lama tak bisa dibatalkan
+selama uang muka menunjuknya.
+- `POST /api/proformas/{id}/correct-amount` dan `.../correct-amount/preview`, badan `{amount, reason}`.
+- Izin: rute `proforma:U` + handler menuntut `proforma:C` (= izin batal/terbit), gagal tertutup → tak lebih longgar dari batal.
+- Blok: `PROFORMA_NOT_ISSUED` (400), `CORRECT_REASON_REQUIRED` (422, alasan WAJIB), `PROFORMA_AMOUNT_INVALID` (400),
+  `PROFORMA_EXCEEDS_BILLABLE` (pagar plafon yang sama, proforma INI dikecualikan). Nominal di bawah terbayar BOLEH (→ `excess_amount`).
+- Nominal dibulatkan ke rupiah; `percent_of_order` dikosongkan (nominal = sumber). Satu tx + kunci `PROFORMA_SO`; `UPDATE proformas`
+  cek-lalu-ubah + riwayat `PROFORMA_AMOUNT_CORRECTED` "Nominal dikoreksi Rp X → Rp Y: <alasan>". NOL jurnal. Nominal sama → `no_change`.
+- Respons: `{proforma_id, proforma_number, status_now, can_proceed, no_change, blocks[], impact{amount_before, amount_after,
+  before{amount, paid_amount, outstanding_amount, excess_amount, is_fully_paid}, after{…}}, journals: [], preview, data}`
+  (`data` = proforma ter-serialisasi, hanya aksi). PDF & detail memakai nominal baru.
+- Pergatsi = SATU langkah: koreksi PRO-2610-0016 5.000.377,50 → 5.000.000 (izin LANGSUNG pemilik, sesudah live).
+- Bukti: harness S9 (tiruan proporsional): pratinjau before/after, md5 baris jurnal identik, audit +1, posisi "Diproses",
+  predikat Check 22 merah→hijau, riwayat teks persis, PDF nominal baru, plafon = total boleh / total+1 blok, draf/alasan kosong ditolak,
+  ulang no-op. Kode master: S9 gagal.

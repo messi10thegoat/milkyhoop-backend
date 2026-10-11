@@ -1221,6 +1221,147 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
 
 
 # ============================================================================
+# KOREKSI NOMINAL PROFORMA TERBIT (11 Okt 2026, putusan pemilik lewat MASTER; pola SAP down-payment request: dokumen
+# permintaan NON-POSTING boleh dikoreksi dengan jejak). Latar: Pergatsi PRO-2610-0016 5.000.377,50 (persen tampilan dipakai
+# ulang) dibayar DP 5.000.000 -> "Menunggu DP"; batal ditolak (sudah dibayar), proforma baru ditolak plafon (lama masih
+# ditagih), ubah hanya untuk draf. Koreksi = SATU langkah: nominal baru (rupiah), percent_of_order dikosongkan (nominal =
+# sumber kebenaran), riwayat PROFORMA_AMOUNT_CORRECTED "Nominal dikoreksi Rp X -> Rp Y: <alasan>". NOL jurnal (proforma
+# tak memposting). Syarat: terbit; alasan WAJIB; nominal > 0; plafon YANG SAMA dengan buat/ubah/terbit dengan proforma ini
+# DIKECUALIKAN. Nominal di bawah terbayar BOLEH (kelebihan = excess_amount, kontrak P2). Izin: middleware proforma:U +
+# handler proforma:C (= izin batal/terbit) -> tidak lebih longgar dari batal. Nominal sama = no-op idempoten.
+# ============================================================================
+class KoreksiNominalRequest(BaseModel):
+    amount: Decimal
+    reason: Optional[str] = None  # WAJIB -- kosong = blok CORRECT_REASON_REQUIRED (pratinjau menampilkannya sebagai blok)
+
+
+async def _wajib_izin(request: Request, aksi: str, modul: str) -> None:
+    """Izin tambahan di handler (gagal TERTUTUP), di atas peta middleware."""
+    try:
+        from ..services.policy_engine_client import get_policy_engine
+        user = getattr(request.state, "user", None) or {}
+        eng = get_policy_engine()
+        uc = await eng.get_user_context(user_id=user["user_id"], tenant_id=user["tenant_id"],
+                                        subscription_role=user.get("role", "USER"))
+        boleh = bool(await eng.can(uc, aksi, modul))
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[PROFORMA_KOREKSI_IZIN] pemeriksaan gagal -> ditolak: {type(e).__name__}: {e}")
+        boleh = False
+    if not boleh:
+        raise HTTPException(status_code=403, detail="Anda tidak punya izin mengoreksi nominal proforma.")
+
+
+async def _rencana_koreksi(conn, ctx: dict, cur, body: KoreksiNominalRequest) -> dict:
+    tid, pid = ctx["tenant_id"], cur["id"]
+    blocks = []
+    if cur["status"] != "issued":
+        blocks.append(_blok("PROFORMA_NOT_ISSUED", 400, (
+            f"Hanya proforma berstatus Terbit yang nominalnya bisa dikoreksi (sekarang {tg.status_id('proforma', cur['status'])}). "
+            "Proforma Draf diubah lewat Ubah.")))
+    if not (body.reason or "").strip():
+        blocks.append(_blok("CORRECT_REASON_REQUIRED", 422, "Alasan koreksi wajib diisi."))
+    baru = rupiah(body.amount)
+    if baru <= 0:
+        blocks.append(_blok("PROFORMA_AMOUNT_INVALID", 400, "Nilai proforma harus lebih dari Rp 0."))
+    order = await fetch_order_or_404(conn, tid, cur["sales_order_id"])
+    if baru > 0:
+        try:  # pagar plafon YANG SAMA dengan buat/ubah/terbit, proforma ini dikecualikan
+            await assert_within_order_total(conn, tid, cur["sales_order_id"], _f(order["total_amount"]) or 0.0,
+                                            float(baru), exclude_id=pid)
+        except HTTPException as e:
+            blocks.append(_blok("PROFORMA_EXCEEDS_BILLABLE", e.status_code, e.detail))
+    lama = Decimal(str(cur["amount"]))
+    return {"order": order, "blocks": blocks, "lama": lama, "baru": baru, "noop": baru == lama and not blocks}
+
+
+async def _bayar_satu(conn, tid: str, cur) -> dict:
+    paid, _bd = await terbayar_satu(conn, tid, cur)
+    b = bayar_proforma(cur["amount"], paid)
+    return {"amount": float(cur["amount"]), "paid_amount": float(b["paid_amount"]),
+            "outstanding_amount": float(b["outstanding_amount"]), "excess_amount": float(b["excess_amount"]),
+            "is_fully_paid": b["is_fully_paid"]}
+
+
+async def _tulis_koreksi(conn, ctx: dict, cur, r: dict, alasan: str):
+    row = await conn.fetchrow(
+        """UPDATE proformas SET amount = $3, percent_of_order = NULL
+           WHERE id = $1 AND tenant_id = $2 AND status = 'issued' AND amount = $4 RETURNING *""",
+        cur["id"], ctx["tenant_id"], r["baru"], r["lama"])
+    if not row:
+        raise HTTPException(status_code=409, detail="Proforma sudah berubah. Muat ulang lalu coba lagi.")
+    await catat_riwayat(
+        conn, ctx["tenant_id"], "proformas", cur["id"], cur["proforma_number"], "PROFORMA_AMOUNT_CORRECTED",
+        ctx.get("user_id"), f"Nominal dikoreksi {tg.rp(r['lama'])} → {tg.rp(r['baru'])}: {alasan}",
+        {"amount": [_js_pf(r["lama"]), _js_pf(r["baru"])],
+         "percent_of_order": [_js_pf(cur["percent_of_order"]), None], "reason": alasan,
+         "sales_order_id": str(cur["sales_order_id"])},
+        source="api:proformas.correct_amount")
+    return row
+
+
+class _BatalKoreksi(Exception):
+    def __init__(self, data):
+        self.data = data
+
+
+async def _jalankan_koreksi(request: Request, proforma_id: str, body: KoreksiNominalRequest, pratinjau: bool) -> dict:
+    ctx = get_user_context(request)
+    await _wajib_izin(request, "C", "proforma")  # = izin batal/terbit; middleware sudah menuntut proforma:U
+    pid = _uuid_or_404(proforma_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                cur = await _kunci_proforma(conn, ctx, pid)
+                r = await _rencana_koreksi(conn, ctx, cur, body)
+                sebelum = await _bayar_satu(conn, ctx["tenant_id"], cur)
+                if r["blocks"] and not pratinjau:
+                    _angkat_blok_pertama(r)
+                row, sesudah = cur, None
+                if not r["blocks"]:
+                    if not r["noop"]:
+                        row = await _tulis_koreksi(conn, ctx, cur, r, body.reason.strip())
+                    sesudah = await _bayar_satu(conn, ctx["tenant_id"], row)
+                data = {"proforma_id": str(cur["id"]), "proforma_number": cur["proforma_number"],
+                        "status_now": cur["status"], "can_proceed": not r["blocks"], "no_change": r["noop"],
+                        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+                        "impact": {"amount_before": float(r["lama"]), "amount_after": float(r["baru"]),
+                                   "before": sebelum, "after": sesudah},
+                        "journals": [], "preview": pratinjau}
+                if pratinjau:
+                    raise _BatalKoreksi(data)
+                paid, bd = await terbayar_satu(conn, ctx["tenant_id"], row)
+                data["data"] = serialize_proforma(row, r["order"]["order_number"], paid, bd)
+                return data
+        except _BatalKoreksi as b:
+            return b.data
+
+
+@router.post("/{proforma_id}/correct-amount")
+async def correct_proforma_amount(request: Request, proforma_id: str, body: KoreksiNominalRequest):
+    """Koreksi nominal proforma TERBIT (alasan wajib, plafon, nol jurnal). Nominal sama = no-op."""
+    try:
+        return {"success": True, "data": await _jalankan_koreksi(request, proforma_id, body, False)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error correcting proforma {proforma_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to correct proforma amount")
+
+
+@router.post("/{proforma_id}/correct-amount/preview")
+async def preview_correct_proforma_amount(request: Request, proforma_id: str, body: KoreksiNominalRequest):
+    """Pratinjau koreksi: penentu + penulis YANG SAMA lalu rollback -> before/after paid/outstanding/excess."""
+    try:
+        return {"success": True, "data": await _jalankan_koreksi(request, proforma_id, body, True)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing proforma correction {proforma_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview proforma correction")
+
+
+# ============================================================================
 # PDF
 # ============================================================================
 

@@ -106,6 +106,9 @@ async def main():
     CD.get_pool = gp
     DBP.get_db_pool = gp
     so = await conn.fetchrow("SELECT * FROM sales_orders WHERE id=$1 AND tenant_id=$2", SO_ID, TENANT)
+    from app.services import policy_engine_client as PEC   # izin tambahan di handler koreksi (proforma:C) -- pool baca terpisah
+    pe_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=2)
+    PEC.init_policy_engine(pe_pool)
     sebelum = await jumlah(conn)
     print("sebelum:", sebelum, flush=True)
 
@@ -259,8 +262,87 @@ async def main():
         so7 = await sp(conn, s7)
         lihat("S7", dict(so7) if so7 else None)
         cek("S7 SO hasil konversi: dp_amount 60.000, dp_amount_source 'manual'", so7 and so7["dp_amount"] == Decimal("60000") and so7["dp_amount_source"] == "manual")
+        # S9: KOREKSI nominal proforma terbit -- tiruan Pergatsi PROPORSIONAL (proforma lama > separuh total SO)
+        KoreksiNominalRequest = getattr(PF, "KoreksiNominalRequest", None)
+
+        async def koreksi(pid, amount, reason="TES E2E koreksi nominal", pratinjau=False):
+            b = KoreksiNominalRequest(amount=Decimal(str(amount)), reason=reason)
+            f = PF.preview_correct_proforma_amount if pratinjau else PF.correct_proforma_amount
+            return (await f(req(), str(pid), b))["data"]
+
+        async def audit_n():
+            return await conn.fetchval("SELECT count(*) FROM audit_logs WHERE tenant_id=$1", TENANT)
+
+        async def pecahan_n():   # predikat Check 22 persis
+            return await conn.fetchval("SELECT count(*) FROM proformas WHERE tenant_id=$1 AND status='issued' AND amount <> round(amount)", TENANT)
+
+        async def s9():
+            lama = await buat_pf(amount=Decimal("62310000"))
+            await conn.execute("UPDATE proformas SET amount = 62310377.50, percent_of_order = 62.31 WHERE id=$1", lama)
+            await dp(62310000, lama)
+            o = {"k0": await keadaan(lama), "c22_0": await pecahan_n()}
+            o["blok_tagih_baru"] = await galat(buat_pf(amount=Decimal("62310000")))   # alasan fitur ini ada
+            buku0, a0 = await hitung_buku(), await audit_n()
+            o["pv"] = await koreksi(lama, 62310000, pratinjau=True)
+            o["amount_pv"] = await conn.fetchval("SELECT amount FROM proformas WHERE id=$1", lama)
+            o["buku_pv_sama"], o["audit_pv"] = (await hitung_buku()) == buku0, (await audit_n()) - a0
+            o["aksi"] = await koreksi(lama, 62310000)
+            o["buku_aksi_sama"], o["audit_aksi"] = (await hitung_buku()) == buku0, (await audit_n()) - a0
+            o["baris"] = dict(await conn.fetchrow("SELECT amount, percent_of_order, status FROM proformas WHERE id=$1", lama))
+            o["k1"], o["c22_1"] = await keadaan(lama), await pecahan_n()
+            a1 = await audit_n()
+            o["ulang"] = await koreksi(lama, 62310000)
+            o["audit_ulang"] = (await audit_n()) - a1
+            riw = await PF.get_proforma_history(req(), str(lama), 50)
+            o["riwayat"] = [x for x in str(riw).split("'") if "Nominal dikoreksi" in x]
+            pdf = await PF.muat_pdf_proforma_id(conn, {"tenant_id": TENANT, "user_id": USER}, lama)
+            pdf = pdf["proforma_data"]   # bentuk balikan muat_pdf_proforma (kunci salah = None meyakinkan)
+            o["pdf"] = {k: pdf.get(k) for k in ("amount", "paid_amount", "outstanding_amount", "excess_amount")}
+            o["plafon_pas"] = await koreksi(lama, 100000000, pratinjau=True)       # = total SO, proforma ini dikecualikan
+            o["plafon_lebih_pv"] = await koreksi(lama, 100000001, pratinjau=True)
+            o["plafon_lebih"] = await galat(koreksi(lama, 100000001))
+            o["di_bawah_bayar"] = await koreksi(lama, 60000000, pratinjau=True)
+            o["tanpa_alasan"] = await galat(koreksi(lama, 62000000, reason="  "))
+            draf = await PF.create_proforma(req(), PF.CreateProformaRequest(sales_order_id=str(SO_ID), purpose="DP", amount=Decimal("1000000")))
+            o["draf"] = await galat(koreksi(draf["data"]["id"] if "data" in draf else draf["id"], 900000))
+            return o
+        if KoreksiNominalRequest is None:
+            cek("S9 koreksi nominal proforma terbit tersedia", False, "kode tanpa KoreksiNominalRequest")
+        else:
+            try:
+                o = await sp(conn, s9)
+            except Exception as e:
+                o = None
+                cek("S9 koreksi berjalan", False, repr(e)[:300])
+            if o is not None:
+                lihat("S9", o)
+                cek("S9a tiruan Pergatsi proporsional: sisa 377,5, Menunggu DP, cek-22 merah (1)",
+                    o["k0"]["detail"]["outstanding_amount"] == 377.5 and o["k0"]["posisi"] == "Menunggu DP" and o["c22_0"] == 1)
+                cek("S9b proforma baru ditolak plafon (alasan fitur ini)", isinstance(o["blok_tagih_baru"], dict) and o["blok_tagih_baru"].get("HTTP") == 400)
+                pv = o["pv"]
+                cek("S9c pratinjau: before 377,5/excess 0 -> after paid 62,31 jt sisa 0 excess 0; journals []; nominal & buku & audit tak berubah",
+                    pv["can_proceed"] and pv["impact"]["before"]["outstanding_amount"] == 377.5
+                    and pv["impact"]["after"] == {"amount": 62310000.0, "paid_amount": 62310000.0, "outstanding_amount": 0.0, "excess_amount": 0.0, "is_fully_paid": True}
+                    and pv["journals"] == [] and o["amount_pv"] == Decimal("62310377.50") and o["buku_pv_sama"] and o["audit_pv"] == 0)
+                cek("S9d aksi: md5 baris jurnal + je/jl/bank_tx IDENTIK (nol jurnal), audit +1, nominal 62.310.000, persen NULL",
+                    o["buku_aksi_sama"] and o["audit_aksi"] == 1 and o["baris"]["amount"] == Decimal("62310000") and o["baris"]["percent_of_order"] is None)
+                cek("S9e sesudah: lunas, posisi Diproses, cek-22 HIJAU (0)", o["k1"]["detail"]["is_fully_paid"] and o["k1"]["posisi"] == "Diproses" and o["c22_1"] == 0)
+                cek("S9f ulang = no-op idempoten (no_change, audit +0)", o["ulang"]["no_change"] and o["audit_ulang"] == 0)
+                cek("S9g riwayat: 'Nominal dikoreksi Rp 62.310.377,50 → Rp 62.310.000: TES E2E koreksi nominal'",
+                    any("Nominal dikoreksi Rp 62.310.377,50 → Rp 62.310.000: TES E2E koreksi nominal" in x for x in o["riwayat"]), str(o["riwayat"])[:200])
+                cek("S9h PDF memakai nominal baru (62.310.000, sisa 0)", o["pdf"]["amount"] == 62310000.0 and o["pdf"]["outstanding_amount"] == 0.0, str(o["pdf"]))
+                cek("S9i plafon (proforma ini dikecualikan): = total SO boleh; total+1 -> blok pratinjau + 400 aksi",
+                    o["plafon_pas"]["can_proceed"] and not o["plafon_lebih_pv"]["can_proceed"]
+                    and [b["code"] for b in o["plafon_lebih_pv"]["blocks"]] == ["PROFORMA_EXCEEDS_BILLABLE"]
+                    and o["plafon_lebih"].get("HTTP") == 400)
+                cek("S9j di bawah terbayar boleh -> after excess 2.310.000, sisa 0 (kontrak P2)",
+                    o["di_bawah_bayar"]["can_proceed"] and o["di_bawah_bayar"]["impact"]["after"]["excess_amount"] == 2310000.0
+                    and o["di_bawah_bayar"]["impact"]["after"]["outstanding_amount"] == 0.0)
+                cek("S9k alasan kosong -> 422 CORRECT_REASON_REQUIRED", o["tanpa_alasan"].get("HTTP") == 422, str(o["tanpa_alasan"]))
+                cek("S9l proforma draf -> 400 PROFORMA_NOT_ISSUED", o["draf"].get("HTTP") == 400 and "Terbit" in str(o["draf"]), str(o["draf"])[:160])
     finally:
         await outer.rollback()
+        await pe_pool.close()
     akhir = await jumlah(conn)
     cek("AKHIR nol jejak (je, jl, audit, bank_tx, dep, pf, urutan)", akhir == sebelum, "" if akhir == sebelum else f"{sebelum} {akhir}")
     await conn.close()
