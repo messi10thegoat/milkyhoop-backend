@@ -6,8 +6,9 @@ bernilai, buku besar tidak (kaos: 1 baris Rp128.000), lalu pemakaian barang itu 
 yang masuknya tak pernah didebit. `source_id` baris kartu juga `gen_random_uuid()` -- menunjuk ke ketiadaan.
 
 Ironlaws: Law 1/16 (neraca dari jurnal; kartu stok tak boleh bernilai tanpa jurnal), Law 4 (double-entry, kedua baris
-dari satu `nilai`), Law 5 (kunci periode diperiksa SEBELUM menulis, pesan ramah), Law 6 (kartu.source_id = id jurnal;
-jurnal.source_id = id produk), Law 13 (advisory lock tenant: penomoran + penolakan ganda), Law 20 (DRAFT -> baris ->
+dari satu `nilai`), Law 5 (kunci periode diperiksa SEBELUM menulis, pesan ramah), Law 6 (kartu.source_id = kartu.journal_id = id jurnal;
+jurnal.source_id = id produk; journal_id = tautan baku kartu->jurnal, dibaca daftar jurnal barang
+& hc_inventory_members, 11 Okt), Law 13 (advisory lock tenant: penomoran + penolakan ganda), Law 20 (DRAFT -> baris ->
 POSTED), Law 23 (WAJIB di transaksi pemanggil -- dijaga `is_in_transaction`), Law 24 (tenant eksplisit di tiap SQL),
 Law 27 (akun lewat `products.inventory_account_id`, cadangan ROLE -- tanpa kode akun keras).
 
@@ -144,9 +145,9 @@ async def catat_saldo_awal_stok(
     await conn.execute(
         """INSERT INTO inventory_ledger (
                id, tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-               source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
+               source_type, source_id, journal_id, source_number, quantity_in, quantity_out, quantity_balance,
                unit_cost, total_cost, average_cost, warehouse_id, notes, created_at
-           ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $10, $11, $12, $11, $13, $14, NOW())""",
+           ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $10, $11, $12, $11, $13, $14, NOW())""",
         tenant_id, product_id, product_code, product_name, movement_type, tanggal, SUMBER, jurnal_id,
         f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai, warehouse_id, catatan)
     return {"journal_id": jurnal_id, "journal_number": nomor, "nilai": nilai}

@@ -281,3 +281,26 @@ def test_create_vendor_menolak_saldo_awal_hutang_sebelum_db(monkeypatch):
     with pytest.raises(HTTPException):  # kontrol: tanpa saldo awal handler MAJU ke DB
         _jalan(fungsi(req, skema(name="PT Uji", opening_balance=0)))
     assert dipanggil == [1]
+
+
+# ---------------- (8) tautan kartu -> jurnal lewat kolom journal_id (11 Okt) ----------------
+def _kolom_ke_nilai(sql, args):
+    """Petakan kolom INSERT ke nilainya ($n -> args[n-1]; literal apa adanya) -- bukan posisi argumen."""
+    m = re.search(r"INSERT INTO inventory_ledger \((.*?)\) VALUES \((.*)\)\s*$", sql)
+    kolom = [c.strip() for c in m.group(1).split(",")]
+    nilai = [v.strip() for v in m.group(2).split(",")]
+    assert len(kolom) == len(nilai), (kolom, nilai)
+    return {c: (args[int(v[1:]) - 1] if v.startswith("$") else v) for c, v in zip(kolom, nilai)}
+
+
+def test_kartu_saldo_awal_menaut_journal_id_ke_jurnal_yang_sama():
+    k = Konek()
+    out = _catat(k)
+    _, sql, args = k.tulis()[-1]
+    isi = _kolom_ke_nilai(sql, args)
+    assert isi["journal_id"] == out["journal_id"] == JID  # tautan baku kartu -> jurnal (dibaca daftar jurnal barang + hc_inventory_members)
+    assert isi["source_id"] == JID and isi["source_type"] == "OPENING_BALANCE"
+    # angka TIDAK berubah oleh tautan: qty/biaya/nilai kartu = nilai jurnal
+    assert isi["quantity_in"] == isi["quantity_balance"] == Decimal("1") and isi["quantity_out"] == "0"
+    assert isi["unit_cost"] == isi["average_cost"] == Decimal("128000") and isi["total_cost"] == Decimal("128000.00")
+    assert isi["tenant_id"] == T and isi["product_id"] == PID and isi["warehouse_id"] == WH
