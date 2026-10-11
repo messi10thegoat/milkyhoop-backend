@@ -336,6 +336,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customer-deposits/[^/]+/apply/preview$", ["POST"], "customer_deposit", "P"),
     (r"^/api/customer-deposits/[^/]+/refund/preview$", ["POST"], "customer_deposit", "V"),
     (r"^/api/customer-deposits/[^/]+/void/preview$", ["POST"], "customer_deposit", "V"),
+    # P1 (11 Okt 2026): pindah uang muka ke proforma lain = atribusi seperti terapkan -> izin P (aksi + pratinjau)
+    (r"^/api/customer-deposits/[^/]+/move-proforma$", ["POST"], "customer_deposit", "P"),
+    (r"^/api/customer-deposits/[^/]+/move-proforma/preview$", ["POST"], "customer_deposit", "P"),
     (r"^/api/customer-deposits/[^/]+/history$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/[^/]+$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer-deposits/[^/]+$", ["PATCH", "PUT"], "customer_deposit", "U"),

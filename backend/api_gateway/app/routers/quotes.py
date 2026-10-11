@@ -2004,7 +2004,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
             notes,
             dp_percent, dp_amount, payment_terms,
             payment_bank_name, payment_account_number,
-            payment_account_holder
+            payment_account_holder, dp_amount_source
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7,
@@ -2013,7 +2013,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
             $13,
             $14, $15, $16,
             $17, $18,
-            $19
+            $19, $21
         )
     """,
         so_id,
@@ -2036,6 +2036,9 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
         quote["payment_account_number"],
         quote["payment_account_holder"],
         _doc["doc_discount"],
+        # 11 Okt (Pergatsi): resolve_dp Penawaran = nominal SUMBER KEBENARAN, persen turunan tampilan -> SO menandai
+        # nominalnya 'manual' (dulu NULL: tak jelas mana yang mengikat; proforma lalu menghitung ulang dari persen).
+        "manual" if quote["dp_amount"] is not None else None,
     )
 
     for idx, ln in enumerate(_doc["items"]):

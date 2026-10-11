@@ -18,7 +18,7 @@ import base64
 import logging
 import uuid as uuid_module
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 from pathlib import Path as _Path
 from typing import Literal, Optional
@@ -29,9 +29,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
-from ..services.proforma_terbayar import terbayar_proforma
+from ..services.proforma_terbayar import bayar_proforma, terbayar_proforma
 from ..services.proforma_atribusi import muat_atribusi
 from ..services.so_riwayat import catat_riwayat
+from ..services.default_dokumen import nominal_dari_persen
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from fastapi.responses import StreamingResponse
 from fastapi import Response as _Response
@@ -307,6 +308,11 @@ async def fetch_order_or_404(conn, tenant_id: str, sales_order_id):
     return order
 
 
+def rupiah(v) -> Decimal:
+    """IDR = rupiah penuh (pola NetSuite, putusan pemilik 11 Okt): Decimal HALF_UP ke 1."""
+    return Decimal(str(v)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
 def serialize_proforma(row, order_number=None, paid_amount=None, paid_breakdown=None) -> dict:
     amount = _f(row["amount"]) or 0.0
     data = {
@@ -335,9 +341,11 @@ def serialize_proforma(row, order_number=None, paid_amount=None, paid_breakdown=
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
     if paid_amount is not None:
-        data["paid_amount"] = float(paid_amount)
-        data["outstanding_amount"] = round(amount - float(paid_amount), 2)
-        data["is_fully_paid"] = float(paid_amount) + 0.005 >= amount
+        b = bayar_proforma(row["amount"], paid_amount)
+        data["paid_amount"] = float(b["paid_amount"])
+        data["outstanding_amount"] = float(b["outstanding_amount"])
+        data["excess_amount"] = float(b["excess_amount"])
+        data["is_fully_paid"] = b["is_fully_paid"]
     if paid_breakdown is not None:
         data["paid_breakdown"] = paid_breakdown
     return data
@@ -716,7 +724,7 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                 order_total = _f(order["total_amount"]) or 0.0
 
                 percent = _f(body.percent_of_order)
-                amount = _f(body.amount)
+                amount = float(rupiah(body.amount)) if body.amount is not None else None  # IDR rupiah penuh (11 Okt)
                 if percent is None and amount is None:
                     raise HTTPException(
                         status_code=400,
@@ -727,7 +735,8 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                         raise HTTPException(
                             status_code=400, detail="Persen dari pesanan harus di antara 0 dan 100."
                         )
-                    amount = round(order_total * percent / 100.0, 2)
+                    # 11 Okt (Pergatsi): persen -> nominal SEKALI, Decimal HALF_UP ke rupiah (dulu float 2 desimal)
+                    amount = float(nominal_dari_persen(order["total_amount"], body.percent_of_order))
                 if amount is None or amount <= 0:
                     raise HTTPException(status_code=400, detail="amount harus lebih besar dari 0.")
 
@@ -912,13 +921,14 @@ async def _rencana_ubah(conn, ctx: dict, cur, body) -> dict:
     purpose = _normalisasi_purpose(body.purpose)
     if purpose is not None and purpose not in VALID_PURPOSES:
         blocks.append(_blok("PROFORMA_PURPOSE_INVALID", 400, "Tujuan proforma tidak dikenal."))
-    percent, amount = _f(body.percent_of_order), _f(body.amount)
+    percent = _f(body.percent_of_order)
+    amount = float(rupiah(body.amount)) if body.amount is not None else None  # IDR rupiah penuh (11 Okt)
     if percent is not None:
         if percent <= 0 or percent > 100:
             blocks.append(_blok("PROFORMA_PERCENT_INVALID", 400, "Persen dari pesanan harus di antara 0 dan 100."))
             amount = None
         else:
-            amount = round(total * percent / 100.0, 2)
+            amount = float(nominal_dari_persen(order["total_amount"], body.percent_of_order))  # rupiah, sama dgn buat
     if amount is not None:
         if amount <= 0:
             blocks.append(_blok("PROFORMA_AMOUNT_INVALID", 400, "Nilai proforma harus lebih dari Rp 0."))
@@ -1350,8 +1360,10 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
         "purpose": row["purpose"],
         "percent_of_order": _f(row["percent_of_order"]),
         "amount": amount,
-        "paid_amount": paid,
-        "outstanding_amount": round(amount - paid, 2),
+        # P2 (11 Okt): sama dengan serialize_proforma -- tanpa sisa negatif di PDF saat lebih bayar
+        "paid_amount": float(bayar_proforma(row["amount"], paid)["paid_amount"]),
+        "outstanding_amount": float(bayar_proforma(row["amount"], paid)["outstanding_amount"]),
+        "excess_amount": float(bayar_proforma(row["amount"], paid)["excess_amount"]),
         # ── angka turunan untuk ringkasan kanan ──
         # Persen ditampilkan HANYA bila nilai SO > 0; tanpa penjaga itu
         # proforma tanpa SO membagi dengan nol.

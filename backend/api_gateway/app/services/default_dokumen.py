@@ -22,6 +22,13 @@ from .nama_pengguna import nama_pengguna_sql
 _SERATUS = Decimal("100")
 
 
+def nominal_dari_persen(total, persen) -> Decimal:
+    """SATU rumus persen -> nominal (SO, proforma): Decimal, ROUND_HALF_UP ke RUPIAH (Law 9/25). Nominal = sumber
+    kebenaran; persen hanya turunan tampilan dan tak boleh dipakai ulang untuk menghitung nominal (Pergatsi 11 Okt:
+    62.31% tampilan dari 5.000.000/8.025.000 -> 5.000.377,50)."""
+    return (Decimal(str(total or 0)) * Decimal(str(persen)) / _SERATUS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
 def hitung_dp(total, dp_percent, dp_amount) -> dict:
     """-> {dp_percent: Decimal|None, dp_amount: Decimal|None, dp_amount_source: 'manual'|'percent'|None}."""
     if dp_amount is not None:
@@ -30,7 +37,7 @@ def hitung_dp(total, dp_percent, dp_amount) -> dict:
                 "dp_amount_source": "manual"}
     if dp_percent is not None:
         pct = Decimal(str(dp_percent))
-        nominal = (Decimal(str(total or 0)) * pct / _SERATUS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        nominal = nominal_dari_persen(total, pct)
         return {"dp_percent": pct, "dp_amount": nominal, "dp_amount_source": "percent"}
     return {"dp_percent": None, "dp_amount": None, "dp_amount_source": None}
 

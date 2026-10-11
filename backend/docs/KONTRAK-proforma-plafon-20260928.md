@@ -33,3 +33,46 @@ Fixture nyata: grapgrap 019-09-26 → 0, SO-2609-0001 → 1.670.000, 009-08-26 �
 repro (DP 2 jt lalu PELUNASAN neto 3 jt) → 0 & "Sudah Dibayar" 0; pengetatan DP 2 jt tanpa proforma di SO 5 jt → 3 jt.
 Regresi 254 SO: grapgrap 0 berbeda; kaos 29 berbeda (semua pengetatan, SO ber-DP tanpa proforma issued), 0 membesar,
 0 negatif. Sabotase merah: max(), tanpa pencocokan, tautan diabaikan, kolam tak dikurangi, draf dihitung.
+
+## 11 Okt 2026 — nominal rupiah, kelebihan bayar, pindah uang muka (Pergatsi; putusan pemilik lewat MASTER, pola NetSuite)
+
+Latar: SO-2610-0015 grapgrap. DP diketik **5.000.000** di Penawaran; `resolve_dp` menurunkan persen TAMPILAN 62.31; form
+proforma mendahulukan persen SO; BE menghitung ulang `round(total*persen/100.0, 2)` (float) → PRO-2610-0016 **5.000.377,50**;
+uang muka 5.000.000 → sisa 377,50 → posisi "Menunggu DP" (predikat `so_posisi`: paid < amount, tanpa toleransi — tetap begitu).
+
+**Nominal = sumber kebenaran, IDR rupiah penuh.**
+- `services/default_dokumen.nominal_dari_persen(total, persen)` = SATU rumus persen→nominal (Decimal, HALF_UP ke rupiah) untuk DP SO
+  (`hitung_dp`) DAN proforma (buat + ubah). Nominal yang DIKETIK di proforma juga dibulatkan ke rupiah (`proformas.rupiah`).
+- Konversi Penawaran→SO mengisi `sales_orders.dp_amount_source = 'manual'` bila Penawaran punya `dp_amount` (aturan Penawaran:
+  nominal mengikat, persen turunan). Dulu NULL.
+
+**Kontrak respons proforma (P2)** — `GET /api/proformas`, `GET /api/proformas/{id}`, `GET /api/sales-orders/{id}/proformas`,
+respons buat/ubah/terbit/batal, dan data PDF; satu fungsi murni `services/proforma_terbayar.bayar_proforma`:
+
+| medan | arti |
+|---|---|
+| `paid_amount` | `min(terbayar, amount)` |
+| `outstanding_amount` | `max(0, amount − terbayar)` — tak pernah negatif |
+| `excess_amount` (BARU) | `max(0, terbayar − amount)` — kelebihan bayar = tetap uang muka PESANAN (tak ditolak, tak "milik" proforma) |
+| `is_fully_paid` | `terbayar + 0,005 ≥ amount` (tak berubah) |
+
+`paid_breakdown` tak berubah. Uang muka melebihi sisa proforma DITERIMA (pagar uang muka = total SO, tak berubah).
+
+**Pindah uang muka ke proforma lain (P1)** — padanan NetSuite unapply/re-apply Customer Deposit (tanpa membalik deposit):
+- `POST /api/customer-deposits/{id}/move-proforma` dan `.../move-proforma/preview`, badan `{target_proforma_id, reason?}`, izin `customer_deposit:P`.
+- Syarat (blok bila tidak): uang muka `draft|posted|partial` (`DP_TIDAK_BISA_DIPINDAH`); terkait SO (`DP_TANPA_PESANAN`); tujuan ada di
+  tenant (`PROFORMA_TIDAK_VALID`), `issued` (`PROFORMA_BUKAN_TERBIT`), SO sama (`PROFORMA_BEDA_PESANAN`), pelanggan sama
+  (`PROFORMA_BEDA_PELANGGAN`). Kelebihan atas sisa tujuan BOLEH (→ `excess_amount`).
+- Satu transaksi + kunci `PROFORMA_SO:{tenant}:{so}` (mutex dgn buat/terbit/batal proforma) + `FOR UPDATE` baris uang muka;
+  hanya `UPDATE customer_deposits SET proforma_id` (cek-lalu-ubah) + riwayat `DEPOSIT_PROFORMA_MOVED`. **NOL jurnal, NOL mutasi bank.**
+- Tujuan = tautan sekarang → `no_change: true` (idempoten). Respons: `deposit_*`, `from_proforma_*`, `to_proforma_*`, `can_proceed`,
+  `no_change`, `blocks[]`, `proformas[{proforma_id, before, after}]` (bentuk P2), `journals: []`, `bank: null`, `preview`.
+- Uang muka TANPA tautan tetap tak melunasi proforma (kecuali nominalnya persis sama sisa) — sengaja, seperti NetSuite: FE
+  "Terima DP" wajib mengirim `proforma_id` (putusan MASTER 11 Okt, S2).
+
+**Cek harian** Check 22 (WARNING): proforma `issued` bernominal pecahan rupiah; tanpa daftar kecualian.
+Bukti: `scripts/ops/uji-cek-harian-proforma-pecahan.sh`.
+
+**Bukti (11 Okt)**: `tests/unit/test_dp_nominal_rupiah.py` (29; kode master: 28 gagal) + harness nyata kaos
+`scripts/ops/uji-nyata-dp-nominal.py` (handler asli, semua ROLLBACK): worktree 16/16; kode master 5 gagal tepat di S3/S4/S5/S6/S7;
+S6 = tiruan Pergatsi diperbaiki lewat terbit baru → pindah → batal lama, je/jl/bank_tx + isi baris jurnal identik.

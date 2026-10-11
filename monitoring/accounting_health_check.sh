@@ -8,6 +8,7 @@
 #   Value Integrity:  Check 9 (inv value), 10 (COGS), 11 (opening balance)
 #   Anomaly:          Check 12 (negative cash/bank)
 #   Kartu stok:       Check 21 (kartu stok wajib-jurnal tanpa jurnal padanan, 11 Okt 2026)
+#   Tagihan:          Check 22 (proforma terbit bernominal pecahan rupiah, 11 Okt 2026) -- WARNING
 #
 # Severity: CRITICAL (exit 2), HIGH (exit 1), WARNING (exit 0)
 # Per-tenant loop, skip cafeanna
@@ -950,6 +951,27 @@ check_20_ar_status_turunan() {
     fi
 }
 
+# ---- Check 22 (MASTER 11 Okt 2026, Pergatsi): proforma TERBIT bernominal pecahan rupiah ----
+# IDR = rupiah penuh (pola NetSuite). Nominal pecahan lahir dari persen tampilan yang dipakai ulang (PRO-2610-0016
+# 5.000.377,50 vs DP 5.000.000) dan MENAHAN posisi SO di "Menunggu DP" walau uang sudah diterima. Sejak fix/dp-nominal-rupiah
+# BE membulatkan nominal proforma ke rupiah; cek ini menangkap jalur lain/baris lama. WARNING (dokumen non-posting,
+# bukan buku besar). TANPA daftar kecualian: baris lama tetap terlihat sampai diperbaiki (putusan pemilik terpisah).
+check_22_proforma_pecahan() {
+    local tenant="$1" cnt nomor
+    cnt=$(psql_cmd "SELECT count(*) FROM proformas WHERE tenant_id = '$tenant' AND status = 'issued' AND amount <> round(amount);")
+    if [ "$cnt" = "__GAGAL__" ]; then
+        CHK_PASS=0; CHK_DETAIL="__GAGAL__"
+    elif [ "$cnt" = "0" ]; then
+        CHK_PASS=1; CHK_DETAIL=""
+    elif [[ "$cnt" =~ ^[0-9]+$ ]]; then
+        nomor=$(psql_cmd "SELECT string_agg(proforma_number || '=' || amount::text, ',' ORDER BY proforma_number) FROM proformas WHERE tenant_id = '$tenant' AND status = 'issued' AND amount <> round(amount);")
+        CHK_PASS=0; CHK_DETAIL="proforma terbit bernominal pecahan: $cnt ($nomor)"
+        detail "[CHECK 22] $tenant: $CHK_DETAIL"
+    else
+        CHK_PASS=0; CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt"
+    fi
+}
+
 # ---- Check 21 (MASTER 11 Okt 2026, audit F1 saldo awal stok): kartu stok yang WAJIB berjurnal ----
 # Penjaga HARIAN untuk celah yang ditutup 10 Okt (cc3e6efb): baris `inventory_ledger` dari sumber di bawah yang TIDAK punya
 # jurnal POSTED padanan (journal_id ATAU source_id menunjuk journal_entries POSTED milik tenant yang sama) = kartu bernilai,
@@ -1352,6 +1374,18 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         STOK_DETAIL="$CHK_DETAIL"
         log "  HIGH [21] Kartu Stok Wajib Jurnal: $CHK_DETAIL"
+    fi
+
+    # Check 22: proforma terbit bernominal pecahan rupiah (11 Okt 2026, Pergatsi) -- WARNING
+    check_22_proforma_pecahan "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 22 "Proforma Nominal Rupiah" "$CHK_DETAIL"
+    else
+        WARNING_COUNT=$((WARNING_COUNT + 1)); T_WARNING=$((T_WARNING + 1))
+        log "  WARNING [22] Proforma Nominal Rupiah: $CHK_DETAIL"
     fi
 
     # ---- Build per-tenant Discord block ----

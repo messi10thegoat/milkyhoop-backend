@@ -187,6 +187,16 @@ def ringkasan_pembayaran_so(order_total, r: dict) -> dict:
     }
 
 
+def bayar_proforma(amount, terbayar) -> dict:
+    """P2 (11 Okt 2026, pola NetSuite): kelebihan bayar TETAP uang muka PESANAN, bukan "bayar lebih" milik proforma.
+    paid_amount = min(terbayar, amount); outstanding_amount = max(0, amount - terbayar) (tak pernah negatif);
+    excess_amount = max(0, terbayar - amount). Murni, Decimal (Law 25). Dipakai detail/daftar/PDF proforma dan
+    pratinjau pindah uang muka."""
+    a, t = _d(amount), _d(terbayar)
+    return {"paid_amount": min(t, a), "outstanding_amount": max(NOL, a - t), "excess_amount": max(NOL, t - a),
+            "is_fully_paid": t + Decimal("0.005") >= a}
+
+
 async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
     """{proforma_id: {"paid": Decimal, "paid_breakdown": {...}}} untuk SEMUA proforma SO-SO itu."""
     so_ids = list({s for s in so_ids if s is not None})

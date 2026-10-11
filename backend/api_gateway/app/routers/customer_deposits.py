@@ -3087,6 +3087,172 @@ async def preview_reverse_customer_deposit_application(request: Request, deposit
                                                          PratinjauReverseDp(application_id=application_id))}
 
 
+# =============================================================================
+# P1 (11 Okt 2026, putusan pemilik lewat MASTER, pola NetSuite unapply/re-apply Customer Deposit): PINDAHKAN uang muka
+# ke proforma lain. Tautan uang muka -> proforma = ATRIBUSI tagihan non-posting, BUKAN pembukuan: NOL jurnal, NOL mutasi
+# bank (uang muka TIDAK dibalik). Latar: Pergatsi PRO-2610-0016 bernominal 5.000.377,50 (persen tampilan dipakai ulang)
+# dibayar DEP-2610-0011 5.000.000 -> "Menunggu DP"; batal proforma ditolak PROFORMA_HAS_PAYMENT, ubah ditolak (bukan
+# draf), PATCH uang muka tak boleh mengganti proforma_id. Void + uang muka ulang DITOLAK pemilik (mengotori buku+bank).
+# Syarat: uang muka draf/posted/partial; SO uang muka = SO proforma tujuan; pelanggan sama; tujuan 'issued'; kelebihan
+# atas sisa tujuan BOLEH (P2: tetap uang muka pesanan, tampil excess_amount). Satu tx + kunci PROFORMA_SO (mutex dengan
+# buat/terbit/batal proforma) + FOR UPDATE baris uang muka; riwayat DEPOSIT_PROFORMA_MOVED. Tujuan = tautan sekarang ->
+# no-op idempoten (ulang sesudah balasan hilang = sukses yang sama).
+# =============================================================================
+DP_BISA_PINDAH = ("draft", "posted", "partial")
+
+
+class PindahProformaRequest(BaseModel):
+    target_proforma_id: str
+    reason: Optional[str] = None
+
+
+def _blok_pindah(code: str, status: int, message: str) -> dict:
+    return {"code": code, "status": status, "message": message}
+
+
+async def _keadaan_proforma_so(conn, tenant_id: str, so_id, pids: list) -> dict:
+    """{pid: {proforma_number, amount, paid_amount, outstanding_amount, excess_amount}} -- turunan SAMA dengan detail."""
+    from ..services.proforma_terbayar import bayar_proforma, terbayar_proforma
+    pids = [p for p in pids if p is not None]
+    if not pids or not so_id:
+        return {}
+    tb = await terbayar_proforma(conn, tenant_id, [so_id])
+    rows = await conn.fetch("SELECT id, proforma_number, amount FROM proformas WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                            tenant_id, pids)
+    out = {}
+    for r in rows:
+        b = bayar_proforma(r["amount"], tb.get(r["id"], {}).get("paid", 0))
+        out[r["id"]] = {"proforma_id": str(r["id"]), "proforma_number": r["proforma_number"], "amount": float(r["amount"]),
+                        **{k: (float(v) if k != "is_fully_paid" else v) for k, v in b.items()}}
+    return out
+
+
+async def _rencana_pindah(conn, tenant_id: str, deposit_id: UUID, body: PindahProformaRequest) -> dict:
+    """Penentu pindah (SAMA untuk aksi dan pratinjau). Mengambil kunci PROFORMA_SO + FOR UPDATE baris uang muka."""
+    dep = await conn.fetchrow(
+        """SELECT id, deposit_number, amount, status, customer_id, sales_order_id, proforma_id
+           FROM customer_deposits WHERE id = $1 AND tenant_id = $2""", deposit_id, tenant_id)
+    if not dep:
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
+    so_id = await resolve_order_id_for_deposit(conn, tenant_id, dep["sales_order_id"], dep["proforma_id"])
+    if so_id:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PROFORMA_SO:{tenant_id}:{so_id}")
+    dep = await conn.fetchrow(
+        """SELECT id, deposit_number, amount, status, customer_id, sales_order_id, proforma_id
+           FROM customer_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE""", deposit_id, tenant_id)
+    blocks = []
+    if dep["status"] not in DP_BISA_PINDAH:
+        blocks.append(_blok_pindah("DP_TIDAK_BISA_DIPINDAH", 400, (
+            f"Uang muka berstatus {tg.status_id('dp', dep['status'])} tidak bisa dipindahkan ke proforma lain.")))
+    if not so_id:
+        blocks.append(_blok_pindah("DP_TANPA_PESANAN", 400, "Uang muka ini tidak terkait pesanan, jadi tidak bisa ditautkan ke proforma."))
+    tujuan = None
+    try:
+        tid_pf = UUID(str(body.target_proforma_id))
+    except (ValueError, TypeError):
+        tid_pf = None
+    if tid_pf is not None:
+        tujuan = await conn.fetchrow(
+            "SELECT id, proforma_number, status, sales_order_id, customer_id, amount FROM proformas WHERE id = $1 AND tenant_id = $2",
+            tid_pf, tenant_id)
+    if not tujuan:
+        blocks.append(_blok_pindah("PROFORMA_TIDAK_VALID", 422, "Proforma tujuan tidak ditemukan."))
+    else:
+        if tujuan["status"] != "issued":
+            blocks.append(_blok_pindah("PROFORMA_BUKAN_TERBIT", 422, (
+                f"Proforma tujuan berstatus {tg.status_id('proforma', tujuan['status'])}; uang muka hanya bisa ditautkan "
+                "ke proforma yang sudah terbit.")))
+        if so_id and str(tujuan["sales_order_id"]) != str(so_id):
+            blocks.append(_blok_pindah("PROFORMA_BEDA_PESANAN", 422, "Proforma tujuan bukan milik pesanan uang muka ini."))
+        if str(tujuan["customer_id"] or "").lower() != str(dep["customer_id"] or "").lower():
+            blocks.append(_blok_pindah("PROFORMA_BEDA_PELANGGAN", 422, "Proforma tujuan bukan milik pelanggan uang muka ini."))
+    lama = await conn.fetchval("SELECT proforma_number FROM proformas WHERE id = $1 AND tenant_id = $2",
+                               dep["proforma_id"], tenant_id) if dep["proforma_id"] else None
+    noop = bool(tujuan) and dep["proforma_id"] == tujuan["id"]
+    return {"dep": dep, "so_id": so_id, "tujuan": tujuan, "lama_nomor": lama, "blocks": blocks, "noop": noop}
+
+
+async def _tulis_pindah(conn, ctx: dict, r: dict, body: PindahProformaRequest) -> None:
+    """SATU penulis (aksi + pratinjau yang di-rollback). Hanya kolom proforma_id + riwayat; nol jurnal."""
+    dep, tujuan = r["dep"], r["tujuan"]
+    hasil = await conn.fetchval(
+        """UPDATE customer_deposits SET proforma_id = $3
+           WHERE id = $1 AND tenant_id = $2 AND proforma_id IS NOT DISTINCT FROM $4 RETURNING id""",
+        dep["id"], ctx["tenant_id"], tujuan["id"], dep["proforma_id"])
+    if not hasil:
+        raise HTTPException(status_code=409, detail="Uang muka sudah berubah. Muat ulang lalu coba lagi.")
+    asal = f"proforma {r['lama_nomor']}" if r["lama_nomor"] else "tanpa proforma"
+    await catat_riwayat(
+        conn, ctx["tenant_id"], "customer_deposit", dep["id"], dep["deposit_number"], "DEPOSIT_PROFORMA_MOVED",
+        ctx["user_id"], f"Uang muka {dep['deposit_number']} dipindah dari {asal} ke proforma {tujuan['proforma_number']}",
+        {"from_proforma_id": str(dep["proforma_id"]) if dep["proforma_id"] else None,
+         "from_proforma_number": r["lama_nomor"], "to_proforma_id": str(tujuan["id"]),
+         "to_proforma_number": tujuan["proforma_number"], "amount": str(dep["amount"]),
+         "sales_order_id": str(r["so_id"]), "reason": (body.reason or "").strip() or None},
+        source="api:customer_deposits.move_proforma")
+
+
+def _bentuk_pindah(r: dict, sebelum: dict, sesudah: dict, pratinjau: bool) -> dict:
+    dep, tujuan = r["dep"], r["tujuan"]
+    return {"deposit_id": str(dep["id"]), "deposit_number": dep["deposit_number"], "amount": float(dep["amount"]),
+            "from_proforma_id": str(dep["proforma_id"]) if dep["proforma_id"] else None,
+            "from_proforma_number": r["lama_nomor"],
+            "to_proforma_id": str(tujuan["id"]) if tujuan else None,
+            "to_proforma_number": tujuan["proforma_number"] if tujuan else None,
+            "can_proceed": not r["blocks"], "no_change": r["noop"],
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+            "proformas": [{"proforma_id": k, **{"before": sebelum.get(k), "after": sesudah.get(k)}}
+                          for k in dict.fromkeys(list(sebelum) + list(sesudah))],
+            "journals": [], "bank": None, "preview": pratinjau}
+
+
+class _BatalPindah(Exception):
+    def __init__(self, data):
+        self.data = data
+
+
+async def _jalankan_pindah(ctx: dict, deposit_id: UUID, body: PindahProformaRequest, pratinjau: bool) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                r = await _rencana_pindah(conn, ctx["tenant_id"], deposit_id, body)
+                pids = [r["dep"]["proforma_id"], r["tujuan"]["id"] if r["tujuan"] else None]
+                sebelum = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
+                if r["blocks"]:
+                    if pratinjau:
+                        raise _BatalPindah(_bentuk_pindah(r, _kunci_teks(sebelum), {}, True))
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
+                if not r["noop"]:
+                    await _tulis_pindah(conn, ctx, r, body)
+                sesudah = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
+                data = _bentuk_pindah(r, _kunci_teks(sebelum), _kunci_teks(sesudah), pratinjau)
+                if pratinjau:
+                    raise _BatalPindah(data)
+                return data
+        except _BatalPindah as b:
+            return b.data
+
+
+def _kunci_teks(d: dict) -> dict:
+    return {str(k): v for k, v in d.items()}
+
+
+@router.post("/{deposit_id}/move-proforma")
+async def move_customer_deposit_proforma(request: Request, deposit_id: UUID, body: PindahProformaRequest):
+    """P1: pindahkan uang muka ke proforma lain (SO & pelanggan sama, tujuan terbit). Nol jurnal, nol mutasi bank."""
+    ctx = await _ctx_pratinjau(request)
+    return {"success": True, "data": await _jalankan_pindah(ctx, deposit_id, body, False)}
+
+
+@router.post("/{deposit_id}/move-proforma/preview")
+async def preview_move_customer_deposit_proforma(request: Request, deposit_id: UUID, body: PindahProformaRequest):
+    """Pratinjau pindah: penentu + penulis YANG SAMA lalu rollback -> sebelum/sesudah per proforma, journals [] ."""
+    ctx = await _ctx_pratinjau(request)
+    return {"success": True, "data": await _jalankan_pindah(ctx, deposit_id, body, True)}
+
+
 @router.get("/{deposit_id}/history")
 async def get_customer_deposit_history(request: Request, deposit_id: UUID, limit: int = Query(200, ge=1, le=500)):
     """Riwayat uang muka, bentuk SAMA dengan GET /sales-orders/{id}/history (so_riwayat.riwayat_uang_muka)."""
