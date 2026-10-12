@@ -325,6 +325,24 @@ def sisa_kredit_nk(status, total_amount, amount_applied, amount_refunded, origin
     return Decimal(str(total_amount or 0)) - Decimal(str(amount_applied or 0)) - Decimal(str(amount_refunded or 0))
 
 
+async def saldo_kredit_nk_many(conn, tenant_id: str, deposit_ids) -> dict:
+    """{str(created_deposit_id): {deposit_id, deposit_number, amount, remaining_amount, status}} -- kunci customer_credit
+    di GET daftar/detail NK (12 Okt 2026, kontrak FE). Sisa = compute_deposit_remaining_many (journal-derived, SATU SQL
+    sisa uang muka); KRD void -> sisa 0. Tenant eksplisit (Law 24)."""
+    ids = [d for d in {x for x in deposit_ids if x}]
+    if not ids:
+        return {}
+    from .customer_deposits import compute_deposit_remaining_many
+    rows = await conn.fetch(
+        "SELECT id, deposit_number, amount, status FROM customer_deposits WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        tenant_id, ids)
+    sisa = await compute_deposit_remaining_many(conn, tenant_id, [r["id"] for r in rows])
+    return {str(r["id"]): {"deposit_id": str(r["id"]), "deposit_number": r["deposit_number"],
+                           "amount": float(r["amount"] or 0), "status": r["status"],
+                           "remaining_amount": 0.0 if r["status"] == "void" else float(max(sisa.get(str(r["id"]), Decimal("0")), Decimal("0")))}
+            for r in rows}
+
+
 async def tolak_nk_bertaut(conn, tenant_id: str, cn) -> None:
     """409 berkode untuk refund/apply DARI NK bertaut (sisa kreditnya 0 menurut sisa_kredit_nk)."""
     if cn["original_invoice_id"] is None:
@@ -336,11 +354,13 @@ async def tolak_nk_bertaut(conn, tenant_id: str, cn) -> None:
                                   cn.get("created_deposit_id"), tenant_id)
         raise HTTPException(status_code=409, detail={
             "code": KODE_KREDIT_DI_UANG_MUKA,
-            "message": f"Kredit nota ini sudah menjadi saldo kredit {krd or 'uang muka'}; kembalikan lewat uang muka itu."})
+            "message": f"Kredit nota ini sudah menjadi saldo kredit {krd or 'uang muka'}; kembalikan lewat uang muka itu.",
+            "deposit_id": str(cn.get("created_deposit_id")), "deposit_number": krd})
     raise HTTPException(status_code=409, detail={
         "code": KODE_SUDAH_MEMOTONG_FAKTUR,
         "message": f"Nota kredit ini sudah memotong tagihan {cn.get('original_invoice_number') or 'faktur asalnya'}; "
-                   "tidak ada sisa kredit untuk dikembalikan."})
+                   "tidak ada sisa kredit untuk dikembalikan.",
+        "invoice_id": str(cn["original_invoice_id"]), "invoice_number": cn.get("original_invoice_number")})
 
 
 def status_detail_nk(status, amount_applied, amount_refunded) -> str:
@@ -444,7 +464,7 @@ async def list_credit_notes(
                 SELECT id, credit_note_number, customer_id, customer_name,
                        credit_note_date, total_amount, amount_applied, amount_refunded,
                        status, reason, created_at,
-                       original_invoice_id, original_invoice_number, voided_at, voided_reason
+                       original_invoice_id, original_invoice_number, voided_at, voided_reason, created_deposit_id
                 FROM credit_notes
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -453,6 +473,7 @@ async def list_credit_notes(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            _kredit = await saldo_kredit_nk_many(conn, ctx["tenant_id"], [r.get("created_deposit_id") for r in rows])
 
             # U9: SO induk lewat faktur asal (NK tak punya sales_order_id) -- satu kueri per halaman, tenant eksplisit
             _inv_ids = [r["original_invoice_id"] for r in rows if r["original_invoice_id"]]
@@ -482,6 +503,7 @@ async def list_credit_notes(
                         row["status"], row["total_amount"], row["amount_applied"], row["amount_refunded"],
                         row["original_invoice_id"]
                     ),
+                    "customer_credit": _kredit.get(str(row.get("created_deposit_id"))) if row.get("created_deposit_id") else None,
                     "status": row["status"],
                     "status_detail": status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
                     "reason": row["reason"],
@@ -694,6 +716,8 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     "amount_applied": cn["amount_applied"] or 0,
                     "amount_refunded": cn["amount_refunded"] or 0,
                     "remaining_amount": remaining,
+                    "customer_credit": (await saldo_kredit_nk_many(conn, ctx["tenant_id"], [cn["created_deposit_id"]])).get(
+                        str(cn["created_deposit_id"])) if cn["created_deposit_id"] else None,
                     "status": cn["status"],
                     "status_detail": status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
                     "credit_note_date": cn["credit_note_date"].isoformat(),

@@ -129,6 +129,9 @@ async def main():
             o["apply_nk"] = await sp(c, lambda: galat(C.apply_nota_kredit_core(c, ctx, nk_id, ApplyCreditNoteRequest(
                 applications=[ApplyCreditNoteItem(invoice_id=str(INV), amount=cn["total_amount"])]))))
             o["pv_refund_nk"] = await C._pratinjau_nk_aksi(ctx, nk_id, "refund", rb)
+            det0 = await C.get_credit_note(req(), nk_id)
+            o["cc0"] = (det0.get("data") if isinstance(det0, dict) else det0.model_dump()["data"])
+            o["cc0"] = o["cc0"].get("customer_credit") if isinstance(o["cc0"], dict) else None
             bt0 = await c.fetchval("SELECT count(*) FROM bank_transactions WHERE tenant_id=$1", T)
             dr = RefundCustomerDepositRequest(amount=krd["amount"], refund_date=TGL_REFUND, payment_method="transfer",
                                               account_id=COA_BANK, bank_account_id=BANK, notes="TES E2E refund pesanan batal")
@@ -140,6 +143,9 @@ async def main():
             o["bank_tx_baru"] = await c.fetchval("SELECT count(*) FROM bank_transactions WHERE tenant_id=$1", T) - bt0
             from app.routers.customer_deposits import compute_deposit_remaining
             o["krd_sisa"] = await compute_deposit_remaining(c, T, krd["id"])
+            det1 = await C.get_credit_note(req(), nk_id)
+            d1 = det1.get("data") if isinstance(det1, dict) else det1.model_dump()["data"]
+            o["cc1"] = d1.get("customer_credit")
             o["ar_akhir"] = await c.fetchval("SELECT COALESCE(SUM(outstanding),0) FROM compute_ar_outstanding($1) WHERE invoice_id=$2", T, INV)
             return o
         o = await sp(c, alur)
@@ -162,6 +168,12 @@ async def main():
             str(o["j_refund"]))
         cek("9 bank_transactions: satu withdrawal -nilai tanggal 1 Okt (DEPOSIT_REFUND)",
             o["bank_tx_baru"] == 1 and o["bank_tx"][0]["amount"] == -o["total"] and o["bank_tx"][0]["transaction_date"] == TGL_REFUND, str(o["bank_tx"]))
+        if "customer_credit" in str(o.get("cc0")) or o.get("cc0") is not None:
+            pass
+        cek("13 GET detail NK: customer_credit KRD sisa penuh sebelum refund, 0 sesudah (kontrak FE)",
+            o.get("cc0") and o["cc0"]["deposit_number"] == o["krd"] and o["cc0"]["remaining_amount"] == float(o["total"])
+            and o.get("cc1") and o["cc1"]["remaining_amount"] == 0.0, f"{o.get('cc0')} {o.get('cc1')}")
+        cek("14 detail 409 refund NK membawa deposit_number", o["refund_nk"].get("detail", {}).get("deposit_number") == o["krd"] if isinstance(o["refund_nk"].get("detail"), dict) else False)
         cek("10 KRD saldo 0; piutang faktur tetap 0", o["krd_sisa"] == 0 and o["ar_akhir"] == 0, f"{o['krd_sisa']} {o['ar_akhir']}")
 
         rb = RefundCreditNoteRequest(amount=Decimal("100000"), refund_date=TGL_REFUND, payment_method="transfer", bank_account_id=BANK)
@@ -171,6 +183,9 @@ async def main():
         rb3 = RefundCreditNoteRequest(amount=Decimal("25000"), refund_date=TGL_REFUND, payment_method="transfer", bank_account_id=BANK)
         b3 = await sp(c, lambda: galat(C.refund_nota_kredit_core(c, ctx, NK_BEBAS, rb3)))
         cek("12 NK BEBAS (CN-2609-0006) TETAP bisa direfund", "ok" in b3, str(b3)[:200])
+        db = await C.get_credit_note(req(), NK_BEBAS)
+        db = db.get("data") if isinstance(db, dict) else db.model_dump()["data"]
+        cek("15 GET detail NK bebas: customer_credit null", db.get("customer_credit") is None)
         sum1 = (await C.get_credit_notes_summary(req()))
         sum1 = (sum1.get("data", sum1) if isinstance(sum1, dict) else sum1.model_dump())
         print("RINGKASAN available_balance kaos:", sum1.get("available_balance"), flush=True)

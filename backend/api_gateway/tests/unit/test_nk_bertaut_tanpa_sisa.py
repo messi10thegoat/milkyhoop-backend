@@ -100,3 +100,53 @@ def test_draf_bertaut_tetap_pesan_lama_400():
     with pytest.raises(HTTPException) as e:
         asyncio.run(CN.tolak_nk_bertaut(Konek(), "t", _nk(status="draft")))
     assert e.value.status_code == 400 and e.value.detail == "Nota kredit ini sudah terkait ke faktur."
+
+
+# ---------------- customer_credit di GET daftar/detail NK (12 Okt 2026, kontrak FE) ----------------
+class KonekKrd:
+    def __init__(self, rows, sisa):
+        self.rows, self.sisa, self.sql = rows, sisa, []
+
+    async def fetch(self, sql, *a):
+        self.sql.append((sql, a))
+        assert "tenant_id = $1" in sql and a[0] == "t"
+        return self.rows
+
+
+def test_saldo_kredit_nk_many_sisa_jurnal_dan_void_nol(monkeypatch):
+    k1, k2 = uuid.uuid4(), uuid.uuid4()
+    rows = [{"id": k1, "deposit_number": "KRD-1", "amount": Decimal("170000"), "status": "posted"},
+            {"id": k2, "deposit_number": "KRD-2", "amount": Decimal("5000"), "status": "void"}]
+
+    async def sisa(conn, tid, ids):
+        return {str(k1): Decimal("120000"), str(k2): Decimal("5000")}
+    import app.routers.customer_deposits as CD
+    monkeypatch.setattr(CD, "compute_deposit_remaining_many", sisa)
+    out = asyncio.run(CN.saldo_kredit_nk_many(KonekKrd(rows, None), "t", [k1, k2, None, k1]))
+    assert out[str(k1)] == {"deposit_id": str(k1), "deposit_number": "KRD-1", "amount": 170000.0, "status": "posted",
+                            "remaining_amount": 120000.0}
+    assert out[str(k2)]["remaining_amount"] == 0.0          # KRD void (NK di-void) -> tak bisa dikembalikan
+    assert asyncio.run(CN.saldo_kredit_nk_many(KonekKrd([], None), "t", [None])) == {}
+
+
+def test_skema_daftar_dan_detail_mempertahankan_customer_credit():
+    from app.schemas import credit_notes as S
+    cc = {"deposit_id": str(uuid.uuid4()), "deposit_number": "KRD-1", "amount": 1.0, "remaining_amount": 1.0, "status": "posted"}
+    assert S.CreditNoteListItem.model_fields["customer_credit"].default is None
+    assert S.CreditNoteDetail.model_fields["customer_credit"].default is None
+    assert S.NkSaldoKredit(**cc).model_dump() == cc
+
+
+def test_detail_409_membawa_nomor_krd_dan_faktur():
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(CN.tolak_nk_bertaut(Konek(), "t", _nk(created_deposit_id=uuid.uuid4())))
+    assert e.value.detail["deposit_number"] == "KRD-2610-0007" and e.value.detail["deposit_id"]
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(CN.tolak_nk_bertaut(Konek(), "t", _nk()))
+    assert e.value.detail["invoice_number"] == "INV-2609-0023" and e.value.detail["invoice_id"] == str(FAKTUR)
+
+
+def test_get_daftar_dan_detail_mengisi_customer_credit():
+    assert 'created_deposit_id\n                FROM credit_notes' in SRC or "voided_reason, created_deposit_id" in SRC
+    assert '"customer_credit": _kredit.get(' in _fungsi("list_credit_notes")
+    assert '"customer_credit": (await saldo_kredit_nk_many(' in _fungsi("get_credit_note")

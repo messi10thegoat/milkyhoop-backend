@@ -187,6 +187,16 @@ class CreditNoteRefundResponse(BaseModel):
 # RESPONSE MODELS - Credit Note
 # =============================================================================
 
+class NkSaldoKredit(BaseModel):
+    """Saldo kredit uang muka (KRD-...) yang dibuat NK bertaut faktur dari kelebihannya (12 Okt 2026, kontrak FE).
+    remaining_amount = sisa KRD journal-derived (compute_deposit_remaining); 0 bila KRD void."""
+    deposit_id: str
+    deposit_number: Optional[str] = None
+    amount: float = 0
+    remaining_amount: float = 0
+    status: Optional[str] = None
+
+
 class CreditNoteListItem(BaseModel):
     """Credit note item for list responses."""
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
@@ -202,6 +212,7 @@ class CreditNoteListItem(BaseModel):
     amount_applied: float = 0
     amount_refunded: float = 0
     remaining_amount: float = 0
+    customer_credit: Optional[NkSaldoKredit] = None  # null = NK tanpa saldo kredit KRD
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     reason: str
@@ -240,6 +251,7 @@ class CreditNoteDetail(BaseModel):
     amount_applied: float = 0
     amount_refunded: float = 0
     remaining_amount: float = 0
+    customer_credit: Optional[NkSaldoKredit] = None  # null = NK tanpa saldo kredit KRD
 
     # Status & dates
     status: str
