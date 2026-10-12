@@ -252,12 +252,14 @@
     </div>
     {% endif %}
 
+    {% if proforma.get('catatan_bukan_faktur_pajak') %}{# 12 Okt 2026: HANYA tenant PKP; non-PKP tanpa catatan pajak #}
     <div class="notes-section">
         <div class="notes-text">
             Dokumen ini adalah {{ (judul or 'Tagihan Uang Muka') | lower }} (proforma) dan BUKAN faktur pajak.
             Faktur pajak diterbitkan terpisah sesuai ketentuan yang berlaku.
         </div>
     </div>
+    {% endif %}
 
     <!-- 7. Footer (running element -> kotak margin @page, lihat <style> di head) -->
     <div class="footer-running">

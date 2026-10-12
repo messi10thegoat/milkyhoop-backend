@@ -1422,9 +1422,12 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
         ]
 
     tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
+        'SELECT display_name, address, phone, logo_url, is_pkp FROM "Tenant" WHERE id = $1',
         ctx["tenant_id"],
     )
+    # 12 Okt 2026 (putusan pemilik): catatan "BUKAN faktur pajak" HANYA untuk tenant PKP. Sumber SAMA dengan penjaga PPN
+    # faktur (pkp_guard: "Tenant".is_pkp); ketat `is True` -- tak pernah bawaan (Law-34: V154 dulu DEFAULT true).
+    _catatan_pajak = bool(tenant_row and tenant_row["is_pkp"] is True)
     if tenant_row:
         tenant_info = {
             "name": tenant_row["display_name"],
@@ -1480,6 +1483,7 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
     from ..services import faktur_cetak as _fc
     _rek_cetak = await _fc.muat_rekening(conn, ctx["tenant_id"])
     proforma_data = {
+        "catatan_bukan_faktur_pajak": _catatan_pajak,
         "id": str(row["id"]),
         "proforma_number": row["proforma_number"],
         "proforma_date": row["proforma_date"].isoformat()
