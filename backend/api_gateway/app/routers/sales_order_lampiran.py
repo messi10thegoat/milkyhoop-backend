@@ -26,6 +26,11 @@ bersama-sama melewati 10. Tiap berkas di savepoint sendiri.
 Pagar: setiap SQL JOIN/menyaring `sales_orders` + tenant JWT (gateway memakai
 peran BYPASSRLS) -> SO tenant lain / tak ada = 404. Izin modul `sales_order`
 (R/U/D) di permission_middleware.
+
+NAMA per TAUTAN (12 Okt 2026, temuan WORKSPACE uji nyata kaos; pola NetSuite/SAP): berkas dideduplikasi per isi (sha256)
+di `documents`, tetapi nama yang dilihat pengguna = nama UNGGAHAN tautan ini (`document_attachments.display_name`, V411).
+Dulu PNG baru "tes-e2e-resi-....png" tampil sebagai dokumen lama "uji-r139-sah.png". Tautan lama (display_name NULL)
+memakai nama dokumen.
 """
 import hashlib
 import logging
@@ -105,12 +110,12 @@ _SQL_SUDAH_TERTAUT = """
 _SQL_TAUT = """
     INSERT INTO document_attachments (
         tenant_id, document_id, entity_type, entity_id,
-        attachment_type, display_order, attached_by
-    ) VALUES ($1, $2, 'sales_order', $3, 'attachment', $4, $5::uuid)
+        attachment_type, display_order, attached_by, display_name
+    ) VALUES ($1, $2, 'sales_order', $3, 'attachment', $4, $5::uuid, $6)
 """
 
 _SQL_DAFTAR = """
-    SELECT d.id, d.file_name, d.file_size, d.file_type, d.storage_type,
+    SELECT d.id, COALESCE(da.display_name, d.file_name) AS file_name, d.file_size, d.file_type, d.storage_type,
            d.deleted_at, d.uploaded_at
     FROM document_attachments da
     JOIN documents d ON d.id = da.document_id
@@ -122,7 +127,7 @@ _SQL_DAFTAR = """
 """
 
 _SQL_UNDUH = """
-    SELECT d.file_name, d.file_path, d.file_type, d.storage_type
+    SELECT COALESCE(da.display_name, d.file_name) AS file_name, d.file_path, d.file_type, d.storage_type
     FROM document_attachments da
     JOIN documents d ON d.id = da.document_id
     JOIN sales_orders so ON so.id = da.entity_id
@@ -233,7 +238,7 @@ async def unggah_lampiran_so(
                             hasil[i] = {"nama": nama, "ok": False, "galat": "duplikat", "id": str(doc_id)}
                             continue
                         await conn.execute(
-                            _SQL_TAUT, tenant_id, doc_id, order_id, urutan, ctx["user_id"]
+                            _SQL_TAUT, tenant_id, doc_id, order_id, urutan, ctx["user_id"], nama
                         )
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"[LampiranSO] simpan baris gagal: {type(e).__name__}: {e}")

@@ -17,6 +17,7 @@ mencatat urutan peristiwa (txn/savepoint/lock/hitung) untuk tes urutan.
 """
 import asyncio
 import hashlib
+import inspect
 import io
 import re
 import uuid
@@ -49,6 +50,7 @@ class Keadaan:
         # tautan: list of dict(document_id, storage_type, deleted_at)
         self.tautan = list(tautan or [])
         self.dokumen = {}  # (sha, kunci) -> id
+        self.nama_dok = {}  # id -> documents.file_name (nama unggahan PERTAMA isi itu)
         self.kunci_lock = {}  # nama -> asyncio.Lock
         self.gagal_taut_untuk = set()  # sha yang INSERT tautannya meledak
 
@@ -100,13 +102,14 @@ class Conn:
         if "set_config" in sql:
             return
         if "INSERT INTO document_attachments" in sql:
-            tenant, doc_id, so_id, urutan, user = args
+            tenant, doc_id, so_id, urutan, user, *sisa = args
+            nama = sisa[0] if sisa else None  # kode lama (pra-V411) tak mengirim nama per tautan
             sha = next(s for (s, _), d in self.k.dokumen.items() if d == doc_id)
             if sha in self.k.gagal_taut_untuk:
                 raise RuntimeError("galat DB buatan")
             await asyncio.sleep(0)
             self.k.tautan.append(
-                {"document_id": doc_id, "storage_type": "s3", "deleted_at": None, "urutan": urutan}
+                {"document_id": doc_id, "storage_type": "s3", "deleted_at": None, "urutan": urutan, "display_name": nama}
             )
             self.peristiwa.append(("taut", doc_id))
             return
@@ -126,6 +129,7 @@ class Conn:
         if sql == SL._SQL_DOK_BARU:
             doc_id = uuid.uuid4()
             self.k.dokumen[(args[6], args[5])] = doc_id
+            self.k.nama_dok[doc_id] = args[1]
             return doc_id
         if sql == SL._SQL_SUDAH_TERTAUT:
             return 1 if any(t["document_id"] == args[0] for t in self.k.tautan) else None
@@ -142,7 +146,7 @@ class Conn:
             return [
                 {
                     "id": t["document_id"],
-                    "file_name": t.get("nama", "x.jpg"),
+                    "file_name": t.get("display_name") or self.k.nama_dok.get(t["document_id"]) or t.get("nama", "x.jpg"),
                     "file_size": 10,
                     "file_type": "image/jpeg",
                     "storage_type": t["storage_type"],
@@ -514,3 +518,38 @@ def test_router_terdaftar_di_main():
     main = (pathlib.Path(SL.__file__).parents[1] / "main.py").read_text()
     assert "sales_order_lampiran.router" in main
     assert re.search(r'sales_order_lampiran\.router,\s*prefix="/api/sales-orders"', main)
+
+
+# ------------------------------------------------------------------ nama per TAUTAN (12 Okt 2026, V411)
+@pytest.mark.asyncio
+async def test_isi_sama_nama_baru_tampil_nama_unggahan_baru_bukan_dokumen_lama(monkeypatch):
+    """Temuan WORKSPACE (uji nyata kaos): PNG baru "tes-e2e-resi-....png" tampil sebagai dokumen lama "uji-r139-sah.png"
+    karena dedup per isi memakai baris documents lama. Pola NetSuite/SAP: penyimpanan boleh dedup, NAMA milik tautan."""
+    k = Keadaan()
+    pasang(monkeypatch, k)
+    isi = PNG + b"isi-yang-sama"
+    o1 = await SL.unggah_lampiran_so(req(), SO, [berkas("uji-r139-sah.png", isi, "image/png")])
+    doc = o1["hasil"][0]["id"]
+    await SL.lepas_lampiran_so(req(), SO, uuid.UUID(doc))
+    o2 = await SL.unggah_lampiran_so(req(), SO, [berkas("tes-e2e-resi-1.png", isi, "image/png")])
+    assert o2["hasil"][0]["ok"] and o2["hasil"][0]["id"] == doc          # penyimpanan TETAP dedup (dokumen sama)
+    daftar = await SL.daftar_lampiran_so(req(), SO)
+    assert [d["nama"] for d in daftar["data"]] == ["tes-e2e-resi-1.png"]
+    assert k.nama_dok[uuid.UUID(doc)] == "uji-r139-sah.png"               # baris documents tak diubah
+
+
+def test_sql_nama_per_tautan_so_dan_sj():
+    from app.routers import delivery_lampiran as DL
+    for M, ent in ((SL, "sales_order"), (DL, "delivery")):
+        assert "attached_by, display_name" in M._SQL_TAUT and "$5::uuid, $6)" in M._SQL_TAUT and f"'{ent}'" in M._SQL_TAUT
+        assert "COALESCE(da.display_name, d.file_name) AS file_name" in M._SQL_DAFTAR
+        assert "COALESCE(da.display_name, d.file_name) AS file_name" in M._SQL_UNDUH   # unduhan: Content-Disposition
+        src = inspect.getsource(M)
+        assert 'urutan, ctx["user_id"], nama\n' in src
+
+
+def test_migrasi_v411_aditif_nullable():
+    import pathlib
+    akar = pathlib.Path(SL.__file__).resolve().parents[4]
+    sql = (akar / "backend/migrations/V411__lampiran_nama_per_tautan.sql").read_text()
+    assert "ADD COLUMN IF NOT EXISTS display_name varchar(255);" in sql and "NOT NULL" not in sql.split("DO $$")[0]
