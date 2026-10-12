@@ -505,3 +505,21 @@ Barang yang sudah terkirim penuh lewat SJ TIDAK memicu keluar stok / HPP kedua (
 
 Migrasi-saja dulu (V417 skema/peran/akun/source_type: kompatibel dengan kode lama; BELUM ada kode yang menulis DELIVERY_*), lalu kode + restart,
 lalu V418 flag kaos. Seluruhnya aturan buku baru -> izin LANGSUNG pemilik per langkah; grapgrap terpisah.
+
+---
+
+# BAGIAN 16 — PRATINJAU JURNAL FAKTUR = JALUR POSTING (12 Okt 2026, BACKEND2) — standar "Tinjau = angka server"
+
+Sebelum: `POST /api/sales-invoices/preview-journal` menghitung ulang HPP/pendapatan sendiri (perkiraan) -> tak tahu alokasi Surat Jalan
+tanpa faktur (HPP snapshot kirim, Barang Terkirim). Sesudah: bila badan memuat `invoice_id` (atau `id`) faktur DRAF tersimpan, server
+menjalankan `terbitkan_faktur` SUNGGUHAN (apply_deposits=false) di dalam transaksi lalu ROLLBACK dan membaca baris jurnal yang
+terbit => baris pratinjau == baris jurnal posting (satu penentu; Law 1/16). Tanpa `invoice_id`, bukan draf, atau simulasi gagal ->
+jalur perkiraan lama + peringatan (gagal-terbuka sebagai perkiraan, tidak pernah menulis).
+
+Respons tambahan: `simulasi_posting: true`, `alokasi_surat_jalan {qty, nilai}`, tiap baris `journal_source` (sumber jurnal asli);
+`event` JV/RECOG/COGS dipetakan dari sumber (DELIVERY_INVOICED = COGS). Dampak: nol tulis permanen (transaksi di-rollback, nol
+jejak jurnal/kartu/alokasi/audit/idempotensi dibuktikan).
+
+Bukti: tes unit `test_pratinjau_faktur_posting.py` (8; sabotase commit-bukan-rollback & tanpa cek draf = merah); uji nyata
+`scripts/ops/uji-nyata-sj-stok.sh` (data kaos: 6 baris pratinjau == 6 baris jurnal terbit, nol jejak). FE: kirim `invoice_id`
+faktur draf tersimpan ke `/preview-journal`.

@@ -556,6 +556,69 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
 # =============================================================================
 # LIST INVOICES
 # =============================================================================
+_EVENT_PRATINJAU = {
+    "INVOICE": "JV", "INVOICE_REVENUE": "RECOG", "INVOICE_FULFILLMENT": "COGS", "SALES_INVOICE_COGS": "COGS",
+    "DELIVERY_INVOICED": "COGS",
+}
+
+
+async def _pratinjau_dari_posting(pool, ctx: dict, invoice_ref) -> Optional[dict]:
+    """Tinjau faktur DRAF dengan jalur posting SUNGGUHAN di savepoint lalu ROLLBACK (nol jejak). None = bukan draf milik tenant.
+    Deposit TIDAK diterapkan di pratinjau (apply_deposits=False; bukan dampak faktur). Kunci baris posting dipegang singkat."""
+    try:
+        invoice_id = UUID(str(invoice_ref))
+    except (ValueError, TypeError):
+        return None
+    tid = ctx["tenant_id"]
+    async with pool.acquire() as conn:
+        inv = await conn.fetchrow(
+            "SELECT id, invoice_number, total_amount, invoice_date, status, tax_amount, shipping_amount "
+            "FROM sales_invoices WHERE id = $1 AND tenant_id = $2", invoice_id, tid)
+        if not inv or inv["status"] != "draft":
+            return None
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
+            hasil = await terbitkan_faktur(
+                conn, ctx, invoice_id, inv["invoice_number"], inv["total_amount"], inv["invoice_date"], apply_deposits=False)
+            rows = await conn.fetch(
+                """SELECT je.id AS jid, je.source_type, je.journal_number, a.account_code, a.name AS account_name,
+                          jl.debit, jl.credit
+                   FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id
+                   JOIN chart_of_accounts a ON a.id = jl.account_id
+                   WHERE je.tenant_id = $1 AND je.source_id = $2 AND je.status = 'POSTED'
+                   ORDER BY je.created_at, je.journal_number, jl.line_number""", tid, invoice_id)
+            alok = await conn.fetchrow(
+                """SELECT COALESCE(SUM(a.quantity), 0) AS qty, COALESCE(SUM(a.total_cost), 0) AS nilai
+                   FROM sj_faktur_alokasi a JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
+                   WHERE sii.invoice_id = $1 AND a.tenant_id = $2 AND a.voided_at IS NULL""", invoice_id, tid)
+            kebijakan = await conn.fetchval("SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id = $1", tid) or "invoice"
+        finally:
+            await tr.rollback()
+    lines, total_cogs = [], Decimal("0")
+    for r in rows:
+        ev = _EVENT_PRATINJAU.get(r["source_type"], r["source_type"])
+        d, k = Decimal(str(r["debit"])), Decimal(str(r["credit"]))
+        lines.append({"account_name": r["account_name"], "account_code": r["account_code"], "debit": float(d), "credit": float(k),
+                      "event": ev, "journal_source": r["source_type"]})
+        if ev == "COGS":
+            total_cogs += d
+    peringatan = list(hasil.get("warnings") or [])
+    if Decimal(str(alok["qty"])) > 0:
+        peringatan.append(
+            f"Pesanan ini punya Surat Jalan tanpa faktur: {Decimal(str(alok['qty'])):f} unit ikut ditagih; HPP-nya memakai nilai kirim "
+            f"(Barang Terkirim) dan pendapatannya diakui sekarang.")
+    return {
+        "journal_lines": lines, "warnings": peringatan, "total_cogs": float(total_cogs), "revenue_policy": kebijakan,
+        "cogs_recognized_at_invoice": total_cogs > 0, "simulasi_posting": True,
+        "alokasi_surat_jalan": {"qty": float(Decimal(str(alok["qty"]))), "nilai": float(Decimal(str(alok["nilai"])))},
+        "subtotal": float(Decimal(str(inv["total_amount"])) - Decimal(str(inv["tax_amount"] or 0)) - Decimal(str(inv["shipping_amount"] or 0))),
+        "tax_amount": float(Decimal(str(inv["tax_amount"] or 0))), "shipping_amount": float(Decimal(str(inv["shipping_amount"] or 0))),
+        "total_amount": float(Decimal(str(inv["total_amount"]))),
+    }
+
+
 @router.post("/preview-journal")
 async def preview_journal(request: Request, body: dict = Body(...)):
     """Pratinjau jurnal faktur penjualan — READ-ONLY, nol tulis.
@@ -602,6 +665,24 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     ctx = get_user_context(request)
     pool = await get_pool()
 
+    # 12 Okt 2026 (Tinjau = angka server): faktur DRAF tersimpan (badan memuat `invoice_id`/`id`) ditinjau dengan MENULIS-SUNGGUHAN-
+    # LALU-ROLLBACK jalur posting yang SAMA (`terbitkan_faktur`) di dalam savepoint; baris jurnal yang tampil = jurnal yang akan terbit
+    # (termasuk alokasi Surat Jalan tanpa faktur: HPP snapshot, Barang Terkirim, pendapatan). Tanpa invoice tersimpan / simulasi gagal ->
+    # jalur perkiraan lama (di bawah) + peringatan.
+    _inv_ref = body.get("invoice_id") or body.get("id")
+    _sim_peringatan = None
+    if _inv_ref:
+        try:
+            _sim = await _pratinjau_dari_posting(pool, ctx, _inv_ref)
+            if _sim is not None:
+                return _sim
+        except HTTPException as _he:
+            _d = _he.detail
+            _sim_peringatan = _d.get("message") if isinstance(_d, dict) else str(_d)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("preview-journal: simulasi posting gagal: %s", _e)
+            _sim_peringatan = "Pratinjau dari jalur posting tidak dapat dijalankan; angka di bawah adalah perkiraan."
+
     def _n(v) -> str:
         """Angka untuk mata manusia: 98.0000 -> '98', 2.5000 -> '2,5'."""
         d = Decimal(str(v))
@@ -612,6 +693,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     invoice_date = body.get("invoice_date")
     customer_id = body.get("customer_id")
     warnings: list[str] = []
+    if _sim_peringatan:
+        warnings.append(_sim_peringatan)
 
     # Aritmetika memakai compute_document() — KALKULATOR YANG SAMA dengan create/
     # update//calculate, yang menghasilkan `tax_amount` yang kelak dibaca

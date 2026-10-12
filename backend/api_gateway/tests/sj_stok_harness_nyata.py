@@ -111,6 +111,24 @@ async def main():
         pend = await R.pending_invoice(req())
         dd = pend["data"]
         cek("laporan terkirim-belum-difakturkan: total = saldo buku, selisih 0", abs(dd["total_pending_value"] - float(nilai)) < 0.01 and dd["selisih"] is not None and abs(dd["selisih"]) < 0.01, str({k: dd[k] for k in ("total_pending_value","ledger_balance","selisih")}))
+        print("== 1b. pratinjau jurnal faktur dari jalur posting (Tinjau = angka server)")
+        async def _gp2():
+            class CM2:
+                async def __aenter__(s_): return conn
+                async def __aexit__(s_, *a): return False
+            class P2:
+                def acquire(s_): return CM2()
+            return P2()
+        SI.get_pool = _gp2
+        pv_req = Request({"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""})
+        pv_req.state.user = {"tenant_id": TID, "user_id": uid}
+        sebelum_pv = await snap(conn)
+        pv_fak = await SI.preview_journal(pv_req, {"invoice_id": str(c["inv_id"])})
+        cek("pratinjau faktur: simulasi_posting=True", pv_fak.get("simulasi_posting") is True, str(pv_fak.get("warnings")))
+        cek("pratinjau faktur: NOL jejak (jurnal/kartu/alokasi/audit/idempotensi/hitungan sama)", (await snap(conn)) == sebelum_pv)
+        cek("pratinjau faktur memuat reklas HPP Barang Terkirim + alokasi SJ", pv_fak["alokasi_surat_jalan"]["qty"] == float(Q)
+            and any(l["account_code"] == "1-10660" and l["credit"] == float(nilai) for l in pv_fak["journal_lines"]),
+            str(pv_fak["alokasi_surat_jalan"]))
         print("== 2. faktur diposting -> alokasi + reklas HPP + pendapatan")
         sj0 = await snap(conn)
         post = await SI.terbitkan_faktur(conn, ctx, c["inv_id"], c["invoice_number"], c["total_amount"], c["invoice_date"], apply_deposits=False)
@@ -118,6 +136,13 @@ async def main():
         cek("alokasi ber-nilai snapshot SJ", al is not None and D(str(al["quantity"])) == Q and D(str(al["total_cost"])) == nilai)
         rk = await conn.fetch("SELECT a.account_code, jl.debit, jl.credit FROM journal_lines jl JOIN chart_of_accounts a ON a.id=jl.account_id WHERE jl.journal_id=$1 ORDER BY jl.line_number", al["cogs_journal_id"])
         cek("reklas Dr HPP 5-10100 / Cr Barang Terkirim 1-10660 pada snapshot", rk[0]["account_code"] == "5-10100" and D(str(rk[0]["debit"])) == nilai and rk[1]["account_code"] == "1-10660" and D(str(rk[1]["credit"])) == nilai)
+        nyata = await conn.fetch(
+            """SELECT a.account_code, jl.debit, jl.credit FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id
+               JOIN chart_of_accounts a ON a.id = jl.account_id
+               WHERE je.tenant_id = $1 AND je.source_id = $2 AND je.status = 'POSTED'""", TID, c["inv_id"])
+        k_nyata = sorted((r["account_code"], float(D(str(r["debit"]))), float(D(str(r["credit"])))) for r in nyata)
+        k_pv = sorted((l["account_code"], l["debit"], l["credit"]) for l in pv_fak["journal_lines"])
+        cek("ANGKA PRATINJAU == JURNAL YANG TERBIT (semua baris, semua peristiwa)", k_nyata == k_pv, f"{len(k_pv)} baris pratinjau vs {len(k_nyata)} nyata")
         sa2, tu2, _ = await check23(conn, TID)
         cek("CHECK 23 sesudah faktur: Barang Terkirim nol == nol", sa2 == tu2 == D("0"), f"{sa2} vs {tu2}")
         cek("tak ada keluar stok kedua (ledger SALE INVOICE_FULFILLMENT untuk faktur ini = 0 baris)", await conn.fetchval(
