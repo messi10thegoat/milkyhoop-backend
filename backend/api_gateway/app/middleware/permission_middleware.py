@@ -712,10 +712,18 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/stock-transfers/[^/]+$", ["DELETE"], "item", "D"),
     (r"^/api/stock-transfers/[^/]+$", ["PATCH"], "item", "U"),
     (r"^/api/stock-transfers/[^/]+/cancel$", ["POST"], "item", "V"),
-    (r"^/api/stock-transfers/[^/]+/complete$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/preview$", ["POST"], "item", "C"),
+    (r"^/api/stock-transfers/create-and-complete$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/(complete|complete/preview)$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/(void/preview|cancel/preview)$", ["POST"], "item", "V"),
     (r"^/api/stock-transfers/[^/]+/void$", ["POST"], "item", "V"),
     (r"^/api/stock-transfers/[^/]+/receive$", ["POST"], "item", "P"),
     (r"^/api/stock-transfers/[^/]+/ship$", ["POST"], "item", "P"),
+    # Baca (12 Okt 2026, kebutuhan FE PB; GET tak-terpetakan = tertutup): modul item, aksi R.
+    (r"^/api/stock-transfers$", ["GET"], "item", "R"),
+    (r"^/api/stock-transfers/(summary|in-transit)$", ["GET"], "item", "R"),
+    (r"^/api/stock-transfers/[^/]+$", ["GET"], "item", "R"),
+    (r"^/api/stock-transfers/[^/]+/history$", ["GET"], "item", "R"),
     # tax_invoices
     (r"^/api/tax-invoices/[^/]+/status$", ["PATCH"], "tax", "U"),
     # vendors

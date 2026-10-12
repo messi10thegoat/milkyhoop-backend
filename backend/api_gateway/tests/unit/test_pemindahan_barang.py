@@ -90,7 +90,7 @@ class Konek:
         if "FROM stock_transfers WHERE id" in s:
             return self.header
         if "FROM sales_orders WHERE id" in s:
-            return {"fase_lokasi": "tersedia", "fase_gudang_id": GB}
+            return {"id": a[0], "order_number": "SO-2610-0001", "fase_lokasi": "tersedia", "fase_gudang_id": GB}
         return None
 
     async def fetch(self, sql, *a):
@@ -151,7 +151,7 @@ def draf(**kw):
 
 
 def baris(pid=P1, qty="10", n=1):
-    return {"id": uuid.uuid4(), "item_id": pid, "quantity_requested": Decimal(qty), "line_number": n}
+    return {"id": uuid.uuid4(), "item_id": pid, "quantity_requested": Decimal(qty), "line_number": n, "notes": None}
 
 
 def body(items=None, **kw):
@@ -457,3 +457,146 @@ def test_rute_punya_pola_izin():
 def test_kosakata_ledger_mengenal_void():
     from app.services import kosakata_ledger as K
     assert "RELOKASI_GUDANG" in K.DIKENAL and "RELOKASI_GUDANG_VOID" in K.DIKENAL
+
+
+# ============================================================================
+# v2 (12 Okt 2026, kebutuhan FE PB): pratinjau = angka server, atomik, riwayat, ringkasan, idempotensi
+# ============================================================================
+def _ln(r, i=0):
+    return r["lines"][i]
+
+
+def test_pratinjau_baru_angka_server_nol_tulis():
+    c = Konek()
+    r = jalan(S.pratinjau_baru(c, ctx(), S.PratinjauIn(
+        from_warehouse_id=GA, to_warehouse_id=GB, items=[{"item_id": P1, "quantity_requested": Decimal("10")}])))
+    assert r["ok"] is True and r["blocks"] == []
+    ln = _ln(r)
+    assert ln["quantity"] == Decimal("10") and ln["unit_cost"] == Decimal("43332.95") and ln["value"] == Decimal("433329.50")
+    assert ln["available_from"] == Decimal("100") and ln["from_after"] == Decimal("90") and ln["to_after"] == Decimal("40")
+    assert r["total_quantity"] == Decimal("10") and r["total_value"] == Decimal("433329.50")
+    assert r["from_"] if False else r["dari"]["name"] == "Gudang A" and r["ke"]["name"] == "Gudang B"
+    assert r["payload"]["items"][0]["quantity_requested"] == "10"
+    # NOL TULIS: tak ada INSERT/UPDATE/DELETE, tak ada kunci advisory, tak ada kartu
+    assert not c.ledger and not c.updates
+    assert not any(s.startswith(("INSERT", "UPDATE", "DELETE")) or "pg_advisory" in s for s in c.log)
+
+
+def test_pratinjau_semua_blok_sekaligus_dan_200_badan_cacat():
+    c = Konek(produk={P1: barang(P1, track=False), P2: barang(P2, "Kaos B")}, gudang_aktif=False)
+    isi = S.PratinjauIn(from_warehouse_id=GA, to_warehouse_id=None, items=[
+        {"item_id": P1, "quantity_requested": Decimal("1")},          # non-stok
+        {"item_id": P2, "quantity_requested": Decimal("5")},          # stok asal 0 -> kurang
+        {"item_id": P2, "quantity_requested": Decimal("1")},          # ganda
+        {"item_id": None, "quantity_requested": None},                # cacat: dilewati, tak meledak
+    ])
+    r = jalan(S.pratinjau_baru(c, ctx(), isi))
+    kodes = [b["code"] for b in r["blocks"]]
+    assert r["ok"] is False
+    for k in ("PB_GUDANG_NONAKTIF", "PB_GUDANG_TUJUAN_WAJIB", "PB_BARANG_NON_STOK", "PB_STOK_TIDAK_CUKUP", "PB_BARANG_GANDA"):
+        assert k in kodes, (k, kodes)
+    assert len(kodes) >= 5                      # SEMUA blok sekaligus, bukan satu-satu
+    assert any(b["item_id"] == str(P1) for b in r["blocks"])
+    assert not c.ledger and not c.updates
+
+
+def test_gudang_sama_dan_qty_nol_jadi_blok_bukan_422_pratinjau():
+    r = jalan(S.pratinjau_baru(Konek(), ctx(), S.PratinjauIn(
+        from_warehouse_id=GA, to_warehouse_id=GA, items=[{"item_id": P1, "quantity_requested": Decimal("0")}])))
+    kodes = [b["code"] for b in r["blocks"]]
+    assert "PB_GUDANG_SAMA" in kodes and "PB_QTY_TIDAK_SAH" in kodes and r["ok"] is False
+
+
+def test_pratinjau_selesai_sama_dengan_angka_tulis():
+    pre = jalan(S.pratinjau_selesai(Konek(header=draf(), items=[baris(P1, "10")]), ctx(), U))
+    c = Konek(header=draf(), items=[baris(P1, "10")])
+    selesai(c)
+    out = c.ledger[0]
+    ln = _ln(pre)
+    assert ln["unit_cost"] == out["unit_cost"] and ln["value"] == out["total_cost"] and ln["quantity"] == out["quantity_out"]
+    assert pre["ok"] is True and pre["transfer_number"] == "ST-2610-0001"
+
+
+def test_pratinjau_selesai_status_dan_ulang():
+    r = jalan(S.pratinjau_selesai(Konek(header=draf(status="cancelled"), items=[baris()]), ctx(), U))
+    assert r["ok"] is False and r["blocks"][0]["code"] == "PB_STATUS_TIDAK_BOLEH"
+    r2 = jalan(S.pratinjau_selesai(Konek(header=draf(status="completed"), items=[baris()]), ctx(), U))
+    assert r2["ok"] is True and r2["ulang"] is True
+
+
+def test_pratinjau_void_stok_sebelum_sesudah_dan_blok():
+    c = Konek(header=draf(status="completed"), asli=asli_pasangan("10"), stok={(GB, P1): Decimal("30"), (GA, P1): Decimal("90")})
+    r = jalan(S.pratinjau_void(c, ctx(), U, "salah gudang"))
+    assert r["ok"] is True
+    ln = _ln(r)
+    assert ln["from_before"] == Decimal("30") and ln["from_after"] == Decimal("20")      # gudang tujuan berkurang
+    assert ln["to_before"] == Decimal("90") and ln["to_after"] == Decimal("100")         # gudang asal kembali
+    assert not c.ledger and not c.updates
+    r2 = jalan(S.pratinjau_void(Konek(header=draf(status="completed"), asli=asli_pasangan("10"), stok={(GB, P1): Decimal("3")}),
+                                ctx(), U, ""))
+    kodes = [b["code"] for b in r2["blocks"]]
+    assert "PB_STOK_TUJUAN_TERPAKAI" in kodes and "PB_ALASAN_WAJIB" in kodes
+
+
+def test_pratinjau_batal():
+    r = jalan(S.pratinjau_batal(Konek(header=draf()), ctx(), U, "salah buat"))
+    assert r["ok"] is True
+    r2 = jalan(S.pratinjau_batal(Konek(header=draf(status="completed")), ctx(), U, "x"))
+    assert r2["ok"] is False and r2["blocks"][0]["code"] == "PB_STATUS_TIDAK_BOLEH"
+    r3 = jalan(S.pratinjau_batal(Konek(header=draf()), ctx(), U, " "))
+    assert [b["code"] for b in r3["blocks"]] == ["PB_ALASAN_WAJIB"]
+
+
+def test_buat_dan_selesaikan_gagal_melempar_dan_router_satu_transaksi():
+    c = Konek(items=[baris(P1, "101")], stok={(GA, P1): Decimal("100")})
+    # selesaikan membaca header+item dari DB; stub header diisi setelah INSERT -> pakai header draf yang sama
+    c.header = draf()
+    with pytest.raises(HTTPException) as e:
+        jalan(S.buat_dan_selesaikan(c, ctx(), body(items=[{"item_id": P1, "quantity_requested": Decimal("101")}])))
+    assert kode(e) == "PB_STOK_TIDAK_CUKUP"
+    src = (APP / "routers" / "stock_transfers.py").read_text()
+    a = src.index("async def create_and_complete_stock_transfer")
+    isi = src[a:src.index("@router.post", a + 10)]
+    assert isi.count("conn.transaction()") == 1 and "buat_dan_selesaikan" in isi
+    assert "buat_draf" not in isi                      # tak ada dua transaksi/draf yatim
+
+
+def test_idempotensi_di_kedua_jalur_buat():
+    src = (APP / "routers" / "stock_transfers.py").read_text()
+    for nama in ("async def create_stock_transfer(", "async def create_and_complete_stock_transfer("):
+        a = src.index(nama)
+        isi = src[a:src.index("\n\n\n", a)]
+        assert "idem_buat.kunci_dari(request)" in isi and "idem_buat.mulai(" in isi and "idem_buat.simpan(" in isi, nama
+        assert isi.index("idem_buat.mulai(") < isi.index("pb.buat"), nama     # replay SEBELUM nomor terbit
+
+
+def test_rute_baru_izin_dan_urutan():
+    from app.middleware import permission_middleware as PM
+    pola = [(re.compile(p), m, mod, aksi) for p, m, mod, aksi in PM.ROUTE_PERMISSIONS]
+
+    def cari(path, meth):
+        for rx, ms, mod, aksi in pola:
+            if rx.match(path) and meth in ms:
+                return mod, aksi
+        return None
+    x = "00000000-0000-0000-0000-000000000000"
+    assert cari("/api/stock-transfers/preview", "POST") == ("item", "C")
+    assert cari("/api/stock-transfers/create-and-complete", "POST") == ("item", "P")
+    assert cari(f"/api/stock-transfers/{x}/complete/preview", "POST") == ("item", "P")
+    assert cari(f"/api/stock-transfers/{x}/void/preview", "POST") == ("item", "V")
+    assert cari(f"/api/stock-transfers/{x}/cancel/preview", "POST") == ("item", "V")
+    for g in ("/api/stock-transfers", "/api/stock-transfers/summary", f"/api/stock-transfers/{x}", f"/api/stock-transfers/{x}/history"):
+        assert cari(g, "GET") == ("item", "R"), g
+    # literal sebelum /{transfer_id}: 'summary' tidak boleh tertelan sebagai id
+    rute = [(r.path, tuple(sorted(r.methods))) for r in R.router.routes]
+    assert rute.index(("/summary", ("GET",))) < rute.index(("/{transfer_id}", ("GET",)))
+    assert rute.index(("/in-transit", ("GET",))) < rute.index(("/{transfer_id}", ("GET",)))
+
+
+def test_riwayat_pemindahan_terdaftar():
+    from app.services import so_riwayat as H
+    assert H.ENTITAS_AUDIT["stock_transfers"] == "stock_transfer"
+    assert H.MODUL_PEMINDAHAN["stock_transfer"] == "item"
+    assert callable(H.riwayat_pemindahan)
+    for ev in ("PEMINDAHAN_BARANG_SELESAI", "PEMINDAHAN_BARANG_DI_VOID"):
+        assert ev in H.RINGKAS_AUDIT

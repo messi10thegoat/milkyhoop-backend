@@ -329,3 +329,41 @@ Bukti (semua terhadap salinan nyata dump prod 11 Okt di DB scratch, transaksi RO
 asal -qty dan tujuan +qty, WAC tidak berubah, nilai kartu produk neto nol (Inv-3 per barang), fase SO terisi lalu dikosongkan saat void,
 stok kurang 409 tanpa baris, idempoten, `voided` beku, lengan 3 MERAH pada void sepihak, hitungan tabel kembali ke awal.
 Tes unit `tests/unit/test_pemindahan_barang.py` 26 tes + 5 sabotase masing-masing memerahkan tes penjaganya.
+
+
+---
+
+# BAGIAN 12 — R2 v2: KEBUTUHAN FE (12 Okt 2026, permintaan WORKSPACE via MASTER; standar CW: Tinjau = angka server)
+
+Prinsip: SATU penentu. `pemindahan_barang._rencana` / `_rencana_void` menghitung baris, nilai (WAC), stok sebelum/sesudah per gudang
+dan SEMUA blok. Pratinjau memakainya tanpa menulis; jalur tulis memakai fungsi yang SAMA (kunci stok FOR UPDATE) dan menulis dari
+hasilnya. Angka pratinjau == angka tulis dibuktikan harness data nyata (bagian 6).
+
+| Rute | Izin (modul item) | Isi |
+|---|---|---|
+| `POST /api/stock-transfers/preview` | C | badan = badan POST draf (longgar: kolom kosong/cacat jadi BLOK, bukan 422). 200 walau diblok. |
+| `POST /api/stock-transfers/create-and-complete` | P | ATOMIK buat + selesai satu transaksi (pola Accurate: Simpan = Selesai). Respons = bentuk /complete + `ulang`. |
+| `POST /api/stock-transfers` | C | draf; sekarang menerima `X-Idempotency-Key`. `transfer_date` opsional (bawaan tanggal bisnis tenant). |
+| `POST /{id}/complete/preview` | P | tinjau menyelesaikan draf tersimpan. |
+| `POST /{id}/void/preview` `{reason}` | V | tinjau void: stok sebelum/sesudah per gudang (tujuan berkurang, asal kembali). |
+| `POST /{id}/cancel/preview` `{reason}` | V | tinjau batal draf. |
+| `GET /{id}/history` | R | riwayat bentuk SO: `{transfer_id, transfer_number, sales_order, events[{at,jenis,ringkas,aktor,dokumen,sumber}], total, omitted}`. |
+| `GET /summary` | R | `{bulan, draft, selesai_bulan_ini, void_bulan_ini, nilai_selesai_bulan_ini}` (bulan bisnis tenant). |
+| `GET /api/stock-transfers?search=` | R | cari nomor PB, referensi, nomor SO, nama/kode barang (tak peka huruf; `%`/`_` literal). |
+
+Bentuk pratinjau (`data`): `{ok, blocks[{code,message,item_id?}], lines[{item_id,name,unit,item_code,quantity,available_from,available_to,unit_cost,value,from_before,from_after,to_before,to_after,notes}], from{id,name}, to{id,name}, total_quantity, total_value, sales_order{id,number,fase_sesudah{fase_lokasi,fase_gudang_id,teks,berubah}}|null, catatan_fase, transfer_number?, ulang, payload}`.
+`payload` = badan ternormalisasi yang dapat dikirim apa adanya ke POST draf / create-and-complete.
+
+Keputusan bentuk atomik: JALUR TERPISAH (`/create-and-complete`), bukan `?selesaikan=true`. Alasan: middleware izin mencocokkan
+metode + path; parameter query tak terlihat, sehingga `?selesaikan=true` pada POST "" (izin C) akan MENYELESAIKAN (aksi P) dengan
+izin buat saja. Path terpisah memberi izin P sendiri, respons sendiri, dan tak mengubah bentuk jawaban endpoint yang sudah ada.
+
+Idempotensi (Law 14): `X-Idempotency-Key` (alias `Idempotency-Key`) pada POST "" dan `/create-and-complete`: kunci sama + isi
+sama = respons asli + `X-Idempotent-Replay: true`; isi beda = 409 `IDEMPOTENCY_KEY_REUSED`; replay dicek SEBELUM nomor terbit;
+respons tersimpan di transaksi yang sama dengan dokumennya. complete/void/cancel idempoten lewat status (`ulang`).
+
+Blok baru pratinjau: `PB_GUDANG_ASAL_WAJIB`, `PB_GUDANG_TUJUAN_WAJIB`, `PB_GUDANG_SAMA`, `PB_TANPA_BARANG`, `PB_QTY_TIDAK_SAH`,
+`PB_ALASAN_WAJIB` (di samping kode lama bagian R2).
+
+Tak ada perubahan skema/migrasi di v2. Perubahan izin baca: GET stock-transfers dipetakan modul `item` R (sebelumnya tak
+terpetakan = tertutup).

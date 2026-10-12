@@ -127,6 +127,103 @@ async def main():
             FROM inventory_ledger WHERE source_id=$1 AND movement_type='RELOKASI_KELUAR' LIMIT 1""", tid_pb)
         a2d, a3d = await arm(conn)
         cek("lengan 3 MERAH pada void sepihak", a3d > a3c and a2d == a2c, f"{(a2d,a3d)}")
+
+        print("== 6. v2: pratinjau == tulis, atomik, idempotensi, riwayat, ringkasan, pencarian (lewat HANDLER rute)")
+        from types import SimpleNamespace
+        from starlette.requests import Request
+        from fastapi import Response
+        from backend.api_gateway.app.routers import stock_transfers as R
+        from backend.api_gateway.app.schemas.stock_transfers import CreateStockTransferRequest, VoidTransferRequest
+
+        class _CM:
+            async def __aenter__(self_): return conn
+            async def __aexit__(self_, *a): return False
+        class _Pool:
+            def acquire(self_): return _CM()
+        async def _gp(): return _Pool()
+        R.get_pool = _gp
+
+        def req(kunci=None):
+            hdr = [(b"x-idempotency-key", kunci.encode())] if kunci else []
+            r = Request({"type": "http", "method": "POST", "path": "/", "headers": hdr, "query_string": b""})
+            r.state.user = {"tenant_id": TID, "user_id": ctx["user_id"]}
+            return r
+        sebelum = await snap(conn)
+        st_asal_b, st_tuj_b = await stok(conn, asal, P1), await stok(conn, tujuan, P1)   # sabotase #5 menggeser 1 unit: bandingkan relatif
+        # (a) pratinjau baru: nol tulis, angka == tulis
+        isi = S.PratinjauIn(from_warehouse_id=asal, to_warehouse_id=tujuan, sales_order_id=so,
+                            items=[S.BarangPratinjau(item_id=P1, quantity_requested=Decimal("3"))])
+        pv = await R.preview_stock_transfer(req(), isi)
+        cek("pratinjau: ok, nol tulis", pv["data"]["ok"] and (await snap(conn)) == sebelum)
+        ln = pv["data"]["lines"][0]
+        cek("pratinjau: sales_order.fase_sesudah tersedia @ tujuan", pv["data"]["sales_order"]["fase_sesudah"]["fase_lokasi"] == "tersedia")
+        # (b) atomik create-and-complete + idempotensi
+        body = CreateStockTransferRequest(from_warehouse_id=asal, to_warehouse_id=tujuan, transfer_date=None, sales_order_id=so,
+                                          items=[{"item_id": P1, "item_name": "x", "quantity_requested": Decimal("3")}])
+        r1 = await R.create_and_complete_stock_transfer(req("kunci-uji-1"), Response(), body)
+        d1 = r1.data if hasattr(r1, "data") else r1["data"]
+        nomor1 = d1.transfer_number if hasattr(d1, "transfer_number") else d1["transfer_number"]
+        led1 = await conn.fetch("SELECT unit_cost, total_cost, quantity_out, quantity_in FROM inventory_ledger WHERE source_number=$1 ORDER BY movement_type", nomor1)
+        cek("atomik: status completed + 2 kartu", len(led1) == 2)
+        cek("angka pratinjau == angka tulis (nilai)", Decimal(str(ln["value"])) == led1[0]["total_cost"] and Decimal(str(ln["unit_cost"])) == led1[0]["unit_cost"])
+        resp2 = Response()
+        r2 = await R.create_and_complete_stock_transfer(req("kunci-uji-1"), resp2, body)
+        n2 = (r2.data.transfer_number if hasattr(r2, "data") else r2["data"]["transfer_number"])
+        cek("idempotensi: kunci sama = respons asli, tak ada transfer kedua", n2 == nomor1 and
+            await conn.fetchval("SELECT count(*) FROM stock_transfers WHERE tenant_id=$1 AND transfer_number=$2", TID, nomor1) == 1)
+        cek("idempotensi: header X-Idempotent-Replay", resp2.headers.get("X-Idempotent-Replay") == "true")
+        body_beda = CreateStockTransferRequest(from_warehouse_id=asal, to_warehouse_id=tujuan,
+                                               items=[{"item_id": P1, "item_name": "x", "quantity_requested": Decimal("1")}])
+        try:
+            await R.create_and_complete_stock_transfer(req("kunci-uji-1"), Response(), body_beda); bk = False
+        except HTTPException as e:
+            bk = e.status_code == 409 and e.detail["code"] == "IDEMPOTENCY_KEY_REUSED"
+        cek("idempotensi: kunci sama isi beda -> 409 IDEMPOTENCY_KEY_REUSED", bk)
+        # (c) atomik gagal -> tak ada draf yatim (savepoint)
+        cnt0 = await conn.fetchval("SELECT count(*) FROM stock_transfers WHERE tenant_id=$1", TID)
+        seq0 = await conn.fetchval("SELECT last_number FROM stock_transfer_sequences WHERE tenant_id=$1 ORDER BY year_month DESC LIMIT 1", TID)
+        besar = CreateStockTransferRequest(from_warehouse_id=asal, to_warehouse_id=tujuan,
+                                           items=[{"item_id": P1, "item_name": "x", "quantity_requested": Decimal("999999")}])
+        try:
+            async with conn.transaction():
+                await R.create_and_complete_stock_transfer(req(), Response(), besar)
+            gagal = False
+        except HTTPException as e:
+            gagal = e.detail["code"] == "PB_STOK_TIDAK_CUKUP"
+        cek("atomik gagal -> 409 PB_STOK_TIDAK_CUKUP", gagal)
+        cek("atomik gagal -> NOL draf yatim + nomor urut ikut rollback",
+            await conn.fetchval("SELECT count(*) FROM stock_transfers WHERE tenant_id=$1", TID) == cnt0 and
+            await conn.fetchval("SELECT last_number FROM stock_transfer_sequences WHERE tenant_id=$1 ORDER BY year_month DESC LIMIT 1", TID) == seq0)
+        # (d) pratinjau void: stok sebelum/sesudah, lalu riwayat + ringkasan + pencarian
+        idpb = await conn.fetchval("SELECT id FROM stock_transfers WHERE tenant_id=$1 AND transfer_number=$2", TID, nomor1)
+        pvv = (await R.preview_void_stock_transfer(req(), idpb, R.AlasanIn(reason="uji")))["data"]
+        l = pvv["lines"][0]
+        cek("pratinjau void: ok + sebelum/sesudah per gudang", pvv["ok"] and l["from_after"] == l["from_before"] - 3 and l["to_after"] == l["to_before"] + 3)
+        pvc = (await R.preview_complete_stock_transfer(req(), idpb))["data"]
+        cek("pratinjau complete pada yang sudah selesai: ulang=true", pvc["ok"] and pvc["ulang"] is True)
+        from backend.api_gateway.app.services.so_riwayat import riwayat_pemindahan
+        async def semua(m): return True
+        h = await riwayat_pemindahan(conn, TID, idpb, semua, 200)
+        jenis = [e["jenis"] for e in h["events"]]
+        cek("riwayat: dibuat + selesai tercatat dengan aktor", "PEMINDAHAN_BARANG_SELESAI" in jenis and "PEMINDAHAN_BARANG_DIBUAT" in jenis and h["total"] >= 2, str(jenis))
+        sm = (await R.summary_stock_transfers(req()))["data"]
+        cek("ringkasan: selesai_bulan_ini >= 1", sm["selesai_bulan_ini"] >= 1 and sm["nilai_selesai_bulan_ini"] > 0, str(sm))
+        lst = await R.list_stock_transfers(req(), skip=0, limit=50, status=None, from_warehouse_id=None, to_warehouse_id=None,
+                                           date_from=None, date_to=None, search=nomor1[-4:])
+        cek("pencarian nomor PB", any(x.transfer_number == nomor1 for x in lst.data))
+        sono = await conn.fetchval("SELECT order_number FROM sales_orders WHERE id=$1", so)
+        lst2 = await R.list_stock_transfers(req(), skip=0, limit=50, status=None, from_warehouse_id=None, to_warehouse_id=None,
+                                            date_from=None, date_to=None, search=sono.lower())
+        cek("pencarian nomor SO (tak peka huruf)", any(x.transfer_number == nomor1 for x in lst2.data))
+        lst3 = await R.list_stock_transfers(req(), skip=0, limit=50, status=None, from_warehouse_id=None, to_warehouse_id=None,
+                                            date_from=None, date_to=None, search="%")
+        cek("pencarian '%' tak jadi wildcard", len(lst3.data) == 0)
+        namabarang = await conn.fetchval("SELECT nama_produk FROM products WHERE id=$1", P1)
+        lst4 = await R.list_stock_transfers(req(), skip=0, limit=50, status=None, from_warehouse_id=None, to_warehouse_id=None,
+                                            date_from=None, date_to=None, search=namabarang[:5].upper())
+        cek("pencarian nama barang", any(x.transfer_number == nomor1 for x in lst4.data))
+        await R.void_stock_transfer(req(), idpb, VoidTransferRequest(reason="uji harness v2"))
+        cek("void lewat handler: stok kembali ke keadaan sebelum bagian 6", await stok(conn, asal, P1) == st_asal_b and await stok(conn, tujuan, P1) == st_tuj_b)
     finally:
         await tr.rollback()
     akhir = await snap(conn)

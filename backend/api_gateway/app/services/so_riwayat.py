@@ -50,6 +50,7 @@ ENTITAS_AUDIT = {
     "invoice_fulfillments": "fulfillment",
     "receive_payments": "receive_payment",
     "credit_notes": "credit_note",
+    "stock_transfers": "stock_transfer", "stock_transfer": "stock_transfer",
 }
 
 # Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).
@@ -112,6 +113,12 @@ RINGKAS_AUDIT = {
     "DEPOSIT_APPLICATION_REVERSED": "Penerapan uang muka dilepas",
     "DEPOSIT_REFUNDED": "Uang muka dikembalikan",
     "DEPOSIT_UPDATED": "Uang muka diubah",
+    "PEMINDAHAN_BARANG_DIBUAT": "Pemindahan barang dibuat",
+    "PEMINDAHAN_BARANG_DIUBAH": "Pemindahan barang diubah",
+    "PEMINDAHAN_BARANG_SELESAI": "Pemindahan barang selesai",
+    "PEMINDAHAN_BARANG_DI_VOID": "Pemindahan barang di-void",
+    "PEMINDAHAN_BARANG_DIBATALKAN": "Pemindahan barang dibatalkan",
+    "PEMINDAHAN_BARANG_DIHAPUS": "Draf pemindahan barang dihapus",
 }
 
 
@@ -283,7 +290,9 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
                "PENAWARAN_DITOLAK": "QUOTE_DECLINED", "PENAWARAN_DIBATALKAN": "QUOTE_VOIDED",
                "PENAWARAN_JADI_PESANAN": "QUOTE_CONVERTED",
                "FAKTUR_DIBATALKAN": "SALES_INVOICE_VOIDED", "SURAT_JALAN_DIBATALKAN": "FULFILLMENT_VOIDED",
-               "UANG_MUKA_DIBATALKAN": "DEPOSIT_VOIDED"}
+               "UANG_MUKA_DIBATALKAN": "DEPOSIT_VOIDED",
+               "PEMINDAHAN_DIBUAT": "PEMINDAHAN_BARANG_DIBUAT", "PEMINDAHAN_DI_VOID": "PEMINDAHAN_BARANG_DI_VOID",
+               "PEMINDAHAN_DIBATALKAN": "PEMINDAHAN_BARANG_DIBATALKAN"}
     # Padanan PER BARIS (kejadian yang bisa berkali-kali per dokumen): kolom hanya dibuang bila audit dengan KUNCI
     # baris yang sama ada -- padanan per dokumen akan membuang SEMUA penerapan lama karena satu audit baru.
     PADANAN_BARIS = {"UANG_MUKA_DITERAPKAN": "DEPOSIT_APPLIED", "UANG_MUKA_DILEPAS": "DEPOSIT_APPLICATION_REVERSED",
@@ -824,5 +833,48 @@ async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable
                           if lihat["sales_invoice"] else None),
         "sales_order": ({"id": str(f["sales_order_id"]), "order_number": f["order_number"]}
                         if lihat["sales_order"] and f["sales_order_id"] else None),
+        "events": keluar, "total": total, "omitted": omitted,
+    }
+
+
+MODUL_PEMINDAHAN = {"stock_transfer": "item", "sales_order": "sales_order"}
+
+
+async def riwayat_pemindahan(conn, tenant_id: str, transfer_id, boleh: Callable[[str], Awaitable[bool]],
+                             limit: int = 200) -> Optional[dict]:
+    """Riwayat PEMINDAHAN BARANG (12 Okt 2026), bentuk SAMA dengan riwayat_so: dibuat, diubah, selesai (barang pindah),
+    di-void / dibatalkan (alasan). Aktor dari audit (PEMINDAHAN_BARANG_*); kolom dokumen hanya cadangan tanpa padanan.
+    None = tak ada di tenant ini."""
+    h = await conn.fetchrow(
+        """SELECT st.id, st.transfer_number, st.created_at, st.created_by, st.voided_at, st.voided_by, st.void_reason,
+                  st.cancelled_at, st.cancelled_by, st.cancel_reason, st.sales_order_id, so.order_number,
+                  fw.name AS dari, tw.name AS ke
+           FROM stock_transfers st
+           LEFT JOIN sales_orders so ON so.id = st.sales_order_id AND so.tenant_id = st.tenant_id
+           LEFT JOIN warehouses fw ON fw.id = st.from_warehouse_id
+           LEFT JOIN warehouses tw ON tw.id = st.to_warehouse_id
+           WHERE st.id = $1 AND st.tenant_id = $2""", transfer_id, tenant_id)
+    if not h:
+        return None
+    izin = {}
+    for modul in set(MODUL_PEMINDAHAN.values()):
+        izin[modul] = bool(await boleh(modul))
+    lihat = {j: izin[m] for j, m in MODUL_PEMINDAHAN.items()}
+    omitted = sorted({m for m in izin if not izin[m]})
+    k = _Kumpul()
+    n = h["transfer_number"]
+    if lihat["stock_transfer"]:
+        rute = f" ({h['dari']} -> {h['ke']})" if h["dari"] and h["ke"] else ""
+        k.tambah(h["created_at"], "PEMINDAHAN_DIBUAT", f"Pemindahan {n} dibuat{rute}", h["created_by"], "stock_transfer", h["id"], n)
+        al = f": {h['void_reason']}" if h["void_reason"] else ""
+        k.tambah(h["voided_at"], "PEMINDAHAN_DI_VOID", f"Pemindahan {n} di-void{al}", h["voided_by"], "stock_transfer", h["id"], n)
+        al = f": {h['cancel_reason']}" if h["cancel_reason"] else ""
+        k.tambah(h["cancelled_at"], "PEMINDAHAN_DIBATALKAN", f"Pemindahan {n} dibatalkan{al}", h["cancelled_by"],
+                 "stock_transfer", h["id"], n)
+    keluar, total = await _selesaikan(conn, tenant_id, k, {"stock_transfer": [h["id"]]}, lihat, limit)
+    return {
+        "transfer_id": str(h["id"]), "transfer_number": n,
+        "sales_order": ({"id": str(h["sales_order_id"]), "order_number": h["order_number"]}
+                        if lihat["sales_order"] and h["sales_order_id"] else None),
         "events": keluar, "total": total, "omitted": omitted,
     }

@@ -41,7 +41,7 @@ class CreateStockTransferRequest(BaseModel):
     """Create a new stock transfer"""
     from_warehouse_id: UUID
     to_warehouse_id: UUID
-    transfer_date: date
+    transfer_date: Optional[date] = None  # kosong -> tanggal bisnis tenant (12 Okt 2026, kebutuhan FE)
     expected_date: Optional[date] = None
     reference: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
