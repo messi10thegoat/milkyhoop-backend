@@ -32,7 +32,7 @@ def test_sumber_angka_jurnal_bukan_kolom_dan_pagar_tenant():
     assert "je.source_type = 'CREDIT_NOTE'" in src
     assert src.count("cn.tenant_id = $1") == 2                                 # CTE jurnal + kueri utama
     assert src.count("cn.status != 'void'") == 2                               # NK void tak dihitung
-    assert "FILTER (WHERE cn.status = 'draft')" in src and "FILTER (WHERE cn.status IN ('posted', 'partial'))" in src
+    assert "FILTER (WHERE cn.status = 'draft')" in src and "FILTER (WHERE cn.status IN ('posted', 'partial') AND cn.original_invoice_id IS NULL)"  # 12 Okt: NK bertaut = sisa 0 in src
     assert "ORDER BY" not in src and "current_balance" not in src
 
 

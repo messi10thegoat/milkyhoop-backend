@@ -307,6 +307,42 @@ def _sql_status_detail_nk(a: str = "") -> str:
 _SQL_STATUS_DETAIL_NK = _sql_status_detail_nk()
 
 
+KODE_KREDIT_DI_UANG_MUKA = "CN_KREDIT_DI_UANG_MUKA"
+KODE_SUDAH_MEMOTONG_FAKTUR = "CN_SUDAH_MEMOTONG_FAKTUR"
+
+
+def sisa_kredit_nk(status, total_amount, amount_applied, amount_refunded, original_invoice_id) -> Decimal:
+    """SATU rumus sisa kredit NK untuk SEMUA pembaca (daftar, detail, ringkasan, pratinjau, refund) -- 12 Okt 2026,
+    putusan MASTER (pola NetSuite: kredit yang sudah diterapkan ke invoice = applied; kelebihan = Customer Deposit).
+    NK BERTAUT faktur yang sudah terbit: sisa 0 -- posting memotong piutang faktur itu (porsi_ar) dan memindah kelebihan
+    ke saldo kredit uang muka KRD (created_deposit_id); amount_applied TIDAK diisi posting, jadi rumus lama (total -
+    applied - refunded) memberi sisa PENUH yang bisa direfund lagi (Dr Piutang / Cr Bank -> piutang hantu + uang keluar
+    ganda). NK BEBAS (tanpa faktur): tak berubah. Void -> 0. Draf: belum terbit, tampil apa adanya."""
+    if status == "void":
+        return Decimal("0")
+    if original_invoice_id is not None and status != "draft":
+        return Decimal("0")
+    return Decimal(str(total_amount or 0)) - Decimal(str(amount_applied or 0)) - Decimal(str(amount_refunded or 0))
+
+
+async def tolak_nk_bertaut(conn, tenant_id: str, cn) -> None:
+    """409 berkode untuk refund/apply DARI NK bertaut (sisa kreditnya 0 menurut sisa_kredit_nk)."""
+    if cn["original_invoice_id"] is None:
+        return
+    if cn.get("status") == "draft":  # draf belum memotong apa pun: pesan lama (sejalan sisa_kredit_nk)
+        raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
+    if cn.get("created_deposit_id"):
+        krd = await conn.fetchval("SELECT deposit_number FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+                                  cn.get("created_deposit_id"), tenant_id)
+        raise HTTPException(status_code=409, detail={
+            "code": KODE_KREDIT_DI_UANG_MUKA,
+            "message": f"Kredit nota ini sudah menjadi saldo kredit {krd or 'uang muka'}; kembalikan lewat uang muka itu."})
+    raise HTTPException(status_code=409, detail={
+        "code": KODE_SUDAH_MEMOTONG_FAKTUR,
+        "message": f"Nota kredit ini sudah memotong tagihan {cn.get('original_invoice_number') or 'faktur asalnya'}; "
+                   "tidak ada sisa kredit untuk dikembalikan."})
+
+
 def status_detail_nk(status, amount_applied, amount_refunded) -> str:
     """'partially_refunded' = refund sebagian, belum diterapkan; 'refunded' = habis karena refund saja; selain itu = status."""
     dipakai, kembali = (amount_applied or 0), (amount_refunded or 0)
@@ -442,12 +478,9 @@ async def list_credit_notes(
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_refunded"] or 0,
-                    "remaining_amount": 0
-                    if row["status"] == "void"
-                    else (
-                        row["total_amount"]
-                        - (row["amount_applied"] or 0)
-                        - (row["amount_refunded"] or 0)
+                    "remaining_amount": sisa_kredit_nk(
+                        row["status"], row["total_amount"], row["amount_applied"], row["amount_refunded"],
+                        row["original_invoice_id"]
                     ),
                     "status": row["status"],
                     "status_detail": status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
@@ -514,7 +547,7 @@ async def get_credit_notes_summary(request: Request):
                     COALESCE(SUM(cn.amount_applied), 0) as total_applied,
                     COALESCE(SUM(cn.amount_refunded), 0) as total_refunded,
                     COALESCE(SUM(cnj.journal_value - COALESCE(cn.amount_applied, 0) - COALESCE(cn.amount_refunded, 0))
-                        FILTER (WHERE cn.status IN ('posted', 'partial')), 0) as available_balance
+                        FILTER (WHERE cn.status IN ('posted', 'partial') AND cn.original_invoice_id IS NULL), 0) as available_balance
                 FROM credit_notes cn
                 LEFT JOIN cn_journal cnj ON cnj.id = cn.id
                 WHERE cn.tenant_id = $1 AND cn.status != 'void'
@@ -622,14 +655,9 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
             )
 
             # Build response
-            remaining = (
-                0
-                if cn["status"] == "void"
-                else (
-                    cn["total_amount"]
-                    - (cn["amount_applied"] or 0)
-                    - (cn["amount_refunded"] or 0)
-                )
+            remaining = sisa_kredit_nk(
+                cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"],
+                cn["original_invoice_id"],
             )
 
             from ..services.kode_order import tempel_kode as _tempel_kode
@@ -2277,7 +2305,8 @@ async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) ->
     )
     if not cn:
         raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
-    if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
+    await tolak_nk_bertaut(conn, ctx["tenant_id"], cn)  # 12 Okt: 409 berkode (kredit di KRD / sudah memotong faktur)
+    if (cn["amount_applied"] or 0) > 0:
         raise HTTPException(status_code=400, detail="Nota kredit ini sudah terkait ke faktur.")
     if cn["status"] != "posted" or cn["journal_id"] is None:
         raise HTTPException(
@@ -2641,12 +2670,10 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
             detail=tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya"),
         )
 
-    # Check remaining
-    remaining = (
-        cn["total_amount"]
-        - (cn["amount_applied"] or 0)
-        - (cn["amount_refunded"] or 0)
-    )
+    # 12 Okt 2026: NK bertaut = sisa 0 -> 409 berkode (Dr Piutang di bawah akan memunculkan piutang hantu)
+    await tolak_nk_bertaut(conn, ctx["tenant_id"], cn)
+    remaining = sisa_kredit_nk(cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"],
+                               cn["original_invoice_id"])
 
     if body.amount > remaining:
         raise HTTPException(
@@ -3272,7 +3299,7 @@ async def _keadaan_nk(conn, tid: str, cn_id) -> dict:
         return {"exists": False, "original_invoice_id": None}
     total = Decimal(str(r["total_amount"] or 0))
     # SAMA dengan GET /credit-notes/{id}: sisa = total - diterapkan - dikembalikan (0 bila void)
-    sisa = Decimal("0") if r["status"] == "void" else total - Decimal(str(r["amount_applied"] or 0)) - Decimal(str(r["amount_refunded"] or 0))
+    sisa = sisa_kredit_nk(r["status"], total, r["amount_applied"], r["amount_refunded"], r["original_invoice_id"])
     ke = {"exists": True, "status": r["status"],
           "status_detail": status_detail_nk(r["status"], r["amount_applied"], r["amount_refunded"]), "total_amount": float(total),
           "amount_applied": float(r["amount_applied"] or 0), "amount_refunded": float(r["amount_refunded"] or 0),
@@ -3448,7 +3475,11 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
     if aksi == "apply":
         if len(body.applications) != 1:
             blok.append(_blok_nk("CN_APPLY_SATU_FAKTUR", 400, "Nota kredit hanya bisa diterapkan ke satu faktur."))
-        if cn["original_invoice_id"] is not None or (cn["amount_applied"] or 0) > 0:
+        try:  # 12 Okt: pagar YANG SAMA dengan inti (409 berkode)
+            await tolak_nk_bertaut(conn, tid, cn)
+        except HTTPException as e:
+            blok.append(_blok_nk("CN_SUDAH_TERKAIT", e.status_code, e.detail))
+        if cn["original_invoice_id"] is None and (cn["amount_applied"] or 0) > 0:
             blok.append(_blok_nk("CN_SUDAH_TERKAIT", 400, "Nota kredit ini sudah terkait ke faktur."))
         if cn["status"] != "posted" or cn["journal_id"] is None:
             blok.append(_blok_nk("CN_BELUM_TERBIT", 400, "Hanya nota kredit yang sudah dibukukan yang bisa diterapkan ke faktur."))
@@ -3489,7 +3520,13 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
     if cn["status"] not in ("posted", "partial"):
         blok.append(_blok_nk("CN_TAK_BISA_REFUND", 400, tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya")))
         return blok
-    sisa = cn["total_amount"] - (cn["amount_applied"] or 0) - (cn["amount_refunded"] or 0)
+    try:  # 12 Okt: pagar YANG SAMA dengan inti (409 berkode)
+        await tolak_nk_bertaut(conn, tid, cn)
+    except HTTPException as e:
+        blok.append(_blok_nk("CN_TAK_BISA_REFUND", e.status_code, e.detail))
+        return blok
+    sisa = sisa_kredit_nk(cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"],
+                          cn["original_invoice_id"])
     if body.amount > sisa:
         blok.append(_blok_nk("CN_REFUND_MELEBIHI_SISA", 400,
                              f"Pengembalian {tg.rp(body.amount)} melebihi sisa nota kredit {tg.rp(sisa)}."))
