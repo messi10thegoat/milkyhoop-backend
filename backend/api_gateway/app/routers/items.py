@@ -166,24 +166,99 @@ PESAN_NAMA_BARANG = "Nama ini sudah dipakai barang lain di Persediaan. Gunakan n
 INDEKS_NAMA_BARANG = "idx_products_tenant_nama"
 
 
-def galat_nama_barang_dipakai() -> HTTPException:
-    return HTTPException(status_code=409, detail={"code": KODE_NAMA_BARANG, "message": PESAN_NAMA_BARANG})
+# W-20261013-ITEMFIELD: SEMUA 409 barang berbentuk {code, field, message, terhapus, nonaktif, item_id?}.
+SQL_PEMEGANG = "id, status, (deleted_at IS NOT NULL) AS terhapus"
+
+
+def _rincian_pemegang(pemegang) -> dict:
+    """`item_id` HANYA bila pemegang nonaktif dan belum terhapus (FE menawarkan "Aktifkan kembali"). Pemegang terhapus
+    tanpa id: kode/barcode tidak dipakai ulang (putusan pemilik 11 Okt)."""
+    if not pemegang:
+        return {"terhapus": False, "nonaktif": False}
+    terhapus = bool(pemegang["terhapus"])
+    nonaktif = not terhapus and pemegang["status"] == "inactive"
+    r = {"terhapus": terhapus, "nonaktif": nonaktif}
+    if nonaktif:
+        r["item_id"] = str(pemegang["id"])
+    return r
+
+
+def galat_nama_barang_dipakai(pemegang=None) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "code": KODE_NAMA_BARANG, "field": "name", "message": PESAN_NAMA_BARANG, **_rincian_pemegang(pemegang)})
 
 
 # 11 Okt 2026 (MASTER via WORKSPACE): kode/SKU barang dipakai -> detail berkode (pola NAMA_BARANG_DIPAKAI). `terhapus`
 # = pemegang kode itu baris yang sudah dihapus (deleted_at terisi; indeks V072 mencakup baris terhapus, kode TIDAK
-# dipakai ulang -- putusan pemilik). Tanpa nama/id barang pemegang. Pesan teks SENGAJA tetap seperti semula.
+# dipakai ulang -- putusan pemilik). Pesan teks SENGAJA tetap seperti semula.
 KODE_KODE_BARANG = "KODE_BARANG_DIPAKAI"
+KODE_BARCODE_BARANG = "BARCODE_BARANG_DIPAKAI"
+INDEKS_KODE_BARANG = {"idx_products_tenant_sku": "sku", "idx_products_tenant_item_code": "item_code"}
 
 
-def galat_kode_barang_dipakai(sku: str, terhapus: bool) -> HTTPException:
+def galat_kode_barang_dipakai(sku: str, terhapus: bool = False, field: str = "sku", pemegang=None) -> HTTPException:
+    rincian = _rincian_pemegang(pemegang) if pemegang is not None else {"terhapus": bool(terhapus), "nonaktif": False}
     return HTTPException(status_code=409, detail={
-        "code": KODE_KODE_BARANG, "message": f"Kode item {sku} sudah digunakan", "terhapus": bool(terhapus)})
+        "code": KODE_KODE_BARANG, "field": field, "message": f"Kode item {sku} sudah digunakan", **rincian})
+
+
+def galat_barcode_barang_dipakai(pemegang=None) -> HTTPException:
+    # Pesan lama dipertahankan: pemeta FE memilih medan barcode dari kata "barcode".
+    return HTTPException(status_code=409, detail={
+        "code": KODE_BARCODE_BARANG, "field": "barcode", "message": "Item with this barcode already exists",
+        **_rincian_pemegang(pemegang)})
 
 
 def nama_barang_bentrok(e: BaseException) -> bool:
     """Balapan: cek app lolos, indeks DB menolak -> tetap 409 berkode, bukan 500."""
     return isinstance(e, asyncpg.UniqueViolationError) and getattr(e, "constraint_name", None) == INDEKS_NAMA_BARANG
+
+
+def galat_bentrok_unik(e: BaseException, body) -> Optional[HTTPException]:
+    """Indeks unik barang (nama/sku/item_code) menolak -> 409 berkode, bukan 500 ber-teks galat DB."""
+    if nama_barang_bentrok(e):
+        return galat_nama_barang_dipakai()
+    if isinstance(e, asyncpg.UniqueViolationError):
+        field = INDEKS_KODE_BARANG.get(getattr(e, "constraint_name", None))
+        if field:
+            return galat_kode_barang_dipakai(getattr(body, field, None) or "", field=field)
+    return None
+
+
+KODE_PAJAK_ITEM = "PAJAK_ITEM_TIDAK_SAH"
+
+
+async def nama_pajak_item(conn, tenant_id: str, tax_id, field: str, arah: str) -> Optional[str]:
+    """tax_codes.id pajak item (otoritas) -> nama pajak untuk kolom teks sales_tax/purchase_tax. Milik tenant (Law 24),
+    aktif, dan arah cocok (output = jual, input = beli; arah kosong = PPh/Tanpa Pajak, boleh). None bila id kosong."""
+    if tax_id is None:
+        return None
+    tc = await conn.fetchrow(
+        "SELECT name, direction, is_active FROM tax_codes WHERE id = $1 AND tenant_id = $2", tax_id, tenant_id)
+    if not tc:
+        salah = "tidak ditemukan"
+    elif not tc["is_active"]:
+        salah = "tidak aktif"
+    elif tc["direction"] and tc["direction"] != arah:
+        salah = "bukan pajak penjualan" if arah == "output" else "bukan pajak pembelian"
+    else:
+        return tc["name"]
+    raise HTTPException(status_code=422, detail={"code": KODE_PAJAK_ITEM, "field": field, "message": f"Pajak item {salah}."})
+
+
+KODE_FIELD_BELUM_DIDUKUNG = "FIELD_BELUM_DIDUKUNG"
+
+
+def periksa_badan_item(body, aksi: str) -> None:
+    """Field belum didukung yang BERISI -> 422 (tak ada jalur jual/beli yang menerapkannya; menyimpannya = janji palsu,
+    membuangnya = kehilangan diam). Kunci tak dikenal -> WARNING saja (pemanggil chat dibangun LLM; daftar pemanggil
+    tak terbukti lengkap) -- 422 untuk kunci asing = unit tersendiri sesudah log bersih."""
+    f = body.field_belum_didukung()
+    if f:
+        raise HTTPException(status_code=422, detail={
+            "code": KODE_FIELD_BELUM_DIDUKUNG, "field": f, "message": f"Isian {f} belum didukung. Kosongkan isian ini."})
+    if body.kunci_asing:
+        logger.warning("[ITEM_KUNCI_ASING] %s kunci tak dikenal dibuang: %s", aksi, body.kunci_asing)
 
 
 def get_user_context(request):
@@ -510,30 +585,30 @@ async def create_item(request: Request, body: CreateItemRequest):
     tenant_id = ctx["tenant_id"]
     conn = None
     tanpa_stok_bila_bukan_barang(body)  # 10 Okt: non_inventory/service tak pernah track_inventory
+    periksa_badan_item(body, "POST /items")
 
     try:
         conn = await get_db_connection()
 
         # Check for duplicate name (barang aktif saja: V402 indeks unik nama parsial WHERE deleted_at IS NULL)
         existing = await conn.fetchrow(
-            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
+            f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
             tenant_id,
             body.name,
         )
         if existing:
-            raise galat_nama_barang_dipakai()
+            raise galat_nama_barang_dipakai(existing)
 
         # Check for duplicate barcode
         if body.barcode:
             existing_barcode = await conn.fetchrow(
                 # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
-                "SELECT id FROM products WHERE barcode = $1 AND tenant_id = $2",
+                f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND tenant_id = $2 "
+                "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
                 body.barcode, tenant_id,
             )
             if existing_barcode:
-                raise HTTPException(
-                    status_code=409, detail="Item with this barcode already exists"
-                )
+                raise galat_barcode_barang_dipakai(existing_barcode)
 
         # Auto-generate item_code if not provided
         item_code_to_use = body.item_code
@@ -579,24 +654,29 @@ async def create_item(request: Request, body: CreateItemRequest):
 
         # Check for duplicate SKU (after SKU is finalized)
         existing_sku = await conn.fetchrow(
-            "SELECT id, (deleted_at IS NOT NULL) AS terhapus FROM products "
+            f"SELECT {SQL_PEMEGANG} FROM products "
             "WHERE tenant_id = $1 AND sku = $2 ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
             tenant_id,
             sku_to_use,
         )
         if existing_sku:
-            raise galat_kode_barang_dipakai(sku_to_use, existing_sku["terhapus"])
+            raise galat_kode_barang_dipakai(sku_to_use, field="sku", pemegang=existing_sku)
 
         # Check for duplicate item_code (after item_code is finalized)
         existing_item_code = await conn.fetchrow(
-            "SELECT id FROM products WHERE tenant_id = $1 AND item_code = $2",
+            f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND item_code = $2 "
+            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
             tenant_id,
             item_code_to_use,
         )
         if existing_item_code:
-            raise HTTPException(
-                status_code=409, detail=f"Kode item {item_code_to_use} sudah digunakan"
-            )
+            raise galat_kode_barang_dipakai(item_code_to_use, field="item_code", pemegang=existing_item_code)
+
+        # Pajak item: id = otoritas, nama teks diisi dari tax_codes (W-20261013-ITEMFIELD; dulu id dibuang diam).
+        if body.sales_tax_id is not None:
+            body.sales_tax = await nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")
+        if body.purchase_tax_id is not None:
+            body.purchase_tax = await nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")
 
         # Auto-default inventory/COGS accounts for stockable goods so the
         # COGS/restock path no longer relies on an implicit silent role fallback.
@@ -644,6 +724,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                     costing_method, opening_stock, opening_stock_rate, opening_stock_date,
                     for_sales, for_purchases, warehouse_id,
                     track_batches, track_expiry, default_expiry_days,
+                    sales_tax_id, purchase_tax_id, bisa_dikirim,
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -656,6 +737,7 @@ async def create_item(request: Request, body: CreateItemRequest):
                     $27, $28, $29, $30,
                     $31, $32, $33,
                     $34, $35, $36,
+                    $37, $38, $39,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -698,13 +780,11 @@ async def create_item(request: Request, body: CreateItemRequest):
                 body.track_batches,
                 body.track_expiry,
                 body.default_expiry_days,
+                body.sales_tax_id,
+                body.purchase_tax_id,
+                # V318: flag non-stok bisa dikirim, SATU INSERT (dulu UPDATE kedua); CHECK DB menolak jasa
+                bool(body.bisa_dikirim),
             )
-            # V318: flag non-stok bisa dikirim (tenant eksplisit; CHECK DB menolak jasa)
-            if body.bisa_dikirim:
-                await conn.execute(
-                    "UPDATE products SET bisa_dikirim = true WHERE id = $1 AND tenant_id = $2",
-                    item_id, ctx["tenant_id"],
-                )
 
             # Insert unit conversions (goods only)
             if body.item_type == "goods" and body.conversions:
@@ -838,8 +918,9 @@ async def create_item(request: Request, body: CreateItemRequest):
     except HTTPException:
         raise
     except Exception as e:
-        if nama_barang_bentrok(e):
-            raise galat_nama_barang_dipakai() from e
+        galat = galat_bentrok_unik(e, body)
+        if galat:
+            raise galat from e
         logger.error(f"Error creating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -881,9 +962,9 @@ async def _item_jebakan_ubah_tipe(conn, tenant_id, item_id):
     (b) riwayat inventory_ledger (valuasi persediaan/HPP).
     """
     tunda = await conn.fetchval(
-        """SELECT string_agg(DISTINCT si.invoice_number, , ) FROM sales_invoice_items sii
+        """SELECT string_agg(DISTINCT si.invoice_number, ', ') FROM sales_invoice_items sii
            JOIN sales_invoices si ON si.id = sii.invoice_id
-           WHERE sii.item_id = $1 AND si.tenant_id = $2 AND si.status IN (posted, partial, paid)
+           WHERE sii.item_id = $1 AND si.tenant_id = $2 AND si.status IN ('posted', 'partial', 'paid')
              AND COALESCE(sii.allocated_amount, 0) - COALESCE(sii.recognized_amount, 0) > 0.005""",
         item_id, tenant_id,
     )
@@ -933,6 +1014,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
     conn = None
+    periksa_badan_item(body, "PUT /items/{id}")
 
     try:
         conn = await get_db_connection()
@@ -949,27 +1031,26 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
         # Check for duplicate name (if changing)
         if body.name:
             duplicate = await conn.fetchrow(
-                "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3 AND deleted_at IS NULL",
+                f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3 AND deleted_at IS NULL",
                 ctx["tenant_id"],
                 body.name,
                 str(item_id),
             )
             if duplicate:
-                raise galat_nama_barang_dipakai()
+                raise galat_nama_barang_dipakai(duplicate)
 
         # Check for duplicate barcode (if changing)
         if body.barcode:
             duplicate_barcode = await conn.fetchrow(
                 # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
-                "SELECT id FROM products WHERE barcode = $1 AND id != $2 AND tenant_id = $3",
+                f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND id != $2 AND tenant_id = $3 "
+                "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
                 body.barcode,
                 str(item_id),
                 tenant_id,
             )
             if duplicate_barcode:
-                raise HTTPException(
-                    status_code=409, detail="Item with this barcode already exists"
-                )
+                raise galat_barcode_barang_dipakai(duplicate_barcode)
 
         # Fetch old values for change tracking
         old_item = await conn.fetchrow(
@@ -1023,6 +1104,8 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                 "purchase_account_id": "purchase_account_id",
                 "sales_tax": "sales_tax",
                 "purchase_tax": "purchase_tax",
+                "sales_tax_id": "sales_tax_id",
+                "purchase_tax_id": "purchase_tax_id",
                 "sales_price": "sales_price",
                 "purchase_price": "purchase_price",
                 "image_url": "image_url",
@@ -1055,6 +1138,11 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                     body_dict["bisa_dikirim"] = False
             if "bisa_dikirim" in body_dict and body_dict["bisa_dikirim"] is None:
                 body_dict.pop("bisa_dikirim")
+            # Pajak item: id = otoritas, nama teks diisi dari tax_codes (W-20261013-ITEMFIELD; dulu id dibuang diam).
+            if body_dict.get("sales_tax_id") is not None:
+                body_dict["sales_tax"] = await nama_pajak_item(conn, tenant_id, body_dict["sales_tax_id"], "sales_tax_id", "output")
+            if body_dict.get("purchase_tax_id") is not None:
+                body_dict["purchase_tax"] = await nama_pajak_item(conn, tenant_id, body_dict["purchase_tax_id"], "purchase_tax_id", "input")
 
             # Auto-default inventory/COGS accounts for stockable goods. Compute the
             # effective type/flags + account ids (post-update if changed, else current
@@ -1284,8 +1372,9 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     except HTTPException:
         raise
     except Exception as e:
-        if nama_barang_bentrok(e):
-            raise galat_nama_barang_dipakai() from e
+        galat = galat_bentrok_unik(e, body)
+        if galat:
+            raise galat from e
         logger.error(f"Error updating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:

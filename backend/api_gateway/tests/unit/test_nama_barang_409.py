@@ -1,7 +1,7 @@
 """11 Okt 2026 (MASTER): nama barang ganda (sesama barang belum dihapus) -> 409 detail {code: NAMA_BARANG_DIPAKAI, message}
 di create DAN update; balapan yang ditolak indeks V402 idx_products_tenant_nama -> 409 yang sama, bukan 500.
 Pesan wajib terbaca FE r227 sebagai galat medan NAMA (barang.ts petakanGalatBarang + useDataForm petakanGalatItem
-memilih medan dari isi pesan)."""
+memilih medan dari isi pesan). 13 Okt (W-20261013-ITEMFIELD): detail seragam {code, field, message, terhapus, nonaktif}."""
 import asyncio
 import re
 import uuid
@@ -28,7 +28,7 @@ class Conn:
         self.q.append(sql)
         if self.galat is not None:
             raise self.galat
-        return {"id": "lain"} if self.ada else None
+        return {"id": "lain", "status": "active", "terhapus": False} if self.ada else None
 
     async def close(self):
         self.ditutup = True
@@ -54,7 +54,8 @@ def _unik(constraint):
 
 def _berkode(e):
     assert e.status_code == 409
-    assert e.detail == {"code": "NAMA_BARANG_DIPAKAI", "message": I.PESAN_NAMA_BARANG}
+    assert e.detail == {"code": "NAMA_BARANG_DIPAKAI", "field": "name", "message": I.PESAN_NAMA_BARANG,
+                        "terhapus": False, "nonaktif": False}
 
 
 def test_create_nama_dipakai_409_berkode(monkeypatch):
@@ -81,9 +82,17 @@ def test_balapan_indeks_nama_jadi_409_bukan_500(monkeypatch, panggil):
 
 
 def test_bentrok_indeks_lain_tetap_500_tak_disamarkan(monkeypatch):
-    _pasang(monkeypatch, Conn(galat=_unik("idx_products_tenant_sku")))
+    _pasang(monkeypatch, Conn(galat=_unik("products_pkey")))
     e = _galat(I.create_item(REQ, C(name="Kaos Polos", base_unit="pcs", item_type="goods")))
     assert e.status_code == 500
+
+
+@pytest.mark.parametrize("indeks,field", [("idx_products_tenant_sku", "sku"), ("idx_products_tenant_item_code", "item_code")])
+def test_balapan_indeks_kode_jadi_409_berkode(monkeypatch, indeks, field):
+    """13 Okt: balapan sku/item_code (dulu 500 ber-teks galat DB) -> 409 KODE_BARANG_DIPAKAI dengan field."""
+    _pasang(monkeypatch, Conn(galat=_unik(indeks)))
+    e = _galat(I.create_item(REQ, C(name="Kaos Polos", base_unit="pcs", item_type="goods", sku="S-1", item_code="S-1")))
+    assert e.status_code == 409 and e.detail["code"] == "KODE_BARANG_DIPAKAI" and e.detail["field"] == field
 
 
 def test_nama_barang_bentrok_hanya_unique_violation_indeks_nama():
@@ -105,4 +114,6 @@ def test_tak_ada_lagi_string_lama():
     import inspect
     src = inspect.getsource(I)
     assert "Item with this name already exists" not in src
-    assert src.count("raise galat_nama_barang_dipakai()") == 4  # create, update, 2x balapan
+    assert "raise galat_nama_barang_dipakai(existing)" in src and "raise galat_nama_barang_dipakai(duplicate)" in src
+    assert src.count("galat = galat_bentrok_unik(e, body)") == 2  # balapan create + update
+    assert src.count('"Item with this barcode already exists"') == 1  # hanya di galat_barcode_barang_dipakai

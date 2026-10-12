@@ -155,4 +155,6 @@ def test_api_barang_bisa_dikirim():
     s = _src(IT, "update_item")
     assert "'bisa_dikirim': 'bisa_dikirim'" in s and "Jasa tidak bisa ditandai 'bisa dikirim'" in s
     c = _src(IT, "create_item")
-    assert "UPDATE products SET bisa_dikirim = true WHERE id = $1 AND tenant_id = $2" in c
+    # 13 Okt (W-20261013-ITEMFIELD): bisa_dikirim ikut INSERT yang sama (atomik), bukan UPDATE kedua
+    assert "sales_tax_id, purchase_tax_id, bisa_dikirim," in c and "bool(body.bisa_dikirim)" in c
+    assert "UPDATE products SET bisa_dikirim" not in c

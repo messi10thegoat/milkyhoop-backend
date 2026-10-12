@@ -48,15 +48,24 @@ def _jalan(monkeypatch, conn):
 
 @pytest.mark.parametrize("terhapus", [True, False])
 def test_sku_dipakai_409_berkode_membawa_terhapus(monkeypatch, terhapus):
-    conn = Conn({"id": uuid.uuid4(), "terhapus": terhapus})
+    conn = Conn({"id": uuid.uuid4(), "status": "inactive" if terhapus else "active", "terhapus": terhapus})
     with pytest.raises(HTTPException) as e:
         _jalan(monkeypatch, conn)
     assert e.value.status_code == 409
-    assert e.value.detail == {"code": "KODE_BARANG_DIPAKAI", "message": "Kode item SKU-9001 sudah digunakan",
-                              "terhapus": terhapus}
-    assert set(e.value.detail) == {"code", "message", "terhapus"}  # tanpa id/nama pemegang
+    assert e.value.detail == {"code": "KODE_BARANG_DIPAKAI", "field": "sku", "message": "Kode item SKU-9001 sudah digunakan",
+                              "terhapus": terhapus, "nonaktif": False}
+    assert "item_id" not in e.value.detail  # tanpa id pemegang kecuali nonaktif-belum-terhapus
     sql = [q for q in conn.q if "sku = $2" in q][0]
     assert "deleted_at" in sql  # baris terhapus ikut dibaca (indeks V072 mencakupnya)
+
+
+def test_sku_dipakai_pemegang_nonaktif_membawa_item_id(monkeypatch):
+    """13 Okt (W-20261013-ITEMFIELD): pemegang nonaktif & belum terhapus -> item_id (FE: "Aktifkan kembali")."""
+    pid = uuid.uuid4()
+    with pytest.raises(HTTPException) as e:
+        _jalan(monkeypatch, Conn({"id": pid, "status": "inactive", "terhapus": False}))
+    d = e.value.detail
+    assert d["nonaktif"] is True and d["terhapus"] is False and d["item_id"] == str(pid)
 
 
 def test_kontrol_tanpa_pemegang_kode_lolos_pemeriksaan_sku(monkeypatch):

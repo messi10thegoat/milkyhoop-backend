@@ -5,7 +5,7 @@ This module defines request and response models for the /api/items endpoints.
 Items are the master data for goods and services used in transactions.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, PrivateAttr, field_validator, model_validator
 from typing import Optional, List, Literal, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -61,7 +61,53 @@ class UnitConversionUpdate(BaseModel):
 # REQUEST MODELS - Create/Update Item
 # =============================================================================
 
-class CreateItemRequest(BaseModel):
+# W-20261013-ITEMFIELD: field yang dikirim form klasik tetapi TAK diterapkan jalur jual/beli mana pun (nol pembaca BE).
+# Diterima hanya bila kosong/false/null; berisi -> 422 FIELD_BELUM_DIDUKUNG di router (bukan disimpan = janji palsu).
+FIELD_ITEM_BELUM_DIDUKUNG = ("price_levels", "quantity_pricing", "quantity_pricing_enabled", "default_bin_id", "is_matrix_parent")
+
+
+class _BadanItem(BaseModel):
+    """Bagian bersama POST/PUT /api/items: id pajak, field belum didukung, dan catatan kunci tak dikenal.
+
+    Kunci tak dikenal TIDAK ditolak (pemanggil chat membangun badan dari LLM; daftar pemanggil tak terbukti lengkap) --
+    dicatat di `kunci_asing` agar router menulis WARNING. 422 untuk kunci asing = unit tersendiri sesudah log bersih."""
+    sales_tax_id: Optional[UUID] = Field(None, description="tax_codes.id pajak penjualan (otoritas; nama diisi server)")
+    purchase_tax_id: Optional[UUID] = Field(None, description="tax_codes.id pajak pembelian (otoritas; nama diisi server)")
+    price_levels: Optional[Any] = None
+    quantity_pricing: Optional[Any] = None
+    quantity_pricing_enabled: Optional[bool] = None
+    default_bin_id: Optional[str] = None
+    is_matrix_parent: Optional[bool] = None
+    _kunci_asing: List[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _catat_kunci_asing(cls, data, handler):
+        m = handler(data)
+        if isinstance(data, dict):
+            dikenal = set()
+            for nama, f in cls.model_fields.items():
+                dikenal.add(nama)
+                if isinstance(f.validation_alias, AliasChoices):
+                    dikenal.update(a for a in f.validation_alias.choices if isinstance(a, str))
+                elif isinstance(f.validation_alias, str):
+                    dikenal.add(f.validation_alias)
+            m._kunci_asing = sorted(k for k in data if k not in dikenal)
+        return m
+
+    @property
+    def kunci_asing(self) -> List[str]:
+        return list(self._kunci_asing)
+
+    def field_belum_didukung(self) -> Optional[str]:
+        """Nama field belum didukung pertama yang BERISI, atau None."""
+        for k in FIELD_ITEM_BELUM_DIDUKUNG:
+            if getattr(self, k) not in (None, False, "", [], {}):
+                return k
+        return None
+
+
+class CreateItemRequest(_BadanItem):
     """Request body for creating a new item."""
     name: str = Field(..., min_length=1, max_length=100, description="Item name")
     item_type: Literal['goods', 'service', 'non_inventory'] = Field('goods', description="Type of item")
@@ -72,7 +118,8 @@ class CreateItemRequest(BaseModel):
     base_unit: str = Field(..., min_length=1, max_length=50, description="Base unit of measure")
     barcode: Optional[str] = Field(None, max_length=100, description="Product barcode")
     kategori: Optional[str] = Field(None, max_length=100, description="Category")
-    deskripsi: Optional[str] = Field(None, description="Description")
+    # Chat create_item mengirim `description` (FieldSpec) -- dulu dibuang diam.
+    deskripsi: Optional[str] = Field(None, validation_alias=AliasChoices("deskripsi", "description"), description="Description")
     is_returnable: bool = Field(True, description="Whether item can be returned (goods only)")
 
     # Accounts
@@ -160,7 +207,7 @@ class CreateItemRequest(BaseModel):
         return v
 
 
-class UpdateItemRequest(BaseModel):
+class UpdateItemRequest(_BadanItem):
     """Request body for updating an existing item."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     item_type: Optional[Literal['goods', 'service', 'non_inventory']] = None
@@ -169,7 +216,7 @@ class UpdateItemRequest(BaseModel):
     base_unit: Optional[str] = Field(None, min_length=1, max_length=50)
     barcode: Optional[str] = Field(None, max_length=100)
     kategori: Optional[str] = Field(None, max_length=100)
-    deskripsi: Optional[str] = None
+    deskripsi: Optional[str] = Field(None, validation_alias=AliasChoices("deskripsi", "description"))
     is_returnable: Optional[bool] = None
 
     # Accounts (string names - legacy)

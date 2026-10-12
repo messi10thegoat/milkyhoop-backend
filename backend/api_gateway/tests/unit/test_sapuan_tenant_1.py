@@ -131,7 +131,7 @@ def _literal(path):
 
 
 @pytest.mark.parametrize("path,penanda,pagar", [
-    ("routers/items.py", "SELECT id FROM products WHERE barcode = $1", "tenant_id = $"),
+    ("routers/items.py", "FROM products WHERE barcode = $1", "tenant_id = $"),
     ("routers/team_members.py", "WHERE r.code = $1 AND r.is_active = TRUE", "r.tenant_id IN ('__SYSTEM__', $2)"),
     ("routers/bank_reconciliation.py", "FROM chat_workflow_state", "tenant_id = $"),
     ("routers/bank_reconciliation.py", "UPDATE chat_workflow_state", "tenant_id = $"),
