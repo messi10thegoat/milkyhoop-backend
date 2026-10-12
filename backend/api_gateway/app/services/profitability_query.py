@@ -58,19 +58,31 @@ WITH revenue AS (
     GROUP BY sii.item_id
 ),
 cogs AS (
-    SELECT
-        il.product_id,
-        SUM(il.total_cost) AS cogs
-    FROM inventory_ledger il
-    JOIN sales_invoices si ON si.id = il.source_id
-    WHERE il.tenant_id = $1
-      AND il.movement_type = 'SALE'
-      AND il.source_type IN __KELUAR_JUAL_FAKTUR__
-      AND si.accounting_status = 'POSTED'
-      AND si.status != 'void'
-      AND si.invoice_date >= $2
-      AND si.invoice_date <= $3
-    GROUP BY il.product_id
+    SELECT x.product_id, SUM(x.cogs) AS cogs FROM (
+        SELECT il.product_id, il.total_cost AS cogs
+        FROM inventory_ledger il
+        JOIN sales_invoices si ON si.id = il.source_id
+        WHERE il.tenant_id = $1
+          AND il.movement_type = 'SALE'
+          AND il.source_type IN __KELUAR_JUAL_FAKTUR__
+          AND si.accounting_status = 'POSTED'
+          AND si.status != 'void'
+          AND si.invoice_date >= $2
+          AND si.invoice_date <= $3
+        UNION ALL
+        -- R1 irisan 2: HPP barang yang dikirim lewat Surat Jalan dari pesanan = alokasi aktif (snapshot SJ), per faktur
+        SELECT ifi.product_id, a.total_cost AS cogs
+        FROM sj_faktur_alokasi a
+        JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        JOIN invoice_fulfillment_items ifi ON ifi.id = a.fulfillment_item_id
+        WHERE a.tenant_id = $1 AND a.voided_at IS NULL AND a.total_cost > 0
+          AND si.accounting_status = 'POSTED'
+          AND si.status != 'void'
+          AND si.invoice_date >= $2
+          AND si.invoice_date <= $3
+    ) x
+    GROUP BY x.product_id
 )
 SELECT
     p.id            AS product_id,
@@ -133,16 +145,30 @@ WITH revenue AS (
       AND sii.item_id IS NOT NULL
 ),
 cogs AS (
-    SELECT SUM(il.total_cost) AS total_cogs
-    FROM inventory_ledger il
-    JOIN sales_invoices si ON si.id = il.source_id
-    WHERE il.tenant_id = $1
-      AND il.movement_type = 'SALE'
-      AND il.source_type IN __KELUAR_JUAL_FAKTUR__
-      AND si.accounting_status = 'POSTED'
-      AND si.status != 'void'
-      AND si.invoice_date >= $2
-      AND si.invoice_date <= $3
+    SELECT SUM(x.cogs) AS total_cogs FROM (
+        SELECT il.product_id, il.total_cost AS cogs
+        FROM inventory_ledger il
+        JOIN sales_invoices si ON si.id = il.source_id
+        WHERE il.tenant_id = $1
+          AND il.movement_type = 'SALE'
+          AND il.source_type IN __KELUAR_JUAL_FAKTUR__
+          AND si.accounting_status = 'POSTED'
+          AND si.status != 'void'
+          AND si.invoice_date >= $2
+          AND si.invoice_date <= $3
+        UNION ALL
+        -- R1 irisan 2: HPP barang yang dikirim lewat Surat Jalan dari pesanan = alokasi aktif (snapshot SJ), per faktur
+        SELECT ifi.product_id, a.total_cost AS cogs
+        FROM sj_faktur_alokasi a
+        JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        JOIN invoice_fulfillment_items ifi ON ifi.id = a.fulfillment_item_id
+        WHERE a.tenant_id = $1 AND a.voided_at IS NULL AND a.total_cost > 0
+          AND si.accounting_status = 'POSTED'
+          AND si.status != 'void'
+          AND si.invoice_date >= $2
+          AND si.invoice_date <= $3
+    ) x
 )
 SELECT
     r.total_revenue_gross,

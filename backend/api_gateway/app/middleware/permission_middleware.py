@@ -206,6 +206,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO tanpa faktur + void mandiri (modul sama dgn kirim lewat faktur)
     (r"^/api/sales-orders/[^/]+/delivery-notes(/preview)?$", ["POST"], "sales_invoice", "P"),
     (r"^/api/deliveries/[^/]+/void(/preview)?$", ["POST"], "sales_invoice", "V"),
+    (r"^/api/delivery-notes/pending-invoice$", ["GET"], "sales_invoice", "R"),
     # Ubah SO terkonfirmasi (4 Okt 2026): pratinjau = izin PATCH /sales-orders/{id} (sales_order U), bukan prefiks POST = C.
     (r"^/api/sales-orders/[^/]+/edit/preview$", ["POST"], "sales_order", "U"),
     # Fase lokasi pesanan (7 Okt 2026): ubah/hapus + pratinjau = izin ubah pesanan (U), bukan prefiks POST = C.

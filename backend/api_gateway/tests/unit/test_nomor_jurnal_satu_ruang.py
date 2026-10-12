@@ -31,6 +31,8 @@ DAFTAR_IZIN = {
         ("pembungkus Python jurnal manual; pemanggil = 'JV'", "get_next_journal_number", 2),
     ("services/kernel_document_executor.py", "_next_journal_number", "prefix"):
         ("pembungkus kernel dokumen; pemanggil = 'DI'", "_next_journal_number", 2),
+    ("services/sj_so.py", "_jurnal", "prefix"):
+        ("pembungkus jurnal Surat Jalan dari pesanan (R1 irisan 2); pemanggil = 'DLV' / 'DLV-REV' / 'COGS' / 'RECOG' / 'REV'", "_jurnal", 3),
 }
 
 

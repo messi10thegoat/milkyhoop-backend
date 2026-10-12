@@ -41,6 +41,8 @@ class DBFaktur(DB):
         if "FROM inventory_ledger" in s and "source_type = ANY" in s:
             self.kueri_keluar.append(a)
             return self.keluar
+        if "FROM sj_faktur_alokasi" in s:   # R1 irisan 2 (T2): tak ada alokasi Surat Jalan pada skenario retur klasik
+            return []
         return await super().fetch(sql, *a)
 
     async def fetchval(self, sql, *a):

@@ -979,7 +979,7 @@ check_22_proforma_pecahan() {
 # 12 Okt 2026 (putusan MASTER, ukur BE2): PRODUCTION_OUTPUT kini wajib berjurnal, sisi MASUK (kaos 12 dari 12) dan sisi
 # PEMBALIK (movement_type PRODUCTION_OUTPUT_REVERSAL; 5 baris 11 Sep ditautkan ke jurnal pembalik MANUAL 12 Okt, Inventory
 # Rule 8 carve-out, izin pemilik; terukur 0 pelanggaran). Sumber lain ditambah HANYA setelah diukur 0 pelanggaran.
-STOK_WAJIB_JURNAL="'OPENING_BALANCE','STOCK_ADJUSTMENT','BILL','INVOICE_FULFILLMENT','MATERIAL_ISSUE'"
+STOK_WAJIB_JURNAL="'OPENING_BALANCE','STOCK_ADJUSTMENT','BILL','INVOICE_FULFILLMENT','MATERIAL_ISSUE','DELIVERY_NOTE'"
 STOK_WAJIB_SQL="(il.source_type IN ($STOK_WAJIB_JURNAL,'PRODUCTION_OUTPUT'))"
 # Daftar BERNAMA sumber yang SAH tanpa jurnal (sumber|alasan). Bukan kecualian per baris: ini kelas yang memang tak
 # bernilai buku, dan ditegakkan LENGAN KEDUA di bawah (berpasangan neto nol per produk per hari) agar "tanpa jurnal"
@@ -1043,6 +1043,32 @@ check_21_stok_wajib_jurnal() {
     else
         CHK_PASS=0
         CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt / $rel"
+    fi
+}
+
+# ---- Check 23 (12 Okt 2026, R1 irisan 2): saldo Barang Terkirim (jurnal) == Σ nilai Surat Jalan dari pesanan yang BELUM difakturkan ----
+# Law 1/16: buku besar (is_effective_journal) vs sub-ledger snapshot SJ (total_cost - alokasi aktif). HIGH. Fail-CLOSED (Rule 11 banksync):
+# tenant tanpa peran GOODS_DELIVERED_NOT_INVOICED / keluaran tak terduga = __GAGAL__, bukan PASS. Tenant tanpa SJ-so: 0 == 0 (dibuktikan
+# bisa merah di scripts/ops/uji-nyata-sj-stok.sh: sisipan jurnal Barang Terkirim tanpa SJ -> MERAH).
+check_23_barang_terkirim() {
+    local tenant="$1" akun saldo turunan selisih
+    akun=$(psql_cmd "SELECT account_id FROM account_roles WHERE tenant_id = '$tenant' AND role_key = 'GOODS_DELIVERED_NOT_INVOICED';")
+    if [ "$akun" = "__GAGAL__" ]; then CHK_PASS=0; CHK_DETAIL="__GAGAL__"; return; fi
+    if [ -z "$akun" ]; then CHK_PASS=0; CHK_DETAIL="__GAGAL__ peran GOODS_DELIVERED_NOT_INVOICED belum terpetakan"; return; fi
+    saldo=$(psql_cmd "SELECT COALESCE(SUM(jl.debit - jl.credit), 0) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id WHERE je.tenant_id = '$tenant' AND je.status = 'POSTED' AND is_effective_journal(je.id) AND jl.account_id = '$akun';")
+    turunan=$(psql_cmd "SELECT COALESCE(SUM(ifi.total_cost - COALESCE(a.c, 0)), 0) FROM invoice_fulfillments f JOIN invoice_fulfillment_items ifi ON ifi.fulfillment_id = f.id LEFT JOIN LATERAL (SELECT SUM(x.total_cost) AS c FROM sj_faktur_alokasi x WHERE x.fulfillment_item_id = ifi.id AND x.tenant_id = f.tenant_id AND x.voided_at IS NULL) a ON true WHERE f.tenant_id = '$tenant' AND f.asal = 'so' AND f.status <> 'voided' AND f.voided_at IS NULL AND f.journal_id IS NOT NULL;")
+    if [ "$saldo" = "__GAGAL__" ] || [ "$turunan" = "__GAGAL__" ]; then CHK_PASS=0; CHK_DETAIL="__GAGAL__"; return; fi
+    if ! [[ "$saldo" =~ ^-?[0-9.]+$ ]] || ! [[ "$turunan" =~ ^-?[0-9.]+$ ]]; then
+        CHK_PASS=0; CHK_DETAIL="__GAGAL__ keluaran tak terduga: $saldo / $turunan"; return
+    fi
+    selisih=$(echo "$saldo - $turunan" | bc -l 2>/dev/null)
+    if [ -z "$selisih" ]; then CHK_PASS=0; CHK_DETAIL="__GAGAL__ bc tak tersedia"; return; fi
+    if [ "$(echo "($selisih) > 0.01 || ($selisih) < -0.01" | bc -l)" = "1" ]; then
+        CHK_PASS=0
+        CHK_DETAIL="saldo Barang Terkirim (jurnal) $saldo != Σ SJ belum difakturkan $turunan (selisih $selisih)"
+        detail "[CHECK 23] $tenant: $CHK_DETAIL"
+    else
+        CHK_PASS=1; CHK_DETAIL=""
     fi
 }
 
@@ -1403,6 +1429,18 @@ for TENANT in $TENANTS; do
         HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
         STOK_DETAIL="$CHK_DETAIL"
         log "  HIGH [21] Kartu Stok Wajib Jurnal: $CHK_DETAIL"
+    fi
+
+    # Check 23: saldo Barang Terkirim vs Σ Surat Jalan dari pesanan belum difakturkan (12 Okt 2026, R1 irisan 2) -- HIGH
+    check_23_barang_terkirim "$TENANT"
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    if [ "$CHK_PASS" = "1" ]; then
+        PASS_COUNT=$((PASS_COUNT + 1)); T_PASS=$((T_PASS + 1))
+    elif is_broken "$CHK_DETAIL"; then
+        note_broken 23 "Barang Terkirim" "$CHK_DETAIL"
+    else
+        HIGH_COUNT=$((HIGH_COUNT + 1)); T_HIGH=$((T_HIGH + 1))
+        log "  HIGH [23] Barang Terkirim: $CHK_DETAIL"
     fi
 
     # Check 22: proforma terbit bernominal pecahan rupiah (11 Okt 2026, Pergatsi) -- WARNING

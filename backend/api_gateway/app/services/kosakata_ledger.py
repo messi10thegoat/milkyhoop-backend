@@ -11,9 +11,9 @@ Pembatal = f"{sumber}_VOID" (inventory_helpers.record_inventory_reversal) — ba
 """
 import re
 
-KELUAR_JUAL = ("SALES_INVOICE", "INVOICE_FULFILLMENT", "POS_SALE", "DOCUMENT_INTAKE")
+KELUAR_JUAL = ("SALES_INVOICE", "INVOICE_FULFILLMENT", "POS_SALE", "DOCUMENT_INTAKE", "DELIVERY_NOTE")
 KELUAR_JUAL_FAKTUR = ("SALES_INVOICE", "INVOICE_FULFILLMENT")          # source_id -> sales_invoices.id
-BATAL_JUAL = tuple(f"{s}_VOID" for s in ("SALES_INVOICE", "INVOICE_FULFILLMENT", "POS_SALE"))
+BATAL_JUAL = tuple(f"{s}_VOID" for s in ("SALES_INVOICE", "INVOICE_FULFILLMENT", "POS_SALE", "DELIVERY_NOTE"))
 # source_type ledger lain yang DIKENAL (bukan penjualan). Penulis baru wajib diklasifikasi di salah satu daftar.
 BUKAN_JUAL = (
     "BILL", "BILL_VOID", "PURCHASE_INVOICE", "CREDIT_NOTE", "CREDIT_NOTE_VOID", "VENDOR_CREDIT",

@@ -800,6 +800,17 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                     f"sedangkan yang dijual {_n(qty)} — stok akan jadi minus."
                 )
 
+        # R1 irisan 2: Surat Jalan dari pesanan yang belum difakturkan -> pratinjau BELUM menirunya (alokasi per baris)
+        try:
+            _pv_so = body.get("sales_order_id")
+            if _pv_so and await conn.fetchval(
+                    "SELECT 1 FROM invoice_fulfillments WHERE tenant_id = $1 AND asal = 'so' AND sales_order_id = $2::uuid "
+                    "AND status <> 'voided' LIMIT 1", ctx["tenant_id"], str(_pv_so)):
+                warnings.append(
+                    "Pesanan ini punya Surat Jalan tanpa faktur: HPP dan pendapatan barang yang sudah terkirim "
+                    "mengikuti nilai kirim saat faktur diposting; pratinjau jurnal ini belum memperhitungkannya.")
+        except Exception:  # noqa: BLE001
+            pass
         # apakah COGS BENAR-BENAR akan terbentuk saat posting?
         cogs_will_post = (
             has_inventory_items and all_have_cost and effective_policy != "delivery"
@@ -2663,6 +2674,17 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             itm["id"],
         )
 
+    # R1 (12 Okt 2026): Surat Jalan dari SO TANPA faktur yang sudah ada ditautkan ke baris faktur ini (alokasi INSERT-only, tertua-dulu)
+    # SEBELUM jalur 3-event dipilih. Non-stok: tautan + fulfilled_qty. BER-STOK: + reklas Dr HPP / Cr Barang Terkirim (snapshot SJ)
+    # + INVOICE_REVENUE qty teralokasi; qty yang sudah terkirim TIDAK ikut kirim-otomatis (tak ada keluar stok ganda).
+    # Tanpa SJ-so = nol efek.
+    from ..services import sj_so as _sj_so
+    _alok = await _sj_so.alokasikan_saat_faktur(conn, ctx["tenant_id"], ctx.get("user_id"), invoice_id)
+    _ful_map = {}
+    if _alok["qty"] > Decimal("0"):
+        _ful_map = {r_["id"]: Decimal(str(r_["fulfilled_qty"] or 0)) for r_ in await conn.fetch(
+            "SELECT id, fulfilled_qty FROM sales_invoice_items WHERE invoice_id=$1", invoice_id)}
+
     # =============================================================
     # 3-Event Path Selection
     # =============================================================
@@ -2681,6 +2703,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         if not product or not product.get("track_inventory", True):
             continue
         has_inventory_items = True
+        _sisa_kirim = Decimal(str(itm["quantity"])) - _ful_map.get(itm["id"], Decimal("0"))
+        if _alok["qty"] > Decimal("0") and _sisa_kirim <= Decimal("0"):
+            continue   # sudah terkirim penuh lewat SJ-so: tak ada keluar stok / HPP kedua
         avg_cost = await conn.fetchval(
             "SELECT get_weighted_average_cost($1, $2)",
             ctx["tenant_id"],
@@ -2692,7 +2717,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             inventory_items_for_fulfill.append(
                 {
                     "invoice_item_id": itm["id"],
-                    "quantity": itm["quantity"],
+                    "quantity": _sisa_kirim if _alok["qty"] > Decimal("0") else itm["quantity"],
                 }
             )
 
@@ -2718,7 +2743,13 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     fulfillment_status = "not_applicable"
     revenue_status = "recognized"
 
-    if has_inventory_items and all_have_cost and effective_policy == "delivery":
+    if _alok["qty"] > Decimal("0") and has_inventory_items and all_have_cost and not inventory_items_for_fulfill:
+        # Semua barang ber-stok sudah terkirim lewat Surat Jalan dari pesanan; reklas HPP + pengakuan pendapatan sudah ditulis
+        # oleh alokasi di atas (P2: pendapatan saat faktur). Nol keluar stok / HPP kedua.
+        fulfillment_status = "fulfilled"
+        revenue_status = "recognized"
+
+    elif has_inventory_items and all_have_cost and effective_policy == "delivery":
         # P4 DELIVERY MODE, sell-from-stock: DEFER. Route into the EXISTING
         # make-to-order deferred branch verbatim — billing journal already
         # credited Pendapatan Diterima Dimuka (2-10750/role) above; here we
@@ -2975,11 +3006,6 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     "UPDATE sales_invoice_items SET recognized_amount = allocated_amount WHERE id = $1",
                     _itm["id"],
                 )
-
-    # R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO TANPA faktur (non-stok) yang sudah ada ditautkan ke baris faktur ini
-    # (alokasi INSERT-only, tertua-dulu) SEBELUM status pengiriman dihitung di bawah. Tanpa SJ-so = nol efek.
-    from ..services import sj_so as _sj_so
-    await _sj_so.alokasikan_saat_faktur(conn, ctx["tenant_id"], ctx.get("user_id"), invoice_id)
 
     # V318: faktur memuat baris NON-STOK yang perlu dikirim -> status pengiriman menunggu Surat Jalan untuk baris
     # itu (kirim-otomatis posting TIDAK menyertakannya; pola NetSuite Item Fulfillment terpisah). Faktur tanpa
@@ -4424,7 +4450,7 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
 
     # R1 irisan 1: alokasi SJ-so (tanpa faktur) ke faktur ini dilepas; SJ-so KEMBALI 'belum ditagih', TIDAK ikut void.
     from ..services import sj_so as _sj_so
-    await _sj_so.lepas_alokasi_faktur(conn, ctx["tenant_id"], invoice_id, "faktur dibatalkan (void)")
+    await _sj_so.balik_alokasi_faktur(conn, ctx, invoice_id, today, body.reason)
 
     year_month_str = today.strftime("%y%m")
     reversal_journal_id = None
@@ -4689,7 +4715,8 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
     # reversed (reversed_by_id IS NULL naturally skips fulfilled
     # invoices already handled by loop 0a; Law 26 max-1).
     # ============================================================
-    orphan_rev = await conn.fetchrow(
+    # R1 irisan 2: alokasi Surat Jalan menambah jurnal INVOICE_REVENUE kedua per faktur -> SEMUA yang belum dibalik, bukan satu.
+    for orphan_rev in await conn.fetch(
         """
         SELECT id, total_debit FROM journal_entries
         WHERE source_type = 'INVOICE_REVENUE'
@@ -4697,11 +4724,11 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
           AND tenant_id = $2
           AND status = 'POSTED'
           AND reversed_by_id IS NULL
+        ORDER BY created_at, id
         """,
         invoice_id,
         ctx["tenant_id"],
-    )
-    if orphan_rev:
+    ):
         orphan_rev_rev_id = uuid.uuid4()
         orphan_rev_trace = str(uuid.uuid4())
         # Self-healing canonical generator (V176): emits REV, bumps REV counter.

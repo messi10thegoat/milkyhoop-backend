@@ -166,6 +166,8 @@ class AccountRole:
     REVENUE_UNBILLED: Final[str] = "REVENUE_UNBILLED"
     COGS_PRODUCTION: Final[str] = "COGS_PRODUCTION"
     COGS_SERVICE: Final[str] = "COGS_SERVICE"
+    # V417 (R1 irisan 2, 12 Okt 2026): Barang Terkirim 1-10660 -- barang sudah dikirim, belum difakturkan (pola Accurate).
+    GOODS_DELIVERED_NOT_INVOICED: Final[str] = "GOODS_DELIVERED_NOT_INVOICED"
     COGS_VARIANCE_MATERIAL: Final[str] = "COGS_VARIANCE_MATERIAL"
     COGS_VARIANCE_LABOR: Final[str] = "COGS_VARIANCE_LABOR"
     COGS_VARIANCE_OVERHEAD: Final[str] = "COGS_VARIANCE_OVERHEAD"
@@ -273,6 +275,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "REVENUE_UNBILLED",
         "COGS_PRODUCTION",
         "COGS_SERVICE",
+        "GOODS_DELIVERED_NOT_INVOICED",  # V417
         "COGS_VARIANCE_MATERIAL",
         "COGS_VARIANCE_LABOR",
         "COGS_VARIANCE_OVERHEAD",

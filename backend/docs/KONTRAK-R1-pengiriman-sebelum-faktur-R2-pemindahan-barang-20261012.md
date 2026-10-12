@@ -459,3 +459,49 @@ lama (kolom baru ber-DEFAULT, fungsi diperluas). Urutan: (1) merge-only (tanpa r
 `POST .../delivery-notes` (header `X-Idempotency-Key`) -> `{success,data:{id,delivery_number,asal:'so',status,sales_order_id,fulfillment_date,lines,dilewati}}`.
 `POST /api/deliveries/{id}/void/preview {reason}` -> `{ok,ulang,delivery_number,blocks[],payload}`; `POST .../void {reason}` -> `{success,ulang}`.
 `GET /api/deliveries[/{id}]`: `asal` ('faktur'|'so'), `invoice_id`/`invoice_number` bisa null.
+
+
+---
+
+# BAGIAN 15 — R1 IRISAN 2: BARANG BER-STOK, BARANG TERKIRIM (12 Okt 2026, BACKEND2) — ATURAN BUKU BARU
+
+Putusan pemilik LANGSUNG (12 Okt): **P1 = Barang Terkirim** (pola Accurate; HPP sepadan dengan pendapatan), **P2 = pendapatan diakui
+saat faktur**. Pola: SAP/NetSuite/Accurate untuk "kirim sebelum faktur". Flag: `pengiriman_stok_sebelum_faktur` (kaos dulu), di atas
+`pengiriman_sebelum_faktur` (irisan 1).
+
+## 15.1 Jurnal
+
+| Peristiwa | Jurnal | source_type | Kartu stok |
+|---|---|---|---|
+| SJ dari pesanan, barang ber-stok | Dr `GOODS_DELIVERED_NOT_INVOICED` (1-10660) / Cr `INVENTORY_MERCHANDISE` (1-10600), qty x WAC snapshot | `DELIVERY_NOTE` | keluar, `source_id` = id SJ, `journal_id` terisi |
+| Faktur diposting (alokasi tertua-dulu) | (i) Dr `COGS_SALES` / Cr Barang Terkirim, nilai = snapshot SJ (alokasi yang menghabiskan sisa baris SJ mengambil sisa BIAYA: clearing tepat); (ii) Dr Dimuka / Cr Penjualan untuk qty teralokasi (menghabiskan qty baris = sisa pendapatan; selain itu proporsional) | `DELIVERY_INVOICED` + `INVOICE_REVENUE` | — (stok sudah keluar saat SJ) |
+| Void SJ mandiri (belum ditagih) | pembalik penuh jurnal SJ | `DELIVERY_NOTE_REVERSAL` | pembalik `DELIVERY_NOTE_VOID` |
+| Void faktur | pembalik reklas HPP; INVOICE_REVENUE alokasi ikut dibalik; SJ KEMBALI "belum ditagih" (TIDAK ikut void) | `DELIVERY_INVOICED_REVERSAL` + `INVOICE_REVENUE_REVERSAL` | — |
+| Barang non-stok | tanpa jurnal, tanpa kartu (irisan 1) | — | — |
+
+Bagian faktur yang BELUM terkirim mengikuti kebijakan tenant seperti biasa (kirim-otomatis `invoice`, atau tertunda `delivery` di kaos).
+Barang yang sudah terkirim penuh lewat SJ TIDAK memicu keluar stok / HPP kedua (`inventory_items_for_fulfill` memakai sisa).
+
+## 15.2 Koreksi dan temuan saat implementasi
+
+| # | Temuan | Tindakan |
+|---|---|---|
+| I1 | Blok "orphan revenue" void faktur membalik SATU `INVOICE_REVENUE` per faktur (`fetchrow`). Alokasi menambah jurnal INVOICE_REVENUE kedua -> satu akan tertinggal. | Diubah mengulang SEMUA jurnal yang belum dibalik (urut `created_at`); perilaku faktur lama (satu jurnal) identik. |
+| I2 | Profitabilitas (`profitability_query` 2x CTE, `profitability_reconciliation`) menghitung HPP dari kartu `source_id = faktur`; kartu `DELIVERY_NOTE` ber-`source_id = SJ`. Tanpa perubahan laba kotor faktur dari SJ-so TERLAMPAU TINGGI. | Ditambah cabang `UNION ALL` dari `sj_faktur_alokasi.total_cost` (aktif, faktur POSTED, rentang tanggal); `DELIVERY_NOTE` TIDAK masuk `KELUAR_JUAL_FAKTUR` (tak ada hitung ganda). |
+| I3 | `credit_notes._keluar_faktur_untuk_retur` (T2) tak melihat barang yang dikirim lewat SJ-so. | Ditambah baris sintetis dari alokasi aktif (qty, biaya snapshot, gudang SJ). Harness: retur menemukan sisa=Q, biaya=WAC snapshot, gudang SJ. |
+| I4 | `account_roles_role_key_check` = enumerasi; `seed_default_coa`/`seed_default_account_roles` perlu ditambal untuk tenant baru. | V417 membangun CHECK dari definisi yang ada + nilai baru (tak ada nilai terbuang), menambal fungsi lewat anchor yang GAGAL-KERAS bila hilang, backfill akun+peran 6 tenant. |
+| I5 | `is_effective_journal` daftar hitam pembalik literal. | V417 menambah `DELIVERY_NOTE_REVERSAL`, `DELIVERY_INVOICED_REVERSAL` (anchor gagal-keras). |
+| I6 | Pratinjau jurnal faktur (`/preview-journal`) menghitung dari badan permintaan, bukan alokasi per baris. | BELUM menirunya: bila pesanan induk punya SJ tanpa faktur, pratinjau memberi PERINGATAN eksplisit (bukan angka palsu). Celah dicatat; angka posting = server. |
+| I7 | `kosakata_ledger.KELUAR_JUAL` memuat `DELIVERY_NOTE`; `BATAL_JUAL` memuat `DELIVERY_NOTE_VOID`. | tes `test_kosakata_keluar_jual` diperbarui + `sj_so.tulis` terdaftar sebagai penulis SQL mentah. |
+
+## 15.3 Penjaga
+
+- **Check 23 (HIGH, harian):** saldo Barang Terkirim (`is_effective_journal`, role-resolved) == Σ (`total_cost` SJ-so aktif - alokasi aktif). Fail-CLOSED (peran tak terpetakan / keluaran tak terduga = `__GAGAL__`). Dibuktikan merah: jurnal `DELIVERY_NOTE` tanpa SJ (+1000) dan `DELIVERY_INVOICED` tanpa alokasi (-500).
+- **Check 21:** `DELIVERY_NOTE` masuk `STOK_WAJIB_JURNAL` (kartu keluar tanpa jurnal = merah; dibuktikan).
+- **Check 15/16:** tidak bergeser oleh SJ-so, alokasi, void faktur, void SJ (drift sebelum == sesudah, dump nyata); bergeser bila kartu tanpa jurnal (kontrol merah).
+- **Laporan:** `GET /api/delivery-notes/pending-invoice`: baris per SJ (qty/ditagih/belum, nilai snapshot, umur) + saldo buku + selisih.
+
+## 15.4 Urutan rilis dan izin
+
+Migrasi-saja dulu (V417 skema/peran/akun/source_type: kompatibel dengan kode lama; BELUM ada kode yang menulis DELIVERY_*), lalu kode + restart,
+lalu V418 flag kaos. Seluruhnya aturan buku baru -> izin LANGSUNG pemilik per langkah; grapgrap terpisah.

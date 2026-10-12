@@ -18,7 +18,8 @@ def test_konstanta():
     assert set(KL.KELUAR_JUAL_FAKTUR) <= set(KL.KELUAR_JUAL)
     assert "INVOICE_FULFILLMENT" in KL.KELUAR_JUAL
     assert "CASH_SALE" not in KL.KELUAR_JUAL and "SALES_RECEIPT_COGS" not in KL.KELUAR_JUAL  # tanpa penulis / jurnal
-    assert KL.BATAL_JUAL == ("SALES_INVOICE_VOID", "INVOICE_FULFILLMENT_VOID", "POS_SALE_VOID")
+    assert KL.BATAL_JUAL == ("SALES_INVOICE_VOID", "INVOICE_FULFILLMENT_VOID", "POS_SALE_VOID", "DELIVERY_NOTE_VOID")
+    assert "DELIVERY_NOTE" in KL.KELUAR_JUAL and "DELIVERY_NOTE" not in KL.KELUAR_JUAL_FAKTUR   # source_id = id SJ, bukan faktur
     assert len(set(KL.DIKENAL)) == len(KL.DIKENAL)
     assert KL.sql_daftar(("A_B", "C")) == "('A_B', 'C')"
     with pytest.raises(AssertionError):
@@ -59,7 +60,7 @@ def test_penulis_lewat_helper_terklasifikasi():
 # & source_type-nya diklasifikasi di services/kosakata_ledger.
 PENULIS_SQL = {
     ("services/saldo_awal_stok.py", "catat_saldo_awal_stok"),  # 10 Okt: saldo awal barang = jurnal + kartu (items/inventory memakai ini)
-    ("routers/items.py", "create_stock_adjustment"), ("services/pemindahan_barang.py", "_tulis_ledger"),
+    ("routers/items.py", "create_stock_adjustment"), ("services/pemindahan_barang.py", "_tulis_ledger"), ("services/sj_so.py", "tulis"),
     ("routers/production.py", "_reverse_inventory_ledger"), ("routers/production.py", "issue_materials"),
     ("routers/sales_invoices.py", "_execute_fulfillment"), ("routers/sales_receipts.py", "create_sales_receipt"),
     ("routers/sales_receipts.py", "void_sales_receipt"), ("routers/stock_adjustments.py", "post_stock_adjustment"),

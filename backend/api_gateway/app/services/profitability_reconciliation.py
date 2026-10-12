@@ -63,15 +63,27 @@ WHERE si.tenant_id = $1
 """
 
 REPORT_COGS_QUERY = """
-SELECT COALESCE(SUM(il.total_cost), 0) AS goods_cogs
-FROM inventory_ledger il
-JOIN sales_invoices si ON si.id = il.source_id
-WHERE il.tenant_id = $1
-  AND il.movement_type = 'SALE'
-  AND il.source_type IN __KELUAR_JUAL_FAKTUR__
-  AND si.accounting_status = 'POSTED'
-  AND si.status != 'void'
-  AND si.invoice_date BETWEEN $2 AND $3
+SELECT COALESCE(SUM(x.cogs), 0) AS goods_cogs FROM (
+    SELECT il.total_cost AS cogs
+    FROM inventory_ledger il
+    JOIN sales_invoices si ON si.id = il.source_id
+    WHERE il.tenant_id = $1
+      AND il.movement_type = 'SALE'
+      AND il.source_type IN __KELUAR_JUAL_FAKTUR__
+      AND si.accounting_status = 'POSTED'
+      AND si.status != 'void'
+      AND si.invoice_date BETWEEN $2 AND $3
+    UNION ALL
+    -- R1 irisan 2: HPP via Surat Jalan dari pesanan (alokasi aktif, snapshot SJ)
+    SELECT a.total_cost AS cogs
+    FROM sj_faktur_alokasi a
+    JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
+    JOIN sales_invoices si ON si.id = sii.invoice_id
+    WHERE a.tenant_id = $1 AND a.voided_at IS NULL AND a.total_cost > 0
+      AND si.accounting_status = 'POSTED'
+      AND si.status != 'void'
+      AND si.invoice_date BETWEEN $2 AND $3
+) x
 """.replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
 
 

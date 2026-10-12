@@ -587,6 +587,7 @@ _VOID_PANDUAN = [
     (("PAYROLL", "PAYROLL_PAYMENT", "PAYROLL_BPJS_PAYMENT", "PAYROLL_TAX_PAYMENT"), "batalkan lewat modul penggajian"),
     (("FIXED_ASSET", "ASSET_DISPOSAL", "ASSET_SALE", "DEPRECATION"), "batalkan lewat modul aset tetap"),
     (("STOCK_ADJUSTMENT", "STOCK_TRANSFER"), "batalkan lewat modul stok"),
+    (("DELIVERY_NOTE", "DELIVERY_NOTE_REVERSAL", "DELIVERY_INVOICED", "DELIVERY_INVOICED_REVERSAL"), "batalkan Surat Jalan atau faktur terkait lewat modulnya (void)"),
     (("OPENING", "OPENING_BALANCE", "VENDOR_OPENING_BALANCE"), "perbaiki lewat modul saldo awal"),
     (("INTERCOMPANY",), "batalkan lewat modul antar-perusahaan"),
     (("CLOSING",), "buka kembali lewat proses tutup buku"),

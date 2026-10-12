@@ -1628,6 +1628,21 @@ async def _keluar_faktur_untuk_retur(conn, tenant_id, invoice_id, product_id, cr
         product_id,
         list(_SUMBER_KELUAR_FAKTUR),
     )
+    # R1 irisan 2 (T1/T2): barang yang dikirim lewat Surat Jalan dari pesanan tercatat di kartu dengan source_id = id SJ (bukan id
+    # faktur). Dari faktur ini, "keluar"-nya = alokasi aktif (qty x biaya snapshot SJ), gudang = gudang SJ.
+    rows = list(rows) + [
+        {"warehouse_id": e["warehouse_id"], "quantity_in": Decimal("0"), "quantity_out": e["quantity"],
+         "unit_cost": (Decimal(str(e["total_cost"])) / Decimal(str(e["quantity"]))) if Decimal(str(e["quantity"])) > 0 else Decimal("0")}
+        for e in await conn.fetch(
+            """SELECT f.warehouse_id, a.quantity, a.total_cost
+               FROM sj_faktur_alokasi a
+               JOIN invoice_fulfillment_items ifi ON ifi.id = a.fulfillment_item_id
+               JOIN invoice_fulfillments f ON f.id = ifi.fulfillment_id AND f.tenant_id = a.tenant_id
+               JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
+               WHERE sii.invoice_id = $1 AND a.tenant_id = $2 AND a.voided_at IS NULL AND ifi.product_id = $3
+                 AND a.total_cost > 0""",
+            invoice_id, tenant_id, product_id)
+    ]
     keluar_qty = Decimal("0")
     keluar_biaya = Decimal("0")
     balik_qty = Decimal("0")
