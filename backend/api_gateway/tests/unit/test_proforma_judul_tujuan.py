@@ -38,7 +38,8 @@ def _judul(isi):
 @pytest.mark.parametrize("purpose,judul", [("DP", "Tagihan Uang Muka"), ("TERMIN", "Tagihan Termin"),
                                            ("PELUNASAN", "Tagihan Pelunasan"), ("pelunasan", "Tagihan Pelunasan")])
 def test_judul_dan_catatan_sesuai_tujuan(tangkap, purpose, judul):
-    isi = _render(tangkap, purpose)
+    # 12 Okt 2026: catatan "BUKAN faktur pajak" hanya untuk tenant PKP -> uji isi catatan dalam konteks PKP
+    isi = _render(tangkap, purpose, catatan_bukan_faktur_pajak=True)
     assert _judul(isi) == judul
     assert f"Dokumen ini adalah {judul.lower()} (proforma)" in " ".join(isi.split())
 
