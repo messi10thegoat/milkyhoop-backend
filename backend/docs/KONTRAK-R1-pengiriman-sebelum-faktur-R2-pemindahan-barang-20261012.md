@@ -367,3 +367,95 @@ Blok baru pratinjau: `PB_GUDANG_ASAL_WAJIB`, `PB_GUDANG_TUJUAN_WAJIB`, `PB_GUDAN
 
 Tak ada perubahan skema/migrasi di v2. Perubahan izin baca: GET stock-transfers dipetakan modul `item` R (sebelumnya tak
 terpetakan = tertutup).
+
+
+---
+
+# BAGIAN 13 — R1 TAHAP 0: HASIL UKUR LANJUT (12 Okt 2026, BACKEND2; baca saja, tanpa kode, tanpa tulis)
+
+Keputusan yang berlaku: P1 Barang Terkirim (pola Accurate), P2 pendapatan saat faktur, P3 model A (perluas + alokasi INSERT-only),
+P4 kode 1-10660. Izin pemilik P1+P2 diminta langsung sebelum MERGE kode R1.
+
+## 13.1 Koreksi/penambahan terhadap bagian 1-10
+
+| # | Temuan | Dampak pada rancangan |
+|---|---|---|
+| T1 | Kartu stok SJ-faktur memakai `source_id = invoice_id` (BUKAN fulfillment_id); jurnal HPP `INVOICE_FULFILLMENT` juga `source_id = invoice_id`. Penautan jurnal ke kartu: `UPDATE inventory_ledger SET journal_id ... WHERE source_type='INVOICE_FULFILLMENT' AND source_id=<invoice> AND journal_id IS NULL`. | SJ-so (belum ada faktur) harus memakai `source_id = fulfillment_id`, `source_type = DELIVERY_NOTE`. Pembaca yang mencari "keluar dari faktur X" lewat `source_id = invoice_id` TIDAK akan melihatnya (T2). |
+| T2 | `credit_notes._keluar_faktur_untuk_retur` (HPP asli NK retur) membaca `inventory_ledger WHERE source_id = original_invoice_id AND source_type IN (SALES_INVOICE, INVOICE_FULFILLMENT)`. `profitability_query` dan `kosakata_ledger.KELUAR_JUAL(_FAKTUR)` juga bergantung pada dua source_type itu. | Retur atas faktur yang barangnya dikirim lewat SJ-so akan gagal "barang tak pernah keluar" (400). Wajib: lewat tabel alokasi (invoice_item -> fulfillment_item -> kartu) dan source_type baru masuk KELUAR_JUAL. Tanpa ini = kelas cacat "stok hantu"/"retur ditolak salah". |
+| T3 | `recompute_so_shipped`, `trg_so_shipped_from_fulfillment(_item)`, `so_memenuhi_selesai`, `terapkan_selesai_so`, `update_sales_order_status`, dan penjaga harian `verify_so_shipped_reconciliation` semuanya menghubungkan SJ ke SO LEWAT `sales_invoices`. | Semua harus mengenal `invoice_fulfillments.sales_order_id`. `verify_so_shipped_reconciliation` akan MERAH palsu begitu ada SJ-so bila tak diubah bersama (penjaga basi = Law 33). |
+| T4 | `so_memenuhi_selesai` menghitung `kirim` lewat `invoice_fulfillment_items.invoice_item_id = sales_invoice_items.id` dan `tagih` lewat faktur; selesai = tagih>=qty AND (stok -> kirim>=qty) AND allocated-recognized<=0.005. | SJ-so menghitung `kirim` lewat `sales_order_item_id`; SO yang terkirim penuh sebelum difakturkan TIDAK selesai (benar: tagih<qty). Setelah faktur, `allocated - recognized` harus 0 karena pendapatan diakui saat faktur (P2). |
+| T5 | `is_effective_journal` memuat daftar hitam source_type pembalik literal (`INVOICE_REVERSAL`, `BILL_REVERSAL`, `INVOICE_FULFILLMENT_REVERSAL`, `SALES_INVOICE_COGS_REVERSAL`). | Tambahkan `DELIVERY_NOTE_REVERSAL`, `DELIVERY_INVOICED_REVERSAL` (fungsi DB: CREATE OR REPLACE di migrasi). |
+| T6 | `account_roles.role_key` dipagari CHECK enumerasi (`account_roles_role_key_check`, 44+ nilai). | Migrasi harus DROP+ADD CHECK dengan daftar yang dibangun dari definisi sekarang + `GOODS_DELIVERED_NOT_INVOICED` (jangan menyalin literal: ambil `pg_get_constraintdef` di DO block agar tak ada nilai terbuang). Juga `AccountRole` di `role_resolver.py` (+ tes katalog). |
+| T7 | `seed_default_coa(p_tenant_id)` (8,5 KB) membangun CoA tenant baru; pola V151/V152: patch fungsi + backfill tenant lama + `account_roles`. | Satu migrasi: patch seed + backfill 6 tenant (kode 1-10660 diukur KOSONG di 6 tenant) + peran. |
+| T8 | `journal_source_types` (FK-enforced): belum ada `DELIVERY_*`. Tabel punya kolom `is_active`. | Daftarkan 4 tipe jurnal (Law 6) SEBELUM kode menulisnya. |
+| T9 | `tenant_config.revenue_recognition_policy`: hanya KAOS punya baris = `delivery` (billing saja saat posting; HPP+pendapatan saat /fulfill). Tak ada baris untuk 5 tenant lain (bawaan global `invoice`). 149 faktur, `recognize_at` semuanya NULL. | Alur SJ-so tak memerlukan kebijakan: pendapatan diakui di faktur untuk qty yang sudah terkirim (P2). Faktur tanpa SJ tetap mengikuti kebijakan tenant. Tidak ada konflik dengan 'delivery' kaos. |
+| T10 | `journals.py:579` (daftar blok jurnal manual untuk dokumen turunan) memuat `INVOICE_FULFILLMENT`. `kosakata_ledger.DIKENAL`, `_SUMBER_*` di credit_notes. | Source_type baru wajib masuk daftar klasifikasi (tes `test_penulis_sql_mentah_dikenal` akan memaksa). |
+| T11 | Pembaca `invoice_fulfillments` di kode: sales_invoices (14), deliveries (10), delivery_lampiran (6), so_riwayat (3), so_kirim (3), pengiriman_serah (2), dokumen (2), so_terkait, so_posisi, so_pengiriman, kode_order, cn_tertunda, bulk_export, bulk_dokumen, sales_orders. Yang JOIN `sales_invoices` lewat `f.invoice_id` (INNER) akan DIAM-DIAM menjatuhkan SJ-so: so_posisi:110, so_riwayat:193/799, kode_order:460, deliveries (list/detail/PDF/serah), dokumen:309, so_terkait:143, cn_tertunda:129, bulk_export:83. | Satu tes inventaris: setiap SELECT dari `invoice_fulfillments` yang JOIN `sales_invoices` harus LEFT JOIN atau menyaring `asal='faktur'` (daftar pinned; tambahan baru = merah). |
+| T13 | FK ke `invoice_fulfillments`: `invoice_fulfillment_items`, `pengiriman_serah`, `pengiriman_resi`. `document_attachments` (entity_type 'delivery') tanpa FK. Tak ada view/matview yang menyebutnya. | Serah/resi/lampiran tak berubah (berkunci `fulfillment_id`). |
+
+## 13.2 Revisi kompleksitas R1 (lebih besar dari perkiraan awal)
+
+Daftar perubahan kode/DB minimum: (1) skema: kolom nullable + CHECK + tabel alokasi + trigger predikat; (2) CoA: peran + CHECK + seed
++ backfill + katalog Python; (3) 4 source_type jurnal + `is_effective_journal`; (4) SO: 5 fungsi DB (`recompute_so_shipped`,
+2 trigger, `so_memenuhi_selesai`, `verify_so_shipped_reconciliation`, mungkin `update_sales_order_status`); (5) jalur baru
+SJ-so + void SJ; (6) alokasi saat faktur (otomatis tertua-dulu) + kaskade void faktur; (7) NK retur lewat alokasi (T2);
+(8) ~10 pembaca (T11) + tes inventaris; (9) laporan + Check harian + Check 21/Inv-2/Inv-9; (10) FE (kartu SO: tiga angka).
+Usul pemecahan rilis (tiap rilis hijau sendiri, flag mati):
+ R1-a skema+CoA+source_type+fungsi SO (tanpa perubahan perilaku; harness: hitung-ulang semua SO prod identik),
+ R1-b pembaca (LEFT JOIN + tes inventaris) + NK lewat alokasi,
+ R1-c jalur SJ-so + void + alokasi + kaskade void faktur di balik flag `pengiriman_sebelum_faktur`,
+ R1-d laporan + Check harian,
+ lalu E2E kaos (izin tulis uji), flag kaos, grapgrap terpisah.
+
+## 13.3 Yang BELUM diukur (tahap 0 lanjut bila diminta)
+- `update_sales_order_status` (isi), `bulk_export`/`dokumen` dampak PDF/ekspor, daftar lengkap pembaca per fungsi (baris).
+- Perilaku auto-fulfill saat POSTING faktur dari SO yang sebagian sudah terkirim (jalur `AUTO_FULFILL:{id}`): harus melompati qty yang sudah teralokasi.
+- Dampak laporan laba-rugi/neraca (reports.py) atas akun baru Barang Terkirim (akun ASSET baru muncul di neraca otomatis? periksa pengelompokan `psak_sub_category`).
+
+
+---
+
+# BAGIAN 14 — R1 IRISAN 1: SURAT JALAN DARI PESANAN TANPA FAKTUR, BARANG NON-STOK (12 Okt 2026, BACKEND2)
+
+Putusan MASTER: irisan 1 = tanpa aturan buku baru (SJ non-stok = dokumen: nol jurnal, nol kartu stok, nol HPP). Irisan 2
+(barang ber-stok + akun Barang Terkirim + NK retur lewat alokasi T1/T2 + Check saldo) menunggu P1+P2 pemilik.
+
+## 14.1 Yang dibangun
+
+| Komponen | Isi |
+|---|---|
+| V415 (skema, tanpa perubahan perilaku) | `invoice_fulfillments`: `invoice_id` NULLABLE, `+ sales_order_id`, `+ asal` ('faktur' DEFAULT / 'so'), CHECK kolom sesuai asal. `invoice_fulfillment_items`: `invoice_item_id` NULLABLE, `+ sales_order_item_id`, CHECK min. satu tautan. Tabel `sj_faktur_alokasi` (INSERT-only; hanya `voided_*`) + trigger predikat DB (alokasi aktif <= qty baris SJ dan <= qty baris faktur). Fungsi SO diperbarui: `trg_so_shipped_from_fulfillment(_item)`, `recompute_so_shipped`, `so_memenuhi_selesai`, `verify_so_shipped_reconciliation` (T3/T4). |
+| V416 | flag `pengiriman_sebelum_faktur` kaos saja. |
+| `services/sj_so.py` | satu penentu `rencana` (pratinjau == tulis; SEMUA blok), `tulis`, `rencana_void`/`void`, `alokasikan_saat_faktur`, `lepas_alokasi_faktur`. |
+| `routers/sj_so.py` | `POST /api/sales-orders/{id}/delivery-notes[/preview]`, `POST /api/deliveries/{id}/void[/preview]`. |
+| Hook faktur | posting: `alokasikan_saat_faktur` SEBELUM blok V318 (status pengiriman dihitung dari `fulfilled_qty` baru); void faktur: `lepas_alokasi_faktur` (SJ-so kembali "belum ditagih", TIDAK ikut void). |
+| Pembaca (T11) | deliveries (list/detail/PDF/serah), riwayat SO + riwayat SJ, so_posisi, so_terkait, kode_order, dokumen, bulk_export, so_kirim (`terkirim_per_baris` + SJ-so) -> LEFT JOIN / COALESCE(`f.sales_order_id`, `si.sales_order_id`); tes inventaris T11 mengunci daftar INNER JOIN yang disengaja. |
+
+## 14.2 Aturan (tanpa buku baru)
+
+- Hanya baris SO `perlu_kirim` yang BUKAN stok (`track_inventory=false`). Baris ber-stok: diminta eksplisit -> 409 `SJ_SO_STOK_BELUM_DIDUKUNG`; default (tanpa `items`) -> dilewati dan dicantumkan di `dilewati`.
+- Sisa kirim per baris = qty SO - terkirim (SJ faktur + SJ-so aktif). Melebihi -> 409 `SJ_SO_QTY_MELEBIHI_SISA`.
+- SO draf/batal/selesai -> 409 `SJ_SO_STATUS_TIDAK_BOLEH`. Tanpa flag -> 409 `SJ_SO_NONAKTIF`.
+- Pendapatan non-stok TETAP diakui saat faktur diposting (jalur lama; tak berubah). Alokasi hanya menaikkan `fulfilled_qty` baris faktur dan status pengiriman.
+- Void SJ mandiri hanya `asal='so'` dan hanya bila tak ada alokasi aktif (409 `SJ_SUDAH_DITAGIH` menyebut nomor faktur); SJ asal faktur tetap lewat void faktur (409 `SJ_VOID_ASAL_FAKTUR`).
+- Idempotensi (Law 14): `X-Idempotency-Key` pada pembuatan; void idempoten lewat status.
+- Kunci (Law 13): `SJ_SO:{tenant}:{so}` + `INVOICE_FULFILL` tiap faktur SO (urut) = kunci yang sama dengan jalur faktur: tak ada kirim ganda lintas jalur.
+
+## 14.3 URUTAN RILIS (kebalikan dari V407/V410: SKEMA DULU)
+
+Kode membaca kolom `asal`/`sales_order_id`, jadi V415 WAJIB terpasang SEBELUM kode berjalan. V415 sendiri kompatibel dengan kode
+lama (kolom baru ber-DEFAULT, fungsi diperluas). Urutan: (1) merge-only (tanpa restart), (2) apply V415 (backup otomatis),
+(3) restart + verifikasi penanda, (4) apply V416 (flag kaos).
+
+## 14.4 Bukti
+
+- `scripts/ops/uji-nyata-sj-so.sh` (dump prod di scratch): 302 SO (shipped/invoiced/status/`so_memenuhi_selesai` + rekonsiliasi per tenant) IDENTIK sebelum == sesudah V415, dan sesudah `recompute_so_shipped()` atas semua SO; lalu 24 pemeriksaan alur (pratinjau nol tulis, tulis, idempotensi, qty melebihi, alokasi tanpa hitung ganda, predikat DB, void ditolak/diizinkan, nol jejak).
+- Tes unit `test_sj_so.py` (20) + penyesuaian empat tes pin-string yang sengaja berubah.
+
+## 14.5 Kontrak FE
+
+`POST /api/sales-orders/{id}/delivery-notes/preview` badan `{items?:[{sales_order_item_id,quantity}], fulfillment_date?, notes?, serah?}` ->
+`{ok, blocks[{code,message,sales_order_item_id}], lines[{sales_order_item_id,item_id,name,unit,ordered,delivered_before,quantity,remaining_after}], dilewati[], sales_order{id,number,status}, fulfillment_date, notes, serah?, serah_aktif, payload}`.
+`POST .../delivery-notes` (header `X-Idempotency-Key`) -> `{success,data:{id,delivery_number,asal:'so',status,sales_order_id,fulfillment_date,lines,dilewati}}`.
+`POST /api/deliveries/{id}/void/preview {reason}` -> `{ok,ulang,delivery_number,blocks[],payload}`; `POST .../void {reason}` -> `{success,ulang}`.
+`GET /api/deliveries[/{id}]`: `asal` ('faktur'|'so'), `invoice_id`/`invoice_number` bisa null.

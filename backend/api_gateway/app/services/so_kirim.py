@@ -29,6 +29,13 @@ SQL_TERKIRIM_PER_BARIS = f"""
     JOIN invoice_fulfillments f ON f.id = ifi.fulfillment_id AND f.tenant_id = si.tenant_id AND {_AKTIF}
     WHERE si.tenant_id = $1 AND si.sales_order_id = ANY($2::uuid[])
     GROUP BY 1, 2
+    UNION ALL
+    -- R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO tanpa faktur (asal 'so'), tautan lewat baris SO
+    SELECT f.sales_order_id AS so_id, ifi.sales_order_item_id AS soi_id, SUM(ifi.quantity) AS terkirim
+    FROM invoice_fulfillments f
+    JOIN invoice_fulfillment_items ifi ON ifi.fulfillment_id = f.id
+    WHERE f.tenant_id = $1 AND f.asal = 'so' AND f.sales_order_id = ANY($2::uuid[]) AND {_AKTIF}
+    GROUP BY 1, 2
 """
 
 
@@ -70,7 +77,7 @@ async def terkirim_per_baris(conn, tenant_id: str, so_ids: list) -> tuple:
         if r["soi_id"] is None:
             tanpa_tautan[r["so_id"]] = tanpa_tautan.get(r["so_id"], NOL) + _d(r["terkirim"])
         else:
-            per_baris[r["soi_id"]] = _d(r["terkirim"])
+            per_baris[r["soi_id"]] = per_baris.get(r["soi_id"], NOL) + _d(r["terkirim"])
     return per_baris, tanpa_tautan
 
 

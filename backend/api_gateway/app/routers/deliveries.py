@@ -109,7 +109,7 @@ async def list_deliveries(
         idx += 1
 
     if customer_id:
-        conditions.append(f"si.customer_id = ${idx}")
+        conditions.append(f"COALESCE(si.customer_id, so.customer_id) = ${idx}")
         params.append(customer_id)
         idx += 1
 
@@ -142,8 +142,9 @@ async def list_deliveries(
             f"""
             SELECT COUNT(*) AS total
             FROM invoice_fulfillments f
-            JOIN sales_invoices si ON si.id = f.invoice_id
-            LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+            LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+            LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE {where_clause}
             """,
@@ -163,10 +164,11 @@ async def list_deliveries(
                 f.posted_at,
                 f.voided_at,
                 f.voided_reason,
+                f.asal AS asal,
                 si.id AS invoice_id,
                 si.invoice_number,
-                si.customer_id,
-                si.sales_order_id,
+                COALESCE(si.customer_id, so.customer_id) AS customer_id,
+                COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id,
                 so.order_number AS sales_order_number,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
@@ -175,10 +177,10 @@ async def list_deliveries(
                 (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
                 (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
             FROM invoice_fulfillments f
-            JOIN sales_invoices si ON si.id = f.invoice_id
-            LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+            LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+            LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
-            LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
             WHERE {where_clause}
             ORDER BY {db_sort} {direction}
             LIMIT ${idx} OFFSET ${idx + 1}
@@ -201,7 +203,8 @@ async def list_deliveries(
             "posted_at": r["posted_at"].isoformat() if r["posted_at"] else None,
             "voided_at": r["voided_at"].isoformat() if r["voided_at"] else None,
             "voided_reason": r["voided_reason"],
-            "invoice_id": str(r["invoice_id"]),
+            "asal": r["asal"],
+            "invoice_id": str(r["invoice_id"]) if r["invoice_id"] else None,
             "invoice_number": r["invoice_number"],
             "customer_id": str(r["customer_id"]) if r["customer_id"] else None,
             "sales_order_id": str(r["sales_order_id"]) if r["sales_order_id"] else None,
@@ -256,10 +259,11 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 f.voided_reason,
                 f.journal_id,
                 f.revenue_journal_id,
+                f.asal AS asal,
                 si.id AS invoice_id,
                 si.invoice_number,
-                si.customer_id,
-                si.sales_order_id,
+                COALESCE(si.customer_id, so.customer_id) AS customer_id,
+                COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id,
                 so.order_number AS sales_order_number,
                 c.nama AS customer_name,
                 c.telepon AS customer_phone,
@@ -268,10 +272,10 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
                 (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
             FROM invoice_fulfillments f
-            JOIN sales_invoices si ON si.id = f.invoice_id
-            LEFT JOIN customers c ON c.id = si.customer_id
+            LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+            LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+            LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
-            LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
             WHERE f.id = $1 AND f.tenant_id = $2
             """,
             delivery_id,
@@ -293,12 +297,13 @@ async def get_delivery_detail(delivery_id: str, request: Request):
                 fi.notes,
                 fi.created_at,
                 p.nama_produk AS product_name,
-                sii.description AS line_description,
+                COALESCE(sii.description, soi.description) AS line_description,
                 p.sku AS product_sku,
-                sii.unit
+                COALESCE(sii.unit, soi.unit) AS unit
             FROM invoice_fulfillment_items fi
             LEFT JOIN products p ON p.id = fi.product_id
             LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
+            LEFT JOIN sales_order_items soi ON soi.id = fi.sales_order_item_id
             WHERE fi.fulfillment_id = $1
             ORDER BY fi.created_at
             """,
@@ -361,7 +366,8 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         else None,
         "sales_order_id": str(row["sales_order_id"]) if row["sales_order_id"] else None,
         "sales_order_number": row["sales_order_number"],
-        "invoice_id": str(row["invoice_id"]),
+        "asal": row["asal"],
+        "invoice_id": str(row["invoice_id"]) if row["invoice_id"] else None,
         "invoice_number": row["invoice_number"],
         "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
         "customer_name": row["customer_name"],
@@ -415,7 +421,8 @@ async def get_delivery_detail(delivery_id: str, request: Request):
     from ..services.kode_order import tempel_kode as _tempel_kode
     async with pool.acquire() as _c:
         await _tempel_kode(_c, ctx["tenant_id"], "delivery", [detail])
-        detail.update(await sisa_faktur_sumber(_c, ctx["tenant_id"], row["invoice_id"]))
+        detail.update(await sisa_faktur_sumber(_c, ctx["tenant_id"], row["invoice_id"])
+                      if row["invoice_id"] else {"invoice_total": None, "invoice_outstanding": None})
         if await _serah.aktif(_c, ctx["tenant_id"]):  # tanpa flag: respons TAK membawa kunci serah (byte-identik)
             detail["serah"] = (await _serah.muat(_c, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
     return detail
@@ -456,9 +463,10 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             f.fulfillment_date AS delivery_date,
             f.status,
             f.notes,
+            f.asal AS asal,
             si.id AS invoice_id,
             si.invoice_number,
-            si.customer_id,
+            COALESCE(si.customer_id, so.customer_id) AS customer_id,
             c.nama AS customer_name,
             c.telepon AS customer_phone,
             c.alamat AS customer_address,
@@ -466,10 +474,11 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             (SELECT COUNT(*) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS item_count,
             (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = f.id) AS total_cogs
         FROM invoice_fulfillments f
-        JOIN sales_invoices si ON si.id = f.invoice_id
-        LEFT JOIN customers c ON c.id = si.customer_id AND c.tenant_id = f.tenant_id
+        LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+        LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+        LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id) AND c.tenant_id = f.tenant_id
         LEFT JOIN warehouses w ON w.id = f.warehouse_id AND w.tenant_id = f.tenant_id
-        WHERE f.id = $1 AND f.tenant_id = $2 AND si.tenant_id = f.tenant_id
+        WHERE f.id = $1 AND f.tenant_id = $2 AND (si.id IS NULL OR si.tenant_id = f.tenant_id)
         """,
         delivery_id,
         ctx["tenant_id"],
@@ -485,12 +494,13 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             fi.quantity,
             fi.notes,
             p.nama_produk AS product_name,
-            sii.description AS line_description,
+            COALESCE(sii.description, soi.description) AS line_description,
             p.sku AS product_sku,
-            sii.unit
+            COALESCE(sii.unit, soi.unit) AS unit
         FROM invoice_fulfillment_items fi
         LEFT JOIN products p ON p.id = fi.product_id AND p.tenant_id = $2
         LEFT JOIN sales_invoice_items sii ON sii.id = fi.invoice_item_id
+            LEFT JOIN sales_order_items soi ON soi.id = fi.sales_order_item_id
         WHERE fi.fulfillment_id = $1
         ORDER BY fi.created_at
         """,
@@ -519,7 +529,8 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
         else None,
         "status": row["status"],
         "notes": row["notes"],
-        "invoice_id": str(row["invoice_id"]),
+        "asal": row["asal"],
+        "invoice_id": str(row["invoice_id"]) if row["invoice_id"] else None,
         "invoice_number": row["invoice_number"],
         "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
         "customer_name": row["customer_name"],
@@ -542,8 +553,8 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
     }
     from ..services.kode_order import label_cetak
     _so_sj = await conn.fetchval(
-        """SELECT si.sales_order_id FROM invoice_fulfillments f
-           JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+        """SELECT COALESCE(f.sales_order_id, si.sales_order_id) FROM invoice_fulfillments f
+           LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
            WHERE f.id = $1 AND f.tenant_id = $2""", row["id"], ctx["tenant_id"])
     delivery_data.update(await label_cetak(conn, ctx["tenant_id"], _so_sj))
     if await _serah.aktif(conn, ctx["tenant_id"]):  # blok "Serah-terima" di cetakan; tanpa flag cetakan TAK berubah
@@ -592,9 +603,9 @@ async def ubah_serah_surat_jalan(delivery_id: str, request: Request, body: _sera
             await _serah.pastikan_aktif(conn, tid)
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DELIVERY_SERAH:{tid}:{fid}")
             sj = await conn.fetchrow(
-                """SELECT f.id, f.fulfillment_number, f.status, si.sales_order_id
+                """SELECT f.id, f.fulfillment_number, f.status, COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id
                    FROM invoice_fulfillments f
-                   JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+                   LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
                    WHERE f.id = $1 AND f.tenant_id = $2""", fid, tid)
             if not sj:
                 raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")

@@ -307,8 +307,8 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
            "paper": "A4", "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
           for f in await conn.fetch(
               f"""SELECT f.id, f.fulfillment_number, f.fulfillment_date FROM invoice_fulfillments f
-                  JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-                  WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND {_AKTIF}
+                  LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+                  WHERE f.tenant_id = $1 AND COALESCE(f.sales_order_id, si.sales_order_id) = $2 AND {_AKTIF}
                   ORDER BY f.fulfillment_date, f.fulfillment_number""", tid, sid)]
     fak = await conn.fetch(
         """SELECT id, invoice_number, invoice_date, total_amount FROM sales_invoices

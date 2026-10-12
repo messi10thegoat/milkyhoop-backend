@@ -76,13 +76,14 @@ SPEC = {
             FROM receive_payments t WHERE t.tenant_id = $1 AND t.id {_ID}""", "receive_payment", _jenis("rp")),
     "deliveries": SpecExport(
         "deliveries", "surat-jalan", ("Pelanggan", "No. surat jalan", "Tgl. kirim", "Dicatat", "HPP", "Status"),
-        f"""SELECT t.id, COALESCE(c.nama, si.customer_name) AS pelanggan, t.fulfillment_number AS nomor,
+        f"""SELECT t.id, COALESCE(c.nama, si.customer_name, so.customer_name) AS pelanggan, t.fulfillment_number AS nomor,
                    t.fulfillment_date AS tgl, t.created_at AS kol4, t.created_at AS dicatat,
                    (SELECT COALESCE(SUM(fi.total_cost), 0) FROM invoice_fulfillment_items fi WHERE fi.fulfillment_id = t.id) AS nilai,
                    t.status
             FROM invoice_fulfillments t
-            JOIN sales_invoices si ON si.id = t.invoice_id AND si.tenant_id = t.tenant_id
-            LEFT JOIN customers c ON c.id = si.customer_id AND c.tenant_id = t.tenant_id
+            LEFT JOIN sales_invoices si ON si.id = t.invoice_id AND si.tenant_id = t.tenant_id
+            LEFT JOIN sales_orders so ON so.id = COALESCE(t.sales_order_id, si.sales_order_id) AND so.tenant_id = t.tenant_id
+            LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id) AND c.tenant_id = t.tenant_id
             WHERE t.tenant_id = $1 AND t.id {_ID}""", "delivery", _pengiriman),
     "credit-notes": SpecExport(
         "credit-notes", "nota-kredit", ("Pelanggan", "No. nota kredit", "Tanggal", "Dicatat", "Nilai", "Status"),

@@ -16,9 +16,9 @@ def test_tanpa_set_local_fstring():
 
 def test_join_ber_tenant_difilter_eksplisit():
     s = " ".join(_src().split())
-    for pola in ("LEFT JOIN customers c ON c.id = si.customer_id AND c.tenant_id = f.tenant_id",
+    for pola in ("LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id) AND c.tenant_id = f.tenant_id",
                  "LEFT JOIN warehouses w ON w.id = f.warehouse_id AND w.tenant_id = f.tenant_id",
-                 "WHERE f.id = $1 AND f.tenant_id = $2 AND si.tenant_id = f.tenant_id",
+                 "WHERE f.id = $1 AND f.tenant_id = $2 AND (si.id IS NULL OR si.tenant_id = f.tenant_id)",
                  "LEFT JOIN products p ON p.id = fi.product_id AND p.tenant_id = $2"):
         assert pola in s, pola
 

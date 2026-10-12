@@ -106,10 +106,14 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         tenant_id, ids,
     )}
     sj = {r["so_id"]: r["n"] for r in await conn.fetch(
-        f"""SELECT si.sales_order_id AS so_id, count(DISTINCT f.id) AS n
-            FROM invoice_fulfillments f JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-            WHERE si.tenant_id = $1 AND si.sales_order_id = ANY($2::uuid[]) AND {_AKTIF}
-            GROUP BY 1""",
+        f"""SELECT x.so_id, count(DISTINCT x.fid) AS n FROM (
+                SELECT si.sales_order_id AS so_id, f.id AS fid
+                FROM invoice_fulfillments f JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+                WHERE si.tenant_id = $1 AND si.sales_order_id = ANY($2::uuid[]) AND {_AKTIF}
+                UNION ALL
+                SELECT f.sales_order_id, f.id FROM invoice_fulfillments f
+                WHERE f.tenant_id = $1 AND f.asal = 'so' AND f.sales_order_id = ANY($2::uuid[]) AND {_AKTIF}
+            ) x GROUP BY 1""",
         tenant_id, ids,
     )}
     baris = await conn.fetch(

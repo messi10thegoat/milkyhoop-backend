@@ -2976,6 +2976,11 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     _itm["id"],
                 )
 
+    # R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO TANPA faktur (non-stok) yang sudah ada ditautkan ke baris faktur ini
+    # (alokasi INSERT-only, tertua-dulu) SEBELUM status pengiriman dihitung di bawah. Tanpa SJ-so = nol efek.
+    from ..services import sj_so as _sj_so
+    await _sj_so.alokasikan_saat_faktur(conn, ctx["tenant_id"], ctx.get("user_id"), invoice_id)
+
     # V318: faktur memuat baris NON-STOK yang perlu dikirim -> status pengiriman menunggu Surat Jalan untuk baris
     # itu (kirim-otomatis posting TIDAK menyertakannya; pola NetSuite Item Fulfillment terpisah). Faktur tanpa
     # baris seperti itu (semua data sebelum V318, grapgrap tanpa flag) -> status TIDAK disentuh.
@@ -4416,6 +4421,10 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
             await reverse_deposit_application_core(
                 conn, ctx, _a["deposit_id"], _a["application_id"]
             )
+
+    # R1 irisan 1: alokasi SJ-so (tanpa faktur) ke faktur ini dilepas; SJ-so KEMBALI 'belum ditagih', TIDAK ikut void.
+    from ..services import sj_so as _sj_so
+    await _sj_so.lepas_alokasi_faktur(conn, ctx["tenant_id"], invoice_id, "faktur dibatalkan (void)")
 
     year_month_str = today.strftime("%y%m")
     reversal_journal_id = None

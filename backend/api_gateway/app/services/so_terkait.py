@@ -141,13 +141,13 @@ async def susun_terkait(conn, tid: str, so_id: UUID, sertakan_order: bool = Fals
         f"""SELECT f.id, f.fulfillment_number, f.fulfillment_date, f.status, si.invoice_number,
                    COALESCE(SUM(ifi.quantity), 0) AS qty, ({_AKTIF}) AS aktif
             FROM invoice_fulfillments f
-            JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+            LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
             LEFT JOIN invoice_fulfillment_items ifi ON ifi.fulfillment_id = f.id
-            WHERE f.tenant_id = $1 AND si.sales_order_id = $2
+            WHERE f.tenant_id = $1 AND COALESCE(f.sales_order_id, si.sales_order_id) = $2
             GROUP BY f.id, f.fulfillment_number, f.fulfillment_date, f.status, si.invoice_number, f.voided_at
             ORDER BY f.fulfillment_date, f.fulfillment_number""", tid, sid)
     g["delivery"] = [_dok("delivery", k["id"], k["fulfillment_number"], k["fulfillment_date"],
-                          f"{tg.qty(k['qty'])}{sat} · Faktur {k['invoice_number']}", None,
+                          f"{tg.qty(k['qty'])}{sat} · " + (f"Faktur {k['invoice_number']}" if k["invoice_number"] else "Tanpa faktur"), None,
                           k["status"] if k["aktif"] else "voided",
                           STATUS_KIRIM.get(k["status"] if k["aktif"] else "voided", k["status"]), not k["aktif"])
                      for k in kir]

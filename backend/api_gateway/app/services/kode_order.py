@@ -457,8 +457,8 @@ SUMBER_SO = {
                    WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
     "sales_invoice": """SELECT d.id, d.sales_order_id AS so_id FROM sales_invoices d
                         WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",
-    "delivery": """SELECT f.id, si.sales_order_id AS so_id FROM invoice_fulfillments f
-                   JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+    "delivery": """SELECT f.id, COALESCE(f.sales_order_id, si.sales_order_id) AS so_id FROM invoice_fulfillments f
+                   LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
                    WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[])""",
     # = resolve_order_id_for_deposit: sales_order_id dulu, kalau kosong SO milik proformanya
     "customer_deposit": """SELECT d.id, COALESCE(d.sales_order_id, p.sales_order_id) AS so_id FROM customer_deposits d

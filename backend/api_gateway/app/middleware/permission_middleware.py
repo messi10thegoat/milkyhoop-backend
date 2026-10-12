@@ -203,6 +203,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Kirim barang SO menulis lewat _execute_fulfillment faktur = izin /sales-invoices/{id}/fulfill.
     (r"^/api/sales-orders/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
     (r"^/api/sales-orders/[^/]+/fulfill/preview$", ["POST"], "sales_invoice", "P"),
+    # R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO tanpa faktur + void mandiri (modul sama dgn kirim lewat faktur)
+    (r"^/api/sales-orders/[^/]+/delivery-notes(/preview)?$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/deliveries/[^/]+/void(/preview)?$", ["POST"], "sales_invoice", "V"),
     # Ubah SO terkonfirmasi (4 Okt 2026): pratinjau = izin PATCH /sales-orders/{id} (sales_order U), bukan prefiks POST = C.
     (r"^/api/sales-orders/[^/]+/edit/preview$", ["POST"], "sales_order", "U"),
     # Fase lokasi pesanan (7 Okt 2026): ubah/hapus + pratinjau = izin ubah pesanan (U), bukan prefiks POST = C.

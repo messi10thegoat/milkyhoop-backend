@@ -232,6 +232,22 @@ async def _bagian_faktur(conn, tenant_id: str, k: "_Kumpul", fakturs, lihat: dic
     return id_faktur
 
 
+async def _bagian_sj_so(conn, tenant_id: str, k: "_Kumpul", so_id, lihat: dict, entitas_audit: dict) -> None:
+    """R1 irisan 1 (12 Okt 2026): Surat Jalan dari SO TANPA faktur (asal 'so') -- dikumpulkan lewat so_id, bukan id faktur."""
+    if not lihat["sales_invoice"]:
+        return
+    for s_ in await conn.fetch(
+            """SELECT id, fulfillment_number, created_at, created_by, voided_at, voided_reason FROM invoice_fulfillments
+               WHERE tenant_id = $1 AND asal = 'so' AND sales_order_id = $2""", tenant_id, so_id):
+        n_ = s_["fulfillment_number"]
+        entitas_audit.setdefault("fulfillment", []).append(s_["id"])
+        k.tambah(s_["created_at"], "SURAT_JALAN_DIBUAT", f"Surat Jalan {n_} dibuat (tanpa faktur)", s_["created_by"],
+                 "fulfillment", s_["id"], n_)
+        al_ = f": {s_['voided_reason']}" if s_["voided_reason"] else ""
+        k.tambah(s_["voided_at"], "SURAT_JALAN_DIBATALKAN", f"Surat Jalan {n_} dibatalkan{al_}", None,
+                 "fulfillment", s_["id"], n_)
+
+
 async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, lihat: dict, limit: int):
     """Ekor BERSAMA: gabung audit_logs dokumen yang boleh dilihat, buang kolom tanpa aktor yang punya
     padanan audit, nama aktor (satu kueri), zona tenant, terbaru dulu. Kembali: (events, total)."""
@@ -408,6 +424,7 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
         tenant_id, so_id,
     )
     await _bagian_faktur(conn, tenant_id, k, fakturs, lihat, entitas_audit, " dari pesanan")
+    await _bagian_sj_so(conn, tenant_id, k, so_id, lihat, entitas_audit)
 
     keluar, total = await _selesaikan(conn, tenant_id, k, entitas_audit, lihat, limit)
     return {
@@ -804,10 +821,11 @@ async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable
     mandiri -- pembatalan = turunan void faktur. None = tak ada di tenant ini."""
     f = await conn.fetchrow(
         """SELECT f.id, f.fulfillment_number, f.created_at, f.created_by, f.posted_at, f.posted_by, f.voided_at,
-                  f.voided_reason, si.id AS invoice_id, si.invoice_number, si.sales_order_id, so.order_number
+                  f.voided_reason, si.id AS invoice_id, si.invoice_number,
+                  COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id, so.order_number
            FROM invoice_fulfillments f
-           JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-           LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = f.tenant_id
+           LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+           LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
            WHERE f.id = $1 AND f.tenant_id = $2""", delivery_id, tenant_id)
     if not f:
         return None
@@ -819,7 +837,7 @@ async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable
     omitted = sorted({m for m in izin if not izin[m]})
     k = _Kumpul()
     n = f["fulfillment_number"]
-    asal = f" (faktur {f['invoice_number']})" if lihat["sales_invoice"] else ""
+    asal = f" (faktur {f['invoice_number']})" if lihat["sales_invoice"] and f["invoice_number"] else ""
     k.tambah(f["created_at"], "SURAT_JALAN_DIBUAT", f"Surat Jalan {n} dibuat{asal}", f["created_by"], "fulfillment", f["id"], n)
     if f["posted_at"] and f["created_at"] and abs((f["posted_at"] - f["created_at"]).total_seconds()) > 1:
         k.tambah(f["posted_at"], "SURAT_JALAN_DIPOSTING", f"Surat Jalan {n} diposting (barang keluar)", f["posted_by"],
@@ -830,7 +848,7 @@ async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable
     return {
         "delivery_id": str(f["id"]), "delivery_number": n,
         "sales_invoice": ({"id": str(f["invoice_id"]), "invoice_number": f["invoice_number"]}
-                          if lihat["sales_invoice"] else None),
+                          if lihat["sales_invoice"] and f["invoice_id"] else None),
         "sales_order": ({"id": str(f["sales_order_id"]), "order_number": f["order_number"]}
                         if lihat["sales_order"] and f["sales_order_id"] else None),
         "events": keluar, "total": total, "omitted": omitted,

@@ -71,7 +71,7 @@ def _baris_dl(so=True):
             "status": "posted", "notes": None, "created_at": T, "posted_at": T, "voided_at": None, "voided_reason": None,
             "invoice_id": INV, "invoice_number": "INV-1", "customer_id": "c1", "sales_order_id": SO if so else None,
             "sales_order_number": "SO-1" if so else None, "customer_name": "X", "customer_phone": None,
-            "customer_address": None, "warehouse_name": "G", "item_count": 1, "total_cogs": 0}
+            "customer_address": None, "warehouse_name": "G", "item_count": 1, "total_cogs": 0, "asal": "faktur"}
 
 
 def _lst(monkeypatch, rows, **kw):
@@ -88,7 +88,7 @@ def test_pengiriman_daftar_membawa_so_induk(monkeypatch):
     assert h["items"][0]["sales_order_id"] == SO and h["items"][0]["sales_order_number"] == "SO-1"
     assert h["items"][1]["sales_order_id"] is None and h["items"][1]["sales_order_number"] is None
     main = " ".join(k.sql[-1][0].split())
-    assert "LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id" in main
+    assert "LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id" in main
 
 
 def test_pengiriman_tanpa_tanggal_sql_tanpa_kondisi_tanggal(monkeypatch):
@@ -108,8 +108,8 @@ def test_pengiriman_filter_tanggal_terikat_parameter(monkeypatch):
 
 def test_pengiriman_detail_memilih_so_induk():
     src = " ".join(inspect.getsource(DL.get_delivery_detail).split())
-    assert "si.sales_order_id, so.order_number AS sales_order_number" in src
-    assert "LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id" in src
+    assert "COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id, so.order_number AS sales_order_number" in src
+    assert "LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id" in src
     assert '"sales_order_id": str(row["sales_order_id"])' in src and '"sales_order_number": row["sales_order_number"]' in src
 
 

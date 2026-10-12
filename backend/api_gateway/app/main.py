@@ -87,6 +87,7 @@ from .routers import opening_balance
 # P4 Core Completion - 7 New Modules
 from .routers import warehouses
 from .routers import stock_transfers
+from .routers import sj_so
 from .routers import sales_receipts
 from .routers import item_batches
 from .routers import item_serials
@@ -863,6 +864,7 @@ app.include_router(
 )
 app.include_router(efaktur.router, prefix="/api/efaktur", tags=["E-Faktur Export"])
 app.include_router(deliveries.router, prefix="/api/deliveries", tags=["deliveries"])
+app.include_router(sj_so.router, prefix="/api", tags=["sj-so"])
 app.include_router(units.router, prefix="/api/units", tags=["Units"])
 app.include_router(reports_profitability.router)
 
