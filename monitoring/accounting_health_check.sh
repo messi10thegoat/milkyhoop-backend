@@ -976,9 +976,18 @@ check_22_proforma_pecahan() {
 # Penjaga HARIAN untuk celah yang ditutup 10 Okt (cc3e6efb): baris `inventory_ledger` dari sumber di bawah yang TIDAK punya
 # jurnal POSTED padanan (journal_id ATAU source_id menunjuk journal_entries POSTED milik tenant yang sama) = kartu bernilai,
 # buku besar tidak (Law 1/16). HIGH. Void membiarkan jurnal asli POSTED (Law 2) sehingga baris asli tetap tertutup.
-# BUKAN cakupan: PRODUCTION_OUTPUT (kaos 5 baris tanpa journal_id -- temuan terpisah, belum diputuskan wajib/tidak) dan
-# RELOKASI_GUDANG (nilai nol bersih, memang tanpa jurnal). Tambah sumber baru HANYA setelah diukur 0 pelanggaran.
+# 12 Okt 2026 (putusan MASTER, ukur BE2): PRODUCTION_OUTPUT SISI MASUK (movement_type = PRODUCTION_OUTPUT) kini wajib berjurnal
+# (kaos 12 dari 12 berjurnal). SISI PEMBALIK (movement_type = PRODUCTION_OUTPUT_REVERSAL, source_type SAMA) BELUM wajib:
+# kaos 5 baris pembalik 11 Sep tanpa journal_id, menunggu penautan (Inventory Rule 8 carve-out, izin pemilik). Setelah
+# ditautkan dan diukur 0, tambahkan pembalik ke daftar. Sumber lain ditambah HANYA setelah diukur 0 pelanggaran.
 STOK_WAJIB_JURNAL="'OPENING_BALANCE','STOCK_ADJUSTMENT','BILL','INVOICE_FULFILLMENT','MATERIAL_ISSUE'"
+STOK_WAJIB_SQL="(il.source_type IN ($STOK_WAJIB_JURNAL) OR (il.source_type = 'PRODUCTION_OUTPUT' AND il.movement_type = 'PRODUCTION_OUTPUT'))"
+# Daftar BERNAMA sumber yang SAH tanpa jurnal (sumber|alasan). Bukan kecualian per baris: ini kelas yang memang tak
+# bernilai buku, dan ditegakkan LENGAN KEDUA di bawah (berpasangan neto nol per produk per hari) agar "tanpa jurnal"
+# tak jadi pintu belakang. Tiap run mencatat jumlah baris kelas ini (terlihat, tak disembunyikan).
+STOK_SAH_TANPA_JURNAL=(
+    "RELOKASI_GUDANG|akun persediaan ditentukan per PRODUK (products.inventory_account_id), bukan per gudang; WAC tanpa gudang; pindah gudang tak mengubah nilai buku (padanan Transfer Order NetSuite tanpa GL)"
+)
 # Kecualian EKSPLISIT per baris kartu (tenant|id|alasan) -- bukan disembunyikan: tiap run mencatat kecualian yang masih berlaku.
 # Entri HANYA boleh ditambah dengan putusan MASTER/pemilik; hapus entri bila barisnya sudah dijurnal.
 STOK_TANPA_JURNAL_DIKECUALIKAN=(
@@ -996,24 +1005,37 @@ check_21_stok_wajib_jurnal() {
     local tanpa="NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.tenant_id = il.tenant_id AND je.status = 'POSTED'
           AND je.id::text IN (il.journal_id::text, il.source_id::text))"
     cnt=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant'
-        AND il.source_type IN ($STOK_WAJIB_JURNAL) $kecuali AND $tanpa;")
+        AND $STOK_WAJIB_SQL $kecuali AND $tanpa;")
+    # Lengan 2 (12 Okt 2026): RELOKASI_GUDANG sah tanpa jurnal HANYA bila berpasangan neto nol per produk per hari
+    # (qty masuk = qty keluar DAN nilai masuk = nilai keluar). Selisih = relokasi timpang = nilai hilang/lahir tanpa jurnal.
+    local rel relsah
+    rel=$(psql_cmd "SELECT count(*) FROM (SELECT 1 FROM inventory_ledger il WHERE il.tenant_id = '$tenant'
+        AND il.source_type = 'RELOKASI_GUDANG' GROUP BY il.product_id, il.movement_date
+        HAVING abs(sum(il.quantity_in) - sum(il.quantity_out)) > 0.0001
+            OR abs(sum(CASE WHEN il.quantity_in > 0 THEN il.total_cost ELSE -il.total_cost END)) > 0.01) x;")
+    relsah=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant' AND il.source_type = 'RELOKASI_GUDANG';")
+    if [[ "$relsah" =~ ^[0-9]+$ ]] && [ "$relsah" -gt 0 ]; then
+        detail "[CHECK 21] $tenant: sah tanpa jurnal (RELOKASI_GUDANG, berpasangan neto nol diverifikasi lengan 2): $relsah baris"
+    fi
     if [ -n "$ids" ]; then
         nkec=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant' AND il.id IN ($ids) AND $tanpa;")
         detail "[CHECK 21] $tenant: kecualian eksplisit masih berlaku=$nkec dari $(echo "$ids" | tr ',' '\n' | wc -l) entri (id: $ids)"
     fi
-    if [ "$cnt" = "__GAGAL__" ]; then
+    if [ "$cnt" = "__GAGAL__" ] || [ "$rel" = "__GAGAL__" ]; then
         CHK_PASS=0
         CHK_DETAIL="__GAGAL__"
-    elif [ "$cnt" = "0" ]; then
+    elif [ "$cnt" = "0" ] && [ "$rel" = "0" ]; then
         CHK_PASS=1
         CHK_DETAIL=""
-    elif [[ "$cnt" =~ ^[0-9]+$ ]]; then
+    elif [[ "$cnt" =~ ^[0-9]+$ ]] && [[ "$rel" =~ ^[0-9]+$ ]]; then
         CHK_PASS=0
-        CHK_DETAIL="kartu stok tanpa jurnal padanan: $cnt baris"
+        CHK_DETAIL=""
+        [ "$cnt" != "0" ] && CHK_DETAIL="kartu stok tanpa jurnal padanan: $cnt baris"
+        [ "$rel" != "0" ] && CHK_DETAIL="${CHK_DETAIL}${CHK_DETAIL:+; }relokasi tak berpasangan neto nol: $rel produk-hari"
         detail "[CHECK 21] $tenant: $CHK_DETAIL"
     else
         CHK_PASS=0
-        CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt"
+        CHK_DETAIL="__GAGAL__ keluaran tak terduga: $cnt / $rel"
     fi
 }
 
