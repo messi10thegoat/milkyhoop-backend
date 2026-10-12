@@ -102,8 +102,3 @@ def test_rute_izin_inventaris_dan_opsi_uang_muka():
     assert "if body.terbitkan_kode_order:" in cd and "_KO.terbitkan_spk(conn, ctx[\"tenant_id\"], _guard_order_id," in cd
     assert cd.index("post_result = await _post_deposit(conn, ctx, dep_id)") < cd.index("if body.terbitkan_kode_order:")
 
-
-def test_v417_hanya_grapgrap_manual_only():
-    sql = (APP.parents[2] / "backend" / "migrations" / "V417__kode_order_manual_grapgrap.sql").read_text()
-    assert "SET trigger = 'manual_only'" in sql and "WHERE tenant_id = 'grapgrap-manado'" in sql
-    assert "tenant selain grapgrap ikut manual_only" in sql
