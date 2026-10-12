@@ -49,12 +49,13 @@ ctl "INSERT INTO inventory_ledger ($COLS) SELECT $SEL FROM inventory_ledger WHER
 check_21_stok_wajib_jurnal $KT; echo "d2 MERAH PRODUCTION_OUTPUT masuk tanpa jurnal: CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
 ctl "INSERT INTO inventory_ledger ($COLS) SELECT $SEL FROM inventory_ledger WHERE id=($KEL); INSERT INTO inventory_ledger ($COLS) SELECT $SEL FROM inventory_ledger WHERE id=($MAS);"
 check_21_stok_wajib_jurnal $KT; echo "d3 HIJAU relokasi berpasangan (sisipan keluar+masuk setara): CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
-echo "-- d4 SABOTASE: filter hanya source_type (tanpa movement_type) -> 5 pembalik 11 Sep HARUS merah (bukti filter movement_type perlu)"
+echo "-- d4 MERAH pembalik PRODUCTION_OUTPUT tanpa jurnal (setelah penautan 12 Okt pembalik ikut wajib)"
+REV="SELECT id FROM inventory_ledger WHERE tenant_id='$KT' AND source_type='PRODUCTION_OUTPUT' AND movement_type='PRODUCTION_OUTPUT_REVERSAL' AND warehouse_id IS NOT NULL ORDER BY id LIMIT 1"
+SEL4="${SEL/quantity_in,quantity_out,quantity_balance/0,0,quantity_balance}"   # kuantitas nol: stok Dryfit 0 -> kaki ganda keluar akan melanggar chk_ws_quantity
+ctl "INSERT INTO inventory_ledger ($COLS) SELECT $SEL4 FROM inventory_ledger WHERE id=($REV);"
+check_21_stok_wajib_jurnal $KT; echo "d4 MERAH pembalik tanpa jurnal: CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
 psql_cmd() { psql_nyata "$1"; }
-SQL_ASLI="$STOK_WAJIB_SQL"; STOK_WAJIB_SQL="(il.source_type IN ($STOK_WAJIB_JURNAL,'PRODUCTION_OUTPUT'))"
-check_21_stok_wajib_jurnal $KT; echo "d4 (sabotase): CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
-STOK_WAJIB_SQL="$SQL_ASLI"
-check_21_stok_wajib_jurnal $KT; echo "d5 PULIH (filter asli, data nyata): CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
+check_21_stok_wajib_jurnal $KT; echo "d5 HIJAU data nyata sesudah penautan (5 pembalik berjurnal): CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"
 n1=$(psql_nyata "SELECT count(*) FROM inventory_ledger WHERE tenant_id='$KT'"); echo "NOL JEJAK (d): ledger kaos $n0 -> $n1 ($( [ "$n0" = "$n1" ] && echo ya || echo TIDAK))"
 echo "== (c) logika dgn keluaran tiruan"
 for out in 0 3 __GAGAL__ "ERROR: x"; do psql_cmd() { echo "$out"; }; check_21_stok_wajib_jurnal t; echo "keluaran=[$out] -> CHK_PASS=$CHK_PASS DETAIL=[$CHK_DETAIL]"; done

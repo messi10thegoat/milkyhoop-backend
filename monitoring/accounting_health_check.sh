@@ -976,12 +976,11 @@ check_22_proforma_pecahan() {
 # Penjaga HARIAN untuk celah yang ditutup 10 Okt (cc3e6efb): baris `inventory_ledger` dari sumber di bawah yang TIDAK punya
 # jurnal POSTED padanan (journal_id ATAU source_id menunjuk journal_entries POSTED milik tenant yang sama) = kartu bernilai,
 # buku besar tidak (Law 1/16). HIGH. Void membiarkan jurnal asli POSTED (Law 2) sehingga baris asli tetap tertutup.
-# 12 Okt 2026 (putusan MASTER, ukur BE2): PRODUCTION_OUTPUT SISI MASUK (movement_type = PRODUCTION_OUTPUT) kini wajib berjurnal
-# (kaos 12 dari 12 berjurnal). SISI PEMBALIK (movement_type = PRODUCTION_OUTPUT_REVERSAL, source_type SAMA) BELUM wajib:
-# kaos 5 baris pembalik 11 Sep tanpa journal_id, menunggu penautan (Inventory Rule 8 carve-out, izin pemilik). Setelah
-# ditautkan dan diukur 0, tambahkan pembalik ke daftar. Sumber lain ditambah HANYA setelah diukur 0 pelanggaran.
+# 12 Okt 2026 (putusan MASTER, ukur BE2): PRODUCTION_OUTPUT kini wajib berjurnal, sisi MASUK (kaos 12 dari 12) dan sisi
+# PEMBALIK (movement_type PRODUCTION_OUTPUT_REVERSAL; 5 baris 11 Sep ditautkan ke jurnal pembalik MANUAL 12 Okt, Inventory
+# Rule 8 carve-out, izin pemilik; terukur 0 pelanggaran). Sumber lain ditambah HANYA setelah diukur 0 pelanggaran.
 STOK_WAJIB_JURNAL="'OPENING_BALANCE','STOCK_ADJUSTMENT','BILL','INVOICE_FULFILLMENT','MATERIAL_ISSUE'"
-STOK_WAJIB_SQL="(il.source_type IN ($STOK_WAJIB_JURNAL) OR (il.source_type = 'PRODUCTION_OUTPUT' AND il.movement_type = 'PRODUCTION_OUTPUT'))"
+STOK_WAJIB_SQL="(il.source_type IN ($STOK_WAJIB_JURNAL,'PRODUCTION_OUTPUT'))"
 # Daftar BERNAMA sumber yang SAH tanpa jurnal (sumber|alasan). Bukan kecualian per baris: ini kelas yang memang tak
 # bernilai buku, dan ditegakkan LENGAN KEDUA di bawah (berpasangan neto nol per produk per hari) agar "tanpa jurnal"
 # tak jadi pintu belakang. Tiap run mencatat jumlah baris kelas ini (terlihat, tak disembunyikan).
