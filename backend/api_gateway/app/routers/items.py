@@ -3808,289 +3808,57 @@ async def get_item_journal_entries(
 
 @router.post("/items/{item_id}/stock-transfer")
 async def create_single_item_stock_transfer(request: Request, item_id: str):
+    """Pindah stok SATU barang antargudang (jalan pintas). 12 Okt 2026: mendelegasikan ke inti Pemindahan Barang
+    (services/pemindahan_barang): nilai = WAC server, TANPA jurnal, kartu RELOKASI_GUDANG + audit. Tanpa flag
+    `pemindahan_barang` -> 409. Jalur lama menulis purchase_price ke average_cost (mencemari WAC penjualan berikutnya)
+    dan memakai source_type STOCK_TRANSFER di luar penjaga Check 21.
+
+    Body: from_warehouse_id, to_warehouse_id, quantity (>0), notes (opsional).
     """
-    Create a quick stock transfer for a single item between warehouses.
+    from ..services import pemindahan_barang as pb
 
-    This is an immediate transfer that:
-    1. Creates a stock_transfer record (status='received')
-    2. Creates inventory_ledger entries (triggers update warehouse_stock)
-    3. Records full audit trail with source_type/source_id
-
-    Request body:
-    - from_warehouse_id: UUID - source warehouse
-    - to_warehouse_id: UUID - destination warehouse
-    - quantity: number - quantity to transfer (must be > 0)
-    - notes: string|null - optional notes
-
-    Follows Iron Laws:
-    - Law 3 (Append-Only): All changes via INSERT to inventory_ledger
-    - Law 6 (Source Traceability): source_type='STOCK_TRANSFER', source_id=transfer_id
-    - Law 13 (Concurrency Safety): Uses SERIALIZABLE isolation + FOR UPDATE locks
-    - Law 14 (Idempotency): Transaction ensures atomicity
-    """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         body = await request.json()
-
-        # Validate required fields
         from_warehouse_id = body.get("from_warehouse_id")
         to_warehouse_id = body.get("to_warehouse_id")
         quantity = body.get("quantity")
         notes = body.get("notes")
-
         if not from_warehouse_id:
             raise HTTPException(status_code=400, detail="from_warehouse_id is required")
         if not to_warehouse_id:
             raise HTTPException(status_code=400, detail="to_warehouse_id is required")
         if not quantity or quantity <= 0:
-            raise HTTPException(
-                status_code=400, detail="quantity must be greater than 0"
-            )
+            raise HTTPException(status_code=400, detail="quantity must be greater than 0")
         if from_warehouse_id == to_warehouse_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Source and destination warehouse must be different",
-            )
-
+            raise HTTPException(status_code=400, detail="Source and destination warehouse must be different")
+        try:
+            data = pb.PemindahanIn(
+                from_warehouse_id=from_warehouse_id, to_warehouse_id=to_warehouse_id, notes=notes,
+                items=[pb.BarangIn(item_id=item_id, quantity_requested=Decimal(str(quantity)), notes=notes)])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid item or warehouse id")
         async with pool.acquire() as conn:
-            # Use SERIALIZABLE isolation for concurrency safety (Law 13)
-            async with conn.transaction(isolation="serializable"):
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-                )
-
-                # 1. Validate item exists and get details
-                item = await conn.fetchrow(
-                    """
-                    SELECT id, item_code, nama_produk as item_name,
-                           base_unit, track_inventory,
-                           COALESCE(purchase_price, 0) as unit_cost
-                    FROM products
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                    """,
-                    item_id,
-                    ctx["tenant_id"],
-                )
-                if not item:
-                    raise HTTPException(status_code=404, detail="Item not found")
-
-                if not item["track_inventory"]:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot transfer stock for items that don't track inventory",
-                    )
-
-                # 2. Validate warehouses exist
-                from_warehouse = await conn.fetchrow(
-                    "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                    UUID(from_warehouse_id),
-                    ctx["tenant_id"],
-                )
-                if not from_warehouse:
-                    raise HTTPException(
-                        status_code=400, detail="Source warehouse not found"
-                    )
-
-                to_warehouse = await conn.fetchrow(
-                    "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                    UUID(to_warehouse_id),
-                    ctx["tenant_id"],
-                )
-                if not to_warehouse:
-                    raise HTTPException(
-                        status_code=400, detail="Destination warehouse not found"
-                    )
-
-                # 3. Check available stock in source warehouse (with lock for concurrency safety)
-                stock_row = await conn.fetchrow(
-                    """
-                    SELECT id, quantity, available_quantity
-                    FROM warehouse_stock
-                    WHERE tenant_id = $1
-                      AND warehouse_id = $2
-                      AND item_id = $3
-                    FOR UPDATE
-                    """,
-                    ctx["tenant_id"],
-                    UUID(from_warehouse_id),
-                    UUID(item_id),
-                )
-
-                available_stock = (
-                    Decimal(str(stock_row["available_quantity"]))
-                    if stock_row
-                    else Decimal("0")
-                )
-                if available_stock < Decimal(str(quantity)):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Insufficient stock. Available: {available_stock}, Requested: {quantity}",
-                    )
-
-                # 4. Generate transfer number
-                transfer_number = await conn.fetchval(
-                    "SELECT generate_stock_transfer_number($1)", ctx["tenant_id"]
-                )
-
-                # 5. Create stock_transfer record (immediate transfer = status 'received')
-                # t10-tanggal-bisnis: bukan SELECT CURRENT_DATE (UTC).
-                transfer_date = await tanggal_dokumen(conn, ctx["tenant_id"])
-                transfer_row = await conn.fetchrow(
-                    """
-                    INSERT INTO stock_transfers (
-                        tenant_id, transfer_number, transfer_date,
-                        from_warehouse_id, to_warehouse_id,
-                        status, shipped_date, received_date,
-                        notes, created_by, shipped_by, received_by,
-                        total_items, total_quantity, total_value
-                    ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        'received', $3, $3,
-                        $6, $7, $7, $7,
-                        1, $8, $9
-                    )
-                    RETURNING id
-                    """,
-                    ctx["tenant_id"],
-                    transfer_number,
-                    transfer_date,
-                    UUID(from_warehouse_id),
-                    UUID(to_warehouse_id),
-                    notes,
-                    ctx.get("user_id"),
-                    Decimal(str(quantity)),
-                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
-                )
-                transfer_id = transfer_row["id"]
-
-                # 6. Create stock_transfer_items record
-                await conn.execute(
-                    """
-                    INSERT INTO stock_transfer_items (
-                        stock_transfer_id, item_id, item_code, item_name,
-                        quantity_requested, quantity_shipped, quantity_received,
-                        unit, unit_cost, total_value, line_number, notes
-                    ) VALUES ($1, $2, $3, $4, $5, $5, $5, $6, $7, $8, 1, $9)
-                    """,
-                    transfer_id,
-                    UUID(item_id),
-                    item["item_code"],
-                    item["item_name"],
-                    Decimal(str(quantity)),
-                    item["base_unit"],
-                    Decimal(str(item["unit_cost"])),
-                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
-                    notes,
-                )
-
-                # 7. Create inventory_ledger entry for source warehouse (OUT)
-                # Law 6: Source traceability with source_type and source_id
-                await conn.execute(
-                    """
-                    INSERT INTO inventory_ledger (
-                        tenant_id, product_id, product_code, product_name,
-                        movement_type, movement_date,
-                        source_type, source_id, source_number,
-                        quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost,
-                        warehouse_id, created_by, notes
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        'TRANSFER_OUT', $5,
-                        'STOCK_TRANSFER', $6, $7,
-                        0, $8, (
-                            SELECT COALESCE(
-                                (SELECT quantity_balance FROM inventory_ledger
-                                 WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $9
-                                 ORDER BY movement_date DESC, created_at DESC LIMIT 1), 0
-                            ) - $8
-                        ),
-                        $10, $11, $10,
-                        $9, $12, $13
-                    )
-                    """,
-                    ctx["tenant_id"],
-                    UUID(item_id),
-                    item["item_code"],
-                    item["item_name"],
-                    transfer_date,
-                    transfer_id,
-                    transfer_number,
-                    Decimal(str(quantity)),
-                    UUID(from_warehouse_id),
-                    Decimal(str(item["unit_cost"])),
-                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
-                    ctx.get("user_id"),
-                    f"Transfer to {to_warehouse['name']}"
-                    + (f": {notes}" if notes else ""),
-                )
-
-                # 8. Create inventory_ledger entry for destination warehouse (IN)
-                await conn.execute(
-                    """
-                    INSERT INTO inventory_ledger (
-                        tenant_id, product_id, product_code, product_name,
-                        movement_type, movement_date,
-                        source_type, source_id, source_number,
-                        quantity_in, quantity_out, quantity_balance,
-                        unit_cost, total_cost, average_cost,
-                        warehouse_id, created_by, notes
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        'TRANSFER_IN', $5,
-                        'STOCK_TRANSFER', $6, $7,
-                        $8, 0, (
-                            SELECT COALESCE(
-                                (SELECT quantity_balance FROM inventory_ledger
-                                 WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $9
-                                 ORDER BY movement_date DESC, created_at DESC LIMIT 1), 0
-                            ) + $8
-                        ),
-                        $10, $11, $10,
-                        $9, $12, $13
-                    )
-                    """,
-                    ctx["tenant_id"],
-                    UUID(item_id),
-                    item["item_code"],
-                    item["item_name"],
-                    transfer_date,
-                    transfer_id,
-                    transfer_number,
-                    Decimal(str(quantity)),
-                    UUID(to_warehouse_id),
-                    Decimal(str(item["unit_cost"])),
-                    Decimal(str(quantity)) * Decimal(str(item["unit_cost"])),
-                    ctx.get("user_id"),
-                    f"Transfer from {from_warehouse['name']}"
-                    + (f": {notes}" if notes else ""),
-                )
-
-                # Triggers on inventory_ledger automatically update warehouse_stock
-
-                logger.info(
-                    f"Stock transfer {transfer_number} created: "
-                    f"{quantity} {item['base_unit']} of {item['item_name']} "
-                    f"from {from_warehouse['name']} to {to_warehouse['name']}"
-                )
-
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                await pb.pastikan_aktif(conn, ctx["tenant_id"])
+                transfer_id = await pb.buat_draf(conn, ctx, data)
+                await pb.selesaikan(conn, ctx, transfer_id)
+                r = await conn.fetchrow(
+                    """SELECT st.transfer_number, fw.name AS dari, tw.name AS ke, i.item_name, i.unit
+                       FROM stock_transfers st JOIN stock_transfer_items i ON i.stock_transfer_id = st.id
+                       JOIN warehouses fw ON fw.id = st.from_warehouse_id JOIN warehouses tw ON tw.id = st.to_warehouse_id
+                       WHERE st.id = $1 AND st.tenant_id = $2""", transfer_id, ctx["tenant_id"])
                 return {
                     "success": True,
-                    "message": f"Transfer berhasil: {quantity} {item['base_unit']} dipindahkan",
+                    "message": f"Transfer berhasil: {quantity} {r['unit'] or ''} dipindahkan".replace("  ", " "),
                     "data": {
-                        "transfer_id": str(transfer_id),
-                        "transfer_number": transfer_number,
-                        "item_id": item_id,
-                        "item_name": item["item_name"],
-                        "from_warehouse": from_warehouse["name"],
-                        "to_warehouse": to_warehouse["name"],
-                        "quantity": quantity,
-                        "unit": item["base_unit"],
+                        "transfer_id": str(transfer_id), "transfer_number": r["transfer_number"], "item_id": item_id,
+                        "item_name": r["item_name"], "from_warehouse": r["dari"], "to_warehouse": r["ke"],
+                        "quantity": quantity, "unit": r["unit"],
                     },
                 }
-
     except HTTPException:
         raise
     except Exception as e:

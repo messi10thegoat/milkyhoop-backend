@@ -1,8 +1,10 @@
 """
-Stock Transfers Router
-======================
-Inter-warehouse stock transfer endpoints.
-IMPORTANT: NO JOURNAL ENTRIES - internal stock movement only.
+Stock Transfers Router -- Pemindahan Barang antargudang
+=======================================================
+SATU LANGKAH (12 Okt 2026, kontrak R2): draf -> selesai (kirim+terima atomik, 2 baris kartu stok per barang) -> void (pembalik).
+TANPA JURNAL (akun persediaan per produk, WAC tak berubah) -- lihat services/pemindahan_barang.py.
+Di balik flag `pemindahan_barang`; tanpa flag semua rute TULIS tetap 409 STOCK_TRANSFER_NOT_AVAILABLE (keadaan 23 Sep).
+Dua langkah (ship/receive) BELUM: butuh akun transit + jurnal (putusan P5): 409 jujur.
 """
 from datetime import date
 from typing import Optional
@@ -11,10 +13,11 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Depends
 
-from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import pemindahan_barang as pb
 from ..schemas.stock_transfers import (
     CancelTransferRequest,
     CancelTransferResponse,
+    CompleteTransferResponse,
     CreateStockTransferRequest,
     CreateStockTransferResponse,
     InTransitResponse,
@@ -29,24 +32,10 @@ from ..schemas.stock_transfers import (
     StockTransferItemData,
     StockTransferListResponse,
     UpdateStockTransferRequest,
+    VoidTransferRequest,
 )
 
 router = APIRouter()
-
-
-# Ditahan 23 Sep 2026: ship/receive (fungsi DB) dan cancel menulis inventory_ledger(item_id, quantity_change,
-# total_value, transaction_date) -- kolom yang TIDAK ADA (terbukti: INSERT persis itu gagal "column item_id
-# ... does not exist"). 0 transfer di semua tenant, tak ada UI, tiap tenant 1 gudang. Tulis -> 409 jujur
-# SEBELUM badan handler jalan (tak ada baris setengah jadi). Baca tetap terbuka (daftar kosong).
-# Tiket: bangun ulang di atas ledger nyata bila pemilik menambah gudang kedua.
-async def _transfer_stok_belum_tersedia():
-    raise HTTPException(
-        status_code=409,
-        detail={"code": "STOCK_TRANSFER_NOT_AVAILABLE", "message": "Transfer stok belum tersedia."},
-    )
-
-
-_TAHAN = [Depends(_transfer_stok_belum_tersedia)]
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -65,9 +54,50 @@ def get_user_context(request: Request) -> dict:
     }
 
 
+async def _butuh_flag(request: Request):
+    """Rute tulis hanya untuk tenant ber-flag `pemindahan_barang`; selain itu 409 jujur SEBELUM badan handler jalan
+    (tak ada baris setengah jadi). Koneksi dilepas sebelum handler memakai koneksinya sendiri (Law 32: tak bersarang)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await pb.pastikan_aktif(conn, ctx["tenant_id"])
+
+
+async def _dua_langkah_belum():
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "STOCK_TRANSFER_DUA_LANGKAH_BELUM_TERSEDIA",
+                "message": "Pemindahan dua langkah (kirim lalu terima) belum tersedia; gunakan Selesaikan (satu langkah)."},
+    )
+
+
+_TAHAN = [Depends(_butuh_flag)]
+_DUA_LANGKAH = [Depends(_butuh_flag), Depends(_dua_langkah_belum)]
+
+
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
+
+
+async def _detail(conn, tenant_id: str, transfer_id: UUID) -> StockTransferDetailData:
+    row = await conn.fetchrow(
+        """
+        SELECT st.*, fw.name as from_warehouse_name, tw.name as to_warehouse_name
+        FROM stock_transfers st
+        LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
+        LEFT JOIN warehouses tw ON st.to_warehouse_id = tw.id
+        WHERE st.id = $1 AND st.tenant_id = $2
+        """,
+        transfer_id,
+        tenant_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Stock transfer not found")
+    items = await conn.fetch(
+        "SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number ASC", transfer_id
+    )
+    return StockTransferDetailData(**dict(row), items=[StockTransferItemData(**dict(i)) for i in items])
 
 
 @router.get("", response_model=StockTransferListResponse)
@@ -238,408 +268,110 @@ async def get_stock_transfer(request: Request, transfer_id: UUID):
         return StockTransferDetailResponse(data=data)
 
 
+
+
 @router.post("", response_model=CreateStockTransferResponse, dependencies=_TAHAN)
 async def create_stock_transfer(request: Request, body: CreateStockTransferRequest):
-    """Create a new stock transfer (draft)"""
+    """Buat pemindahan (draf). Nilai TIDAK diambil dari klien: WAC server saat diselesaikan."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-
-            # Verify warehouses
-            from_wh = await conn.fetchrow(
-                "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                body.from_warehouse_id,
-                ctx["tenant_id"],
-            )
-            if not from_wh:
-                raise HTTPException(
-                    status_code=400, detail="Source warehouse not found"
-                )
-
-            to_wh = await conn.fetchrow(
-                "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
-                body.to_warehouse_id,
-                ctx["tenant_id"],
-            )
-            if not to_wh:
-                raise HTTPException(
-                    status_code=400, detail="Destination warehouse not found"
-                )
-
-            # Generate transfer number
-            transfer_number = await conn.fetchval(
-                "SELECT generate_stock_transfer_number($1)", ctx["tenant_id"]
-            )
-
-            # Create header
-            row = await conn.fetchrow(
-                """
-                INSERT INTO stock_transfers (
-                    tenant_id, transfer_number, transfer_date,
-                    from_warehouse_id, to_warehouse_id,
-                    expected_date, reference, notes, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                RETURNING *
-                """,
-                ctx["tenant_id"],
-                transfer_number,
-                body.transfer_date,
-                body.from_warehouse_id,
-                body.to_warehouse_id,
-                body.expected_date,
-                body.reference,
-                body.notes,
-                ctx.get("user_id"),
-            )
-
-            transfer_id = row["id"]
-
-            # Create items
-            items = []
-            for idx, item in enumerate(body.items, 1):
-                item_row = await conn.fetchrow(
-                    """
-                    INSERT INTO stock_transfer_items (
-                        stock_transfer_id, item_id, item_code, item_name,
-                        quantity_requested, unit, unit_cost, total_value,
-                        batch_number, expiry_date, serial_numbers, line_number, notes
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                    RETURNING *
-                    """,
-                    transfer_id,
-                    item.item_id,
-                    item.item_code,
-                    item.item_name,
-                    item.quantity_requested,
-                    item.unit,
-                    item.unit_cost,
-                    int(item.quantity_requested * item.unit_cost),
-                    item.batch_number,
-                    item.expiry_date,
-                    item.serial_numbers,
-                    idx,
-                    item.notes,
-                )
-                items.append(StockTransferItemData(**dict(item_row)))
-
-            # Refresh header for totals
-            row = await conn.fetchrow(
-                """
-                SELECT st.*, fw.name as from_warehouse_name, tw.name as to_warehouse_name
-                FROM stock_transfers st
-                LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
-                LEFT JOIN warehouses tw ON st.to_warehouse_id = tw.id
-                WHERE st.id = $1
-                """,
-                transfer_id,
-            )
-
-            data = StockTransferDetailData(**dict(row), items=items)
-
-            return CreateStockTransferResponse(data=data)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            tid = await pb.buat_draf(conn, ctx, pb.PemindahanIn(**body.model_dump()))
+            return CreateStockTransferResponse(data=await _detail(conn, ctx["tenant_id"], tid))
 
 
 @router.patch("/{transfer_id}", response_model=StockTransferDetailResponse, dependencies=_TAHAN)
-async def update_stock_transfer(
-    request: Request, transfer_id: UUID, body: UpdateStockTransferRequest
-):
-    """Update draft stock transfer"""
+async def update_stock_transfer(request: Request, transfer_id: UUID, body: UpdateStockTransferRequest):
+    """Ubah draf: kolom yang tak dikirim dipertahankan; items (bila ada) menggantikan seluruh baris."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-
-            existing = await conn.fetchrow(
-                "SELECT * FROM stock_transfers WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                transfer_id,
-                ctx["tenant_id"],
-            )
-
-            if not existing:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            lama = await conn.fetchrow(
+                "SELECT * FROM stock_transfers WHERE id = $1 AND tenant_id = $2", transfer_id, ctx["tenant_id"])
+            if not lama:
                 raise HTTPException(status_code=404, detail="Stock transfer not found")
-
-            if existing["status"] != "draft":
-                raise HTTPException(
-                    status_code=400, detail="Can only update draft transfers"
-                )
-
-            # Update fields
-            updates = []
-            params = []
-            param_idx = 1
-
-            for field in [
-                "from_warehouse_id",
-                "to_warehouse_id",
-                "transfer_date",
-                "expected_date",
-                "reference",
-                "notes",
-            ]:
-                value = getattr(body, field, None)
-                if value is not None:
-                    updates.append(f"{field} = ${param_idx}")
-                    params.append(value)
-                    param_idx += 1
-
-            if updates:
-                params.extend([transfer_id])
-                await conn.execute(
-                    f"UPDATE stock_transfers SET {', '.join(updates)}, updated_at = NOW() WHERE id = ${param_idx}",
-                    *params,
-                )
-
-            # Update items if provided
-            if body.items is not None:
-                await conn.execute(
-                    "DELETE FROM stock_transfer_items WHERE stock_transfer_id = $1",
-                    transfer_id,
-                )
-
-                for idx, item in enumerate(body.items, 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO stock_transfer_items (
-                            stock_transfer_id, item_id, item_code, item_name,
-                            quantity_requested, unit, unit_cost, total_value,
-                            batch_number, expiry_date, serial_numbers, line_number, notes
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                        """,
-                        transfer_id,
-                        item.item_id,
-                        item.item_code,
-                        item.item_name,
-                        item.quantity_requested,
-                        item.unit,
-                        item.unit_cost,
-                        int(item.quantity_requested * item.unit_cost),
-                        item.batch_number,
-                        item.expiry_date,
-                        item.serial_numbers,
-                        idx,
-                        item.notes,
-                    )
-
-                # Rollup parent aggregates after items replaced
-                await conn.execute(
-                    """
-                    UPDATE stock_transfers
-                    SET total_value = COALESCE((SELECT SUM(total_value) FROM stock_transfer_items WHERE stock_transfer_id = $1), 0),
-                        total_items = (SELECT COUNT(*) FROM stock_transfer_items WHERE stock_transfer_id = $1),
-                        total_quantity = COALESCE((SELECT SUM(quantity_requested) FROM stock_transfer_items WHERE stock_transfer_id = $1), 0),
-                        updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $2
-                    """,
-                    transfer_id,
-                    ctx["tenant_id"],
-                )
-
-            # Return updated
-    # Law 32: koneksi pertama DILEPAS dulu (fungsi baca ini mengambil koneksi pool sendiri; 28 Sep). Dulu return ini
-    # di DALAM transaksi -> get_stock_transfer (koneksi lain) membaca keadaan SEBELUM commit (respons basi).
-    return await get_stock_transfer(request, transfer_id)
+            if body.items is None:
+                baris = await conn.fetch(
+                    "SELECT item_id, quantity_requested, notes FROM stock_transfer_items WHERE stock_transfer_id = $1 "
+                    "ORDER BY line_number", transfer_id)
+                items = [{"item_id": b["item_id"], "quantity_requested": b["quantity_requested"], "notes": b["notes"]}
+                         for b in baris]
+            else:
+                items = [i.model_dump() for i in body.items]
+            data = pb.PemindahanIn(
+                from_warehouse_id=body.from_warehouse_id or lama["from_warehouse_id"],
+                to_warehouse_id=body.to_warehouse_id or lama["to_warehouse_id"],
+                transfer_date=body.transfer_date, expected_date=body.expected_date or lama["expected_date"],
+                reference=body.reference if body.reference is not None else lama["reference"],
+                notes=body.notes if body.notes is not None else lama["notes"],
+                sales_order_id=body.sales_order_id or lama["sales_order_id"], items=items)
+            await pb.ubah_draf(conn, ctx, transfer_id, data)
+            return StockTransferDetailResponse(data=await _detail(conn, ctx["tenant_id"], transfer_id))
 
 
 @router.delete("/{transfer_id}", dependencies=_TAHAN)
 async def delete_stock_transfer(request: Request, transfer_id: UUID):
-    """Delete draft stock transfer"""
+    """Hapus DRAF (yang sudah selesai di-void, bukan dihapus)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        existing = await conn.fetchrow(
-            "SELECT * FROM stock_transfers WHERE id = $1 AND tenant_id = $2",
-            transfer_id,
-            ctx["tenant_id"],
-        )
-
-        if not existing:
-            raise HTTPException(status_code=404, detail="Stock transfer not found")
-
-        if existing["status"] != "draft":
-            raise HTTPException(
-                status_code=400, detail="Can only delete draft transfers"
-            )
-
-        await conn.execute("DELETE FROM stock_transfers WHERE id = $1", transfer_id)
-
-        return {"success": True, "message": "Stock transfer deleted"}
-
-
-@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse, dependencies=_TAHAN)
-async def ship_stock_transfer(
-    request: Request, transfer_id: UUID, body: ShipTransferRequest = None
-):
-    """Ship stock transfer - reduces from_warehouse stock. NO JOURNAL ENTRY."""
-    ctx = get_user_context(request)
-    pool = await get_pool()
-
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-
-            # Use DB function
-            result = await conn.fetchrow(
-                "SELECT * FROM ship_stock_transfer($1, $2)",
-                transfer_id,
-                ctx.get("user_id"),
-            )
-
-            if not result["success"]:
-                raise HTTPException(status_code=400, detail=result["message"])
-
-            # Get updated transfer
-            row = await conn.fetchrow(
-                """
-                SELECT st.*, fw.name as from_warehouse_name, tw.name as to_warehouse_name
-                FROM stock_transfers st
-                LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
-                LEFT JOIN warehouses tw ON st.to_warehouse_id = tw.id
-                WHERE st.id = $1
-                """,
-                transfer_id,
-            )
-
-            return ShipTransferResponse(data=StockTransferData(**dict(row)))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await pb.hapus_draf(conn, ctx, transfer_id)
+    return {"success": True, "message": "Stock transfer deleted"}
 
 
-@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse, dependencies=_TAHAN)
-async def receive_stock_transfer(
-    request: Request, transfer_id: UUID, body: ReceiveTransferRequest = None
-):
-    """Receive stock transfer - increases to_warehouse stock. NO JOURNAL ENTRY."""
+@router.post("/{transfer_id}/complete", response_model=CompleteTransferResponse, dependencies=_TAHAN)
+async def complete_stock_transfer(request: Request, transfer_id: UUID):
+    """Selesaikan: kirim+terima atomik. Idempoten (ulang -> 200, tanpa tulis kedua)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            hasil = await pb.selesaikan(conn, ctx, transfer_id)
+            return CompleteTransferResponse(
+                data=await _detail(conn, ctx["tenant_id"], transfer_id), ulang=hasil["ulang"],
+                catatan_fase=hasil["catatan_fase"])
 
-            # Convert items to JSONB if provided
-            items_json = None
-            if body and body.items:
-                import json
 
-                items_json = json.dumps(
-                    [
-                        {
-                            "item_id": str(i.item_id),
-                            "quantity_received": float(i.quantity_received),
-                        }
-                        for i in body.items
-                    ]
-                )
+@router.post("/{transfer_id}/void", response_model=CompleteTransferResponse, dependencies=_TAHAN)
+async def void_stock_transfer(request: Request, transfer_id: UUID, body: VoidTransferRequest):
+    """Void pemindahan selesai: pembalik ledger kedua kaki; ditolak bila stok tujuan sudah terpakai."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            hasil = await pb.void(conn, ctx, transfer_id, body.reason)
+            return CompleteTransferResponse(
+                data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Pemindahan barang di-void",
+                ulang=hasil["ulang"], catatan_fase=hasil["catatan_fase"])
 
-            result = await conn.fetchrow(
-                "SELECT * FROM receive_stock_transfer($1, $2, $3::jsonb)",
-                transfer_id,
-                ctx.get("user_id"),
-                items_json,
-            )
 
-            if not result["success"]:
-                raise HTTPException(status_code=400, detail=result["message"])
+@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse, dependencies=_DUA_LANGKAH)
+async def ship_stock_transfer(request: Request, transfer_id: UUID, body: ShipTransferRequest = None):
+    """Dua langkah belum tersedia (putusan P5): selalu 409 sebelum badan jalan."""
+    raise HTTPException(status_code=409, detail="dua langkah belum tersedia")
 
-            row = await conn.fetchrow(
-                """
-                SELECT st.*, fw.name as from_warehouse_name, tw.name as to_warehouse_name
-                FROM stock_transfers st
-                LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
-                LEFT JOIN warehouses tw ON st.to_warehouse_id = tw.id
-                WHERE st.id = $1
-                """,
-                transfer_id,
-            )
 
-            return ReceiveTransferResponse(data=StockTransferData(**dict(row)))
+@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse, dependencies=_DUA_LANGKAH)
+async def receive_stock_transfer(request: Request, transfer_id: UUID, body: ReceiveTransferRequest = None):
+    """Dua langkah belum tersedia (putusan P5): selalu 409 sebelum badan jalan."""
+    raise HTTPException(status_code=409, detail="dua langkah belum tersedia")
 
 
 @router.post("/{transfer_id}/cancel", response_model=CancelTransferResponse, dependencies=_TAHAN)
-async def cancel_stock_transfer(
-    request: Request, transfer_id: UUID, body: CancelTransferRequest
-):
-    """Cancel stock transfer"""
+async def cancel_stock_transfer(request: Request, transfer_id: UUID, body: CancelTransferRequest):
+    """Batalkan DRAF (tanpa ledger). Pemindahan yang sudah selesai dibatalkan lewat /void."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        existing = await conn.fetchrow(
-            "SELECT * FROM stock_transfers WHERE id = $1 AND tenant_id = $2",
-            transfer_id,
-            ctx["tenant_id"],
-        )
-
-        if not existing:
-            raise HTTPException(status_code=404, detail="Stock transfer not found")
-
-        if existing["status"] not in ["draft", "in_transit"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot cancel transfer with status: {existing['status']}",
-            )
-
-        # If in_transit, need to reverse the stock reduction
-        if existing["status"] == "in_transit":
-            items = await conn.fetch(
-                "SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1",
-                transfer_id,
-            )
-
-            for item in items:
-                # Add back to from_warehouse
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await conn.execute(
-                    """
-                    INSERT INTO inventory_ledger (
-                        tenant_id, item_id, warehouse_id,
-                        quantity_change, unit_cost, total_value,
-                        source_type, source_id, transaction_date
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 'STOCK_TRANSFER_CANCEL', $7, $8)
-                    """,
-                    ctx["tenant_id"],
-                    item["item_id"],
-                    existing["from_warehouse_id"],
-                    item["quantity_shipped"],
-                    item["unit_cost"],
-                    int(item["quantity_shipped"] * item["unit_cost"]),
-                    transfer_id,
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-        await conn.execute(
-            """
-            UPDATE stock_transfers
-            SET status = 'cancelled',
-                cancelled_at = NOW(),
-                cancelled_by = $2,
-                cancel_reason = $3,
-                updated_at = NOW()
-            WHERE id = $1
-            """,
-            transfer_id,
-            ctx.get("user_id"),
-            body.reason,
-        )
-
-        return CancelTransferResponse()
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await pb.batalkan_draf(conn, ctx, transfer_id, body.reason)
+    return CancelTransferResponse()

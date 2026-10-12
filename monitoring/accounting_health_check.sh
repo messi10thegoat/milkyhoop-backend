@@ -1012,6 +1012,14 @@ check_21_stok_wajib_jurnal() {
         AND il.source_type = 'RELOKASI_GUDANG' GROUP BY il.product_id, il.movement_date
         HAVING abs(sum(il.quantity_in) - sum(il.quantity_out)) > 0.0001
             OR abs(sum(CASE WHEN il.quantity_in > 0 THEN il.total_cost ELSE -il.total_cost END)) > 0.01) x;")
+    # Lengan 3 (12 Okt 2026, Pemindahan Barang): berpasangan per DOKUMEN (source_id) per barang -- termasuk pembalik
+    # RELOKASI_GUDANG_VOID (sumber sama). Per-hari (lengan 2) tak melihat void yang jatuh di hari lain.
+    local xfer
+    xfer=$(psql_cmd "SELECT count(*) FROM (SELECT 1 FROM inventory_ledger il WHERE il.tenant_id = '$tenant'
+        AND il.source_type IN ('RELOKASI_GUDANG', 'RELOKASI_GUDANG_VOID') GROUP BY il.source_id, il.product_id
+        HAVING abs(sum(il.quantity_in) - sum(il.quantity_out)) > 0.0001
+            OR abs(sum(CASE WHEN il.quantity_in > 0 THEN il.total_cost ELSE -il.total_cost END)) > 0.01) x;")
+    if [[ "$rel" =~ ^[0-9]+$ ]] && [[ "$xfer" =~ ^[0-9]+$ ]]; then rel=$((rel + xfer)); else rel="__GAGAL__"; fi
     relsah=$(psql_cmd "SELECT count(*) FROM inventory_ledger il WHERE il.tenant_id = '$tenant' AND il.source_type = 'RELOKASI_GUDANG';")
     if [[ "$relsah" =~ ^[0-9]+$ ]] && [ "$relsah" -gt 0 ]; then
         detail "[CHECK 21] $tenant: sah tanpa jurnal (RELOKASI_GUDANG, berpasangan neto nol diverifikasi lengan 2): $relsah baris"
@@ -1030,7 +1038,7 @@ check_21_stok_wajib_jurnal() {
         CHK_PASS=0
         CHK_DETAIL=""
         [ "$cnt" != "0" ] && CHK_DETAIL="kartu stok tanpa jurnal padanan: $cnt baris"
-        [ "$rel" != "0" ] && CHK_DETAIL="${CHK_DETAIL}${CHK_DETAIL:+; }relokasi tak berpasangan neto nol: $rel produk-hari"
+        [ "$rel" != "0" ] && CHK_DETAIL="${CHK_DETAIL}${CHK_DETAIL:+; }relokasi tak berpasangan neto nol: $rel produk-hari/dokumen"
         detail "[CHECK 21] $tenant: $CHK_DETAIL"
     else
         CHK_PASS=0

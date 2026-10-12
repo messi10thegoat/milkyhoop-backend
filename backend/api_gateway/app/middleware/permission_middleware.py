@@ -712,6 +712,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/stock-transfers/[^/]+$", ["DELETE"], "item", "D"),
     (r"^/api/stock-transfers/[^/]+$", ["PATCH"], "item", "U"),
     (r"^/api/stock-transfers/[^/]+/cancel$", ["POST"], "item", "V"),
+    (r"^/api/stock-transfers/[^/]+/complete$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/void$", ["POST"], "item", "V"),
     (r"^/api/stock-transfers/[^/]+/receive$", ["POST"], "item", "P"),
     (r"^/api/stock-transfers/[^/]+/ship$", ["POST"], "item", "P"),
     # tax_invoices

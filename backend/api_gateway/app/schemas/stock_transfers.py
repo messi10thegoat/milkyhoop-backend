@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 # TYPES
 # ============================================================================
 
-TransferStatus = Literal["draft", "in_transit", "received", "cancelled"]
+TransferStatus = Literal["draft", "in_transit", "received", "cancelled", "completed", "voided"]
 
 
 # ============================================================================
@@ -27,10 +27,10 @@ class StockTransferItemCreate(BaseModel):
     """Line item for stock transfer"""
     item_id: UUID
     item_code: Optional[str] = None
-    item_name: str
+    item_name: Optional[str] = None  # diabaikan: nama dari master barang
     quantity_requested: Decimal = Field(..., gt=0, description="Quantity to transfer")
     unit: Optional[str] = None
-    unit_cost: int = 0
+    unit_cost: Optional[Decimal] = None  # diabaikan: nilai = WAC server (12 Okt 2026, Law 25)
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
     serial_numbers: Optional[List[str]] = None
@@ -45,6 +45,7 @@ class CreateStockTransferRequest(BaseModel):
     expected_date: Optional[date] = None
     reference: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
+    sales_order_id: Optional[UUID] = None
     items: List[StockTransferItemCreate] = Field(..., min_length=1)
 
     @model_validator(mode="after")
@@ -62,6 +63,7 @@ class UpdateStockTransferRequest(BaseModel):
     expected_date: Optional[date] = None
     reference: Optional[str] = None
     notes: Optional[str] = None
+    sales_order_id: Optional[UUID] = None
     items: Optional[List[StockTransferItemCreate]] = None
 
     @model_validator(mode="after")
@@ -104,13 +106,13 @@ class StockTransferItemData(BaseModel):
     item_id: UUID
     item_code: Optional[str] = None
     item_name: str
-    quantity_requested: Decimal
-    quantity_shipped: Decimal
-    quantity_received: Decimal
-    quantity_variance: Decimal  # shipped - received
+    quantity_requested: float
+    quantity_shipped: Optional[float] = None
+    quantity_received: Optional[float] = None
+    quantity_variance: Optional[float] = None  # shipped - received
     unit: Optional[str] = None
-    unit_cost: int
-    total_value: int
+    unit_cost: Optional[float] = None
+    total_value: Optional[float] = None
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
     serial_numbers: Optional[List[str]] = None
@@ -134,8 +136,11 @@ class StockTransferData(BaseModel):
     reference: Optional[str] = None
     notes: Optional[str] = None
     total_items: int
-    total_quantity: Decimal
-    total_value: int
+    total_quantity: float
+    total_value: float
+    sales_order_id: Optional[UUID] = None
+    voided_at: Optional[datetime] = None
+    void_reason: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: Optional[UUID] = None
@@ -191,11 +196,26 @@ class CancelTransferResponse(BaseModel):
     message: str = "Stock transfer cancelled"
 
 
+class VoidTransferRequest(BaseModel):
+    """Void pemindahan selesai (pembalik ledger)"""
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class CompleteTransferResponse(BaseModel):
+    """Response untuk menyelesaikan / void pemindahan (satu langkah)"""
+    success: bool = True
+    data: StockTransferDetailData
+    message: str = "Pemindahan barang selesai"
+    note: str = "Tanpa jurnal: akun persediaan per produk, nilai WAC tidak berubah"
+    ulang: bool = False
+    catatan_fase: Optional[str] = None
+
+
 class InTransitSummary(BaseModel):
     """Summary of in-transit transfers"""
     total_transfers: int
     total_items: int
-    total_value: int
+    total_value: float
     oldest_transfer_date: Optional[date] = None
 
 

@@ -59,11 +59,11 @@ def test_penulis_lewat_helper_terklasifikasi():
 # & source_type-nya diklasifikasi di services/kosakata_ledger.
 PENULIS_SQL = {
     ("services/saldo_awal_stok.py", "catat_saldo_awal_stok"),  # 10 Okt: saldo awal barang = jurnal + kartu (items/inventory memakai ini)
-    ("routers/items.py", "create_stock_adjustment"), ("routers/items.py", "create_single_item_stock_transfer"),
+    ("routers/items.py", "create_stock_adjustment"), ("services/pemindahan_barang.py", "_tulis_ledger"),
     ("routers/production.py", "_reverse_inventory_ledger"), ("routers/production.py", "issue_materials"),
     ("routers/sales_invoices.py", "_execute_fulfillment"), ("routers/sales_receipts.py", "create_sales_receipt"),
     ("routers/sales_receipts.py", "void_sales_receipt"), ("routers/stock_adjustments.py", "post_stock_adjustment"),
-    ("routers/stock_transfers.py", "cancel_stock_transfer"), ("routers/transactions.py", "_create_pos_inventory_and_journals"),
+    ("routers/transactions.py", "_create_pos_inventory_and_journals"),
     ("services/inventory_helpers.py", "record_inventory_outbound"), ("services/inventory_helpers.py", "record_inventory_inbound"),
     ("services/inventory_helpers.py", "record_inventory_reversal"),
     ("services/kernel_document_executor.py", "_create_inventory_movements"),
