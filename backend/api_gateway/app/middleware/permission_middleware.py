@@ -210,6 +210,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+/edit/preview$", ["POST"], "sales_order", "U"),
     # Fase lokasi pesanan (7 Okt 2026): ubah/hapus + pratinjau = izin ubah pesanan (U), bukan prefiks POST = C.
     (r"^/api/sales-orders/[^/]+/fase-lokasi(/preview)?$", ["POST"], "sales_order", "U"),
+    # Terbitkan SPK / kode order (12 Okt 2026) = ubah pesanan, bukan buat (prefiks ^/api/sales-orders POST = C)
+    (r"^/api/sales-orders/[^/]+/kode-order(/preview)?$", ["POST"], "sales_order", "U"),
     (r"^/api/employee-advances/preview$", ["POST"], "payroll", "C"),
     (r"^/api/employee-advances/[^/]+/void/preview$", ["POST"], "payroll", "V"),
     # P3 SO-dokumen (1 Okt 2026): render dokumen = izin BACA modul dokumennya (sama dengan rute /pdf lama). DI ATAS

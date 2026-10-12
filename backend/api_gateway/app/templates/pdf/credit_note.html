@@ -49,7 +49,7 @@
             {% if credit_note.sales_order_number %}
             <tr>
                 <td class="meta-label">Sales Order</td>
-                <td class="meta-value"{% if credit_note.order_code_cetak %} style="white-space: nowrap"{% endif %}>{{ credit_note.sales_order_number }}{% if credit_note.order_code_cetak %} · {{ credit_note.order_code_cetak }}{% endif %}</td>
+                <td class="meta-value">{{ credit_note.sales_order_number }}</td>
             </tr>
             {% endif %}
             <tr>

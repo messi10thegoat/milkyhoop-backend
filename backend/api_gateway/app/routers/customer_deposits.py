@@ -1202,6 +1202,21 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                     result["data"]["journal_id"] = post_result.get("journal_id")
                     result["message"] = "Customer deposit created and posted"
 
+                # 12 Okt 2026: opsi Terbitkan SPK di Terima DP -- SATU transaksi dengan uang muka; SO tak memenuhi
+                # syarat / setelan mati / sudah berkode -> uang muka TETAP tercatat, order_code_issued false.
+                if body.terbitkan_kode_order:
+                    from ..services import kode_order as _KO
+                    result["data"]["order_code_issued"] = False
+                    if _guard_order_id:
+                        try:
+                            _h = await _KO.terbitkan_spk(conn, ctx["tenant_id"], _guard_order_id,
+                                                         await tanggal_dokumen(conn, ctx["tenant_id"]), ctx["user_id"])
+                        except _KO.KodeOrderGalat:
+                            _h = None
+                        if _h and _h["status"] == 200:
+                            result["data"]["order_code"] = _h["order_code"]
+                            result["data"]["order_code_issued"] = bool(_h["issued"])
+
                 return result
 
     except HTTPException:
@@ -3518,10 +3533,7 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
                 _logo_b64 = _base64.b64encode(_lf.read()).decode()
             _logo_data = f"data:image/png;base64,{_logo_b64}"
     tenant_info["logo_data"] = _logo_data
-    from ..services.kode_order import label_cetak
-    _so_dp = (await resolve_order_id_for_deposit(conn, ctx["tenant_id"], dep["sales_order_id"], dep["proforma_id"])
-              if dep["sales_order_id"] or dep["proforma_id"] else None)
-    receipt_data.update(await label_cetak(conn, ctx["tenant_id"], _so_dp))
+    # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     return {"receipt_data": receipt_data, "tenant_info": tenant_info, "dep": dep}
 
 

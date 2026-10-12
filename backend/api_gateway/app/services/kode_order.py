@@ -240,6 +240,34 @@ async def _terbitkan_inti(conn, tenant_id: str, so_id, tanggal: date, s: dict, s
     return kode
 
 
+# 12 Okt 2026 (putusan pemilik, pola SAP Production Order / NetSuite Work Order): nomor SPK terbit saat produksi DILEPAS
+# (tenant ber-pemicu 'manual_only', mis. grapgrap: sesudah DP) -- lewat "Terbitkan SPK" atau opsi di Terima DP.
+STATUS_BOLEH_SPK = ("confirmed", "partial_shipped", "shipped", "partial_invoiced", "invoiced")
+
+
+async def terbitkan_spk(conn, tenant_id: str, so_id, tanggal: date, aktor) -> dict:
+    """POST /sales-orders/{id}/kode-order + opsi terbitkan_kode_order di Terima DP. IDEMPOTEN: SO sudah berkode ->
+    {status 200, issued False} (bukan 409). Nomor berikutnya dari penghitung yang SAMA (_terbitkan_inti: kunci per-SO
+    lalu per-periode, lompati yang terpakai, event + riwayat). Kode manual TAK PERNAH ditimpa. Pemanggil membuka
+    transaksi. -> {status 200|404|409, order_code?, issued?, code?, message?}"""
+    s = await muat_setelan(conn, tenant_id)
+    if not s["enabled"]:
+        raise KodeOrderGalat(f"{s['label']} belum dinyalakan di Pengaturan.")
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
+    so = await conn.fetchrow(
+        "SELECT id, order_number, status, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
+    if not so:
+        return {"status": 404}
+    if so["order_code"]:
+        return {"status": 200, "order_code": so["order_code"], "issued": False, "label": s["label"]}
+    if so["status"] not in STATUS_BOLEH_SPK:
+        from . import teks_galat as tg
+        return {"status": 409, "code": "SPK_STATUS_TIDAK_SAH",
+                "message": f"Pesanan berstatus {tg.status_id('so', so['status'])} tidak bisa diberi {s['label']}."}
+    kode = await _terbitkan_inti(conn, tenant_id, so_id, tanggal, s, "manual", aktor, {"trigger": "terbitkan_spk"})
+    return {"status": 200, "order_code": kode, "issued": True, "label": s["label"]}
+
+
 async def terbitkan_berikutnya(conn, tenant_id: str, so_id, tanggal: date, aktor) -> dict:
     """'+ {label}' tanpa mengetik (3 Okt, MASTER): nomor berikutnya dari penghitung yang SAMA (kunci sama),
     source='manual'. Jalan untuk pemicu apa pun selama setelan menyala. Pemanggil sudah memeriksa boleh_ganti_kode
@@ -307,21 +335,7 @@ def potong_judul(judul: Optional[str]) -> Optional[str]:
     return judul if len(judul) <= MAKS_JUDUL_CETAK else judul[:MAKS_JUDUL_CETAK - 1].rstrip() + "…"
 
 
-async def label_cetak(conn, tenant_id: str, so_id) -> dict:
-    """{order_code_cetak} = "{label} {kode} · {judul}" (judul dipotong) untuk ditempel SEBARIS pada baris nomor
-    pesanan yang SUDAH ADA di PDF. so_id None / SO tanpa kode -> None (template tak mencetak apa pun -> PDF dokumen
-    tanpa kode sama dengan sebelumnya)."""
-    kosong = {"order_code_cetak": None, "order_code_pendek": None}
-    if not so_id:
-        return kosong
-    r = await conn.fetchrow("SELECT order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2",
-                            so_id, tenant_id)
-    if not r or not r["order_code"]:
-        return kosong
-    label = (await muat_setelan(conn, tenant_id))["label"]
-    judul = potong_judul(r["order_title"])
-    return {"order_code_cetak": f"{label} {r['order_code']}" + (f" · {judul}" if judul else ""),
-            "order_code_pendek": f"{label} {r['order_code']}"}  # kwitansi A5: tanpa judul
+# label_cetak DIHAPUS 12 Okt 2026: No. SPK/kode order tidak lagi dicetak di dokumen konsumen (nomor internal produksi).
 
 
 MAKS_BARIS_IMPOR = 2000
@@ -450,8 +464,8 @@ async def impor(conn, tenant_id: str, baris: list, dry_run: bool, aktor) -> dict
 
 
 # ── Kode order di DOKUMEN ANAK (3 Okt 2026, MASTER/pemilik: sub-judul "005-10-26 · KEMEJA GMIM" di semua dokumen anak).
-# Jalur SO induk SAMA dengan pemuat PDF (label_cetak di proformas/sales_invoices/deliveries/customer_deposits/
-# receive_payments) supaya layar = cetak. Tenant eksplisit di KEDUA sisi setiap join (gateway BYPASSRLS).
+# Jalur SO induk untuk LAYAR aplikasi (internal). Sejak 12 Okt 2026 kode TIDAK lagi dicetak di PDF konsumen
+# (label_cetak dihapus). Tenant eksplisit di KEDUA sisi setiap join (gateway BYPASSRLS).
 SUMBER_SO = {
     "proforma": """SELECT d.id, d.sales_order_id AS so_id FROM proformas d
                    WHERE d.tenant_id = $1 AND d.id = ANY($2::uuid[])""",

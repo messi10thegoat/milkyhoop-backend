@@ -156,6 +156,54 @@ async def ganti_kode_order(request: Request, order_id: str):
     return {"success": True, "data": {k: v for k, v in h.items() if k != "status"}}
 
 
+class _BatalSpk(Exception):
+    def __init__(self, data):
+        self.data = data
+
+
+async def _jalankan_spk(request: Request, order_id: str, pratinjau: bool) -> dict:
+    ctx = _ctx(request)
+    try:
+        so_id = uuid_module.UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Sales order not found")
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                try:
+                    h = await KO.terbitkan_spk(conn, ctx["tenant_id"], so_id, await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                               ctx["user_id"])
+                except KO.KodeOrderGalat as e:
+                    h = {"status": 409, "code": "SPK_NONAKTIF", "message": str(e)}
+                if h["status"] == 404:
+                    raise HTTPException(status_code=404, detail="Sales order not found")
+                data = {"sales_order_id": str(so_id), "order_code": h.get("order_code"), "issued": h.get("issued", False),
+                        "order_code_label": h.get("label"), "can_proceed": h["status"] == 200,
+                        "blocks": [] if h["status"] == 200 else [{"code": h["code"], "message": h["message"]}],
+                        "preview": pratinjau}
+                if pratinjau:
+                    raise _BatalSpk(data)
+                if h["status"] != 200:
+                    raise HTTPException(status_code=409, detail={"code": h["code"], "message": h["message"]})
+                return data
+        except _BatalSpk as b:
+            return b.data
+
+
+@router.post("/sales-orders/{order_id}/kode-order")
+async def terbitkan_spk(request: Request, order_id: str):
+    """Terbitkan SPK (12 Okt 2026): nomor berikutnya dari penghitung; IDEMPOTEN (sudah berkode -> issued false)."""
+    return {"success": True, "data": await _jalankan_spk(request, order_id, False)}
+
+
+@router.post("/sales-orders/{order_id}/kode-order/preview")
+async def pratinjau_terbitkan_spk(request: Request, order_id: str):
+    """Pratinjau Terbitkan SPK: penulis YANG SAMA lalu rollback -> nomor calon + blok."""
+    return {"success": True, "data": await _jalankan_spk(request, order_id, True)}
+
+
 @router.post("/settings/order-codes/import")
 async def impor_kode_order(request: Request):
     """Impor kode yang sudah dipakai di luar MilkyHoop (tenant mana pun). PEMILIK saja. {rows:[{order_number |

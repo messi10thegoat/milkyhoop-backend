@@ -551,12 +551,7 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             for i in items_rows
         ],
     }
-    from ..services.kode_order import label_cetak
-    _so_sj = await conn.fetchval(
-        """SELECT COALESCE(f.sales_order_id, si.sales_order_id) FROM invoice_fulfillments f
-           LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-           WHERE f.id = $1 AND f.tenant_id = $2""", row["id"], ctx["tenant_id"])
-    delivery_data.update(await label_cetak(conn, ctx["tenant_id"], _so_sj))
+    # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     if await _serah.aktif(conn, ctx["tenant_id"]):  # blok "Serah-terima" di cetakan; tanpa flag cetakan TAK berubah
         _sr = (await _serah.muat(conn, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
         if _sr["metode"] or _sr["kirim_ke"] or _sr["resi"]:

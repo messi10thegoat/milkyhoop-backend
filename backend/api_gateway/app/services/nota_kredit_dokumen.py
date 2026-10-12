@@ -45,8 +45,6 @@ async def muat_pdf_nota_kredit(conn, ctx: dict, cn_id) -> dict:
                FROM sales_invoices si
                LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
                WHERE si.id = $1 AND si.tenant_id = $2""", cn["original_invoice_id"], tid)
-    from .kode_order import label_cetak
-    kode = await label_cetak(conn, tid, faktur["sales_order_id"] if faktur else None)
     data = {
         "credit_note_number": cn["credit_note_number"],
         "credit_note_date": cn["credit_note_date"],
@@ -57,7 +55,6 @@ async def muat_pdf_nota_kredit(conn, ctx: dict, cn_id) -> dict:
         "original_invoice_number": (faktur["invoice_number"] if faktur else None) or cn["original_invoice_number"],
         "original_invoice_date": faktur["invoice_date"] if faktur else None,
         "sales_order_number": faktur["order_number"] if faktur else None,
-        "order_code_cetak": kode["order_code_cetak"],
         "reason": cn["reason"],
         "reason_label": ALASAN.get(cn["reason"], cn["reason"]),
         "reason_detail": cn["reason_detail"],

@@ -5924,8 +5924,7 @@ async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
         from ..services.rekap_pesanan import muat_rekap_pesanan
         _rk = (await muat_rekap_pesanan(conn, ctx, invoice["sales_order_id"]))["rekap"]
         invoice_data["rekap_pembayaran"] = len(_rk["pembayaran"])
-    from ..services.kode_order import label_cetak
-    invoice_data.update(await label_cetak(conn, ctx["tenant_id"], invoice["sales_order_id"]))
+    # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     return {"invoice_data": invoice_data, "tpl": tpl, "invoice": invoice}
 
 

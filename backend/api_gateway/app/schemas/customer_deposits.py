@@ -54,6 +54,8 @@ class CreateCustomerDepositRequest(BaseModel):
     proforma_id: Optional[str] = Field(
         None, description="Proforma UUID this DP settles (tagihan uang muka)"
     )
+    # 12 Okt 2026: Terima DP sekaligus Terbitkan SPK (nomor produksi) untuk SO-nya, SATU transaksi. Bawaan false.
+    terbitkan_kode_order: bool = Field(False, description="Terbitkan nomor produksi (label setelan tenant) untuk SO uang muka ini (idempoten)")
     idempotency_key: Optional[str] = Field(
         None,
         max_length=255,

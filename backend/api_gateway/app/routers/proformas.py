@@ -1541,8 +1541,7 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
         "cancelled_at": row["cancelled_at"],
         "cancelled_reason": row["cancelled_reason"],
     }
-    from ..services.kode_order import label_cetak
-    proforma_data.update(await label_cetak(conn, ctx["tenant_id"], row["sales_order_id"]))
+    # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     return {"proforma_data": proforma_data, "tenant_info": tenant_info}
 
 

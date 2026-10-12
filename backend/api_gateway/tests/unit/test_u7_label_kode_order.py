@@ -146,10 +146,22 @@ def test_riwayat_tanpa_peristiwa_kode_tak_membaca_setelan():
 
 # ── PDF + DTO ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def test_label_cetak_pdf_memakai_label_tenant():
-    c = _Conn(so={"order_code": "002-10-26", "order_title": "KAOS"})
-    h = _j(KO.label_cetak(c, "t1", uuid.uuid4()))
-    assert h["order_code_cetak"] == "No. SPK 002-10-26 · KAOS" and h["order_code_pendek"] == "No. SPK 002-10-26"
+def test_pdf_konsumen_tanpa_kode_order():
+    """12 Okt 2026 (putusan pemilik, pola SAP Production Order / NetSuite Work Order / Accurate Perintah Kerja): No. SPK =
+    nomor INTERNAL produksi -> TIDAK dicetak di dokumen konsumen (penawaran, proforma, kwitansi/uang muka, faktur A/B,
+    surat jalan, nota kredit, rekap pesanan). Nomor SO + referensi konsumen tetap. Menggantikan tes lama yang
+    membekukan teks cetak "No. SPK 002-10-26 · KAOS"."""
+    import pathlib
+    app = pathlib.Path(KO.__file__).resolve().parent.parent
+    tpl = {p.name: p.read_text() for p in (app / "templates" / "pdf").rglob("*.html")}
+    assert len(tpl) >= 8
+    kena = [n for n, t in tpl.items() if "order_code" in t]
+    assert kena == [], kena
+    assert not hasattr(KO, "label_cetak")
+    pemanggil = [str(p.relative_to(app)) for p in app.rglob("*.py") if "label_cetak(" in p.read_text()]
+    assert pemanggil == [], pemanggil
+    for t in ("sales_invoice.html", "proforma.html", "rekap_pesanan.html", "credit_note.html"):   # nomor SO tetap
+        assert "sales_order_number" in tpl[t] or "order_number" in tpl[t]
 
 
 def test_dto_dokumen_anak_dan_penawaran_membawa_label_tenant():
