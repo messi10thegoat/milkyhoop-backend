@@ -15,6 +15,7 @@ Impor unified_chat KERAS (bukan lunak): kegagalan impor = merah, bukan skip.
 """
 import asyncio
 import hashlib
+import inspect
 import io
 import os
 import re
@@ -328,12 +329,23 @@ async def test_form_dedup_abaikan_baris_local_mati(form):
 
 
 @pytest.mark.asyncio
-async def test_form_dedup_ke_baris_s3_yang_ada(form):
-    out1 = await UP.upload_document_for_form(req(), berkas())
+async def test_form_isi_sama_baris_baru_bernama_sendiri_objek_satu(form):
+    """12 Okt 2026 (putusan MASTER, pola NetSuite File Cabinet): tiap unggahan = baris documents BARU dengan NAMA
+    unggahannya; dedup hanya di OBJEK. Dulu baris lama dipakai ulang -> nama unggahan pertama tampil di semua penaut."""
+    out1 = await UP.upload_document_for_form(req(), berkas(nama="DATA KONSUMEN.JPG"))
     out2 = await UP.upload_document_for_form(req(), berkas(nama="nama-lain.png"))
-    assert out2["data"]["id"] == out1["data"]["id"]
-    assert len(form.db.inserts) == 1
+    assert out2["data"]["id"] != out1["data"]["id"]
+    assert len(form.db.inserts) == 2
+    a, b = form.db.rows[-2], form.db.rows[-1]
+    assert (a["file_name"], b["file_name"]) == ("DATA KONSUMEN.JPG", "nama-lain.png")
+    assert a["file_path"] == b["file_path"] == kunci("forms")          # objek SAMA
     assert out2["data"]["url"] == out1["data"]["url"]
+    assert list(form.storage.client.objek) == [(BUCKET, kunci("forms"))]  # MinIO tak dobel
+
+
+def test_form_tanpa_pencarian_baris_dedup():
+    src = inspect.getsource(UP.upload_document_for_form)
+    assert "checksum_sha256 = $2" not in src and "existing" not in src and "Dedup hit" not in src
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,13 @@ Unit U1 (24 Sep 2026): dulu ditulis ke /tmp/milkyhoop_uploads di kontainer
 (hilang tiap recreate). Kini objek MinIO berkunci deterministik
 `<tenant>/uploads/forms/<sha256><ext>` (lihat app/utils/chat_file_path.py);
 baris documents storage_type='s3'. Tak ada tulisan ke disk.
+
+12 Okt 2026 (putusan MASTER, pola NetSuite File Cabinet): SETIAP unggahan = baris `documents` BARU dengan nama
+unggahannya sendiri; dedup HANYA di tingkat OBJEK (kunci sha256 -> PUT ulang isi sama idempoten, MinIO tak dobel).
+Dulu baris lama dipakai ulang -> modul penaut (biaya, pembayaran, uang muka, ...) menampilkan nama unggahan PERTAMA
+(grapgrap "DATA KONSUMEN.JPG" dipakai 3 biaya). Banyak baris boleh MENUNJUK objek yang sama: jalur hapus dokumen hanya
+soft-delete (deleted_at), tak menghapus objek (diukur 12 Okt; penghapus objek hanya untuk lampiran MILIK SI/tagihan
+yang berkunci sendiri). Jalur baru yang menghapus objek dokumen WAJIB menghitung referensi file_path dulu.
 """
 import hashlib
 import logging
@@ -95,32 +102,16 @@ async def upload_document_for_form(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                f"FORM_FILE:{tenant_id}:{file_hash}",
+            # Selalu baris BARU (nama unggahan ini); objeknya boleh sama dengan baris lain (kunci sha).
+            doc_id = await conn.fetchval(
+                """INSERT INTO documents (
+                    tenant_id, file_name, original_name, file_type, file_extension,
+                    file_size, storage_type, file_path, file_url, category, checksum_sha256, source, uploaded_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, 's3', $7, $8, 'receipt', $9, 'form', $10::uuid)
+                RETURNING id""",
+                tenant_id, file.filename or f"upload{ext}", file.filename, file.content_type, ext,
+                len(content), kunci, file_url, file_hash, user_id,
             )
-            # Dedup HANYA ke baris s3 berkunci sama. Baris 'local' lama
-            # (berkasnya sudah hilang) diabaikan -> unggahan ulang membuat baris
-            # s3 BARU; baris s3 lain (mis. /api/documents, file_url NULL) juga
-            # tak dipakai supaya url tak pernah NULL.
-            existing = await conn.fetchrow(
-                "SELECT id FROM documents WHERE tenant_id = $1 AND checksum_sha256 = $2"
-                " AND storage_type = 's3' AND file_path = $3 AND deleted_at IS NULL LIMIT 1",
-                tenant_id, file_hash, kunci,
-            )
-            if existing:
-                doc_id = existing["id"]
-                logger.info(f"[FormUpload] Dedup hit: {file_hash[:12]} -> {doc_id}")
-            else:
-                doc_id = await conn.fetchval(
-                    """INSERT INTO documents (
-                        tenant_id, file_name, original_name, file_type, file_extension,
-                        file_size, storage_type, file_path, file_url, category, checksum_sha256, source, uploaded_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, 's3', $7, $8, 'receipt', $9, 'form', $10::uuid)
-                    RETURNING id""",
-                    tenant_id, file.filename or f"upload{ext}", file.filename, file.content_type, ext,
-                    len(content), kunci, file_url, file_hash, user_id,
-                )
 
     return {
         "success": True,
