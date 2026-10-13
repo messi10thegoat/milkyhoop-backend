@@ -537,6 +537,58 @@ async def get_next_vendor_code(request: Request):
         raise HTTPException(status_code=500, detail="Failed to get next code")
 
 
+def _alamat_terstruktur(jalan, kota, provinsi, kodepos):
+    """Bentuk objek yang dibaca FE (useVendorForm: v.tax_address.street ...). Semua kosong -> None."""
+    if not any((jalan, kota, provinsi, kodepos)):
+        return None
+    return {"street": jalan, "city": kota, "province": provinsi, "postal_code": kodepos}
+
+
+async def _baca_anak_pemasok(conn, tenant_id: str, vendor_id):
+    """Alamat pengiriman (vendor_addresses 'shipping') + kontak (vendor_contacts). Filter tenant eksplisit (BYPASSRLS)."""
+    a = await conn.fetchrow(
+        """SELECT street, city, province, postal_code FROM vendor_addresses
+           WHERE vendor_id = $1 AND tenant_id = $2 AND address_type = 'shipping'
+           ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1""",
+        vendor_id, tenant_id)
+    kontak = await conn.fetch(
+        """SELECT id, name, position, email, phone, mobile, is_primary FROM vendor_contacts
+           WHERE vendor_id = $1 AND tenant_id = $2 ORDER BY is_primary DESC NULLS LAST, created_at, id""",
+        vendor_id, tenant_id)
+    return (
+        _alamat_terstruktur(a["street"], a["city"], a["province"], a["postal_code"]) if a else None,
+        [{"id": str(k["id"]), "name": k["name"], "position": k["position"] or "", "email": k["email"] or "",
+          "phone": k["phone"] or "", "mobile": k["mobile"] or "", "is_primary": bool(k["is_primary"])} for k in kontak],
+    )
+
+
+async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contacts, sent: set) -> list:
+    """Tulis anak dalam transaksi pemanggil. HANYA kunci yang DIKIRIM (sent) disentuh; null = tak ada perubahan;
+    alamat kosong = hapus baris shipping; contacts = ganti seluruhnya (baris kosong dilewati). Mengembalikan nama yang berubah."""
+    berubah = []
+    if "shipping_address" in sent and shipping is not None:
+        await conn.execute(
+            "DELETE FROM vendor_addresses WHERE vendor_id = $1 AND tenant_id = $2 AND address_type = 'shipping'",
+            vendor_id, tenant_id)
+        if not shipping.kosong():
+            await conn.execute(
+                """INSERT INTO vendor_addresses (tenant_id, vendor_id, address_type, street, city, province, postal_code, is_default)
+                   VALUES ($1, $2, 'shipping', $3, $4, $5, $6, true)""",
+                tenant_id, vendor_id, shipping.street, shipping.city, shipping.province, shipping.postal_code)
+        berubah.append("shipping_address")
+    if "contacts" in sent and contacts is not None:
+        await conn.execute("DELETE FROM vendor_contacts WHERE vendor_id = $1 AND tenant_id = $2", vendor_id, tenant_id)
+        for k in contacts:
+            if k.kosong():
+                continue
+            await conn.execute(
+                """INSERT INTO vendor_contacts (tenant_id, vendor_id, name, position, email, phone, mobile, is_primary)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                tenant_id, vendor_id, k.name, k.position, k.email, k.phone, k.mobile, k.is_primary)
+        berubah.append("contacts")
+    return berubah
+
+
 @router.get("/{vendor_id}", response_model=VendorDetailResponse)
 async def get_vendor(request: Request, vendor_id: UUID):
     """Get detailed information for a single vendor."""
@@ -550,7 +602,8 @@ async def get_vendor(request: Request, vendor_id: UUID):
                 SELECT id, code, name, company_name, display_name, contact_person, phone, email,
                        address, city, province, postal_code, tax_id,
                        payment_terms_days, credit_limit, notes,
-                       vendor_type, nik, is_pkp,
+                       vendor_type, nik, is_pkp, nitku, negara, account_number,
+                       tax_address, tax_city, tax_province, tax_postal_code,
                        default_tax_code, default_pph_type, default_pph_rate,
                        company_name, display_name, mobile_phone, website,
                        currency, opening_balance, opening_balance_date,
@@ -593,6 +646,8 @@ async def get_vendor(request: Request, vendor_id: UUID):
                 vendor_id,
             )
 
+            shipping_address, contacts = await _baca_anak_pemasok(conn, ctx["tenant_id"], vendor_id)
+
             return {
                 "success": True,
                 "data": {
@@ -622,6 +677,14 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     if row["default_pph_rate"]
                     else None,
                     "mobile_phone": row["mobile_phone"],
+                    "mobile": row["mobile_phone"],
+                    "nitku": row["nitku"],
+                    "negara": row["negara"],
+                    "account_number": row["account_number"],
+                    "tax_address": _alamat_terstruktur(
+                        row["tax_address"], row["tax_city"], row["tax_province"], row["tax_postal_code"]),
+                    "shipping_address": shipping_address,
+                    "contacts": contacts,
                     "website": row["website"],
                     "currency": row["currency"],
                     "opening_balance": row["opening_balance"],
@@ -806,10 +869,13 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                     company_name, display_name, mobile_phone, website,
                     is_pkp, currency,
                     bank_name, bank_account_number, bank_account_holder,
-                    created_by
+                    created_by,
+                    nik, account_number, tax_address, tax_city, tax_province, tax_postal_code,
+                    nitku, negara, default_tax_code, default_pph_type, default_pph_rate
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
+                    $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, COALESCE($38::numeric, 0)
                 )
                 RETURNING id
                 """,
@@ -840,7 +906,20 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                     getattr(body, "bank_account_number", None),
                     getattr(body, "bank_account_holder", None),
                     ctx["user_id"],
+                    body.nik,
+                    body.account_number,
+                    body.tax_address,
+                    getattr(body, "tax_city", None),
+                    getattr(body, "tax_province", None),
+                    getattr(body, "tax_postal_code", None),
+                    body.nitku,
+                    body.negara,
+                    body.default_tax_code,
+                    body.default_pph_type,
+                    body.default_pph_rate,
                 )
+                await _tulis_anak_pemasok(
+                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, body.model_fields_set)
 
                 logger.info(f"Vendor created: {vendor_id}, name={body.name}")
 
@@ -909,7 +988,9 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                           vendor_type, company_name, display_name,
                           mobile_phone, website, is_pkp, currency,
                           bank_name, bank_account_number, bank_account_holder,
-                          is_active
+                          is_active, nik, account_number, tax_address, tax_city,
+                          tax_province, tax_postal_code, nitku, negara,
+                          default_tax_code, default_pph_type, default_pph_rate
                    FROM vendors WHERE id = $1 AND tenant_id = $2""",
                     vendor_id,
                     ctx["tenant_id"],
@@ -933,7 +1014,15 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
 
                 # Build update query dynamically
                 update_data = body.model_dump(exclude_unset=True)
-                if not update_data:
+                # Anak (alamat pengiriman, kontak) bukan kolom vendors: ditulis terpisah di transaksi yang sama.
+                anak_dikirim = {k for k in ("shipping_address", "contacts") if k in update_data}
+                for k in ("shipping_address", "contacts"):
+                    update_data.pop(k, None)
+                if update_data.get("nik"):
+                    tipe_efektif = update_data.get("vendor_type") or existing["vendor_type"]
+                    if tipe_efektif != "ORANG_PRIBADI":
+                        raise HTTPException(status_code=422, detail="NIK hanya untuk pemasok Orang Pribadi")
+                if not update_data and not anak_dikirim:
                     return {
                         "success": True,
                         "message": "No changes provided",
@@ -958,6 +1047,8 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                 WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
             """
                 await conn.execute(query, *params)
+                anak_berubah = await _tulis_anak_pemasok(
+                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, anak_dikirim)
 
                 logger.info(f"Vendor updated: {vendor_id}")
 
@@ -996,6 +1087,17 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                     "bank_account_number": "No Rekening",
                     "bank_account_holder": "Pemilik Rekening",
                     "is_active": "Status Aktif",
+                    "nik": "NIK",
+                    "account_number": "No Akun",
+                    "tax_address": "Alamat Pajak",
+                    "tax_city": "Kota Pajak",
+                    "tax_province": "Provinsi Pajak",
+                    "tax_postal_code": "Kode Pos Pajak",
+                    "nitku": "NITKU",
+                    "negara": "Negara",
+                    "default_tax_code": "Kode Pajak Bawaan",
+                    "default_pph_type": "Jenis PPh Bawaan",
+                    "default_pph_rate": "Tarif PPh Bawaan",
                 }
 
                 changes_logged = []
@@ -1026,6 +1128,21 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                         changes_logged.append(
                             f"{label}: {old_display} -> {new_display}"
                         )
+
+                for nama_anak in anak_berubah:
+                    await conn.execute(
+                        """
+                        INSERT INTO vendor_activities
+                        (vendor_id, tenant_id, type, description, field_name, actor_id, actor_name)
+                        VALUES ($1, $2, 'updated', $3, $4, $5, $6)
+                        """,
+                        vendor_id,
+                        ctx["tenant_id"],
+                        "Alamat pengiriman diubah" if nama_anak == "shipping_address" else "Kontak diubah",
+                        nama_anak,
+                        user_id,
+                        user_name,
+                    )
 
                 if changes_logged:
                     logger.info(f"Vendor {vendor_id} changes logged: {changes_logged}")
