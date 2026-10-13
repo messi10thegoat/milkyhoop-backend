@@ -41,9 +41,8 @@ def _baris(l: dict) -> dict:
 
 
 def _dilewati(daftar: list) -> list:
-    """Entri dilewati -> JSON murni (qty faktur Decimal -> float). invoices = daftar {invoice_id, invoice_number, quantity}."""
-    return [{**d, **({"invoices": [{**v, "quantity": _f(v["quantity"])} for v in d["invoices"]]} if d.get("invoices") else {})}
-            for d in daftar]
+    """Entri dilewati -> JSON murni. SJ_SO_BARIS_SUDAH_DIFAKTUR membawa faktur[] {invoice_id, invoice_number} + invoice_id/number pertama."""
+    return [dict(d) for d in daftar]
 
 
 def _bentuk(r: dict) -> dict:
@@ -51,7 +50,7 @@ def _bentuk(r: dict) -> dict:
     return {
         "ok": not r["blocks"],
         "blocks": [{"code": b["code"], "message": b["message"], "sales_order_item_id": b.get("sales_order_item_id"),
-                    **({"invoices": [{**v, "quantity": _f(v["quantity"])} for v in b["invoices"]]} if b.get("invoices") else {})}
+                    **({k: b[k] for k in ("faktur", "invoice_id", "invoice_number") if k in b})}
                    for b in r["blocks"]],
         "lines": [_baris(l) for l in r["lines"]],
         "dilewati": _dilewati(r["dilewati"]),

@@ -120,12 +120,15 @@ async def main():
                 blok = [b for b in pv["blocks"] if b["code"] == "SJ_SO_BARIS_SUDAH_DIFAKTUR"]
                 cek("S1a pratinjau items: ok=False + blok SJ_SO_BARIS_SUDAH_DIFAKTUR bermedan baris", pv["ok"] is False and len(blok) == 1
                     and blok[0]["sales_order_item_id"] == str(c["soi_id"]), str(pv["blocks"])[:200])
-                cek("S1b blok membawa invoice_id + invoice_number", bool(blok) and blok[0].get("invoices") and
-                    blok[0]["invoices"][0]["invoice_id"] == str(c["inv_id"]) and blok[0]["invoices"][0]["invoice_number"] == c["invoice_number"])
+                cek("S1b blok membawa invoice_id + invoice_number", bool(blok) and blok[0].get("faktur") and
+                    blok[0]["faktur"][0]["invoice_id"] == str(c["inv_id"]) and blok[0]["faktur"][0]["invoice_number"] == c["invoice_number"]
+                    and blok[0]["invoice_number"] == c["invoice_number"])
                 pv0 = (await R.preview_sj_so(req(), str(c["so_id"]), S.SJSOIn()))["data"]
+                print("CONTOH_JSON_DILEWATI", json.dumps([d for d in pv0["dilewati"] if d["sales_order_item_id"] == str(c["soi_id"])], default=str))
+                print("CONTOH_JSON_BLOK", json.dumps(blok, default=str))
                 dl = [d for d in pv0["dilewati"] if d["sales_order_item_id"] == str(c["soi_id"])]
                 cek("S1c mode tanpa items: baris itu di dilewati (alasan+faktur), bukan di lines", len(dl) == 1 and dl[0]["alasan"] == "SJ_SO_BARIS_SUDAH_DIFAKTUR"
-                    and dl[0]["invoices"][0]["invoice_number"] == c["invoice_number"]
+                    and dl[0]["faktur"][0]["invoice_number"] == c["invoice_number"] and dl[0]["invoice_id"] == str(c["inv_id"])
                     and all(l["sales_order_item_id"] != str(c["soi_id"]) for l in pv0["lines"]), str(pv0["dilewati"])[:200])
                 s0 = await snap(conn)
                 try:
@@ -153,6 +156,8 @@ async def main():
                 body = S.SJSOIn(items=[S.BarisIn(sales_order_item_id=c["soi_id"], quantity=Q)], warehouse_id=gud)
                 pv = (await R.preview_sj_so(req(), str(c["so_id"]), body))["data"]
                 cek("S2a SJ-so SEBELUM faktur: diterima (ok)", pv["ok"], str(pv["blocks"])[:150])
+                print("CONTOH_JSON_WAREHOUSE", json.dumps(pv["warehouse"], default=str))
+                print("CONTOH_JSON_LINE", json.dumps(pv["lines"][0], default=str) if pv["lines"] else None)
                 r1 = await R.create_sj_so(req("sjdf-2"), Response(), str(c["so_id"]), body)
                 nilai = (Q * wac).quantize(D("0.01"))
                 sa, tu = await check23(conn)

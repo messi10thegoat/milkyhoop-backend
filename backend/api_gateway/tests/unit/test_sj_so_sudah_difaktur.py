@@ -55,7 +55,8 @@ def test_items_baris_sudah_difaktur_diblok_bermedan_dengan_faktur():
     assert kodes(r) == ["SJ_SO_BARIS_SUDAH_DIFAKTUR"]
     b = r["blocks"][0]
     assert b["sales_order_item_id"] == str(L1) and b["status"] == 409
-    assert b["invoices"] == [{"invoice_id": str(INV1), "invoice_number": "INV-2610-0001", "quantity": D("10")}]
+    assert b["faktur"] == [{"invoice_id": str(INV1), "invoice_number": "INV-2610-0001"}]
+    assert (b["invoice_id"], b["invoice_number"]) == (str(INV1), "INV-2610-0001")
     assert "INV-2610-0001" in b["message"]
     assert r["lines"] == []
 
@@ -65,7 +66,8 @@ def test_default_baris_sudah_difaktur_masuk_dilewati_bukan_lines():
     r = jalan(S.rencana(c, ctx(), SO, S.SJSOIn()))
     d = [x for x in r["dilewati"] if x["alasan"] == "SJ_SO_BARIS_SUDAH_DIFAKTUR"]
     assert len(d) == 1 and d[0]["sales_order_item_id"] == str(L1)
-    assert [(v["invoice_id"], v["invoice_number"]) for v in d[0]["invoices"]] == [(str(INV1), "INV-1"), (str(INV2), "INV-2")]
+    assert [(v["invoice_id"], v["invoice_number"]) for v in d[0]["faktur"]] == [(str(INV1), "INV-1"), (str(INV2), "INV-2")]
+    assert (d[0]["invoice_id"], d[0]["invoice_number"]) == (str(INV1), "INV-1")   # tingkat atas = faktur PERTAMA
     assert [l["sales_order_item_id"] for l in r["lines"]] == [str(L2)]   # baris belum difaktur tetap dikirim satu SJ
     assert r["blocks"] == []
 
@@ -124,7 +126,7 @@ def test_dilewati_memuat_tidak_perlu_dan_sudah_terkirim_dengan_alasan_dan_pesan(
 def test_warehouse_source(diminta, so_gudang, sumber):
     c = K(rows=[baris(L2, P2, 5, stok=True, desc="Kaos")], flag_stok=True, so_gudang=so_gudang)
     r = jalan(S.rencana(c, ctx(), SO, S.SJSOIn(warehouse_id=diminta)))
-    assert r["blocks"] == [] and r["warehouse"] == {"id": str(GUD), "name": "Gudang Utama", "source": sumber}
+    assert r["blocks"] == [] and r["warehouse"]["source"] == sumber and r["warehouse"]["id"] == str(GUD) and r["warehouse"]["source_label"]
 
 
 def test_warehouse_null_tanpa_baris_stok():
@@ -133,17 +135,22 @@ def test_warehouse_null_tanpa_baris_stok():
 
 
 # ---- bentuk JSON router (Decimal -> float)
-def test_router_dilewati_dan_blocks_json_murni():
-    out = R._dilewati([{"sales_order_item_id": "x", "alasan": "A", "invoices": [{"invoice_id": "i", "invoice_number": "N", "quantity": D("4")}]}])
-    assert out[0]["invoices"][0]["quantity"] == 4.0 and isinstance(out[0]["invoices"][0]["quantity"], float)
+def test_router_bentuk_kontrak_final_faktur_dan_source_label():
     c = K(rows=[baris(L1, P1, 10)], faktur=[f(L1, INV1, "INV-1", 10)])
     b = R._bentuk(jalan(S.rencana(c, ctx(), SO, body((L1, 1)))))
-    assert b["ok"] is False and b["blocks"][0]["invoices"][0]["quantity"] == 10.0
+    assert b["ok"] is False
+    blok = b["blocks"][0]
+    assert blok["faktur"] == [{"invoice_id": str(INV1), "invoice_number": "INV-1"}] and blok["invoice_number"] == "INV-1"
+    import json
+    json.dumps(b)   # JSON murni (tanpa Decimal)
+    c2 = K(rows=[baris(L2, P2, 5, stok=True, desc="Kaos")], flag_stok=True)
+    w = R._bentuk(jalan(S.rencana(c2, ctx(), SO, S.SJSOIn())))["warehouse"]
+    assert w == {"id": str(GUD), "name": "Gudang Utama", "source": "default", "source_label": "Gudang bawaan"}
 
 
 # ---- penjaga statis SQL (Law 24: tenant eksplisit; draf/void tak dihitung)
 def test_sql_faktur_terbit_tenant_eksplisit_dan_saring_draf_void():
     q = " ".join(S.SQL_FAKTUR_TERBIT_PER_BARIS.split())
-    assert "si.tenant_id = $1" in q and "si.status NOT IN ('draft', 'void')" in q and "si.sales_order_id = $2" in q
+    assert "si.tenant_id = $1" in q and "ORDER BY si.invoice_date" in q and "si.status NOT IN ('draft', 'void')" in q and "si.sales_order_id = $2" in q
     q2 = " ".join(S.SQL_SJ_SO_PER_BARIS.split())
     assert "f.tenant_id = $1" in q2 and "a.tenant_id = f.tenant_id" in q2 and "a.voided_at IS NULL" in q2 and "f.voided_at IS NULL" in q2
