@@ -18,7 +18,7 @@ from ..services import idem_buat
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 
 router = APIRouter()
-_ANGKA = ("ordered", "delivered_before", "quantity", "remaining_after", "unit_cost", "value", "available")
+_ANGKA = ("ordered", "delivered_before", "quantity", "remaining_after", "unit_cost", "value", "available", "invoiced_quantity")
 
 
 async def _pool():
@@ -40,14 +40,21 @@ def _baris(l: dict) -> dict:
     return {k: (_f(v) if k in _ANGKA else v) for k, v in l.items()}
 
 
+def _dilewati(daftar: list) -> list:
+    """Entri dilewati -> JSON murni (qty faktur Decimal -> float). invoices = daftar {invoice_id, invoice_number, quantity}."""
+    return [{**d, **({"invoices": [{**v, "quantity": _f(v["quantity"])} for v in d["invoices"]]} if d.get("invoices") else {})}
+            for d in daftar]
+
+
 def _bentuk(r: dict) -> dict:
     so = r["so"]
     return {
         "ok": not r["blocks"],
-        "blocks": [{"code": b["code"], "message": b["message"], "sales_order_item_id": b.get("sales_order_item_id")}
+        "blocks": [{"code": b["code"], "message": b["message"], "sales_order_item_id": b.get("sales_order_item_id"),
+                    **({"invoices": [{**v, "quantity": _f(v["quantity"])} for v in b["invoices"]]} if b.get("invoices") else {})}
                    for b in r["blocks"]],
         "lines": [_baris(l) for l in r["lines"]],
-        "dilewati": r["dilewati"],
+        "dilewati": _dilewati(r["dilewati"]),
         "sales_order": {"id": str(so["id"]), "number": so["order_number"], "status": so["status"]},
         "fulfillment_date": r["fulfillment_date"].isoformat(),
         "warehouse": r.get("warehouse"),
@@ -103,7 +110,7 @@ async def create_sj_so(request: Request, response: Response, order_id: str, body
                              "fulfillment_date": r["fulfillment_date"].isoformat(),
                              "warehouse": r.get("warehouse"), "total_value": _f(r.get("total_value", Decimal("0"))),
                              "journal_id": str(h["journal_id"]) if h.get("journal_id") else None,
-                             "lines": [_baris(l) for l in r["lines"]], "dilewati": r["dilewati"]}}
+                             "lines": [_baris(l) for l in r["lines"]], "dilewati": _dilewati(r["dilewati"])}}
             return await idem_buat.simpan(conn, ctx, kp, sidik, "SJ_SO", resp, h["fulfillment_id"])
 
 

@@ -170,7 +170,7 @@ def test_default_semua_sisa_nonstok_dan_stok_dilewati():
     assert len(r["lines"]) == 1
     l = r["lines"][0]
     assert l["sales_order_item_id"] == str(L1) and l["quantity"] == Decimal("7") and l["remaining_after"] == Decimal("0")
-    assert [d["alasan"] for d in r["dilewati"]] == ["SJ_SO_STOK_BELUM_DIDUKUNG"]
+    assert [d["alasan"] for d in r["dilewati"]] == ["SJ_SO_STOK_BELUM_DIDUKUNG", "SJ_SO_BARIS_TIDAK_PERLU_KIRIM"]   # 13 Okt: tak diam
     assert r["fulfillment_date"] == HARI
 
 

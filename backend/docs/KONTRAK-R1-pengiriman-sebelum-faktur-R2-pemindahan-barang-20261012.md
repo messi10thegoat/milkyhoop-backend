@@ -523,3 +523,20 @@ jejak jurnal/kartu/alokasi/audit/idempotensi dibuktikan).
 Bukti: tes unit `test_pratinjau_faktur_posting.py` (8; sabotase commit-bukan-rollback & tanpa cek draf = merah); uji nyata
 `scripts/ops/uji-nyata-sj-stok.sh` (data kaos: 6 baris pratinjau == 6 baris jurnal terbit, nol jejak). FE: kirim `invoice_id`
 faktur draf tersimpan ke `/preview-journal`.
+
+## BAGIAN 17 — Baris SO sudah difaktur tidak boleh dikirim lewat SJ tanpa faktur (13 Okt 2026, W-20261013-SJSO-SUDAHFAKTUR)
+
+**Cacat (terukur di scratch kaos):** faktur POSTED (fulfillment_status pending, nol kartu keluar) lalu SJ-so untuk baris yang sama
+diterima; alokasi hanya terjadi SAAT faktur diposting, jadi SJ susulan tak pernah tertaut dan POST /sales-invoices/{id}/fulfill mengirim
+LAGI (stok keluar 68 untuk faktur 63; HPP ganda; SJ menggantung di Barang Terkirim).
+
+**Aturan baru (Law 1/16, 13, 24, 25):** sisa_SJ = qty baris SO − Σ qty faktur terbit (status NOT IN draft,void) − (Σ SJ-so aktif − Σ teralokasi),
+dipotong ke terkirim lama (min), tak pernah negatif.
+- mode items: qty > sisa_SJ karena faktur → blocks[] 409 SJ_SO_BARIS_SUDAH_DIFAKTUR bermedan sales_order_item_id + invoices[{invoice_id, invoice_number, quantity}];
+  selain itu SJ_SO_QTY_MELEBIHI_SISA (lama).
+- mode tanpa items: baris itu masuk dilewati[] {sales_order_item_id, name, alasan, message, invoices[]}; lines hanya sisa yang BOLEH.
+- dilewati[] kini memuat SEMUA alasan (tak diam): SJ_SO_BARIS_TIDAK_PERLU_KIRIM, SJ_SO_BARIS_SUDAH_TERKIRIM, SJ_SO_BARIS_SUDAH_DIFAKTUR, SJ_SO_STOK_BELUM_DIDUKUNG.
+- lines[] +invoiced_quantity; warehouse = {id, name, source: diminta|so|default}.
+- Alur aman tak berubah: SJ-so DULU → faktur (alokasi tertua-dulu) → /fulfill sisa. Baris yang sudah difaktur dikirim lewat /sales-invoices/{id}/fulfill.
+Bukti: tests/unit/test_sj_so_sudah_difaktur.py (14, kontrol merah 11 gagal vs master); scripts/ops/uji-nyata-sjso-difaktur.sh (20/20; master 7 gagal
+termasuk stok 68 vs 63; nol jejak). Tanpa migrasi, tanpa flag baru.

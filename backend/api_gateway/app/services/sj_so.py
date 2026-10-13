@@ -60,8 +60,28 @@ class SJSOIn(BaseModel):
     serah: Optional[serah_mod.SerahIn] = None
 
 
-def _blok(kode: str, pesan: str, status: int = 409, baris=None) -> dict:
-    return {"code": kode, "message": pesan, "status": status, "sales_order_item_id": str(baris) if baris else None}
+def _blok(kode: str, pesan: str, status: int = 409, baris=None, **tambahan) -> dict:
+    return {"code": kode, "message": pesan, "status": status, "sales_order_item_id": str(baris) if baris else None, **tambahan}
+
+
+# 13 Okt 2026 (W-20261013-SJSO-SUDAHFAKTUR, Law 1/16 + 13 + 24 + 25): baris SO yang SUDAH difaktur (terbit: bukan draf/void) tetapi
+# belum dikirim TIDAK boleh dikirim lewat SJ tanpa faktur -- alokasi hanya terjadi SAAT faktur diposting, jadi SJ susulan tak pernah
+# tertaut dan /fulfill faktur itu mengirim LAGI (stok + HPP keluar ganda). Sisa yang boleh = qty - difaktur - (SJ-so aktif - teralokasi).
+SQL_FAKTUR_TERBIT_PER_BARIS = """
+    SELECT sii.sales_order_item_id AS soi_id, si.id AS invoice_id, si.invoice_number, SUM(sii.quantity) AS q
+    FROM sales_invoices si JOIN sales_invoice_items sii ON sii.invoice_id = si.id
+    WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND si.status NOT IN ('draft', 'void') AND sii.sales_order_item_id IS NOT NULL
+    GROUP BY 1, 2, 3 ORDER BY si.invoice_number
+"""
+SQL_SJ_SO_PER_BARIS = """
+    SELECT ifi.sales_order_item_id AS soi_id, SUM(ifi.quantity) AS s,
+           COALESCE(SUM((SELECT SUM(a.quantity) FROM sj_faktur_alokasi a
+                         WHERE a.fulfillment_item_id = ifi.id AND a.tenant_id = f.tenant_id AND a.voided_at IS NULL)), 0) AS alok
+    FROM invoice_fulfillments f JOIN invoice_fulfillment_items ifi ON ifi.fulfillment_id = f.id
+    WHERE f.tenant_id = $1 AND f.asal = 'so' AND f.sales_order_id = $2 AND f.voided_at IS NULL AND f.status <> 'voided'
+      AND ifi.sales_order_item_id IS NOT NULL
+    GROUP BY 1
+"""
 
 
 def angkat_blok_pertama(r: dict) -> None:
@@ -114,12 +134,14 @@ async def _periode_terbuka(conn, tenant_id: str, tanggal) -> Optional[str]:
 
 
 async def _gudang_default(conn, tid: str, diminta, so_gudang):
-    for kandidat in (diminta, so_gudang):
+    """-> (gudang|None, sumber) ; sumber 'diminta' | 'so' | 'default' (pola /fulfill; FE tak menebak)."""
+    for kandidat, sumber in ((diminta, "diminta"), (so_gudang, "so")):
         if kandidat is not None:
             g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", kandidat, tid)
-            return g
+            return g, sumber
     return await conn.fetchrow(
-        "SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1", tid)
+        "SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1",
+        tid), "default"
 
 
 async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> dict:
@@ -146,20 +168,56 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
            WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order NULLS LAST, soi.id""", so_id, tid)
     peta = {b["id"]: b for b in baris}
     terkirim, _ = await so_kirim.terkirim_per_baris(conn, tid, [so_id])
+    # Faktur terbit per baris (qty + daftar faktur) dan SJ-so aktif/teralokasi per baris -> sisa yang boleh dikirim TANPA faktur.
+    faktur: dict = {}
+    for r_ in await conn.fetch(SQL_FAKTUR_TERBIT_PER_BARIS, tid, so_id):
+        f_ = faktur.setdefault(r_["soi_id"], {"q": _NOL, "daftar": []})
+        qf = Decimal(str(r_["q"]))
+        f_["q"] += qf
+        f_["daftar"].append({"invoice_id": str(r_["invoice_id"]), "invoice_number": r_["invoice_number"], "quantity": qf})
+    sj: dict = {r_["soi_id"]: (Decimal(str(r_["s"])), Decimal(str(r_["alok"]))) for r_ in await conn.fetch(SQL_SJ_SO_PER_BARIS, tid, so_id)}
     dilewati: list = []
     diminta: dict = {}
 
     def perlu(b):
         return b["perlu_kirim"] if b["perlu_kirim"] is not None else b["stok"]
 
+    def sisa_kirim(b):
+        """-> (sisa lama = qty - terkirim, sisa boleh = min(lama, qty - difaktur - SJ-so belum teralokasi), difaktur)."""
+        q = Decimal(str(b["quantity"]))
+        lama = q - terkirim.get(b["id"], _NOL)
+        i = faktur.get(b["id"], {}).get("q", _NOL)
+        s_, alok = sj.get(b["id"], (_NOL, _NOL))
+        baru = q - i - max(_NOL, s_ - alok)
+        return lama, max(_NOL, min(lama, baru)), i
+
+    def blok_difaktur(b, nama, sisa, diminta_qty=None):
+        daftar = faktur.get(b["id"], {}).get("daftar", [])
+        nomor = ", ".join(d["invoice_number"] for d in daftar)
+        pesan = (f"{nama} sudah difaktur ({nomor}); kirim lewat Surat Jalan faktur itu. "
+                 f"Sisa yang bisa dikirim tanpa faktur {sisa:f}" + (f", diminta {diminta_qty:f}." if diminta_qty is not None else "."))
+        return pesan, [{"invoice_id": d["invoice_id"], "invoice_number": d["invoice_number"], "quantity": d["quantity"]} for d in daftar]
+
     if body.items is None:
         for b in baris:
-            sisa = Decimal(str(b["quantity"])) - terkirim.get(b["id"], _NOL)
-            if not perlu(b) or sisa <= _NOL:
+            nama = b["nama_produk"] or b["description"]
+            lama, sisa, i = sisa_kirim(b)
+
+            def lewat(alasan, pesan, **tambahan):
+                dilewati.append({"sales_order_item_id": str(b["id"]), "name": nama, "alasan": alasan, "message": pesan, **tambahan})
+
+            if not perlu(b):
+                lewat("SJ_SO_BARIS_TIDAK_PERLU_KIRIM", f"{nama} tidak perlu dikirim.")
+                continue
+            if lama <= _NOL:
+                lewat("SJ_SO_BARIS_SUDAH_TERKIRIM", f"{nama} sudah terkirim seluruhnya.")
+                continue
+            if sisa <= _NOL:
+                pesan, inv = blok_difaktur(b, nama, sisa)
+                lewat("SJ_SO_BARIS_SUDAH_DIFAKTUR", pesan, invoices=inv)
                 continue
             if b["stok"] and not flag_stok:
-                dilewati.append({"sales_order_item_id": str(b["id"]), "name": b["nama_produk"] or b["description"],
-                                 "alasan": "SJ_SO_STOK_BELUM_DIDUKUNG"})
+                lewat("SJ_SO_STOK_BELUM_DIDUKUNG", f"{nama} ber-stok: Surat Jalan tanpa faktur untuk barang ber-stok belum didukung.")
                 continue
             diminta[b["id"]] = sisa
     else:
@@ -179,17 +237,21 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             if not perlu(b):
                 blocks.append(_blok("SJ_SO_BARIS_TIDAK_PERLU_KIRIM", f"{nama} tidak perlu dikirim.", 409, b["id"]))
                 continue
-            sisa = Decimal(str(b["quantity"])) - terkirim.get(b["id"], _NOL)
+            lama, sisa, i = sisa_kirim(b)
             if it.quantity > sisa:
-                blocks.append(_blok("SJ_SO_QTY_MELEBIHI_SISA", f"Sisa kirim {nama} hanya {sisa:f}, diminta {it.quantity:f}.", 409, b["id"]))
+                if i > _NOL and it.quantity <= lama:   # akan lolos bila faktur tak dihitung -> penyebabnya faktur
+                    pesan, inv = blok_difaktur(b, nama, sisa, it.quantity)
+                    blocks.append(_blok("SJ_SO_BARIS_SUDAH_DIFAKTUR", pesan, 409, b["id"], invoices=inv))
+                else:
+                    blocks.append(_blok("SJ_SO_QTY_MELEBIHI_SISA", f"Sisa kirim {nama} hanya {sisa:f}, diminta {it.quantity:f}.", 409, b["id"]))
                 continue
             diminta[b["id"]] = it.quantity
 
     tgl = body.fulfillment_date or await tanggal_dokumen(conn, tid)
     ada_stok = any(peta[i]["stok"] for i in diminta)
-    gudang = None
+    gudang, sumber_gudang = None, None
     if ada_stok:
-        gudang = await _gudang_default(conn, tid, body.warehouse_id, so["warehouse_id"])
+        gudang, sumber_gudang = await _gudang_default(conn, tid, body.warehouse_id, so["warehouse_id"])
         if gudang is None:
             blocks.append(_blok("SJ_SO_GUDANG_WAJIB", "Pilih gudang asal barang.", 422))
         elif not gudang["is_active"]:
@@ -206,7 +268,8 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
         ln = {"sales_order_item_id": str(bid), "item_id": str(b["item_id"]) if b["item_id"] else None, "name": nama,
               "unit": b["unit"], "ordered": Decimal(str(b["quantity"])), "delivered_before": ada, "quantity": qty,
               "remaining_after": Decimal(str(b["quantity"])) - ada - qty, "stok": bool(b["stok"]),
-              "unit_cost": _NOL, "value": _NOL, "available": None, "item_code": b["item_code"]}
+              "unit_cost": _NOL, "value": _NOL, "available": None, "item_code": b["item_code"],
+              "invoiced_quantity": faktur.get(bid, {}).get("q", _NOL)}
         if b["stok"]:
             if b["batch"] or b["serial"]:
                 blocks.append(_blok("SJ_SO_BATCH_SERIAL_BELUM_DIDUKUNG",
@@ -242,7 +305,8 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
         except HTTPException as e:
             blocks.append(_blok("SERAH_TIDAK_SAH", serah_mod.pesan_galat(e), 422))
     return {"so": so, "blocks": blocks, "lines": lines, "dilewati": dilewati, "fulfillment_date": tgl,
-            "warehouse": ({"id": str(gudang["id"]), "name": gudang["name"]} if gudang else None), "total_value": total_nilai,
+            "warehouse": ({"id": str(gudang["id"]), "name": gudang["name"], "source": sumber_gudang} if gudang else None),
+            "total_value": total_nilai,
             "serah": serah, "serah_aktif": flag, "notes": body.notes,
             "payload": {"items": [{"sales_order_item_id": l["sales_order_item_id"], "quantity": str(l["quantity"])} for l in lines],
                         "fulfillment_date": tgl.isoformat(), "notes": body.notes,
