@@ -7,12 +7,22 @@
 # nol 502 pengguna saat startup 10-25 dtk). Bukti mode reload = PID worker berganti + "Received SIGHUP" + healthz -m 5
 # + penanda (StartedAt TIDAK bergeser pada HUP, jadi TIDAK dipakai sebagai bukti). Default tetap MODE=restart.
 # Hanya untuk perubahan KODE; .env/image -> restart/recreate.
+# PENANDA (14 Okt 2026, W-20261014-WINDOW-PENANDA): <marker-file> boleh relatif ke app/ (routers/x.py) ATAU berawalan
+# backend/api_gateway/app/, app/, /app/backend/api_gateway/app/ -> dinormalisasi. Berkas + teks penanda WAJIB ada di
+# worktree SEBELUM fetch/rebase/gerbang/ff/restart (dulu salah path = LIVE-RED palsu SESUDAH restart, 3x pada 13 Okt).
+# CEK_SAJA=1: hanya pemeriksaan awal + cetak "PENANDA-OK <path>", lalu keluar 0 (tanpa git/gerbang/restart).
+# MH_MAIN: pohon utama (bawaan /root/milkyhoop-dev; diganti HANYA oleh uji-window-item-penanda.sh di kotak pasir).
 set -uo pipefail
-N=$1; W=$2; B=$3; MF=$4; MT=$5; MAIN=/root/milkyhoop-dev; G=milkyhoop-dev-api_gateway
+N=$1; W=$2; B=$3; MF=$4; MT=$5; MAIN=${MH_MAIN:-/root/milkyhoop-dev}; G=milkyhoop-dev-api_gateway
 log(){ echo "[item $N] $*"; }
 cd "$W" || { log "REFUSE: no worktree"; exit 3; }
 [ "$(git rev-parse --abbrev-ref HEAD)" = "$B" ] || { log "REFUSE: not on $B"; exit 3; }
 [ -z "$(git status --porcelain)" ] || { log "REFUSE: worktree dirty"; exit 3; }
+MF=${MF#/}; MF=${MF#app/backend/api_gateway/}; MF=${MF#backend/api_gateway/}; MF=${MF#app/}
+[ -n "$MF" ] && [ -n "$MT" ] || { log "REFUSE: penanda kosong (berkas= teks=)"; exit 3; }
+[ -f "$W/backend/api_gateway/app/$MF" ] || { log "REFUSE: berkas penanda tak ada di worktree: backend/api_gateway/app/$MF"; exit 3; }
+grep -qF -- "$MT" "$W/backend/api_gateway/app/$MF" || { log "REFUSE: teks penanda tak ada di backend/api_gateway/app/$MF"; exit 3; }
+if [ "${CEK_SAJA:-0}" = "1" ]; then echo "PENANDA-OK $MF"; exit 0; fi
 git -C $MAIN fetch -q deploy || { log "REFUSE: fetch"; exit 3; }
 LIVE=$(git -C $MAIN rev-parse HEAD)
 [ "$LIVE" = "$(git -C $MAIN rev-parse deploy/master)" ] || { log "REFUSE: main tree HEAD != deploy/master"; exit 3; }
