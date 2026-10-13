@@ -14,11 +14,15 @@ KOP = {"name": "TES", "address": None, "phone": None, "email": None, "logo_data"
 
 
 def _font_pdf(pdf: bytes) -> set:
-    """BaseFont dari PDF; WeasyPrint memadatkan objek ke object stream (Flate), jadi stream dibuka dulu."""
+    """BaseFont dari PDF; WeasyPrint memadatkan objek ke object stream (Flate), jadi stream dibuka dulu.
+
+    13 Okt 2026: pola lama memakan byte data terakhir bila data Flate kebetulan berakhir 0x0D -> zlib.error -> "tak ada
+    font" (bergantung TANGGAL cetak: 13 Okt proforma 150/150 merah). EOL sebelum endstream kini ikut ditangkap dan
+    dibuang decompressobj sebagai sisa sesudah akhir aliran zlib."""
     teks = [pdf]
-    for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):
+    for m in re.finditer(rb"stream\r?\n(.*?)endstream", pdf, re.S):
         try:
-            teks.append(zlib.decompress(m.group(1)))
+            teks.append(zlib.decompressobj().decompress(m.group(1)))
         except zlib.error:
             pass
     return {f.decode() for t in teks for f in re.findall(rb"/BaseFont\s*/[A-Z]{6}\+([A-Za-z\-]+)", t)}
@@ -45,6 +49,18 @@ def test_dokumen_so_tercetak_inter_bukan_dejavu(jenis):
     assert font, "tak ada font terbaca dari PDF (alat ukur buta)"
     assert any(f.startswith("Inter") for f in font), font
     assert not any(f.startswith("DejaVu-Sans") and "Mono" not in f for f in font), font
+
+
+def test_pembaca_tahan_data_flate_berakhir_cr():
+    """Kontrol alat: aliran Flate yang byte terakhirnya 0x0D tetap terbaca (kelas merah 13 Okt)."""
+    for i in range(5000):
+        z = zlib.compress(b"<< /BaseFont /ABCDEF+Inter-Regular >> %d" % i)
+        if z.endswith(b"\r"):
+            break
+    else:
+        pytest.fail("tak menemukan aliran berakhir CR (alat uji buta)")
+    pdf = b"1 0 obj << /Filter /FlateDecode >> stream\n" + z + b"\nendstream endobj"
+    assert _font_pdf(pdf) == {"Inter-Regular"}
 
 
 def test_kontrol_alat_membaca_dejavu():
