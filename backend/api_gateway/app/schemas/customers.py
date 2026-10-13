@@ -47,8 +47,8 @@ class CreateCustomerRequest(BaseModel):
     tax_id: Optional[str] = Field(None, max_length=50, description="NPWP")
     nik: Optional[str] = Field(None, max_length=20, description="NIK for ORANG_PRIBADI")
     is_pkp: bool = Field(False, description="Pengusaha Kena Pajak status")
-    customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI", "LUAR_NEGERI"]] = Field(
-        "BADAN", description="Business type for tax purposes"
+    customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI"]] = Field(
+        "BADAN", description="Business type for tax purposes (LUAR_NEGERI dicabut 13 Okt 2026: 0 baris, UI dihapus)"
     )
     
     # Financial
@@ -114,7 +114,7 @@ class UpdateCustomerRequest(BaseModel):
     tax_id: Optional[str] = None
     nik: Optional[str] = None
     is_pkp: Optional[bool] = None
-    customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI", "LUAR_NEGERI"]] = None
+    customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI"]] = None
     
     # Financial
     currency: Optional[str] = None
