@@ -68,10 +68,12 @@ def _blok(kode: str, pesan: str, status: int = 409, baris=None, **tambahan) -> d
 # 13 Okt 2026 (W-20261013-SJSO-SUDAHFAKTUR, Law 1/16 + 13 + 24 + 25): baris SO yang SUDAH difaktur (terbit: bukan draf/void) tetapi
 # belum dikirim TIDAK boleh dikirim lewat SJ tanpa faktur -- alokasi hanya terjadi SAAT faktur diposting, jadi SJ susulan tak pernah
 # tertaut dan /fulfill faktur itu mengirim LAGI (stok + HPP keluar ganda). Sisa yang boleh = qty - difaktur - (SJ-so aktif - teralokasi).
-SQL_FAKTUR_TERBIT_PER_BARIS = """
+# Faktur TERBIT (bukan draf/void) -- SATU predikat untuk qty difaktur per baris SO (di sini + services/so_aksi, 14 Okt 2026).
+PRED_FAKTUR_TERBIT = "si.status NOT IN ('draft', 'void')"
+SQL_FAKTUR_TERBIT_PER_BARIS = f"""
     SELECT sii.sales_order_item_id AS soi_id, si.id AS invoice_id, si.invoice_number, si.invoice_date, SUM(sii.quantity) AS q
     FROM sales_invoices si JOIN sales_invoice_items sii ON sii.invoice_id = si.id
-    WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND si.status NOT IN ('draft', 'void') AND sii.sales_order_item_id IS NOT NULL
+    WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND {PRED_FAKTUR_TERBIT} AND sii.sales_order_item_id IS NOT NULL
     GROUP BY 1, 2, 3, 4 ORDER BY si.invoice_date, si.invoice_number
 """
 SQL_SJ_SO_PER_BARIS = """

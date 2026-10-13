@@ -114,6 +114,9 @@ async def test_ringkasan_memakai_baris_bukan_status(monkeypatch):
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", kirim)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_menunggu_kirim", menunggu)
     monkeypatch.setattr(SO.so_kirim, "jumlah_surat_jalan", sj)
+    async def _pill(conn, t, hari, so_ids=None):  # 14 Okt 2026 AKSI-SO: pill aksi (services/so_aksi) -- bukan objek tes ini
+        return {}
+    monkeypatch.setattr(SO.so_aksi, "fakta", _pill)
     d = (await SO.get_sales_order_summary(None)).data
     d = d if isinstance(d, dict) else d.model_dump()
     assert d["pending_shipment_value"] == 0 and d["pending_shipment_count"] == 0

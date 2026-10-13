@@ -249,6 +249,9 @@ async def test_ringkasan_so_mengirim_unshipped(monkeypatch):
         assert t == TENANT
         return 0
     monkeypatch.setattr(SO.so_kirim, "jumlah_surat_jalan", sj)
+    async def _pill(conn, t, hari, so_ids=None):  # 14 Okt 2026 AKSI-SO: pill aksi (services/so_aksi) -- bukan objek tes ini
+        return {}
+    monkeypatch.setattr(SO.so_aksi, "fakta", _pill)
     d = (await SO.get_sales_order_summary(None)).data
     d = d if isinstance(d, dict) else d.model_dump()
     assert d["unshipped_value"] == 900.0 and d["unshipped_count"] == 1 and d["fulfillment_count"] == 0

@@ -325,6 +325,8 @@ class SalesOrderListItem(BaseModel):
     ship_text: Optional[str] = None
     ship_style: Optional[Literal["normal", "muted", "strong"]] = None
     doc_count: int = 0
+    # 14 Okt 2026 (AKSI-SO): aksi PALING MENDESAK (services/so_aksi.AKSI) atau null (arsip / tanpa aksi)
+    aksi: Optional[str] = None
     created_at: str
 
 
@@ -472,6 +474,15 @@ class SalesOrderSummary(BaseModel):
     unshipped_count: int = 0
     fulfillment_count: int = 0  # Surat Jalan aktif tenant; 0 = pengiriman tak dicatat -> unshipped_value tak bermakna
     tersedia_count: int = 0  # 7 Okt 2026: SO fase "Tersedia" yang berjalan (= ?tugas=tersedia, so_agregat.PREDIKAT_TERSEDIA)
+    # 14 Okt 2026 (AKSI-SO): pill aksi = ?aksi=<kunci> (services/so_aksi, satu sumber); _value = Σ total_amount SO
+    telat_kirim_count: int = 0
+    telat_kirim_value: float = 0
+    perlu_dikonfirmasi_count: int = 0
+    perlu_dikonfirmasi_value: float = 0
+    perlu_dikirim_count: int = 0
+    perlu_dikirim_value: float = 0
+    perlu_ditagih_count: int = 0
+    perlu_ditagih_value: float = 0
 
 
 class SalesOrderSummaryResponse(BaseModel):

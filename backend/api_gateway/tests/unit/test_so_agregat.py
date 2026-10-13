@@ -245,6 +245,9 @@ def klien(monkeypatch, tagihan):
 
     async def pool():
         return Pool()
+    async def _pill(conn, t, hari, so_ids=None):  # 14 Okt 2026 AKSI-SO: pill aksi (services/so_aksi) -- bukan objek tes ini
+        return {}
+    monkeypatch.setattr(SOR.so_aksi, "fakta", _pill)
     monkeypatch.setattr(SOR, "get_pool", pool)
     app = FastAPI()
 

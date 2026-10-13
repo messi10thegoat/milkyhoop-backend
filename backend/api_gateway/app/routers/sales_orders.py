@@ -31,6 +31,7 @@ from ..services.tax_factor import (
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
+from ..services import so_aksi  # 14 Okt 2026 AKSI-SO: pill aksi daftar (satu sumber)
 from ..services.so_riwayat import catat_riwayat, riwayat_so
 from ..services.default_dokumen import default_pesanan, hitung_dp
 from ..services.termin_bayar import tentukan_jatuh_tempo, termin_hari
@@ -137,6 +138,8 @@ async def list_sales_orders(
     # 7 Okt 2026: urut menurut "Sisa" (outstanding_amount) -- dihitung server atas SEMUA yang cocok filter, bukan hanya halaman
     sort_by: Optional[Literal["outstanding"]] = Query(None),
     sort_dir: Literal["asc", "desc"] = Query("desc"),
+    # 14 Okt 2026 (AKSI-SO): pill aksi, aditif; kunci asing -> 422. Satu sumber dengan summary <kunci>_count
+    aksi: Optional[Literal["telat_kirim", "perlu_dikonfirmasi", "perlu_dikirim", "perlu_ditagih"]] = Query(None),
 ):
     """List sales orders with filters."""
     try:
@@ -147,6 +150,7 @@ async def list_sales_orders(
             conditions = ["tenant_id = $1"]
             params = [ctx["tenant_id"]]
             param_idx = 2
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # sekali; tanggal bisnis tenant
 
             if status != "all":
                 conditions.append(f"status = ${param_idx}")
@@ -156,7 +160,12 @@ async def list_sales_orders(
             if tugas:
                 from ..services.dashboard_v2 import id_tugas
                 conditions.append(f"id = ANY(${param_idx}::uuid[])")
-                params.append(await id_tugas(conn, ctx["tenant_id"], tugas, await tanggal_dokumen(conn, ctx["tenant_id"])))
+                params.append(await id_tugas(conn, ctx["tenant_id"], tugas, hari_ini))
+                param_idx += 1
+
+            if aksi in so_aksi.AKSI:
+                conditions.append(f"id = ANY(${param_idx}::uuid[])")
+                params.append(so_aksi.id_aksi(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini), aksi))
                 param_idx += 1
 
             if customer_id:
@@ -223,7 +232,8 @@ async def list_sales_orders(
             # Q-016 (a): penanda faktur DRAF per SO (status tetap) — satu kueri, sumber = quantity_invoiced
             penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
             # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
-            posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, await tanggal_dokumen(conn, ctx["tenant_id"]))
+            posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, hari_ini)
+            _aksi_baris = await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, [row["id"] for row in rows])
             from ..services.kode_order import muat_setelan as _setelan_kode
             _st_kode = await _setelan_kode(conn, ctx["tenant_id"])
             _label_kode, _label_judul = _st_kode["label"], _st_kode["title_label"]
@@ -252,6 +262,7 @@ async def list_sales_orders(
                     invoiced_qty=float(row["invoiced_qty"] or 0),
                     **penanda[str(row["id"])],
                     **posisi[str(row["id"])],
+                    aksi=so_aksi.aksi_utama(_aksi_baris.get(row["id"], {}).get("aksi", [])),
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
@@ -369,6 +380,7 @@ async def get_sales_order_summary(request: Request):
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
             kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
             menunggu = await so_kirim.ringkasan_menunggu_kirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
+            pill = so_aksi.ringkasan(await so_aksi.fakta(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"])))
 
             return SalesOrderSummaryResponse(
                 success=True,
@@ -392,6 +404,7 @@ async def get_sales_order_summary(request: Request):
                     "unshipped_count": kirim["count"],
                     "fulfillment_count": await so_kirim.jumlah_surat_jalan(conn, ctx["tenant_id"]),
                     "tersedia_count": await so_agregat.jumlah_tersedia(conn, ctx["tenant_id"]),
+                    **pill,
                 },
             )
 
