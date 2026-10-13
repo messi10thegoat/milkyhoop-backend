@@ -22,6 +22,7 @@ from ..services.so_riwayat import catat_riwayat, riwayat_faktur
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import faktur_aksi as _fa
 from fastapi import Response as _Response
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
@@ -377,6 +378,15 @@ async def get_invoice_summary(request: Request):
             # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             row = await conn.fetchrow(query, ctx["tenant_id"], hari_ini)
+            # 14 Okt 2026: pill AKSI (services/faktur_aksi.sql_aksi, SAMA dengan ?aksi= daftar; sisa = compute_ar_outstanding)
+            aksi_row = await conn.fetchrow(
+                "WITH ar_fn AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding($1)) SELECT "
+                + ", ".join(
+                    f"COUNT(*) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}) AS {k}_count, "
+                    f"COALESCE(SUM({_fa.sql_nilai(k)}) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}), 0) AS {k}_value"
+                    for k in _fa.AKSI)
+                + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1",
+                ctx["tenant_id"], hari_ini, _fa.AMBANG_SEGERA_TEMPO)
 
             return {
                 "success": True,
@@ -391,6 +401,8 @@ async def get_invoice_summary(request: Request):
                     "unpaid_count": row["unpaid_count"],  # belum lunas = pilih_belum_lunas (5 Okt 2026)
                     "total_outstanding": float(row["total_outstanding"]),
                     "total_overdue": float(row["total_overdue"]),
+                    **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
+                       for k in _fa.AKSI for m in ("count", "value")},
                 },
             }
 
@@ -1057,6 +1069,8 @@ async def list_invoices(
     amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
     # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
     tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini", "belum_lunas"]] = Query(None),
+    # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/faktur_aksi), nilai asing = 422
+    aksi: Optional[Literal["perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo"]] = Query(None),
 ):
     """List invoices with search, filtering, and pagination."""
     try:
@@ -1127,6 +1141,12 @@ async def list_invoices(
                 conditions.append(f"si.id = ANY(${param_idx}::uuid[])")
                 params.append(await id_tugas(conn, ctx["tenant_id"], tugas, hari_ini))
                 param_idx += 1
+
+            if aksi in _fa.AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
+                _pred, _par = _fa.sql_aksi_berparam(aksi, param_idx, hari_ini)
+                conditions.append(_pred)
+                params.extend(_par)
+                param_idx += len(_par)
 
             if customer_id:
                 # sales_invoices.customer_id = UUID (terverifikasi [SQL] 2026-08-09).
@@ -1236,6 +1256,7 @@ async def list_invoices(
                     "sales_order_number": row["sales_order_number"],
                     "is_overdue": bool(row["is_overdue"]),
                     "outstanding_amount": None if row.get("sisa_faktur") is None else f"{Decimal(str(row['sisa_faktur'])):.2f}",
+                    "aksi": _fa.aksi_faktur(row["status"], row.get("sisa_faktur"), row["due_date"], row["invoice_date"], hari_ini),
                 }
                 for row in rows
             ]

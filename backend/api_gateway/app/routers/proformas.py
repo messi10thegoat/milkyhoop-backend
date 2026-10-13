@@ -31,6 +31,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.proforma_terbayar import bayar_proforma, terbayar_proforma
 from ..services.proforma_atribusi import muat_atribusi
+from ..services import proforma_aksi as _pa
 from ..services.so_riwayat import catat_riwayat
 from ..services.default_dokumen import nominal_dari_persen
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
@@ -377,6 +378,8 @@ async def list_proformas(
     limit: int = Query(20, ge=1, le=100),
     # 5 Okt 2026: SATU pemilih dengan kartu "Terbit belum lunas" (kelas_bayar_terbit), aditif terhadap filter lain
     tugas: Optional[Literal["terbit_belum_lunas"]] = Query(None),
+    # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/proforma_aksi, tanggal bisnis), nilai asing = 422
+    aksi: Optional[Literal["perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo"]] = Query(None),
 ):
     """List proformas with filters."""
     try:
@@ -396,6 +399,12 @@ async def list_proformas(
             if tugas:
                 extras.append(f"p.id = ANY(${idx}::uuid[])")
                 params.append(await id_terbit_belum_lunas(conn, ctx["tenant_id"]))
+                idx += 1
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            if aksi in _pa.AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
+                extras.append(f"p.id = ANY(${idx}::uuid[])")
+                params.append([pid for pid, (k, _) in
+                               (await aksi_semua_proforma(conn, ctx["tenant_id"], hari_ini)).items() if k == aksi])
                 idx += 1
             if customer_id:
                 extras.append(f"p.customer_id = ${idx}::uuid")
@@ -426,7 +435,7 @@ async def list_proformas(
 
             rows = await conn.fetch(
                 f"""
-                SELECT p.*, so.order_number
+                SELECT p.*, so.order_number, so.status AS so_status
                 FROM proformas p
                 LEFT JOIN sales_orders so
                        ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
@@ -445,6 +454,12 @@ async def list_proformas(
                                    tb[r["id"]]["paid_breakdown"] if r["id"] in tb else None)
                 for r in rows
             ]
+            # 14 Okt 2026: aksi per baris = SATU aturan dgn ?aksi= & /summary (terbayar = sumber yang sama dgn kolom `paid`)
+            for it, r in zip(items, rows):
+                it["aksi"] = _pa.aksi_proforma(
+                    r["status"], r["so_status"],
+                    _pa.proforma_lunas(r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0),
+                    r["due_date"], hari_ini)
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "proforma", items)
 
@@ -477,8 +492,30 @@ async def kelas_bayar_terbit(conn, tid: str, rows) -> dict:
     for r in terbit:
         nominal = Decimal(str(r["amount"] or 0))
         bayar = Decimal(str(tb[r["id"]]["paid"])) if r["id"] in tb else Decimal("0")
-        kelas = "lunas" if bayar + Decimal("0.005") >= nominal else ("sebagian" if bayar > 0 else "belum")
+        kelas = "lunas" if _pa.proforma_lunas(nominal, bayar) else ("sebagian" if bayar > 0 else "belum")
         hasil[r["id"]] = (kelas, nominal, bayar)
+    return hasil
+
+
+async def aksi_semua_proforma(conn, tid: str, hari_ini) -> dict:
+    """{id proforma: (kunci aksi, nilai Decimal)} untuk SEMUA proforma tenant yang punya aksi -- SATU pemilih untuk
+    ?aksi= daftar DAN /summary (14 Okt 2026). Nilai: draf = nominal, terbit = SISA (nominal - terbayar). lunas =
+    kelas_bayar_terbit (rumus tunggal proforma_lunas)."""
+    rows = await conn.fetch(
+        """SELECT p.id, p.sales_order_id, p.status, p.amount, p.due_date, so.status AS so_status
+             FROM proformas p LEFT JOIN sales_orders so ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
+            WHERE p.tenant_id = $1""", tid)
+    kelas = await kelas_bayar_terbit(conn, tid, rows)
+    hasil = {}
+    for r in rows:
+        if r["id"] in kelas:
+            k, nominal, bayar = kelas[r["id"]]
+            lunas, nilai = k == "lunas", max(Decimal("0"), nominal - bayar)
+        else:
+            lunas, nilai = False, Decimal(str(r["amount"] or 0))
+        a = _pa.aksi_proforma(r["status"], r["so_status"], lunas, r["due_date"], hari_ini)
+        if a:
+            hasil[r["id"]] = (a, nilai)
     return hasil
 
 
@@ -499,6 +536,7 @@ async def get_proforma_summary(request: Request):
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT id, sales_order_id, status, amount FROM proformas WHERE tenant_id = $1", tid)
         kelas = await kelas_bayar_terbit(conn, tid, rows)
+        aksi_map = await aksi_semua_proforma(conn, tid, await tanggal_dokumen(conn, tid))
     per = {}
     for r in rows:
         n, j = per.get(r["status"], (0, Decimal("0")))
@@ -524,6 +562,9 @@ async def get_proforma_summary(request: Request):
         "issued_paid_count": lunas, "issued_partially_paid_count": sebagian, "issued_unpaid_count": belum,
         "cancelled_count": _n("cancelled"), "cancelled_amount": _j("cancelled"),
         "expired_count": _n("expired"),
+        # 14 Okt 2026: pill AKSI (aksi_semua_proforma == ?aksi= daftar); nilai: draf nominal, terbit SISA
+        **{f"{k}_count": sum(1 for a, _ in aksi_map.values() if a == k) for k in _pa.AKSI},
+        **{f"{k}_value": float(sum((v for a, v in aksi_map.values() if a == k), Decimal("0"))) for k in _pa.AKSI},
     }}
 
 

@@ -388,6 +388,7 @@ class InvoiceListItem(BaseModel):
     # `status` tetap nilai kolom (posted/partial/...) -- 'overdue' tak pernah tersimpan.
     is_overdue: bool = False
     outstanding_amount: Optional[str] = None  # sisa journal-derived, desimal teks; lunas "0.00"; draf/void null (5 Okt)
+    aksi: Optional[str] = None  # 14 Okt 2026: pill AKSI (services/faktur_aksi.AKSI) atau null
 
 
 class InvoiceListResponse(BaseModel):
@@ -415,6 +416,16 @@ class InvoiceSummary(BaseModel):
     unpaid_count: Optional[int] = None  # belum lunas = dashboard_v2.pilih_belum_lunas (5 Okt 2026)
     total_outstanding: int
     total_overdue: int
+    # 14 Okt 2026: pill AKSI (services/faktur_aksi.sql_aksi; tanggal bisnis, ambang segera_tempo 3 hari).
+    # *_value: draf = total_amount, terbit = SISA tagihan journal-derived.
+    perlu_diterbitkan_count: int = 0
+    perlu_diterbitkan_value: float = 0
+    belum_lunas_count: int = 0
+    belum_lunas_value: float = 0
+    segera_tempo_count: int = 0
+    segera_tempo_value: float = 0
+    jatuh_tempo_count: int = 0
+    jatuh_tempo_value: float = 0
 
 
 class InvoiceSummaryResponse(BaseModel):
