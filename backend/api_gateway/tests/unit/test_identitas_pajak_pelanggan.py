@@ -121,3 +121,19 @@ def test_migrasi_v420_aditif_nullable_dengan_check():
               "customers_nomor_dokumen_wajib", "vendors_nitku_22_digit", "vendors_negara_iso3"):
         assert re.search(rf"ADD CONSTRAINT {c}\s+CHECK", sql), c
     assert "UPDATE " not in sql  # nol backfill
+
+
+def test_mixin_dasar_lintas_modul_hanya_nitku_negara():
+    # Dipakai ulang modul lain (pemasok, VENDORFIELD): hanya nitku + negara, tanpa aturan jenis_id/nomor_dokumen
+    from app.schemas.identitas_pajak import IdentitasPajakDasar, IdentitasPajakPembeli
+
+    class BadanPemasok(IdentitasPajakDasar):
+        name: str
+
+    b = BadanPemasok(name="V", nitku="0123.4567.8901.2345-000000", negara="idn")
+    assert (b.nitku, b.negara) == (NITKU, "IDN")
+    assert set(IdentitasPajakDasar.model_fields) == {"nitku", "negara"}
+    assert set(IdentitasPajakPembeli.model_fields) == set(KUNCI)
+    with pytest.raises(ValidationError):
+        BadanPemasok(name="V", nitku="12")
+    assert issubclass(CreateCustomerRequest, IdentitasPajakPembeli) and issubclass(UpdateCustomerRequest, IdentitasPajakPembeli)

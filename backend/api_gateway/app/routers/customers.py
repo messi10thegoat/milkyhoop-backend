@@ -13,6 +13,7 @@ import asyncpg
 
 from ..services.termin_bayar import termin_hari
 from ..services.pelanggan_unik import tolak_nama_dipakai, tolak_nomor_dipakai
+from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -104,16 +105,6 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 # HEALTH CHECK (must be before /{customer_id} to avoid route conflict)
 # =============================================================================
-def tolak_identitas_pajak_tak_lengkap(jenis_id, nomor_dokumen):
-    """V420: jenis ID Passport/Other tanpa nomor dokumen -> 422 bermedan (DB menolaknya juga: customers_nomor_dokumen_wajib)."""
-    if jenis_id in ("Passport", "Other") and not (nomor_dokumen or "").strip():
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "IDENTITAS_PAJAK_TIDAK_LENGKAP", "field": "nomor_dokumen",
-                    "message": f"Nomor dokumen wajib diisi untuk jenis ID {jenis_id}"},
-        )
-
-
 @router.get("/health")
 async def health_check():
     """Health check endpoint for the customers service."""
