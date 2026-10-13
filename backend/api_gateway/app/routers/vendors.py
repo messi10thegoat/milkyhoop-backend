@@ -602,8 +602,8 @@ async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contact
                 dipertahankan.append(sama)  # persis sama = bukan kontak baru (hindari ganda)
                 continue
             baru = await conn.fetchval(
-                """INSERT INTO vendor_contacts (tenant_id, vendor_id, name, position, email, phone, mobile, is_primary)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
+                """INSERT INTO vendor_contacts (tenant_id, vendor_id, name, position, email, phone, mobile, is_primary, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp()) RETURNING id""",
                 tenant_id, vendor_id, k.name, k.position, k.email, k.phone, k.mobile, k.is_primary)
             dipertahankan.append(baru)
         if replace:
