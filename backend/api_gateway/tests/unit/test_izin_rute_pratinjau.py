@@ -30,6 +30,7 @@ KHUSUS = {
     "POST /api/settings/order-codes/preview": "PUT /api/settings/order-codes",
     # ubah SO terkonfirmasi: pratinjau menjalankan penulis PATCH /sales-orders/{id} (so_ubah_terkonfirmasi.ubah)
     "POST /api/sales-orders/{order_id}/edit/preview": "PATCH /api/sales-orders/{order_id}",
+    "POST /api/quotes/{quote_id}/edit/preview": "PATCH /api/quotes/{quote_id}",
     # U2b ubah draf proforma: pratinjau menjalankan penulis PATCH /proformas/{id} (proformas._tulis_ubah)
     "POST /api/proformas/{proforma_id}/update/preview": "PATCH /api/proformas/{proforma_id}",
 }
