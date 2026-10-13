@@ -905,7 +905,8 @@ async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> 
 
 @router.patch("/{quote_id}", response_model=QuoteResponse)
 async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest):
-    """Update an existing quote (draft only)."""
+    """Ubah penawaran: draf, terkirim, dilihat, kedaluwarsa (STATUS_BOLEH_UBAH). Isi + aturan: _ubah_penawaran
+    (juga dipakai pratinjau POST /{id}/edit/preview)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -915,253 +916,375 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Check quote exists and is draft
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
-                )
-                quote = await conn.fetchrow(
-                    """
-                    SELECT id, status FROM quotes
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                """,
-                    uuid_module.UUID(quote_id),
-                    ctx["tenant_id"],
-                )
-
-                if not quote:
-                    raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-                # 2 Okt 2026 (MASTER, praktik umum): "Perpanjang" = HANYA expiry_date, pada penawaran terkirim/
-                # dilihat. Field lain tetap hanya draf (penjaga di bawah).
-                if body.model_fields_set == {"expiry_date"} and quote["status"] in ("sent", "viewed"):
-                    return await _perpanjang_penawaran(conn, ctx, quote_id, body, quote)
-
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
-                if _new_num is None:
-                    body.__pydantic_fields_set__.discard("quote_number")
-                else:
-                    if quote["status"] != "draft":
-                        raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
-                    if await conn.fetchval(
-                        "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2 AND id <> $3",
-                        ctx["tenant_id"], _new_num, uuid_module.UUID(quote_id)):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                    body.quote_number = _new_num
-
-                if quote["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Hanya penawaran berstatus Draf yang bisa diubah."
-                    )
-
-                # Build update query
-                updates = []
-                params = []
-                param_idx = 1
-
-                # `exclude_unset=True` adalah pembedanya: Pydantic mencatat
-                # field mana yang BENAR-BENAR dikirim (`model_fields_set`), jadi
-                # null eksplisit ikut terbawa sementara yang absen tidak.
-                #
-                # Yang lama, `if value is not None`, membuat TIGA bentuk
-                # permintaan tak bisa dibedakan sama sekali:
-                #   kunci absen -> tak diubah        (benar)
-                #   null        -> DIABAIKAN, 200    (SALAH: pengguna meminta
-                #                                     mengosongkan, dijawab
-                #                                     "berhasil", nilainya tetap)
-                #   ""          -> tersimpan sebagai string kosong
-                # Akibatnya Pesanan menyimpan NULL dan Penawaran menyimpan ''
-                # untuk makna yang sama. Sekarang keduanya seragam:
-                # absen = jangan ubah, null ATAU "" = NULL.
-                #
-                # Sama dengan PATCH Pesanan (f1ce3564) dan faktur (fd5a9dc5).
-                # `items` dan field DP ditangani blok tersendiri di bawah.
-                from ..services import penawaran_surat as _surat
-                update_data = body.model_dump(
-                    exclude_unset=True, exclude={"items", "dp_amount", "dp_percent", "signer_user_id",
-                                                 *_surat.MEDAN, *(m + "_source" for m in _surat.MEDAN)}
-                )
-
-                for field, value in update_data.items():
-                    if field == "customer_id" and value is not None:
-                        _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
-                        value = uuid_module.UUID(_c) if _c else None
-                    updates.append(f"{field} = ${param_idx}")
-                    params.append(value)
-                    param_idx += 1
-
-                # 3h: hitung ulang bila BARIS atau DISKON berubah. Dulu suntingan diskon-saja
-                # menulis discount_type/value tapi membiarkan discount_amount/tax/total basi.
-                _recalc = body.items is not None or bool(
-                    {"discount_type", "discount_value"} & body.model_fields_set
-                )
-                if _recalc:
-                    if body.items is not None:
-                        _lines = [item.model_dump() for item in body.items]
-                    else:
-                        _lines = [_quote_line(r) for r in await conn.fetch(
-                            "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id",
-                            uuid_module.UUID(quote_id),
-                        )]
-                    # Delete existing items
-                    await conn.execute(
-                        "DELETE FROM quote_items WHERE quote_id = $1",
-                        uuid_module.UUID(quote_id),
-                    )
-
-                    discount_type = body.discount_type or "fixed"
-                    discount_value = body.discount_value or 0
-
-                    # Get current discount info if not provided
-                    if body.discount_type is None or body.discount_value is None:
-                        current = await conn.fetchrow(
-                            "SELECT discount_type, discount_value FROM quotes WHERE id = $1",
-                            uuid_module.UUID(quote_id),
-                        )
-                        discount_type = body.discount_type or current["discount_type"]
-                        discount_value = (
-                            body.discount_value
-                            if body.discount_value is not None
-                            else float(current["discount_value"])
-                        )
-
-                    _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value)
-                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #39
-                    calculated_items = _doc["items"]
-                    totals = {
-                        "subtotal": _doc["net_subtotal"],
-                        "discount_amount": _doc["doc_discount"],
-                        "tax_amount": _doc["tax_amount"],
-                        "total_amount": _doc["total_amount"],
-                    }
-
-                    # Add totals to update
-                    updates.append(f"subtotal = ${param_idx}")
-                    params.append(totals["subtotal"])
-                    param_idx += 1
-
-                    updates.append(f"discount_amount = ${param_idx}")
-                    params.append(totals["discount_amount"])
-                    param_idx += 1
-
-                    updates.append(f"tax_amount = ${param_idx}")
-                    params.append(totals["tax_amount"])
-                    param_idx += 1
-
-                    updates.append(f"total_amount = ${param_idx}")
-                    params.append(totals["total_amount"])
-                    param_idx += 1
-
-                    # Insert new items
-                    for idx, item in enumerate(calculated_items):
-                        await conn.execute(
-                            """
-                            INSERT INTO quote_items (
-                                id, quote_id, item_id, description,
-                                quantity, unit, unit_price, discount_percent,
-                                tax_id, tax_rate, tax_amount, line_total,
-                                group_name, sort_order
-                            ) VALUES (
-                                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-                            )
-                        """,
-                            uuid_module.uuid4(),
-                            uuid_module.UUID(quote_id),
-                            uuid_module.UUID(item["item_id"])
-                            if item.get("item_id")
-                            else None,
-                            item["description"],
-                            item["quantity"],
-                            item.get("unit"),
-                            item["unit_price"],
-                            item.get("discount_percent") or 0,
-                            uuid_module.UUID(item["tax_id"])
-                            if item.get("tax_id")
-                            else None,
-                            item.get("tax_rate") or 0,
-                            item["tax_amount"],
-                            item["line_total"],
-                            item.get("group_name"),
-                            item.get("sort_order") if item.get("sort_order") is not None else idx,
-                        )
-
-                # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER).
-                # dp_amount is authoritative. Recompute against the effective total
-                # (new total if items changed this update, else the stored total).
-                # Only touch dp columns when the client actually sent a dp_* field.
-                if body.dp_amount is not None or body.dp_percent is not None:
-                    if _recalc:
-                        effective_total = totals["total_amount"]
-                    else:
-                        eff = await conn.fetchrow(
-                            "SELECT total_amount FROM quotes WHERE id = $1",
-                            uuid_module.UUID(quote_id),
-                        )
-                        effective_total = eff["total_amount"] if eff else 0
-
-                    dp = resolve_dp(effective_total, body.dp_amount, body.dp_percent)
-
-                    updates.append(f"dp_amount = ${param_idx}")
-                    params.append(
-                        Decimal(str(dp["dp_amount"]))
-                        if dp["dp_amount"] is not None
-                        else None
-                    )
-                    param_idx += 1
-
-                    updates.append(f"dp_percent = ${param_idx}")
-                    params.append(
-                        Decimal(str(dp["dp_percent"]))
-                        if dp["dp_percent"] is not None
-                        else None
-                    )
-                    param_idx += 1
-
-                if updates:
-                    params.append(uuid_module.UUID(quote_id))
-                    params.append(ctx["tenant_id"])
-                    update_query = f"""
-                        UPDATE quotes SET {', '.join(updates)}
-                        WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                    """
-                    await conn.execute(update_query, *params)
-
-                # 6 Okt 2026: isian surat (snapshot + sumber); bawaan dibaca HANYA bila ada `_source:'default'` tanpa nilai
-                _perlu = any(getattr(body, m + "_source") == "default" and m not in body.model_fields_set for m in _surat.MEDAN)
-                _bwn = {}
-                if _perlu:
-                    from ..services.default_dokumen import default_penawaran as _bawaan_pnw
-                    _cid = await conn.fetchval("SELECT customer_id::text FROM quotes WHERE id = $1 AND tenant_id = $2",
-                                               uuid_module.UUID(quote_id), ctx["tenant_id"])
-                    _bwn = await _bawaan_pnw(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), _cid)
-                _ubah_surat = await _surat.terapkan(conn, ctx["tenant_id"], uuid_module.UUID(quote_id), body, _bwn, buat=False)
-
-                _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
-                               | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
-                if _ubah:
-                    # 3 Okt 2026 (MASTER): riwayat Penawaran 'diubah' -- pola SO (SALES_ORDER_UPDATED): tak punya kolom
-                    # aktor -> audit_logs di transaksi YANG SAMA (gagal mencatat = suntingan batal). 'Dibuat' tetap
-                    # dari kolom created_at/created_by (beraktor) seperti SO -- tak perlu QUOTE_CREATED.
-                    _nomor = await conn.fetchval("SELECT quote_number FROM quotes WHERE id = $1 AND tenant_id = $2",
-                                                 uuid_module.UUID(quote_id), ctx["tenant_id"])
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "quotes", uuid_module.UUID(quote_id), _nomor, "QUOTE_UPDATED",
-                        ctx.get("user_id"), "Penawaran diubah (" + ", ".join(_ubah) + ")", {"fields": _ubah},
-                        source="api:quotes.update",
-                    )
-
-                return QuoteResponse(
-                    success=True,
-                    message="Quote updated successfully",
-                    data={"id": quote_id},
-                )
+                return await _ubah_penawaran(conn, ctx, quote_id, body)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating quote: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update quote")
+
+
+async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteRequest) -> QuoteResponse:
+    """Inti PATCH /quotes/{id}, di transaksi PEMANGGIL (PATCH = commit, pratinjau = ROLLBACK)."""
+    # Check quote exists and is draft
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+    )
+    quote = await conn.fetchrow(
+        """
+        SELECT id, status FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+    """,
+        uuid_module.UUID(quote_id),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+
+    # 2 Okt 2026 (MASTER, praktik umum): "Perpanjang" = HANYA expiry_date, pada penawaran terkirim/
+    # dilihat. Field lain tetap hanya draf (penjaga di bawah).
+    if body.model_fields_set == {"expiry_date"} and quote["status"] in ("sent", "viewed"):
+        return await _perpanjang_penawaran(conn, ctx, quote_id, body, quote)
+
+    from ..services.document_number import bersihkan_nomor_dokumen_opsional
+    _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
+    if _new_num is None:
+        body.__pydantic_fields_set__.discard("quote_number")
+    else:
+        if quote["status"] != "draft":
+            raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
+        if await conn.fetchval(
+            "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2 AND id <> $3",
+            ctx["tenant_id"], _new_num, uuid_module.UUID(quote_id)):
+            raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+        body.quote_number = _new_num
+
+    # 13 Okt 2026 (MASTER, pola estimate Xero/Zoho/NetSuite): penawaran yang BELUM DIJAWAB boleh diubah, termasuk
+    # yang sudah dikirim/dilihat/kedaluwarsa; status TETAP. Terjawab/jadi dokumen/batal = terkunci -> Duplikat.
+    if quote["status"] not in STATUS_BOLEH_UBAH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Penawaran berstatus {tg.status_id('quote', quote['status'])} tidak bisa diubah. "
+                   "Duplikat untuk membuat penawaran baru.",
+        )
+    _sesudah_kirim = quote["status"] != "draft"
+    if _sesudah_kirim:
+        await _tolak_bila_sudah_jadi_dokumen(conn, ctx["tenant_id"], quote["id"])
+    _sebelum = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
+    if _sesudah_kirim:
+        _periksa_tanggal_terkirim(body, _sebelum["kepala"], await tanggal_dokumen(conn, ctx["tenant_id"]))
+
+    # Build update query
+    updates = []
+    params = []
+    param_idx = 1
+
+    # `exclude_unset=True` adalah pembedanya: Pydantic mencatat
+    # field mana yang BENAR-BENAR dikirim (`model_fields_set`), jadi
+    # null eksplisit ikut terbawa sementara yang absen tidak.
+    #
+    # Yang lama, `if value is not None`, membuat TIGA bentuk
+    # permintaan tak bisa dibedakan sama sekali:
+    #   kunci absen -> tak diubah        (benar)
+    #   null        -> DIABAIKAN, 200    (SALAH: pengguna meminta
+    #                                     mengosongkan, dijawab
+    #                                     "berhasil", nilainya tetap)
+    #   ""          -> tersimpan sebagai string kosong
+    # Akibatnya Pesanan menyimpan NULL dan Penawaran menyimpan ''
+    # untuk makna yang sama. Sekarang keduanya seragam:
+    # absen = jangan ubah, null ATAU "" = NULL.
+    #
+    # Sama dengan PATCH Pesanan (f1ce3564) dan faktur (fd5a9dc5).
+    # `items` dan field DP ditangani blok tersendiri di bawah.
+    from ..services import penawaran_surat as _surat
+    update_data = body.model_dump(
+        exclude_unset=True, exclude={"items", "dp_amount", "dp_percent", "signer_user_id",
+                                     *_surat.MEDAN, *(m + "_source" for m in _surat.MEDAN)}
+    )
+
+    for field, value in update_data.items():
+        if field == "customer_id" and value is not None:
+            _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
+            value = uuid_module.UUID(_c) if _c else None
+        updates.append(f"{field} = ${param_idx}")
+        params.append(value)
+        param_idx += 1
+
+    # 3h: hitung ulang bila BARIS atau DISKON berubah. Dulu suntingan diskon-saja
+    # menulis discount_type/value tapi membiarkan discount_amount/tax/total basi.
+    _recalc = body.items is not None or bool(
+        {"discount_type", "discount_value"} & body.model_fields_set
+    )
+    if _recalc:
+        if body.items is not None:
+            _lines = [item.model_dump() for item in body.items]
+        else:
+            _lines = [_quote_line(r) for r in await conn.fetch(
+                "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id",
+                uuid_module.UUID(quote_id),
+            )]
+        # Delete existing items
+        await conn.execute(
+            "DELETE FROM quote_items WHERE quote_id = $1",
+            uuid_module.UUID(quote_id),
+        )
+
+        discount_type = body.discount_type or "fixed"
+        discount_value = body.discount_value or 0
+
+        # Get current discount info if not provided
+        if body.discount_type is None or body.discount_value is None:
+            current = await conn.fetchrow(
+                "SELECT discount_type, discount_value FROM quotes WHERE id = $1",
+                uuid_module.UUID(quote_id),
+            )
+            discount_type = body.discount_type or current["discount_type"]
+            discount_value = (
+                body.discount_value
+                if body.discount_value is not None
+                else float(current["discount_value"])
+            )
+
+        _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value)
+        await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #39
+        calculated_items = _doc["items"]
+        totals = {
+            "subtotal": _doc["net_subtotal"],
+            "discount_amount": _doc["doc_discount"],
+            "tax_amount": _doc["tax_amount"],
+            "total_amount": _doc["total_amount"],
+        }
+
+        # Add totals to update
+        updates.append(f"subtotal = ${param_idx}")
+        params.append(totals["subtotal"])
+        param_idx += 1
+
+        updates.append(f"discount_amount = ${param_idx}")
+        params.append(totals["discount_amount"])
+        param_idx += 1
+
+        updates.append(f"tax_amount = ${param_idx}")
+        params.append(totals["tax_amount"])
+        param_idx += 1
+
+        updates.append(f"total_amount = ${param_idx}")
+        params.append(totals["total_amount"])
+        param_idx += 1
+
+        # Insert new items
+        for idx, item in enumerate(calculated_items):
+            await conn.execute(
+                """
+                INSERT INTO quote_items (
+                    id, quote_id, item_id, description,
+                    quantity, unit, unit_price, discount_percent,
+                    tax_id, tax_rate, tax_amount, line_total,
+                    group_name, sort_order
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                )
+            """,
+                uuid_module.uuid4(),
+                uuid_module.UUID(quote_id),
+                uuid_module.UUID(item["item_id"])
+                if item.get("item_id")
+                else None,
+                item["description"],
+                item["quantity"],
+                item.get("unit"),
+                item["unit_price"],
+                item.get("discount_percent") or 0,
+                uuid_module.UUID(item["tax_id"])
+                if item.get("tax_id")
+                else None,
+                item.get("tax_rate") or 0,
+                item["tax_amount"],
+                item["line_total"],
+                item.get("group_name"),
+                item.get("sort_order") if item.get("sort_order") is not None else idx,
+            )
+
+    # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER).
+    # dp_amount is authoritative. Recompute against the effective total
+    # (new total if items changed this update, else the stored total).
+    # Only touch dp columns when the client actually sent a dp_* field.
+    if body.dp_amount is not None or body.dp_percent is not None:
+        if _recalc:
+            effective_total = totals["total_amount"]
+        else:
+            eff = await conn.fetchrow(
+                "SELECT total_amount FROM quotes WHERE id = $1",
+                uuid_module.UUID(quote_id),
+            )
+            effective_total = eff["total_amount"] if eff else 0
+
+        dp = resolve_dp(effective_total, body.dp_amount, body.dp_percent)
+
+        updates.append(f"dp_amount = ${param_idx}")
+        params.append(
+            Decimal(str(dp["dp_amount"]))
+            if dp["dp_amount"] is not None
+            else None
+        )
+        param_idx += 1
+
+        updates.append(f"dp_percent = ${param_idx}")
+        params.append(
+            Decimal(str(dp["dp_percent"]))
+            if dp["dp_percent"] is not None
+            else None
+        )
+        param_idx += 1
+
+    if updates:
+        params.append(uuid_module.UUID(quote_id))
+        params.append(ctx["tenant_id"])
+        update_query = f"""
+            UPDATE quotes SET {', '.join(updates)}
+            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+        """
+        await conn.execute(update_query, *params)
+
+    # 6 Okt 2026: isian surat (snapshot + sumber); bawaan dibaca HANYA bila ada `_source:'default'` tanpa nilai
+    _perlu = any(getattr(body, m + "_source") == "default" and m not in body.model_fields_set for m in _surat.MEDAN)
+    _bwn = {}
+    if _perlu:
+        from ..services.default_dokumen import default_penawaran as _bawaan_pnw
+        _cid = await conn.fetchval("SELECT customer_id::text FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                   uuid_module.UUID(quote_id), ctx["tenant_id"])
+        _bwn = await _bawaan_pnw(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), _cid)
+    _ubah_surat = await _surat.terapkan(conn, ctx["tenant_id"], uuid_module.UUID(quote_id), body, _bwn, buat=False)
+
+    _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
+                   | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
+    _sesudah = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
+    _beda = beda_penawaran(_sebelum, _sesudah, _ubah)
+    if _ubah:
+        # 3 Okt 2026 (MASTER): riwayat Penawaran 'diubah' -- pola SO (SALES_ORDER_UPDATED): tak punya kolom
+        # aktor -> audit_logs di transaksi YANG SAMA (gagal mencatat = suntingan batal). 'Dibuat' tetap
+        # dari kolom created_at/created_by (beraktor) seperti SO -- tak perlu QUOTE_CREATED.
+        # 13 Okt: + diff medan/baris/total; sesudah dikirim -> "diubah sesudah dikirim" (status tetap).
+        _nomor = await conn.fetchval("SELECT quote_number FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                     uuid_module.UUID(quote_id), ctx["tenant_id"])
+        _judul = "Penawaran diubah sesudah dikirim" if _sesudah_kirim else "Penawaran diubah"
+        await catat_riwayat(
+            conn, ctx["tenant_id"], "quotes", uuid_module.UUID(quote_id), _nomor, "QUOTE_UPDATED",
+            ctx.get("user_id"), _judul + " (" + ", ".join(_ubah) + ")",
+            {"fields": _ubah, "after_sent": _sesudah_kirim, "status": quote["status"], **_beda},
+            source="api:quotes.update",
+        )
+
+    return QuoteResponse(
+        success=True,
+        message="Quote updated successfully",
+        data={"id": quote_id, "status": quote["status"], "after_sent": _sesudah_kirim, "fields": _ubah, **_beda},
+    )
+
+
+class _BatalkanUbahPenawaran(Exception):
+    def __init__(self, hasil: QuoteResponse):
+        self.hasil = hasil
+
+
+@router.post("/{quote_id}/edit/preview", response_model=QuoteResponse)
+async def preview_edit_quote(request: Request, quote_id: str, body: UpdateQuoteRequest):
+    """Pratinjau ubah penawaran (pola /sales-orders/{id}/edit/preview): jalur _ubah_penawaran YANG SAMA lalu ROLLBACK
+    (nol tulis). Galat = galat yang sama dengan PATCH; data = diff medan/baris/total yang AKAN tercatat."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                raise _BatalkanUbahPenawaran(await _ubah_penawaran(conn, ctx, quote_id, body))
+    except _BatalkanUbahPenawaran as b:
+        return QuoteResponse(success=True, message="Pratinjau ubah penawaran",
+                             data={**(b.hasil.data or {}), "preview": True})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing quote edit: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview quote edit")
+
+
+# ---- ubah penawaran: penjaga + potret + diff (13 Okt 2026) ----
+STATUS_BOLEH_UBAH = ("draft", "sent", "viewed", "expired")  # belum dijawab pelanggan
+_KEPALA_DIFF = ("quote_date", "expiry_date", "customer_id", "customer_name", "customer_email", "reference", "subject",
+                "discount_type", "discount_value", "notes", "terms", "footer", "opening_text", "closing_text",
+                "payment_bank_name", "payment_account_number", "payment_account_holder", "dp_amount", "dp_percent",
+                "attention_name", "attention_title", "signer_user_id", "signer_name", "signer_title", "signer_phone",
+                "signer_email")
+_TOTAL_DIFF = ("subtotal", "discount_amount", "tax_amount", "total_amount")
+_BARIS_DIFF = ("item_id", "description", "quantity", "unit", "unit_price", "discount_percent", "tax_id", "tax_rate",
+               "line_total", "group_name")
+
+
+async def _tolak_bila_sudah_jadi_dokumen(conn, tenant_id: str, qid) -> None:
+    """Pertahanan: penawaran terkirim yang sudah dirujuk pesanan/faktur (seharusnya berstatus converted) tetap terkunci."""
+    if await conn.fetchval(
+        """SELECT 1 FROM sales_orders WHERE tenant_id = $1 AND quote_id = $2
+           UNION ALL SELECT 1 FROM sales_invoices WHERE tenant_id = $1 AND quote_id = $2 LIMIT 1""", tenant_id, qid):
+        raise HTTPException(status_code=409, detail="Penawaran sudah dijadikan pesanan/faktur; tidak bisa diubah. "
+                                                    "Duplikat untuk membuat penawaran baru.")
+
+
+def _periksa_tanggal_terkirim(body, kepala: dict, hari_ini: date) -> None:
+    """Penawaran yang sudah keluar: tanggal berlaku tak boleh sebelum tanggal penawaran, dan tanggal berlaku BARU
+    (yang memang berubah) tak boleh di masa lalu -- aturan Perpanjang yang sama."""
+    fs = body.model_fields_set
+    tgl = body.quote_date if "quote_date" in fs and body.quote_date else kepala.get("quote_date")
+    exp = body.expiry_date if "expiry_date" in fs else kepala.get("expiry_date")
+    if "expiry_date" in fs and body.expiry_date is None:
+        raise HTTPException(status_code=422, detail="Tanggal berlaku wajib diisi.")
+    if tgl and exp and exp < tgl:
+        raise HTTPException(status_code=422, detail="Tanggal berlaku tidak boleh sebelum tanggal penawaran.")
+    if "expiry_date" in fs and exp != kepala.get("expiry_date") and exp < hari_ini:
+        raise HTTPException(status_code=422, detail="Tanggal berlaku baru tidak boleh di masa lalu.")
+
+
+async def _potret_penawaran(conn, tenant_id: str, qid) -> dict:
+    kepala = await conn.fetchrow("SELECT * FROM quotes WHERE id = $1 AND tenant_id = $2", qid, tenant_id)
+    baris = await conn.fetch("SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id", qid)
+    return {"kepala": dict(kepala) if kepala else {}, "baris": [dict(b) for b in baris]}
+
+
+def _js(v):
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()
+    if isinstance(v, uuid_module.UUID):
+        return str(v)
+    return v
+
+
+def _sama(a, b) -> bool:
+    if isinstance(a, (int, float, Decimal)) and isinstance(b, (int, float, Decimal)) \
+            and not isinstance(a, bool) and not isinstance(b, bool):
+        return Decimal(str(a)) == Decimal(str(b))
+    return (str(a) if isinstance(a, uuid_module.UUID) else a) == (str(b) if isinstance(b, uuid_module.UUID) else b)
+
+
+def beda_penawaran(sebelum: dict, sesudah: dict, medan) -> dict:
+    """Diff yang tercatat di riwayat: medan kepala yang BENAR-BENAR berubah {medan: [lama, baru]}, baris per urutan
+    (added/removed/changed), total [lama, baru]. Medan yang dikirim tapi nilainya sama tidak masuk diff."""
+    k0, k1 = sebelum["kepala"], sesudah["kepala"]
+    kepala = {m: [_js(k0.get(m)), _js(k1.get(m))] for m in _KEPALA_DIFF + _TOTAL_DIFF
+              if (m in medan or m in _TOTAL_DIFF) and m in k1 and not _sama(k0.get(m), k1.get(m))}
+    b0, b1 = sebelum["baris"], sesudah["baris"]
+    berubah = []
+    for i in range(min(len(b0), len(b1))):
+        ch = {k: [_js(b0[i].get(k)), _js(b1[i].get(k))] for k in _BARIS_DIFF if not _sama(b0[i].get(k), b1[i].get(k))}
+        if ch:
+            berubah.append({"line": i + 1, "description": b1[i].get("description"), "changes": ch})
+    return {"diff": kepala,
+            "lines": {"added": [b.get("description") for b in b1[len(b0):]],
+                      "removed": [b.get("description") for b in b0[len(b1):]],
+                      "changed": berubah},
+            "total": [_js(k0.get("total_amount")), _js(k1.get("total_amount"))]}
 
 
 async def alasan_tak_bisa_hapus(conn, tenant_id: str, quote) -> Optional[str]:

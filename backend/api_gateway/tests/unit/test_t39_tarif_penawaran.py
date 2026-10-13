@@ -44,6 +44,8 @@ class DBQ(DB):
         s = " ".join(sql.split())
         if s.startswith("SELECT id, status FROM quotes"):
             return {"id": a[0], "status": "draft"}
+        if s.startswith("SELECT * FROM quotes WHERE id"):  # 13 Okt: potret sebelum/sesudah (diff riwayat)
+            return {"id": a[0], "status": "draft", "total_amount": 0}
         if s.startswith("SELECT discount_type, discount_value FROM quotes"):
             return {"discount_type": "fixed", "discount_value": 0}
         if s.startswith("SELECT total_amount FROM quotes"):

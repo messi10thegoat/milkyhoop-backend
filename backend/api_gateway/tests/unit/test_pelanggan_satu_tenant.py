@@ -26,7 +26,7 @@ JALUR = [
     ("sales_invoices.py", "create_invoice", "INSERT INTO sales_invoices"),
     ("sales_invoices.py", "update_invoice", "UPDATE sales_invoices SET"),
     ("quotes.py", "create_quote", "INSERT INTO quotes"),
-    ("quotes.py", "update_quote", "UPDATE quotes"),
+    ("quotes.py", "_ubah_penawaran", "UPDATE quotes"),
     ("receive_payments.py", "update_receive_payment", "UPDATE receive_payments"),
     ("customer_deposits.py", "create_customer_deposit", "INSERT INTO customer_deposits"),
     ("customer_deposits.py", "update_customer_deposit", "UPDATE customer_deposits"),
