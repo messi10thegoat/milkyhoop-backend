@@ -111,6 +111,12 @@ class FakeConn:
     async def execute(self, q, *a):
         self.sql.append((" ".join(q.split()), a))
 
+    kontak_ada = []
+
+    async def fetch(self, q, *a):
+        self.sql.append((" ".join(q.split()), a))
+        return list(self.kontak_ada)
+
     def kena(self, fragmen):
         return [s for s, _ in self.sql if fragmen in s]
 
@@ -184,14 +190,69 @@ def test_update_null_tak_menyentuh_anak(monkeypatch):
     assert not conn.kena("vendor_contacts") and not conn.kena("vendor_addresses")
 
 
-def test_update_contacts_dikirim_ganti_seluruhnya_dengan_filter_tenant(monkeypatch):
-    conn = FakeConn(existing=_existing())
+KID1, KID2 = uuid4(), uuid4()
+
+
+def _conn_kontak():
+    c = FakeConn(existing=_existing())
+    c.kontak_ada = [
+        {"id": KID1, "name": "Budi", "position": None, "email": None, "phone": "0431", "mobile": None},
+        {"id": KID2, "name": "Sari", "position": None, "email": None, "phone": None, "mobile": "08"},
+    ]
+    return c
+
+
+def test_update_contacts_tanpa_penanda_hanya_menambah_tak_menghapus(monkeypatch):
+    conn = _conn_kontak()
     _pasang(monkeypatch, conn)
+    # FE edit-dari-baris-daftar mengirim daftar yang tak memuat kontak lama: TIDAK boleh menghapus Budi/Sari
     asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[{"name": "A"}, {"name": ""}, {"name": "B", "mobile": "08"}])))
-    hapus = conn.kena("DELETE FROM vendor_contacts")
-    assert len(hapus) == 1 and "tenant_id = $2" in hapus[0]
+    assert not conn.kena("DELETE FROM vendor_contacts")
     assert len(conn.kena("INSERT INTO vendor_contacts")) == 2  # baris kosong dilewati
     assert not conn.kena("vendor_addresses")
+
+
+def test_update_contacts_kosong_tanpa_penanda_tak_berubah(monkeypatch):
+    conn = _conn_kontak()
+    _pasang(monkeypatch, conn)
+    asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[])))
+    assert not conn.kena("DELETE FROM vendor_contacts") and not conn.kena("INSERT INTO vendor_contacts")
+
+
+def test_update_contacts_kosong_dengan_penanda_menghapus_semua_filter_tenant(monkeypatch):
+    conn = _conn_kontak()
+    _pasang(monkeypatch, conn)
+    asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[], contacts_replace=True)))
+    hapus = conn.kena("DELETE FROM vendor_contacts")
+    assert len(hapus) == 1 and "tenant_id = $2" in hapus[0]
+    args = [a for s, a in conn.sql if "DELETE FROM vendor_contacts" in s][0]
+    assert args[2] == []  # tak ada yang dipertahankan
+
+
+def test_update_contacts_id_mengubah_baris_dan_penanda_menghapus_sisanya(monkeypatch):
+    conn = _conn_kontak()
+    _pasang(monkeypatch, conn)
+    asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[{"id": str(KID1), "name": "Budi S", "phone": "0431"}],
+                                                   contacts_replace=True)))
+    assert len(conn.kena("UPDATE vendor_contacts")) == 1 and not conn.kena("INSERT INTO vendor_contacts")
+    args = [a for s, a in conn.sql if "DELETE FROM vendor_contacts" in s][0]
+    assert args[2] == [KID1]  # KID2 (Sari) dihapus karena tak ada di daftar + penanda
+
+
+def test_update_contacts_persis_sama_tak_digandakan(monkeypatch):
+    conn = _conn_kontak()
+    _pasang(monkeypatch, conn)
+    asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[{"name": "Budi", "phone": "0431"}])))
+    assert not conn.kena("INSERT INTO vendor_contacts") and not conn.kena("DELETE FROM vendor_contacts")
+
+
+def test_update_contacts_id_asing_422(monkeypatch):
+    from fastapi import HTTPException
+    conn = _conn_kontak()
+    _pasang(monkeypatch, conn)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(V.update_vendor(_req(), uuid4(), U(contacts=[{"id": str(uuid4()), "name": "X"}])))
+    assert e.value.status_code == 422
 
 
 def test_update_shipping_objek_upsert_dan_kosong_menghapus(monkeypatch):

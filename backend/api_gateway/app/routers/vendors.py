@@ -562,9 +562,10 @@ async def _baca_anak_pemasok(conn, tenant_id: str, vendor_id):
     )
 
 
-async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contacts, sent: set) -> list:
+async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contacts, sent: set, replace: bool = False) -> list:
     """Tulis anak dalam transaksi pemanggil. HANYA kunci yang DIKIRIM (sent) disentuh; null = tak ada perubahan;
-    alamat kosong = hapus baris shipping; contacts = ganti seluruhnya (baris kosong dilewati). Mengembalikan nama yang berubah."""
+    alamat kosong = hapus baris shipping; contacts: id = ubah, tanpa id = tambah (persis sama = dilewati), baris kosong dilewati,
+    kontak yang tak ada di daftar dihapus HANYA bila replace=True (penanda eksplisit contacts_replace). Mengembalikan yang berubah."""
     berubah = []
     if "shipping_address" in sent and shipping is not None:
         await conn.execute(
@@ -577,14 +578,38 @@ async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contact
                 tenant_id, vendor_id, shipping.street, shipping.city, shipping.province, shipping.postal_code)
         berubah.append("shipping_address")
     if "contacts" in sent and contacts is not None:
-        await conn.execute("DELETE FROM vendor_contacts WHERE vendor_id = $1 AND tenant_id = $2", vendor_id, tenant_id)
+        ada = {
+            r["id"]: r for r in await conn.fetch(
+                """SELECT id, name, position, email, phone, mobile FROM vendor_contacts
+                   WHERE vendor_id = $1 AND tenant_id = $2""", vendor_id, tenant_id)
+        }
+        dipertahankan = []
         for k in contacts:
             if k.kosong():
                 continue
-            await conn.execute(
+            if k.id is not None:
+                if k.id not in ada:
+                    raise HTTPException(status_code=422, detail=f"Kontak {k.id} bukan milik pemasok ini")
+                await conn.execute(
+                    """UPDATE vendor_contacts SET name = $1, position = $2, email = $3, phone = $4, mobile = $5, is_primary = $6
+                       WHERE id = $7 AND vendor_id = $8 AND tenant_id = $9""",
+                    k.name, k.position, k.email, k.phone, k.mobile, k.is_primary, k.id, vendor_id, tenant_id)
+                dipertahankan.append(k.id)
+                continue
+            sama = next((i for i, r in ada.items() if (r["name"], r["position"], r["email"], r["phone"], r["mobile"])
+                         == (k.name, k.position, k.email, k.phone, k.mobile)), None)
+            if sama is not None:
+                dipertahankan.append(sama)  # persis sama = bukan kontak baru (hindari ganda)
+                continue
+            baru = await conn.fetchval(
                 """INSERT INTO vendor_contacts (tenant_id, vendor_id, name, position, email, phone, mobile, is_primary)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
                 tenant_id, vendor_id, k.name, k.position, k.email, k.phone, k.mobile, k.is_primary)
+            dipertahankan.append(baru)
+        if replace:
+            await conn.execute(
+                """DELETE FROM vendor_contacts WHERE vendor_id = $1 AND tenant_id = $2 AND id <> ALL($3::uuid[])""",
+                vendor_id, tenant_id, dipertahankan)
         berubah.append("contacts")
     return berubah
 
@@ -919,7 +944,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                     body.default_pph_rate,
                 )
                 await _tulis_anak_pemasok(
-                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, body.model_fields_set)
+                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, body.model_fields_set, body.contacts_replace)
 
                 logger.info(f"Vendor created: {vendor_id}, name={body.name}")
 
@@ -1016,7 +1041,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                 update_data = body.model_dump(exclude_unset=True)
                 # Anak (alamat pengiriman, kontak) bukan kolom vendors: ditulis terpisah di transaksi yang sama.
                 anak_dikirim = {k for k in ("shipping_address", "contacts") if k in update_data}
-                for k in ("shipping_address", "contacts"):
+                for k in ("shipping_address", "contacts", "contacts_replace"):
                     update_data.pop(k, None)
                 if update_data.get("nik"):
                     tipe_efektif = update_data.get("vendor_type") or existing["vendor_type"]
@@ -1048,7 +1073,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
             """
                 await conn.execute(query, *params)
                 anak_berubah = await _tulis_anak_pemasok(
-                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, anak_dikirim)
+                    conn, ctx["tenant_id"], vendor_id, body.shipping_address, body.contacts, anak_dikirim, body.contacts_replace)
 
                 logger.info(f"Vendor updated: {vendor_id}")
 

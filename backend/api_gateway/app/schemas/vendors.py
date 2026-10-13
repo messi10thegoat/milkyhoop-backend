@@ -5,6 +5,7 @@ This module defines request and response models for the /api/vendors endpoints.
 """
 
 from decimal import Decimal
+from uuid import UUID
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 import re
@@ -53,8 +54,9 @@ class AlamatTerstruktur(BaseModel):
 
 
 class KontakPemasok(BaseModel):
-    """Satu baris vendor_contacts."""
+    """Satu baris vendor_contacts. `id` (dari GET) = ubah baris itu; tanpa id = baris baru."""
 
+    id: Optional[UUID] = None
     name: Optional[str] = Field(None, max_length=255)
     position: Optional[str] = Field(None, max_length=255)
     email: Optional[str] = Field(None, max_length=255)
@@ -129,6 +131,11 @@ class FieldFormPemasok(IdentitasPajakDasar):
     tax_address: Optional[str] = None  # jalan; objek FE dipecah oleh _pecah_tax_address
     shipping_address: Optional[AlamatTerstruktur] = None
     contacts: Optional[List[KontakPemasok]] = Field(None, max_length=100)
+    contacts_replace: bool = Field(
+        False,
+        description="Penanda EKSPLISIT 'ganti seluruhnya' (pola NetSuite replaceAll): kontak yang tak ada di daftar "
+                    "dihapus HANYA bila true. Tanpa penanda: id = ubah, tanpa id = tambah, [] = tak ada perubahan.",
+    )
 
     @model_validator(mode="before")
     @classmethod
