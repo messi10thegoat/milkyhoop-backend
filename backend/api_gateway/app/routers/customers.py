@@ -104,6 +104,16 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 # HEALTH CHECK (must be before /{customer_id} to avoid route conflict)
 # =============================================================================
+def tolak_identitas_pajak_tak_lengkap(jenis_id, nomor_dokumen):
+    """V420: jenis ID Passport/Other tanpa nomor dokumen -> 422 bermedan (DB menolaknya juga: customers_nomor_dokumen_wajib)."""
+    if jenis_id in ("Passport", "Other") and not (nomor_dokumen or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "IDENTITAS_PAJAK_TIDAK_LENGKAP", "field": "nomor_dokumen",
+                    "message": f"Nomor dokumen wajib diisi untuk jenis ID {jenis_id}"},
+        )
+
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint for the customers service."""
@@ -273,7 +283,7 @@ async def list_customers(
             query = f"""
                 SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
                        points, total_transaksi, total_nilai, is_active, created_at,
-                       phone2, community
+                       phone2, community, nitku, jenis_id, negara, nomor_dokumen
                 FROM customers
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -319,6 +329,10 @@ async def list_customers(
                     "email": row["email"],
                     "community": row["community"],
                     "address": row["alamat"],
+                    "nitku": row["nitku"],
+                    "jenis_id": row["jenis_id"],
+                    "negara": row["negara"],
+                    "nomor_dokumen": row["nomor_dokumen"],
                     "points": row["points"],
                     "total_transactions": None,  # cache mati (26 Sep 2026) -> pakai jumlah_faktur
                     "total_value": None,  # cache mati (26 Sep 2026) -> pakai total_penjualan
@@ -397,7 +411,7 @@ async def get_customer(request: Request, customer_id: str):
                        mobile_phone, website, company_name, display_name,
                        customer_type, is_pkp, nik, currency,
                        ar_opening_balance, opening_balance_date, opening_balance_notes,
-                       phone2, community
+                       phone2, community, nitku, jenis_id, negara, nomor_dokumen
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -476,6 +490,10 @@ async def get_customer(request: Request, customer_id: str):
                     "nik": row["nik"],
                     "is_pkp": row["is_pkp"] or False,
                     "customer_type": row["customer_type"],
+                    "nitku": row["nitku"],
+                    "jenis_id": row["jenis_id"],
+                    "negara": row["negara"],
+                    "nomor_dokumen": row["nomor_dokumen"],
                     # Financial
                     "currency": row["currency"] or "IDR",
                     "payment_terms_days": row["payment_terms_days"] or 0,
@@ -723,7 +741,8 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     mobile_phone, website, company_name, display_name,
                     customer_type, is_pkp, nik, currency,
                     ar_opening_balance, opening_balance_date, opening_balance_notes,
-                    created_by, phone2, community
+                    created_by, phone2, community,
+                    nitku, jenis_id, negara, nomor_dokumen
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11,
@@ -731,7 +750,8 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     $16, $17, $18, $19,
                     $20, $21, $22, $23,
                     $24, $25, $26,
-                    $27, $28, $29
+                    $27, $28, $29,
+                    $30, $31, $32, $33
                 )
             """,
                     new_id,  # $1  id
@@ -764,6 +784,10 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     ctx["user_id"],  # $27 created_by
                     body.phone2,  # $28 phone2
                     body.community,  # $29 community
+                    body.nitku,  # $30 nitku (V420)
+                    body.jenis_id,  # $31 jenis_id
+                    body.negara,  # $32 negara
+                    body.nomor_dokumen,  # $33 nomor_dokumen
                 )
 
                 # Extract user info for activity logging
@@ -844,10 +868,17 @@ async def update_customer(
                         is_active, contact_person, city, province, postal_code,
                         tax_id, notes, mobile_phone, website, display_name,
                         customer_type, is_pkp, nik, currency, alamat,
-                        phone2, community
+                        phone2, community, nitku, jenis_id, negara, nomor_dokumen
                    FROM customers WHERE id = $1""",
                 customer_id,
             )
+
+            # V420: Passport/Other wajib bernomor dokumen -- cek keadaan GABUNGAN (badan + DB), bukan badan saja
+            if current and ({"jenis_id", "nomor_dokumen"} & body.model_fields_set):
+                tolak_identitas_pajak_tak_lengkap(
+                    body.jenis_id if "jenis_id" in body.model_fields_set else current["jenis_id"],
+                    body.nomor_dokumen if "nomor_dokumen" in body.model_fields_set else current["nomor_dokumen"],
+                )
 
             # Build update query dynamically
             update_data = body.model_dump(exclude_unset=True)
@@ -924,6 +955,10 @@ async def update_customer(
                     "customer_type": "Tipe pelanggan",
                     "is_pkp": "PKP",
                     "nik": "NIK",
+                    "nitku": "NITKU",
+                    "jenis_id": "Jenis ID",
+                    "negara": "Negara",
+                    "nomor_dokumen": "No. dokumen",
                     "currency": "Mata uang",
                     "address": "Alamat",
                     "alamat": "Alamat",

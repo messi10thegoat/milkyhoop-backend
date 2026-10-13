@@ -5,7 +5,7 @@ This module defines request and response models for the /api/customers endpoints
 Following QB/Xero/Zoho patterns for customer master data.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 import re
 
@@ -15,7 +15,62 @@ import re
 # =============================================================================
 
 
-class CreateCustomerRequest(BaseModel):
+JENIS_ID_PAJAK = ("TIN", "NIK", "Passport", "Other")
+JENIS_ID_BERDOKUMEN = ("Passport", "Other")
+
+
+def _kosong_jadi_none(v):
+    if isinstance(v, str):
+        v = v.strip()
+        return v or None
+    return v
+
+
+class _IdentitasPajakPelanggan(BaseModel):
+    """V420 (13 Okt 2026): identitas pajak pembeli (Coretax) di MASTER pelanggan; disnapshot ke faktur pajak saat terbit.
+    Dulu dibuang diam oleh skema (kolom hilang bersama DB lama) -- kini disimpan dan divalidasi."""
+
+    nitku: Optional[str] = Field(None, description="NITKU 22 digit (NPWP 16 digit + 6 digit cabang; pusat = 000000)")
+    jenis_id: Optional[Literal["TIN", "NIK", "Passport", "Other"]] = Field(None, description="Jenis ID pembeli (Coretax)")
+    negara: Optional[str] = Field(None, description="Kode negara ISO 3166 alpha-3, mis. IDN")
+    nomor_dokumen: Optional[str] = Field(None, max_length=50, description="Nomor paspor/dokumen (wajib bila Passport/Other)")
+
+    @field_validator("nitku", mode="before")
+    @classmethod
+    def _nitku_22_digit(cls, v):
+        v = _kosong_jadi_none(v)
+        if v is None:
+            return None
+        v = re.sub(r"[\s.\-]", "", str(v))
+        if not re.fullmatch(r"[0-9]{22}", v):
+            raise ValueError("NITKU harus 22 digit (NPWP 16 digit + 6 digit kode cabang; pusat = 000000)")
+        return v
+
+    @field_validator("jenis_id", "nomor_dokumen", mode="before")
+    @classmethod
+    def _kosong(cls, v):
+        return _kosong_jadi_none(v)
+
+    @field_validator("negara", mode="before")
+    @classmethod
+    def _negara_iso3(cls, v):
+        v = _kosong_jadi_none(v)
+        if v is None:
+            return None
+        v = str(v).upper()
+        if not re.fullmatch(r"[A-Z]{3}", v):
+            raise ValueError("Negara = kode ISO 3 huruf (mis. IDN, SGP)")
+        return v
+
+    @model_validator(mode="after")
+    def _dokumen_wajib(self):
+        # Hanya bila jenis_id DIKIRIM di badan ini; PATCH yang hanya mengubah nomor_dokumen dicek handler terhadap DB.
+        if "jenis_id" in self.model_fields_set and self.jenis_id in JENIS_ID_BERDOKUMEN and not self.nomor_dokumen:
+            raise ValueError(f"Nomor dokumen wajib diisi untuk jenis ID {self.jenis_id}")
+        return self
+
+
+class CreateCustomerRequest(_IdentitasPajakPelanggan):
     """Request body for creating a customer."""
 
     # Basic info
@@ -85,7 +140,7 @@ class CreateCustomerRequest(BaseModel):
         return v.strip()
 
 
-class UpdateCustomerRequest(BaseModel):
+class UpdateCustomerRequest(_IdentitasPajakPelanggan):
     """Request body for updating a customer (partial update)."""
 
     # Basic info
@@ -160,6 +215,11 @@ class CustomerListItem(BaseModel):
     city: Optional[str] = None
     tax_id: Optional[str] = None
     is_pkp: bool = False
+    # V420: identitas pajak pembeli (Coretax)
+    nitku: Optional[str] = None
+    jenis_id: Optional[str] = None
+    negara: Optional[str] = None
+    nomor_dokumen: Optional[str] = None
     payment_terms_days: int = 0
     credit_limit: Optional[int] = None
     points: Optional[int] = 0
@@ -221,6 +281,11 @@ class CustomerDetail(BaseModel):
     nik: Optional[str] = None
     is_pkp: bool = False
     customer_type: Optional[str] = None
+    # V420: identitas pajak pembeli (Coretax)
+    nitku: Optional[str] = None
+    jenis_id: Optional[str] = None
+    negara: Optional[str] = None
+    nomor_dokumen: Optional[str] = None
     
     # Financial
     currency: Optional[str] = "IDR"
