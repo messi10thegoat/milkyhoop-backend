@@ -278,6 +278,7 @@ class QuoteListItem(BaseModel):
     converted_to_id: Optional[str] = None
     created_at: str
     is_expired: bool = False
+    aksi: Optional[str] = None  # 13 Okt 2026: pill AKSI (services/penawaran_kedaluwarsa.AKSI) atau null
     # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
     sales_order_id: Optional[str] = None
     sales_order_number: Optional[str] = None
@@ -408,6 +409,17 @@ class QuoteSummary(BaseModel):
     pending_active_value: int = 0
     expired_pending_count: int = 0  # sent+viewed SUDAH kedaluwarsa (is_expired)
     expired_pending_value: int = 0
+    # 13 Okt 2026: pill AKSI (services/penawaran_kedaluwarsa.sql_aksi, tanggal bisnis, ambang segera_habis 3 hari)
+    perlu_dikirim_count: int = 0
+    perlu_dikirim_value: int = 0
+    tunggu_jawaban_count: int = 0
+    tunggu_jawaban_value: int = 0
+    segera_habis_count: int = 0
+    segera_habis_value: int = 0
+    lewat_masa_count: int = 0
+    lewat_masa_value: int = 0
+    perlu_dipesan_count: int = 0
+    perlu_dipesan_value: int = 0
 
 
 class QuoteSummaryResponse(BaseModel):

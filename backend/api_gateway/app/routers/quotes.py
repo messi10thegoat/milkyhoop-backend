@@ -14,6 +14,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
+from ..services.penawaran_kedaluwarsa import AKSI, AMBANG_SEGERA_HABIS, aksi_penawaran, sql_aksi, sql_aksi_berparam
 from ..services.sales_doc_calc import (
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
@@ -238,6 +239,8 @@ async def list_quotes(
         Literal["all", "draft", "sent", "viewed", "accepted", "declined",
                 "expired", "converted", "void", "invoiced"]
     ] = Query("all"),
+    # 13 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (tanggal bisnis), nilai asing = 422
+    aksi: Optional[Literal["perlu_dikirim", "tunggu_jawaban", "segera_habis", "lewat_masa", "perlu_dipesan"]] = Query(None),
     customer_id: Optional[str] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
@@ -268,6 +271,14 @@ async def list_quotes(
                 conditions.append(f"status = ${param_idx}")
                 params.append(status)
                 param_idx += 1
+
+            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant -- sekali per permintaan
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            if aksi in AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
+                _pred, _par = sql_aksi_berparam(aksi, param_idx, hari_ini)
+                conditions.append(_pred)
+                params.extend(_par)
+                param_idx += len(_par)
 
             if customer_id:
                 conditions.append(f"customer_id = ${param_idx}")
@@ -324,8 +335,6 @@ async def list_quotes(
             """
             params.extend([limit, eff_offset])
             rows = await conn.fetch(list_query, *params)
-            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
-            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             from ..services.kode_order import so_hasil_penawaran as _so_hasil
             so_hasil = await _so_hasil(conn, ctx["tenant_id"], [r["id"] for r in rows])  # batch, nol N+1
 
@@ -357,6 +366,7 @@ async def list_quotes(
                         else None,
                         created_at=row["created_at"].isoformat(),
                         is_expired=is_expired,
+                        aksi=aksi_penawaran(row["status"], row["expiry_date"], hari_ini, row["converted_to_id"]),
                         **so_hasil[str(row["id"])],
                     )
                 )
@@ -468,11 +478,18 @@ async def get_quote_summary(request: Request):
                     COUNT(*) FILTER (WHERE {aktif}) as pending_active_count,
                     COALESCE(SUM(total_amount) FILTER (WHERE {aktif}), 0) as pending_active_value,
                     COUNT(*) FILTER (WHERE {lewat}) as expired_pending_count,
-                    COALESCE(SUM(total_amount) FILTER (WHERE {lewat}), 0) as expired_pending_value
+                    COALESCE(SUM(total_amount) FILTER (WHERE {lewat}), 0) as expired_pending_value,
+                    -- 13 Okt 2026: pill AKSI (sql_aksi, sama dengan ?aksi= daftar)
+                    {aksi_kolom}
                 FROM quotes
                 WHERE tenant_id = $1
-            """.format(aktif=sql_menunggu_aktif("$2"), lewat=sql_kedaluwarsa("$2"))
-            row = await conn.fetchrow(query, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]))
+            """.format(aktif=sql_menunggu_aktif("$2"), lewat=sql_kedaluwarsa("$2"),
+                       aksi_kolom=",\n".join(
+                           f"COUNT(*) FILTER (WHERE {sql_aksi(k, '$2', '$3')}) as {k}_count, "
+                           f"COALESCE(SUM(total_amount) FILTER (WHERE {sql_aksi(k, '$2', '$3')}), 0) as {k}_value"
+                           for k in AKSI))
+            row = await conn.fetchrow(query, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                      AMBANG_SEGERA_HABIS)
 
             return QuoteSummaryResponse(
                 success=True,
@@ -495,6 +512,7 @@ async def get_quote_summary(request: Request):
                     "pending_active_value": row["pending_active_value"],
                     "expired_pending_count": row["expired_pending_count"],
                     "expired_pending_value": row["expired_pending_value"],
+                    **{f"{k}_{m}": row[f"{k}_{m}"] for k in AKSI for m in ("count", "value")},
                 },
             )
 
@@ -1161,6 +1179,12 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
 
     _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
                    | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
+    if quote["status"] == "sent":
+        # trg_quote_expiry (BEFORE UPDATE) membalik sent -> 'expired' pada UPDATE APA PUN bila berlaku < tanggal bisnis.
+        # Status tersimpan 'expired' memblok terima/tolak/batal/konversi/Perpanjang -> penawaran TERDAMPAR. Putusan:
+        # status TETAP sesudah diubah. UPDATE kedua tak memicu balik (OLD.status sudah 'expired').
+        await conn.execute("UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'",
+                           quote["id"], ctx["tenant_id"])
     _sesudah = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
     _beda = beda_penawaran(_sebelum, _sesudah, _ubah)
     if _ubah:

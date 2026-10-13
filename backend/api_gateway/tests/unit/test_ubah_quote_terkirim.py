@@ -94,7 +94,9 @@ async def test_belum_dijawab_boleh_diubah_status_tetap(pasang, status):
     db = pasang(DBU(status, kepala_sesudah={**KEPALA, "notes": "TES E2E baru"}))
     r = await Q.update_quote(_req(), QUOTE_ID, UpdateQuoteRequest(notes="TES E2E baru"))
     assert r.success and r.data["status"] == status and r.data["after_sent"] is True
-    assert not any("status" in s for (s, _, _) in db.urut if s.startswith("UPDATE quotes SET status"))
+    pulih = [a for (s, _, a) in db.urut if s.startswith("UPDATE quotes SET status")]
+    # trg_quote_expiry membalik HANYA OLD.status='sent' -> pemulihan bersyarat hanya untuk sent
+    assert len(pulih) == (1 if status == "sent" else 0)
     [(dalam, a)] = _audit(db)
     meta = json.loads(a[7])
     assert dalam and a[1] == "QUOTE_UPDATED"
@@ -250,3 +252,17 @@ def test_beda_total_selalu_ikut_bila_berubah():
 
 def test_status_boleh_ubah_persis():
     assert set(Q.STATUS_BOLEH_UBAH) == {"draft", "sent", "viewed", "expired"}
+
+
+@pytest.mark.asyncio
+async def test_pemulihan_status_sesudah_tulis_dan_bersyarat_expired(pasang):
+    """trg_quote_expiry: sent + berlaku < tanggal bisnis -> 'expired' pada UPDATE apa pun (memblok terima/konversi/
+    Perpanjang). Pemulihan = UPDATE bersyarat status='expired' -> 'sent', SESUDAH semua tulisan quotes."""
+    db = pasang(DBU("sent", kepala_sesudah={**KEPALA, "notes": "z"}))
+    await Q.update_quote(_req(), QUOTE_ID, UpdateQuoteRequest(notes="z"))
+    urut = [s for (s, _, _) in db.urut]
+    i_pulih = max(i for i, s in enumerate(urut) if s.startswith("UPDATE quotes SET status"))
+    assert all(i < i_pulih for i, s in enumerate(urut) if s.startswith("UPDATE quotes") and i != i_pulih)
+    import inspect
+    src = " ".join(inspect.getsource(Q._ubah_penawaran).split())
+    assert "UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'" in src
