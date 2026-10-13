@@ -895,9 +895,20 @@ async def get_quote_history(request: Request, quote_id: str, limit: int = Query(
     return {"success": True, "data": data}
 
 
+def _hasil_ubah(quote_id: str, status: str, sesudah_kirim: bool, ubah: list, beda: dict,
+                pesan: str = "Quote updated successfully") -> QuoteResponse:
+    """SATU pembangun respons PATCH /quotes/{id} + pratinjau, untuk jalur ubah penuh DAN perpanjang (14 Okt 2026,
+    W-20261014-QUOTE-PRATINJAU-BENTUK): badan apa pun -> kunci sama {id, status, after_sent, fields, diff, lines, total}."""
+    return QuoteResponse(success=True, message=pesan,
+                         data={"id": quote_id, "status": status, "after_sent": sesudah_kirim, "fields": ubah, **beda})
+
+
 async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> QuoteResponse:
     """Perpanjang (2 Okt 2026, MASTER): HANYA expiry_date pada penawaran sent/viewed. Fungsi terpisah dari
-    update_quote supaya penjaga pelanggan-satu-tenant tetap mendahului UPDATE quotes di jalur ubah penuh."""
+    update_quote supaya penjaga pelanggan-satu-tenant tetap mendahului UPDATE quotes di jalur ubah penuh.
+    14 Okt 2026: UPDATE sempit + riwayat QUOTE_EXPIRY_EXTENDED tetap; respons = _hasil_ubah (bentuk jalur penuh)."""
+    status = quote["status"]
+    _sebelum = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
     quote = await conn.fetchrow(
         "SELECT id, quote_number, quote_date, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2",
         quote["id"], ctx["tenant_id"])
@@ -912,13 +923,17 @@ async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> 
     await conn.execute(
         "UPDATE quotes SET expiry_date = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
         quote["id"], ctx["tenant_id"], baru)
+    if status == "sent":  # trg_quote_expiry: sama dengan jalur ubah penuh -- status TETAP
+        await conn.execute("UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'",
+                           quote["id"], ctx["tenant_id"])
     await catat_riwayat(
         conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_EXPIRY_EXTENDED",
         ctx.get("user_id"), f"Masa berlaku penawaran {quote['quote_number']} diperpanjang sampai "
         f"{baru.isoformat()}", {"old": quote["expiry_date"].isoformat() if quote["expiry_date"] else None,
                                 "new": baru.isoformat()}, source="api:quotes")
-    return QuoteResponse(success=True, message="Quote validity extended",
-                         data={"quote_id": quote_id, "expiry_date": baru.isoformat()})
+    _sesudah = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
+    return _hasil_ubah(quote_id, status, True, ["expiry_date"], beda_penawaran(_sebelum, _sesudah, ["expiry_date"]),
+                       "Quote validity extended")
 
 
 @router.patch("/{quote_id}", response_model=QuoteResponse)
@@ -1202,11 +1217,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
             source="api:quotes.update",
         )
 
-    return QuoteResponse(
-        success=True,
-        message="Quote updated successfully",
-        data={"id": quote_id, "status": quote["status"], "after_sent": _sesudah_kirim, "fields": _ubah, **_beda},
-    )
+    return _hasil_ubah(quote_id, quote["status"], _sesudah_kirim, _ubah, _beda)
 
 
 class _BatalkanUbahPenawaran(Exception):

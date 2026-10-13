@@ -266,3 +266,56 @@ async def test_pemulihan_status_sesudah_tulis_dan_bersyarat_expired(pasang):
     import inspect
     src = " ".join(inspect.getsource(Q._ubah_penawaran).split())
     assert "UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'" in src
+
+
+# ---- bentuk respons SAMA untuk badan apa pun (14 Okt 2026, W-20261014-QUOTE-PRATINJAU-BENTUK) ----
+# Gejala (WORKSPACE, kaos): pratinjau expiry-saja pada 'sent' -> {quote_id, expiry_date, preview} tanpa status/total/diff.
+
+class DBP(DBU):
+    """+ baca kepala jalur perpanjang (SELECT id, quote_number, quote_date, expiry_date)."""
+
+    async def fetchrow(self, sql, *a):
+        s = " ".join(sql.split())
+        if s.startswith("SELECT id, quote_number, quote_date, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2"):
+            k = self.potret_kepala[0]
+            return {"id": a[0], "quote_number": "QUO-2610-0018", "quote_date": k["quote_date"], "expiry_date": k["expiry_date"]}
+        return await super().fetchrow(sql, *a)
+
+
+_BARU = date(2026, 10, 31)
+
+
+@pytest.mark.asyncio
+async def test_pratinjau_expiry_saja_bentuk_sama_dengan_pratinjau_catatan(pasang):
+    pasang(DBU("sent", kepala_sesudah={**KEPALA, "notes": "baru"}))
+    a = await Q.preview_edit_quote(_req(), QUOTE_ID, UpdateQuoteRequest(notes="baru"))
+    db = pasang(DBP("sent", kepala_sesudah={**KEPALA, "expiry_date": _BARU}))
+    b = await Q.preview_edit_quote(_req(), QUOTE_ID, UpdateQuoteRequest(expiry_date=_BARU))
+    assert set(b.data) == set(a.data), (sorted(a.data), sorted(b.data))
+    assert b.data["status"] == "sent" and b.data["after_sent"] is True and b.data["fields"] == ["expiry_date"]
+    assert b.data["diff"] == {"expiry_date": ["2026-10-27", "2026-10-31"]}
+    assert b.data["total"] == [100000.0, 100000.0] and b.data["preview"] is True
+    assert db.keluar and db.keluar[-1] is Q._BatalkanUbahPenawaran, "pratinjau perpanjang WAJIB ROLLBACK"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["sent", "viewed"])
+async def test_patch_expiry_saja_status_tetap_bentuk_lengkap_jalur_sempit(pasang, status):
+    db = pasang(DBP(status, kepala_sesudah={**KEPALA, "expiry_date": _BARU}))
+    r = await Q.update_quote(_req(), QUOTE_ID, UpdateQuoteRequest(expiry_date=_BARU))
+    assert r.data["id"] == QUOTE_ID and r.data["status"] == status and r.data["diff"]["expiry_date"][1] == "2026-10-31"
+    tulis = db.tulis_quotes()
+    assert any(_BARU in a for a in tulis), "UPDATE sempit expiry_date tetap"
+    assert not any(s.startswith("UPDATE quotes SET quote_date") or "notes" in s for (s, _, _) in db.urut if s.startswith("UPDATE quotes"))
+    pulih = [a for (s, _, a) in db.urut if s.startswith("UPDATE quotes SET status")]
+    assert len(pulih) == (1 if status == "sent" else 0)   # trg_quote_expiry: sama dengan jalur penuh
+    [(_, a)] = _audit(db)
+    assert a[1] == "QUOTE_EXPIRY_EXTENDED", "riwayat perpanjang tetap"
+    assert db.keluar == [None]
+
+
+def test_satu_pembangun_respons_ubah():
+    import inspect
+    for f in (Q._ubah_penawaran, Q._perpanjang_penawaran):
+        src = inspect.getsource(f)
+        assert "_hasil_ubah(" in src and "QuoteResponse(" not in src, f.__name__
