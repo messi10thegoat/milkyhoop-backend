@@ -310,3 +310,214 @@ async def lepas_lampiran_so(request: Request, order_id: UUID, attachment_id: UUI
                 raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
             terpakai = await hitung_lampiran_tersedia(conn, tenant_id, _ENTITAS, order_id)
     return {"success": True, "kuota": _kuota(terpakai)}
+
+
+# =============================================================================
+# W-20261013-LAMPIRAN-SO: tab "Lampiran (N)" panel SO -- SEMUA lampiran keluarga
+# SO, dikelompokkan per dokumen (pola NetSuite subtab Files / SAP Attachments).
+# Tahap 1 BACA saja.
+#
+# Temuan pemilik grapgrap (SO-2610-0019): bukti transfer DP "tak bisa dilihat
+# lagi". Diukur: berkas utuh (149/149 objek MinIO ada); panel SO hanya membaca
+# lampiran milik SO sendiri, padahal bukti tertaut ke DOKUMEN ANAK (DP,
+# penerimaan, SJ, faktur) -> 103 lampiran hub + 20 lampiran faktur lama di 72 SO
+# tak terlihat dari panel.
+#
+# Pagar:
+#  * SO bukan milik tenant JWT -> 404. SETIAP tabel di SQL keluarga disaring
+#    tenant eksplisit (gateway = peran BYPASSRLS; RLS bukan pagar).
+#  * Izin per GRUP = izin rute /download modul grup itu (ROUTE_PERMISSIONS +
+#    PolicyEngine yang sama dengan middleware). Tanpa izin -> grup diganti
+#    {jenis, tersembunyi_izin, jumlah} tanpa nomor dokumen/nama berkas.
+#  * url = rute /download modul yang SUDAH ADA (pagar induk+tenant tiap modul
+#    tetap berlaku); berkas tak tersedia (baris 'local' lama, musnah 23 Sep)
+#    tetap dikirim dengan tersedia=false + url null, bukan dihilangkan diam.
+# =============================================================================
+PENANDA_LAMPIRAN_KELUARGA = "lampiran-so-keluarga-w20261013"
+
+# jenis -> (segmen URL modul untuk /download, jalur izin bila TAK ada rute download)
+JENIS_KELUARGA = {
+    "sales_order": ("sales-orders", None),
+    "quote": (None, "/api/quotes/{id}"),
+    "proforma": (None, "/api/proformas/{id}"),
+    "customer_deposit": ("customer-deposits", None),
+    "receive_payment": ("receive-payments", None),
+    "delivery": ("deliveries", None),
+    "sales_invoice": ("sales-invoices", None),
+}
+URUTAN_JENIS = list(JENIS_KELUARGA)
+STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})
+
+
+def jalur_izin_jenis(jenis: str) -> str:
+    """Jalur contoh yang izinnya mewakili grup `jenis` (id tiruan, pola [^/]+)."""
+    modul, cadangan = JENIS_KELUARGA[jenis]
+    if modul:
+        return url_unduh_lampiran(modul, "x", "x")
+    return cadangan.format(id="x")
+
+
+# Keluarga SO. $1 = SO id, $2 = tenant. Tiap tabel berpredikat tenant_id = $2.
+#  - penawaran: sales_orders.quote_id
+#  - proforma: proformas.sales_order_id
+#  - DP: customer_deposits.sales_order_id / quote_id penawaran SO / proforma_id keluarga
+#  - faktur: sales_invoices.sales_order_id
+#  - penerimaan: alokasi ke faktur keluarga, ATAU source/created_deposit_id = DP keluarga
+#  - SJ: invoice_fulfillments.sales_order_id
+#  Alias tiap tabel UNIK (penjaga tes membaca predikat tenant per alias).
+#  entity_type 'payment' dipakai BERSAMA penerimaan & pembayaran-keluar -> hanya id yang
+#  ADA di receive_payments tenant ini yang dicocokkan.
+_SQL_KELUARGA = """
+WITH so AS (
+    SELECT id, quote_id FROM sales_orders WHERE id = $1 AND tenant_id = $2
+), pf AS (
+    SELECT pfx.id FROM proformas pfx JOIN so ON pfx.sales_order_id = so.id WHERE pfx.tenant_id = $2
+), dp AS (
+    SELECT cdx.id FROM customer_deposits cdx, so
+    WHERE cdx.tenant_id = $2
+      AND (cdx.sales_order_id = so.id
+           OR (so.quote_id IS NOT NULL AND cdx.quote_id = so.quote_id)
+           OR cdx.proforma_id IN (SELECT id FROM pf))
+), si AS (
+    SELECT six.id FROM sales_invoices six JOIN so ON six.sales_order_id = so.id WHERE six.tenant_id = $2
+), rp AS (
+    SELECT rpx.id FROM receive_payments rpx
+    WHERE rpx.tenant_id = $2
+      AND (EXISTS (SELECT 1 FROM receive_payment_allocations alx
+                   WHERE alx.payment_id = rpx.id AND alx.tenant_id = $2
+                     AND alx.invoice_id IN (SELECT id FROM si))
+           OR rpx.source_deposit_id IN (SELECT id FROM dp)
+           OR rpx.created_deposit_id IN (SELECT id FROM dp))
+), meta AS (
+    SELECT 'sales_order'::text AS jenis, 'sales_order'::text AS et, s.id,
+           s.order_number::text AS nomor, s.order_date::date AS tanggal, s.status::text AS status
+    FROM sales_orders s JOIN so ON s.id = so.id WHERE s.tenant_id = $2
+    UNION ALL
+    SELECT 'quote', 'quote', q.id, q.quote_number, q.quote_date::date, q.status
+    FROM quotes q JOIN so ON q.id = so.quote_id WHERE q.tenant_id = $2
+    UNION ALL
+    SELECT 'proforma', 'proforma', p.id, p.proforma_number, p.proforma_date::date, p.status
+    FROM proformas p WHERE p.tenant_id = $2 AND p.id IN (SELECT id FROM pf)
+    UNION ALL
+    SELECT 'customer_deposit', 'customer_deposit', c.id, c.deposit_number, c.deposit_date::date, c.status
+    FROM customer_deposits c WHERE c.tenant_id = $2 AND c.id IN (SELECT id FROM dp)
+    UNION ALL
+    SELECT 'receive_payment', 'payment', r.id, r.payment_number, r.payment_date::date, r.status
+    FROM receive_payments r WHERE r.tenant_id = $2 AND r.id IN (SELECT id FROM rp)
+    UNION ALL
+    SELECT 'delivery', 'delivery', f.id, f.fulfillment_number, f.fulfillment_date::date, f.status
+    FROM invoice_fulfillments f JOIN so ON f.sales_order_id = so.id WHERE f.tenant_id = $2
+    UNION ALL
+    SELECT 'sales_invoice', 'sales_invoice', i.id, i.invoice_number, i.invoice_date::date, i.status
+    FROM sales_invoices i WHERE i.tenant_id = $2 AND i.id IN (SELECT id FROM si)
+)
+SELECT m.jenis, m.id AS dok_id, m.nomor, m.tanggal, m.status,
+       d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,
+       d.file_type AS mime, d.file_size AS ukuran, d.storage_type, d.uploaded_at,
+       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''),
+                NULLIF(trim(u.name), ''), u.email) AS pengunggah,
+       'hub'::text AS sumber
+FROM meta m
+JOIN document_attachments da
+  ON da.entity_type = m.et AND da.entity_id = m.id AND da.tenant_id = $2
+JOIN documents d ON d.id = da.document_id AND d.tenant_id = $2 AND d.deleted_at IS NULL
+LEFT JOIN "User" u ON u.id = d.uploaded_by::text
+LEFT JOIN user_profiles up ON up.user_id = u.id
+UNION ALL
+SELECT m.jenis, m.id, m.nomor, m.tanggal, m.status,
+       sa.id, sa.filename, sa.mime_type, sa.file_size, NULL, sa.uploaded_at,
+       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''),
+                NULLIF(trim(u.name), ''), u.email),
+       'faktur_lama'
+FROM meta m
+JOIN sales_invoice_attachments sa ON sa.invoice_id = m.id AND sa.tenant_id = $2
+LEFT JOIN "User" u ON u.id = sa.uploaded_by::text
+LEFT JOIN user_profiles up ON up.user_id = u.id
+WHERE m.jenis = 'sales_invoice'
+"""
+
+
+def _tersedia_baris(r) -> bool:
+    # Tabel lama faktur: rute download faktur menyajikannya (tersedia=True di GET faktur).
+    if r["sumber"] == "faktur_lama":
+        return True
+    return lampiran_tersedia(r["storage_type"])
+
+
+def susun_grup_lampiran(rows, boleh: dict) -> dict:
+    """Baris SQL keluarga -> respons. `boleh` = {jenis: bool} hasil izin rute."""
+    grup = {}
+    for r in rows:
+        kunci = (r["jenis"], str(r["dok_id"]))
+        g = grup.get(kunci)
+        if g is None:
+            status = (r["status"] or "").lower()
+            g = grup[kunci] = {
+                "dokumen": {
+                    "jenis": r["jenis"],
+                    "id": str(r["dok_id"]),
+                    "nomor": r["nomor"],
+                    "tanggal": r["tanggal"].isoformat() if r["tanggal"] else None,
+                    "status": r["status"],
+                    "void": status in STATUS_VOID,
+                },
+                "lampiran": [],
+                "_kunci_lampiran": set(),
+            }
+        lid = str(r["lampiran_id"])
+        if lid in g["_kunci_lampiran"]:
+            continue
+        g["_kunci_lampiran"].add(lid)
+        modul = JENIS_KELUARGA[r["jenis"]][0]
+        tersedia = _tersedia_baris(r)
+        g["lampiran"].append({
+            "id": lid,
+            "display_name": r["nama"],
+            "mime": r["mime"],
+            "ukuran": r["ukuran"],
+            "diunggah_oleh": r["pengunggah"],
+            "diunggah_pada": r["uploaded_at"].isoformat() if r["uploaded_at"] else None,
+            "tersedia": tersedia,
+            # berkas musnah (baris 'local' lama) / modul tanpa rute unduh -> null, bukan tautan mati
+            "url": url_unduh_lampiran(modul, r["dok_id"], lid) if (tersedia and modul) else None,
+        })
+
+    terlihat, tersembunyi = [], {}
+    for (jenis, _), g in grup.items():
+        g.pop("_kunci_lampiran")
+        g["lampiran"].sort(key=lambda x: (x["diunggah_pada"] or "", x["id"]))
+        if boleh.get(jenis):
+            terlihat.append(g)
+        else:
+            tersembunyi[jenis] = tersembunyi.get(jenis, 0) + len(g["lampiran"])
+    terlihat.sort(key=lambda g: (
+        URUTAN_JENIS.index(g["dokumen"]["jenis"]),
+        g["dokumen"]["tanggal"] or "",
+        g["dokumen"]["nomor"] or "",
+    ))
+    data = terlihat + [
+        {"dokumen": {"jenis": j}, "tersembunyi_izin": True, "jumlah": n}
+        for j, n in sorted(tersembunyi.items(), key=lambda x: URUTAN_JENIS.index(x[0]))
+    ]
+    # Satu berkas bisa tertaut ke >1 dokumen keluarga: tampil di tiap grup, dihitung sekali.
+    unik = {lp["id"] for g in terlihat for lp in g["lampiran"]}
+    return {"success": True, "data": data, "jumlah": len(unik)}
+
+
+@router.get("/{order_id}/lampiran")
+async def lampiran_keluarga_so(request: Request, order_id: UUID):
+    from ..middleware.permission_middleware import izin_rute_pengguna
+
+    ctx = _ctx(request)
+    tenant_id = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await _pastikan_so(conn, order_id, tenant_id)
+            rows = await conn.fetch(_SQL_KELUARGA, order_id, tenant_id)
+    jenis_ada = sorted({r["jenis"] for r in rows}, key=URUTAN_JENIS.index)
+    jalur = {j: jalur_izin_jenis(j) for j in jenis_ada}
+    izin = await izin_rute_pengguna(request.state.user, list(jalur.values())) if jalur else {}
+    boleh = {j: izin.get(p, False) for j, p in jalur.items()}
+    return susun_grup_lampiran(rows, boleh)

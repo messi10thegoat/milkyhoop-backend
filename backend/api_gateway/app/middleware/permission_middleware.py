@@ -70,6 +70,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/[^/]+/attachments$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-orders/[^/]+/attachments/[^/]+/download$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-orders/[^/]+/attachments/[^/]+$", ["DELETE"], "sales_order", "D"),
+    # W-20261013-LAMPIRAN-SO: tab Lampiran panel SO (seluruh keluarga SO). Rute ini = baca SO; tiap GRUP
+    # dokumen anak disaring lagi di handler dgn izin rute /download modulnya (izin_rute_pengguna di bawah).
+    (r"^/api/sales-orders/[^/]+/lampiran$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-invoices$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices$", ["POST"], "sales_invoice", "C"),
     (r"^/api/sales-invoices/[^/]+$", ["GET"], "sales_invoice", "R"),
@@ -1394,3 +1397,48 @@ class PermissionMiddleware(BaseHTTPMiddleware):
 def create_permission_middleware(skip_permission_check: bool = False):
     """Factory function to create permission middleware."""
     return lambda app: PermissionMiddleware(app, skip_permission_check)
+
+
+# ---------------------------------------------------------------------------
+# W-20261013-LAMPIRAN-SO: izin per RUTE untuk handler yang menggabungkan data
+# beberapa modul (tab Lampiran panel SO). Sumbernya SATU: tabel ROUTE_PERMISSIONS
+# + PolicyEngine yang SAMA dengan middleware (impor absolut di atas -- jangan
+# impor ulang lewat path relatif: dua objek modul = dua singleton). Handler
+# bertanya "boleh GET jalur X?" -> jawaban = jawaban middleware bila pengguna
+# memanggil X langsung. Tak terpetakan -> hanya OWNER (= READ default tertutup).
+# ---------------------------------------------------------------------------
+_RUTE_IZIN_TERKOMPILASI = [
+    (re.compile(pattern), methods, module, action)
+    for pattern, methods, module, action in ROUTE_PERMISSIONS
+]
+
+
+def izin_untuk_jalur(path: str, method: str = "GET") -> Optional[Tuple[str, str]]:
+    """(modul, aksi) pola PERTAMA yang cocok -- urutan sama dengan middleware."""
+    for pattern, methods, module, action in _RUTE_IZIN_TERKOMPILASI:
+        if method in methods and pattern.match(path):
+            return (module, action)
+    return None
+
+
+async def izin_rute_pengguna(user: dict, jalur: List[str], method: str = "GET") -> dict:
+    """{jalur: boleh?} untuk satu pengguna; konteks peran diambil SEKALI."""
+    pe = get_policy_engine()
+    ctx = await pe.get_user_context(
+        user_id=user["user_id"],
+        tenant_id=user["tenant_id"],
+        subscription_role=user.get("role", "USER"),
+    )
+    hasil = {}
+    for j in jalur:
+        if not ctx.membership_active or ctx.business_role_id is None:
+            hasil[j] = False
+            continue
+        perlu = izin_untuk_jalur(j, method)
+        if perlu is None:
+            hasil[j] = ctx.business_role_code == "OWNER"
+            continue
+        modul, aksi = perlu
+        hasil[j] = bool(await pe.can(ctx, aksi, modul))
+    return hasil
+
