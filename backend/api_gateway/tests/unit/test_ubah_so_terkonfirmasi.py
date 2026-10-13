@@ -244,3 +244,22 @@ def test_patch_menyimpan_replay_di_setiap_jalan_sukses():
     assert src.count("return SalesOrderResponse(") == 1  # satu-satunya = bentuk replay
     assert src.count("_simpan_idem_patch(") == 3          # judul-saja, terkonfirmasi, draf
     assert src.index("IDEM:") < src.index("FOR UPDATE")  # kunci idempotensi sebelum baris SO
+
+
+# ---- W-20261013-UBAH-SO-NOOP (13 Okt 2026): medan terkunci bernilai SAMA = no-op; beda = 409 SO_FIELD_LOCKED terstruktur ----
+
+@pytest.mark.asyncio
+async def test_nomor_sama_bukan_medan_terkunci_nomor_beda_terkunci_terstruktur():
+    st, d = await _galat(_Conn(), {"order_number": "SO-1", "items": [{"id": str(L1), "quantity": 1}]})
+    assert d["code"] == "SO_LINE_QTY_BELOW_USED"      # nomor sama LOLOS penjaga medan; yang menolak = baris
+    st, d = await _galat(_Conn(), {"order_number": "SO-2"})
+    assert st == 409 and d["code"] == "SO_FIELD_LOCKED" and d["fields"] == ["order_number"]
+    st, d = await _galat(_Conn(), {"order_number": " SO-1 ", "customer_name": "B"})   # nomor sama (trim) tak ikut terkunci
+    assert d["code"] == "SO_FIELD_LOCKED" and d["fields"] == ["customer_name"]
+
+
+def test_pra_cek_nomor_router_hanya_jalur_draf_dan_medan_sama_tak_masuk_riwayat():
+    src = inspect.getsource(SO.update_sales_order)
+    assert "Nomor dokumen yang sudah terbit tidak dapat diubah" not in src      # 400 polos hilang; service yang menolak
+    assert 'order["status"] == "draft" and await conn.fetchval(' in src         # pra-cek unik hanya draf
+    assert "fs -= set(HEADER_KUNCI)" in inspect.getsource(SUT.ubah)

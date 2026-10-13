@@ -1042,9 +1042,10 @@ async def update_sales_order(
                 if _new_num is None:
                     body.__pydantic_fields_set__.discard("order_number")
                 else:
-                    if order["status"] != "draft":
-                        raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
-                    if await conn.fetchval(
+                    # Nomor di SO TERKONFIRMASI = medan terkunci: sama -> no-op, beda -> 409 SO_FIELD_LOCKED terstruktur
+                    # (so_ubah_terkonfirmasi, SAMA dengan pratinjau). Pra-cek unik hanya untuk jalur draf (13 Okt 2026:
+                    # FE mengirim balik seluruh form -> dulu 400 polos walau nomor tak berubah, sedangkan pratinjau hijau).
+                    if order["status"] == "draft" and await conn.fetchval(
                         "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
                         ctx["tenant_id"], _new_num, _so_uuid(order_id)):
                         raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")

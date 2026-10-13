@@ -152,6 +152,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     kunci = [k for k in kunci if not _sama(getattr(body, k), so.get(k))]
     if kunci:
         galat(409, "SO_FIELD_LOCKED", "Pelanggan dan nomor pesanan tidak bisa diubah setelah dikonfirmasi.", fields=kunci)
+    fs -= set(HEADER_KUNCI)   # medan terkunci bernilai SAMA = no-op: tak masuk payload/riwayat (FE boleh kirim balik form)
     dikenal = set(HEADER_BEBAS) | set(HEADER_UANG) | set(HEADER_KUNCI) | {"items", "dp_percent", "dp_amount"}
     asing = sorted(fs - dikenal)
     if asing:
