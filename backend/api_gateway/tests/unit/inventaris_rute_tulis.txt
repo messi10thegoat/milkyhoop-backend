@@ -436,6 +436,7 @@ POST /api/quotes
 POST /api/quotes/{quote_id}/accept
 POST /api/quotes/{quote_id}/decline
 POST /api/quotes/{quote_id}/duplicate
+POST /api/quotes/{quote_id}/edit/preview
 POST /api/quotes/{quote_id}/send
 POST /api/quotes/{quote_id}/to-invoice
 POST /api/quotes/{quote_id}/to-order
