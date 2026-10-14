@@ -41,15 +41,26 @@ def test_menunggu_tagih_satu_pemilih_tanpa_potongan(monkeypatch):
     assert kartu["truncated"] is True
 
 
-def test_id_tugas_so_memakai_pemilih_so_agregat(monkeypatch):
-    a, b = [uuid.uuid4()], [uuid.uuid4()]
+def test_id_tugas_menunggu_tagih_ikut_pill_perlu_ditagih(monkeypatch):
+    # DEFINISI-TAGIH (14 Okt 2026, MASTER): kartu "Menunggu tagih" = pill perlu_ditagih (so_aksi), BUKAN so_agregat uang
+    from datetime import date
+    from app.services import so_aksi
+    a, x, b = uuid.uuid4(), uuid.uuid4(), [uuid.uuid4()]
+    terima = {}
 
-    async def bt(c, t): return a
+    async def fakta(c, t, hari_ini, so_ids=None):
+        terima["args"] = (t, hari_ini, so_ids)
+        return {a: {"aksi": ["perlu_dikirim", "perlu_ditagih"]}, x: {"aksi": ["perlu_dikirim"]}}
+
+    async def bt(c, t): return [x]
     async def sl(c, t): return b
+    monkeypatch.setattr(so_aksi, "fakta", fakta)
     monkeypatch.setattr(SA, "id_belum_ditagih", bt)
     monkeypatch.setattr(SA, "id_selesai", sl)
-    assert asyncio.run(DV.id_tugas(None, T, "menunggu_tagih", None)) == a
-    assert asyncio.run(DV.id_tugas(None, T, "selesai", None)) == b
+    hi = date(2026, 10, 14)
+    assert asyncio.run(DV.id_tugas(None, T, "menunggu_tagih", hi)) == [a]
+    assert terima["args"] == (T, hi, None)
+    assert asyncio.run(DV.id_tugas(None, T, "selesai", hi)) == b
 
 
 def test_selesai_kartu_dan_tugas_satu_status():

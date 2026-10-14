@@ -1,4 +1,4 @@
-"""Pill AKSI daftar Pesanan (W-20261014-AKSI-SO, 14 Okt 2026; putusan MASTER B1). Pola quote 864f5ed2: ?aksi=<kunci>,
+"""Pill AKSI daftar Pesanan (W-20261014-AKSI-SO, 14 Okt 2026; B1 pagi -> DEFINISI-TAGIH sore: NetSuite Pending Billing). Pola quote 864f5ed2: ?aksi=<kunci>,
 `aksi` per baris = kunci paling mendesak, /summary <kunci>_count/_value -- SATU sumber (services/so_aksi.fakta)."""
 import re
 import typing
@@ -33,8 +33,9 @@ def test_arsip_tanpa_aksi(st):
     assert A.aksi_so(st, date(2026, 1, 1), HARI, [_b(5, True, True), _b(3, False, False)]) == []
 
 
-def test_sisa_kirim_tanggal_lewat_telat_dan_perlu_dikirim():
-    assert A.aksi_so("confirmed", date(2026, 10, 13), HARI, [_b(5, True, True, kirim=2)]) == ["telat_kirim", "perlu_dikirim", "perlu_ditagih"]
+def test_sisa_kirim_tanggal_lewat_telat_saja_bukan_perlu_dikirim():
+    # DEFINISI-TAGIH: telat | perlu_dikirim | siap = partisi; 2 terkirim belum difaktur -> perlu_ditagih
+    assert A.aksi_so("confirmed", date(2026, 10, 13), HARI, [_b(5, True, True, kirim=2)]) == ["telat_kirim", "perlu_ditagih"]
 
 
 def test_tanggal_hari_ini_atau_kosong_bukan_telat():
@@ -46,10 +47,31 @@ def test_tanggal_lewat_tanpa_sisa_kirim_bukan_telat():
     assert A.aksi_so("partial_invoiced", date(2026, 9, 1), HARI, [_b(5, True, True, kirim=5, fak=2)]) == ["perlu_ditagih"]
 
 
-def test_b1_non_stok_wajib_serah_bisa_ditagih_penuh_sebelum_kirim():
-    # grapgrap: perlu_kirim=true (flag serah) pada barang NON-stok -> tagih = qty pesan (B1), kirim tetap bersisa
-    assert A.aksi_so("confirmed", None, HARI, [_b(4, True, False)]) == ["perlu_dikirim", "perlu_ditagih"]
+def test_bawaan_non_stok_wajib_serah_belum_diserahkan_bukan_perlu_ditagih():
+    # grapgrap SO-2610-0019/-0014: barang NON-stok perlu_kirim, nol diserahkan -> BUKAN perlu_ditagih (NetSuite)
+    assert A.aksi_so("confirmed", None, HARI, [_b(4, True, False)]) == ["perlu_dikirim"]
+    assert A.aksi_so("confirmed", None, HARI, [_b(4, True, False, kirim=1)]) == ["perlu_dikirim", "perlu_ditagih"]
     assert A.aksi_so("invoiced", None, HARI, [_b(4, True, False, fak=4)]) == ["perlu_dikirim"]
+    assert A.aksi_so("confirmed", None, HARI, [_b(3, False, False)]) == ["perlu_ditagih"]   # tanpa kirim: tagih langsung
+
+
+def test_flag_tagih_sebelum_kirim_kembali_ke_b1():
+    assert A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], tagih_sebelum_kirim=True) == ["perlu_dikirim", "perlu_ditagih"]
+    assert A.aksi_so("confirmed", None, HARI, [_b(5, False, True)], tagih_sebelum_kirim=True) == []
+    assert A.aksi_so("confirmed", None, HARI, [_b(5, True, True)], tagih_sebelum_kirim=True) == ["perlu_dikirim"]
+
+
+def test_sebagian_terkirim_dua_baris_dikirim_dan_ditagih():
+    # kaos SO-2609-0273 (Partially Fulfilled / Pending Billing): baris 1 terkirim belum difaktur, baris 2 masih sisa kirim
+    b = [_b(2, True, True, kirim=2), _b(3, True, True)]
+    assert A.aksi_so("confirmed", None, HARI, b) == ["perlu_dikirim", "perlu_ditagih"]
+
+
+@pytest.mark.parametrize("tgl", [date(2026, 10, 1), HARI, None])
+@pytest.mark.parametrize("fase", [None, "tersedia"])
+def test_telat_dikirim_siap_partisi_bersih(tgl, fase):
+    a = A.aksi_so("confirmed", tgl, HARI, [_b(4, True, False, kirim=1)], fase_lokasi=fase)
+    assert len({"telat_kirim", "perlu_dikirim", "siap_diserahkan"} & set(a)) == 1
 
 
 def test_b1_barang_stok_tagih_hanya_yang_terkirim():
@@ -58,9 +80,9 @@ def test_b1_barang_stok_tagih_hanya_yang_terkirim():
     assert A.aksi_so("partial_shipped", None, HARI, [_b(5, True, True, kirim=3, fak=2)]) == ["perlu_dikirim", "perlu_ditagih"]
 
 
-def test_stok_tanpa_wajib_kirim_tetap_tagih_dari_terkirim_bukan_kirim():
-    # perlu_kirim=false eksplisit pada barang stok: tak ada sisa kirim; tagih tetap mengikuti terkirim (B1 = stok)
-    assert A.aksi_so("confirmed", None, HARI, [_b(5, False, True)]) == []
+def test_stok_tanpa_wajib_kirim_bisa_ditagih_langsung():
+    # perlu_kirim=false eksplisit pada barang stok: tak ada sisa kirim -> baris tanpa kirim = tagih qty pesan
+    assert A.aksi_so("confirmed", None, HARI, [_b(5, False, True)]) == ["perlu_ditagih"]
 
 
 def test_semua_beres_tanpa_aksi_dan_tanpa_baris():
@@ -106,6 +128,7 @@ class _Conn:
 
     def __init__(self, so, baris, kirim, fak, pf=()):
         self.so, self.baris, self.kirim, self.fak, self.pf, self.q = so, baris, kirim, fak, list(pf), []
+        self.tagih_sebelum = False
 
     async def fetch(self, q, *a):
         n = {int(x) for x in re.findall(r"\$(\d+)", q)}
@@ -121,6 +144,9 @@ class _Conn:
             return [r for r in self.fak if r["so_id"] in set(a[1])]
         if "JOIN sales_order_items soi" in q:
             return [r for r in self.baris if r["so_id"] in set(a[1])]
+        if "FROM tenant_features" in q:  # DEFINISI-TAGIH: flag tagih_sebelum_kirim
+            assert a[1] == A.FLAG_TAGIH_SEBELUM_KIRIM
+            return [{"?column?": 1}] if self.tagih_sebelum else []
         if "FROM proformas" in q:  # AKSI-SO-2: so_posisi.id_menunggu_dp
             return [r for r in self.pf if r["sales_order_id"] in set(a[1])]
         raise AssertionError(q)
@@ -149,18 +175,30 @@ async def test_fakta_seluruh_tenant_dan_arsip_tak_dikueri_barisnya():
     s, c = _dunia()
     f = await A.fakta(c, TENANT, HARI)
     assert f[s["draf"]]["aksi"] == ["perlu_dikonfirmasi"]
-    assert f[s["telat"]]["aksi"] == ["telat_kirim", "perlu_dikirim"]      # stok: terkirim 1 = difaktur 1
+    assert f[s["telat"]]["aksi"] == ["telat_kirim"]      # stok: terkirim 1 = difaktur 1; telat -> bukan perlu_dikirim
     assert f[s["tagih"]]["aksi"] == ["perlu_ditagih"]
     assert f[s["batal"]]["aksi"] == [] and f[s["beres"]]["aksi"] == []
     for q, a in c.q[1:]:
+        if "tenant_features" in q:
+            continue
         assert s["batal"] not in a[1] and s["draf"] not in a[1]          # hanya SO berjalan yang barisnya dihitung
     assert A.id_aksi(f, "perlu_ditagih") == [s["tagih"]]
     r = A.ringkasan(f)
     assert r == {"telat_kirim_count": 1, "telat_kirim_value": 1000.0, "perlu_dikonfirmasi_count": 1,
-                 "perlu_dikonfirmasi_value": 100.0, "perlu_dikirim_count": 1, "perlu_dikirim_value": 1000.0,
+                 "perlu_dikonfirmasi_value": 100.0, "perlu_dikirim_count": 0, "perlu_dikirim_value": 0.0,
                  "perlu_ditagih_count": 1, "perlu_ditagih_value": 250.5, "menunggu_dp_count": 0,
                  "menunggu_dp_value": 0.0, "siap_diserahkan_count": 0, "siap_diserahkan_value": 0.0,
                  "perlu_minta_dp_count": 0, "perlu_minta_dp_value": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_fakta_membaca_flag_tagih_sebelum_kirim():
+    s, c = _dunia()
+    c.baris.append({"id": uuid.uuid4(), "so_id": s["tagih"], "quantity": D("4"), "perlu": True, "stok": False})
+    c.baris[1]["perlu"] = True   # SO tagih: semua baris wajib serah non-stok, nol terkirim
+    assert (await A.fakta(c, TENANT, HARI))[s["tagih"]]["aksi"] == ["perlu_dikirim"]
+    c.tagih_sebelum = True
+    assert (await A.fakta(c, TENANT, HARI))[s["tagih"]]["aksi"] == ["perlu_dikirim", "perlu_ditagih"]
 
 
 @pytest.mark.asyncio
@@ -329,7 +367,7 @@ async def test_summary_pill_dari_ringkasan_fakta(monkeypatch):
     d = d if isinstance(d, dict) else d.model_dump()
     assert d["telat_kirim_count"] == 1 and d["telat_kirim_value"] == 1000.0
     assert d["perlu_dikonfirmasi_count"] == 1 and d["perlu_ditagih_value"] == 250.5
-    assert d["perlu_dikirim_count"] == 1
+    assert d["perlu_dikirim_count"] == 0   # SO telat bukan perlu_dikirim (partisi)
 
 
 # ---------- AKSI-SO-2 (14 Okt 2026, MASTER): menunggu_dp + siap_diserahkan ----------
@@ -337,7 +375,7 @@ async def test_summary_pill_dari_ringkasan_fakta(monkeypatch):
 def test_menunggu_dp_urutan_kedua_dan_bertumpuk():
     # grapgrap SO-2609-0009: telat + menunggu DP -> kolom aksi telat_kirim, tapi tetap ANGGOTA menunggu_dp (pill penuh)
     a = A.aksi_so("confirmed", date(2026, 10, 1), HARI, [_b(4, True, False)], dp="menunggu_dp")
-    assert a == ["telat_kirim", "menunggu_dp", "perlu_dikirim", "perlu_ditagih"]
+    assert a == ["telat_kirim", "menunggu_dp"]
     assert A.aksi_utama(a) == "telat_kirim"
     assert A.aksi_utama(A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], dp="menunggu_dp")) == "menunggu_dp"
 
@@ -361,7 +399,7 @@ def test_siap_diserahkan_eksklusif_dari_perlu_dikirim():
 def test_siap_diserahkan_butuh_sisa_kirim_dan_telat_tak_terpengaruh_fase():
     assert A.aksi_so("invoiced", None, HARI, [_b(4, True, False, kirim=4, fak=4)], fase_lokasi="tersedia") == []
     a = A.aksi_so("invoiced", date(2026, 10, 1), HARI, [_b(4, True, False, fak=4)], fase_lokasi="tersedia")
-    assert a == ["telat_kirim", "siap_diserahkan"] and A.aksi_utama(a) == "telat_kirim"
+    assert a == ["telat_kirim"]   # DEFINISI-TAGIH: siap eksklusif dari telat
 
 
 def test_fase_siap_sama_dengan_predikat_tersedia_kartu_lama():
@@ -384,11 +422,11 @@ async def test_fakta_menunggu_dp_dan_siap_lewat_so_posisi(monkeypatch):
     f = await A.fakta(c, TENANT, HARI)
     assert terima["rows"] == {s["telat"], s["tagih"], s["beres"]}     # hanya SO berjalan
     assert f[s["tagih"]]["aksi"] == ["menunggu_dp", "perlu_ditagih"]
-    assert f[s["telat"]]["aksi"] == ["telat_kirim", "siap_diserahkan"]
+    assert f[s["telat"]]["aksi"] == ["telat_kirim"]          # siap tapi telat -> telat saja
     assert f[s["batal"]]["aksi"] == []
     r = A.ringkasan(f)
     assert (r["menunggu_dp_count"], r["menunggu_dp_value"]) == (1, 40.0)   # nilai DP, bukan total SO 250.5
-    assert (r["siap_diserahkan_count"], r["perlu_dikirim_count"]) == (1, 0)
+    assert (r["siap_diserahkan_count"], r["perlu_dikirim_count"]) == (0, 0)
 
 
 def test_rute_meneruskan_kunci_baru(monkeypatch):
@@ -404,7 +442,7 @@ def test_rute_meneruskan_kunci_baru(monkeypatch):
 
 def test_perlu_minta_dp_urutan_kedua_sebelum_menunggu():
     a = A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], dp="perlu_minta_dp")
-    assert a == ["perlu_minta_dp", "perlu_dikirim", "perlu_ditagih"] and A.aksi_utama(a) == "perlu_minta_dp"
+    assert a == ["perlu_minta_dp", "perlu_dikirim"] and A.aksi_utama(a) == "perlu_minta_dp"
     t = A.aksi_so("confirmed", date(2026, 10, 1), HARI, [_b(4, True, False)], dp="perlu_minta_dp")
     assert A.aksi_utama(t) == "telat_kirim" and "perlu_minta_dp" in t
     assert A.aksi_so("confirmed", None, HARI, [], dp="kunci_asing") == []

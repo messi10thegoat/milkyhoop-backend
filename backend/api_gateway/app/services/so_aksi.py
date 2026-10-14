@@ -2,6 +2,7 @@
 
 Kunci (pola NetSuite Pending Approval / Pending Fulfillment / Pending Billing), urut PALING MENDESAK dulu:
   telat_kirim        = berjalan, expected_ship_date < hari ini (tanggal bisnis tenant) DAN masih ada sisa kirim
+                       (DEFINISI-TAGIH 14 Okt: telat | perlu_dikirim | siap_diserahkan = PARTISI bersih SO bersisa kirim)
   perlu_minta_dp     = (PERLU-MINTA-DP) berjalan, bersyarat DP, BELUM ditagih: tanpa proforma terbit apa pun, tanpa uang muka
                        hidup, tanpa faktur terbit, sisa > 0 (so_posisi.perlu_minta_dp; pola SAP down payment request)
   menunggu_dp        = (AKSI-SO-2) berjalan, fakta Posisi "Menunggu DP" tanpa fase lokasi -- SATU fungsi murni
@@ -9,13 +10,16 @@ Kunci (pola NetSuite Pending Approval / Pending Fulfillment / Pending Billing), 
   perlu_dikonfirmasi = draft
   perlu_dikirim      = berjalan, ada baris PERLU DIKIRIM (COALESCE(perlu_kirim, track_inventory, false) -- ekspresi
                        sama dengan so_kirim.ringkasan_menunggu_kirim / V318) yang qty-nya belum habis dikirim SJ aktif,
-                       DAN BUKAN fase lokasi 'tersedia' (eksklusif dengan siap_diserahkan; kartu tak dobel)
+                       DAN BUKAN fase lokasi 'tersedia' (eksklusif dengan siap_diserahkan; kartu tak dobel) DAN TIDAK telat
   siap_diserahkan    = (AKSI-SO-2) berjalan, sisa kirim seperti di atas DAN fase_lokasi = 'tersedia' (predikat SAMA dengan
                        so_agregat.PREDIKAT_TERSEDIA; lokasi = pengaturan per SO/tenant). Pola NetSuite Packed / Shopify
-                       Ready for pickup. telat_kirim tak terpengaruh fase.
-  perlu_ditagih      = berjalan, ada baris dengan qty BISA DITAGIH > qty difaktur terbit. B1: barang berSTOK
-                       (track_inventory) bisa ditagih = terkirim; selain itu = qty pesan (grapgrap: tanda perlu_kirim =
-                       flag serah, bukan syarat tagih; "tagih sesudah kirim" per tenant = tiket, bukan kode).
+                       Ready for pickup. TIDAK telat (SO telat yang siap = telat_kirim saja; kartu dashboard "Tersedia" terpisah).
+  perlu_ditagih      = berjalan, ada baris dengan qty BISA DITAGIH > qty difaktur terbit. DEFINISI-TAGIH (14 Okt 2026, MASTER;
+                       pola NetSuite Pending Billing, menggantikan B1 pagi itu): baris PERLU DIKIRIM bisa ditagih = terkirim
+                       (SJ aktif); baris tanpa kirim = qty pesan. SO yang belum diserahkan apa pun BUKAN perlu_ditagih.
+                       Flag tenant `tagih_sebelum_kirim` (bawaan MATI) -> aturan lama B1 (stok: terkirim; non-stok: qty pesan).
+                       Kartu "Menunggu tagih" (?tugas=menunggu_tagih) = kunci ini (satu sumber); uang "belum difakturkan"
+                       (so_agregat.uninvoiced, aggregate?q=uninvoiced) = wilayah laporan, bukan kartu aksi.
 Berjalan = selain so_agregat.AKTIF_TIDAK (draft/cancelled/completed); arsip (cancelled/completed) tak masuk aksi mana pun.
 Satu SO boleh masuk lebih dari satu kunci; kolom `aksi` per baris daftar = kunci pertama menurut urutan AKSI.
 Terkirim = so_kirim.terkirim_per_baris (SJ aktif; quantity_shipped MATI). Difaktur = faktur TERBIT per baris
@@ -39,6 +43,7 @@ AKSI = ("telat_kirim", "perlu_minta_dp", "menunggu_dp", "perlu_dikonfirmasi", "p
 KUNCI_DP = ("perlu_minta_dp", "menunggu_dp")  # saling lepas; kartu dashboard "DP belum diterima" = gabungannya
 FASE_SIAP = "tersedia"  # = so_agregat.PREDIKAT_TERSEDIA (fase_lokasi = 'tersedia')
 STATUS_DRAF = "draft"
+FLAG_TAGIH_SEBELUM_KIRIM = "tagih_sebelum_kirim"  # tenant_features; MATI = NetSuite (tagih sesudah serah)
 
 SQL_FAKTUR_TERBIT_PER_BARIS_SO = f"""
     SELECT sii.sales_order_item_id AS soi_id, SUM(sii.quantity) AS q
@@ -62,7 +67,7 @@ def _d(v) -> Decimal:
 
 
 def aksi_so(status: str, expected_ship_date: Optional[date], hari_ini: date, baris: Iterable[dict],
-            dp: Optional[str] = None, fase_lokasi: Optional[str] = None) -> list:
+            dp: Optional[str] = None, fase_lokasi: Optional[str] = None, tagih_sebelum_kirim: bool = False) -> list:
     """Murni. baris: {quantity, perlu, stok, terkirim, difaktur}; dp = kunci KUNCI_DP dari so_posisi.fakta_dp (atau None).
     -> kunci AKSI yang berlaku, urut AKSI."""
     if status == STATUS_DRAF:
@@ -74,14 +79,14 @@ def aksi_so(status: str, expected_ship_date: Optional[date], hari_ini: date, bar
         q, kirim, fak = _d(b["quantity"]), _d(b["terkirim"]), _d(b["difaktur"])
         if b["perlu"] and q - kirim > NOL:
             sisa_kirim = True
-        if (kirim if b["stok"] else q) - fak > NOL:
+        tunggu_serah = b["stok"] if tagih_sebelum_kirim else b["perlu"]   # baris yang ditagih sesudah diserahkan
+        if (kirim if tunggu_serah else q) - fak > NOL:
             sisa_tagih = True
-    out = []
-    if sisa_kirim and expected_ship_date is not None and expected_ship_date < hari_ini:
-        out.append("telat_kirim")
+    telat = sisa_kirim and expected_ship_date is not None and expected_ship_date < hari_ini
+    out = ["telat_kirim"] if telat else []
     if dp in KUNCI_DP:
         out.append(dp)
-    if sisa_kirim:
+    if sisa_kirim and not telat:
         out.append("siap_diserahkan" if fase_lokasi == FASE_SIAP else "perlu_dikirim")
     if sisa_tagih:
         out.append("perlu_ditagih")
@@ -108,7 +113,11 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
     jalan = sorted(r["id"] for r in so if r["status"] not in AKTIF_TIDAK)
     per_so: dict = {}
     dp: dict = {}
+    sebelum = False
     if jalan:
+        sebelum = bool(await conn.fetch(
+            "SELECT 1 FROM tenant_features WHERE tenant_id = $1 AND feature = $2 AND enabled",
+            tenant_id, FLAG_TAGIH_SEBELUM_KIRIM))
         dp = await so_posisi.fakta_dp(conn, tenant_id, [r for r in so if r["status"] not in AKTIF_TIDAK])
         terkirim, _ = await so_kirim.terkirim_per_baris(conn, tenant_id, jalan)
         difaktur = {r["soi_id"]: _d(r["q"]) for r in await conn.fetch(SQL_FAKTUR_TERBIT_PER_BARIS_SO, tenant_id, jalan)}
@@ -120,7 +129,7 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
     for r in so:
         kd, nilai = dp.get(r["id"], (None, None))
         out[r["id"]] = {"aksi": aksi_so(r["status"], r["expected_ship_date"], hari_ini, per_so.get(r["id"], []),
-                                        dp=kd, fase_lokasi=r.get("fase_lokasi")),
+                                        dp=kd, fase_lokasi=r.get("fase_lokasi"), tagih_sebelum_kirim=sebelum),
                         "total": _d(r["total_amount"]), "nilai": ({kd: nilai} if kd else {}),
                         "nomor": r.get("order_number")}
     return out
