@@ -5427,7 +5427,8 @@ class ToolExecutor:
                         item["tax_rate"] = _cur_tr
                     if item.get("unit_price") is not None:
                         try:
-                            item["unit_price"] = int(float(item["unit_price"]))
+                            _hg = round(float(item["unit_price"]), 2)  # harga berdesimal tak boleh terpotong (V427)
+                            item["unit_price"] = int(_hg) if _hg == int(_hg) else _hg
                         except (ValueError, TypeError):
                             item["unit_price"] = 0
                     if item.get("quantity") is not None:
@@ -6133,7 +6134,8 @@ class ToolExecutor:
                         item["tax_rate"] = _cur_tr
                     if item.get("unit_price") is not None:
                         try:
-                            item["unit_price"] = int(float(item["unit_price"]))
+                            _hg = round(float(item["unit_price"]), 2)  # harga berdesimal tak boleh terpotong (V427)
+                            item["unit_price"] = int(_hg) if _hg == int(_hg) else _hg
                         except (ValueError, TypeError):
                             item["unit_price"] = 0
                     if item.get("quantity") is not None:

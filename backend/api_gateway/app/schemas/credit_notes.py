@@ -34,6 +34,8 @@ class CreditNoteItemCreate(BaseModel):
     tax_code_id: Optional[str] = Field(None, description="3(c): PPN code id; else resolved from tax_code / rate (output)")
     tax_rate: float = Field(0, ge=0, le=100)
     original_invoice_item_id: Optional[str] = Field(None, description="Original invoice item UUID")
+    # JUMLAH BARIS (V427): jumlah baris bruto yang menggantikan qty x harga bila selisih <= qty x 0,005 (selainnya 422)
+    line_amount: Optional[Decimal] = Field(None, ge=0)
 
     @field_validator('description')
     @classmethod
@@ -56,6 +58,7 @@ class CreditNoteItemUpdate(BaseModel):
     tax_code: Optional[str] = None
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
     original_invoice_item_id: Optional[str] = None  # V348: tautan baris faktur (disimpan, divalidasi)
+    line_amount: Optional[Decimal] = Field(None, ge=0)  # JUMLAH BARIS (V427)
 
 
 # =============================================================================

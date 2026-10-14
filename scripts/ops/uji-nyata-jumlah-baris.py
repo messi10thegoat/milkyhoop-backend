@@ -6,7 +6,9 @@ import asyncpg
 os.environ.setdefault("OPENAI_API_KEY", "boneka")
 from fastapi import HTTPException, Response
 from starlette.requests import Request
-from backend.api_gateway.app.routers import sales_orders as SO
+from backend.api_gateway.app.routers import sales_orders as SO, sales_invoices as SI, credit_notes as CN
+from backend.api_gateway.app.schemas.credit_notes import CreateCreditNoteRequest
+CreditNotePreviewRequest = CN.CreditNotePreviewRequest
 from backend.api_gateway.app.schemas.sales_orders import CreateSalesOrderRequest as C, UpdateSalesOrderRequest as U, ConvertToInvoiceRequest as CI
 
 TID = "kaos-biru-konveksi"
@@ -82,6 +84,49 @@ async def main():
             tot = await conn.fetchval("SELECT COALESCE(SUM(total_amount),0) FROM sales_invoices WHERE sales_order_id=$1::uuid AND status<>'void'", o)
             sub = await conn.fetchval("SELECT COALESCE(SUM(sii.subtotal),0) FROM sales_invoice_items sii JOIN sales_invoices si ON si.id=sii.invoice_id WHERE si.sales_order_id=$1::uuid", o)
             cek(f"parsial {pecah}: Σ total faktur == total SO, sisa 0", tot == D("6150000") and sub == D("6150000"), (tot, sub))
+
+        # 5. JURNAL (Law 1/16): faktur penuh dari SO 26 pcs -> posting -> jurnal AR == total faktur == SO; alokasi PSAK-72;
+        #    NK penuh atas faktur itu -> sisa piutang faktur 0 (tanpa selisih 0,04).
+        SI.get_pool = _gp
+        import backend.api_gateway.app.routers.credit_notes as _cnmod
+        _cnmod.get_pool = _gp
+        rr = await SO.create_sales_order(req(uid), body(), Response())
+        o = rr.data["id"]
+        await SO.confirm_sales_order(req(uid), o)
+        sid = await conn.fetchval("SELECT id FROM sales_order_items WHERE sales_order_id=$1::uuid", o)
+        ctx = {"tenant_id": TID, "user_id": uid}
+        out = await SO._to_invoice_dalam_tx(conn, ctx, o, CI(items=[{"so_item_id": str(sid), "quantity": 26}]))
+        inv_id = out.get("id") or out.get("invoice_id") or (out.get("data") or {}).get("id")
+        inv = await conn.fetchrow("SELECT id, invoice_number, total_amount, subtotal FROM sales_invoices WHERE id=$1::uuid", str(inv_id))
+        cek("faktur penuh total == 6.150.000", inv["total_amount"] == D("6150000"), inv["total_amount"])
+        try:
+            await SI._internal_post_invoice(conn, ctx, inv["id"], inv["invoice_number"], inv["total_amount"])
+            ar = await conn.fetchval("""SELECT COALESCE(SUM(jl.debit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id
+                JOIN chart_of_accounts c ON c.id=jl.account_id WHERE je.source_id=$1::uuid AND je.tenant_id=$2
+                AND je.source_type='INVOICE' AND c.account_type='RECEIVABLE'""", str(inv["id"]), TID)
+            cek("jurnal AR debit == total faktur == 6.150.000", ar == D("6150000"), ar)
+            alok = await conn.fetchval("SELECT COALESCE(SUM(allocated_amount),0) FROM sales_invoice_items WHERE invoice_id=$1", inv["id"])
+            cek("Σ allocated_amount (PSAK-72) == subtotal faktur", alok == inv["subtotal"], (alok, inv["subtotal"]))
+            sisa = await conn.fetchval("SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id=$2::uuid", TID, str(inv["id"]))
+            cek("sisa piutang faktur == 6.150.000 sebelum NK", sisa == D("6150000"), sisa)
+        except Exception as e:
+            cek("posting faktur -> jurnal", False, repr(e)[:300])
+            raise
+        try:
+            rk = await CN.rakit_dari_faktur(conn, TID, CreditNotePreviewRequest(original_invoice_id=str(inv["id"]), reason="pricing_error"))
+            cek("NK penuh: line_amount = 6.150.000", rk["create"] and D(str(rk["create"]["items"][0].get("line_amount"))) == D("6150000"),
+                rk.get("blocks"))
+            rk["create"]["credit_note_date"] = date(2026, 10, 14)
+            nk = await CN.buat_nota_kredit(conn, ctx, CreateCreditNoteRequest(**rk["create"]))
+            nk_id = nk["data"]["id"]
+            tn = await conn.fetchval("SELECT total_amount FROM credit_notes WHERE id=$1::uuid", nk_id)
+            cek("NK penuh total == 6.150.000", tn == D("6150000"), tn)
+            from uuid import UUID as _U
+            await CN.posting_nota_kredit(conn, ctx, _U(str(nk_id)))
+            sisa2 = await conn.fetchval("SELECT COALESCE((SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id=$2::uuid),0)", TID, str(inv["id"]))
+            cek("sisa piutang faktur sesudah NK penuh == 0", sisa2 == 0, sisa2)
+        except Exception as e:
+            cek("NK penuh -> piutang 0", False, repr(e)[:400])
     finally:
         await tr.rollback()
         await conn.close()

@@ -139,6 +139,11 @@ class PDFService:
         self.jinja_env.filters["rupiah"] = (
             lambda v, bersen=False: self.format_currency2(v) if bersen else self.format_currency(v)
         )
+        # JUMLAH BARIS (V427): harga satuan berdesimal HANYA bila bukan bilangan bulat (236.538,46), selain itu persis
+        # `currency` (236.538). Per nilai, supaya dokumen bulat tak berubah tata letaknya.
+        self.jinja_env.filters["harga"] = (
+            lambda v: self.format_currency2(v) if self.money_has_cents(v) else self.format_currency(v)
+        )
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
         self.jinja_env.filters["date_full"] = self.format_date_full
         self.jinja_env.filters["date_short"] = self.format_date_short

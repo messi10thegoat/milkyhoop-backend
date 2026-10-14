@@ -106,7 +106,7 @@
             <tr>
                 <td class="col-desc">{{ item.description or '-' }}{% if item.discount_amount and item.discount_amount|float > 0 %}<br><span class="text-muted">Diskon -Rp {{ item.discount_amount | currency }}</span>{% endif %}</td>
                 <td class="col-qty">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                <td class="col-price">Rp {{ item.unit_price | currency }}</td>
+                <td class="col-price">Rp {{ item.unit_price | harga }}</td>
                 <td class="col-amount">Rp {{ item.net | currency }}</td>
             </tr>
             {% endfor %}

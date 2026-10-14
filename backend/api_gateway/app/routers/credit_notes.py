@@ -204,7 +204,7 @@ async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, hea
     diskon baris MENGURANGI total (dulu subtotal header = SIGMA BRUTO baris, diskon baris hilang),
     diskon dokumen dialokasikan SEBELUM PPN, faktor DPP per kode. tax_rate header (lama: 'pajak
     menyeluruh') diterapkan ke baris yang tak punya tarif sendiri."""
-    from ..services.sales_doc_calc import compute_document, DocumentDiscountError
+    from ..services.sales_doc_calc import compute_document, DocumentDiscountError, LineAmountError
     from ..services.tax_factor import attach_dpp_factors
     lines = [dict(it) for it in items]
     hr = Decimal(str(header_tax_rate or 0))
@@ -219,6 +219,8 @@ async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, hea
                                 doc_discount_percent=discount_percent or 0)
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except LineAmountError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -> Decimal:
@@ -938,8 +940,8 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
                 discount_percent, discount_amount,
                 tax_code, tax_rate, tax_amount,
                 subtotal, total, line_number,
-                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id, jumlah_baris
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         """,
             cn_id,
             UUID(item["item_id"]) if item.get("item_id") else None,
@@ -960,6 +962,7 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
             item["dpp"],
             item["dpp_harga_jual"],
             UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
+            item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
         )
 
     logger.info(f"Credit note created: {cn_id}, number={cn_number}")
@@ -1216,8 +1219,16 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
                 "lines": [], "create": None}
     rows = await conn.fetch(
         """SELECT id, item_id, item_code, description, quantity, unit, unit_price, discount_percent, discount_amount,
-                  tax_code, tax_code_id, tax_rate
+                  tax_code, tax_code_id, tax_rate, jumlah_baris
            FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number""", fid)
+    # JUMLAH BARIS (V427): jumlah kotor yang SUDAH dinotakan per baris faktur (NK tak-void) -> NK yang menuntaskan baris
+    # menyerap sisa (NK penuh == jumlah baris faktur; tak ada selisih pembulatan tersisa di piutang).
+    sudah_gross = {r["oid"]: Decimal(str(r["g"])) for r in await conn.fetch(
+        """SELECT cni.original_invoice_item_id AS oid, COALESCE(SUM(COALESCE(cni.jumlah_baris, cni.subtotal)), 0) AS g
+           FROM credit_note_items cni JOIN credit_notes cn ON cn.id = cni.credit_note_id
+           WHERE cn.tenant_id = $1 AND cn.original_invoice_id = $2 AND cn.status <> 'void'
+             AND cni.original_invoice_item_id IS NOT NULL
+           GROUP BY 1""", tid, fid)}
     sudah = {r["oid"]: Decimal(str(r["q"])) for r in await conn.fetch(
         """SELECT cni.original_invoice_item_id AS oid, SUM(cni.quantity) AS q
            FROM credit_note_items cni JOIN credit_notes cn ON cn.id = cni.credit_note_id
@@ -1265,6 +1276,15 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
               "discount_percent": float(pct), "discount_amount": Decimal("0") if pct > 0 else (q2(amt * q / qty) if qty else Decimal("0")),
               "tax_code": r["tax_code"], "tax_code_id": str(r["tax_code_id"]) if r["tax_code_id"] else None,
               "tax_rate": float(r["tax_rate"] or 0), "original_invoice_item_id": str(r["id"])}
+        if r["jumlah_baris"] is not None and qty > 0:
+            jb = Decimal(str(r["jumlah_baris"]))
+            if sd + q >= qty:  # menuntaskan baris -> serap sisa
+                cand = jb - sudah_gross.get(r["id"], Decimal("0"))
+            else:
+                cand = q2(jb * q / qty)
+            # hanya bila dalam toleransi qty x 0,005 (kalkulator menolak selainnya); di luar itu kembali qty x harga
+            if cand >= 0 and abs(q * Decimal(str(r["unit_price"])) - cand) <= q * Decimal("0.005"):
+                it["line_amount"] = cand
         items.append(it)
         net_pilih += line_net(it)["net"]
     # lebih dari yang bisa dinotakan -> BLOK CN_QTY_EXCEEDS_CREDITABLE dari _rencana_nota_kredit (periksa_bisa_dinotakan)
@@ -1377,7 +1397,8 @@ async def update_credit_note(
                     update_data["items"] = [
                         {k: r[k] for k in ("item_id", "item_code", "description", "quantity", "unit",
                                            "unit_price", "discount_percent", "discount_amount",
-                                           "tax_code", "tax_code_id", "tax_rate", "original_invoice_item_id")}
+                                           "tax_code", "tax_code_id", "tax_rate", "original_invoice_item_id",
+                                           "jumlah_baris")}
                         for r in _rows
                     ]
                 if _recalc:
@@ -1437,8 +1458,8 @@ async def update_credit_note(
                                 discount_percent, discount_amount,
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
-                                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                                tax_code_id, dpp, dpp_harga_jual, original_invoice_item_id, jumlah_baris
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                         """,
                             credit_note_id,
                             UUID(item["item_id"]) if item.get("item_id") else None,
@@ -1459,6 +1480,7 @@ async def update_credit_note(
                             item["dpp"],
                             item["dpp_harga_jual"],
                             UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
+                            item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
                         )
 
                     update_data.pop("items", None)
