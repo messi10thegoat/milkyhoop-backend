@@ -542,7 +542,7 @@ async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
         pilih = pilih_faktur_telat if tugas == "telat" else pilih_jatuh_tempo_hari_ini
         return [r["invoice_id"] for r in pilih(ar, hari_ini)]
     if tugas == "harus_kirim":
-        return [r["id"] for r in await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))]
+        return [r["id"] for r in await so_harus_kirim(conn, tenant_id, hari_ini)]
     if tugas == "dp_belum_diterima":
         return [r["id"] for r in await so_dp_belum(conn, tenant_id, hari_ini)]
     if tugas == "tersedia":  # 7 Okt 2026: SO fase "Tersedia" (so_agregat.PREDIKAT_TERSEDIA = kartu summary = baris)
@@ -669,9 +669,11 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
 
     # so_to_ship — satu kartu
     if so_kirim_rows:
-        so = sorted(so_kirim_rows, key=lambda r: (r["expected_ship_date"], r["order_number"]))
+        # DASBOR-SATU-SUMBER (15 Okt 2026): tanggal kirim kosong = siap dipenuhi sekarang (urut sebagai hari ini);
+        # "lewat tanggal kirim" = kunci telat_kirim dari so_aksi (bukan hitung ulang tanggal)
+        so = sorted(so_kirim_rows, key=lambda r: (r["expected_ship_date"] or hari_ini, r["order_number"]))
         nomor = [r["order_number"] for r in so]
-        n_telat = sum(1 for r in so if r["expected_ship_date"] < hari_ini)
+        n_telat = sum(1 for r in so if r["telat"])
         sub = ", ".join(nomor[:3]) + (f" +{len(nomor) - 3} lainnya" if len(nomor) > 3 else "")
         if n_telat:
             sub += f" · {n_telat} lewat tanggal kirim"
@@ -725,29 +727,29 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
     return tugas
 
 
-# SO yang HARUS DIKIRIM: tanggal kirim ≤ akhir minggu ini, punya baris PERLU DIKIRIM
-# (COALESCE(perlu_kirim, track_inventory, false) — ekspresi so_kirim.ringkasan_menunggu_kirim / V318)
-# dengan sisa > 0 menurut Surat Jalan AKTIF (so_kirim.terkirim_per_baris) — BUKAN quantity_shipped (mati sejak V264).
-SO_STATUS_TERBUKA = ("confirmed", "partial_invoiced", "invoiced")
+# Kartu "N pesanan harus dikirim" + ?tugas=harus_kirim (DASBOR-SATU-SUMBER, 15 Okt 2026, putusan MASTER (b); pola NetSuite
+# reminder = saved search yang sama + satu kriteria): SATU sumber = so_aksi.fakta, kunci telat_kirim | perlu_dikirim |
+# siap_diserahkan (partisi SO bersisa kirim; status = so_agregat.AKTIF_TIDAK yang sama dengan pill), lalu JENDELA: tanggal
+# kirim <= akhir minggu ATAU kosong (ship date kosong = siap dipenuhi sekarang). Kueri sendiri (daftar putih status,
+# tanggal wajib ada) DICABUT: ia melewatkan SO tanpa tanggal kirim (kaos 10, grapgrap 2) dan status di luar daftarnya.
+KUNCI_HARUS_KIRIM = ("telat_kirim", "perlu_dikirim", "siap_diserahkan")
 
 
-async def so_harus_kirim(conn, tenant_id: str, akhir_minggu: date) -> list:
-    baris = await conn.fetch(
-        """SELECT so.id AS so_id, so.order_number, so.expected_ship_date, soi.id AS soi_id, soi.quantity
-           FROM sales_orders so
-           JOIN sales_order_items soi ON soi.sales_order_id = so.id
-           LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = so.tenant_id
-           WHERE so.tenant_id = $1 AND so.status = ANY($2::text[])
-             AND so.expected_ship_date IS NOT NULL AND so.expected_ship_date <= $3
-             AND COALESCE(soi.perlu_kirim, p.track_inventory, false)""",
-        tenant_id, list(SO_STATUS_TERBUKA), akhir_minggu,
-    )
-    per_baris, _ = await so_kirim.terkirim_per_baris(conn, tenant_id, sorted({r["so_id"] for r in baris}))
-    out = {}
-    for r in baris:
-        if so_kirim.belum_dikirim(r["quantity"], per_baris.get(r["soi_id"])) > NOL:
-            out[r["so_id"]] = {"id": r["so_id"], "order_number": r["order_number"],
-                               "expected_ship_date": r["expected_ship_date"]}
+def pilih_harus_kirim(f: dict, hari_ini: date) -> list:
+    """Murni. f = so_aksi.fakta -> [{id, order_number, expected_ship_date, telat}] SO kartu harus_kirim."""
+    batas = akhir_minggu(hari_ini)
+    out = []
+    for i, v in f.items():
+        tgl = v.get("tanggal_kirim")
+        if any(k in v["aksi"] for k in KUNCI_HARUS_KIRIM) and (tgl is None or tgl <= batas):
+            out.append({"id": i, "order_number": v["nomor"], "expected_ship_date": tgl,
+                        "telat": "telat_kirim" in v["aksi"]})
+    return out
+
+
+async def so_harus_kirim(conn, tenant_id: str, hari_ini: date) -> list:
+    from . import so_aksi
+    out = {r["id"]: r for r in pilih_harus_kirim(await so_aksi.fakta(conn, tenant_id, hari_ini), hari_ini)}
     # D5: faktur TERBIT tertua per SO dengan pengiriman terbuka (gerbang fulfill yang sama) -> tujuan "Siapkan kirim"
     tertunda = await so_kirim.faktur_tertunda_per_so(conn, tenant_id, sorted(out))
     for so_id, v in out.items():
@@ -848,7 +850,7 @@ async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
     usaha = await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', tenant_id) or ""
     return susun_tugas(
         hari_ini=hari_ini, ar_rows=ar_rows, ap_rows=ap_rows,
-        so_kirim_rows=await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini)),
+        so_kirim_rows=await so_harus_kirim(conn, tenant_id, hari_ini),
         so_dp_rows=await so_dp_belum(conn, tenant_id, hari_ini),
         rekon_rows=await rekening_belum_rekon(conn, tenant_id, hari_ini),
         kontak=await kontak_pelanggan(conn, tenant_id, (r["customer_id"] for r in ar_rows)),

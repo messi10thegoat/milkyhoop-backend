@@ -106,15 +106,17 @@ def test_hutang_lajur_now_bila_hari_ini_atau_telat_week_bila_dekat():
 
 
 def test_so_harus_kirim_dan_dp_belum_dan_rekon():
-    so = [{"id": UUID(int=1), "order_number": "SO-2", "expected_ship_date": H + timedelta(days=2)},
-          {"id": UUID(int=2), "order_number": "SO-1", "expected_ship_date": H - timedelta(days=1)}]
+    so = [{"id": UUID(int=1), "order_number": "SO-2", "expected_ship_date": H + timedelta(days=2), "telat": False},
+          {"id": UUID(int=2), "order_number": "SO-1", "expected_ship_date": H - timedelta(days=1), "telat": True},
+          {"id": UUID(int=6), "order_number": "SO-0", "expected_ship_date": None, "telat": False}]
     dp = [{"id": UUID(int=3), "order_number": "SO-9", "dp_wajib": Decimal("250000")}]
     rk = [{"id": UUID(int=4), "account_name": "BCA Operasional"}]
     t = _susun(so_kirim_rows=so, so_dp_rows=dp, rekon_rows=rk)
     kirim, = _per_jenis(t, "so_to_ship")
     assert kirim["lane"] == "week" and kirim["amount"] is None
-    assert kirim["title_html"] == "<b>2 pesanan</b> harus dikirim"
-    assert kirim["subtitle"] == "SO-1, SO-2 · 1 lewat tanggal kirim"
+    assert kirim["title_html"] == "<b>3 pesanan</b> harus dikirim"
+    # tanggal kosong = hari ini (sesudah yang telat); "lewat" = kunci telat, bukan tanggal
+    assert kirim["subtitle"] == "SO-1, SO-0, SO-2 · 1 lewat tanggal kirim"
     assert kirim["actions"][0]["kind"] == "prepare_shipment"
     dpk, = _per_jenis(t, "so_dp_pending")
     assert dpk["lane"] == "any" and dpk["amount"] == "250000.00" and dpk["title_html"] == "<b>1 DP</b> belum diterima"
@@ -129,11 +131,11 @@ FK1, FK2 = UUID(int=11), UUID(int=12)
 def test_so_harus_kirim_faktur_tertunda_per_so_dan_tujuan_tombol():
     """D5: tiap ref SO membawa faktur tertundanya (null bila tak ada); tombol "Siapkan kirim" menuju faktur SO
     PERTAMA dalam urutan kartu yang punya — SO pertama tanpa faktur dilewati, bukan menghasilkan null."""
-    so = [{"id": UUID(int=1), "order_number": "SO-1", "expected_ship_date": H - timedelta(days=1),
+    so = [{"id": UUID(int=1), "order_number": "SO-1", "expected_ship_date": H - timedelta(days=1), "telat": True,
            "pending_invoice_id": None, "pending_invoice_number": None},
-          {"id": UUID(int=2), "order_number": "SO-2", "expected_ship_date": H,
+          {"id": UUID(int=2), "order_number": "SO-2", "expected_ship_date": H, "telat": False,
            "pending_invoice_id": FK1, "pending_invoice_number": "INV-2609-0007"},
-          {"id": UUID(int=5), "order_number": "SO-3", "expected_ship_date": H + timedelta(days=1),
+          {"id": UUID(int=5), "order_number": "SO-3", "expected_ship_date": H + timedelta(days=1), "telat": False,
            "pending_invoice_id": FK2, "pending_invoice_number": "INV-2609-0009"}]
     kirim, = _per_jenis(_susun(so_kirim_rows=list(reversed(so))), "so_to_ship")
     assert [(r["number"], r["pending_invoice_id"], r["pending_invoice_number"]) for r in kirim["refs"]] == [
@@ -152,28 +154,29 @@ def test_so_harus_kirim_faktur_tertunda_per_so_dan_tujuan_tombol():
     assert _cocok(rusak, s, s)  # kontrak menolak tipe salah (validator bisa merah pada medan baru)
 
 
-async def test_so_harus_kirim_menanyakan_faktur_terbit_tertua_dengan_kirim_terbuka():
+async def test_so_harus_kirim_menanyakan_faktur_terbit_tertua_dengan_kirim_terbuka(monkeypatch):
     """Stimulus MENCAPAI so_harus_kirim: definisi = gerbang POST /fulfill (literal spek, bukan konstanta modul)."""
     SO_A, SO_B = UUID(int=21), UUID(int=22)
     tanya = []
 
     class C:
         async def fetch(self, sql, *a):
-            if "FROM sales_orders so" in sql:
-                return [{"so_id": SO_A, "order_number": "SO-A", "expected_ship_date": H, "soi_id": UUID(int=31),
-                         "quantity": Decimal("2")},
-                        {"so_id": SO_B, "order_number": "SO-B", "expected_ship_date": H, "soi_id": UUID(int=32),
-                         "quantity": Decimal("1")}]
-            if "invoice_fulfillment_items" in sql:
-                return []
             if "DISTINCT ON (si.sales_order_id)" in sql:
                 tanya.append((sql, a))
                 return [{"so_id": SO_A, "id": FK1, "invoice_number": "INV-A"}]
             raise AssertionError(sql[:80])
 
+    async def fakta(conn, t, hari):
+        assert t == "tenant-x" and hari == H
+        return {SO_A: {"aksi": ["perlu_dikirim"], "nomor": "SO-A", "tanggal_kirim": H},
+                SO_B: {"aksi": ["telat_kirim"], "nomor": "SO-B", "tanggal_kirim": H - timedelta(days=1)}}
+
+    from app.services import so_aksi as SA
+    monkeypatch.setattr(SA, "fakta", fakta)
     hasil = {r["order_number"]: r for r in await DV.so_harus_kirim(C(), "tenant-x", H)}
     assert (hasil["SO-A"]["pending_invoice_id"], hasil["SO-A"]["pending_invoice_number"]) == (FK1, "INV-A")
     assert (hasil["SO-B"]["pending_invoice_id"], hasil["SO-B"]["pending_invoice_number"]) == (None, None)
+    assert (hasil["SO-A"]["telat"], hasil["SO-B"]["telat"]) == (False, True)
     (sql, a), = tanya
     assert a[0] == "tenant-x" and sorted(a[1]) == sorted([SO_A, SO_B])
     assert sorted(a[2]) == ["paid", "partial", "posted"]  # TERBIT; draft/void TIDAK
@@ -334,7 +337,7 @@ def test_tugas_valid_terhadap_kontrak():
     t = _susun(ar_rows=[_inv("INV-1", H, 945000), _inv("INV-2", H - timedelta(days=2), 5000),
                         _inv("INV-3", H + timedelta(days=1), 10), _inv("INV-4", H + timedelta(days=3), 10)],
                ap_rows=[_bill("B-1", H, 1)],
-               so_kirim_rows=[{"id": UUID(int=1), "order_number": "SO-1", "expected_ship_date": H}],
+               so_kirim_rows=[{"id": UUID(int=1), "order_number": "SO-1", "expected_ship_date": H, "telat": False}],
                so_dp_rows=[{"id": UUID(int=3), "order_number": "SO-9", "dp_wajib": Decimal("1")}],
                rekon_rows=[{"id": UUID(int=4), "account_name": "BCA"}])
     badan = json.loads(json.dumps(DV.rangkum_tugas(t, set(), 0, "2026-09-28T09:00:00+07:00")))
@@ -410,9 +413,9 @@ def test_rute_terdaftar_ke_fungsi_yang_benar_dan_dipasang_di_main():
 
 
 def test_sql_tugas_tenant_eksplisit_dan_tanpa_quantity_shipped():
-    kirim = inspect.getsource(DV.so_harus_kirim)
-    assert "quantity_shipped" not in kirim and "COALESCE(soi.perlu_kirim, p.track_inventory, false)" in kirim
-    assert "terkirim_per_baris" in kirim and "so.tenant_id = $1" in kirim
+    kirim = inspect.getsource(DV.so_harus_kirim)  # DASBOR-SATU-SUMBER: satu sumber so_aksi (kueri sendiri dicabut)
+    assert "so_aksi.fakta(conn, tenant_id, hari_ini)" in kirim and "pilih_harus_kirim(" in kirim and "SELECT" not in kirim
+    assert not hasattr(DV, "SO_STATUS_TERBUKA")
     dp = inspect.getsource(DV.so_dp_belum)  # PERLU-MINTA-DP: satu sumber so_aksi (kueri sendiri dicabut)
     assert "so_aksi.dp_belum_diterima(conn, tenant_id, hari_ini)" in dp and "SELECT" not in dp
     from app.services import so_posisi as _sp
@@ -542,3 +545,65 @@ def test_pesan_wa_rekening_faktur_dengan_pemilik_seperti_pdf():
     src = inspect.getsource(DV.teks_rekening)
     assert "faktur_cetak.pemilik_dari" in src and "faktur_cetak.pemilik_rekening" in src  # SATU sumber dengan PDF
     assert "sales_invoices" in inspect.getsource(DV.rekening_per_faktur) and "tenant_id = $1" in inspect.getsource(DV.rekening_per_faktur)
+
+
+# ───────── DASBOR-SATU-SUMBER (15 Okt 2026, putusan MASTER (b)) ─────────
+
+def _f(aksi, tgl, nomor="SO"):
+    return {"aksi": aksi, "nomor": nomor, "tanggal_kirim": tgl}
+
+
+def test_pilih_harus_kirim_pasangan_filter_fakta():
+    """Kartu == {pill telat|dikirim|siap} ∩ (tanggal kirim <= akhir minggu ATAU kosong) -- definisi PASANGAN ditulis ulang
+    dari fakta (bukan memanggil fungsi yang sama)."""
+    batas = DV.akhir_minggu(H)  # Minggu 4 Okt
+    f = {
+        1: _f(["telat_kirim"], H - timedelta(days=3)),
+        2: _f(["perlu_dikirim", "perlu_ditagih"], batas),
+        3: _f(["siap_diserahkan"], H),
+        4: _f(["perlu_dikirim"], None),                       # tanggal kosong -> MASUK (siap dipenuhi sekarang)
+        5: _f(["perlu_dikirim"], batas + timedelta(days=1)),  # sesudah minggu ini -> TIDAK
+        6: _f(["siap_diserahkan"], batas + timedelta(days=9)),
+        7: _f(["perlu_ditagih"], H),                          # bukan kunci kirim -> TIDAK
+        8: _f(["menunggu_dp"], None),
+        9: _f([], None),                                      # selesai/arsip -> TIDAK
+        10: _f(["perlu_dikonfirmasi"], H),                    # draft -> TIDAK
+    }
+    pasangan = {i for i, v in f.items()
+                if set(v["aksi"]) & {"telat_kirim", "perlu_dikirim", "siap_diserahkan"}
+                and (v["tanggal_kirim"] is None or v["tanggal_kirim"] <= batas)}
+    hasil = DV.pilih_harus_kirim(f, H)
+    assert {r["id"] for r in hasil} == pasangan == {1, 2, 3, 4}
+    assert {r["id"]: r["telat"] for r in hasil} == {1: True, 2: False, 3: False, 4: False}
+    assert DV.KUNCI_HARUS_KIRIM == ("telat_kirim", "perlu_dikirim", "siap_diserahkan")
+
+
+def test_fakta_membawa_tanggal_kirim_dan_status_aktif_sama_dengan_pill():
+    """Status = so_aksi.aksi_so (AKTIF_TIDAK): SO partial_shipped BERTANGGAL bersisa kirim -> perlu_dikirim -> kartu
+    (kueri lama: daftar putih confirmed/partial_invoiced/invoiced melewatkannya)."""
+    from app.services import so_aksi as SA
+    baris = [{"quantity": 5, "perlu": True, "stok": True, "terkirim": 2, "difaktur": 0}]
+    aksi = SA.aksi_so("partial_shipped", H, H, baris)
+    assert "perlu_dikirim" in aksi
+    assert [r["id"] for r in DV.pilih_harus_kirim({"x": _f(aksi, H)}, H)] == ["x"]
+    assert '"tanggal_kirim": r["expected_ship_date"]' in inspect.getsource(SA.fakta)
+
+
+async def test_so_harus_kirim_kontrol_tanggal_dan_status(monkeypatch):
+    """Ujung ke ujung lewat so_harus_kirim (fakta palsu): bertanggal partial_shipped + kosong MASUK; sesudah minggu TIDAK."""
+    from app.services import so_aksi as SA
+    batas = DV.akhir_minggu(H)
+
+    async def fakta(conn, t, hari):
+        return {"PS": _f(["perlu_dikirim"], H, "SO-PS"), "KOSONG": _f(["perlu_dikirim"], None, "SO-K"),
+                "NANTI": _f(["perlu_dikirim"], batas + timedelta(days=1), "SO-N")}
+
+    async def tertunda(conn, t, ids):
+        assert sorted(ids) == ["KOSONG", "PS"]
+        return {}
+
+    monkeypatch.setattr(SA, "fakta", fakta)
+    monkeypatch.setattr(DV.so_kirim, "faktur_tertunda_per_so", tertunda)
+    assert sorted(r["order_number"] for r in await DV.so_harus_kirim(None, "t", H)) == ["SO-K", "SO-PS"]
+    ids = await DV.id_tugas(None, "t", "harus_kirim", H)  # ?tugas= lewat fungsi yang SAMA
+    assert sorted(ids) == ["KOSONG", "PS"]

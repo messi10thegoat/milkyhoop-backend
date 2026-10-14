@@ -27,6 +27,8 @@ Terkirim = so_kirim.terkirim_per_baris (SJ aktif; quantity_shipped MATI). Difakt
 (menyimpang dari faktur, tiket). DP/proforma tak memengaruhi qty ditagih (bukan baris faktur).
 Filter ?aksi=, kolom aksi per baris, dan /summary <kunci>_count/_value memanggil `fakta` yang SAMA; kartu dashboard
 "DP belum diterima" (?tugas=dp_belum_diterima) = dp_belum_diterima() = menunggu_dp U perlu_minta_dp dari fakta yang SAMA.
+Kartu dashboard "N pesanan harus dikirim" (?tugas=harus_kirim) = dashboard_v2.pilih_harus_kirim atas fakta yang SAMA:
+telat_kirim | perlu_dikirim | siap_diserahkan dengan tanggal kirim <= akhir minggu ATAU kosong (DASBOR-SATU-SUMBER 15 Okt).
 _value = Σ total_amount SO, KECUALI kunci DP: menunggu_dp = sisa proforma DP belum terbayar, perlu_minta_dp = DP syarat SO.
 """
 from datetime import date
@@ -131,7 +133,7 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
         out[r["id"]] = {"aksi": aksi_so(r["status"], r["expected_ship_date"], hari_ini, per_so.get(r["id"], []),
                                         dp=kd, fase_lokasi=r.get("fase_lokasi"), tagih_sebelum_kirim=sebelum),
                         "total": _d(r["total_amount"]), "nilai": ({kd: nilai} if kd else {}),
-                        "nomor": r.get("order_number")}
+                        "nomor": r.get("order_number"), "tanggal_kirim": r["expected_ship_date"]}
     return out
 
 
