@@ -16,6 +16,7 @@ from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.penawaran_kedaluwarsa import AKSI, AMBANG_SEGERA_HABIS, aksi_penawaran, sql_aksi, sql_aksi_berparam
 from ..services.sales_doc_calc import (
+    LineAmountError, harga_json as _harga_json,
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
 from ..services.tax_factor import attach_dpp_factors, turunkan_tarif_baris
@@ -94,6 +95,8 @@ async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fix
         doc = compute_document(lines, doc_discount_amount=amt, doc_discount_percent=pct)
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except LineAmountError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     for ln in doc["items"]:
         ln["line_total"] = ln["total"]
     return doc
@@ -112,7 +115,35 @@ def _quote_line(r) -> dict:
         "tax_rate": r["tax_rate"] or 0,
         "group_name": r.get("group_name"),
         "sort_order": r.get("sort_order"),
+        "jumlah_baris": r.get("jumlah_baris"),  # JUMLAH BARIS (V427)
     }
+
+
+def _warisi_jumlah_baris_quote(items: list, lama: list) -> None:
+    """Suntingan yang mengirim ulang baris TANPA line_amount mewarisi jumlah_baris tersimpan selama qty & harga sama.
+    Cocok menurut `id` bila ada; bila tak ada id (form kirim-ulang), menurut keterangan+qty+harga yang sama (sekali pakai).
+    qty/harga berubah -> warisan dilepas (kembali qty x harga)."""
+    from decimal import Decimal as _D
+    by_id = {str(r["id"]): r for r in lama if r.get("jumlah_baris") is not None}
+    pakai = set()
+    for it in items:
+        if it.get("line_amount") is not None or it.get("jumlah_baris") is not None:
+            continue
+        r = by_id.get(str(it.get("id"))) if it.get("id") else None
+        if r is None and not it.get("id"):
+            for k, c in by_id.items():
+                if k in pakai:
+                    continue
+                if c["description"] == it.get("description") and _D(str(c["quantity"])) == _D(str(it.get("quantity") or 0)) \
+                        and _D(str(c["unit_price"])) == _D(str(it.get("unit_price") if it.get("unit_price") is not None else -1)):
+                    r = c
+                    pakai.add(k)
+                    break
+        if r is None:
+            continue
+        if _D(str(it.get("quantity", r["quantity"]))) == _D(str(r["quantity"])) and \
+                _D(str(it.get("unit_price", r["unit_price"]))) == _D(str(r["unit_price"])):
+            it["jumlah_baris"] = r["jumlah_baris"]
 
 
 async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
@@ -619,7 +650,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                             product_name=item["product_name"],
                             quantity=float(item["quantity"]),
                             unit=item["unit"],
-                            unit_price=item["unit_price"],
+                            unit_price=_harga_json(item["unit_price"]),
+                            line_amount=float(item["jumlah_baris"]) if item.get("jumlah_baris") is not None else None,
                             discount_percent=float(item["discount_percent"]),
                             tax_id=str(item["tax_id"]) if item["tax_id"] else None,
                             tax_rate=float(item["tax_rate"]),
@@ -810,9 +842,9 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                             id, quote_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
                             tax_id, tax_rate, tax_amount, line_total,
-                            group_name, sort_order
+                            group_name, sort_order, jumlah_baris
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
                         )
                     """,
                         uuid_module.uuid4(),
@@ -833,6 +865,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                         item["line_total"],
                         item.get("group_name"),
                         _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
+                        item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
                     )
 
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_CREATE", QuoteResponse(
@@ -874,6 +907,7 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
         "dp_amount": f(dp["dp_amount"]), "dp_percent": f(dp["dp_percent"]),
         "items": [{"line_number": i + 1, "description": ln.get("description"), "quantity": f(ln.get("quantity")),
                    "unit_price": f(ln.get("unit_price")), "discount_percent": f(ln.get("discount_percent") or 0),
+                   "line_amount": f(ln["line_amount"]) if ln.get("line_amount") is not None else f(ln.get("jumlah_baris")),
                    "tax_rate": f(ln.get("tax_rate") or 0), "tax_amount": f(ln["tax_amount"]),
                    "line_total": f(ln["line_total"]), "dpp": f(ln.get("dpp"))}
                   for i, ln in enumerate(_doc["items"])],
@@ -1056,6 +1090,10 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
     if _recalc:
         if body.items is not None:
             _lines = [item.model_dump() for item in body.items]
+            # JUMLAH BARIS (V427): kirim-ulang tanpa line_amount mewarisi jumlah tersimpan (qty/harga sama)
+            _warisi_jumlah_baris_quote(_lines, [dict(r) for r in await conn.fetch(
+                "SELECT id, description, quantity, unit_price, jumlah_baris FROM quote_items WHERE quote_id = $1",
+                uuid_module.UUID(quote_id))])
         else:
             _lines = [_quote_line(r) for r in await conn.fetch(
                 "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, id",
@@ -1118,9 +1156,9 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
                     id, quote_id, item_id, description,
                     quantity, unit, unit_price, discount_percent,
                     tax_id, tax_rate, tax_amount, line_total,
-                    group_name, sort_order
+                    group_name, sort_order, jumlah_baris
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
                 )
             """,
                 uuid_module.uuid4(),
@@ -1141,6 +1179,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
                 item["line_total"],
                 item.get("group_name"),
                 item.get("sort_order") if item.get("sort_order") is not None else idx,
+                item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
             )
 
     # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER).
@@ -1250,7 +1289,7 @@ _KEPALA_DIFF = ("quote_date", "expiry_date", "customer_id", "customer_name", "cu
                 "signer_email")
 _TOTAL_DIFF = ("subtotal", "discount_amount", "tax_amount", "total_amount")
 _BARIS_DIFF = ("item_id", "description", "quantity", "unit", "unit_price", "discount_percent", "tax_id", "tax_rate",
-               "line_total", "group_name")
+               "line_total", "group_name", "jumlah_baris")
 
 
 async def _tolak_bila_sudah_jadi_dokumen(conn, tenant_id: str, qid) -> None:
@@ -1832,9 +1871,9 @@ async def duplicate_quote(
                             id, quote_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
                             tax_id, tax_rate, tax_amount, line_total,
-                            group_name, sort_order
+                            group_name, sort_order, jumlah_baris
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
                         )
                     """,
                         uuid_module.uuid4(),
@@ -1851,6 +1890,7 @@ async def duplicate_quote(
                         item["line_total"],
                         item["group_name"],
                         item["sort_order"],
+                        item.get("jumlah_baris"),  # JUMLAH BARIS (V427): duplikat membawa jumlah
                     )
 
                 return QuoteResponse(
@@ -2006,9 +2046,9 @@ async def convert_to_invoice(
                             id, invoice_id, item_id, description,
                             quantity, unit, unit_price, discount_percent, discount_amount,
                             tax_code, tax_rate, tax_amount, subtotal, total,
-                            line_number, tax_code_id, dpp, dpp_harga_jual
+                            line_number, tax_code_id, dpp, dpp_harga_jual, jumlah_baris
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
                         )
                     """,
                         uuid_module.uuid4(),
@@ -2029,6 +2069,7 @@ async def convert_to_invoice(
                         uuid_module.UUID(ln["tax_id"]) if ln["tax_id"] else None,
                         ln["dpp"],
                         ln["dpp_harga_jual"],
+                        ln.get("jumlah_baris"),  # JUMLAH BARIS (V427): faktur membawa jumlah baris Penawaran
                     )
 
                 # Update quote status
@@ -2208,9 +2249,9 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
             INSERT INTO sales_order_items (
                 id, sales_order_id, item_id, description,
                 quantity, unit, unit_price, discount_percent,
-                tax_id, tax_rate, tax_amount, line_total, sort_order, dpp
+                tax_id, tax_rate, tax_amount, line_total, sort_order, dpp, jumlah_baris
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
             )
         """,
             uuid_module.uuid4(),
@@ -2227,6 +2268,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
             ln["total"],
             idx,
             ln["dpp"],
+            ln.get("jumlah_baris"),  # JUMLAH BARIS (V427): SO membawa jumlah baris Penawaran
         )
 
     # FIX_P3_BRIDGE 2026-06-16: propagate the new sales_order_id to
