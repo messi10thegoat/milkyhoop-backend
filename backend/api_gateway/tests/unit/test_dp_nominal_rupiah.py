@@ -114,8 +114,10 @@ def test_pdf_proforma_memakai_aturan_p2():
 
 # ---------------- D: posisi TANPA toleransi (kurang Rp1 pun = belum lunas) ----------------
 def test_posisi_tanpa_toleransi():
-    src = _fungsi("services/so_posisi.py", "fakta_daftar")
+    # AKSI-SO-2 (14 Okt): perbandingan pindah ke belum_bayar_so, dipakai fakta_daftar DAN id_menunggu_dp
+    src = _fungsi("services/so_posisi.py", "belum_bayar_so")
     assert 'terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))' in src
+    assert "belum_bayar_so(daftar_pf, terbayar)" in _fungsi("services/so_posisi.py", "fakta_daftar")
     from app.services.so_posisi import posisi
     assert posisi("confirmed", Decimal("3025000"), [{"purpose": "DP", "termin_ke": None}], False, Decimal(0), False,
                   Decimal("5000000"))[0] == "Menunggu DP"
