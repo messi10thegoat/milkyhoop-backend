@@ -135,6 +135,38 @@ async def batas_bawah_total(conn, tenant_id: str, so_id, total_lama) -> dict:
             "faktur_terbit": faktur, "batas": max(dp, tagih, faktur)}
 
 
+# 14 Okt 2026 (W-20261014-PESAN-BAWAH-DITAGIH): pesan tolak menyebut HANYA komponen pengikat (tertinggi) + selisih;
+# komponen nol tak disebut. Seri -> urutan ini menang (faktur = tagihan sah; uang diterima > tagihan proforma).
+URUTAN_PENGIKAT = ("faktur_terbit", "uang_muka_diterima", "tertagih_proforma")
+
+
+def pengikat_batas(batas: dict) -> tuple:
+    """(kunci, label, nilai) komponen yang mengikat batas bawah total -- SATU-SATUNYA tempat labelnya."""
+    kunci = max(URUTAN_PENGIKAT, key=lambda k: (batas[k], -URUTAN_PENGIKAT.index(k)))
+    if kunci == "faktur_terbit":
+        label = "faktur terbit"
+    elif kunci == "uang_muka_diterima":
+        label = "uang muka diterima"
+    elif batas["proforma_terbit"] > 0 and batas["uang_muka_di_luar_tagihan"] > 0:
+        label = "proforma terbit + uang muka di luar tagihan"
+    elif batas["proforma_terbit"] > 0:
+        label = "proforma terbit"
+    else:
+        label = "uang muka di luar tagihan"
+    return kunci, label, batas[kunci]
+
+
+def galat_di_bawah_tertagih(total_baru, batas: dict):
+    """409 SO_TOTAL_BELOW_COMMITTED (pratinjau DAN simpan lewat ubah()). Teks ringkas; rincian tetap di badan."""
+    kunci, label, nilai = pengikat_batas(batas)
+    galat(409, "SO_TOTAL_BELOW_COMMITTED",
+          f"Total {_rp(total_baru)} kurang dari {label} {_rp(nilai)} (selisih {_rp(nilai - total_baru)}).",
+          minimum_total=float(batas["batas"]), new_total=float(total_baru),
+          shortfall=float(batas["batas"] - total_baru), binding_component=kunci,
+          components={k: float(batas[k]) for k in ("uang_muka_diterima", "proforma_terbit",
+                                                     "uang_muka_di_luar_tagihan", "faktur_terbit")})
+
+
 async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     """Jalur TUNGGAL (PATCH asli DAN pratinjau yang di-rollback). Pemanggil memegang transaksi + FOR UPDATE baris SO.
     `hitung(conn, tenant, src_items, discount, shipping, shipping_code)` -> dokumen terhitung (kalkulator SO yang sama
@@ -289,12 +321,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     total_lama, total_baru = _d(so["total_amount"]), _d(doc["total_amount"])
     batas = await batas_bawah_total(conn, tid, so_id, total_lama)
     if total_baru < total_lama and total_baru < batas["batas"]:
-        galat(409, "SO_TOTAL_BELOW_COMMITTED",
-              f"Nilai pesanan baru {_rp(total_baru)} di bawah yang sudah ditagih/diterima: uang muka diterima "
-              f"{_rp(batas['uang_muka_diterima'])}, proforma terbit {_rp(batas['proforma_terbit'])}"
-              f" (+ uang muka di luar tagihan {_rp(batas['uang_muka_di_luar_tagihan'])}), faktur terbit "
-              f"{_rp(batas['faktur_terbit'])}. Minimal {_rp(batas['batas'])}.",
-              minimum_total=float(batas["batas"]), new_total=float(total_baru))
+        galat_di_bawah_tertagih(total_baru, batas)
 
     # ---- uang muka (aturan sama dengan jalur draf) ----
     dp_kirim = {"dp_percent", "dp_amount"} & fs
