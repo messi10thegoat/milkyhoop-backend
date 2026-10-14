@@ -166,7 +166,8 @@ async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
         per_so.setdefault(p["sales_order_id"], []).append(p)
     terbit = {p["sales_order_id"] for p in pfs if p["status"] not in PROFORMA_BELUM_TERBIT}
     tunggu = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued" and p["purpose"] == "DP"})
-    minta = sorted(r["id"] for r in rows if r["status"] not in SO_TAK_BERJALAN and r["id"] not in terbit
+    # pengecualian proforma terbit/uang muka/faktur HANYA di perlu_minta_dp (satu tempat; kontrol merah 14 Okt)
+    minta = sorted(r["id"] for r in rows if r["status"] not in SO_TAK_BERJALAN
                    and punya_term_dp(r.get("dp_percent"), r.get("dp_amount")))
     semua = sorted(set(tunggu) | set(minta))
     if not semua:
