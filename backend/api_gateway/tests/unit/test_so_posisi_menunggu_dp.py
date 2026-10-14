@@ -47,8 +47,8 @@ T = "kaos-biru-konveksi"
 
 
 class _C:
-    def __init__(self, pf, faktur):
-        self.pf, self.faktur, self.q = pf, faktur, []
+    def __init__(self, pf, faktur, deposit=()):
+        self.pf, self.faktur, self.deposit, self.q = pf, faktur, set(deposit), []
 
     async def fetch(self, q, *a):
         assert {int(x) for x in re.findall(r"\$(\d+)", q)} == set(range(1, len(a) + 1)), q
@@ -58,6 +58,9 @@ class _C:
             return [p for p in self.pf if p["sales_order_id"] in set(a[1])]
         if "FROM sales_invoices" in q:
             return [{"so_id": s, "n": n} for s, n in self.faktur.items() if s in set(a[1])]
+        if "FROM customer_deposits" in q:
+            assert set(a[2]) == {"void", "draft", "refunded"}
+            return [{"so_id": s} for s in self.deposit if s in set(a[1])]
         raise AssertionError(q)
 
 
@@ -66,34 +69,80 @@ def _pf(so, purpose, status="issued", amount="100", jam=1):
             "amount": D(amount), "status": status, "issued_at": datetime(2026, 10, jam, tzinfo=timezone.utc)}
 
 
-def test_id_menunggu_dp(monkeypatch):
-    s = {k: uuid.uuid4() for k in ("dp", "lunasdp", "termin", "tanpa", "draf_pf", "habis")}
-    pf = [_pf(s["dp"], "DP"), _pf(s["lunasdp"], "DP"), _pf(s["termin"], "TERMIN", jam=1), _pf(s["termin"], "DP", jam=2),
-          _pf(s["draf_pf"], "DP", status="draft"), _pf(s["habis"], "DP")]
-    lunas = pf[1]["id"]
+def _jalan(monkeypatch, s, pf, rows, faktur=None, deposit=(), dibayar=None, tutup=()):
     minta = {}
 
     async def rg(conn, t, ids):
         minta["rg"] = set(ids)
-        return {i: {"tertutup": D("1000") if i == s["habis"] else D("0")} for i in ids}
+        return {i: {"tertutup": D("1000") if i in tutup else D("0")} for i in ids}
 
     async def tb(conn, t, ids):
-        return {lunas: {"paid": D("100")}}
+        minta["tb"] = set(ids)
+        return dibayar or {}
     monkeypatch.setattr(SP, "ringkasan_pesanan", rg)
     monkeypatch.setattr(SP, "terbayar_proforma", tb)
-    rows = [{"id": i, "status": "confirmed", "total_amount": D("1000")} for i in s.values()]
-    c = _C(pf, {})
-    hasil = asyncio.run(SP.id_menunggu_dp(c, T, rows))
-    assert hasil == {s["dp"]}
-    assert minta["rg"] == {s["dp"], s["lunasdp"], s["termin"], s["habis"]}   # hanya SO ber-proforma DP issued
+    return asyncio.run(SP.fakta_dp(_C(pf, faktur or {}, deposit), T, rows)), minta
 
 
-def test_id_menunggu_dp_tanpa_proforma_dp_nol_kueri_uang(monkeypatch):
+def _so(i, term=True, status="confirmed", dp_amount=None):
+    return {"id": i, "status": status, "total_amount": D("1000"), "dp_percent": D("30") if term else None,
+            "dp_amount": dp_amount}
+
+
+def test_fakta_dp_menunggu(monkeypatch):
+    s = {k: uuid.uuid4() for k in ("dp", "lunasdp", "termin", "habis", "sebagian")}
+    pf = [_pf(s["dp"], "DP"), _pf(s["lunasdp"], "DP"), _pf(s["termin"], "TERMIN", jam=1), _pf(s["termin"], "DP", jam=2),
+          _pf(s["habis"], "DP"), _pf(s["sebagian"], "DP", amount="150")]
+    bayar = {pf[1]["id"]: {"paid": D("100")}, pf[5]["id"]: {"paid": D("10")}}
+    rows = [_so(i, term=False) for i in s.values()]
+    hasil, minta = _jalan(monkeypatch, s, pf, rows, dibayar=bayar, tutup={s["habis"]})
+    assert hasil == {s["dp"]: ("menunggu_dp", D("100")), s["sebagian"]: ("menunggu_dp", D("140"))}
+    assert minta["tb"] == {s["dp"], s["lunasdp"], s["termin"], s["habis"], s["sebagian"]}
+
+
+def test_fakta_dp_perlu_minta(monkeypatch):
+    k = ("minta", "minta_nominal", "pelunasan", "draf_pf", "batal_pf", "deposit", "faktur", "tanpa_term", "habis", "draf_so")
+    s = {x: uuid.uuid4() for x in k}
+    pf = [_pf(s["pelunasan"], "PELUNASAN"), _pf(s["draf_pf"], "DP", status="draft"),
+          _pf(s["batal_pf"], "DP", status="cancelled")]
+    rows = [_so(s[x]) for x in k if x not in ("minta_nominal", "tanpa_term", "draf_so")]
+    rows += [_so(s["minta_nominal"], dp_amount=D("250")), _so(s["tanpa_term"], term=False),
+             _so(s["draf_so"], status="draft")]
+    hasil, minta = _jalan(monkeypatch, s, pf, rows, faktur={s["faktur"]: 1}, deposit={s["deposit"]}, tutup={s["habis"]})
+    assert hasil == {s["minta"]: ("perlu_minta_dp", D("300.00")), s["minta_nominal"]: ("perlu_minta_dp", D("250")),
+                     s["draf_pf"]: ("perlu_minta_dp", D("300.00")), s["batal_pf"]: ("perlu_minta_dp", D("300.00"))}
+    assert "tb" not in minta                       # tanpa proforma DP terbit: terbayar tak dihitung
+
+
+def test_fakta_dp_usaha_tanpa_dp_satu_kueri(monkeypatch):
     async def jangan(*a):
-        raise AssertionError("tak boleh menghitung ringkasan tanpa proforma DP issued")
+        raise AssertionError("tak boleh menghitung uang tanpa calon DP")
     monkeypatch.setattr(SP, "ringkasan_pesanan", jangan)
     monkeypatch.setattr(SP, "terbayar_proforma", jangan)
     so = uuid.uuid4()
     c = _C([_pf(so, "PELUNASAN")], {})
-    assert asyncio.run(SP.id_menunggu_dp(c, T, [{"id": so, "status": "confirmed", "total_amount": D("5")}])) == set()
-    assert asyncio.run(SP.id_menunggu_dp(c, T, [])) == set()
+    assert asyncio.run(SP.fakta_dp(c, T, [_so(so, term=False)])) == {}
+    assert len(c.q) == 1
+    assert asyncio.run(SP.fakta_dp(c, T, [])) == {}
+
+
+@pytest.mark.parametrize("args,harap", [
+    (("confirmed", True, False, False, False, D("1")), True),
+    (("partial_invoiced", True, False, False, False, D("1")), True),
+    (("confirmed", False, False, False, False, D("1")), False),
+    (("confirmed", True, True, False, False, D("1")), False),
+    (("confirmed", True, False, True, False, D("1")), False),
+    (("confirmed", True, False, False, True, D("1")), False),
+    (("confirmed", True, False, False, False, D("0")), False),
+    (("draft", True, False, False, False, D("1")), False),
+    (("completed", True, False, False, False, D("1")), False),
+])
+def test_perlu_minta_dp_murni(args, harap):
+    assert SP.perlu_minta_dp(*args) is harap
+
+
+def test_dp_wajib():
+    assert SP.dp_wajib(D("1000"), D("30"), None) == D("300.00")
+    assert SP.dp_wajib(D("1000"), D("30"), D("90")) == D("90")
+    assert SP.dp_wajib(D("333.33"), D("50"), D("0")) == D("166.67")   # half-up = ROUND SQL kartu lama
+    assert SP.punya_term_dp(None, D("0")) is False and SP.punya_term_dp(D("0"), D("5")) is True

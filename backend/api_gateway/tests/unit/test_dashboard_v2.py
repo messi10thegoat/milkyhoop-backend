@@ -413,8 +413,11 @@ def test_sql_tugas_tenant_eksplisit_dan_tanpa_quantity_shipped():
     kirim = inspect.getsource(DV.so_harus_kirim)
     assert "quantity_shipped" not in kirim and "COALESCE(soi.perlu_kirim, p.track_inventory, false)" in kirim
     assert "terkirim_per_baris" in kirim and "so.tenant_id = $1" in kirim
-    dp = inspect.getsource(DV.so_dp_belum)
-    assert "COALESCE(cd.sales_order_id, pf.sales_order_id) = so.id" in dp and "cd.tenant_id = so.tenant_id" in dp
+    dp = inspect.getsource(DV.so_dp_belum)  # PERLU-MINTA-DP: satu sumber so_aksi (kueri sendiri dicabut)
+    assert "so_aksi.dp_belum_diterima(conn, tenant_id, hari_ini)" in dp and "SELECT" not in dp
+    from app.services import so_posisi as _sp
+    assert "COALESCE(cd.sales_order_id, pf.sales_order_id) = ANY($2::uuid[])" in _sp.SQL_DEPOSIT_HIDUP_SO
+    assert "pf.tenant_id = cd.tenant_id" in _sp.SQL_DEPOSIT_HIDUP_SO
     assert "GROUP BY je.id" in DV.SQL_KAS_PER_HARI  # neto PER JURNAL (transfer internal = 0), bukan bruto
     rek = inspect.getsource(DV.rekening_belum_rekon)
     assert "if not pernah" in rek  # putusan pemilik: hanya bila pernah rekonsiliasi

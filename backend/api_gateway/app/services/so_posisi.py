@@ -13,7 +13,7 @@ dalam kueri ber-batch (daftar <= 100 SO) dari sumber yang SUDAH ADA -- tanpa rum
 Filter tenant EKSPLISIT di tiap kueri (set_config bukan pagar).
 """
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
 from .so_fase_lokasi import STATUS_TERTUTUP as _FASE_TUTUP, teks_fase
@@ -120,29 +120,72 @@ def belum_bayar_so(daftar_pf: list, terbayar: dict) -> list:
             for p in issued if terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))]
 
 
-async def id_menunggu_dp(conn, tenant_id: str, rows: list) -> set:
-    """rows: SO (id, status, total_amount). -> {so_id} yang menunggu_dp; fakta SAMA dengan fakta_daftar (Posisi).
-    SO tanpa proforma issued tak pernah memicu ringkasan/terbayar (usaha tanpa DP = 0 kueri tambahan)."""
+DEPOSIT_TAK_HIDUP = ("void", "draft", "refunded")   # = dashboard so_dp_belum lama: uang muka "hidup" = selain ini
+PROFORMA_BELUM_TERBIT = ("draft", "cancelled")       # proforma selain ini = tagihan SUDAH dikirim ke pelanggan
+SO_TAK_BERJALAN = ("draft", "cancelled", "completed")  # = so_agregat.AKTIF_TIDAK (tanpa impor: so_agregat -> proforma_terbayar)
+SQL_DEPOSIT_HIDUP_SO = """SELECT DISTINCT COALESCE(cd.sales_order_id, pf.sales_order_id) AS so_id
+           FROM customer_deposits cd
+           LEFT JOIN proformas pf ON pf.id = cd.proforma_id AND pf.tenant_id = cd.tenant_id
+           WHERE cd.tenant_id = $1 AND COALESCE(cd.sales_order_id, pf.sales_order_id) = ANY($2::uuid[])
+             AND cd.status <> ALL($3::text[])"""
+
+
+def punya_term_dp(dp_percent, dp_amount) -> bool:
+    return Decimal(str(dp_percent or 0)) > NOL or Decimal(str(dp_amount or 0)) > NOL
+
+
+def dp_wajib(total, dp_percent, dp_amount) -> Decimal:
+    """DP menurut SYARAT SO: dp_amount bila > 0, selain itu total x dp_percent / 100 (2 desimal, half-up = ROUND SQL
+    kartu lama). Angka tampilan, bukan saldo (tak menulis apa pun)."""
+    if Decimal(str(dp_amount or 0)) > NOL:
+        return Decimal(str(dp_amount))
+    return (Decimal(str(total or 0)) * Decimal(str(dp_percent or 0)) / 100).quantize(Decimal("0.01"), ROUND_HALF_UP)
+
+
+def perlu_minta_dp(status: str, punya_term: bool, ada_proforma_terbit: bool, ada_deposit_hidup: bool,
+                   ada_faktur: bool, sisa: Decimal) -> bool:
+    """PERLU-MINTA-DP (14 Okt 2026, MASTER): SO berjalan bersyarat DP yang BELUM ditagih sama sekali -- tanpa proforma
+    terbit APA PUN (PELUNASAN terbit = pelanggan sudah ditagih), tanpa uang muka hidup, tanpa faktur terbit, sisa > 0.
+    Pola SAP billing plan: milestone DP jatuh tempo, down payment request belum dibuat; NetSuite: sebelum Pending Deposit."""
+    if status in SO_TAK_BERJALAN:
+        return False
+    return punya_term and not ada_proforma_terbit and not ada_deposit_hidup and not ada_faktur and sisa > NOL
+
+
+async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
+    """rows: SO berjalan (id, status, total_amount, dp_percent, dp_amount). -> {so_id: (kunci, nilai)} dengan kunci
+    'menunggu_dp' (nilai = sisa proforma DP terbit yang belum terbayar, terbayar_proforma kanonik) atau 'perlu_minta_dp'
+    (nilai = dp_wajib syarat SO). Keduanya saling lepas. Fakta menunggu_dp SAMA dengan fakta_daftar (Posisi).
+    Usaha tanpa syarat DP dan tanpa proforma DP = satu kueri proforma saja."""
     ids = [r["id"] for r in rows]
     if not ids:
-        return set()
+        return {}
     pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
-    calon = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued" and p["purpose"] == "DP"})
-    if not calon:
-        return set()
-    rg = await ringkasan_pesanan(conn, tenant_id, calon)
-    terbayar = await terbayar_proforma(conn, tenant_id, calon)
-    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, calon)}
     per_so = {}
     for p in pfs:
         per_so.setdefault(p["sales_order_id"], []).append(p)
+    terbit = {p["sales_order_id"] for p in pfs if p["status"] not in PROFORMA_BELUM_TERBIT}
+    tunggu = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued" and p["purpose"] == "DP"})
+    minta = sorted(r["id"] for r in rows if r["status"] not in SO_TAK_BERJALAN and r["id"] not in terbit
+                   and punya_term_dp(r.get("dp_percent"), r.get("dp_amount")))
+    semua = sorted(set(tunggu) | set(minta))
+    if not semua:
+        return {}
+    rg = await ringkasan_pesanan(conn, tenant_id, semua)
+    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, semua)}
+    terbayar = await terbayar_proforma(conn, tenant_id, tunggu) if tunggu else {}
+    hidup = {r["so_id"] for r in await conn.fetch(SQL_DEPOSIT_HIDUP_SO, tenant_id, minta, list(DEPOSIT_TAK_HIDUP))} if minta else set()
     st = {r["id"]: r for r in rows}
-    out = set()
-    for sid in calon:
+    out = {}
+    for sid in semua:
         r = st[sid]
         sisa = Decimal(str(r["total_amount"] or 0)) - rg[sid]["tertutup"]
-        if menunggu_dp(r["status"], sisa, belum_bayar_so(per_so[sid], terbayar), faktur.get(sid, 0) > 0):
-            out.add(sid)
+        ada_faktur = faktur.get(sid, 0) > 0
+        if sid in per_so and menunggu_dp(r["status"], sisa, belum_bayar_so(per_so[sid], terbayar), ada_faktur):
+            out[sid] = ("menunggu_dp", sum((max(Decimal(str(p["amount"])) - terbayar.get(p["id"], {}).get("paid", NOL), NOL)
+                                            for p in per_so[sid] if p["status"] == "issued" and p["purpose"] == "DP"), NOL))
+        elif sid in minta and perlu_minta_dp(r["status"], True, sid in terbit, sid in hidup, ada_faktur, sisa):
+            out[sid] = ("perlu_minta_dp", dp_wajib(r["total_amount"], r.get("dp_percent"), r.get("dp_amount")))
     return out
 
 

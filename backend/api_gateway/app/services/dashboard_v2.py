@@ -544,7 +544,7 @@ async def id_tugas(conn, tenant_id: str, tugas: str, hari_ini: date) -> list:
     if tugas == "harus_kirim":
         return [r["id"] for r in await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))]
     if tugas == "dp_belum_diterima":
-        return [r["id"] for r in await so_dp_belum(conn, tenant_id)]
+        return [r["id"] for r in await so_dp_belum(conn, tenant_id, hari_ini)]
     if tugas == "tersedia":  # 7 Okt 2026: SO fase "Tersedia" (so_agregat.PREDIKAT_TERSEDIA = kartu summary = baris)
         from . import so_agregat as _sa
         return await _sa.id_tersedia(conn, tenant_id)
@@ -754,27 +754,12 @@ async def so_harus_kirim(conn, tenant_id: str, akhir_minggu: date) -> list:
     return list(out.values())
 
 
-async def so_dp_belum(conn, tenant_id: str) -> list:
-    """SO Dikonfirmasi bersyarat DP tanpa SATU pun uang muka tertaut yang hidup.
-    Tautan = resolusi yang sama dengan customer_deposits.resolve_order_id_for_deposit /
-    linked_so_deposits: sales_order_id langsung, bila kosong lewat proforma.sales_order_id.
-    Status hidup = selain void/draft/refunded (linked_so_deposits hanya posted/partial, sehingga DP yang
-    SUDAH diterapkan ke faktur ('applied') akan terbaca 'belum diterima' — karena itu tak dipakai apa adanya)."""
-    return await conn.fetch(
-        """SELECT so.id, so.order_number,
-                  CASE WHEN COALESCE(so.dp_amount, 0) > 0 THEN so.dp_amount
-                       ELSE ROUND(COALESCE(so.total_amount, 0) * so.dp_percent / 100, 2) END AS dp_wajib
-           FROM sales_orders so
-           WHERE so.tenant_id = $1 AND so.status = 'confirmed'
-             AND (COALESCE(so.dp_percent, 0) > 0 OR COALESCE(so.dp_amount, 0) > 0)
-             AND NOT EXISTS (
-                 SELECT 1 FROM customer_deposits cd
-                 LEFT JOIN proformas pf ON pf.id = cd.proforma_id AND pf.tenant_id = cd.tenant_id
-                 WHERE cd.tenant_id = so.tenant_id
-                   AND COALESCE(cd.sales_order_id, pf.sales_order_id) = so.id
-                   AND cd.status NOT IN ('void', 'draft', 'refunded'))""",
-        tenant_id,
-    )
+async def so_dp_belum(conn, tenant_id: str, hari_ini: date) -> list:
+    """Kartu "DP belum diterima" (PERLU-MINTA-DP, 14 Okt 2026, putusan MASTER): SATU sumber = so_aksi (pill
+    menunggu_dp U perlu_minta_dp). Kueri sendiri (SO confirmed bersyarat DP tanpa uang muka) DICABUT: ia memasukkan SO
+    yang sudah ditagih PELUNASAN dan melewatkan proforma DP tanpa syarat (kaos 16 vs pill 1). -> [{id, order_number, dp_wajib}]."""
+    from . import so_aksi
+    return await so_aksi.dp_belum_diterima(conn, tenant_id, hari_ini)
 
 
 async def rekening_belum_rekon(conn, tenant_id: str, hari_ini: date) -> list:
@@ -861,7 +846,7 @@ async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
     return susun_tugas(
         hari_ini=hari_ini, ar_rows=ar_rows, ap_rows=ap_rows,
         so_kirim_rows=await so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini)),
-        so_dp_rows=await so_dp_belum(conn, tenant_id),
+        so_dp_rows=await so_dp_belum(conn, tenant_id, hari_ini),
         rekon_rows=await rekening_belum_rekon(conn, tenant_id, hari_ini),
         kontak=await kontak_pelanggan(conn, tenant_id, (r["customer_id"] for r in ar_rows)),
         rekening=await rekening_tagih(conn, tenant_id), usaha=usaha,

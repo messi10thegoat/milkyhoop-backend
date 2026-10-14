@@ -30,10 +30,10 @@ def test_kartu_memakai_pemilih_yang_sama():
     assert "pilih_faktur_telat(ar, hari_ini)" in s and "pilih_jatuh_tempo_hari_ini(ar, hari_ini)" in s
     assert '_jatuh_tempo_lewat(r["due_date"]' not in s and 'r["due_date"] == hari_ini' not in s  # bukan salinan
     t = inspect.getsource(DV.tugas_tenant)
-    assert "so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))" in t and "so_dp_belum(conn, tenant_id)" in t
+    assert "so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))" in t and "so_dp_belum(conn, tenant_id, hari_ini)" in t
     i = inspect.getsource(DV.id_tugas)
     for x in ("pilih_faktur_telat", "pilih_jatuh_tempo_hari_ini", "so_harus_kirim(conn, tenant_id, akhir_minggu(hari_ini))",
-              "so_dp_belum(conn, tenant_id)", 'compute_ar_outstanding'):
+              "so_dp_belum(conn, tenant_id, hari_ini)", 'compute_ar_outstanding'):
         assert x in i, x
 
 
