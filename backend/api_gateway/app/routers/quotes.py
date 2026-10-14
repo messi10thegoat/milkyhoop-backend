@@ -168,48 +168,6 @@ async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
     return await _quote_calc(conn, tenant_id, sel, dtype, dval, fixed_amount=fixed)
 
 
-def calculate_item_totals(item: dict) -> dict:
-    """Calculate line item totals."""
-    quantity = Decimal(str(item.get("quantity", 1)))
-    unit_price = Decimal(str(item.get("unit_price", 0)))
-    discount_percent = Decimal(str(item.get("discount_percent", 0)))
-    tax_rate = Decimal(str(item.get("tax_rate", 0)))
-
-    subtotal = quantity * unit_price
-    discount = subtotal * discount_percent / 100
-    after_discount = subtotal - discount
-    tax_amount = after_discount * tax_rate / 100
-    line_total = after_discount + tax_amount
-
-    return {**item, "tax_amount": int(tax_amount), "line_total": int(line_total)}
-
-
-def calculate_quote_totals(
-    items: list, discount_type: str, discount_value: float
-) -> dict:
-    """Calculate quote totals from items."""
-    subtotal = sum(
-        item.get("line_total", 0) - item.get("tax_amount", 0) for item in items
-    )
-    total_tax = sum(item.get("tax_amount", 0) for item in items)
-
-    if discount_type == "percentage":
-        discount_amount = int(
-            Decimal(str(subtotal)) * Decimal(str(discount_value)) / 100
-        )
-    else:
-        discount_amount = int(discount_value)
-
-    total_amount = subtotal - discount_amount + total_tax
-
-    return {
-        "subtotal": subtotal,
-        "discount_amount": discount_amount,
-        "tax_amount": total_tax,
-        "total_amount": total_amount,
-    }
-
-
 def resolve_dp(
     total_amount: int,
     dp_amount: Optional[int],
@@ -739,7 +697,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                         "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
                     )
 
-                # 3h: kalkulator bersama (bukan calculate_item_totals/int()).
+                # 3h: kalkulator bersama (sales_doc_calc; HALF_UP 2dp).
                 _doc = await _quote_calc(
                     conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
                     body.discount_type, body.discount_value,
