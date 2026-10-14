@@ -176,6 +176,8 @@ class _Konn:
         return self.dep
 
     async def fetch(self, sql, *a):
+        if "FROM audit_logs" in sql:
+            return list(getattr(self, "audit", []))
         if "customer_deposit_applications" in sql:
             return [{"id": "a1", "invoice_number": "INV-1", "amount_applied": 500,
                      "created_at": datetime(2026, 10, 14, 3, tzinfo=timezone.utc), "created_by": None,
@@ -183,7 +185,7 @@ class _Konn:
         return []
 
 
-def _riwayat_dp(monkeypatch, jenis):
+def _riwayat_dp(monkeypatch, jenis, audit=()):
     async def _zona(conn, tid):
         return timezone.utc
     monkeypatch.setattr(SR, "zona_tenant", _zona)
@@ -194,7 +196,9 @@ def _riwayat_dp(monkeypatch, jenis):
 
     async def boleh(m):
         return True
-    return asyncio.run(SR.riwayat_uang_muka(_Konn(dep), "t1", "d1", boleh))
+    k = _Konn(dep)
+    k.audit = audit
+    return asyncio.run(SR.riwayat_uang_muka(k, "t1", "d1", boleh))
 
 
 def test_riwayat_uang_muka_pelunasan(monkeypatch):
@@ -209,6 +213,41 @@ def test_riwayat_uang_muka_pelunasan(monkeypatch):
 def test_riwayat_uang_muka_dp(monkeypatch):
     teks = [e["ringkas"] for e in _riwayat_dp(monkeypatch, "DP")["events"]]
     assert any(t.startswith("Uang muka DEP-1") for t in teks) and not any("Pelunasan" in t for t in teks)
+
+
+def _audit(event, ringkas=None):
+    meta = {"ringkas": ringkas} if ringkas else {}
+    return {"id": "x", "createdAt": datetime(2026, 10, 14, 5, tzinfo=timezone.utc), "eventType": event,
+            "userId": None, "entity_type": "customer_deposit", "entity_id": "d1", "entity_number": "DEP-1",
+            "metadata": meta, "source": None}
+
+
+AUDIT_DP = (_audit("DEPOSIT_VOIDED", "Uang muka DEP-1 Rp 1.000 dibatalkan: salah"),
+            _audit("DEPOSIT_MOVED", "Uang muka DEP-1 dipindah dari proforma PRO-1 ke proforma PRO-2"),
+            _audit("DEPOSIT_APPLICATION_REVERSED"), _audit("DEPOSIT_REFUNDED"))
+
+
+def test_riwayat_audit_tersimpan_ikut_jenis_pelunasan(monkeypatch):
+    """Ringkas audit TERSIMPAN (void/pindah, ditulis 'Uang muka ..') dibaca dengan label jenis efektif (harness nyata
+    kaos DEP-2610-0005, 14 Okt: void + pindah tampil 'Uang muka' walau PELUNASAN)."""
+    teks = [e["ringkas"] for e in _riwayat_dp(monkeypatch, "PELUNASAN", AUDIT_DP)["events"]]
+    assert "Pelunasan DEP-1 Rp 1.000 dibatalkan: salah" in teks, teks
+    assert "Pelunasan DEP-1 dipindah dari proforma PRO-1 ke proforma PRO-2" in teks, teks
+    assert "Penerapan pelunasan dilepas" in teks and "Pelunasan dikembalikan" in teks, teks
+    assert not any("uang muka" in t.lower() for t in teks), teks
+
+
+def test_riwayat_audit_tersimpan_dp_tak_berubah(monkeypatch):
+    teks = [e["ringkas"] for e in _riwayat_dp(monkeypatch, "DP", AUDIT_DP)["events"]]
+    assert "Uang muka DEP-1 Rp 1.000 dibatalkan: salah" in teks and "Penerapan uang muka dilepas" in teks, teks
+
+
+def test_label_ringkas():
+    assert DJ.label_ringkas("Uang muka DEP-1 x", "Pelunasan") == "Pelunasan DEP-1 x"
+    assert DJ.label_ringkas("Penerapan uang muka DEP-1 dilepas", "Pelunasan") == "Penerapan pelunasan DEP-1 dilepas"
+    assert DJ.label_ringkas("Uang muka DEP-1 x", "Uang muka") == "Uang muka DEP-1 x"
+    assert DJ.label_ringkas("Uang muka DEP-1 x", None) == "Uang muka DEP-1 x"
+    assert DJ.label_ringkas("Faktur INV-1 dibuat", "Pelunasan") == "Faktur INV-1 dibuat"
 
 
 def test_riwayat_so_memakai_jenis():

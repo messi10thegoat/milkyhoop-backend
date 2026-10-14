@@ -49,6 +49,20 @@ def label_jenis(jenis: Optional[str]) -> str:
     return LABEL_JENIS.get(jenis or "", LABEL_JENIS[JENIS_BAWAAN])
 
 
+def label_ringkas(ringkas: str, label: Optional[str]) -> str:
+    """Ringkas audit uang muka TERSIMPAN ('Uang muka DEP-.. dibatalkan', 'Penerapan uang muka ..') -> label jenis
+    efektif SAAT DIBACA. Hanya awalan; label None/'Uang muka' -> tak berubah."""
+    dasar = LABEL_JENIS[JENIS_BAWAAN]
+    if not label or label == dasar or not ringkas:
+        return ringkas
+    if ringkas.startswith(dasar):
+        return label + ringkas[len(dasar):]
+    awal = f"Penerapan {dasar.lower()}"
+    if ringkas.startswith(awal):
+        return f"Penerapan {label.lower()}" + ringkas[len(awal):]
+    return ringkas
+
+
 def label_kwitansi(jenis: Optional[str], ada_so: bool) -> str:
     """Keperluan kwitansi: 'Uang Muka Pesanan' / 'Pelunasan Pesanan'; tanpa SO: 'Uang Muka' / 'Pelunasan'."""
     dasar = LABEL_KWITANSI.get(jenis or "", LABEL_KWITANSI[JENIS_BAWAAN])

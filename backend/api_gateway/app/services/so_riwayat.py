@@ -23,7 +23,7 @@ import json
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
-from .deposit_jenis import label_jenis, sql_jenis_efektif
+from .deposit_jenis import label_jenis, label_ringkas, sql_jenis_efektif
 from .nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import zona_tenant
 from . import teks_galat as tg
@@ -167,6 +167,7 @@ def _rp(x) -> str:
 class _Kumpul:
     def __init__(self):
         self.ev = []
+        self.label_dp = {}  # V422: id uang muka (str) -> label jenis efektif, untuk ringkas audit
 
     def tambah(self, at, jenis, ringkas, aktor, dok_tipe=None, dok_id=None, dok_nomor=None, sumber="dokumen",
                kunci=None):
@@ -296,6 +297,8 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
             aktor = r["userId"] or meta.get("user_id")
             if not aktor and str(r["source"] or "").startswith("db:"):
                 aktor = AKTOR_SISTEM  # kejadian ditulis fungsi DB (V315 selesai otomatis / dibuka kembali)
+            if jenis == "customer_deposit":  # V422: ringkas tersimpan "Uang muka .." -> label jenis efektif
+                ringkas = label_ringkas(ringkas, k.label_dp.get(str(r["entity_id"])))
             k.tambah(r["createdAt"], r["eventType"], ringkas, aktor, jenis, r["entity_id"], r["entity_number"], sumber="audit")
             audit_ada.add((r["eventType"], str(r["entity_id"])))
             if meta.get("kunci"):
@@ -378,6 +381,7 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
         )
         entitas_audit["customer_deposit"] = [d["id"] for d in dps]
         jenis_dp = {d["id"]: label_jenis(d["jenis"]) for d in dps}  # V422: "Uang muka" | "Pelunasan"
+        k.label_dp.update({str(i): v for i, v in jenis_dp.items()})
         for d in dps:
             n = d["deposit_number"]
             lb = jenis_dp[d["id"]]
@@ -543,6 +547,7 @@ async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     k = _Kumpul()
     n = d["deposit_number"]
     lb = label_jenis(d["jenis"])  # V422: "Uang muka" | "Pelunasan"
+    k.label_dp[str(d["id"])] = lb
     k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {n} {_rp(d['amount'])} dibuat", d["created_by"],
              "customer_deposit", d["id"], n)
     k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima (diposting)",

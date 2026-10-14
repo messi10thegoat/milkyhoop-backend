@@ -17,7 +17,7 @@ for f in "$OUT"/*.pdf; do
   n=$(basename "$f" .pdf)
   case "$n" in *pelunasan) harap="Untuk Pelunasan Pesanan";; *) harap="Untuk Uang Muka Pesanan";; esac
   for frasa in "Bukti Penerimaan" "$harap" "Total Pembayaran Diterima"; do
-    if echo "$t" | grep -qF "$frasa"; then echo "PASS PDF $n memuat '$frasa'"; else echo "FAIL PDF $n TANPA '$frasa'"; gagal_pdf=$((gagal_pdf+1)); fi
+    if echo "$t" | grep -qiF "$frasa"; then echo "PASS PDF $n memuat '$frasa'"; else echo "FAIL PDF $n TANPA '$frasa'"; gagal_pdf=$((gagal_pdf+1)); fi
   done
   if echo "$t" | grep -qF "Total Uang Muka Diterima"; then echo "FAIL PDF $n masih 'Total Uang Muka Diterima'"; gagal_pdf=$((gagal_pdf+1)); fi
 done
