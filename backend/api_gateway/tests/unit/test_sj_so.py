@@ -42,7 +42,8 @@ def baris(id_, item, qty, perlu=True, stok=False, desc="Jasa Jahit", unit="pcs")
 class Konek:
     def __init__(self, so_status="confirmed", rows=None, terkirim=None, flag_serah=False, ada_sjso=True, alokasi_aktif=None,
                  sj=None, faktur_items=None, sj_items=None, flag_stok=False, wac=Decimal("50000"), stok_ada=Decimal("100"),
-                 gudang_aktif=True):
+                 gudang_aktif=True, flag_sjso=True):
+        self.flag_sjso = flag_sjso
         self.flag_stok, self.wac, self.stok_ada, self.gudang_aktif = flag_stok, wac, stok_ada, gudang_aktif
         self.so_status = so_status
         self.rows = rows if rows is not None else [baris(L1, P1, 10)]
@@ -65,6 +66,8 @@ class Konek:
         if "FROM tenant_features" in s:
             if a and a[1] == S.FLAG_STOK:
                 return 1 if self.flag_stok else None
+            if a and a[1] == S.FLAG:
+                return 1 if self.flag_sjso else None
             return 1 if self.flag_serah else None
         if "get_weighted_average_cost" in s:
             return self.wac
@@ -252,10 +255,11 @@ def sj(asal="so", status="posted"):
             "sales_order_id": SO, "voided_at": None, "journal_id": None, "fulfillment_date": HARI}
 
 
-def test_void_hanya_asal_so_dan_belum_ditagih():
-    c = Konek(sj=sj("faktur"))
-    r = jalan(S.rencana_void(c, T, uuid.uuid4(), "salah"))
-    assert [b["code"] for b in r["blocks"]] == ["SJ_VOID_ASAL_FAKTUR"]
+def test_void_asal_so_belum_ditagih_dan_flag():
+    # VOID-SJ-FAKTUR (15 Okt 2026): asal 'faktur' TIDAK lagi diblok di sini -> didelegasikan (tests/unit/test_void_sj_faktur.py)
+    with pytest.raises(HTTPException) as e:   # flag pengiriman_sebelum_faktur kini dicek di rencana_void, HANYA asal 'so'
+        jalan(S.rencana_void(Konek(sj=sj(), flag_sjso=False), T, uuid.uuid4(), "salah"))
+    assert e.value.detail["code"] == "SJ_SO_NONAKTIF"
     c2 = Konek(sj=sj(), alokasi_aktif=[{"invoice_number": "INV-2610-0001", "q": Decimal("3")}])
     r2 = jalan(S.rencana_void(c2, T, uuid.uuid4(), "salah"))
     assert [b["code"] for b in r2["blocks"]] == ["SJ_SUDAH_DITAGIH"]

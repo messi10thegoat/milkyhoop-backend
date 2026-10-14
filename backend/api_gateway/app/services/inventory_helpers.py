@@ -507,9 +507,13 @@ async def record_inventory_reversal(
     created_by: Optional[UUID] = None,
     reversal_date=None,
     notes_prefix: str = "VOID",
+    journal_id: Optional[UUID] = None,
 ) -> list:
     """
     Reverse all inventory_ledger entries for a given source.
+
+    journal_id (VOID-SJ-FAKTUR 15 Okt 2026): bila diisi, HANYA baris sumber itu dengan journal_id tsb. Satu faktur bisa punya
+    beberapa Surat Jalan yang semuanya ber-source_id = id faktur; pembalik per SJ dibedakan oleh jurnal HPP-nya. None = perilaku lama.
 
     Finds original entries by source_type + source_id, creates mirror entries
     (swap quantity_in <-> quantity_out), links journal_id to reversal journal.
@@ -539,11 +543,13 @@ async def record_inventory_reversal(
                warehouse_id, source_number, batch_id
         FROM inventory_ledger
         WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3
+          AND ($4::uuid IS NULL OR journal_id = $4::uuid)
         ORDER BY created_at
         """,
         tenant_id,
         source_type,
         source_id,
+        journal_id,
     )
 
     if not original_entries:

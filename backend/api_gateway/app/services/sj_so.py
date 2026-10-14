@@ -12,7 +12,8 @@ BER-STOK (irisan 2, flag `pengiriman_stok_sebelum_faktur`; ATURAN BUKU BARU, izi
                 bukan WAC hari faktur) + INVOICE_REVENUE Dr Dimuka / Cr Penjualan untuk qty teralokasi (aturan sisa:
                 alokasi yang menghabiskan qty baris mengambil sisa, pembulatan seperti `_execute_fulfillment`).
   void mandiri: pembalik jurnal (DELIVERY_NOTE_REVERSAL, reversed_by_id; Law 2/26) + pembalik kartu (record_inventory_reversal),
-                hanya SJ asal 'so' yang belum ditagih; void faktur melepas alokasi + membalik reklas (SJ kembali 'belum ditagih').
+                SJ asal 'so' yang belum ditagih; void faktur melepas alokasi + membalik reklas (SJ kembali 'belum ditagih').
+                SJ asal 'faktur' (VOID-SJ-FAKTUR 15 Okt 2026): endpoint sama, aturan di services/sj_faktur_batal.
 
 Satu penentu `rencana` (pratinjau == tulis; semua blok). Satu transaksi milik PEMANGGIL (Law 23); kunci `SJ_SO:{tenant}:{so}` +
 INVOICE_FULFILL tiap faktur SO + `STOCK:{barang}:{gudang}` (Law 13). Tenant eksplisit di tiap SQL (Law 24). Tautan faktur =
@@ -404,19 +405,23 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
 
 
 # ----------------------------------------------------------------------------
-# VOID mandiri (hanya asal 'so' yang belum ditagih)
+# VOID mandiri: asal 'so' yang belum ditagih (di sini) + asal 'faktur' (VOID-SJ-FAKTUR 15 Okt 2026 -> services/sj_faktur_batal;
+# faktur tetap utuh, pola NetSuite Item Fulfillment). Endpoint SAMA untuk keduanya.
 # ----------------------------------------------------------------------------
 async def rencana_void(conn, tid: str, fid, alasan: Optional[str], kunci: bool = False) -> dict:
     blocks: list = []
     f = await conn.fetchrow(
-        """SELECT f.id, f.fulfillment_number, f.status, f.asal, f.sales_order_id, f.voided_at, f.journal_id, f.fulfillment_date
+        """SELECT f.id, f.fulfillment_number, f.status, f.asal, f.sales_order_id, f.invoice_id, f.voided_at, f.journal_id,
+                  f.revenue_journal_id, f.fulfillment_date
            FROM invoice_fulfillments f WHERE f.id = $1 AND f.tenant_id = $2""" + (" FOR UPDATE" if kunci else ""), fid, tid)
     if not f:
         raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
+    if f["asal"] == "faktur":
+        from . import sj_faktur_batal
+        return await sj_faktur_batal.rencana(conn, tid, f, alasan, _blok, _periode_terbuka)
+    await pastikan_aktif(conn, tid)  # flag pengiriman_sebelum_faktur: hanya SJ asal 'so'
     ulang = f["status"] == "voided"
-    if f["asal"] != "so":
-        blocks.append(_blok("SJ_VOID_ASAL_FAKTUR", "Surat Jalan ini milik faktur; pembatalannya lewat void faktur, bukan mandiri."))
-    elif not ulang:
+    if not ulang:
         akt = await conn.fetch(
             """SELECT si.invoice_number, SUM(a.quantity) AS q FROM sj_faktur_alokasi a
                JOIN invoice_fulfillment_items i ON i.id = a.fulfillment_item_id
@@ -438,13 +443,23 @@ async def rencana_void(conn, tid: str, fid, alasan: Optional[str], kunci: bool =
 
 async def void(conn, ctx: dict, fid, alasan: str) -> dict:
     tid, uid = ctx["tenant_id"], ctx.get("user_id")
-    pre = await conn.fetchrow("SELECT sales_order_id FROM invoice_fulfillments WHERE id = $1 AND tenant_id = $2", fid, tid)
+    pre = await conn.fetchrow("SELECT sales_order_id, asal, invoice_id FROM invoice_fulfillments WHERE id = $1 AND tenant_id = $2",
+                              fid, tid)
     if not pre:
         raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
+    if pre["asal"] == "faktur":
+        from . import sj_faktur_batal
+        await sj_faktur_batal.kunci(conn, tid, pre["invoice_id"])
+        r = await rencana_void(conn, tid, fid, alasan, kunci=True)
+        if r["ulang"]:
+            return {"ulang": True}
+        angkat_blok_pertama(r)
+        await sj_faktur_batal.void(conn, ctx, r, alasan, _jurnal)
+        return {"ulang": False}
     if pre["sales_order_id"] is not None:
         await kunci_so(conn, tid, pre["sales_order_id"])
     r = await rencana_void(conn, tid, fid, alasan, kunci=True)
-    if r["ulang"] and r["sj"]["asal"] == "so":
+    if r["ulang"]:
         return {"ulang": True}
     angkat_blok_pertama(r)
     f = r["sj"]

@@ -123,10 +123,11 @@ async def preview_void_sj(request: Request, delivery_id: str, body: Optional[Ala
     fid = _uuid(delivery_id)
     pool = await _pool()
     async with pool.acquire() as conn:
-        await S.pastikan_aktif(conn, ctx["tenant_id"])
+        # flag pengiriman_sebelum_faktur dicek di rencana_void HANYA untuk asal 'so' (SJ asal faktur: VOID-SJ-FAKTUR, tanpa flag)
         r = await S.rencana_void(conn, ctx["tenant_id"], fid, body.reason if body else None)
         return {"success": True, "data": {
             "ok": not r["blocks"], "ulang": r["ulang"], "delivery_number": r["sj"]["fulfillment_number"],
+            "asal": r["sj"]["asal"], "notes": r.get("notes", []),
             "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
             "payload": {"delivery_id": str(fid), "reason": body.reason if body else None}}}
 
@@ -139,8 +140,7 @@ async def void_sj(request: Request, delivery_id: str, body: AlasanIn):
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-            await S.pastikan_aktif(conn, ctx["tenant_id"])
-            h = await S.void(conn, ctx, fid, (body.reason or "").strip())
+            h = await S.void(conn, ctx, fid, (body.reason or "").strip())  # flag asal 'so' dicek di rencana_void
             return {"success": True, "ulang": h["ulang"], "message": "Surat Jalan dibatalkan"}
 
 

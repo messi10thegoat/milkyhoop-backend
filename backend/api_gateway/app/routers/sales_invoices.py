@@ -4732,6 +4732,22 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
                 f["journal_id"],
                 last_cogs_rev_id,
             )
+            # VOID-SJ-FAKTUR (15 Okt 2026): kartu stok dibalik PER SJ (baris ber-journal_id jurnal HPP SJ ini). Dulu SATU panggilan
+            # per source_id faktur sesudah loop -> SJ yang sudah dibatalkan mandiri (kartunya sudah dibalik) akan dibalik LAGI.
+            # Terukur 15 Okt: 0 baris kartu INVOICE_FULFILLMENT tanpa journal_id / tak cocok SJ (semua tenant).
+            from ..services.inventory_helpers import record_inventory_reversal
+
+            await record_inventory_reversal(
+                conn,
+                ctx["tenant_id"],
+                source_type="INVOICE_FULFILLMENT",
+                source_id=invoice_id,
+                reversal_journal_id=last_cogs_rev_id,
+                created_by=ctx["user_id"],
+                reversal_date=today,
+                notes_prefix="VOID",
+                journal_id=f["journal_id"],
+            )
 
         # 0c. Mark fulfillment as voided
         await conn.execute(
@@ -4745,21 +4761,6 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
             "FULFILLMENT_VOIDED", ctx.get("user_id"),
             f"Surat Jalan {f['fulfillment_number'] or ''} dibatalkan: {body.reason}".replace("  ", " "),
             {"reason": body.reason, "invoice_id": str(invoice_id)}, source="api:sales_invoices.void",
-        )
-
-    # Inventory reversal for ALL fulfillments (single call since same source_id)
-    if fulfillments:
-        from ..services.inventory_helpers import record_inventory_reversal
-
-        await record_inventory_reversal(
-            conn,
-            ctx["tenant_id"],
-            source_type="INVOICE_FULFILLMENT",
-            source_id=invoice_id,
-            reversal_journal_id=last_cogs_rev_id or invoice_id,
-            created_by=ctx["user_id"],
-            reversal_date=today,
-            notes_prefix="VOID",
         )
 
     # Reset fulfillment tracking on invoice items
