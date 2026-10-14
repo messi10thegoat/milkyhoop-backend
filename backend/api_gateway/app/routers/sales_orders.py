@@ -139,7 +139,8 @@ async def list_sales_orders(
     sort_by: Optional[Literal["outstanding"]] = Query(None),
     sort_dir: Literal["asc", "desc"] = Query("desc"),
     # 14 Okt 2026 (AKSI-SO): pill aksi, aditif; kunci asing -> 422. Satu sumber dengan summary <kunci>_count
-    aksi: Optional[Literal["telat_kirim", "perlu_dikonfirmasi", "perlu_dikirim", "perlu_ditagih"]] = Query(None),
+    aksi: Optional[Literal["telat_kirim", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim", "siap_diserahkan",
+                           "perlu_ditagih"]] = Query(None),
 ):
     """List sales orders with filters."""
     try:

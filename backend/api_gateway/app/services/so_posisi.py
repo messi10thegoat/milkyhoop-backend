@@ -24,6 +24,25 @@ SELESAI_KIRIM = ("completed", "cancelled")  # putusan pemilik #8: Kirim "—"
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
+def tagihan_pertama(belum_bayar: list, ada_faktur: bool):
+    """Proforma issued belum lunas yang PERTAMA berlaku untuk Posisi (urut issued_at), atau None.
+    Putusan pemilik #3: proforma PELUNASAN dilewati bila faktur sudah ada (tagihan faktur yang sama -> aturan 5)."""
+    for p in belum_bayar:
+        if p["purpose"] == "PELUNASAN" and ada_faktur:
+            continue
+        return p
+    return None
+
+
+def menunggu_dp(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool) -> bool:
+    """AKSI-SO-2 (14 Okt 2026): fakta di balik Posisi "Menunggu DP" TANPA fase lokasi (fase hanya mengganti TEKS
+    kolom). SATU sumber untuk posisi() DAN pill so_aksi `menunggu_dp` (pola NetSuite Pending Deposit)."""
+    if status == "cancelled" or sisa <= NOL:
+        return False
+    p = tagihan_pertama(belum_bayar, ada_faktur)
+    return p is not None and p["purpose"] == "DP"
+
+
 def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa_faktur: Decimal,
            ada_surat_jalan: bool, dp_diterima: Decimal, fase_teks=None) -> tuple:
     """-> (teks, muted). Aturan 02 §Posisi, yang PERTAMA cocok.
@@ -38,11 +57,10 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
         return "Lunas", True
     if fase_teks:  # 7 Okt 2026: fase lokasi ("Tersedia di Toko Manado") di depan aturan pembayaran; Batal/Lunas tetap menang
         return fase_teks, False
-    for p in belum_bayar:
-        if p["purpose"] == "PELUNASAN" and ada_faktur:
-            continue  # putusan pemilik #3: tagihan faktur yang sama -> aturan 5
-        if p["purpose"] == "DP":
-            return "Menunggu DP", False
+    if menunggu_dp(status, sisa, belum_bayar, ada_faktur):
+        return "Menunggu DP", False
+    p = tagihan_pertama(belum_bayar, ada_faktur)
+    if p is not None:
         if p["purpose"] == "TERMIN":
             return f"Menunggu termin {p['termin_ke']}", False
         return "Menunggu tagihan", False
@@ -82,6 +100,52 @@ def kirim(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bool, h
     return teks, "normal"
 
 
+SQL_PROFORMA_SO = """SELECT id, sales_order_id, proforma_number, purpose, amount, status, issued_at
+           FROM proformas WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])"""
+SQL_JUMLAH_FAKTUR = """SELECT sales_order_id AS so_id, count(*) AS n FROM sales_invoices
+           WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[]) AND status NOT IN ('draft', 'void')
+           GROUP BY 1"""
+
+
+def _urut_terbit(p):
+    return (p["issued_at"] is None, p["issued_at"], p["proforma_number"] or "")
+
+
+def belum_bayar_so(daftar_pf: list, terbayar: dict) -> list:
+    """Proforma issued yang belum lunas (terbayar_proforma kanonik), urut issued_at: [{"purpose", "termin_ke"}]."""
+    issued = sorted((p for p in daftar_pf if p["status"] == "issued"), key=_urut_terbit)
+    termin = [p["id"] for p in sorted((p for p in daftar_pf if p["status"] != "cancelled" and p["purpose"] == "TERMIN"),
+                                      key=_urut_terbit)]
+    return [{"purpose": p["purpose"], "termin_ke": (termin.index(p["id"]) + 1) if p["id"] in termin else None}
+            for p in issued if terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))]
+
+
+async def id_menunggu_dp(conn, tenant_id: str, rows: list) -> set:
+    """rows: SO (id, status, total_amount). -> {so_id} yang menunggu_dp; fakta SAMA dengan fakta_daftar (Posisi).
+    SO tanpa proforma issued tak pernah memicu ringkasan/terbayar (usaha tanpa DP = 0 kueri tambahan)."""
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return set()
+    pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
+    calon = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued" and p["purpose"] == "DP"})
+    if not calon:
+        return set()
+    rg = await ringkasan_pesanan(conn, tenant_id, calon)
+    terbayar = await terbayar_proforma(conn, tenant_id, calon)
+    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, calon)}
+    per_so = {}
+    for p in pfs:
+        per_so.setdefault(p["sales_order_id"], []).append(p)
+    st = {r["id"]: r for r in rows}
+    out = set()
+    for sid in calon:
+        r = st[sid]
+        sisa = Decimal(str(r["total_amount"] or 0)) - rg[sid]["tertutup"]
+        if menunggu_dp(r["status"], sisa, belum_bayar_so(per_so[sid], terbayar), faktur.get(sid, 0) > 0):
+            out.add(sid)
+    return out
+
+
 async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
     """rows: baris sales_orders (id, status, total_amount, expected_ship_date, quote_id).
     -> {str(so_id): {position_text, position_muted, ship_text, ship_style, doc_count}}."""
@@ -90,21 +154,12 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         return {}
     rg = await ringkasan_pesanan(conn, tenant_id, ids)
 
-    pfs = [dict(p) for p in await conn.fetch(
-        """SELECT id, sales_order_id, proforma_number, purpose, amount, status, issued_at
-           FROM proformas WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])""",
-        tenant_id, ids,
-    )]
+    pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
     # Terbayar per proforma = SATU sumber kanonik (terbayar_proforma: atribusi uang muka tertaut/tercocok + kolam
     # pesanan tanpa uang muka di luar tagihan) -- sama dengan detail proforma & Rekap. Dulu P1 memakai alokasikan
     # dengan eksplisit = Σ uang muka ber-proforma_id saja (versi ringkas; diukur 1 Okt: lihat commit).
     terbayar = await terbayar_proforma(conn, tenant_id, ids) if pfs else {}
-    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(
-        """SELECT sales_order_id AS so_id, count(*) AS n FROM sales_invoices
-           WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[]) AND status NOT IN ('draft', 'void')
-           GROUP BY 1""",
-        tenant_id, ids,
-    )}
+    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, ids)}
     sj = {r["so_id"]: r["n"] for r in await conn.fetch(
         f"""SELECT x.so_id, count(DISTINCT x.fid) AS n FROM (
                 SELECT si.sales_order_id AS so_id, f.id AS fid
@@ -169,12 +224,7 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         o = rg[sid]
         sisa = Decimal(str(r["total_amount"] or 0)) - o["tertutup"]
         daftar_pf = per_so_pf.get(sid, [])
-        issued = sorted((p for p in daftar_pf if p["status"] == "issued"),
-                        key=lambda p: (p["issued_at"] is None, p["issued_at"], p["proforma_number"] or ""))
-        termin = [p["id"] for p in sorted((p for p in daftar_pf if p["status"] != "cancelled" and p["purpose"] == "TERMIN"),
-                                          key=lambda p: (p["issued_at"] is None, p["issued_at"], p["proforma_number"] or ""))]
-        belum_bayar = [{"purpose": p["purpose"], "termin_ke": (termin.index(p["id"]) + 1) if p["id"] in termin else None}
-                       for p in issued if terbayar.get(p["id"], {}).get("paid", NOL) < Decimal(str(p["amount"]))]
+        belum_bayar = belum_bayar_so(daftar_pf, terbayar)
         n_faktur = faktur.get(sid, 0)
         fase = r.get("fase_lokasi") if r["status"] not in _FASE_TUTUP else None
         nama_g = nama_gudang.get(r.get("fase_gudang_id")) if fase else None

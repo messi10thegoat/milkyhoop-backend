@@ -483,6 +483,11 @@ class SalesOrderSummary(BaseModel):
     perlu_dikirim_value: float = 0
     perlu_ditagih_count: int = 0
     perlu_ditagih_value: float = 0
+    # AKSI-SO-2 (14 Okt 2026): menunggu_dp (Posisi Menunggu DP) + siap_diserahkan (fase tersedia, eksklusif dari perlu_dikirim)
+    menunggu_dp_count: int = 0
+    menunggu_dp_value: float = 0
+    siap_diserahkan_count: int = 0
+    siap_diserahkan_value: float = 0
 
 
 class SalesOrderSummaryResponse(BaseModel):

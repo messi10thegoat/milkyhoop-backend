@@ -73,7 +73,8 @@ def test_lebih_kirim_atau_lebih_faktur_tak_negatif_menjadi_aksi():
 
 
 def test_aksi_utama_urutan_mendesak():
-    assert A.AKSI == ("telat_kirim", "perlu_dikonfirmasi", "perlu_dikirim", "perlu_ditagih")
+    assert A.AKSI == ("telat_kirim", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim", "siap_diserahkan",
+                      "perlu_ditagih")  # AKSI-SO-2 (MASTER 14 Okt)
     assert A.aksi_utama(["perlu_dikirim", "perlu_ditagih"]) == "perlu_dikirim"
     assert A.aksi_utama([]) is None
 
@@ -103,8 +104,8 @@ def test_ekspresi_wajib_kirim_sama_dengan_kartu_menunggu_kirim():
 class _Conn:
     """Kueri tak dikenal -> AssertionError; $N wajib == 1..len(args) (asyncpg: tipe parameter tak tertentu)."""
 
-    def __init__(self, so, baris, kirim, fak):
-        self.so, self.baris, self.kirim, self.fak, self.q = so, baris, kirim, fak, []
+    def __init__(self, so, baris, kirim, fak, pf=()):
+        self.so, self.baris, self.kirim, self.fak, self.pf, self.q = so, baris, kirim, fak, list(pf), []
 
     async def fetch(self, q, *a):
         n = {int(x) for x in re.findall(r"\$(\d+)", q)}
@@ -120,6 +121,8 @@ class _Conn:
             return [r for r in self.fak if r["so_id"] in set(a[1])]
         if "JOIN sales_order_items soi" in q:
             return [r for r in self.baris if r["so_id"] in set(a[1])]
+        if "FROM proformas" in q:  # AKSI-SO-2: so_posisi.id_menunggu_dp
+            return [r for r in self.pf if r["sales_order_id"] in set(a[1])]
         raise AssertionError(q)
 
 
@@ -155,7 +158,8 @@ async def test_fakta_seluruh_tenant_dan_arsip_tak_dikueri_barisnya():
     r = A.ringkasan(f)
     assert r == {"telat_kirim_count": 1, "telat_kirim_value": 1000.0, "perlu_dikonfirmasi_count": 1,
                  "perlu_dikonfirmasi_value": 100.0, "perlu_dikirim_count": 1, "perlu_dikirim_value": 1000.0,
-                 "perlu_ditagih_count": 1, "perlu_ditagih_value": 250.5}
+                 "perlu_ditagih_count": 1, "perlu_ditagih_value": 250.5, "menunggu_dp_count": 0,
+                 "menunggu_dp_value": 0.0, "siap_diserahkan_count": 0, "siap_diserahkan_value": 0.0}
 
 
 @pytest.mark.asyncio
@@ -325,3 +329,71 @@ async def test_summary_pill_dari_ringkasan_fakta(monkeypatch):
     assert d["telat_kirim_count"] == 1 and d["telat_kirim_value"] == 1000.0
     assert d["perlu_dikonfirmasi_count"] == 1 and d["perlu_ditagih_value"] == 250.5
     assert d["perlu_dikirim_count"] == 1
+
+
+# ---------- AKSI-SO-2 (14 Okt 2026, MASTER): menunggu_dp + siap_diserahkan ----------
+
+def test_menunggu_dp_urutan_kedua_dan_bertumpuk():
+    # grapgrap SO-2609-0009: telat + menunggu DP -> kolom aksi telat_kirim, tapi tetap ANGGOTA menunggu_dp (pill penuh)
+    a = A.aksi_so("confirmed", date(2026, 10, 1), HARI, [_b(4, True, False)], menunggu_dp=True)
+    assert a == ["telat_kirim", "menunggu_dp", "perlu_dikirim", "perlu_ditagih"]
+    assert A.aksi_utama(a) == "telat_kirim"
+    assert A.aksi_utama(A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], menunggu_dp=True)) == "menunggu_dp"
+
+
+def test_menunggu_dp_tanpa_baris_bersisa_tetap_muncul():
+    assert A.aksi_so("invoiced", None, HARI, [], menunggu_dp=True) == ["menunggu_dp"]
+
+
+@pytest.mark.parametrize("st", ["draft", "cancelled", "completed"])
+def test_menunggu_dp_bukan_untuk_draf_dan_arsip(st):
+    assert "menunggu_dp" not in A.aksi_so(st, None, HARI, [_b(1, True, False)], menunggu_dp=True)
+
+
+def test_siap_diserahkan_eksklusif_dari_perlu_dikirim():
+    b = [_b(4, True, False, kirim=1)]
+    assert A.aksi_so("confirmed", None, HARI, b, fase_lokasi="tersedia") == ["siap_diserahkan", "perlu_ditagih"]
+    assert A.aksi_so("confirmed", None, HARI, b, fase_lokasi="dikirim_ke_lokasi") == ["perlu_dikirim", "perlu_ditagih"]
+    assert A.aksi_so("confirmed", None, HARI, b) == ["perlu_dikirim", "perlu_ditagih"]
+
+
+def test_siap_diserahkan_butuh_sisa_kirim_dan_telat_tak_terpengaruh_fase():
+    assert A.aksi_so("invoiced", None, HARI, [_b(4, True, False, kirim=4, fak=4)], fase_lokasi="tersedia") == []
+    a = A.aksi_so("invoiced", date(2026, 10, 1), HARI, [_b(4, True, False, fak=4)], fase_lokasi="tersedia")
+    assert a == ["telat_kirim", "siap_diserahkan"] and A.aksi_utama(a) == "telat_kirim"
+
+
+def test_fase_siap_sama_dengan_predikat_tersedia_kartu_lama():
+    from app.services import so_agregat
+    assert f"fase_lokasi = '{A.FASE_SIAP}'" in so_agregat.PREDIKAT_TERSEDIA
+
+
+@pytest.mark.asyncio
+async def test_fakta_menunggu_dp_dan_siap_lewat_so_posisi(monkeypatch):
+    s, c = _dunia()
+    for r in c.so:
+        if r["id"] == s["telat"]:
+            r["fase_lokasi"] = "tersedia"
+    terima = {}
+
+    async def dp(conn, t, rows):
+        terima["rows"] = {r["id"] for r in rows}
+        return {s["tagih"], s["batal"]}       # batal diabaikan oleh aksi_so (arsip)
+    monkeypatch.setattr(A.so_posisi, "id_menunggu_dp", dp)
+    f = await A.fakta(c, TENANT, HARI)
+    assert terima["rows"] == {s["telat"], s["tagih"], s["beres"]}     # hanya SO berjalan
+    assert f[s["tagih"]]["aksi"] == ["menunggu_dp", "perlu_ditagih"]
+    assert f[s["telat"]]["aksi"] == ["telat_kirim", "siap_diserahkan"]
+    assert f[s["batal"]]["aksi"] == []
+    r = A.ringkasan(f)
+    assert (r["menunggu_dp_count"], r["menunggu_dp_value"]) == (1, 250.5)
+    assert (r["siap_diserahkan_count"], r["perlu_dikirim_count"]) == (1, 0)
+
+
+def test_rute_meneruskan_kunci_baru(monkeypatch):
+    for k in ("menunggu_dp", "siap_diserahkan"):
+        async def gp():
+            raise RuntimeError("sampai-db")
+        monkeypatch.setattr(SO, "get_pool", gp)
+        r = _klien(monkeypatch).get(f"/api/sales-orders?aksi={k}")
+        assert r.status_code != 422, k
