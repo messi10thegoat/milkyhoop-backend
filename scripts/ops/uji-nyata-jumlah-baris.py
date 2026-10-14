@@ -6,7 +6,8 @@ import asyncpg
 os.environ.setdefault("OPENAI_API_KEY", "boneka")
 from fastapi import HTTPException, Response
 from starlette.requests import Request
-from backend.api_gateway.app.routers import sales_orders as SO, sales_invoices as SI, credit_notes as CN
+from backend.api_gateway.app.routers import sales_orders as SO, sales_invoices as SI, credit_notes as CN, customer_deposits as CD
+from backend.api_gateway.app.schemas.customer_deposits import CreateCustomerDepositRequest as CDR
 from backend.api_gateway.app.schemas.credit_notes import CreateCreditNoteRequest
 CreditNotePreviewRequest = CN.CreditNotePreviewRequest
 from backend.api_gateway.app.schemas.sales_orders import CreateSalesOrderRequest as C, UpdateSalesOrderRequest as U, ConvertToInvoiceRequest as CI
@@ -127,6 +128,63 @@ async def main():
             cek("sisa piutang faktur sesudah NK penuh == 0", sisa2 == 0, sisa2)
         except Exception as e:
             cek("NK penuh -> piutang 0", False, repr(e)[:400])
+
+        # 6. KASUS PEMILIK (SO-2610-0014): DP 6.150.000 -> ubah SO terkonfirmasi ke 26 pcs line_amount 6.150.000 -> faktur
+        #    penuh -> posting -> DP diterapkan lewat jalur resmi -> sisa piutang 0, DP terpakai penuh, sisa DP 0.
+        CD.get_pool = _gp
+        akun = await conn.fetchval("""SELECT c.id FROM chart_of_accounts c WHERE c.tenant_id=$1 AND c.account_type='ASSET'
+            AND c.is_header IS NOT TRUE AND c.account_code LIKE '1-102%' ORDER BY c.account_code LIMIT 1""", TID)
+        if akun is None:
+            akun = await conn.fetchval("SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND is_cash=true LIMIT 1", TID)
+        r6 = await SO.create_sales_order(req(uid), body(qty=26, harga="240000", jumlah=None), Response())
+        o6 = r6.data["id"]
+        await SO.confirm_sales_order(req(uid), o6)
+        dep = await CD.create_customer_deposit(req(uid), CDR(
+            customer_id=str(cust["id"]), customer_name=cust["nama"], amount=6150000, deposit_date=date(2026, 10, 14),
+            payment_method="cash", account_id=str(akun), sales_order_id=str(o6), auto_post=True))
+        _dd_ = dep if isinstance(dep, dict) else dep.model_dump()
+        dep_id = (_dd_.get("data") or _dd_)["id"]
+        # (a) 6.149.988 (harga bulat 236.538 x 26) harus DITOLAK penjaga (total < DP)
+        sp = conn.transaction(); await sp.start()
+        try:
+            await SO.update_sales_order(req(uid), o6, U(items=[{"id": str(await conn.fetchval("SELECT id FROM sales_order_items WHERE sales_order_id=$1::uuid", o6)),
+                                                              "quantity": 26, "unit_price": D("236538")}]), Response())
+            cek("ubah SO ke 6.149.988 (< DP 6.150.000) DITOLAK", False, "lolos")
+        except HTTPException as e:
+            d_ = e.detail if isinstance(e.detail, dict) else {"code": str(e.detail)}
+            cek("ubah SO ke 6.149.988 (< DP 6.150.000) DITOLAK", e.status_code == 409 and "BELOW" in str(d_.get("code")), (e.status_code, d_))
+        await sp.rollback()
+        # (b) 6.150.000 via line_amount harus LOLOS
+        sid6 = await conn.fetchval("SELECT id FROM sales_order_items WHERE sales_order_id=$1::uuid", o6)
+        try:
+            await SO.update_sales_order(req(uid), o6, U(items=[{"id": str(sid6), "quantity": 26, "unit_price": D("236538.46"),
+                                                              "line_amount": D("6150000")}]), Response())
+            t6 = await conn.fetchval("SELECT total_amount FROM sales_orders WHERE id=$1::uuid", o6)
+            jb6 = await conn.fetchval("SELECT jumlah_baris FROM sales_order_items WHERE id=$1", sid6)
+            cek("ubah SO terkonfirmasi ke line_amount 6.150.000 LOLOS, total 6.150.000", t6 == D("6150000") and jb6 == D("6150000"), (t6, jb6))
+        except HTTPException as e:
+            cek("ubah SO terkonfirmasi ke line_amount 6.150.000 LOLOS", False, (e.status_code, e.detail))
+            raise
+        out6 = await SO._to_invoice_dalam_tx(conn, {"tenant_id": TID, "user_id": uid}, o6, CI(items=[{"so_item_id": str(sid6), "quantity": 26}]))
+        inv6 = out6.get("id") or out6.get("invoice_id") or (out6.get("data") or {}).get("id")
+        try:
+            await SI.post_invoice(req(uid), __import__("uuid").UUID(str(inv6)))
+        except HTTPException as e:
+            cek("post faktur (jalur resmi)", False, (e.status_code, e.detail))
+            raise
+        tot6 = await conn.fetchval("SELECT total_amount FROM sales_invoices WHERE id=$1::uuid", str(inv6))
+        sisa6 = await conn.fetchval("SELECT COALESCE((SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id=$2::uuid),0)", TID, str(inv6))
+        dep_sisa = await CD.compute_deposit_remaining(conn, TID, __import__("uuid").UUID(str(dep_id)))
+        pakai = await conn.fetchval("SELECT COALESCE(SUM(amount_applied),0) FROM customer_deposit_applications WHERE deposit_id=$1::uuid AND invoice_id=$2::uuid", str(dep_id), str(inv6)) \
+            if await conn.fetchval("SELECT to_regclass('customer_deposit_applications') IS NOT NULL") else None
+        cek("faktur DP-kasus pemilik total == 6.150.000", tot6 == D("6150000"), tot6)
+        cek("sisa piutang faktur == 0 sesudah DP diterapkan", sisa6 == 0, sisa6)
+        cek("sisa DP == 0", dep_sisa == 0, dep_sisa)
+        if pakai is not None:
+            cek("DP terpakai == 6.150.000", pakai == D("6150000"), pakai)
+        seimbang = await conn.fetchval("""SELECT COUNT(*) FROM journal_entries je WHERE je.tenant_id=$1 AND je.status='POSTED'
+            AND je.source_id = ANY($2::uuid[]) AND ABS(je.total_debit - je.total_credit) > 0.005""", TID, [__import__("uuid").UUID(str(inv6)), __import__("uuid").UUID(str(dep_id))])
+        cek("jurnal faktur+DP seimbang (debit==kredit)", seimbang == 0, seimbang)
     finally:
         await tr.rollback()
         await conn.close()

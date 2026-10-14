@@ -193,7 +193,8 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     pakai = await pemakaian_baris(conn, tid, so_id)
     lama = [dict(r) for r in await conn.fetch(
         """SELECT soi.id, soi.item_id, soi.description, soi.quantity, soi.unit, soi.unit_price, soi.discount_percent,
-                  soi.tax_id, soi.tax_rate, soi.tax_amount, soi.line_total, soi.dpp, soi.warehouse_id, soi.sort_order
+                  soi.tax_id, soi.tax_rate, soi.tax_amount, soi.line_total, soi.dpp, soi.warehouse_id, soi.sort_order,
+                  soi.jumlah_baris
            FROM sales_order_items soi JOIN sales_orders so ON so.id = soi.sales_order_id AND so.tenant_id = $1
            WHERE soi.sales_order_id = $2 ORDER BY soi.sort_order, soi.id""", tid, so_id)]
     per_id = {str(r["id"]): r for r in lama}
@@ -239,10 +240,20 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                 baru["_turunkan"] = not _sama(r["tax_id"], baru["tax_id"])
                 if "sort_order" not in d:
                     baru["sort_order"] = i
+                # JUMLAH BARIS (V427): kirim-ulang tanpa line_amount mewarisi jumlah tersimpan selama qty & harga sama;
+                # qty/harga berubah tanpa line_amount -> kembali qty x harga; line_amount diketik -> diuji toleransi.
+                baru["jumlah_baris"] = r["jumlah_baris"]
+                if d.get("line_amount") is not None:
+                    baru["line_amount"] = d["line_amount"]
+                    baru["jumlah_baris"] = None
+                elif not (_sama(r["quantity"], baru["quantity"]) and _sama(r["unit_price"], baru["unit_price"])):
+                    baru["jumlah_baris"] = None
                 p, minimum, alasan = info(r)
                 beda = {k: [r[k], baru[k]] for k in MEDAN_BARIS if k != "sort_order" and not _sama(r[k], baru[k])}
+                if d.get("line_amount") is not None and not _sama(r["jumlah_baris"], d["line_amount"]):
+                    beda["line_amount"] = [r["jumlah_baris"], d["line_amount"]]
                 if alasan:
-                    terkunci = sorted(k for k in beda if k in KUNCI_BARIS)
+                    terkunci = sorted(k for k in beda if k in KUNCI_BARIS or k == "line_amount")
                     if terkunci:
                         galat(409, "SO_LINE_LOCKED", f"Baris '{r['description']}' sudah "
                               + _alasan_teks(alasan, p) + " -- hanya jumlahnya yang bisa dinaikkan.",
@@ -260,7 +271,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                     if d.get(wajib) in (None, ""):
                         galat(422, "SO_LINE_INCOMPLETE", f"Baris baru wajib mengisi {wajib}.", field=wajib)
                 baru = {"id": None, **{k: d.get(k) for k in MEDAN_BARIS}, "tax_rate": d.get("tax_rate") or 0,
-                        "_turunkan": True}
+                        "_turunkan": True, "line_amount": d.get("line_amount")}
                 baru["discount_percent"] = baru["discount_percent"] or 0
                 if baru["sort_order"] is None:
                     baru["sort_order"] = i
@@ -281,14 +292,17 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
         if not src:
             galat(422, "SO_NO_LINES", "Pesanan harus punya minimal satu baris.")
     else:
-        src = [{**{k: r[k] for k in ("id", "tax_rate") + MEDAN_BARIS}, "_turunkan": False} for r in lama]
+        src = [{**{k: r[k] for k in ("id", "tax_rate") + MEDAN_BARIS}, "jumlah_baris": r["jumlah_baris"],
+                "_turunkan": False} for r in lama]
 
     # badan PATCH yang DINORMALKAN server (permintaan WORKSPACE 4 Okt, pola Terima pelunasan): FE mengirim balik apa
     # adanya; baris lengkap ber-id (baris lama) / tanpa id (baru), header hanya medan yang dikirim.
     payload = {k: _js(getattr(body, k)) for k in sorted(fs - {"items"})}
     if body.items is not None:
         payload["items"] = [{**({"id": str(x["id"])} if x["id"] else {}),
-                             **{k: _js(x.get(k)) for k in MEDAN_BARIS}} for x in src]
+                             **{k: _js(x.get(k)) for k in MEDAN_BARIS},
+                             **({"line_amount": _js(x["line_amount"])} if x.get("line_amount") is not None else {})}
+                            for x in src]
 
     # ---- hitung ulang dengan kalkulator SO yang sama ----
     disc = body.discount_amount if "discount_amount" in fs else so["discount_amount"]
@@ -363,18 +377,19 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                  s.get("unit"), s["unit_price"], s.get("discount_percent") or 0,
                  uuid_module.UUID(s["tax_id"]) if s["tax_id"] else None, s.get("tax_rate") or 0,
                  h["tax_amount"], h["line_total"], uuid_module.UUID(s["warehouse_id"]) if s["warehouse_id"] else None,
-                 s["sort_order"], h["dpp"])
+                 s["sort_order"], h["dpp"],
+                 s["line_amount"] if s.get("line_amount") is not None else s.get("jumlah_baris"))  # JUMLAH BARIS (V427)
         if s["id"] is None:
             await conn.execute(
                 """INSERT INTO sales_order_items (id, sales_order_id, item_id, description, quantity, unit, unit_price,
-                       discount_percent, tax_id, tax_rate, tax_amount, line_total, warehouse_id, sort_order, dpp)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)""",
+                       discount_percent, tax_id, tax_rate, tax_amount, line_total, warehouse_id, sort_order, dpp, jumlah_baris)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)""",
                 uuid_module.uuid4(), so_id, *nilai)
         else:
             await conn.execute(
                 """UPDATE sales_order_items SET item_id=$3, description=$4, quantity=$5, unit=$6, unit_price=$7,
                        discount_percent=$8, tax_id=$9, tax_rate=$10, tax_amount=$11, line_total=$12, warehouse_id=$13,
-                       sort_order=$14, dpp=$15
+                       sort_order=$14, dpp=$15, jumlah_baris=$16
                    WHERE id = $1 AND sales_order_id = $2""", s["id"], so_id, *nilai)
 
     set_, param = [], []
