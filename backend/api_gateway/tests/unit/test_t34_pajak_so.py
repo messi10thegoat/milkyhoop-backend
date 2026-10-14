@@ -94,6 +94,8 @@ class DB:
             return self.so_baris
         if s.startswith("SELECT id, quantity, unit_price, jumlah_baris FROM sales_order_items"):  # warisan JUMLAH BARIS (V427)
             return []
+        if s.startswith("SELECT id, description, quantity, unit_price, jumlah_baris FROM quote_items"):  # warisan Penawaran
+            return []
         raise AssertionError(f"fetch tak dikenal: {s}")
 
     async def execute(self, sql, *a):
