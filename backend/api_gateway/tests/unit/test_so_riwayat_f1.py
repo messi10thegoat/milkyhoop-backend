@@ -53,7 +53,7 @@ class _RConn:
         if "FROM customer_deposits" in sql:
             return [{"id": DP, "deposit_number": "DP-1", "amount": 500000, "status": "posted",
                      "created_at": _t(3), "created_by": UUID(U1), "posted_at": _t(3), "posted_by": UUID(U1),
-                     "voided_at": None, "voided_by": None, "voided_reason": None}]
+                     "voided_at": None, "voided_by": None, "voided_reason": None, "jenis": "DP"}]  # V422: kueri memilih jenis efektif
         if "FROM customer_deposit_applications" in sql:
             return []
         if "FROM proformas" in sql:
