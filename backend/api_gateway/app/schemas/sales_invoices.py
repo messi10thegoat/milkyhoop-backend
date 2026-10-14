@@ -5,7 +5,7 @@ This module defines request and response models for the /api/sales-invoices endp
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import date
 from decimal import Decimal
 
@@ -37,7 +37,8 @@ class InvoiceItemCreate(BaseModel):
     description_custom: bool = False
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
-    unit_price: int = Field(..., ge=0)
+    unit_price: Decimal = Field(..., ge=0, max_digits=18, decimal_places=2)
+    line_amount: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)  # JUMLAH BARIS (V427)
     discount_percent: float = Field(0, ge=0, le=100)
     discount_amount: float = Field(0, ge=0)
     tax_code: Optional[str] = Field(None, max_length=20)
@@ -65,7 +66,8 @@ class InvoiceItemResponse(BaseModel):
     description: str
     quantity: float
     unit: Optional[str] = None
-    unit_price: int
+    unit_price: Union[int, float]
+    line_amount: Optional[float] = None
     discount_percent: float = 0
     discount_amount: float = 0
     tax_code: Optional[str] = None

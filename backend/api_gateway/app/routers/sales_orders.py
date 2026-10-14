@@ -23,7 +23,8 @@ from ..utils.idempotency import (
     simpan_replay_klien,
 )
 from ..services.sales_doc_calc import (
-    compute_document, plan_so_invoice, DocumentDiscountError, d as _dd,
+    compute_document, plan_so_invoice, DocumentDiscountError, LineAmountError, d as _dd,
+    harga_json as _harga_json, warisi_jumlah_baris as _warisi_jb,
 )
 from ..services.tax_factor import (
     attach_dpp_factors, resolve_shipping_tax, effective_shipping_code, turunkan_tarif_baris,
@@ -101,6 +102,8 @@ def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None) ->
         )
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except LineAmountError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     for ln in doc["items"]:
         ln["line_total"] = ln["total"]
     return doc
@@ -639,7 +642,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
                                 item["quantity"] - item["quantity_shipped"]
                             ),
                             unit=item["unit"],
-                            unit_price=item["unit_price"],
+                            unit_price=_harga_json(item["unit_price"]),
+                            line_amount=float(item["jumlah_baris"]) if item.get("jumlah_baris") is not None else None,
                             discount_percent=float(item["discount_percent"]),
                             tax_id=str(item["tax_id"]) if item["tax_id"] else None,
                             tax_rate=float(item["tax_rate"]),
@@ -873,8 +877,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                             id, sales_order_id, item_id, description,
                             quantity, unit, unit_price, discount_percent,
                             tax_id, tax_rate, tax_amount, line_total,
-                            warehouse_id, sort_order, dpp
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            warehouse_id, sort_order, dpp, jumlah_baris
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     """,
                         uuid_module.uuid4(),
                         order_id,
@@ -897,6 +901,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         else None,
                         _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
                         item["dpp"],
+                        item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
                     )
 
                 _hasil = SalesOrderResponse(
@@ -1141,11 +1146,15 @@ async def update_sales_order(
                     if body.items is not None:
                         _src = [item.model_dump() for item in body.items]
                         await turunkan_tarif_baris(conn, ctx["tenant_id"], _src, "tax_id")  # #34
+                        # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
+                        _warisi_jb(_src, [dict(r) for r in await conn.fetch(
+                            "SELECT id, quantity, unit_price, jumlah_baris FROM sales_order_items WHERE sales_order_id = $1",
+                            _so_uuid(order_id))])
                     else:
                         _src = [
                             dict(r)
                             for r in await conn.fetch(
-                                """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id
+                                """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id, jumlah_baris
                                    FROM sales_order_items WHERE sales_order_id = $1
                                    ORDER BY sort_order, id""",
                                 _so_uuid(order_id),
@@ -1227,8 +1236,8 @@ async def update_sales_order(
                                 id, sales_order_id, item_id, description,
                                 quantity, unit, unit_price, discount_percent,
                                 tax_id, tax_rate, tax_amount, line_total,
-                                warehouse_id, sort_order, dpp
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                warehouse_id, sort_order, dpp, jumlah_baris
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                         """,
                             uuid_module.uuid4(),
                             _so_uuid(order_id),
@@ -1251,6 +1260,7 @@ async def update_sales_order(
                             else None,
                             item.get("sort_order") if item.get("sort_order") is not None else idx,
                             item["dpp"],
+                            item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
                         )
 
                 if updates:
@@ -2476,6 +2486,20 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
         _so_uuid_faktur(order_id),
     )
     _so_rows = [dict(r) for r in _all_so_items]
+    # JUMLAH BARIS (V427): jumlah kotor baris yang SUDAH ditagih faktur non-void -> faktur yang menuntaskan
+    # baris menyerap sisa (Σ faktur == jumlah SO, sisa pembulatan 0 rupiah).
+    _prior_gross = {
+        str(r["so_item"]): r["g"]
+        for r in await conn.fetch(
+            """SELECT sii.sales_order_item_id AS so_item, COALESCE(SUM(sii.subtotal), 0) AS g
+               FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id
+               WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND si.status <> 'void'
+                 AND sii.sales_order_item_id IS NOT NULL
+               GROUP BY sii.sales_order_item_id""",
+            ctx["tenant_id"], _so_uuid_faktur(order_id))
+    }
+    for _r in _so_rows:
+        _r["prior_gross"] = _prior_gross.get(str(_r["id"]), _dd(0))
     await attach_dpp_factors(conn, ctx["tenant_id"], _so_rows, "tax_id")
     # V290: pajak ongkir faktur = pilihan eksplisit SO, atau ikut kode barang SO.
     _so_ship_code = (
@@ -2498,6 +2522,8 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
         )
     except DocumentDiscountError as _e:
         raise HTTPException(status_code=400, detail=str(_e))
+    except LineAmountError as _e:
+        raise HTTPException(status_code=422, detail=str(_e))
     subtotal = _plan["gross_subtotal"]
     tax_total = _plan["tax_amount"]
     total = _plan["total_amount"]
@@ -2575,8 +2601,8 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
                 id, invoice_id, item_id, description,
                 quantity, unit, unit_price, discount_percent,
                 tax_code_id, tax_rate, tax_amount, subtotal, total, line_number,
-                sales_order_item_id, discount_amount, dpp, dpp_harga_jual
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                sales_order_item_id, discount_amount, dpp, dpp_harga_jual, jumlah_baris
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         """,
             uuid_module.uuid4(),
             invoice_id,
@@ -2596,6 +2622,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
             item["discount_amount"],
             item["dpp"],
             item["dpp_harga_jual"],  # 3c
+            item.get("jumlah_baris"),  # JUMLAH BARIS (V427): jumlah kotor baris faktur (pro-rata / penyerap sisa)
         )
 
         await conn.execute(

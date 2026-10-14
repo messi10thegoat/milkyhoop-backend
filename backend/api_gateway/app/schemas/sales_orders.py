@@ -4,7 +4,7 @@ Order management with shipment tracking.
 NO journal entries - accounting impact happens on Invoice creation.
 """
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Literal, Dict, Any
+from typing import Optional, List, Literal, Dict, Any, Union
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -20,7 +20,9 @@ class SalesOrderItemCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=500, description="Item description")
     quantity: Decimal = Field(1, gt=0, description="Quantity ordered")
     unit: Optional[str] = Field(None, max_length=50, description="Unit of measure")
-    unit_price: int = Field(..., ge=0, description="Unit price in smallest currency unit")
+    unit_price: Decimal = Field(..., ge=0, max_digits=18, decimal_places=2, description="Harga satuan (2 desimal; bulat tetap bulat)")
+    # JUMLAH BARIS (V427): jumlah baris yang diketik; menggantikan qty x harga bila selisihnya <= qty x 0,005 (selainnya 422)
+    line_amount: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     discount_percent: float = Field(0, ge=0, le=100, description="Line discount percentage")
     tax_id: Optional[str] = Field(None, description="Tax code reference")
     tax_rate: float = Field(0, ge=0, le=100, description="Tax rate percentage")
@@ -42,7 +44,8 @@ class SalesOrderItemUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=500)
     quantity: Optional[Decimal] = Field(None, gt=0)
     unit: Optional[str] = Field(None, max_length=50)
-    unit_price: Optional[int] = Field(None, ge=0)
+    unit_price: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
+    line_amount: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     tax_id: Optional[str] = None
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
@@ -66,7 +69,8 @@ class SalesOrderItemResponse(BaseModel):
     unfulfilled_qty: float = 0
     unfulfilled_value: float = 0  # (qty - terkirim) x line_net/qty; NETO sebelum pajak, tanpa diskon header/ongkir
     unit: Optional[str] = None
-    unit_price: int
+    unit_price: Union[int, float]  # bulat tetap int (JSON tanpa desimal), pecahan float 2dp
+    line_amount: Optional[float] = None  # jumlah baris tersimpan (V427); NULL = qty x harga
     discount_percent: float = 0
     tax_id: Optional[str] = None
     tax_rate: float = 0

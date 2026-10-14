@@ -7,6 +7,11 @@ Dipakai oleh SEMUA jalur berikut -- jangan buat salinan aritmetika pajak di temp
 ATURAN (Law 9: Decimal + ROUND_HALF_UP, 2 desimal):
   1. Neto baris = qty x harga - diskon baris, dibulatkan HALF_UP 2dp PER BARIS.
      (diskon baris: persen bila > 0, selain itu nominal -- sama dengan perilaku lama.)
+  1b. JUMLAH BARIS (V427, 14 Okt 2026; NetSuite Amount<->Rate, Accurate "Jumlah"): bila baris membawa
+     `line_amount` (diketik pengguna) ia MENGGANTIKAN q2(qty x harga) pada tingkat BRUTO, sebelum
+     diskon baris, asal |qty x harga - line_amount| <= qty x 0,005 (selisih pembulatan harga 2dp);
+     selainnya LineAmountError. `jumlah_baris` (kolom DB, sudah tervalidasi saat disimpan) dipercaya
+     tanpa uji toleransi. PPN tetap dihitung dari neto. NULL/absen = perilaku lama persis.
   2. Diskon dokumen (nominal, ATAU persen dari SIGMA neto baris SESUDAH diskon baris)
      dialokasikan PRO-RATA ke SEMUA baris menurut neto baris -- TERMASUK baris tak kena
      pajak. Baris TERAKHIR menyerap sisa pembulatan. Ini pola yang sama dengan alokasi
@@ -37,6 +42,13 @@ _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
 
 
+class LineAmountError(ValueError):
+    """Jumlah baris yang diketik terlalu jauh dari qty x harga (> qty x 0,005). Router memetakan ke 422."""
+
+
+TOLERANSI_PER_UNIT = Decimal("0.005")
+
+
 class DocumentDiscountError(ValueError):
     """Diskon dokumen melebihi jumlah neto baris (DPP negatif). Router memetakan ke 400."""
 
@@ -62,6 +74,17 @@ def line_net(item: dict) -> dict:
     qty = d(item.get("quantity"))
     price = d(item.get("unit_price"))
     gross = qty * price
+    typed = item.get("line_amount")
+    if typed is not None and typed != "":
+        amt = d(typed)
+        if amt < 0 or abs(gross - amt) > qty * TOLERANSI_PER_UNIT:
+            raise LineAmountError(
+                f"Jumlah baris {tg.rp(q2(amt))} tidak sesuai harga satuan x qty ({tg.rp(q2(gross))}); "
+                f"selisih maksimum {tg.rp(q2(qty * TOLERANSI_PER_UNIT))}. Ubah harga satuan atau jumlah barisnya."
+            )
+        gross = amt
+    elif item.get("jumlah_baris") is not None:
+        gross = d(item.get("jumlah_baris"))  # tersimpan (sudah divalidasi saat disimpan / hasil pro-rata faktur)
     pct = d(item.get("discount_percent"))
     disc = gross * pct / _HUNDRED if pct > 0 else d(item.get("discount_amount"))
     net = q2(gross - disc)
@@ -170,7 +193,18 @@ def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
         q = invoice_qty.get(str(it["id"]))
         if q is None or d(q) <= 0:
             continue
-        inv_items.append(dict(it, quantity=d(q), so_quantity=d(it["quantity"])))
+        ln = dict(it, quantity=d(q), so_quantity=d(it["quantity"]))
+        jb = it.get("jumlah_baris")
+        if jb is not None:
+            # JUMLAH BARIS: pro-rata menurut qty; faktur yang MENUNTASKAN baris menyerap sisa
+            # (jumlah SO - jumlah baris faktur non-void sebelumnya) -> sisa pembulatan 0 rupiah.
+            so_q = d(it["quantity"])
+            prior_q = d(it.get("quantity_invoiced"))
+            if prior_q + d(q) >= so_q:
+                ln["jumlah_baris"] = d(jb) - d(it.get("prior_gross"))
+            else:
+                ln["jumlah_baris"] = q2(d(jb) * d(q) / so_q)
+        inv_items.append(ln)
     inv_net = sum((line_net(it)["net"] for it in inv_items), _ZERO)
     so_disc, so_ship = q2(d(so_discount)), q2(d(so_shipping))
     if is_last:
@@ -183,3 +217,27 @@ def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
         disc = ship = _ZERO
     return compute_document(inv_items, doc_discount_amount=disc, shipping_amount=ship,
                             shipping_tax=shipping_tax)
+
+
+def harga_json(v):
+    """Harga satuan untuk JSON: bilangan bulat tetap int (FE tak melihat ',00'), pecahan float 2dp."""
+    if v is None:
+        return None
+    x = d(v)
+    return int(x) if x == x.to_integral_value() else float(x)
+
+
+def warisi_jumlah_baris(items: list, rows: list, key_item: str = "id", key_row: str = "id") -> None:
+    """Suntingan yang mengirim ulang baris TANPA `line_amount` mewarisi `jumlah_baris` tersimpan
+    selama qty & harga baris tak berubah (FE lama tak boleh diam-diam membuang jumlah yang diketik).
+    Qty/harga berubah -> warisan dilepas (kembali qty x harga). Memodifikasi `items` di tempat."""
+    by = {str(r[key_row]): r for r in rows if r.get(key_row) is not None}
+    for it in items:
+        if it.get("line_amount") is not None or it.get("jumlah_baris") is not None:
+            continue
+        k = it.get(key_item)
+        r = by.get(str(k)) if k is not None else None
+        if r is None or r.get("jumlah_baris") is None:
+            continue
+        if d(it.get("quantity", r["quantity"])) == d(r["quantity"]) and d(it.get("unit_price", r["unit_price"])) == d(r["unit_price"]):
+            it["jumlah_baris"] = d(r["jumlah_baris"])

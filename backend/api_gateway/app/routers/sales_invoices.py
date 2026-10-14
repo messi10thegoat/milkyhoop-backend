@@ -48,7 +48,10 @@ from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..utils.metode_pembayaran import label_metode, tentukan_metode
-from ..services.sales_doc_calc import compute_document, DocumentDiscountError
+from ..services.sales_doc_calc import (
+    compute_document, DocumentDiscountError, LineAmountError,
+    harga_json as _harga_json, warisi_jumlah_baris as _warisi_jb,
+)
 from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
@@ -543,13 +546,16 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 _conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
                 body.shipping_amount, "tax_code_id",
             )
-        res = compute_document(
-            _items,
-            doc_discount_amount=body.discount_amount,
-            doc_discount_percent=body.discount_percent,
-            shipping_amount=body.shipping_amount,
-            shipping_tax=_ship,
-        )
+        try:
+            res = compute_document(
+                _items,
+                doc_discount_amount=body.discount_amount,
+                doc_discount_percent=body.discount_percent,
+                shipping_amount=body.shipping_amount,
+                shipping_tax=_ship,
+            )
+        except LineAmountError as _e:
+            raise HTTPException(status_code=422, detail=str(_e))
         async with _pool.acquire() as _conn:
             await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], res["tax_amount"])
         return {
@@ -1525,7 +1531,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "product_name": item["product_name"],
                             "quantity": float(item["quantity"]),
                             "unit": item.get("unit"),
-                            "unit_price": item["unit_price"],
+                            "unit_price": _harga_json(item["unit_price"]),
+                            "line_amount": float(item["jumlah_baris"]) if item.get("jumlah_baris") is not None else None,
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
                             "tax_code": item["tax_code"],
@@ -1560,7 +1567,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                             "product_name": item["product_name"],
                             "quantity": float(item["quantity"]),
                             "unit": item.get("unit"),
-                            "unit_price": item["unit_price"],
+                            "unit_price": _harga_json(item["unit_price"]),
+                            "line_amount": float(item["jumlah_baris"]) if item.get("jumlah_baris") is not None else None,
                             "discount_percent": float(item["discount_percent"] or 0),
                             "discount_amount": item["discount_amount"],
                             "tax_code": item["tax_code"],
@@ -2738,7 +2746,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     items = await conn.fetch(
         """
         SELECT id, item_id, item_code, description, quantity, unit_price,
-               batch_id, batch_no, exp_date, discount_amount
+               batch_id, batch_no, exp_date, discount_amount, jumlah_baris
         FROM sales_invoice_items
         WHERE invoice_id = $1
         ORDER BY line_number, id
@@ -2756,7 +2764,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     for itm in items:
         qty = _d(itm["quantity"])
         price = _d(itm["unit_price"])
-        line_sub = qty * price
+        line_sub = _d(itm["jumlah_baris"]) if itm.get("jumlah_baris") is not None else qty * price  # V427
         disc = _d(itm.get("discount_amount", 0))
         line_sub -= disc
         total_line_subtotals += line_sub
@@ -2765,7 +2773,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         for i, itm in enumerate(items):
             qty = _d(itm["quantity"])
             price = _d(itm["unit_price"])
-            line_sub = qty * price - _d(itm.get("discount_amount", 0))
+            line_sub = (_d(itm["jumlah_baris"]) if itm.get("jumlah_baris") is not None else qty * price) \
+                - _d(itm.get("discount_amount", 0))  # V427
             proportion = line_sub / total_line_subtotals
             alloc = (proportion * subtotal_after_discount).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -3270,6 +3279,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                     )
                 except DocumentDiscountError as _e:
                     raise HTTPException(status_code=400, detail=str(_e))
+                except LineAmountError as _e:
+                    raise HTTPException(status_code=422, detail=str(_e))
                 calculated_items = []
                 for i, _ln in enumerate(_doc["items"]):
                     _ln["line_number"] = i + 1
@@ -3493,8 +3504,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                             tax_code, tax_rate, tax_amount,
                             subtotal, total, line_number,
                             batch_id, batch_no, exp_date,
-                            tax_code_id, dpp, dpp_harga_jual
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                            tax_code_id, dpp, dpp_harga_jual, jumlah_baris
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
                     """,
                         invoice_id,
                         item_uuid,
@@ -3523,6 +3534,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         item["dpp"],
                         # 3c: DPP harga jual DISIMPAN (faktor kode pajak bisa berubah kelak).
                         item["dpp_harga_jual"],
+                        item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
                     )
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -3733,12 +3745,17 @@ async def update_invoice(
                     ) or 0
                     if body.items is not None:
                         _src = [item.model_dump() for item in body.items]
+                        # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
+                        _warisi_jb(_src, [dict(r) for r in await conn.fetch(
+                            "SELECT sales_order_item_id, id, quantity, unit_price, jumlah_baris FROM sales_invoice_items "
+                            "WHERE invoice_id = $1 AND jumlah_baris IS NOT NULL", invoice_id)],
+                            key_item="sales_order_item_id", key_row="sales_order_item_id")
                     else:
                         _src = [
                             dict(r)
                             for r in await conn.fetch(
                                 """SELECT id, quantity, unit_price, discount_percent,
-                                          discount_amount, tax_rate, tax_code_id
+                                          discount_amount, tax_rate, tax_code_id, jumlah_baris
                                    FROM sales_invoice_items
                                    WHERE invoice_id = $1 ORDER BY line_number""",
                                 invoice_id,
@@ -3768,6 +3785,8 @@ async def update_invoice(
                         )
                     except DocumentDiscountError as _e:
                         raise HTTPException(status_code=400, detail=str(_e))
+                    except LineAmountError as _e:
+                        raise HTTPException(status_code=422, detail=str(_e))
                     await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
                     subtotal = _doc["gross_subtotal"]
                     invoice_discount = _doc["doc_discount"]
@@ -3867,8 +3886,8 @@ async def update_invoice(
                                 tax_code, tax_rate, tax_amount,
                                 subtotal, total, line_number,
                                 batch_id, batch_no, exp_date,
-                                tax_code_id, dpp, sales_order_item_id, dpp_harga_jual
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+                                tax_code_id, dpp, sales_order_item_id, dpp_harga_jual, jumlah_baris
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
                         """,
                             invoice_id,
                             item_uuid,
@@ -3894,6 +3913,7 @@ async def update_invoice(
                             calc["dpp"],
                             UUID(_so_links[i]) if _so_links[i] else None,
                             calc["dpp_harga_jual"],
+                            calc["line_amount"] if calc.get("line_amount") is not None else calc.get("jumlah_baris"),  # V427
                         )
 
                     await _apply_so_invoiced_deltas(conn, _so_deltas)
