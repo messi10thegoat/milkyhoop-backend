@@ -90,8 +90,10 @@ class DB:
         if s.startswith("SELECT DISTINCT dpp_factor_num, dpp_factor_den FROM tax_codes"):
             fs = {(k[2], k[3]) for k in self.kode.values() if k[0] == a[0] and k[1] == a[2] and k[4]}
             return [{"dpp_factor_num": n, "dpp_factor_den": d} for n, d in fs]
-        if s.startswith("SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id FROM sales_order_items"):
+        if s.startswith("SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id, jumlah_baris FROM sales_order_items"):
             return self.so_baris
+        if s.startswith("SELECT id, quantity, unit_price, jumlah_baris FROM sales_order_items"):  # warisan JUMLAH BARIS (V427)
+            return []
         raise AssertionError(f"fetch tak dikenal: {s}")
 
     async def execute(self, sql, *a):
