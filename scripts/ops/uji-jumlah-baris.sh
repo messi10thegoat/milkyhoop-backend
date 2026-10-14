@@ -7,7 +7,7 @@ DUMP=$(ls -t /root/backups/milkydb-pre-*.dump | head -1)
 docker exec $PGC psql -U postgres -d postgres -qc "CREATE DATABASE $DB" || exit 2
 trap "docker exec $PGC psql -U postgres -d postgres -qc \"DROP DATABASE IF EXISTS $DB\" >/dev/null 2>&1" EXIT
 docker exec -i $PGC pg_restore -U postgres -d $DB --no-owner < "$DUMP" > /tmp/jb_restore.log 2>&1
-docker exec -i $PGC psql -U postgres -d $DB -v ON_ERROR_STOP=1 -q < $REPO/backend/migrations/V427__jumlah_baris.sql || exit 3
+docker exec -i $PGC psql -U postgres -d $DB -v ON_ERROR_STOP=1 -q < ${MIG:-$REPO/backend/migrations/V427__jumlah_baris.sql} || exit 3
 URLASLI=$(docker exec milkyhoop-dev-api_gateway printenv DATABASE_URL)
 URL=$(echo "$URLASLI" | sed -E "s#/[^/?]+(\?.*)?\$#/$DB\1#")
 docker run --rm --network milkyhoop_dev_network -e URL="$URL" \
