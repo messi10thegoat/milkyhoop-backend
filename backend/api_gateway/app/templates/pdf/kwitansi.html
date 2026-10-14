@@ -68,7 +68,7 @@
             {% if receipt.get('order_total') is not none %}
             <table class="kw-ringkas">
                 <tr><td>Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_total | currency }}</td></tr>
-                <tr><td>Total Uang Muka Diterima</td><td class="kw-r-nilai">Rp {{ receipt.dp_received_total | currency }}</td></tr>
+                <tr><td>Total Pembayaran Diterima</td><td class="kw-r-nilai">Rp {{ receipt.dp_received_total | currency }}</td></tr>
                 <tr class="kw-r-total"><td>Sisa Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_remaining | currency }}</td></tr>
             </table>
             {% elif receipt.get('remaining') is not none %}

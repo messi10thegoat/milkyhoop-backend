@@ -54,6 +54,7 @@ from ..utils.metode_pembayaran import label_metode_layar
 from ..services import teks_galat as tg
 from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
 from ..services.so_riwayat import catat_riwayat
+from ..services.deposit_jenis import jenis_dari_purpose, label_kwitansi, sql_jenis_efektif
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -477,7 +478,8 @@ async def list_customer_deposits(
             query = f"""
                 SELECT id, deposit_number, customer_id, customer_name,
                        deposit_date, amount, amount_applied, amount_refunded,
-                       status, payment_method, reference, created_at
+                       status, payment_method, reference, created_at,
+                       {sql_jenis_efektif("customer_deposits")} AS jenis
                 FROM customer_deposits
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -511,6 +513,7 @@ async def list_customer_deposits(
                     "method_label": label_metode_layar(row["payment_method"]),
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
+                    "jenis": row["jenis"],  # V422 jenis efektif
                 }
                 for row in rows
             ]
@@ -637,7 +640,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
             # Get deposit
             dep = await conn.fetchrow(
                 """
-                SELECT d.*,
+                SELECT d.*, """ + sql_jenis_efektif("d") + """ AS jenis_efektif,
                        c.account_code, c.name as account_name,
                        b.account_name as bank_account_name,
                        j.journal_number
@@ -722,6 +725,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "notes": dep["notes"],
                     "status": dep["status"],
                     "status_detail": status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"]),
+                    "jenis": dep["jenis_efektif"],  # V422 jenis efektif
                     "journal_id": str(dep["journal_id"]) if dep["journal_id"] else None,
                     "journal_number": dep["journal_number"],
                     "applications": [
@@ -1101,6 +1105,17 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                 # proforma yang ditunjuk: tenant + SO + pelanggan sama, status issued (422 bila tidak)
                 await validasi_proforma_dp(conn, ctx["tenant_id"], body.proforma_id, body.sales_order_id, pelanggan_dp)
 
+                # V422 (DEPOSIT-JENIS): eksplisit menang; absen -> purpose proforma yang ditunjuk -> 'DP'. Label saja.
+                jenis_simpan = body.jenis
+                if jenis_simpan is None:
+                    purpose_pf = None
+                    if body.proforma_id:
+                        purpose_pf = await conn.fetchval(
+                            "SELECT purpose FROM proformas WHERE id = $1 AND tenant_id = $2",
+                            UUID(body.proforma_id), ctx["tenant_id"],
+                        )
+                    jenis_simpan = jenis_dari_purpose(purpose_pf)
+
                 # Generate deposit number
                 dep_number = await conn.fetchval(
                     "SELECT generate_customer_deposit_number($1, 'DEP')",
@@ -1118,8 +1133,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                             amount, deposit_date, payment_method,
                             account_id, bank_account_id, reference, notes,
                             status, created_by,
-                            quote_id, sales_order_id, idempotency_key, proforma_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16)
+                            quote_id, sales_order_id, idempotency_key, proforma_id, jenis
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17)
                         RETURNING id
                     """,
                         ctx["tenant_id"],
@@ -1139,6 +1154,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         body.idempotency_key,
                         # T200: proforma yang ditagih oleh uang masuk ini.
                         UUID(body.proforma_id) if body.proforma_id else None,
+                        jenis_simpan,
                     )
                 except asyncpg.exceptions.UniqueViolationError:
                     # FIX_P3_BRIDGE 2026-06-16 (b): lost the create race on the
@@ -3326,7 +3342,8 @@ async def list_customer_deposits_by_customer(
             query = f"""
                 SELECT id, deposit_number, customer_id, customer_name,
                        deposit_date, amount, amount_applied, amount_refunded,
-                       status, payment_method, reference, created_at
+                       status, payment_method, reference, created_at,
+                       {sql_jenis_efektif("customer_deposits")} AS jenis
                 FROM customer_deposits
                 WHERE {where_clause}
                 ORDER BY deposit_date DESC
@@ -3360,6 +3377,7 @@ async def list_customer_deposits_by_customer(
                     "method_label": label_metode_layar(row["payment_method"]),
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
+                    "jenis": row["jenis"],  # V422 jenis efektif
                 }
                 for row in rows
             ]
@@ -3390,21 +3408,21 @@ from pathlib import Path as _Path
 from ..utils.terbilang import terbilang as _terbilang  # noqa: E402  satu sumber (P3, 1 Okt 2026)
 
 
-def _deposit_purpose_label(sales_order_id) -> str:
-    """Label keperluan pada kwitansi uang muka (T198, butir 1.3).
+def _deposit_purpose_label(sales_order_id, jenis=None) -> str:
+    """Label keperluan pada kwitansi uang muka (T198, butir 1.3; V422 jenis).
 
-    Uang muka yang terikat Sales Order dicetak sebagai "Uang Muka Pesanan"
-    supaya kwitansi menyebut KEPERLUANNYA, bukan sekadar jenis dokumennya.
-    Tanpa SO, label lama ("Uang Muka") dipertahankan persis.
+    Terikat Sales Order -> "Uang Muka Pesanan" / "Pelunasan Pesanan" supaya kwitansi menyebut KEPERLUANNYA.
+    Tanpa SO -> "Uang Muka" / "Pelunasan". jenis None (pemanggil lama) = DP.
     """
-    return "Uang Muka Pesanan" if sales_order_id else "Uang Muka"
+    return label_kwitansi(jenis, bool(sales_order_id))
 
 
 async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
     """Konteks PDF kwitansi uang muka (P3 SO-dokumen: SATU sumber). Dipindah VERBATIM dari
     get_customer_deposit_pdf. -> {receipt_data, tenant_info, dep}."""
     dep = await conn.fetchrow(
-        "SELECT * FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
+        "SELECT cd.*, " + sql_jenis_efektif("cd") + " AS jenis_efektif "
+        "FROM customer_deposits cd WHERE cd.id = $1 AND cd.tenant_id = $2",
         uuid_module.UUID(deposit_id),
         ctx["tenant_id"],
     )
@@ -3492,7 +3510,8 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
         "amount_words": _terbilang(_amt),
         "method": method_label,
         "bank_name": bank_name,
-        "purpose_label": _deposit_purpose_label(dep["sales_order_id"]),
+        "purpose_label": _deposit_purpose_label(dep["sales_order_id"], dep["jenis_efektif"]),
+        "jenis": dep["jenis_efektif"],
         "purpose_ref": purpose_ref,
         "remaining": remaining,
         "remaining_label": remaining_label,

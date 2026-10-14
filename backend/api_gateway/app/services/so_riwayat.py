@@ -23,6 +23,7 @@ import json
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
+from .deposit_jenis import label_jenis, sql_jenis_efektif
 from .nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import zona_tenant
 from . import teks_galat as tg
@@ -75,7 +76,7 @@ LABEL_MEDAN = [
     ("opening_text", "teks pembuka"), ("closing_text", "teks penutup"),
     ("notes", "catatan"), ("internal_notes", "catatan internal"), ("footer", "catatan kaki"),
     ("deposit_date", "tanggal"), ("payment_method", "cara bayar"), ("account_id", "rekening"),
-    ("bank_account_id", "rekening"),
+    ("bank_account_id", "rekening"), ("jenis", "jenis pembayaran"),
 ]
 _PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
 _LABEL = dict(LABEL_MEDAN)
@@ -371,17 +372,19 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
     if lihat["customer_deposit"]:
         dps = await conn.fetch(
             """SELECT id, deposit_number, amount, status, created_at, created_by, posted_at, posted_by,
-                      voided_at, voided_by, voided_reason
+                      voided_at, voided_by, voided_reason, """ + sql_jenis_efektif("customer_deposits") + """ AS jenis
                FROM customer_deposits WHERE tenant_id = $1 AND sales_order_id = $2""",
             tenant_id, so_id,
         )
         entitas_audit["customer_deposit"] = [d["id"] for d in dps]
+        jenis_dp = {d["id"]: label_jenis(d["jenis"]) for d in dps}  # V422: "Uang muka" | "Pelunasan"
         for d in dps:
             n = d["deposit_number"]
-            k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"Uang muka {n} {_rp(d['amount'])} dibuat", d["created_by"], "customer_deposit", d["id"], n)
-            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"Uang muka {n} {_rp(d['amount'])} diterima (diposting)", d["posted_by"], "customer_deposit", d["id"], n)
+            lb = jenis_dp[d["id"]]
+            k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {n} {_rp(d['amount'])} dibuat", d["created_by"], "customer_deposit", d["id"], n)
+            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima (diposting)", d["posted_by"], "customer_deposit", d["id"], n)
             alasan = f": {d['voided_reason']}" if d["voided_reason"] else ""
-            k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"Uang muka {n} dibatalkan{alasan}", d["voided_by"], "customer_deposit", d["id"], n)
+            k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {n} dibatalkan{alasan}", d["voided_by"], "customer_deposit", d["id"], n)
         if dps:
             for a in await conn.fetch(
                 """SELECT a.id, a.deposit_id, d.deposit_number, a.invoice_number, a.amount_applied,
@@ -392,11 +395,12 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
                 tenant_id, [d["id"] for d in dps],
             ):
                 n = a["deposit_number"]
+                lb = jenis_dp.get(a["deposit_id"], label_jenis(None))
                 k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN",
-                         f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan ke faktur {a['invoice_number']}",
+                         f"{lb} {n} {_rp(a['amount_applied'])} diterapkan ke faktur {a['invoice_number']}",
                          a["created_by"], "customer_deposit", a["deposit_id"], n, kunci=a["id"])
                 k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS",
-                         f"Penerapan uang muka {n} ke faktur {a['invoice_number']} dilepas",
+                         f"Penerapan {lb.lower()} {n} ke faktur {a['invoice_number']} dilepas",
                          None, "customer_deposit", a["deposit_id"], n, kunci=a["id"])
 
     # ---- proforma ----
@@ -522,7 +526,8 @@ async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     None = tak ada di tenant ini."""
     d = await conn.fetchrow(
         """SELECT d.id, d.deposit_number, d.amount, d.created_at, d.created_by, d.posted_at, d.posted_by, d.voided_at,
-                  d.voided_by, d.voided_reason, d.sales_order_id, d.proforma_id, so.order_number, p.proforma_number
+                  d.voided_by, d.voided_reason, d.sales_order_id, d.proforma_id, so.order_number, p.proforma_number,
+                  """ + sql_jenis_efektif("d") + """ AS jenis
            FROM customer_deposits d
            LEFT JOIN sales_orders so ON so.id = d.sales_order_id AND so.tenant_id = d.tenant_id
            LEFT JOIN proformas p ON p.id = d.proforma_id AND p.tenant_id = d.tenant_id
@@ -537,29 +542,30 @@ async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     omitted = sorted({m for m in izin if not izin[m]})
     k = _Kumpul()
     n = d["deposit_number"]
-    k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"Uang muka {n} {_rp(d['amount'])} dibuat", d["created_by"],
+    lb = label_jenis(d["jenis"])  # V422: "Uang muka" | "Pelunasan"
+    k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {n} {_rp(d['amount'])} dibuat", d["created_by"],
              "customer_deposit", d["id"], n)
-    k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"Uang muka {n} {_rp(d['amount'])} diterima (diposting)",
+    k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima (diposting)",
              d["posted_by"], "customer_deposit", d["id"], n)
     al = f": {d['voided_reason']}" if d["voided_reason"] else ""
-    k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"Uang muka {n} dibatalkan{al}", d["voided_by"],
+    k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {n} dibatalkan{al}", d["voided_by"],
              "customer_deposit", d["id"], n)
     for a in await conn.fetch(
             """SELECT id, invoice_number, amount_applied, created_at, created_by, reversed_at FROM customer_deposit_applications
                WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
         fk = f" ke faktur {a['invoice_number']}" if lihat["sales_invoice"] else ""
-        k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan{fk}",
+        k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"{lb} {n} {_rp(a['amount_applied'])} diterapkan{fk}",
                  a["created_by"], "customer_deposit", d["id"], n, kunci=a["id"])
-        k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan uang muka {n}{fk} dilepas", None,
+        k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan {lb.lower()} {n}{fk} dilepas", None,
                  "customer_deposit", d["id"], n, kunci=a["id"])
     for r in await conn.fetch(
             """SELECT id, amount, refund_date, created_at, created_by FROM customer_deposit_refunds
                WHERE tenant_id = $1 AND deposit_id = $2""", tenant_id, d["id"]):
-        k.tambah(r["created_at"], "UANG_MUKA_DIKEMBALIKAN", f"Uang muka {n} {_rp(r['amount'])} dikembalikan ke pelanggan",
+        k.tambah(r["created_at"], "UANG_MUKA_DIKEMBALIKAN", f"{lb} {n} {_rp(r['amount'])} dikembalikan ke pelanggan",
                  r["created_by"], "customer_deposit", d["id"], n, kunci=r["id"])
     keluar, total = await _selesaikan(conn, tenant_id, k, {"customer_deposit": [d["id"]]}, lihat, limit)
     return {
-        "deposit_id": str(d["id"]), "deposit_number": n,
+        "deposit_id": str(d["id"]), "deposit_number": n, "jenis": d["jenis"],
         "sales_order": ({"id": str(d["sales_order_id"]), "order_number": d["order_number"]}
                         if lihat["sales_order"] and d["sales_order_id"] else None),
         "proforma": ({"id": str(d["proforma_id"]), "proforma_number": d["proforma_number"]}

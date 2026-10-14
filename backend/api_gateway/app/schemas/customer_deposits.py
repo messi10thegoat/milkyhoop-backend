@@ -54,6 +54,9 @@ class CreateCustomerDepositRequest(BaseModel):
     proforma_id: Optional[str] = Field(
         None, description="Proforma UUID this DP settles (tagihan uang muka)"
     )
+    # V422 (14 Okt 2026, DEPOSIT-JENIS): label saja, pembukuan sama. Absen -> purpose proforma (DP/TERMIN->DP,
+    # PELUNASAN->PELUNASAN), tanpa proforma -> DP. Eksplisit menang walau beda dengan purpose proforma.
+    jenis: Optional[Literal["DP", "PELUNASAN"]] = Field(None, description="DP (uang muka) | PELUNASAN")
     # 12 Okt 2026: Terima DP sekaligus Terbitkan SPK (nomor produksi) untuk SO-nya, SATU transaksi. Bawaan false.
     terbitkan_kode_order: bool = Field(False, description="Terbitkan nomor produksi (label setelan tenant) untuk SO uang muka ini (idempoten)")
     idempotency_key: Optional[str] = Field(
@@ -85,6 +88,7 @@ class UpdateCustomerDepositRequest(BaseModel):
     bank_account_id: Optional[str] = None
     reference: Optional[str] = None
     notes: Optional[str] = None
+    jenis: Optional[Literal["DP", "PELUNASAN"]] = None  # V422; null -> kembali ke turunan (purpose proforma / DP)
 
 
 # =============================================================================
@@ -175,6 +179,7 @@ class CustomerDepositListItem(BaseModel):
     method_label: Optional[str] = None  # label layar (faktur_cetak.label_metode), 5 Okt
     reference: Optional[str] = None
     created_at: str
+    jenis: str = "DP"  # V422: jenis EFEKTIF (services/deposit_jenis), tak pernah null: DP | PELUNASAN
 
 
 class CustomerDepositDetail(BaseModel):
@@ -212,6 +217,7 @@ class CustomerDepositDetail(BaseModel):
     # Status
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
+    jenis: str = "DP"  # V422: jenis EFEKTIF (services/deposit_jenis), tak pernah null: DP | PELUNASAN
 
     # Accounting links
     journal_id: Optional[str] = None
