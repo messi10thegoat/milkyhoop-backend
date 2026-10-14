@@ -446,6 +446,8 @@ def _render(serah):
     import jinja2
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(APP / "templates" / "pdf")), autoescape=True)
     env.filters["date_id"] = lambda v: str(v)
+    from app.services.pdf_service import format_qty
+    env.filters["qty"] = format_qty  # 14 Okt 2026: sel qty SJ memakai filter `qty` (format_qty)
     for nama in ("rupiah", "idr", "angka", "fmt_qty", "terbilang", "tgl"):
         env.filters.setdefault(nama, lambda v, *a, **k: str(v))
     d = {"delivery_number": "SJ-1", "delivery_date": "2026-10-11", "invoice_number": "INV-1", "customer_name": "Budi",
