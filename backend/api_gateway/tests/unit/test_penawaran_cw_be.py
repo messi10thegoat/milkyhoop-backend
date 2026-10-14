@@ -3,6 +3,7 @@ tulis + nomor/angka == to-order nyata; accept bersamaan -> satu menang; riwayat 
 Perpanjang di 'sent'; DP lewat penawaran saja -> 422. Di sini: PERILAKU kunci di tiap aksi + blok DP."""
 import asyncio
 import uuid
+from datetime import date
 
 import pytest
 
@@ -29,7 +30,7 @@ class _Conn:
         self.log.append(("fetchrow", " ".join(sql.split()), a))
         if "FROM quotes" in sql:
             return {"id": uuid.UUID(QID), "status": self.status, "quote_number": "QUO-T", "total_amount": 0,
-                    "customer_name": "x"}
+                    "customer_name": "x", "expiry_date": None}
         return None
 
     async def fetchval(self, sql, *a):
@@ -52,6 +53,10 @@ def _jalan(monkeypatch, fn, status, *arg):
     monkeypatch.setattr(Q, "get_user_context", lambda r: {"tenant_id": "t1", "user_id": None})
     monkeypatch.setattr(Q, "_tolak_bila_ada_uang_muka_aktif", tanpa)
     monkeypatch.setattr(Q, "catat_riwayat", tanpa)
+
+    async def hari(c, t):  # V421: kirim memakai penentu bagikan (tanggal bisnis)
+        return date(2026, 10, 14)
+    monkeypatch.setattr(Q, "tanggal_dokumen", hari)
     asyncio.run(fn(object(), QID, *arg))
     return conn
 
