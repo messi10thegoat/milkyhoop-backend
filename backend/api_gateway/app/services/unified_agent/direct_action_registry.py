@@ -6566,7 +6566,8 @@ DOCUMENT_ACTIONS: tuple[AksiDokumen, ...] = (
         #   2. lebih buruk, trg_quote_expiry membalik NEW.status := 'expired'
         #      ketika OLD='sent' DAN NEW='sent' DAN expiry_date < hari ini.
         #      Jadi "kirim penawaran" pada penawaran lewat tanggal justru
-        #      MENG-EXPIRE-kannya. Nol pesan, nol galat.
+        #      MENG-EXPIRE-kannya. Nol pesan, nol galat. (V421, 14 Okt 2026: trigger
+        #      dicabut; /send lewat masa kini 409 QUOTE_NOT_SHAREABLE.)
         # Chat memilih jalur yang tak bisa mengejutkan; dashboard tetap punya
         # keleluasaan penuh.
         status_boleh=("draft",),

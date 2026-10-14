@@ -3,7 +3,8 @@
 kedaluwarsa = status menunggu jawaban (sent ATAU viewed — putusan MASTER: dilihat tapi tak dijawab lewat tanggal
 tetap kedaluwarsa) DAN expiry_date < tanggal BISNIS tenant (bukan date.today()/CURRENT_DATE UTC server).
 `hari_ini` WAJIB dari tanggal_dokumen(conn, tenant) dan dipakai SAMA oleh Python & SQL (satu tanggal per aksi).
-Status tersimpan 'expired' (trigger check_quote_expiry) tidak diubah artinya.
+V421 (14 Okt 2026): trigger check_quote_expiry DICABUT -- status tersimpan tak pernah 'expired' lagi (0 baris saat cabut;
+tes penjaga: tak ada penulis). Kedaluwarsa HANYA dari aturan ini.
 """
 from datetime import date
 from typing import Optional

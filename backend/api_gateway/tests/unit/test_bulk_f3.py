@@ -8,6 +8,8 @@ import asyncio
 import inspect
 import uuid
 
+from datetime import date
+
 import pytest
 from fastapi import HTTPException
 
@@ -37,7 +39,7 @@ class _K:
 
 
 def _q(status="draft", nomor="QUO-1"):
-    return {"id": _id(), "status": status, "quote_number": nomor, "sent_at": None}
+    return {"id": _id(), "status": status, "quote_number": nomor, "sent_at": None, "expiry_date": None}
 
 
 @pytest.fixture
@@ -56,6 +58,9 @@ def terkirim(monkeypatch):
     async def f(conn, tid, qid, nomor, user, sumber): rek.append((tid, qid, nomor, user, sumber))
     import app.services.penawaran_bagikan as PB
     monkeypatch.setattr(PB, "tandai_terkirim", f)
+
+    async def hari(conn, tid): return date(2026, 10, 14)  # V421: kirim memakai penentu bagikan (tanggal bisnis)
+    monkeypatch.setattr(Q, "tanggal_dokumen", hari)
     return rek
 
 

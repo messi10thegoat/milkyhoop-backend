@@ -264,16 +264,21 @@ async def list_quotes(
             params = [ctx["tenant_id"]]
             param_idx = 2
 
+            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant -- sekali per permintaan
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+
             # Map frontend status aliases
             if status == "invoiced":
                 status = "converted"
-            if status != "all":
+            if status == "expired":
+                # V421 (14 Okt 2026): kedaluwarsa = TURUNAN tanggal, tak pernah status tersimpan -> alias predikat
+                conditions.append(sql_kedaluwarsa(f"${param_idx}"))
+                params.append(hari_ini)
+                param_idx += 1
+            elif status != "all":
                 conditions.append(f"status = ${param_idx}")
                 params.append(status)
                 param_idx += 1
-
-            # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant -- sekali per permintaan
-            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             if aksi in AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
                 _pred, _par = sql_aksi_berparam(aksi, param_idx, hari_ini)
                 conditions.append(_pred)
@@ -465,7 +470,7 @@ async def get_quote_summary(request: Request):
                     COUNT(*) FILTER (WHERE status = 'sent') as sent_count,
                     COUNT(*) FILTER (WHERE status = 'accepted') as accepted_count,
                     COUNT(*) FILTER (WHERE status = 'declined') as declined_count,
-                    COUNT(*) FILTER (WHERE status = 'expired') as expired_count,
+                    COUNT(*) FILTER (WHERE {lewat}) as expired_count,  -- V421: turunan tanggal (= expired_pending_count)
                     COUNT(*) FILTER (WHERE status = 'converted') as converted_count,
                     COUNT(*) FILTER (WHERE status = 'viewed') as viewed_count,
                     COUNT(*) FILTER (WHERE status = 'void') as void_count,
@@ -923,9 +928,6 @@ async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> 
     await conn.execute(
         "UPDATE quotes SET expiry_date = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
         quote["id"], ctx["tenant_id"], baru)
-    if status == "sent":  # trg_quote_expiry: sama dengan jalur ubah penuh -- status TETAP
-        await conn.execute("UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'",
-                           quote["id"], ctx["tenant_id"])
     await catat_riwayat(
         conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_EXPIRY_EXTENDED",
         ctx.get("user_id"), f"Masa berlaku penawaran {quote['quote_number']} diperpanjang sampai "
@@ -1194,12 +1196,6 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
 
     _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
                    | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
-    if quote["status"] == "sent":
-        # trg_quote_expiry (BEFORE UPDATE) membalik sent -> 'expired' pada UPDATE APA PUN bila berlaku < tanggal bisnis.
-        # Status tersimpan 'expired' memblok terima/tolak/batal/konversi/Perpanjang -> penawaran TERDAMPAR. Putusan:
-        # status TETAP sesudah diubah. UPDATE kedua tak memicu balik (OLD.status sudah 'expired').
-        await conn.execute("UPDATE quotes SET status = 'sent' WHERE id = $1 AND tenant_id = $2 AND status = 'expired'",
-                           quote["id"], ctx["tenant_id"])
     _sesudah = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
     _beda = beda_penawaran(_sebelum, _sesudah, _ubah)
     if _ubah:
@@ -1246,7 +1242,7 @@ async def preview_edit_quote(request: Request, quote_id: str, body: UpdateQuoteR
 
 
 # ---- ubah penawaran: penjaga + potret + diff (13 Okt 2026) ----
-STATUS_BOLEH_UBAH = ("draft", "sent", "viewed", "expired")  # belum dijawab pelanggan
+STATUS_BOLEH_UBAH = ("draft", "sent", "viewed")  # belum dijawab pelanggan; kedaluwarsa = turunan tanggal (V421)
 _KEPALA_DIFF = ("quote_date", "expiry_date", "customer_id", "customer_name", "customer_email", "reference", "subject",
                 "discount_type", "discount_value", "notes", "terms", "footer", "opening_text", "closing_text",
                 "payment_bank_name", "payment_account_number", "payment_account_holder", "dp_amount", "dp_percent",
@@ -1432,7 +1428,7 @@ async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = Fal
     # Check quote
     quote = await conn.fetchrow(
         """
-        SELECT id, status, quote_number FROM quotes
+        SELECT id, status, quote_number, expiry_date FROM quotes
         WHERE id = $1 AND tenant_id = $2
         FOR UPDATE
     """,
@@ -1448,6 +1444,13 @@ async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = Fal
             status_code=400,
             detail=tg.tak_bisa_status("quote", quote["status"], "dikirim", quote["quote_number"]),
         )
+    # 14 Okt 2026 (V421, MASTER): lewat masa -> 409 QUOTE_NOT_SHAREABLE, penentu YANG SAMA dengan bagikan. Dulu kirim ulang
+    # penawaran terkirim yang lewat masa dibalik trigger jadi 'expired' -> terdampar (terima/tolak/batal/konversi menolak).
+    from ..services.penawaran_bagikan import penentu
+    _p = penentu(quote["status"], quote["quote_number"], quote["expiry_date"],
+                 await tanggal_dokumen(conn, ctx["tenant_id"]))
+    if not _p["boleh"]:
+        raise HTTPException(status_code=409, detail={"code": _p["code"], "message": _p["message"]})
 
     # SUREL PENAWARAN BELUM ADA -- DAN JALUR INI DULU BERPURA-PURA.
     # Sampai 12 Sep 2026, `send_email=true` mengubah status jadi

@@ -3,8 +3,9 @@ dan pratinjaunya; SATU penanda 'terkirim' untuk share DAN POST /quotes/{id}/send
 
   draft                                  -> boleh; tautan + DITANDAI terkirim (status sent, sent_at, audit QUOTE_SENT)
   sent / viewed / accepted / converted   -> boleh; tautan saja, status tetap
-  void / declined / expired              -> 409 QUOTE_NOT_SHAREABLE, nol tulis
+  void / declined                        -> 409 QUOTE_NOT_SHAREABLE, nol tulis
   kedaluwarsa turunan (penawaran_kedaluwarsa: sent/viewed lewat tanggal) -> 409 yang sama
+  (V421, 14 Okt: status tersimpan 'expired' tak punya penulis lagi -- kedaluwarsa HANYA dari tanggal)
   draft yang tanggal berlakunya SUDAH lewat -> 409 yang sama (mengirim penawaran yang sudah mati = menyesatkan)
 """
 from datetime import date
@@ -25,9 +26,9 @@ def penentu(status: str, nomor: str, expiry_date: Optional[date], hari_ini: date
     tolak = None
     if status in TAK_BOLEH:
         tolak = f"Penawaran {nomor} {TAK_BOLEH[status]}; tidak bisa dikirim."
-    elif status == "expired" or kedaluwarsa(status, expiry_date, hari_ini):
+    elif kedaluwarsa(status, expiry_date, hari_ini):
         tolak = (f"Masa berlaku penawaran {nomor} sudah lewat"
-                 + (f" ({_tgl(expiry_date)})" if expiry_date else "") + ". Perpanjang dulu.")
+                 + (f" ({_tgl(expiry_date)})" if expiry_date else "") + ". Ubah tanggal berlaku dulu.")
     elif status == "draft" and expiry_date is not None and expiry_date < hari_ini:
         tolak = f"Tanggal berlaku penawaran {nomor} sudah lewat ({_tgl(expiry_date)}). Ubah tanggal berlaku dulu."
     if tolak:

@@ -123,7 +123,7 @@ async def test_share_bukan_draf_hanya_tautan(pasang, st):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("st,exp", [("void", date(2026, 10, 17)), ("declined", date(2026, 10, 17)),
-                                    ("expired", date(2026, 9, 1)), ("sent", date(2026, 10, 2)),
+                                    ("sent", date(2026, 10, 2)),
                                     ("viewed", date(2026, 10, 2)), ("draft", date(2026, 10, 2))])
 async def test_share_tak_boleh_409_nol_tulis(pasang, st, exp):
     c = pasang(_Conn(st, exp))
