@@ -1039,7 +1039,7 @@ from datetime import date as _date  # noqa: E402  (anotasi query /defaults; modu
 
 @router.get("/defaults")
 async def get_sales_invoice_defaults(request: Request, customer_id: Optional[str] = None,
-                                     invoice_date: Optional[_date] = None):
+                                     invoice_date: Optional[_date] = None, sales_order_id: Optional[str] = None):
     """Default form Faktur Penjualan (U1c CW, 4 Okt 2026), pola /sales-orders/defaults: rekening penerimaan UTAMA +
     jatuh tempo dari termin (penentu SAMA dengan to-invoice). null = tak ada default. DI ATAS /{invoice_id}."""
     ctx = get_user_context(request)
@@ -1048,11 +1048,18 @@ async def get_sales_invoice_defaults(request: Request, customer_id: Optional[str
             customer_id = str(UUID(str(customer_id)))
         except ValueError:
             raise HTTPException(status_code=422, detail="customer_id bukan UUID")
+    if sales_order_id:  # DEFAULTS-SO-TERMS (14 Okt 2026): termin SO, penentu SAMA dengan /to-invoice
+        try:
+            sales_order_id = str(UUID(str(sales_order_id)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="sales_order_id bukan UUID")
     from ..services.default_dokumen import default_faktur
     pool = await get_pool()
     async with pool.acquire() as conn:
         tgl = invoice_date or await tanggal_dokumen(conn, ctx["tenant_id"])
-        data = await default_faktur(conn, ctx["tenant_id"], tgl, customer_id)
+        data = await default_faktur(conn, ctx["tenant_id"], tgl, customer_id, sales_order_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     return {"success": True, "data": data}
 
 

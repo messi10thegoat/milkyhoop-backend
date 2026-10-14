@@ -61,16 +61,28 @@ async def default_pesanan(conn, tenant_id: str, customer_id: Optional[str] = Non
     }
 
 
-async def default_faktur(conn, tenant_id: str, invoice_date, customer_id: Optional[str] = None) -> dict:
+async def default_faktur(conn, tenant_id: str, invoice_date, customer_id: Optional[str] = None,
+                         sales_order_id: Optional[str] = None) -> Optional[dict]:
     """Default form Faktur Penjualan (U1c CW, 4 Okt 2026; pemilik LANGSUNG ke WORKSPACE: "Default dari server").
     SATU penentu: rekening penerimaan UTAMA = default_pesanan (bendera is_default eksplisit, bukan urutan); jatuh tempo
     = services/termin_bayar.tentukan_jatuh_tempo YANG SAMA dengan to-invoice/buat faktur (termin pelanggan -> default
     = tanggal faktur; tingkat perusahaan TIDAK ada di aturan itu, jadi tak dikarang di sini). Nol tulis; FE mengirim
-    nilainya (snapshot). invoice_date = isian FE atau tanggal usaha zona tenant (pemanggil)."""
+    nilainya (snapshot). invoice_date = isian FE atau tanggal usaha zona tenant (pemanggil).
+    DEFAULTS-SO-TERMS (14 Okt 2026, MASTER): sales_order_id -> termin SO + pelanggan SO, masukan YANG SAMA dengan
+    to-invoice (order.payment_terms, order.customer_id) -> source bisa 'so_terms'. SO tenant lain/tak ada -> None (404)."""
     from .termin_bayar import tentukan_jatuh_tempo, termin_hari
+    termin_so = None
+    if sales_order_id:
+        so = await conn.fetchrow(
+            "SELECT payment_terms, customer_id FROM sales_orders WHERE id = $1::uuid AND tenant_id = $2",
+            str(sales_order_id), tenant_id)
+        if so is None:
+            return None
+        termin_so = so["payment_terms"]
+        customer_id = str(so["customer_id"]) if so["customer_id"] else None
     d = await default_pesanan(conn, tenant_id, customer_id)
-    n, _ = await termin_hari(conn, tenant_id, None, customer_id)
-    jt, sumber = await tentukan_jatuh_tempo(conn, tenant_id, invoice_date, None, None, customer_id)
+    n, _ = await termin_hari(conn, tenant_id, termin_so, customer_id)
+    jt, sumber = await tentukan_jatuh_tempo(conn, tenant_id, invoice_date, None, termin_so, customer_id)
     return {
         "receiving_account": d["receiving_account"],
         "invoice_date": invoice_date.isoformat(),
