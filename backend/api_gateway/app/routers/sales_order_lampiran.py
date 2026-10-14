@@ -363,7 +363,8 @@ def jalur_izin_jenis(jenis: str) -> str:
 #  - DP: customer_deposits.sales_order_id / quote_id penawaran SO / proforma_id keluarga
 #  - faktur: sales_invoices.sales_order_id
 #  - penerimaan: alokasi ke faktur keluarga, ATAU source/created_deposit_id = DP keluarga
-#  - SJ: invoice_fulfillments.sales_order_id
+#  - SJ: COALESCE(invoice_fulfillments.sales_order_id, faktur.sales_order_id) -- SJ asal 'faktur' tak punya
+#    sales_order_id (chk_if_asal_kolom: kolom itu khusus asal 'so'); SO-nya lewat fakturnya (14 Okt 2026, SJ-FAKTUR-SO-ID)
 #  Alias tiap tabel UNIK (penjaga tes membaca predikat tenant per alias).
 #  entity_type 'payment' dipakai BERSAMA penerimaan & pembayaran-keluar -> hanya id yang
 #  ADA di receive_payments tenant ini yang dicocokkan.
@@ -406,7 +407,9 @@ WITH so AS (
     FROM receive_payments r WHERE r.tenant_id = $2 AND r.id IN (SELECT id FROM rp)
     UNION ALL
     SELECT 'delivery', 'delivery', f.id, f.fulfillment_number, f.fulfillment_date::date, f.status
-    FROM invoice_fulfillments f JOIN so ON f.sales_order_id = so.id WHERE f.tenant_id = $2
+    FROM invoice_fulfillments f
+    LEFT JOIN sales_invoices fsi ON fsi.id = f.invoice_id AND fsi.tenant_id = $2
+    JOIN so ON COALESCE(f.sales_order_id, fsi.sales_order_id) = so.id WHERE f.tenant_id = $2
     UNION ALL
     SELECT 'sales_invoice', 'sales_invoice', i.id, i.invoice_number, i.invoice_date::date, i.status
     FROM sales_invoices i WHERE i.tenant_id = $2 AND i.id IN (SELECT id FROM si)

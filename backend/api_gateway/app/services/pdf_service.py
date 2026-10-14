@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 from datetime import datetime, date
 
 from jinja2 import Environment, FileSystemLoader
+
+from . import teks_galat as _tg
 from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
 
@@ -34,6 +36,13 @@ TEMPLATE_FAKTUR = {
     "b": "sales_invoice_b.html",  # gaya faktur industri klasik
 }
 
+
+
+def format_qty(v) -> str:
+    """Kuantitas di PDF: tanpa nol ekor, koma desimal, titik ribuan (teks_galat.qty). Kosong -> ''."""
+    if v is None or v == "":
+        return ""
+    return _tg.qty(v)
 
 class TemplateTidakDikenal(ValueError):
     """Nilai template di luar TEMPLATE_FAKTUR. Di tepi HTTP menjadi 422."""
@@ -144,6 +153,9 @@ class PDFService:
         self.jinja_env.filters["harga"] = (
             lambda v: self.format_currency2(v) if self.money_has_cents(v) else self.format_currency(v)
         )
+        # 14 Okt 2026: kuantitas SATU format semua PDF ('25' / '2,5' / '1.250'; dulu '25.0000', '2.5', '1e+06',
+        # bahkan dibulatkan lewat `currency`) = teks_galat.qty, standar pesan galat.
+        self.jinja_env.filters["qty"] = format_qty
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
         self.jinja_env.filters["date_full"] = self.format_date_full
         self.jinja_env.filters["date_short"] = self.format_date_short

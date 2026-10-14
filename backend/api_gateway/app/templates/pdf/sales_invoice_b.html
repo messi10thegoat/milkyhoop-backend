@@ -85,7 +85,7 @@
     {% for it in items %}
     <tr class="{{ 'baris-awal' if loop.first }} {{ 'baris-akhir' if loop.last and items|length >= BARIS_TETAP }}">
       <td class="c-no">{{ loop.index }}</td>
-      <td class="c-qty"><span class="qty-angka">{{ it.quantity | currency }}</span><span class="qty-unit">{{ (it.unit or '') | capitalize }}</span></td>
+      <td class="c-qty"><span class="qty-angka">{{ it.quantity | qty }}</span><span class="qty-unit">{{ (it.unit or '') | capitalize }}</span></td>
       <td class="c-kode">{{ it.item_code or '' }}</td>
       <td class="c-desc">{{ it.description or '' }}</td>
       <td class="c-harga">{{ it.unit_price | currency2 }}</td>

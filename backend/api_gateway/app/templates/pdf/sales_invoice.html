@@ -189,7 +189,7 @@
                 {% if ns.has_unit %}<td class="col-unit">{{ item.unit or '-' }}</td>{% endif %}
                 {% if ns.has_batch %}<td class="col-batch">{{ item.batch_no or '-' }}</td>{% endif %}
                 {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date | date_short if item.exp_date else '-' }}</td>{% endif %}
-                <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                <td class="col-qty">{{ (item.qty or item.quantity) | qty }}</td>
                 {% if ns.has_disc %}<td class="col-disc">{{ item.discount_percent if item.discount_percent and item.discount_percent|float > 0 else '-' }}</td>{% endif %}
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | rupiah(invoice.has_cents) }}</td>
                 <td class="col-amount">Rp {{ (item.subtotal or item.total) | rupiah(invoice.has_cents) }}</td>
@@ -219,7 +219,7 @@
                     <br><span class="text-muted">Disk. {{ item.discount_percent }}%</span>
                     {% endif %}
                 </td>
-                <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                <td class="col-qty">{{ (item.qty or item.quantity) | qty }}</td>
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | rupiah(invoice.has_cents) }}</td>
                 <td class="col-amount">Rp {{ (item.subtotal or item.total) | rupiah(invoice.has_cents) }}</td>
             </tr>

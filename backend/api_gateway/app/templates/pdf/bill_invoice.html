@@ -123,7 +123,7 @@
                 {% if ns.has_unit %}<td class="col-unit">{{ item.unit or '-' }}</td>{% endif %}
                 {% if ns.has_batch %}<td class="col-batch">{{ item.batch_no or '-' }}</td>{% endif %}
                 {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date or '-' }}</td>{% endif %}
-                <td class="col-qty text-center">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                <td class="col-qty text-center">{{ (item.qty or item.quantity) | qty }}</td>
                 {% if ns.has_disc %}<td class="col-disc text-center">{{ item.discount_percent|default(0) }}%</td>{% endif %}
                 {% if ns.has_bonus %}<td class="col-bonus text-center">{{ item.bonus_qty|default(0) }}</td>{% endif %}
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
@@ -147,7 +147,7 @@
             {% for item in bill["items"] %}
             <tr>
                 <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
-                <td class="col-qty">{{ "%g" % ((item.qty or item.quantity)|float) }}</td>
+                <td class="col-qty">{{ (item.qty or item.quantity) | qty }}</td>
                 <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
                 <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
             </tr>

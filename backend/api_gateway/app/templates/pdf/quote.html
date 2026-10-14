@@ -54,7 +54,7 @@
   {% for item in quote["items"] %}
     <tr>
       <td><div>{{ item.description or '-' }}</div>{% if item.discount_percent and item.discount_percent|float > 0 %}<div class="dt">Diskon {{ "%g" % (item.discount_percent|float) }}%</div>{% endif %}</td>
-      <td class="r">{{ "%g" % (item.quantity|float) }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+      <td class="r">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
       <td class="r">Rp {{ item.unit_price | rupiah(quote.has_cents) }}</td>
       <td class="r">Rp {{ item.line_total | rupiah(quote.has_cents) }}</td>
     </tr>

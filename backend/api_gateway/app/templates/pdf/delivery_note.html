@@ -123,7 +123,7 @@
         {{ item.product_name or item.description or "-" }}
         {% if item.product_sku %}<br><span style="color:#888;font-size:10px">SKU: {{ item.product_sku }}</span>{% endif %}
       </td>
-      <td class="center">{{ item.quantity }}</td>
+      <td class="center">{{ item.quantity | qty }}</td>
       <td class="center">{{ item.unit or "-" }}</td>
       <td>{{ item.notes or '' }}</td>
     </tr>
