@@ -346,6 +346,9 @@ async def health_check():
 # =============================================================================
 # SUMMARY
 # =============================================================================
+_FAKTUR_TERBIT = ("belum_lunas", "segera_tempo", "jatuh_tempo")
+
+
 @router.get("/summary", response_model=InvoiceSummaryResponse)
 async def get_invoice_summary(request: Request):
     """Get invoice summary statistics."""
@@ -373,7 +376,11 @@ async def get_invoice_summary(request: Request):
                     (SELECT COUNT(*) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0) as unpaid_count,
                     COALESCE((SELECT SUM(outstanding) FROM ar_fn), 0) as total_outstanding,
                     COALESCE((SELECT SUM(outstanding) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0
-                                AND (due_date < $2::date OR due_date IS NULL)), 0) as total_overdue
+                                AND (due_date < $2::date OR due_date IS NULL)), 0) as total_overdue,
+                    -- 14 Okt 2026 (MASTER, pola QuickBooks/Xero): kredit pelanggan (baris tanpa faktur = nota kredit belum
+                    -- terpakai) ditampilkan TERPISAH; total_outstanding (neto) TIDAK diubah. Σ faktur_belum_lunas - kredit == total_outstanding.
+                    (SELECT COUNT(*) FROM ar_fn WHERE invoice_id IS NULL AND outstanding <> 0) as kredit_count,
+                    COALESCE((SELECT SUM(ABS(outstanding)) FROM ar_fn WHERE invoice_id IS NULL), 0) as kredit_value
             """
             # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
@@ -401,6 +408,11 @@ async def get_invoice_summary(request: Request):
                     "unpaid_count": row["unpaid_count"],  # belum lunas = pilih_belum_lunas (5 Okt 2026)
                     "total_outstanding": float(row["total_outstanding"]),
                     "total_overdue": float(row["total_overdue"]),
+                    # payung faktur terbuka = Σ tiga kunci terbit (kunci aksi saling eksklusif) == Σ sisa ?tugas=belum_lunas
+                    "faktur_belum_lunas_count": sum(int(aksi_row[f"{k}_count"]) for k in _FAKTUR_TERBIT),
+                    "faktur_belum_lunas_value": sum(float(aksi_row[f"{k}_value"]) for k in _FAKTUR_TERBIT),
+                    "kredit_nota_belum_terpakai_count": int(row["kredit_count"]),
+                    "kredit_nota_belum_terpakai_value": float(row["kredit_value"]),
                     **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
                        for k in _fa.AKSI for m in ("count", "value")},
                 },

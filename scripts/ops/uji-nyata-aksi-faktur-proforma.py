@@ -109,6 +109,13 @@ async def main():
                 cek(f"{T} g={g} faktur ringkasan {k}_count", sm[f"{k}_count"] == n, (sm[f"{k}_count"], n))
                 cek(f"{T} g={g} faktur ringkasan {k}_value", abs(Decimal(str(sm[f"{k}_value"])) - nilai[k]) < Decimal("0.01"),
                     (sm[f"{k}_value"], nilai[k]))
+            # 14 Okt (MASTER): payung faktur terbuka == Σ3 kunci terbit; payung - kredit NK == total_outstanding (neto lama)
+            pay = Decimal(str(sm["faktur_belum_lunas_value"]))
+            cek(f"{T} g={g} payung == Σ3 kunci",
+                abs(pay - sum(nilai[k] for k in KUNCI_F if k != "perlu_diterbitkan")) < Decimal("0.01"), pay)
+            cek(f"{T} g={g} payung - kredit == total_outstanding",
+                abs(pay - Decimal(str(sm["kredit_nota_belum_terpakai_value"])) - Decimal(str(sm["total_outstanding"]))) < Decimal("0.01"),
+                (pay, sm["kredit_nota_belum_terpakai_value"], sm["total_outstanding"]))
             ids_bl = {i["id"] for i in await semua(SI.list_invoices, T, tugas="belum_lunas")}
             cek(f"{T} g={g} faktur ?tugas=belum_lunas == gabungan 3 kunci terbit",
                 ids_bl == {str(i) for i, x in exp.items() if x != "perlu_diterbitkan"})

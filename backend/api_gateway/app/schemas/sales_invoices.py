@@ -426,6 +426,12 @@ class InvoiceSummary(BaseModel):
     segera_tempo_value: float = 0
     jatuh_tempo_count: int = 0
     jatuh_tempo_value: float = 0
+    # 14 Okt 2026: payung faktur terbuka (Σ tiga kunci terbit) + kredit nota belum terpakai TERPISAH.
+    # faktur_belum_lunas_value - kredit_nota_belum_terpakai_value == total_outstanding.
+    faktur_belum_lunas_count: int = 0
+    faktur_belum_lunas_value: float = 0
+    kredit_nota_belum_terpakai_count: int = 0
+    kredit_nota_belum_terpakai_value: float = 0
 
 
 class InvoiceSummaryResponse(BaseModel):

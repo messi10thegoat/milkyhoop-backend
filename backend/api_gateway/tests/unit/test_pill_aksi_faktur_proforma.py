@@ -185,6 +185,43 @@ async def test_ringkasan_faktur_empat_aksi_count_value(monkeypatch):
     assert "LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1" in sql
 
 
+@pytest.mark.asyncio
+async def test_ringkasan_payung_faktur_dan_kredit_nk_terpisah(monkeypatch):
+    """MASTER 14 Okt: payung = Σ tiga kunci terbit; kredit NK TERPISAH; payung - kredit == total_outstanding (neto, tak diubah)."""
+    class C(Conn):
+        async def fetchrow(self, sql, *a):
+            r = await super().fetchrow(sql, *a)
+            if "total_outstanding" in sql:
+                r.update(total_outstanding=Decimal("5765000"), kredit_count=2, kredit_value=Decimal("46000"))
+            else:
+                r.update(belum_lunas_count=10, belum_lunas_value=Decimal("600000"), segera_tempo_count=2,
+                         segera_tempo_value=Decimal("0"), jatuh_tempo_count=5, jatuh_tempo_value=Decimal("5211000"))
+            return r
+    c = C()
+
+    async def gp():
+        return Pool(c)
+
+    async def hari(conn, t):
+        return H
+    monkeypatch.setattr(SI, "get_pool", gp)
+    monkeypatch.setattr(SI, "tanggal_dokumen", hari)
+    req = SimpleNamespace(state=SimpleNamespace(user={"user_id": None, "tenant_id": TENANT}))
+    d = (await SI.get_invoice_summary(req))["data"]
+    assert d["faktur_belum_lunas_count"] == 17
+    assert d["faktur_belum_lunas_value"] == 5811000
+    assert d["faktur_belum_lunas_value"] == sum(d[f"{k}_value"] for k in ("belum_lunas", "segera_tempo", "jatuh_tempo"))
+    assert d["kredit_nota_belum_terpakai_count"] == 2 and d["kredit_nota_belum_terpakai_value"] == 46000
+    assert d["faktur_belum_lunas_value"] - d["kredit_nota_belum_terpakai_value"] == d["total_outstanding"]
+    assert d["total_outstanding"] == 5765000  # neto lama tak diubah (dashboard memakainya)
+
+
+def test_skema_ringkasan_mendeklarasikan_medan_payung():  # response_model membuang medan tak terdeklarasi diam-diam
+    for f in ("faktur_belum_lunas_count", "faktur_belum_lunas_value",
+              "kredit_nota_belum_terpakai_count", "kredit_nota_belum_terpakai_value"):
+        assert f in InvoiceSummary.model_fields
+
+
 # ---------------------------------------------------------------- PROFORMA
 @pytest.mark.parametrize("status,so,lunas,due,harap", [
     ("draft", "confirmed", False, None, "perlu_diterbitkan"),
