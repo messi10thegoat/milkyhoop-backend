@@ -41,6 +41,8 @@ class _C:
     async def fetch(self, sql, *a):
         if "FROM sales_invoice_items WHERE invoice_id" in sql:
             return list(self.rows)
+        if "COALESCE(cni.jumlah_baris, cni.subtotal)" in sql:  # JUMLAH BARIS (V427): jumlah kotor yang sudah dinotakan
+            return []
         if "SUM(cni.quantity)" in sql:
             assert "cn.status <> 'void'" in sql and "cn.tenant_id = $1" in sql
             return [{"oid": k, "q": v} for k, v in self.sudah.items()]

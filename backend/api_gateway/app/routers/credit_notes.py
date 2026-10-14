@@ -1276,7 +1276,7 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
               "discount_percent": float(pct), "discount_amount": Decimal("0") if pct > 0 else (q2(amt * q / qty) if qty else Decimal("0")),
               "tax_code": r["tax_code"], "tax_code_id": str(r["tax_code_id"]) if r["tax_code_id"] else None,
               "tax_rate": float(r["tax_rate"] or 0), "original_invoice_item_id": str(r["id"])}
-        if r["jumlah_baris"] is not None and qty > 0:
+        if r.get("jumlah_baris") is not None and qty > 0:
             jb = Decimal(str(r["jumlah_baris"]))
             if sd + q >= qty:  # menuntaskan baris -> serap sisa
                 cand = jb - sudah_gross.get(r["id"], Decimal("0"))
