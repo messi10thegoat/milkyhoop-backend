@@ -22,7 +22,7 @@ def _baris(i, desk, qty):
     return {"id": i, "item_id": None, "description": desk, "quantity": Decimal(qty), "unit": None,
             "unit_price": Decimal("100000"), "discount_percent": Decimal("0"), "tax_id": None, "tax_rate": Decimal("0"),
             "tax_amount": Decimal("0"), "line_total": Decimal(qty) * 100000, "dpp": Decimal("0"), "warehouse_id": None,
-            "sort_order": 0}
+            "sort_order": 0, "jumlah_baris": None}
 
 
 class _Conn:

@@ -242,7 +242,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                     baru["sort_order"] = i
                 # JUMLAH BARIS (V427): kirim-ulang tanpa line_amount mewarisi jumlah tersimpan selama qty & harga sama;
                 # qty/harga berubah tanpa line_amount -> kembali qty x harga; line_amount diketik -> diuji toleransi.
-                baru["jumlah_baris"] = r["jumlah_baris"]
+                baru["jumlah_baris"] = r.get("jumlah_baris")
                 if d.get("line_amount") is not None:
                     baru["line_amount"] = d["line_amount"]
                     baru["jumlah_baris"] = None
@@ -250,8 +250,8 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
                     baru["jumlah_baris"] = None
                 p, minimum, alasan = info(r)
                 beda = {k: [r[k], baru[k]] for k in MEDAN_BARIS if k != "sort_order" and not _sama(r[k], baru[k])}
-                if d.get("line_amount") is not None and not _sama(r["jumlah_baris"], d["line_amount"]):
-                    beda["line_amount"] = [r["jumlah_baris"], d["line_amount"]]
+                if d.get("line_amount") is not None and not _sama(r.get("jumlah_baris"), d["line_amount"]):
+                    beda["line_amount"] = [r.get("jumlah_baris"), d["line_amount"]]
                 if alasan:
                     terkunci = sorted(k for k in beda if k in KUNCI_BARIS or k == "line_amount")
                     if terkunci:
@@ -292,7 +292,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
         if not src:
             galat(422, "SO_NO_LINES", "Pesanan harus punya minimal satu baris.")
     else:
-        src = [{**{k: r[k] for k in ("id", "tax_rate") + MEDAN_BARIS}, "jumlah_baris": r["jumlah_baris"],
+        src = [{**{k: r[k] for k in ("id", "tax_rate") + MEDAN_BARIS}, "jumlah_baris": r.get("jumlah_baris"),
                 "_turunkan": False} for r in lama]
 
     # badan PATCH yang DINORMALKAN server (permintaan WORKSPACE 4 Okt, pola Terima pelunasan): FE mengirim balik apa
