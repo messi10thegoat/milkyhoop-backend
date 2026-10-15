@@ -81,6 +81,8 @@ def test_rute_lampiran_dimenangkan_handler_keluarga_lewat_tabel_rute():
     ("receive_payment", "receive_payments", "download_payment_attachment"),
     ("delivery", "delivery_lampiran", "unduh_lampiran_sj"),
     ("sales_invoice", "sales_invoices", "download_invoice_attachment"),
+    ("credit_note", "lampiran_induk", "unduh_lampiran_credit_note"),   # LAMPIRAN-NK-QUOTE
+    ("quote", "lampiran_induk", "unduh_lampiran_quote"),
 ])
 def test_url_tiap_grup_diselesaikan_ke_rute_download_modulnya(jenis, modul, akhir):
     url = SL.url_unduh_lampiran(SL.JENIS_KELUARGA[jenis][0], uuid.uuid4(), uuid.uuid4())
@@ -176,7 +178,7 @@ class Conn:
     async def fetch(self, sql, *a):
         self.fetch_dipanggil.append((sql, a))
         # LAMPIRAN-TANPA-SO: benih $3..$8 KOSONG untuk keluarga SO (hasil == SQL lama; pasangan nyata di harness)
-        assert sql == SL._SQL_KELUARGA and a == (SO, TENANT, [], [], [], [], [], [])
+        assert sql == SL._SQL_KELUARGA and a == (SO, TENANT, [], [], [], [], [], [], [])
         return self.rows
 
 
@@ -281,10 +283,13 @@ def test_void_ditandai_urutan_jenis_dan_dedup_berkas_lintas_grup():
     assert out["jumlah"] == 2  # DOK di dua grup dihitung sekali
 
 
-def test_quote_proforma_tanpa_rute_unduh_url_null():
-    q = uuid.uuid4()
-    out = SL.susun_grup_lampiran([baris("quote", q, "Q-1", uuid.uuid4(), "x.pdf")], {"quote": True})
-    assert out["data"][0]["lampiran"][0]["url"] is None
+def test_proforma_tanpa_rute_unduh_url_null_penawaran_kini_berurl():
+    # LAMPIRAN-NK-QUOTE (15 Okt): penawaran kini punya rute lampiran; proforma tetap tanpa -> url null
+    q, p = uuid.uuid4(), uuid.uuid4()
+    out = SL.susun_grup_lampiran([baris("quote", q, "Q-1", uuid.uuid4(), "x.pdf"), baris("proforma", p, "PRO-1", uuid.uuid4(), "y.pdf")],
+                                 {"quote": True, "proforma": True})
+    url = {g["dokumen"]["jenis"]: g["lampiran"][0]["url"] for g in out["data"]}
+    assert url["proforma"] is None and url["quote"].startswith(f"/api/quotes/{q}/attachments/")
 
 
 # ------------------------------------------------------------------ pagar tenant SQL

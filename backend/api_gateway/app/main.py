@@ -67,6 +67,7 @@ from .routers import proformas
 from .routers import sales_orders
 from .routers import sales_order_lampiran  # L1 lampiran SO
 from .routers import lampiran_dokumen  # LAMPIRAN-TANPA-SO: lampiran keluarga dokumen apa pun (15 Okt 2026)
+from .routers import lampiran_induk  # LAMPIRAN-NK-QUOTE: lampiran nota kredit + penawaran, satu pabrik rute (15 Okt 2026)
 from .routers import metode_serah, delivery_lampiran  # serah-terima Surat Jalan (11 Okt 2026)
 from .routers import currencies
 from .routers import bank_reconciliation
@@ -545,6 +546,9 @@ from .routers import so_fase_lokasi as so_fase_lokasi_router  # noqa: E402  (7 O
 app.include_router(so_fase_lokasi_router.router, prefix="/api/sales-orders", tags=["sales-orders"])
 from .routers import bulk_quote as bulk_quote_router  # noqa: E402  (U1b F3: Penawaran Hapus draf + Kirim massal)
 
+# LAMPIRAN-NK-QUOTE: rute /{id}/attachments* DIDAFTARKAN SEBELUM router penawaran/NK (jalur literal menang lebih dulu)
+app.include_router(lampiran_induk.router_penawaran, prefix="/api/quotes", tags=["quotes"])
+app.include_router(lampiran_induk.router_nota_kredit, prefix="/api/credit-notes", tags=["credit-notes"])
 app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"])
 from .routers import bulk_proforma as bulk_proforma_router  # noqa: E402  (U1b F4: Proforma BATAL draf massal; terbit massal tak ada)
 

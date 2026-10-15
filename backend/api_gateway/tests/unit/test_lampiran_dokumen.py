@@ -38,6 +38,7 @@ def test_rute_dimenangkan_handler_lampiran_dokumen():
     ("sales_order", ("sales_order", "R")), ("sales_invoice", ("sales_invoice", "R")),
     ("receive_payment", ("receive_payment", "R")), ("customer_deposit", ("customer_deposit", "R")),
     ("proforma", ("proforma", "R")), ("delivery", ("sales_invoice", "R")), ("credit_note", ("credit_note", "R")),
+    ("quote", ("quote", "R")),
 ])
 def test_izin_rute_per_jenis(jenis, harap):
     assert pm.izin_untuk_jalur(f"/api/lampiran/{jenis}/{DOK}") == harap
@@ -54,11 +55,11 @@ def test_jenis_lain_tak_terpetakan_dan_semua_jenis_dokumen_berizin():
 def test_satu_sql_berbenih_bukan_salinan():
     assert SL._SQL_KELUARGA.startswith(SL._SQL_META_KELUARGA)
     assert SL._SQL_ANGGOTA_KELUARGA.startswith(SL._SQL_META_KELUARGA)
-    for n in range(3, 9):
+    for n in range(3, 10):
         assert f"ANY(${n}::uuid[])" in SL._SQL_META_KELUARGA, n
-    assert SL.param_keluarga(SO1, T) == (SO1, T, [], [], [], [], [], [])
+    assert SL.param_keluarga(SO1, T) == (SO1, T, [], [], [], [], [], [], [])
     assert SL.param_keluarga(None, T, {"receive_payment": [DOK]})[4] == [DOK]
-    assert SL.BENIH_JENIS == ("sales_invoice", "customer_deposit", "receive_payment", "proforma", "delivery", "credit_note")
+    assert SL.BENIH_JENIS == ("sales_invoice", "customer_deposit", "receive_payment", "proforma", "delivery", "credit_note", "quote")
     assert "FROM receive_payments rp0x" in SL._SQL_META_KELUARGA     # benih penerimaan hanya id receive_payments
 
 
@@ -146,7 +147,7 @@ def jalankan(monkeypatch, conn, jenis="sales_invoice", did=None, pe=None):
 def test_satu_so_terverifikasi_delegasi_keluarga_so(monkeypatch):
     c = Conn(calon=[SO1], anggota={SO1})
     out = jalankan(monkeypatch, c)
-    assert c.keluarga == [(SO1, T, [], [], [], [], [], [])]
+    assert c.keluarga == [(SO1, T, [], [], [], [], [], [], [])]
     assert out["sumber"] == {"jenis": "sales_invoice", "id": str(DOK), "nomor": "INV-X", "mode": "keluarga_so",
                              "sales_order": {"id": str(SO1), "nomor": "SO-X"}}
 
@@ -154,7 +155,7 @@ def test_satu_so_terverifikasi_delegasi_keluarga_so(monkeypatch):
 def test_tanpa_so_benih_dokumen(monkeypatch):
     c = Conn(calon=[], rows=[baris("sales_invoice", DOK, "INV-X", uuid.uuid4(), "nota.pdf")])
     out = jalankan(monkeypatch, c, jenis="receive_payment")
-    assert c.keluarga == [(None, T, [], [], [DOK], [], [], [])]
+    assert c.keluarga == [(None, T, [], [], [DOK], [], [], [], [])]
     assert out["sumber"]["mode"] == "dokumen" and out["sumber"]["sales_order"] is None
     assert out["jumlah"] == 1 and out["data"][0]["dokumen"]["jenis"] == "sales_invoice"
 

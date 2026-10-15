@@ -1,6 +1,7 @@
 """Lampiran keluarga untuk dokumen penjualan APA PUN, juga TANPA SO (LAMPIRAN-TANPA-SO, 15 Okt 2026, putusan MASTER).
 
 GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_payment | customer_deposit | proforma | delivery | credit_note
+                                        | quote (LAMPIRAN-NK-QUOTE 15 Okt)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
      {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen", "sales_order": {"id", "nomor"} | null}
 
@@ -33,6 +34,7 @@ JENIS_DOKUMEN = {
     "proforma": ("proformas", "proforma_number"),
     "delivery": ("invoice_fulfillments", "fulfillment_number"),
     "credit_note": ("credit_notes", "credit_note_number"),
+    "quote": ("quotes", "quote_number"),   # LAMPIRAN-NK-QUOTE 15 Okt
 }
 
 # Calon SO per jenis ($1 = id dokumen, $2 = tenant). Hanya USULAN: keanggotaan diputuskan _SQL_ANGGOTA_KELUARGA.
@@ -46,6 +48,7 @@ SQL_CALON_SO = {
     "sales_order": "SELECT id FROM sales_orders WHERE id = $1 AND tenant_id = $2",
     "sales_invoice": "SELECT sales_order_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
     "proforma": "SELECT sales_order_id FROM proformas WHERE id = $1 AND tenant_id = $2",
+    "quote": "SELECT id FROM sales_orders WHERE quote_id = $1 AND tenant_id = $2",
     "delivery": """SELECT COALESCE(f.sales_order_id, fsi.sales_order_id) FROM invoice_fulfillments f
                    LEFT JOIN sales_invoices fsi ON fsi.id = f.invoice_id AND fsi.tenant_id = $2
                    WHERE f.id = $1 AND f.tenant_id = $2""",

@@ -338,13 +338,13 @@ PENANDA_LAMPIRAN_KELUARGA = "lampiran-so-keluarga-w20261013"
 # jenis -> (segmen URL modul untuk /download, jalur izin bila TAK ada rute download)
 JENIS_KELUARGA = {
     "sales_order": ("sales-orders", None),
-    "quote": (None, "/api/quotes/{id}"),
+    "quote": ("quotes", None),   # LAMPIRAN-NK-QUOTE 15 Okt: rute lampiran penawaran ada
     "proforma": (None, "/api/proformas/{id}"),
     "customer_deposit": ("customer-deposits", None),
     "receive_payment": ("receive-payments", None),
     "delivery": ("deliveries", None),
     "sales_invoice": ("sales-invoices", None),
-    "credit_note": (None, "/api/credit-notes/{id}"),   # LAMPIRAN-TANPA-SO 15 Okt: NK belum punya rute lampiran -> url null
+    "credit_note": ("credit-notes", None),   # LAMPIRAN-NK-QUOTE 15 Okt: rute lampiran NK ada
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})
@@ -372,7 +372,8 @@ def jalur_izin_jenis(jenis: str) -> str:
 #  ADA di receive_payments tenant ini yang dicocokkan.
 #
 # BENIH (LAMPIRAN-TANPA-SO, 15 Okt 2026, putusan MASTER): dokumen TANPA SO (faktur langsung, penerimaan, DP/proforma tanpa SO,
-# SJ, NK) memakai SQL yang SAMA dengan SO NULL dan benih: $3 faktur[], $4 DP[], $5 penerimaan[], $6 proforma[], $7 SJ[], $8 NK[].
+# SJ, NK) memakai SQL yang SAMA dengan SO NULL dan benih: $3 faktur[], $4 DP[], $5 penerimaan[], $6 proforma[], $7 SJ[], $8 NK[],
+# $9 penawaran[] (LAMPIRAN-NK-QUOTE: penawaran -> DP ber-quote_id + faktur ber-quote_id + kerabatnya).
 # Penutupan satu langkah yang sama: faktur -> penerimaan teralokasi + SJ + NK; penerimaan -> faktur teralokasi (+ kerabatnya) + DP
 # sumber/hasil; DP -> proforma + penerimaan; proforma -> DP + penerimaan; SJ -> fakturnya; NK -> faktur asal. Benih kosong = keluarga
 # SO PERSIS seperti sebelumnya (pasangan diuji). Benih penerimaan HANYA id yang ada di receive_payments (bukan bill_payments_v2).
@@ -399,7 +400,8 @@ WITH so AS (
            OR cdx.proforma_id IN (SELECT id FROM pf)
            OR cdx.id IN (SELECT id FROM dp0)
            OR cdx.id IN (SELECT source_deposit_id FROM rp0)
-           OR cdx.id IN (SELECT created_deposit_id FROM rp0))
+           OR cdx.id IN (SELECT created_deposit_id FROM rp0)
+           OR cdx.quote_id = ANY($9::uuid[]))
 ), si AS (
     SELECT six.id FROM sales_invoices six
     WHERE six.tenant_id = $2
@@ -407,6 +409,7 @@ WITH so AS (
            OR six.id = ANY($3::uuid[])
            OR six.id IN (SELECT invoice_id FROM sj0)
            OR six.id IN (SELECT original_invoice_id FROM nk0)
+           OR six.quote_id = ANY($9::uuid[])
            OR six.id IN (SELECT al0x.invoice_id FROM receive_payment_allocations al0x
                          WHERE al0x.tenant_id = $2 AND al0x.payment_id IN (SELECT id FROM rp0)))
 ), rp AS (
@@ -424,7 +427,7 @@ WITH so AS (
     FROM sales_orders s JOIN so ON s.id = so.id WHERE s.tenant_id = $2
     UNION ALL
     SELECT 'quote', 'quote', q.id, q.quote_number, q.quote_date::date, q.status
-    FROM quotes q JOIN so ON q.id = so.quote_id WHERE q.tenant_id = $2
+    FROM quotes q WHERE q.tenant_id = $2 AND (q.id IN (SELECT quote_id FROM so) OR q.id = ANY($9::uuid[]))
     UNION ALL
     SELECT 'proforma', 'proforma', p.id, p.proforma_number, p.proforma_date::date, p.status
     FROM proformas p WHERE p.tenant_id = $2 AND p.id IN (SELECT id FROM pf)
@@ -476,15 +479,15 @@ WHERE m.jenis = 'sales_invoice'
 """
 
 _SQL_ANGGOTA_KELUARGA = _SQL_META_KELUARGA + """)
-SELECT EXISTS (SELECT 1 FROM meta WHERE jenis = $9 AND id = $10)
+SELECT EXISTS (SELECT 1 FROM meta WHERE jenis = $10 AND id = $11)
 """
 
 # urutan benih $3..$8 (jenis dokumen -> posisi parameter)
-BENIH_JENIS = ("sales_invoice", "customer_deposit", "receive_payment", "proforma", "delivery", "credit_note")
+BENIH_JENIS = ("sales_invoice", "customer_deposit", "receive_payment", "proforma", "delivery", "credit_note", "quote")
 
 
 def param_keluarga(so_id, tenant_id: str, benih: dict = None) -> tuple:
-    """($1 SO|None, $2 tenant, $3..$8 benih uuid[] per BENIH_JENIS)."""
+    """($1 SO|None, $2 tenant, $3..$9 benih uuid[] per BENIH_JENIS; $9 = penawaran, LAMPIRAN-NK-QUOTE)."""
     b = benih or {}
     return (so_id, tenant_id, *[list(b.get(j, [])) for j in BENIH_JENIS])
 

@@ -10,7 +10,9 @@ SELALU di-ROLLBACK (lampiran uji ditautkan ke faktur tanpa SO + penerimaannya).
   K3 penerimaan TANPA alokasi & tanpa deposit (dibuat di tx-ROLLBACK: alokasi RCV-2026-0008 dihapus) -> grup penerimaannya sendiri.
   K4 DP yang ke SO HANYA lewat penawaran (tx-ROLLBACK: sales_order_id/proforma_id DP dikosongkan, quote_id = penawaran SO) -> DP
      tetap di keluarga SO itu dan generik DP -> mode keluarga_so. (Data nyata hari ini: 0 kasus K3/K4 -> wajib dibuat.)
-MODE=merah: hanya P1 + K2 + K3 + K4 (kontrol merah: sabotase harus GAGAL)."""
+  K5 (LAMPIRAN-NK-QUOTE) penawaran TANPA SO (tx-ROLLBACK: lampiran uji ditaut ke penawaran) -> generik quote mode dokumen, grup
+     quote berurl /api/quotes/..; penawaran BER-SO -> mode keluarga_so (SO yang memuatnya).
+MODE=merah: hanya P1 + K2 + K3 + K4 + K5 (kontrol merah: sabotase harus GAGAL)."""
 import ast, asyncio, os, sys
 sys.path.insert(0, "/app")
 os.environ.setdefault("OPENAI_API_KEY", "sk-boneka")
@@ -29,10 +31,30 @@ def cek(ok, label, info=""):
 
 
 def sql_lama():
+    """SQL keluarga dari berkas ref LAMA. Literal atau gabungan Name + literal (sejak 43057e4a: _SQL_META_KELUARGA + "...")."""
     t = ast.parse(open("/lama.py").read())
+    nilai = {}
+    def ev(x):
+        if isinstance(x, ast.Constant):
+            return x.value
+        if isinstance(x, ast.Name):
+            return nilai[x.id]
+        if isinstance(x, ast.BinOp) and isinstance(x.op, ast.Add):
+            return ev(x.left) + ev(x.right)
+        raise ValueError(ast.dump(x)[:80])
     for n in t.body:
-        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_SQL_KELUARGA":
-            return n.value.value
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name):
+            try:
+                nilai[n.targets[0].id] = ev(n.value)
+            except (ValueError, KeyError):
+                pass
+    return nilai["_SQL_KELUARGA"]
+
+
+def param_lama(sql, baru):
+    """Parameter untuk SQL lama: sebanyak $N tertinggi di SQL lama (posisi benih $3..$8 sama sejak 43057e4a)."""
+    import re as _re
+    return baru[:max(int(x) for x in _re.findall(r"\$(\d+)", sql))]
 
 
 def kunci(rows):
@@ -51,7 +73,7 @@ async def p1_p2_p3(c):
         anggota = {}
         for s in sos:
             baru = await SL.baris_keluarga(c, t, s)
-            if kunci(baru) != kunci(await c.fetch(lama, s, t)):
+            if kunci(baru) != kunci(await c.fetch(lama, *param_lama(lama, SL.param_keluarga(s, t)))):
                 beda1 += 1
             for m in await c.fetch(SL._SQL_META_KELUARGA + ") SELECT jenis, id FROM meta", *SL.param_keluarga(s, t)):
                 if m["jenis"] in LD.JENIS_DOKUMEN:
@@ -78,7 +100,7 @@ async def p1_p2_p3(c):
             """SELECT CASE da.entity_type WHEN 'payment' THEN 'receive_payment' ELSE da.entity_type END AS jenis, da.entity_id AS id,
                       da.document_id AS lid FROM document_attachments da JOIN documents d ON d.id = da.document_id AND d.deleted_at IS NULL
                WHERE da.tenant_id = $1 AND da.entity_type IN ('sales_order','sales_invoice','payment','customer_deposit','proforma',
-                     'delivery','credit_note')
+                     'delivery','credit_note','quote')
                  AND (da.entity_type <> 'payment' OR EXISTS (SELECT 1 FROM receive_payments r WHERE r.id = da.entity_id))
                UNION ALL
                SELECT 'sales_invoice', sa.invoice_id, sa.id FROM sales_invoice_attachments sa
@@ -156,6 +178,27 @@ async def k3_k4(c):
         await sp.rollback()
 
 
+async def k5(c):
+    t = "kaos-biru-konveksi"
+    doc = await c.fetchval("SELECT id FROM documents WHERE tenant_id=$1 AND deleted_at IS NULL AND storage_type='s3' LIMIT 1", t)
+    q0 = await c.fetchval("""SELECT q.id FROM quotes q WHERE q.tenant_id=$1
+                             AND NOT EXISTS (SELECT 1 FROM sales_orders s WHERE s.quote_id=q.id AND s.tenant_id=$1) LIMIT 1""", t)
+    q1 = await c.fetchrow("SELECT s.quote_id, s.id FROM sales_orders s WHERE s.tenant_id=$1 AND s.quote_id IS NOT NULL LIMIT 1", t)
+    sp = c.transaction(); await sp.start()
+    try:
+        await c.execute("""INSERT INTO document_attachments (id, tenant_id, document_id, entity_type, entity_id, display_name)
+                           VALUES (gen_random_uuid(), $1, $2, 'quote', $3, 'UJI HARNESS lampiran.pdf')""", t, doc, q0)
+        r = await LD.tentukan(c, t, "quote", q0)
+        out = susun(await SL.baris_keluarga(c, t, None, {"quote": [q0]}))
+        g = [x for x in out["data"] if x["dokumen"]["jenis"] == "quote" and x["dokumen"]["id"] == str(q0)]
+        cek(r["so"] == [] and g and g[0]["lampiran"][0]["url"].startswith(f"/api/quotes/{q0}/attachments/"),
+            "K5 penawaran tanpa SO -> mode dokumen, grup quote berurl")
+        r1 = await LD.tentukan(c, t, "quote", q1["quote_id"])
+        cek(r1["so"] == [q1["id"]], "K5 penawaran ber-SO -> keluarga SO yang memuatnya", str(r1["so"]))
+    finally:
+        await sp.rollback()
+
+
 async def main():
     c = await asyncpg.connect(os.environ["DATABASE_URL"])
     try:
@@ -170,6 +213,7 @@ async def main():
         try:
             await k2(c)
             await k3_k4(c)
+            await k5(c)
         finally:
             await tx.rollback()
         sisa = await c.fetchval("SELECT count(*) FROM document_attachments WHERE display_name = 'UJI HARNESS lampiran.pdf'")
