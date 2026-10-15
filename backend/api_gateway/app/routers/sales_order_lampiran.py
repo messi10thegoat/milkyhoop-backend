@@ -344,6 +344,7 @@ JENIS_KELUARGA = {
     "receive_payment": ("receive-payments", None),
     "delivery": ("deliveries", None),
     "sales_invoice": ("sales-invoices", None),
+    "credit_note": (None, "/api/credit-notes/{id}"),   # LAMPIRAN-TANPA-SO 15 Okt: NK belum punya rute lampiran -> url null
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})
@@ -357,7 +358,7 @@ def jalur_izin_jenis(jenis: str) -> str:
     return cadangan.format(id="x")
 
 
-# Keluarga SO. $1 = SO id, $2 = tenant. Tiap tabel berpredikat tenant_id = $2.
+# Keluarga SO. $1 = SO id (boleh NULL), $2 = tenant. Tiap tabel berpredikat tenant_id = $2.
 #  - penawaran: sales_orders.quote_id
 #  - proforma: proformas.sales_order_id
 #  - DP: customer_deposits.sales_order_id / quote_id penawaran SO / proforma_id keluarga
@@ -365,22 +366,49 @@ def jalur_izin_jenis(jenis: str) -> str:
 #  - penerimaan: alokasi ke faktur keluarga, ATAU source/created_deposit_id = DP keluarga
 #  - SJ: COALESCE(invoice_fulfillments.sales_order_id, faktur.sales_order_id) -- SJ asal 'faktur' tak punya
 #    sales_order_id (chk_if_asal_kolom: kolom itu khusus asal 'so'); SO-nya lewat fakturnya (14 Okt 2026, SJ-FAKTUR-SO-ID)
+#  - NK (LAMPIRAN-TANPA-SO 15 Okt): credit_notes.original_invoice_id = faktur keluarga
 #  Alias tiap tabel UNIK (penjaga tes membaca predikat tenant per alias).
 #  entity_type 'payment' dipakai BERSAMA penerimaan & pembayaran-keluar -> hanya id yang
 #  ADA di receive_payments tenant ini yang dicocokkan.
-_SQL_KELUARGA = """
+#
+# BENIH (LAMPIRAN-TANPA-SO, 15 Okt 2026, putusan MASTER): dokumen TANPA SO (faktur langsung, penerimaan, DP/proforma tanpa SO,
+# SJ, NK) memakai SQL yang SAMA dengan SO NULL dan benih: $3 faktur[], $4 DP[], $5 penerimaan[], $6 proforma[], $7 SJ[], $8 NK[].
+# Penutupan satu langkah yang sama: faktur -> penerimaan teralokasi + SJ + NK; penerimaan -> faktur teralokasi (+ kerabatnya) + DP
+# sumber/hasil; DP -> proforma + penerimaan; proforma -> DP + penerimaan; SJ -> fakturnya; NK -> faktur asal. Benih kosong = keluarga
+# SO PERSIS seperti sebelumnya (pasangan diuji). Benih penerimaan HANYA id yang ada di receive_payments (bukan bill_payments_v2).
+_SQL_META_KELUARGA = """
 WITH so AS (
     SELECT id, quote_id FROM sales_orders WHERE id = $1 AND tenant_id = $2
+), rp0 AS (
+    SELECT rp0x.id, rp0x.source_deposit_id, rp0x.created_deposit_id FROM receive_payments rp0x
+    WHERE rp0x.tenant_id = $2 AND rp0x.id = ANY($5::uuid[])
+), dp0 AS (
+    SELECT dp0x.id, dp0x.proforma_id FROM customer_deposits dp0x WHERE dp0x.tenant_id = $2 AND dp0x.id = ANY($4::uuid[])
+), sj0 AS (
+    SELECT sj0x.id, sj0x.invoice_id FROM invoice_fulfillments sj0x WHERE sj0x.tenant_id = $2 AND sj0x.id = ANY($7::uuid[])
+), nk0 AS (
+    SELECT nk0x.id, nk0x.original_invoice_id FROM credit_notes nk0x WHERE nk0x.tenant_id = $2 AND nk0x.id = ANY($8::uuid[])
 ), pf AS (
-    SELECT pfx.id FROM proformas pfx JOIN so ON pfx.sales_order_id = so.id WHERE pfx.tenant_id = $2
+    SELECT pfx.id FROM proformas pfx WHERE pfx.tenant_id = $2
+      AND (pfx.sales_order_id IN (SELECT id FROM so) OR pfx.id = ANY($6::uuid[]) OR pfx.id IN (SELECT proforma_id FROM dp0))
 ), dp AS (
-    SELECT cdx.id FROM customer_deposits cdx, so
+    SELECT cdx.id FROM customer_deposits cdx
     WHERE cdx.tenant_id = $2
-      AND (cdx.sales_order_id = so.id
-           OR (so.quote_id IS NOT NULL AND cdx.quote_id = so.quote_id)
-           OR cdx.proforma_id IN (SELECT id FROM pf))
+      AND (cdx.sales_order_id IN (SELECT id FROM so)
+           OR cdx.quote_id IN (SELECT quote_id FROM so WHERE quote_id IS NOT NULL)
+           OR cdx.proforma_id IN (SELECT id FROM pf)
+           OR cdx.id IN (SELECT id FROM dp0)
+           OR cdx.id IN (SELECT source_deposit_id FROM rp0)
+           OR cdx.id IN (SELECT created_deposit_id FROM rp0))
 ), si AS (
-    SELECT six.id FROM sales_invoices six JOIN so ON six.sales_order_id = so.id WHERE six.tenant_id = $2
+    SELECT six.id FROM sales_invoices six
+    WHERE six.tenant_id = $2
+      AND (six.sales_order_id IN (SELECT id FROM so)
+           OR six.id = ANY($3::uuid[])
+           OR six.id IN (SELECT invoice_id FROM sj0)
+           OR six.id IN (SELECT original_invoice_id FROM nk0)
+           OR six.id IN (SELECT al0x.invoice_id FROM receive_payment_allocations al0x
+                         WHERE al0x.tenant_id = $2 AND al0x.payment_id IN (SELECT id FROM rp0)))
 ), rp AS (
     SELECT rpx.id FROM receive_payments rpx
     WHERE rpx.tenant_id = $2
@@ -388,7 +416,8 @@ WITH so AS (
                    WHERE alx.payment_id = rpx.id AND alx.tenant_id = $2
                      AND alx.invoice_id IN (SELECT id FROM si))
            OR rpx.source_deposit_id IN (SELECT id FROM dp)
-           OR rpx.created_deposit_id IN (SELECT id FROM dp))
+           OR rpx.created_deposit_id IN (SELECT id FROM dp)
+           OR rpx.id IN (SELECT id FROM rp0))
 ), meta AS (
     SELECT 'sales_order'::text AS jenis, 'sales_order'::text AS et, s.id,
            s.order_number::text AS nomor, s.order_date::date AS tanggal, s.status::text AS status
@@ -409,11 +438,18 @@ WITH so AS (
     SELECT 'delivery', 'delivery', f.id, f.fulfillment_number, f.fulfillment_date::date, f.status
     FROM invoice_fulfillments f
     LEFT JOIN sales_invoices fsi ON fsi.id = f.invoice_id AND fsi.tenant_id = $2
-    JOIN so ON COALESCE(f.sales_order_id, fsi.sales_order_id) = so.id WHERE f.tenant_id = $2
+    WHERE f.tenant_id = $2
+      AND (COALESCE(f.sales_order_id, fsi.sales_order_id) IN (SELECT id FROM so)
+           OR f.invoice_id IN (SELECT id FROM si)
+           OR f.id IN (SELECT id FROM sj0))
     UNION ALL
     SELECT 'sales_invoice', 'sales_invoice', i.id, i.invoice_number, i.invoice_date::date, i.status
     FROM sales_invoices i WHERE i.tenant_id = $2 AND i.id IN (SELECT id FROM si)
-)
+    UNION ALL
+    SELECT 'credit_note', 'credit_note', n.id, n.credit_note_number, n.credit_note_date::date, n.status
+    FROM credit_notes n WHERE n.tenant_id = $2 AND (n.original_invoice_id IN (SELECT id FROM si) OR n.id IN (SELECT id FROM nk0))
+"""
+_SQL_KELUARGA = _SQL_META_KELUARGA + """)
 SELECT m.jenis, m.id AS dok_id, m.nomor, m.tanggal, m.status,
        d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,
        d.file_type AS mime, d.file_size AS ukuran, d.storage_type, d.uploaded_at,
@@ -438,6 +474,37 @@ LEFT JOIN "User" u ON u.id = sa.uploaded_by::text
 LEFT JOIN user_profiles up ON up.user_id = u.id
 WHERE m.jenis = 'sales_invoice'
 """
+
+_SQL_ANGGOTA_KELUARGA = _SQL_META_KELUARGA + """)
+SELECT EXISTS (SELECT 1 FROM meta WHERE jenis = $9 AND id = $10)
+"""
+
+# urutan benih $3..$8 (jenis dokumen -> posisi parameter)
+BENIH_JENIS = ("sales_invoice", "customer_deposit", "receive_payment", "proforma", "delivery", "credit_note")
+
+
+def param_keluarga(so_id, tenant_id: str, benih: dict = None) -> tuple:
+    """($1 SO|None, $2 tenant, $3..$8 benih uuid[] per BENIH_JENIS)."""
+    b = benih or {}
+    return (so_id, tenant_id, *[list(b.get(j, [])) for j in BENIH_JENIS])
+
+
+async def baris_keluarga(conn, tenant_id: str, so_id=None, benih: dict = None):
+    return await conn.fetch(_SQL_KELUARGA, *param_keluarga(so_id, tenant_id, benih))
+
+
+async def anggota_keluarga(conn, tenant_id: str, so_id, jenis: str, dok_id) -> bool:
+    return bool(await conn.fetchval(_SQL_ANGGOTA_KELUARGA, *param_keluarga(so_id, tenant_id), jenis, dok_id))
+
+
+async def susun_dengan_izin(request, rows) -> dict:
+    """Izin per GRUP (izin rute /download modul grup itu) lalu susun. Satu jalur untuk keluarga SO & dokumen."""
+    from ..middleware.permission_middleware import izin_rute_pengguna
+    jenis_ada = sorted({r["jenis"] for r in rows}, key=URUTAN_JENIS.index)
+    jalur = {j: jalur_izin_jenis(j) for j in jenis_ada}
+    izin = await izin_rute_pengguna(request.state.user, list(jalur.values())) if jalur else {}
+    boleh = {j: izin.get(p, False) for j, p in jalur.items()}
+    return susun_grup_lampiran(rows, boleh)
 
 
 def _tersedia_baris(r) -> bool:
@@ -509,8 +576,6 @@ def susun_grup_lampiran(rows, boleh: dict) -> dict:
 
 @router.get("/{order_id}/lampiran")
 async def lampiran_keluarga_so(request: Request, order_id: UUID):
-    from ..middleware.permission_middleware import izin_rute_pengguna
-
     ctx = _ctx(request)
     tenant_id = ctx["tenant_id"]
     pool = await get_pool()
@@ -518,9 +583,5 @@ async def lampiran_keluarga_so(request: Request, order_id: UUID):
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             await _pastikan_so(conn, order_id, tenant_id)
-            rows = await conn.fetch(_SQL_KELUARGA, order_id, tenant_id)
-    jenis_ada = sorted({r["jenis"] for r in rows}, key=URUTAN_JENIS.index)
-    jalur = {j: jalur_izin_jenis(j) for j in jenis_ada}
-    izin = await izin_rute_pengguna(request.state.user, list(jalur.values())) if jalur else {}
-    boleh = {j: izin.get(p, False) for j, p in jalur.items()}
-    return susun_grup_lampiran(rows, boleh)
+            rows = await baris_keluarga(conn, tenant_id, order_id)
+    return await susun_dengan_izin(request, rows)

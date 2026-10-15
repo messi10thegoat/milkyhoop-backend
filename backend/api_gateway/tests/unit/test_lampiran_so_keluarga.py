@@ -103,6 +103,7 @@ def test_izin_rute_lampiran_sales_order_R():
     ("receive_payment", ("receive_payment", "R")),
     ("delivery", ("sales_invoice", "R")),
     ("sales_invoice", ("sales_invoice", "R")),
+    ("credit_note", ("credit_note", "R")),
 ])
 def test_izin_grup_sama_dengan_izin_rute_download_modulnya(jenis, harap):
     assert pm.izin_untuk_jalur(SL.jalur_izin_jenis(jenis)) == harap
@@ -174,7 +175,8 @@ class Conn:
 
     async def fetch(self, sql, *a):
         self.fetch_dipanggil.append((sql, a))
-        assert sql == SL._SQL_KELUARGA and a == (SO, TENANT)
+        # LAMPIRAN-TANPA-SO: benih $3..$8 KOSONG untuk keluarga SO (hasil == SQL lama; pasangan nyata di harness)
+        assert sql == SL._SQL_KELUARGA and a == (SO, TENANT, [], [], [], [], [], [])
         return self.rows
 
 
@@ -286,7 +288,7 @@ def test_quote_proforma_tanpa_rute_unduh_url_null():
 
 
 # ------------------------------------------------------------------ pagar tenant SQL
-_CTE = {"so", "pf", "dp", "si", "rp", "meta"}
+_CTE = {"so", "pf", "dp", "si", "rp", "meta", "rp0", "dp0", "sj0", "nk0"}
 _TANPA_TENANT = {'"User"', "user_profiles"}  # tabel global (nama pengunggah)
 
 
@@ -313,7 +315,7 @@ def test_setiap_tabel_sql_keluarga_berpredikat_tenant():
     nyata = {t for t in tabel if t not in _CTE}
     assert {"sales_orders", "proformas", "customer_deposits", "sales_invoices", "receive_payments",
             "receive_payment_allocations", "quotes", "invoice_fulfillments", "document_attachments",
-            "documents", "sales_invoice_attachments"} <= nyata
+            "documents", "sales_invoice_attachments", "credit_notes"} <= nyata
     assert _tabel_tanpa_tenant(SL._SQL_KELUARGA) == []
 
 

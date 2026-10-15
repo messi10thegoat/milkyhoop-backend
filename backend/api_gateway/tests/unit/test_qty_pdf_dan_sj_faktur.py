@@ -54,7 +54,7 @@ def test_tak_ada_template_pdf_yang_mencetak_qty_mentah():
 
 def test_keluarga_lampiran_sj_faktur_lewat_fakturnya():
     cabang = SL._SQL_KELUARGA[SL._SQL_KELUARGA.index("SELECT 'delivery'"):SL._SQL_KELUARGA.index("SELECT 'sales_invoice'")]
-    assert "COALESCE(f.sales_order_id, fsi.sales_order_id) = so.id" in cabang
+    assert "COALESCE(f.sales_order_id, fsi.sales_order_id) IN (SELECT id FROM so)" in cabang  # LAMPIRAN-TANPA-SO: SO boleh kosong
     assert "fsi.id = f.invoice_id AND fsi.tenant_id = $2" in cabang
 
 

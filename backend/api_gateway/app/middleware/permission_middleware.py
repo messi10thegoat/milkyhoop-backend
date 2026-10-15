@@ -74,6 +74,15 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # W-20261013-LAMPIRAN-SO: tab Lampiran panel SO (seluruh keluarga SO). Rute ini = baca SO; tiap GRUP
     # dokumen anak disaring lagi di handler dgn izin rute /download modulnya (izin_rute_pengguna di bawah).
     (r"^/api/sales-orders/[^/]+/lampiran$", ["GET"], "sales_order", "R"),
+    # LAMPIRAN-TANPA-SO (15 Okt 2026): GET /api/lampiran/{jenis}/{id} -- izin rute = R modul jenis dokumen itu (SJ = modul faktur,
+    # sama dengan /api/deliveries); tiap GRUP disaring lagi di handler (susun_dengan_izin). Jenis lain -> tak terpetakan = TERTUTUP.
+    (r"^/api/lampiran/sales_order/[^/]+$", ["GET"], "sales_order", "R"),
+    (r"^/api/lampiran/sales_invoice/[^/]+$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/lampiran/receive_payment/[^/]+$", ["GET"], "receive_payment", "R"),
+    (r"^/api/lampiran/customer_deposit/[^/]+$", ["GET"], "customer_deposit", "R"),
+    (r"^/api/lampiran/proforma/[^/]+$", ["GET"], "proforma", "R"),
+    (r"^/api/lampiran/delivery/[^/]+$", ["GET"], "sales_invoice", "R"),
+    (r"^/api/lampiran/credit_note/[^/]+$", ["GET"], "credit_note", "R"),
     (r"^/api/sales-invoices$", ["GET"], "sales_invoice", "R"),
     (r"^/api/sales-invoices$", ["POST"], "sales_invoice", "C"),
     (r"^/api/sales-invoices/[^/]+$", ["GET"], "sales_invoice", "R"),
