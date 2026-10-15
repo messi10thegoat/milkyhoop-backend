@@ -102,6 +102,8 @@ class _C:
         raise AssertionError(sql[:70])
 
     async def fetch(self, sql, *a):
+        if "FROM customer_deposits cdl" in sql:  # PELUNASAN-TEKS: label jenis (kosong -> "Uang muka")
+            return []
         if "FROM bank_accounts" in sql:
             return [r for r in self.rek if r["is_active"]]
         if "compute_ar_outstanding" in sql:

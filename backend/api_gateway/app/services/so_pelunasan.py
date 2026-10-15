@@ -176,8 +176,11 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
         if rem > 0:
             dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
     if dp:
+        from .deposit_jenis import frasa_daftar, label_deposit_banyak  # PELUNASAN-TEKS
+        _lb = await label_deposit_banyak(conn, tid, [UUID(x["deposit_id"]) for x in dp])
         notes.append({"code": "RP_DEPOSIT_AVAILABLE",
-                      "message": "Uang muka " + ", ".join(f"{x['deposit_number']} (sisa {_rp(x['remaining'])})" for x in dp)
+                      "message": frasa_daftar([f"{_lb.get(UUID(x['deposit_id']), 'Uang muka')} {x['deposit_number']} (sisa {_rp(x['remaining'])})"
+                                               for x in dp])
                                  + " belum dipotong dari faktur — penerimaan ini tidak memakainya."})
 
     payload = None
@@ -348,8 +351,11 @@ async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIRe
             if rem > 0:
                 dp.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
     if dp:
+        from .deposit_jenis import frasa_daftar, label_deposit_banyak  # PELUNASAN-TEKS
+        _lb = await label_deposit_banyak(conn, tid, [UUID(x["deposit_id"]) for x in dp])
         notes.append({"code": "RP_DEPOSIT_AVAILABLE",
-                      "message": "Uang muka " + ", ".join(f"{x['deposit_number']} (sisa {_rp(x['remaining'])})" for x in dp)
+                      "message": frasa_daftar([f"{_lb.get(UUID(x['deposit_id']), 'Uang muka')} {x['deposit_number']} (sisa {_rp(x['remaining'])})"
+                                               for x in dp])
                                  + " belum dipotong dari faktur — penerimaan ini tidak memakainya."})
 
     payload = None

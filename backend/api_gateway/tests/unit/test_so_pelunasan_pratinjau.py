@@ -118,6 +118,8 @@ class _C:
 
     async def fetch(self, sql, *a):
         self.q.append(sql)
+        if "FROM customer_deposits cdl" in sql:  # PELUNASAN-TEKS: label jenis (kosong -> "Uang muka")
+            return []
         if "FROM sales_invoices" in sql:
             assert a[0] == T and "sales_order_id = $2" in sql
             assert "ORDER BY invoice_date, invoice_number, id" in sql  # tertua-dulu ditentukan SQL

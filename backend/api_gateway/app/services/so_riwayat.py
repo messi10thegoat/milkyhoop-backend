@@ -476,16 +476,19 @@ async def riwayat_faktur(conn, tenant_id: str, invoice_id, boleh: Callable[[str]
     # ---- uang muka yang diterapkan ke faktur INI ----
     if lihat["customer_deposit"]:
         for a in await conn.fetch(
-            """SELECT a.id, a.deposit_id, d.deposit_number, a.amount_applied, a.created_at, a.created_by, a.reversed_at
+            """SELECT a.id, a.deposit_id, d.deposit_number, a.amount_applied, a.created_at, a.created_by, a.reversed_at,
+                      """ + sql_jenis_efektif("d") + """ AS jenis
                FROM customer_deposit_applications a
                JOIN customer_deposits d ON d.id = a.deposit_id AND d.tenant_id = $1
                WHERE a.tenant_id = $1 AND a.invoice_id = $2""",
             tenant_id, f["id"],
         ):
             n = a["deposit_number"]
-            k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"Uang muka {n} {_rp(a['amount_applied'])} diterapkan ke faktur ini",
+            lb = label_jenis(a["jenis"])  # PELUNASAN-TEKS: label jenis efektif (juga untuk ringkas audit tersimpan)
+            k.label_dp[str(a["deposit_id"])] = lb
+            k.tambah(a["created_at"], "UANG_MUKA_DITERAPKAN", f"{lb} {n} {_rp(a['amount_applied'])} diterapkan ke faktur ini",
                      a["created_by"], "customer_deposit", a["deposit_id"], n, kunci=a["id"])
-            k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan uang muka {n} dilepas", None,
+            k.tambah(a["reversed_at"], "UANG_MUKA_DILEPAS", f"Penerapan {lb.lower()} {n} dilepas", None,
                      "customer_deposit", a["deposit_id"], n, kunci=a["id"])
 
     # ---- nota kredit atas faktur INI ----
@@ -614,17 +617,19 @@ async def riwayat_proforma(conn, tenant_id: str, proforma_id, boleh: Callable[[s
     if lihat["customer_deposit"]:
         dps = await conn.fetch(
             """SELECT id, deposit_number, amount, created_at, created_by, posted_at, posted_by, voided_at, voided_by,
-                      voided_reason
+                      voided_reason, """ + sql_jenis_efektif("customer_deposits") + """ AS jenis
                FROM customer_deposits WHERE tenant_id = $1 AND proforma_id = $2""", tenant_id, p["id"])
         entitas_audit["customer_deposit"] = [d["id"] for d in dps]
         for d in dps:
             dn = d["deposit_number"]
-            k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"Uang muka {dn} {_rp(d['amount'])} dibuat untuk proforma {n}",
+            lb = label_jenis(d["jenis"])  # PELUNASAN-TEKS
+            k.label_dp[str(d["id"])] = lb
+            k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {dn} {_rp(d['amount'])} dibuat untuk proforma {n}",
                      d["created_by"], "customer_deposit", d["id"], dn)
-            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"Uang muka {dn} {_rp(d['amount'])} diterima (diposting)",
+            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {dn} {_rp(d['amount'])} diterima (diposting)",
                      d["posted_by"], "customer_deposit", d["id"], dn)
             al = f": {d['voided_reason']}" if d["voided_reason"] else ""
-            k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"Uang muka {dn} dibatalkan{al}", d["voided_by"],
+            k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {dn} dibatalkan{al}", d["voided_by"],
                      "customer_deposit", d["id"], dn)
     keluar, total = await _selesaikan(conn, tenant_id, k, entitas_audit, lihat, limit)
     return {

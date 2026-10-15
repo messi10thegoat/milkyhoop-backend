@@ -94,7 +94,7 @@ async def test_pagar_menolak_pelunasan_penuh_bila_dp_tanpa_tagihan():
         await pf.assert_within_order_total(c, "t", "so", 5_000_000.0, 5_000_000.0)
     d = e.value.detail
     assert e.value.status_code == 400
-    for bagian in ("Nilai pesanan", "sudah ditagih", "uang muka diterima", "di luar tagihan",
+    for bagian in ("Nilai pesanan", "sudah ditagih", "pembayaran diterima", "di luar tagihan",
                    "sisa yang bisa ditagih", "Rp 3.000.000.", "Rp 2.000.000"):
         assert bagian in d, d
 

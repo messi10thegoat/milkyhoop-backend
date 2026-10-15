@@ -142,7 +142,7 @@ TOOL_ENDPOINTS: Dict[str, Dict[str, str]] = {
         "method": "GET",
         "path": "/api/customer-deposits",
         "params": ["status", "customer_id", "search"],
-        "description": "List uang muka pelanggan",
+        "description": "List uang muka pelanggan (medan jenis: DP = uang muka, PELUNASAN = pelunasan; sebut sesuai jenisnya)",
     },
     "get_customer_deposit_detail": {
         "method": "GET",
@@ -1013,7 +1013,7 @@ READ_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "get_customer_deposits",
-        "description": "List uang muka pelanggan (customer deposit). GUNAKAN untuk: pelanggan mana yang punya deposit, ada uang muka pelanggan, deposit customer.",
+        "description": "List uang muka pelanggan (customer deposit). GUNAKAN untuk: pelanggan mana yang punya deposit, ada uang muka pelanggan, deposit customer. Tiap baris punya medan jenis: DP = uang muka, PELUNASAN = pelunasan -- sebut sesuai jenisnya.",
         "parameters": {
             "type": "object",
             "properties": {

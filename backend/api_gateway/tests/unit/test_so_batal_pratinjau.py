@@ -102,6 +102,8 @@ class _C:
         return SOID
 
     async def fetch(self, sql, *a):
+        if "FROM customer_deposits cdl" in sql:  # PELUNASAN-TEKS: label jenis (kosong -> "Uang muka")
+            return []
         if "FROM customer_deposits cd" in sql and "'draft'" in sql:
             assert "cd.tenant_id = $2" in sql
             return [{"id": DPD, "deposit_number": "DP-DRAF", "amount": Decimal("1")}] if self.draf else []

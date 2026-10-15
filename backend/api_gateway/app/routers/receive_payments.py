@@ -33,6 +33,7 @@ Endpoints:
 - GET    /receive-payments/{id}/history - Riwayat
 """
 
+from ..services.deposit_jenis import label_deposit  # PELUNASAN-TEKS
 from fastapi import APIRouter, Body, HTTPException, Request, Query, Response as _Response
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
@@ -1341,7 +1342,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         if body.total_amount > deposit_remaining:
             raise HTTPException(
                 status_code=400,
-                detail=f"Jumlah bayar {tg.rp(body.total_amount)} melebihi sisa uang muka {tg.rp(deposit_remaining)}.",
+                detail=f"Jumlah bayar {tg.rp(body.total_amount)} melebihi sisa {(await label_deposit(conn, ctx['tenant_id'], deposit['id'])).lower()} {tg.rp(deposit_remaining)}.",
             )
 
     # Validate allocations

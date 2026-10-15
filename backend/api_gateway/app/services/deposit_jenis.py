@@ -67,3 +67,35 @@ def label_kwitansi(jenis: Optional[str], ada_so: bool) -> str:
     """Keperluan kwitansi: 'Uang Muka Pesanan' / 'Pelunasan Pesanan'; tanpa SO: 'Uang Muka' / 'Pelunasan'."""
     dasar = LABEL_KWITANSI.get(jenis or "", LABEL_KWITANSI[JENIS_BAWAAN])
     return f"{dasar} Pesanan" if ada_so else dasar
+
+
+# ── PELUNASAN-TEKS (15 Okt 2026, putusan MASTER #2): teks yang menyebut SATU penerimaan memakai label jenis efektifnya ──
+# ("Uang muka" | "Pelunasan"). Konsep SALDO (akun "Uang Muka Pelanggan", "saldo uang muka pelanggan", penjaga "uang muka aktif")
+# tetap "uang muka" -- pelunasan yang belum diterapkan pun duduk di akun itu. Jurnal LAMA tak disentuh (Law 2); memo jurnal BARU
+# memakai label_kwitansi-kapital ("Terima Uang Muka - .." tetap sama untuk DP).
+
+async def label_deposit(conn, tenant_id: str, deposit_id, kapital: bool = False) -> str:
+    """Label jenis efektif satu uang muka/pelunasan (tenant eksplisit). kapital=True -> 'Uang Muka' / 'Pelunasan' (memo jurnal)."""
+    j = await conn.fetchval(
+        f"SELECT {sql_jenis_efektif('cdl')} FROM customer_deposits cdl WHERE cdl.id = $1 AND cdl.tenant_id = $2",
+        deposit_id, tenant_id)
+    return LABEL_KWITANSI.get(j or "", LABEL_KWITANSI[JENIS_BAWAAN]) if kapital else label_jenis(j)
+
+
+async def label_deposit_banyak(conn, tenant_id: str, ids) -> dict:
+    """{deposit_id: label} untuk banyak baris sekaligus (satu kueri)."""
+    ids = [i for i in ids if i is not None]
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        f"SELECT cdl.id, {sql_jenis_efektif('cdl')} AS jenis FROM customer_deposits cdl "
+        "WHERE cdl.tenant_id = $1 AND cdl.id = ANY($2::uuid[])", tenant_id, list(ids))
+    return {r["id"]: label_jenis(r["jenis"]) for r in rows}
+
+
+def frasa_daftar(potongan: list) -> str:
+    """['Uang muka DEP-1 (..)', 'Pelunasan DEP-2 (..)'] -> 'Uang muka DEP-1 (..), pelunasan DEP-2 (..)' (huruf besar di awal saja)."""
+    if not potongan:
+        return ""
+    teks = ", ".join(x[:1].lower() + x[1:] for x in potongan)
+    return teks[:1].upper() + teks[1:]

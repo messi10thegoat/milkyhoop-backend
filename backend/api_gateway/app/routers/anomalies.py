@@ -23,6 +23,7 @@ basis data (UTC): terukur 23 Sep, pukul pagi WITA basis data masih 22 Sep, sehin
 muka 8 hari terbaca 7 hari dan lolos dari ambang "> 7 hari".
 """
 import logging
+from ..services.deposit_jenis import label_deposit  # PELUNASAN-TEKS
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -205,7 +206,7 @@ async def _check_deposit_idle(conn, tid, today, tz):
             "amount": float(remaining),
             "age_days": int(d["idle_days"]),
             "message": (
-                f"Uang muka {d['deposit_number']} masih tersisa {_rp(remaining)} dan belum "
+                f"{await label_deposit(conn, tid, d['id'])} {d['deposit_number']} masih tersisa {_rp(remaining)} dan belum "
                 f"dipakai selama {int(d['idle_days'])} hari."
             ),
             "suggested_action": "Terapkan ke faktur pelanggan ini, atau kembalikan bila pesanan batal.",

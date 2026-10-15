@@ -60,6 +60,10 @@ class _Conn:
         self.args.append(args)
         return "UPDATE 1"
 
+    async def fetchval(self, sql, *args):  # PELUNASAN-TEKS: label jenis untuk ringkas audit (None -> "Uang muka")
+        assert "FROM customer_deposits cdl" in sql, sql[:60]
+        return None
+
 
 class _Pool:
     def __init__(self, conn):

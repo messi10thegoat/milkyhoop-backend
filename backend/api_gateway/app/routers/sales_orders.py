@@ -1619,8 +1619,11 @@ async def _rencana_batal_so(conn, ctx, order_id: str, reason) -> dict:
         uang_muka.append({"deposit_id": str(d["id"]), "deposit_number": d["deposit_number"], "remaining": rem})
     tetap = [x for x in uang_muka if x["remaining"] > 0]
     if tetap:
+        from ..services.deposit_jenis import frasa_daftar, label_deposit_banyak  # PELUNASAN-TEKS
+        lb = await label_deposit_banyak(conn, ctx["tenant_id"], [uuid_module.UUID(x["deposit_id"]) for x in tetap])
         notes.append({"code": "SO_DEPOSIT_STAYS", "message": (
-            "Uang muka " + ", ".join(f"{x['deposit_number']} (sisa {_rp_teks(x['remaining'])})" for x in tetap)
+            frasa_daftar([f"{lb.get(uuid_module.UUID(x['deposit_id']), 'Uang muka')} {x['deposit_number']} (sisa {_rp_teks(x['remaining'])})"
+                          for x in tetap])
             + " tetap menjadi saldo uang muka pelanggan: bisa diterapkan ke faktur lain pelanggan ini atau dikembalikan.")})
 
     from .proformas import compute_paid_amount

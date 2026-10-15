@@ -2,6 +2,7 @@
 Judul order, ID. Satu SQL per modul: tenant eksplisit + id = ANY(ids); angka dari KOLOM TERSIMPAN yang sama dengan daftar
 (Pengiriman = HPP, bukan nilai jual). Status layar = label teks_galat (sumber sama dengan FE) dan status_detail untuk NK/uang muka.
 BACA SAJA: tak ada tulisan selain satu baris audit BULK_EXPORT."""
+from .deposit_jenis import sql_jenis_efektif  # PELUNASAN-TEKS
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Optional
@@ -32,7 +33,9 @@ def _nk(r) -> str:
 
 def _dp(r) -> str:
     from ..routers.customer_deposits import status_detail_dp
-    return tg.status_id("dp", status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"]))
+    st = tg.status_id("dp", status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"]))
+    # PELUNASAN-TEKS (15 Okt 2026): kolom tetap 6 untuk semua jenis ekspor -> jenis PELUNASAN ditandai di kolom Status
+    return f"{st} · Pelunasan" if r.get("jenis") == "PELUNASAN" else st
 
 
 def _jenis(j: str):
@@ -67,7 +70,7 @@ SPEC = {
         "customer-deposits", "uang-muka", ("Pelanggan", "No. uang muka", "Tgl. terima", "Dicatat", "Jumlah", "Status"),
         f"""SELECT t.id, t.customer_name AS pelanggan, t.deposit_number AS nomor, t.deposit_date AS tgl,
                    t.created_at AS kol4, t.created_at AS dicatat, t.amount AS nilai, t.status,
-                   t.amount_applied, t.amount_refunded
+                   t.amount_applied, t.amount_refunded, {sql_jenis_efektif("t")} AS jenis
             FROM customer_deposits t WHERE t.tenant_id = $1 AND t.id {_ID}""", "customer_deposit", _dp),
     "receive-payments": SpecExport(
         "receive-payments", "penerimaan", ("Pelanggan", "No. penerimaan", "Tgl. bayar", "Dicatat", "Jumlah", "Status"),

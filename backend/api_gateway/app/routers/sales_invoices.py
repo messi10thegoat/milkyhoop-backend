@@ -4567,8 +4567,11 @@ async def _rencana_void_faktur(conn, ctx: dict, invoice_id: UUID) -> dict:
         blocks.append({"code": "VOID_PERIOD_CLOSED", "message": str(e.detail), "status": e.status_code, "detail": e.detail})
 
     if active_deposit_apps:
+        from ..services.deposit_jenis import frasa_daftar, label_deposit_banyak  # PELUNASAN-TEKS
+        _lb = await label_deposit_banyak(conn, ctx["tenant_id"], [a["deposit_id"] for a in active_deposit_apps])
+        _unik = sorted({(a["deposit_number"] or "-", _lb.get(a["deposit_id"], "Uang muka")) for a in active_deposit_apps})
         notes.append({"code": "VOID_DEPOSITS_RELEASED",
-                      "message": "Uang muka " + ", ".join(sorted({a["deposit_number"] or "-" for a in active_deposit_apps}))
+                      "message": frasa_daftar([f"{lb} {no}" for no, lb in _unik])
                                  + " dilepas dari faktur ini dan kembali jadi saldo pelanggan."})
     if fulfillments:
         notes.append({"code": "VOID_FULFILLMENTS_VOIDED",

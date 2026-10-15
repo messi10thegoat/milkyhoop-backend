@@ -54,7 +54,7 @@ from ..utils.metode_pembayaran import label_metode_layar
 from ..services import teks_galat as tg
 from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
 from ..services.so_riwayat import catat_riwayat
-from ..services.deposit_jenis import jenis_dari_purpose, label_kwitansi, sql_jenis_efektif
+from ..services.deposit_jenis import jenis_dari_purpose, label_deposit, label_kwitansi, sql_jenis_efektif
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -911,7 +911,7 @@ async def assert_deposit_within_order_total(
             detail={
                 "code": "SO_NOT_ACCEPTING_DEPOSIT",
                 "message": (
-                    f"Uang muka tidak bisa dicatat untuk pesanan {order['order_number']} berstatus "
+                    f"Pembayaran tidak bisa dicatat untuk pesanan {order['order_number']} berstatus "  # PELUNASAN-TEKS: netral DP/pelunasan
                     f"{tg.status_id('so', order['status'])}. Konfirmasi pesanannya dulu, atau catat tanpa pesanan."
                 ),
             },
@@ -926,7 +926,7 @@ async def assert_deposit_within_order_total(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Uang muka {tg.rp(amount)} melebihi sisa yang masih dapat "
+                f"Jumlah {tg.rp(amount)} melebihi sisa yang masih dapat "  # PELUNASAN-TEKS: netral DP/pelunasan
                 f"diterima. Nilai pesanan {tg.rp(order_total)}, sudah diterima "
                 f"{tg.rp(already)}, sisa yang masih dapat diterima {tg.rp(sisa)}."
             ),
@@ -1378,7 +1378,7 @@ async def update_customer_deposit(
                     from ..services.so_riwayat import label_medan
                     await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, lama["deposit_number"],
                                         "DEPOSIT_UPDATED", ctx["user_id"],
-                                        f"Uang muka {lama['deposit_number']} diubah: {label_medan(list(berubah))}",
+                                        f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {lama['deposit_number']} diubah: {label_medan(list(berubah))}",
                                         {"fields": sorted(berubah), "perubahan": berubah})
 
                 logger.info(f"Customer deposit updated: {deposit_id}")
@@ -1590,7 +1590,7 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
         journal_id,
         dep["account_id"],
         dep["amount"],
-        f"Terima Uang Muka - {dep['deposit_number']}",
+        f"Terima {await label_deposit(conn, ctx['tenant_id'], deposit_id, kapital=True)} - {dep['deposit_number']}",
     )
 
     # Cr. Customer Deposit Liability
@@ -1764,7 +1764,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa diterapkan.",
+            detail=f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa diterapkan.",
         )
 
     # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
@@ -1799,7 +1799,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
     if total_to_apply > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Nilai penerapan {_rp_dp(total_to_apply)} melebihi sisa uang muka {_rp_dp(remaining)}.",
+            detail=f"Nilai penerapan {_rp_dp(total_to_apply)} melebihi sisa {(await label_deposit(conn, ctx['tenant_id'], deposit_id)).lower()} {_rp_dp(remaining)}.",
         )
 
     application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
@@ -1920,7 +1920,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
             journal_id,
             deposit_account_id,
             app.amount,
-            f"Aplikasi Uang Muka - {invoice['invoice_number']}",
+            f"Aplikasi {await label_deposit(conn, ctx['tenant_id'], deposit_id, kapital=True)} - {invoice['invoice_number']}",
         )
 
         # Cr. Accounts Receivable
@@ -1970,7 +1970,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], UUID(app.invoice_id))
         await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_APPLIED",
                             ctx["user_id"],
-                            f"Uang muka {dep['deposit_number']} {tg.rp(app.amount)} diterapkan ke faktur {invoice['invoice_number']}",
+                            f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(app.amount)} diterapkan ke faktur {invoice['invoice_number']}",
                             {"kunci": str(app_id), "application_id": str(app_id), "invoice_id": str(app.invoice_id),
                              "invoice_number": invoice["invoice_number"], "amount": str(app.amount)})
 
@@ -2266,7 +2266,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
                                 deposit_id, ctx["tenant_id"])
     await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, no_dp, "DEPOSIT_APPLICATION_REVERSED",
                         ctx["user_id"],
-                        f"Penerapan uang muka {no_dp} {tg.rp(reversal_amount)} ke faktur {app_row['invoice_number']} dilepas",
+                        f"Penerapan {(await label_deposit(conn, ctx['tenant_id'], deposit_id)).lower()} {no_dp} {tg.rp(reversal_amount)} ke faktur {app_row['invoice_number']} dilepas",
                         {"kunci": str(application_id), "application_id": str(application_id),
                          "invoice_id": str(inv_id), "invoice_number": app_row["invoice_number"],
                          "amount": str(reversal_amount), "reversal_journal_id": str(reversal_journal_id)})
@@ -2379,7 +2379,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     if dep["status"] not in ("posted", "partial"):
         raise HTTPException(
             status_code=400,
-            detail=f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa dikembalikan.",
+            detail=f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa dikembalikan.",
         )
 
     # Check remaining (Option B: journal-derived, SATU SUMBER dgn apply; bukan cache)
@@ -2390,7 +2390,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     if body.amount > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Pengembalian {_rp_dp(body.amount)} melebihi sisa uang muka {_rp_dp(remaining)}.",
+            detail=f"Pengembalian {_rp_dp(body.amount)} melebihi sisa {(await label_deposit(conn, ctx['tenant_id'], deposit_id)).lower()} {_rp_dp(remaining)}.",
         )
 
     # Validate account
@@ -2475,7 +2475,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
         journal_id,
         deposit_account_id,
         body.amount,
-        f"Refund Uang Muka - {dep['deposit_number']}",
+        f"Refund {await label_deposit(conn, ctx['tenant_id'], deposit_id, kapital=True)} - {dep['deposit_number']}",
     )
 
     # Cr. Cash/Bank
@@ -2555,7 +2555,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
                               UUID(body.account_id), ctx["tenant_id"])
     await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_REFUNDED",
                         ctx["user_id"],
-                        f"Uang muka {dep['deposit_number']} {tg.rp(body.amount)} dikembalikan ke pelanggan"
+                        f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(body.amount)} dikembalikan ke pelanggan"
                         + (f" dari {rek}" if rek else ""),
                         {"kunci": str(refund_id), "refund_id": str(refund_id), "account_id": str(body.account_id),
                          "account_name": rek, "amount": str(body.amount), "refund_date": str(body.refund_date)})
@@ -2839,7 +2839,7 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
     )
 
     await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_VOIDED",
-                        ctx["user_id"], f"Uang muka {dep['deposit_number']} {tg.rp(dep['amount'])} dibatalkan: {body.reason}",
+                        ctx["user_id"], f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(dep['amount'])} dibatalkan: {body.reason}",
                         {"reason": body.reason, "amount": str(dep["amount"])})
     logger.info(f"Customer deposit voided: {deposit_id}")
 
@@ -2962,12 +2962,12 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         return blok
     if dep["status"] not in ("posted", "partial"):
         kata = "refund" if aksi == "refund" else "apply"
-        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"Uang muka berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
+        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"{await label_deposit(conn, tid, deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
     sisa = await compute_deposit_remaining(conn, tid, deposit_id)
     if aksi == "refund":
         if body.amount > sisa:
             blok.append(_blok_dp("REFUND_EXCEEDS_REMAINING", 400,
-                                 f"Pengembalian {_rp_dp(body.amount)} melebihi sisa uang muka {_rp_dp(sisa)}."))
+                                 f"Pengembalian {_rp_dp(body.amount)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {_rp_dp(sisa)}."))
         try:
             akun = await conn.fetchrow("SELECT account_type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
                                        UUID(body.account_id), tid)
@@ -2984,7 +2984,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         total = sum((a.amount for a in body.applications), Decimal("0"))
         if total > sisa:
             blok.append(_blok_dp("APPLY_EXCEEDS_REMAINING", 400,
-                                 f"Nilai penerapan {_rp_dp(total)} melebihi sisa uang muka {_rp_dp(sisa)}."))
+                                 f"Nilai penerapan {_rp_dp(total)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {_rp_dp(sisa)}."))
     return blok
 
 
@@ -3174,7 +3174,7 @@ async def _rencana_pindah(conn, tenant_id: str, deposit_id: UUID, body: PindahPr
     blocks = []
     if dep["status"] not in DP_BISA_PINDAH:
         blocks.append(_blok_pindah("DP_TIDAK_BISA_DIPINDAH", 400, (
-            f"Uang muka berstatus {tg.status_id('dp', dep['status'])} tidak bisa dipindahkan ke proforma lain.")))
+            f"{await label_deposit(conn, tenant_id, deposit_id)} berstatus {tg.status_id('dp', dep['status'])} tidak bisa dipindahkan ke proforma lain.")))
     if not so_id:
         blocks.append(_blok_pindah("DP_TANPA_PESANAN", 400, "Uang muka ini tidak terkait pesanan, jadi tidak bisa ditautkan ke proforma."))
     tujuan = None
@@ -3215,7 +3215,7 @@ async def _tulis_pindah(conn, ctx: dict, r: dict, body: PindahProformaRequest) -
     asal = f"proforma {r['lama_nomor']}" if r["lama_nomor"] else "tanpa proforma"
     await catat_riwayat(
         conn, ctx["tenant_id"], "customer_deposit", dep["id"], dep["deposit_number"], "DEPOSIT_PROFORMA_MOVED",
-        ctx["user_id"], f"Uang muka {dep['deposit_number']} dipindah dari {asal} ke proforma {tujuan['proforma_number']}",
+        ctx["user_id"], f"{await label_deposit(conn, ctx['tenant_id'], dep['id'])} {dep['deposit_number']} dipindah dari {asal} ke proforma {tujuan['proforma_number']}",
         {"from_proforma_id": str(dep["proforma_id"]) if dep["proforma_id"] else None,
          "from_proforma_number": r["lama_nomor"], "to_proforma_id": str(tujuan["id"]),
          "to_proforma_number": tujuan["proforma_number"], "amount": str(dep["amount"]),

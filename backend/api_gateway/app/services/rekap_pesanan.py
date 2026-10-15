@@ -12,6 +12,7 @@ WAJIB = sudah dibayar (selisih dicatat, pola selisih_riwayat faktur). Filter ten
 """
 import base64
 import logging
+from .deposit_jenis import label_jenis, sql_jenis_efektif  # PELUNASAN-TEKS
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -99,7 +100,8 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
     from . import faktur_cetak as _fc
     bayar_rows = []
     for d in await conn.fetch(
-        """SELECT cd.deposit_number, cd.deposit_date, cd.payment_method, cd.amount, cd.amount_refunded, ba.bank_name
+        """SELECT cd.deposit_number, cd.deposit_date, cd.payment_method, cd.amount, cd.amount_refunded, ba.bank_name,
+                  """ + sql_jenis_efektif("cd") + """ AS jenis
            FROM customer_deposits cd
            LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
            LEFT JOIN LATERAL (
@@ -111,11 +113,11 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
              AND COALESCE(cd.sales_order_id, p.sales_order_id) = $2""",
         tid, sid,
     ):
-        bayar_rows.append({"tanggal": d["deposit_date"], "jenis": "Uang muka", "nomor": d["deposit_number"],
+        bayar_rows.append({"tanggal": d["deposit_date"], "jenis": label_jenis(d["jenis"]), "nomor": d["deposit_number"],
                            "metode": _fc.label_metode(d["payment_method"], d["bank_name"]),  # SAMA dengan riwayat faktur
                            "jumlah": _d(d["amount"])})
         if _d(d["amount_refunded"]) > NOL:
-            bayar_rows.append({"tanggal": None, "jenis": "Pengembalian uang muka", "nomor": d["deposit_number"],
+            bayar_rows.append({"tanggal": None, "jenis": f"Pengembalian {label_jenis(d['jenis']).lower()}", "nomor": d["deposit_number"],
                                "metode": "", "jumlah": -_d(d["amount_refunded"])})
     # Atas faktur SO: riwayat KANONIK per faktur (faktur_cetak.riwayat_pembayaran = yang dicetak faktur, kredit AR
     # jurnal). Penerimaan selalu; penerapan uang muka HANYA bila uang mukanya TAK tertaut SO (yang tertaut sudah

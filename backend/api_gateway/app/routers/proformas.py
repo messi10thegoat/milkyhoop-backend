@@ -286,7 +286,7 @@ async def assert_within_order_total(
             detail=(
                 f"Nilai proforma {tg.rp(amount)} melebihi sisa yang bisa ditagih. "
                 f"Nilai pesanan {tg.rp(order_total)}, sudah ditagih {tg.rp(r['issued_total'])}, "
-                f"uang muka diterima {tg.rp(r['received_total'])} "
+                f"pembayaran diterima {tg.rp(r['received_total'])} "  # PELUNASAN-TEKS: jumlah uang muka + pelunasan
                 f"(di luar tagihan {tg.rp(r['received_not_billed'])}), "
                 f"sisa yang bisa ditagih {tg.rp(sisa)}."
             ),

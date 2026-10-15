@@ -50,7 +50,7 @@ class _C:
         if "FROM customer_deposit_applications" in sql:
             assert "a.invoice_id = $2" in sql and "a.tenant_id = $1" in sql and a[0] == T
             return [{"id": "app-9", "deposit_id": DP, "deposit_number": "DEP-9", "amount_applied": 50000, "created_at": _t(4),
-                     "created_by": UUID(U1), "reversed_at": None}]
+                     "created_by": UUID(U1), "reversed_at": None, "jenis": "DP"}]
         if "FROM credit_notes" in sql:
             assert "original_invoice_id = $2" in sql and "WHERE tenant_id = $1" in sql and a[0] == T
             return [{"id": CN, "credit_note_number": "CN-9", "total_amount": 20000, "created_at": _t(6), "created_by": UUID(U1),
