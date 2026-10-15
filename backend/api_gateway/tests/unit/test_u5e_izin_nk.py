@@ -111,9 +111,11 @@ def test_setiap_rute_tulis_nk_di_inventaris_punya_keputusan_eksplisit():
         jalur = b.split(" ", 1)[1]
         # U1b (5 Okt): aksi massal dokumen = keputusan izin eksplisit: ekspor CSV + PDF ZIP = BACA (R); tautan bagikan (+pratinjau) = E
         massal = {"/api/credit-notes/bulk/export": "R", "/api/credit-notes/bulk/pdf": "R",
-                  "/api/credit-notes/bulk/share": "E", "/api/credit-notes/bulk/share/preview": "E"}
+                  "/api/credit-notes/bulk/share": "E", "/api/credit-notes/bulk/share/preview": "E",
+                  # LAMPIRAN-NK-QUOTE (15 Okt 2026): tambah lampiran ke NK yang ada = U (pola lampiran SO)
+                  "/api/credit-notes/{doc_id}/attachments": "U"}
         if jalur in massal:
-            if _izin("POST", jalur) != ("credit_note", massal[jalur]):
+            if _izin("POST", re.sub(r"\{[^}]+\}", "X", jalur)) != ("credit_note", massal[jalur]):
                 tak.append(b)
             continue
         m = re.fullmatch(r"/api/credit-notes(?:/preview|/\{credit_note_id\}/(.+))?", jalur)
