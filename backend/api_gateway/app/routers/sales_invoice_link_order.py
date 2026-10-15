@@ -42,11 +42,11 @@ async def get_pool():
 
 def get_user_context(request: Request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 

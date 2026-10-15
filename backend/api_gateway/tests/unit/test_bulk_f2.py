@@ -119,7 +119,7 @@ def test_inti_hapus_dp_aktif_ditolak_tanpa_menghapus(guard):
 def test_rute_tunggal_hanya_membungkus_inti_di_transaksi():
     src = " ".join(inspect.getsource(SO.delete_sales_order).split())
     assert "async with conn.transaction(): data = await hapus_so_draf_core(conn, ctx, order_id)" in src
-    assert 'message="Sales order deleted"' in src and "DELETE FROM" not in src  # rute tak menulis sendiri
+    assert 'message="Pesanan dihapus"' in src and "DELETE FROM" not in src  # rute tak menulis sendiri
 
 
 def test_rencana_hapus_semua_penghalang(guard):

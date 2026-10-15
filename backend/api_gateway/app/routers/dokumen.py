@@ -38,7 +38,7 @@ SUBTIPE = {"DP": "dp", "TERMIN": "termin", "PELUNASAN": "penuh"}
 def _ctx(request: Request) -> dict:
     u = getattr(request.state, "user", None)
     if not u or not u.get("tenant_id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
     uid = u.get("user_id") or u.get("id")
     return {"tenant_id": u["tenant_id"], "user_id": UUID(str(uid)) if uid else None}
 
@@ -149,7 +149,7 @@ def _respons_pdf(pdf: bytes, nomor: str) -> StreamingResponse:
 async def font_publik(nama: str):
     """Font Inter untuk HTML layar. Publik (CSS @font-face tak membawa Authorization) dan HANYA 5 berkas daftar putih."""
     if nama not in FONT_SAH:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail="Tidak ditemukan.")
     return FileResponse(TEMPLATE_DIR / "fonts" / nama, media_type="font/ttf",
                         # ACAO *: dokumen di iframe ber-sandbox (asal opak) memuat font lintas-asal (P5, 1 Okt 2026).
                         headers={"Cache-Control": "public, max-age=31536000, immutable", "Access-Control-Allow-Origin": "*"})
@@ -221,7 +221,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
                   order_code, order_title, fase_lokasi, fase_gudang_id
            FROM sales_orders WHERE id = $1 AND tenant_id = $2""", so_id, tid)
     if not so:
-        raise HTTPException(status_code=404, detail="Sales order not found")
+        raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
     sid = so["id"]
     r = (await ringkasan_pesanan(conn, tid, [sid]))[sid]
     total = Decimal(str(so["total_amount"] or 0))

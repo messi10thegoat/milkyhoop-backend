@@ -72,7 +72,7 @@ def test_detail_memanggil_helper_sisa():
 
 
 def _nilai_status_respons(fn):
-    """Nilai `data.status` pada return yang pesannya 'voided successfully'."""
+    """Nilai `data.status` pada return yang pesannya void sukses ('Faktur dibatalkan ...'; dulu 'voided successfully')."""
     for n in ast.walk(fn):
         if not isinstance(n, ast.Dict):
             continue
@@ -80,7 +80,7 @@ def _nilai_status_respons(fn):
         if "message" not in kunci or "data" not in kunci:
             continue
         msg = n.values[kunci.index("message")]
-        if "voided" not in str(getattr(msg, "value", "")):
+        if "dibatalkan" not in str(getattr(msg, "value", "")):
             continue
         data = n.values[kunci.index("data")]
         dk = [getattr(k, "value", None) for k in data.keys]

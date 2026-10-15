@@ -123,14 +123,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -530,7 +530,7 @@ async def list_credit_notes(
         raise
     except Exception as e:
         logger.error(f"Error listing credit notes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list credit notes")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar nota kredit.")
 
 
 # =============================================================================
@@ -603,7 +603,7 @@ async def get_credit_notes_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting credit notes summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 @router.get("/{credit_note_id}/history")
@@ -793,7 +793,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get credit note")
+        raise HTTPException(status_code=500, detail="Gagal memuat nota kredit.")
 
 
 # =============================================================================
@@ -969,7 +969,7 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
 
     return {
         "success": True,
-        "message": "Credit note created successfully",
+        "message": "Nota kredit dibuat",
         "data": {
             "id": str(cn_id),
             "credit_note_number": cn_number,
@@ -990,7 +990,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest, re
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
         from ..services import idem_buat
         _kunci = idem_buat.kunci_dari(request)
 
@@ -1009,7 +1009,7 @@ async def create_credit_note(request: Request, body: CreateCreditNoteRequest, re
         raise
     except Exception as e:
         logger.error(f"Error creating credit note: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create credit note")
+        raise HTTPException(status_code=500, detail="Gagal membuat nota kredit.")
 
 
 def _pesan_galat(e: HTTPException) -> str:
@@ -1313,7 +1313,7 @@ async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
         async with pool.acquire() as conn:
@@ -1329,7 +1329,7 @@ async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
         raise
     except Exception as e:
         logger.error(f"Error previewing credit note: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview credit note")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau nota kredit.")
 
 
 # =============================================================================
@@ -1538,7 +1538,7 @@ async def update_credit_note(
 
                 return {
                     "success": True,
-                    "message": "Credit note updated successfully",
+                    "message": "Nota kredit diperbarui",
                     "data": {"id": str(credit_note_id)},
                 }
 
@@ -1546,7 +1546,7 @@ async def update_credit_note(
         raise
     except Exception as e:
         logger.error(f"Error updating credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update credit note")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui nota kredit.")
 
 
 # =============================================================================
@@ -1592,7 +1592,7 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
 
             return {
                 "success": True,
-                "message": "Credit note deleted successfully",
+                "message": "Nota kredit dihapus",
                 "data": {
                     "id": str(credit_note_id),
                     "credit_note_number": cn["credit_note_number"],
@@ -1603,7 +1603,7 @@ async def delete_credit_note(request: Request, credit_note_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error deleting credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete credit note")
+        raise HTTPException(status_code=500, detail="Gagal menghapus nota kredit.")
 
 
 # =============================================================================
@@ -1764,7 +1764,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
 
     if not ar_account_id or not sales_return_account_id:
         raise HTTPException(
-            status_code=500, detail="Required accounts not found in CoA"
+            status_code=500, detail="Akun yang diperlukan belum ada di bagan akun."
         )
 
     # Generate journal number
@@ -2286,7 +2286,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
 
     return {
         "success": True,
-        "message": "Credit note posted to accounting",
+        "message": "Nota kredit diposting",
         "data": {
             "id": str(credit_note_id),
             "journal_id": str(journal_id),
@@ -2311,7 +2311,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID, response: _Re
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
@@ -2331,7 +2331,7 @@ async def post_credit_note(request: Request, credit_note_id: UUID, response: _Re
         raise
     except Exception as e:
         logger.error(f"Error posting credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post credit note")
+        raise HTTPException(status_code=500, detail="Gagal memposting nota kredit.")
 
 
 # =============================================================================
@@ -2439,7 +2439,7 @@ async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) ->
 
     return {
         "success": True,
-        "message": f"Credit note applied to {len(applications_created)} invoice(s)",
+        "message": f"Nota kredit diterapkan ke {len(applications_created)} faktur",
         "data": {
             "id": str(credit_note_id),
             "applications": applications_created,
@@ -2461,7 +2461,7 @@ async def apply_credit_note(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -2479,7 +2479,7 @@ async def apply_credit_note(
         raise
     except Exception as e:
         logger.error(f"Error applying credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to apply credit note")
+        raise HTTPException(status_code=500, detail="Gagal menerapkan nota kredit.")
 
 
 # =============================================================================
@@ -2612,7 +2612,7 @@ async def unapply_credit_note(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
         if not (body.reason or "").strip():  # sebelum transaksi, seperti rute lama
             raise HTTPException(status_code=400, detail="Alasan pembatalan penerapan wajib diisi.")
 
@@ -2632,7 +2632,7 @@ async def unapply_credit_note(
         raise
     except Exception as e:
         logger.error(f"Error unapplying credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to unapply credit note")
+        raise HTTPException(status_code=500, detail="Gagal melepas penerapan nota kredit.")
 
 
 # =============================================================================
@@ -2890,7 +2890,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
 
     return {
         "success": True,
-        "message": "Refund issued successfully",
+        "message": "Pengembalian dana dicatat",
         "data": {
             "id": str(credit_note_id),
             "refund_id": str(refund_id),
@@ -2911,7 +2911,7 @@ async def refund_credit_note(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -2931,7 +2931,7 @@ async def refund_credit_note(
         logger.error(
             f"Error refunding credit note {credit_note_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to issue refund")
+        raise HTTPException(status_code=500, detail="Gagal menerbitkan pengembalian dana.")
 
 
 # =============================================================================
@@ -2974,7 +2974,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
         )
         return {
             "success": True,
-            "message": "Draft credit note deleted",
+            "message": "Draf nota kredit dihapus",
             "data": {"id": str(credit_note_id)},
         }
 
@@ -3223,7 +3223,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
 
     return {
         "success": True,
-        "message": "Credit note voided successfully",
+        "message": "Nota kredit dibatalkan",
         "data": {"id": str(credit_note_id), "status": "void"},
     }
 
@@ -3242,7 +3242,7 @@ async def void_credit_note(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -3261,7 +3261,7 @@ async def void_credit_note(
         raise
     except Exception as e:
         logger.error(f"Error voiding credit note {credit_note_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void credit note")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan nota kredit.")
 
 
 @router.post("/{credit_note_id}/create-tax-invoice")
@@ -3488,7 +3488,7 @@ async def preview_post_credit_note(request: Request, credit_note_id: UUID):
     """Pratinjau terbit: penentu + posting_nota_kredit YANG SAMA lalu rollback (jurnal, sisa faktur sebelum -> sesudah)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     await _ensure_role_preconditions(await get_pool(), ctx["tenant_id"])
     return {"success": True, "data": await _pratinjau_nk(ctx, credit_note_id, "post", None)}
 
@@ -3498,7 +3498,7 @@ async def preview_void_credit_note(request: Request, credit_note_id: UUID, body:
     """Pratinjau batal: penentu + void_nota_kredit_core YANG SAMA lalu rollback. Draf = akan DIHAPUS (after.exists false)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     return {"success": True, "data": await _pratinjau_nk(ctx, credit_note_id, "void", (body.reason if body else None))}
 
 
@@ -3687,7 +3687,7 @@ async def preview_apply_credit_note(request: Request, credit_note_id: UUID, body
     """Pratinjau terapkan: penentu + apply_nota_kredit_core YANG SAMA lalu rollback (sisa faktur sebelum -> sesudah)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "apply", body)}
 
 
@@ -3696,7 +3696,7 @@ async def preview_unapply_credit_note(request: Request, credit_note_id: UUID, bo
     """Pratinjau lepas penerapan: penentu + unapply_nota_kredit_core YANG SAMA lalu rollback."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "unapply", (body.reason if body else None))}
 
 
@@ -3706,5 +3706,5 @@ async def preview_refund_credit_note(request: Request, credit_note_id: UUID, bod
     sebelum -> sesudah, baris bank_transactions yang AKAN dibuat)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "refund", body)}

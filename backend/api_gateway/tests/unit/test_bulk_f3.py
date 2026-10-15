@@ -91,7 +91,7 @@ def test_inti_hapus_404_dan_409_kode_stabil(alasan):
 def test_rute_hapus_tunggal_membungkus_inti_di_transaksi():
     src = " ".join(inspect.getsource(Q.delete_quote).split())
     assert "async with conn.transaction(): data = await hapus_penawaran_core(conn, ctx, quote_id)" in src
-    assert 'message="Quote deleted successfully"' in src and "DELETE FROM" not in src
+    assert 'message="Penawaran dihapus"' in src and "DELETE FROM" not in src
 
 
 def test_rencana_hapus(alasan):
@@ -135,7 +135,7 @@ def test_inti_kirim_penolakan_surel_tetap_sebelum_menandai(terkirim):
 def test_rute_kirim_tunggal_membungkus_inti():
     src = " ".join(inspect.getsource(Q.send_quote).split())
     assert "kirim_penawaran_core(conn, ctx, quote_id, bool(body and body.send_email))" in src
-    assert 'message="Quote sent successfully"' in src and "tandai_terkirim(" not in src
+    assert 'message="Penawaran dikirim"' in src and "tandai_terkirim(" not in src
 
 
 # ---------------- rute bulk ----------------

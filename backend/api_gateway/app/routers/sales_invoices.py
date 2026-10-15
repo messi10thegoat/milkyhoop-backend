@@ -110,14 +110,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     try:
         user_uuid = UUID(user_id) if user_id else None
@@ -425,7 +425,7 @@ async def get_invoice_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting invoice summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 # =============================================================================
@@ -521,7 +521,7 @@ async def get_outstanding_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting outstanding summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get outstanding summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan piutang.")
 
 
 # =============================================================================
@@ -580,7 +580,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error calculating invoice: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to calculate invoice")
+        raise HTTPException(status_code=500, detail="Gagal menghitung faktur.")
 
 
 # =============================================================================
@@ -1294,7 +1294,7 @@ async def list_invoices(
         raise
     except Exception as e:
         logger.error(f"Error listing invoices: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list invoices")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar faktur.")
 
 
 # =============================================================================
@@ -1688,7 +1688,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get invoice")
+        raise HTTPException(status_code=500, detail="Gagal memuat faktur.")
 
 
 # =============================================================================
@@ -2133,7 +2133,7 @@ async def _execute_fulfillment(
                 raise HTTPException(409, "Idempotency key conflict: payload berbeda")
             return {
                 "fulfillment_id": str(existing["id"]),
-                "message": "Already fulfilled (idempotent)",
+                "message": "Sudah dikirim sebelumnya",
             }
 
     # INSERT invoice_fulfillments header
@@ -3562,7 +3562,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
 
                     return await _simpan_idem_buat(conn, ctx, _kunci_penuh, _sidik, {
                         "success": True,
-                        "message": "Invoice created and posted successfully",
+                        "message": "Faktur dibuat dan diterbitkan",
                         "data": {
                             "status": "posted",
                             "id": str(invoice_id),
@@ -3580,7 +3580,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
 
                 return await _simpan_idem_buat(conn, ctx, _kunci_penuh, _sidik, {
                     "success": True,
-                    "message": "Invoice created successfully",
+                    "message": "Faktur dibuat",
                     "data": {
                         "status": "draft",
                         "id": str(invoice_id),
@@ -3600,7 +3600,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
         raise
     except Exception as e:
         logger.error(f"Error creating invoice: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create invoice")
+        raise HTTPException(status_code=500, detail="Gagal membuat faktur.")
 
 
 # =============================================================================
@@ -4035,7 +4035,7 @@ async def update_invoice(
                 )
                 return {
                     "success": True,
-                    "message": "Invoice updated successfully",
+                    "message": "Faktur diperbarui",
                     "data": {
                         "id": str(updated["id"]),
                         "invoice_number": updated["invoice_number"],
@@ -4062,7 +4062,7 @@ async def update_invoice(
         raise
     except Exception as e:
         logger.error(f"Error updating invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update invoice")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui faktur.")
 
 
 # =============================================================================
@@ -4135,7 +4135,7 @@ async def post_invoice(
 
                 return {
                     "success": True,
-                    "message": "Invoice posted successfully",
+                    "message": "Faktur diterbitkan",
                     "data": {
                         "id": str(invoice_id),
                         "ar_id": post_result.get("ar_id"),
@@ -4152,7 +4152,7 @@ async def post_invoice(
         raise
     except Exception as e:
         logger.error(f"Error posting invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post invoice")
+        raise HTTPException(status_code=500, detail="Gagal memposting faktur.")
 
 
 # =============================================================================
@@ -4336,7 +4336,7 @@ async def record_payment(
 
                 result_payload = {
                     "success": True,
-                    "message": "Payment recorded successfully",
+                    "message": "Pembayaran dicatat",
                     "created_payment_id": str(rp_id),
                     "data": {
                         "status": "posted",
@@ -4367,7 +4367,7 @@ async def record_payment(
         raise
     except Exception as e:
         logger.error(f"Error recording payment for {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to record payment")
+        raise HTTPException(status_code=500, detail="Gagal mencatat pembayaran.")
 
 
 # =============================================================================
@@ -5155,7 +5155,7 @@ async def _tulis_void_faktur(conn, ctx: dict, invoice_id: UUID, r: dict, body) -
 
     return {
         "success": True,
-        "message": "Invoice voided successfully with reversal journals",
+        "message": "Faktur dibatalkan dengan jurnal pembalik",
         "data": {
             "status": voided_status,
             "id": str(invoice_id),
@@ -5290,7 +5290,7 @@ async def preview_receive_payment_for_invoice(
         raise
     except Exception as e:
         logger.error(f"Error previewing receive payment for invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview receive payment")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penerimaan.")
 
 
 @router.post("/{invoice_id}/void/preview")
@@ -5318,7 +5318,7 @@ async def preview_void_invoice(request: Request, invoice_id: UUID, body: VoidInv
         raise
     except Exception as e:
         logger.error(f"Error previewing void invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview void")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pembatalan.")
 
 
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
@@ -5354,7 +5354,7 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
         raise
     except Exception as e:
         logger.error(f"Error voiding invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void invoice")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan faktur.")
 
 
 # =============================================================================
@@ -5494,7 +5494,7 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
     except Exception as e:
         logger.error(f"Error listing applicable deposits: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail="Failed to list applicable deposits"
+            status_code=500, detail="Gagal memuat daftar uang muka yang bisa diterapkan."
         )
 
 
@@ -5572,7 +5572,7 @@ async def delete_invoice(request: Request, invoice_id: UUID):
 
             return {
                 "success": True,
-                "message": "Invoice deleted successfully",
+                "message": "Faktur dihapus",
                 "data": {
                     "status": "draft",
                     "id": str(invoice_id),
@@ -5584,7 +5584,7 @@ async def delete_invoice(request: Request, invoice_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error deleting invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete invoice")
+        raise HTTPException(status_code=500, detail="Gagal menghapus faktur.")
 
 
 # =============================================================================
@@ -5672,7 +5672,7 @@ async def get_invoice_history(
         raise
     except Exception as e:
         logger.error(f"Error getting invoice history {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get invoice history")
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat faktur.")
 
 
 # =============================================================================
@@ -6168,7 +6168,7 @@ async def get_invoice_pdf(
         logger.error(
             f"Error generating PDF for invoice {invoice_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to generate PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF.")
 
 
 # =============================================================================
@@ -6308,7 +6308,7 @@ async def get_invoice_activity(
         raise
     except Exception as e:
         logger.error(f"Error getting invoice activity {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get invoice activity")
+        raise HTTPException(status_code=500, detail="Gagal memuat aktivitas faktur.")
 
 
 # =============================================================================
@@ -6447,7 +6447,7 @@ async def get_invoice_journals(
         raise
     except Exception as e:
         logger.error(f"Error getting invoice journals {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+        raise HTTPException(status_code=500, detail="Gagal memuat jurnal.")
 
 
 # =============================================================================
@@ -6526,7 +6526,7 @@ async def upload_invoice_attachment(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         from ..attachment_limits import baca_lampiran_atau_400
 
@@ -6591,7 +6591,7 @@ async def upload_invoice_attachment(
         logger.error(
             f"Error uploading attachment for invoice {invoice_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+        raise HTTPException(status_code=500, detail="Gagal mengunggah lampiran.")
 
 
 @router.get("/{invoice_id}/attachments")
@@ -6720,7 +6720,7 @@ async def delete_invoice_attachment(
             "DELETE FROM sales_invoice_attachments WHERE id = $1", attachment_id
         )
 
-        return {"success": True, "message": "Attachment deleted"}
+        return {"success": True, "message": "Lampiran dihapus"}
 
 
 @router.get("/{invoice_id}/attachments/{attachment_id}/download")
@@ -6971,7 +6971,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                             "success": True,
                             "data": {
                                 "fulfillment_id": str(existing["id"]),
-                                "message": "Already fulfilled (idempotent)",
+                                "message": "Sudah dikirim sebelumnya",
                             },
                         }
 
@@ -6979,7 +6979,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 # bisa dikirim — pembayaran tak mengubah kewajiban menyerahkan barang (PSAK 72: pendapatan diakui saat
                 # serah terima). Dulu hanya 'posted' -> faktur ber-DP tak pernah bisa dikirim.
                 if invoice["status"] not in _so_kirim.FAKTUR_TERBIT_KIRIM:
-                    raise HTTPException(400, "Hanya faktur terbit (posted/sebagian/lunas) yang bisa dikirim")
+                    raise HTTPException(400, "Hanya faktur terbit (belum lunas, sebagian, atau lunas) yang bisa dikirim.")
                 if invoice["fulfillment_status"] not in _so_kirim.KIRIM_TERBUKA:
                     raise HTTPException(
                         400,
@@ -7019,7 +7019,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error fulfilling invoice {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(500, "Failed to fulfill invoice")
+        raise HTTPException(500, "Gagal mengirim faktur.")
 
 
 @router.get("/{invoice_id}/fulfillments")
@@ -7155,4 +7155,4 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting fulfillments for {invoice_id}: {e}", exc_info=True)
-        raise HTTPException(500, "Failed to get fulfillments")
+        raise HTTPException(500, "Gagal memuat pengiriman.")

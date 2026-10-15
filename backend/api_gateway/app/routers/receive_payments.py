@@ -139,14 +139,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -762,7 +762,7 @@ async def list_receive_payments(
         raise
     except Exception as e:
         logger.error(f"Error listing receive payments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list receive payments")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar penerimaan.")
 
 
 # =============================================================================
@@ -839,7 +839,7 @@ async def get_receive_payments_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting receive payments summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 # =============================================================================
@@ -1198,7 +1198,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting receive payment {payment_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get receive payment")
+        raise HTTPException(status_code=500, detail="Gagal memuat penerimaan.")
 
 
 # =============================================================================
@@ -1369,7 +1369,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         if str(invoice["customer_id"]) != body.customer_id:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invoice {invoice['invoice_number']} belongs to different customer",
+                detail=f"Faktur {invoice['invoice_number']} milik pelanggan lain.",
             )
 
         # Law 16: compute remaining from journal, not amount_paid
@@ -1473,7 +1473,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
 
     result = {
         "success": True,
-        "message": "Receive payment created successfully",
+        "message": "Penerimaan dibuat",
         "data": {
             "id": str(payment_id),
             "payment_number": payment_number,
@@ -1590,7 +1590,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
         raise
     except Exception as e:
         logger.error(f"Error creating receive payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create receive payment")
+        raise HTTPException(status_code=500, detail="Gagal membuat penerimaan.")
 
 
 # =============================================================================
@@ -1703,7 +1703,7 @@ async def update_receive_payment(
                         if str(invoice["customer_id"]) != customer_id:
                             raise HTTPException(
                                 status_code=400,
-                                detail="Invoice belongs to different customer",
+                                detail="Faktur ini milik pelanggan lain.",
                             )
 
                         # Law 16: compute remaining from journal, not amount_paid
@@ -1791,7 +1791,7 @@ async def update_receive_payment(
 
                 return {
                     "success": True,
-                    "message": "Receive payment updated successfully",
+                    "message": "Penerimaan diperbarui",
                     "data": {"id": str(payment_id)},
                 }
 
@@ -1799,7 +1799,7 @@ async def update_receive_payment(
         raise
     except Exception as e:
         logger.error(f"Error updating receive payment {payment_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update receive payment")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui penerimaan.")
 
 
 # =============================================================================
@@ -1847,7 +1847,7 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
 
             return {
                 "success": True,
-                "message": "Receive payment deleted successfully",
+                "message": "Penerimaan dihapus",
                 "data": {
                     "id": str(payment_id),
                     "payment_number": payment["payment_number"],
@@ -1858,7 +1858,7 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error deleting receive payment {payment_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete receive payment")
+        raise HTTPException(status_code=500, detail="Gagal menghapus penerimaan.")
 
 
 # =============================================================================
@@ -2222,7 +2222,7 @@ async def post_receive_payment(request: Request, payment_id: UUID):
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
@@ -2254,7 +2254,7 @@ async def post_receive_payment(request: Request, payment_id: UUID):
 
                 return {
                     "success": True,
-                    "message": "Receive payment posted to accounting",
+                    "message": "Penerimaan diposting",
                     "data": {
                         "id": str(payment_id),
                         "journal_id": result["journal_id"],
@@ -2268,7 +2268,7 @@ async def post_receive_payment(request: Request, payment_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error posting receive payment {payment_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post receive payment")
+        raise HTTPException(status_code=500, detail="Gagal memposting penerimaan.")
 
 
 # =============================================================================
@@ -2296,7 +2296,7 @@ async def unapply_receive_payment_allocation(
 ):
     ctx = get_user_context(request)
     if not ctx.get("user_id"):
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     reason = (body.reason.strip() if body and body.reason else None) or None
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -2807,7 +2807,7 @@ async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) ->
 
     return {
         "success": True,
-        "message": "Receive payment voided successfully",
+        "message": "Penerimaan dibatalkan",
         "data": {
             "id": str(payment_id),
             "void_journal_id": str(void_journal_id),
@@ -2834,7 +2834,7 @@ async def void_receive_payment(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
@@ -2864,7 +2864,7 @@ async def void_receive_payment(
         raise
     except Exception as e:
         logger.error(f"Error voiding receive payment {payment_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void receive payment")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan penerimaan.")
 
 
 async def _keadaan_faktur(conn, tid: str, ids: list) -> dict:
@@ -2889,7 +2889,7 @@ async def preview_void_receive_payment(
     uang muka yang ikut batal."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     alasan = ((body.void_reason if body else None) or "").strip() or None
     tid = ctx["tenant_id"]
     pool = await get_pool()
@@ -3111,7 +3111,7 @@ async def get_receive_payment_journal_entries(request: Request, payment_id: str)
         logger.error(
             f"Error getting receive payment journal entries: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+        raise HTTPException(status_code=500, detail="Gagal memuat jurnal.")
 
 
 @router.get("/{payment_id}/attachments")
@@ -3429,4 +3429,4 @@ async def get_receive_payment_pdf(
         raise
     except Exception as e:
         logger.error(f"Error generating receive payment receipt PDF: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate receipt PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF kwitansi.")

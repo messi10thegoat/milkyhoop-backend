@@ -74,14 +74,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id") or user.get("id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {
         "tenant_id": tenant_id,
@@ -280,7 +280,7 @@ async def list_sales_orders(
         raise
     except Exception as e:
         logger.error(f"Error listing sales orders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list sales orders")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar pesanan.")
 
 
 @router.get("/pending", response_model=PendingOrdersResponse)
@@ -349,7 +349,7 @@ async def get_pending_orders(
         raise
     except Exception as e:
         logger.error(f"Error getting pending orders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get pending orders")
+        raise HTTPException(status_code=500, detail="Gagal memuat pesanan tertunda.")
 
 
 @router.get("/summary", response_model=SalesOrderSummaryResponse)
@@ -416,7 +416,7 @@ async def get_sales_order_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting sales order summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get sales order summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan pesanan.")
 
 
 @router.get("/aggregate")
@@ -439,7 +439,7 @@ async def get_sales_order_aggregate(
         raise
     except Exception as e:
         logger.error(f"Error sales order aggregate: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get sales order aggregate")
+        raise HTTPException(status_code=500, detail="Gagal memuat agregat pesanan.")
 
 
 @router.get("/defaults")
@@ -694,7 +694,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting sales order detail: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get sales order detail")
+        raise HTTPException(status_code=500, detail="Gagal memuat detail pesanan.")
 
 
 # ============================================================================
@@ -906,7 +906,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
 
                 _hasil = SalesOrderResponse(
                     success=True,
-                    message="Sales order created successfully",
+                    message="Pesanan dibuat",
                     data={"id": str(order_id), "order_number": order_number},
                 )
                 if _kunci_penuh:
@@ -920,7 +920,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
         raise
     except Exception as e:
         logger.error(f"Error creating sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create sales order")
+        raise HTTPException(status_code=500, detail="Gagal membuat pesanan.")
 
 
 @router.post("/calculate")
@@ -1053,7 +1053,7 @@ async def update_sales_order(
                     body.__pydantic_fields_set__.discard("order_title")
                     if not body.model_fields_set:
                         return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
-                            success=True, message="Sales order updated", data={"id": order_id}
+                            success=True, message="Pesanan diperbarui", data={"id": order_id}
                         ), order["id"])
 
                 from ..services.document_number import bersihkan_nomor_dokumen_opsional
@@ -1077,7 +1077,7 @@ async def update_sales_order(
                     if await _sut.flag_aktif(conn, ctx["tenant_id"]):
                         hasil = await _sut.ubah(conn, ctx, await _so_untuk_ubah(conn, ctx, order["id"]), body, _hitung_so)
                         return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
-                            success=True, message="Sales order updated", data=hasil), order["id"])
+                            success=True, message="Pesanan diperbarui", data=hasil), order["id"])
                     raise HTTPException(
                         status_code=400, detail="Hanya pesanan berstatus Draf yang bisa diubah."
                     )
@@ -1283,14 +1283,14 @@ async def update_sales_order(
                         source="api:sales_orders.update",
                     )
                 return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
-                    success=True, message="Sales order updated", data={"id": order_id}
+                    success=True, message="Pesanan diperbarui", data={"id": order_id}
                 ), order["id"])
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update sales order")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui pesanan.")
 
 
 async def _so_untuk_ubah(conn, ctx: dict, so_id) -> Optional[dict]:
@@ -1453,7 +1453,7 @@ async def delete_sales_order(request: Request, order_id: str):
                 data = await hapus_so_draf_core(conn, ctx, order_id)
             return SalesOrderResponse(
                 success=True,
-                message="Sales order deleted",
+                message="Pesanan dihapus",
                 data=data,
             )
 
@@ -1461,7 +1461,7 @@ async def delete_sales_order(request: Request, order_id: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete sales order")
+        raise HTTPException(status_code=500, detail="Gagal menghapus pesanan.")
 
 
 # ============================================================================
@@ -1531,13 +1531,13 @@ async def confirm_sales_order(request: Request, order_id: str):
         # 2 Okt 2026: transaksi -- kode order pemicu 'so_confirmed' terbit ATOMIK bersama konfirmasinya.
         async with pool.acquire() as conn, conn.transaction():
             h = await _konfirmasi_so(conn, ctx, order_id)
-            return SalesOrderResponse(success=True, message="Sales order confirmed", data=h)
+            return SalesOrderResponse(success=True, message="Pesanan dikonfirmasi", data=h)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error confirming sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to confirm sales order")
+        raise HTTPException(status_code=500, detail="Gagal mengonfirmasi pesanan.")
 
 
 @router.post("/{order_id}/confirm/preview", response_model=SalesOrderResponse)
@@ -1559,7 +1559,7 @@ async def preview_confirm_sales_order(request: Request, order_id: str):
         raise
     except Exception as e:
         logger.error(f"Error previewing confirm of sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview sales order confirmation")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau konfirmasi pesanan.")
 
 
 SO_TAK_BISA_BATAL = ("cancelled", "completed", "invoiced")
@@ -1713,7 +1713,7 @@ async def cancel_sales_order(
 
             return SalesOrderResponse(
                 success=True,
-                message="Sales order cancelled",
+                message="Pesanan dibatalkan",
                 data={"order_number": order["order_number"], "status": "cancelled", "reason": alasan_batal,
                       "proformas_cancelled": proformas_cancelled, "deposits_remaining": deposits_remaining},
             )
@@ -1722,7 +1722,7 @@ async def cancel_sales_order(
         raise
     except Exception as e:
         logger.error(f"Error cancelling sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cancel sales order")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan pesanan.")
 
 
 @router.post("/{order_id}/cancel/preview")
@@ -1764,7 +1764,7 @@ async def preview_cancel_sales_order(
         raise
     except Exception as e:
         logger.error(f"Error previewing cancel of sales order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview cancel")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pembatalan.")
 
 
 SO_BISA_DITUTUP = ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped")
@@ -1951,7 +1951,7 @@ async def close_sales_order(
 
                 return SalesOrderResponse(
                     success=True,
-                    message="Sales order closed",
+                    message="Pesanan ditutup",
                     data={"order_number": order["order_number"], "status": "completed",
                           "forced": bool(kurang), "reason": reason,
                           "cancelled_lines": kurang, "deposits_remaining": dp_tetap},
@@ -1961,7 +1961,7 @@ async def close_sales_order(
         raise
     except Exception as e:
         logger.error(f"Error closing sales order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to close sales order")
+        raise HTTPException(status_code=500, detail="Gagal menutup pesanan.")
 
 
 async def _nilai_batal(conn, ctx, order_id, rows: list, qty_batal: dict) -> dict:
@@ -2043,7 +2043,7 @@ async def preview_close_sales_order(
         raise
     except Exception as e:
         logger.error(f"Error previewing close of sales order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview close")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penutupan.")
 
 
 from ..services.so_pelunasan import SOReceivePaymentPreviewRequest, pratinjau_pelunasan_so  # noqa: E402
@@ -2076,7 +2076,7 @@ async def preview_receive_payment_from_order(
         raise
     except Exception as e:
         logger.error(f"Error previewing receive payment for order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview receive payment")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penerimaan.")
 
 
 from ..services.so_pengiriman import (  # noqa: E402
@@ -2112,7 +2112,7 @@ async def preview_fulfill_order(request: Request, order_id: str, body: SOFulfill
         raise
     except Exception as e:
         logger.error(f"Error previewing fulfill for order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview shipment")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pengiriman.")
 
 
 @router.post("/{order_id}/fulfill")
@@ -2167,7 +2167,7 @@ async def fulfill_order(request: Request, response: Response, order_id: str, bod
         raise
     except Exception as e:
         logger.error(f"Error fulfilling order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to ship order")
+        raise HTTPException(status_code=500, detail="Gagal mengirim pesanan.")
 
 
 @router.post("/{order_id}/ship", response_model=SalesOrderResponse)
@@ -2276,7 +2276,7 @@ async def get_order_shipments(request: Request, order_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting shipments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get shipments")
+        raise HTTPException(status_code=500, detail="Gagal memuat pengiriman.")
 
 
 # ============================================================================
@@ -2726,7 +2726,7 @@ async def convert_to_invoice(
                 dp = await _uang_muka_terterap(conn, ctx["tenant_id"], h["invoice_id"])
                 hasil = SalesOrderResponse(
                     success=True,
-                    message="Invoice created and posted from sales order" if h["posted"]
+                    message="Faktur dibuat dan diterbitkan dari pesanan" if h["posted"]
                     else "Invoice created from sales order",
                     data={
                         "invoice_id": str(h["invoice_id"]),
@@ -2752,7 +2752,7 @@ async def convert_to_invoice(
         raise
     except Exception as e:
         logger.error(f"Error converting to invoice: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to convert to invoice")
+        raise HTTPException(status_code=500, detail="Gagal mengubah menjadi faktur.")
 
 
 @router.post("/{order_id}/to-invoice/preview")
@@ -2781,7 +2781,7 @@ async def preview_to_invoice(request: Request, order_id: str, body: ConvertToInv
         raise
     except Exception as e:
         logger.error(f"Error previewing invoice from order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview invoice")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau faktur.")
 
 
 async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:

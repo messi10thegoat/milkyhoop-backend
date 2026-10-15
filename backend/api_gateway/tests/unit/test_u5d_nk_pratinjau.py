@@ -34,7 +34,7 @@ def test_handler_void_dan_pratinjau_memakai_inti_yang_sama():
 
 def test_inti_void_memuat_semua_langkah_lama():
     inti = inspect.getsource(C.void_nota_kredit_core)
-    for penanda in ("CREDIT_NOTE_VOID:", "pg_advisory_xact_lock", "Draft credit note deleted", "amount_applied",
+    for penanda in ("CREDIT_NOTE_VOID:", "pg_advisory_xact_lock", "Draf nota kredit dihapus", "amount_applied",
                     "amount_refunded", "created_deposit_id", "fiscal_periods", "pulihkan_saat_void", "get_next_journal_number",
                     "reversal_of_id", "UPDATE journal_entries SET status = 'POSTED'", "reversed_by_id", "CREDIT_NOTE_COGS",
                     "record_inventory_reversal", "segarkan_cache_piutang_faktur", "voided_reason = $3", "'void'"):

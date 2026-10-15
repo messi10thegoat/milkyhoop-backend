@@ -61,14 +61,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id") or user.get("id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {
         "tenant_id": tenant_id,
@@ -381,7 +381,7 @@ async def list_quotes(
         raise
     except Exception as e:
         logger.error(f"Error listing quotes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list quotes")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar penawaran.")
 
 
 @router.get("/defaults")
@@ -441,7 +441,7 @@ async def get_expiring_quotes(
         raise
     except Exception as e:
         logger.error(f"Error getting expiring quotes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get expiring quotes")
+        raise HTTPException(status_code=500, detail="Gagal memuat penawaran yang segera kedaluwarsa.")
 
 
 @router.get("/summary", response_model=QuoteSummaryResponse)
@@ -514,7 +514,7 @@ async def get_quote_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting quote summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get quote summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan penawaran.")
 
 
 @router.get("/{quote_id}", response_model=QuoteDetailResponse)
@@ -647,7 +647,7 @@ async def get_quote_detail(request: Request, quote_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting quote detail: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get quote detail")
+        raise HTTPException(status_code=500, detail="Gagal memuat detail penawaran.")
 
 
 # ============================================================================
@@ -828,7 +828,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
 
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_CREATE", QuoteResponse(
                     success=True,
-                    message="Quote created successfully",
+                    message="Penawaran dibuat",
                     data={
                         "id": str(quote_id),
                         "quote_number": quote_number,
@@ -843,7 +843,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
         raise
     except Exception as e:
         logger.error(f"Error creating quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create quote")
+        raise HTTPException(status_code=500, detail="Gagal membuat penawaran.")
 
 
 @router.post("/calculate")
@@ -949,7 +949,7 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
         raise
     except Exception as e:
         logger.error(f"Error updating quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update quote")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui penawaran.")
 
 
 async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteRequest) -> QuoteResponse:
@@ -1235,7 +1235,7 @@ async def preview_edit_quote(request: Request, quote_id: str, body: UpdateQuoteR
         raise
     except Exception as e:
         logger.error(f"Error previewing quote edit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview quote edit")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau ubah penawaran.")
 
 
 # ---- ubah penawaran: penjaga + potret + diff (13 Okt 2026) ----
@@ -1400,7 +1400,7 @@ async def delete_quote(request: Request, quote_id: str):
 
             return QuoteResponse(
                 success=True,
-                message="Quote deleted successfully",
+                message="Penawaran dihapus",
                 data=data,
             )
 
@@ -1408,7 +1408,7 @@ async def delete_quote(request: Request, quote_id: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete quote")
+        raise HTTPException(status_code=500, detail="Gagal menghapus penawaran.")
 
 
 # ============================================================================
@@ -1491,7 +1491,7 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
             data = await kirim_penawaran_core(conn, ctx, quote_id, bool(body and body.send_email))
             return QuoteResponse(
                 success=True,
-                message="Quote sent successfully",
+                message="Penawaran dikirim",
                 data=data,
             )
 
@@ -1499,7 +1499,7 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
         raise
     except Exception as e:
         logger.error(f"Error sending quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to send quote")
+        raise HTTPException(status_code=500, detail="Gagal mengirim penawaran.")
 
 
 @router.post("/{quote_id}/accept", response_model=QuoteResponse)
@@ -1547,7 +1547,7 @@ async def accept_quote(request: Request, quote_id: str):
 
             return QuoteResponse(
                 success=True,
-                message="Quote accepted",
+                message="Penawaran diterima",
                 data={"quote_number": quote["quote_number"], "status": "accepted"},
             )
 
@@ -1555,7 +1555,7 @@ async def accept_quote(request: Request, quote_id: str):
         raise
     except Exception as e:
         logger.error(f"Error accepting quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to accept quote")
+        raise HTTPException(status_code=500, detail="Gagal menerima penawaran.")
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1629,7 +1629,7 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
 
             return QuoteResponse(
                 success=True,
-                message="Quote declined",
+                message="Penawaran ditolak",
                 data={"quote_number": quote["quote_number"], "status": "declined"},
             )
 
@@ -1637,7 +1637,7 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
         raise
     except Exception as e:
         logger.error(f"Error declining quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to decline quote")
+        raise HTTPException(status_code=500, detail="Gagal menolak penawaran.")
 
 
 # ============================================================================
@@ -1706,7 +1706,7 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
 
             return QuoteResponse(
                 success=True,
-                message="Quote voided successfully",
+                message="Penawaran dibatalkan",
                 data={
                     "quote_id": quote_id,
                     "quote_number": quote["quote_number"],
@@ -1719,7 +1719,7 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
         raise
     except Exception as e:
         logger.error(f"Error voiding quote {quote_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void quote")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan penawaran.")
 
 
 @router.post("/{quote_id}/duplicate", response_model=QuoteResponse)
@@ -1853,7 +1853,7 @@ async def duplicate_quote(
 
                 return QuoteResponse(
                     success=True,
-                    message="Quote duplicated successfully",
+                    message="Penawaran digandakan",
                     data={
                         "id": str(new_id),
                         "quote_number": new_number,
@@ -1865,7 +1865,7 @@ async def duplicate_quote(
         raise
     except Exception as e:
         logger.error(f"Error duplicating quote: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to duplicate quote")
+        raise HTTPException(status_code=500, detail="Gagal menggandakan penawaran.")
 
 
 # ============================================================================
@@ -2047,7 +2047,7 @@ async def convert_to_invoice(
 
                 return QuoteResponse(
                     success=True,
-                    message="Quote converted to invoice",
+                    message="Penawaran dijadikan faktur",
                     data={
                         "quote_id": quote_id,
                         "invoice_id": str(invoice_id),
@@ -2062,7 +2062,7 @@ async def convert_to_invoice(
     except Exception as e:
         logger.error(f"Error converting quote to invoice: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail="Failed to convert quote to invoice"
+            status_code=500, detail="Gagal mengubah penawaran menjadi faktur."
         )
 
 
@@ -2099,7 +2099,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
         if so_lama:
             return QuoteResponse(
                 success=True,
-                message="Quote already converted to sales order",
+                message="Penawaran sudah dijadikan pesanan",
                 data={"quote_id": quote_id, "sales_order_id": str(so_lama["id"]),
                       "order_number": so_lama["order_number"], "already_converted": True},
             )
@@ -2273,7 +2273,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
 
     return QuoteResponse(
         success=True,
-        message="Quote converted to sales order",
+        message="Penawaran dijadikan pesanan",
         data={
             "quote_id": quote_id,
             "sales_order_id": str(so_id),
@@ -2300,7 +2300,7 @@ async def convert_to_sales_order(
     except Exception as e:
         logger.error(f"Error converting quote to sales order: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail="Failed to convert quote to sales order"
+            status_code=500, detail="Gagal mengubah penawaran menjadi pesanan."
         )
 
 
@@ -2579,4 +2579,4 @@ async def get_quote_pdf(
         raise
     except Exception as e:
         logger.error(f"Error generating PDF for quote {quote_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF.")

@@ -88,14 +88,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id") or user.get("id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {
         "tenant_id": tenant_id,
@@ -479,7 +479,7 @@ async def list_proformas(
         raise
     except Exception as e:
         logger.error(f"Error listing proformas: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list proformas")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar proforma.")
 
 
 async def kelas_bayar_terbit(conn, tid: str, rows) -> dict:
@@ -641,7 +641,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get proforma")
+        raise HTTPException(status_code=500, detail="Gagal memuat proforma.")
 
 
 @so_router.get("/{order_id}/proformas")
@@ -701,7 +701,7 @@ async def list_proformas_for_order(request: Request, order_id: str):
         raise
     except Exception as e:
         logger.error(f"Error listing proformas for order {order_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list proformas")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar proforma.")
 
 
 # ============================================================================
@@ -835,7 +835,7 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
         raise
     except Exception as e:
         logger.error(f"Error creating proforma: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create proforma")
+        raise HTTPException(status_code=500, detail="Gagal membuat proforma.")
 
 
 @router.patch("/{proforma_id}")
@@ -869,7 +869,7 @@ async def update_proforma(request: Request, proforma_id: str, body: UpdateProfor
         raise
     except Exception as e:
         logger.error(f"Error updating proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update proforma")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui proforma.")
 
 
 # ============================================================================
@@ -1210,7 +1210,7 @@ async def issue_proforma(request: Request, proforma_id: str, response: _Response
         raise
     except Exception as e:
         logger.error(f"Error issuing proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to issue proforma")
+        raise HTTPException(status_code=500, detail="Gagal menerbitkan proforma.")
 
 
 async def batal_proforma_core(conn, ctx: dict, pid, alasan, hanya_draf: bool = False) -> dict:
@@ -1258,7 +1258,7 @@ async def cancel_proforma(request: Request, proforma_id: str, body: CancelProfor
         raise
     except Exception as e:
         logger.error(f"Error cancelling proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cancel proforma")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan proforma.")
 
 
 # ============================================================================
@@ -1387,7 +1387,7 @@ async def correct_proforma_amount(request: Request, proforma_id: str, body: Kore
         raise
     except Exception as e:
         logger.error(f"Error correcting proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to correct proforma amount")
+        raise HTTPException(status_code=500, detail="Gagal mengoreksi nilai proforma.")
 
 
 @router.post("/{proforma_id}/correct-amount/preview")
@@ -1399,7 +1399,7 @@ async def preview_correct_proforma_amount(request: Request, proforma_id: str, bo
         raise
     except Exception as e:
         logger.error(f"Error previewing proforma correction {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to preview proforma correction")
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau koreksi proforma.")
 
 
 # ============================================================================
@@ -1638,4 +1638,4 @@ async def get_proforma_pdf(
         raise
     except Exception as e:
         logger.error(f"Error generating PDF for proforma {proforma_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF.")

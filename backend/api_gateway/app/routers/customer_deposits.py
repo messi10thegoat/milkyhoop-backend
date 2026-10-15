@@ -162,14 +162,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Perlu masuk (login).")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Konteks pengguna tidak sah.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -363,9 +363,9 @@ async def _assert_ar_side_is_ar_trade(conn, tenant_id: str, ar_line_account_id) 
         raise HTTPException(
             status_code=500,
             detail=(
-                "Invariant #7 violated: deposit AR-side line resolved to "
-                "REVENUE_DEFERRED (2-10750). Deposit settlement must hit "
-                "AR_TRADE (Piutang Usaha), never deferred revenue."
+                "Invarian #7 dilanggar: baris sisi piutang uang muka mengarah ke "
+                "REVENUE_DEFERRED (2-10750). Penyelesaian uang muka wajib ke "
+                "AR_TRADE (Piutang Usaha), bukan pendapatan ditangguhkan."
             ),
         )
 
@@ -526,7 +526,7 @@ async def list_customer_deposits(
         raise
     except Exception as e:
         logger.error(f"Error listing customer deposits: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list customer deposits")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar uang muka pelanggan.")
 
 
 # =============================================================================
@@ -608,7 +608,7 @@ async def get_customer_deposits_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting customer deposits summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 # =============================================================================
@@ -774,7 +774,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting customer deposit {deposit_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal memuat uang muka pelanggan.")
 
 
 # =============================================================================
@@ -990,7 +990,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         # 4 Okt 2026 (MASTER GO, ukur idempotensi jalur buat CW): header X-Idempotency-Key = CADANGAN
         # body.idempotency_key (pola to-invoice). Dulu header DIABAIKAN -> klien yang hanya mengirim header tak
@@ -1054,8 +1054,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"Customer deposit {existing['deposit_number']} "
-                                "already exists (idempotent)"
+                                f"Uang muka {existing['deposit_number']} "
+                                "sudah tercatat sebelumnya"
                             ),
                             "data": {
                                 "id": str(existing["id"]),
@@ -1178,8 +1178,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"Customer deposit {winner['deposit_number']} "
-                                "already exists (idempotent)"
+                                f"Uang muka {winner['deposit_number']} "
+                                "sudah tercatat sebelumnya"
                             ),
                             "data": {
                                 "id": str(winner["id"]),
@@ -1194,7 +1194,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
 
                 result = {
                     "success": True,
-                    "message": "Customer deposit created successfully",
+                    "message": "Uang muka dibuat",
                     "data": {
                         "id": str(dep_id),
                         "deposit_number": dep_number,
@@ -1239,7 +1239,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
         raise
     except Exception as e:
         logger.error(f"Error creating customer deposit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal membuat uang muka pelanggan.")
 
 
 # =============================================================================
@@ -1385,7 +1385,7 @@ async def update_customer_deposit(
 
                 return {
                     "success": True,
-                    "message": "Customer deposit updated successfully",
+                    "message": "Uang muka diperbarui",
                     "data": {"id": str(deposit_id)},
                 }
 
@@ -1395,7 +1395,7 @@ async def update_customer_deposit(
         logger.error(
             f"Error updating customer deposit {deposit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to update customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui uang muka pelanggan.")
 
 
 # =============================================================================
@@ -1467,7 +1467,7 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
 
             return {
                 "success": True,
-                "message": "Customer deposit deleted successfully",
+                "message": "Uang muka dihapus",
                 "data": {
                     "id": str(deposit_id),
                     "deposit_number": dep["deposit_number"],
@@ -1480,7 +1480,7 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
         logger.error(
             f"Error deleting customer deposit {deposit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to delete customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal menghapus uang muka pelanggan.")
 
 
 # =============================================================================
@@ -1687,7 +1687,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -1712,7 +1712,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
 
                 return {
                     "success": True,
-                    "message": "Customer deposit posted to accounting",
+                    "message": "Uang muka diposting",
                     "data": {
                         "id": str(deposit_id),
                         "journal_id": result["journal_id"],
@@ -1725,7 +1725,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error posting customer deposit {deposit_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal memposting uang muka pelanggan.")
 
 
 # =============================================================================
@@ -1991,7 +1991,7 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
 
     return {
         "success": True,
-        "message": f"Deposit applied to {len(applications_created)} invoice(s)",
+        "message": f"Uang muka diterapkan ke {len(applications_created)} faktur",
         "data": {
             "id": str(deposit_id),
             "applications": applications_created,
@@ -2017,7 +2017,7 @@ async def apply_customer_deposit(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -2041,7 +2041,7 @@ async def apply_customer_deposit(
         logger.error(
             f"Error applying customer deposit {deposit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to apply customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal menerapkan uang muka pelanggan.")
 
 
 # =============================================================================
@@ -2084,7 +2084,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     ]:
         return {
             "success": True,
-            "message": "Application already reversed (idempotent)",
+            "message": "Penerapan sudah dilepas sebelumnya",
             "data": {
                 "id": str(deposit_id),
                 "application_id": str(application_id),
@@ -2278,7 +2278,7 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
 
     return {
         "success": True,
-        "message": "Deposit application reversed (un-applied)",
+        "message": "Penerapan uang muka dilepas",
         "data": {
             "id": str(deposit_id),
             "application_id": str(application_id),
@@ -2318,7 +2318,7 @@ async def reverse_customer_deposit_application(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool)
@@ -2343,7 +2343,7 @@ async def reverse_customer_deposit_application(
             exc_info=True,
         )
         raise HTTPException(
-            status_code=500, detail="Failed to reverse deposit application"
+            status_code=500, detail="Gagal melepas penerapan uang muka."
         )
 
 
@@ -2567,7 +2567,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
 
     return {
         "success": True,
-        "message": "Refund issued successfully",
+        "message": "Pengembalian dana dicatat",
         "data": {
             "id": str(deposit_id),
             "refund_id": str(refund_id),
@@ -2593,7 +2593,7 @@ async def refund_customer_deposit(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -2618,7 +2618,7 @@ async def refund_customer_deposit(
         logger.error(
             f"Error refunding customer deposit {deposit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to refund customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal mengembalikan dana uang muka pelanggan.")
 
 
 # =============================================================================
@@ -2673,7 +2673,7 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
             raise HTTPException(status_code=409, detail="Uang muka sudah berubah status.")
         return {
             "success": True,
-            "message": "Draft deposit deleted",
+            "message": "Draf uang muka dihapus",
             "data": {"id": str(deposit_id)},
         }
 
@@ -2845,7 +2845,7 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
 
     return {
         "success": True,
-        "message": "Customer deposit voided successfully",
+        "message": "Uang muka dibatalkan",
         "data": {"id": str(deposit_id), "status": "void"},
     }
 
@@ -2863,7 +2863,7 @@ async def void_customer_deposit(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
 
@@ -2890,7 +2890,7 @@ async def void_customer_deposit(
         raise
     except Exception as e:
         logger.error(f"Error voiding customer deposit {deposit_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void customer deposit")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan uang muka pelanggan.")
 
 
 # =============================================================================
@@ -3080,7 +3080,7 @@ class PratinjauVoidDp(BaseModel):
 async def _ctx_pratinjau(request):
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     await _ensure_role_preconditions(await get_pool(), ctx["tenant_id"])
     return ctx
 
@@ -3392,7 +3392,7 @@ async def list_customer_deposits_by_customer(
         logger.error(
             f"Error listing deposits for customer {customer_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to list customer deposits")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar uang muka pelanggan.")
 
 
 # =============================================================================
@@ -3593,7 +3593,7 @@ async def get_customer_deposit_pdf(
         raise
     except Exception as e:
         logger.error(f"Error generating deposit receipt PDF: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate receipt PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF kwitansi.")
 
 
 # =============================================================================
@@ -3688,7 +3688,7 @@ async def upload_deposit_attachment(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         # L2: satu sumber aturan (ekstensi + byte awal + 10 MB); tipe resmi
         # PENUH (dulu storage.upload_file menolak selain 6 tipe -> 500).
@@ -3784,7 +3784,7 @@ async def upload_deposit_attachment(
             f"Error uploading attachment for customer deposit {deposit_id}: {e}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+        raise HTTPException(status_code=500, detail="Gagal mengunggah lampiran.")
 
 
 @router.get("/{deposit_id}/attachments")
@@ -3935,4 +3935,4 @@ async def delete_deposit_attachment(
                 tenant_id,
             )
 
-    return {"success": True, "message": "Attachment deleted"}
+    return {"success": True, "message": "Lampiran dihapus"}

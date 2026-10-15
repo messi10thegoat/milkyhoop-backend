@@ -179,3 +179,59 @@ def f(remaining, s):
 def test_galat_penjualan_berbahasa_indonesia(rel):
     temuan = pindai((APP / rel).read_text())
     assert temuan == [], f"{rel}: {temuan}"
+
+
+
+# ---------- #9 (15 Okt 2026, MASTER): SEMUA pesan Penjualan Indonesia -- juga 401, 5xx, dan pesan SUKSES ----------
+# Penjaga di atas sengaja 4xx saja; sapuan #9 menutup sisanya. Kata Inggris lebih ketat (partisip sukses ikut).
+INGGRIS_SEMUA = re.compile(INGGRIS.pattern[:-3] + r"|updated|created|deleted|confirmed|cancell?ed|accepted|declined|applied"
+                           r"|converted|issued|posted|voided|reversed|recorded|duplicated|context|authentication)\b", re.I)
+BERKAS_SEMUA = BERKAS + ["routers/dokumen.py", "routers/sj_so.py"]
+
+
+def _teks_inggris(node) -> list:
+    out = []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if INGGRIS_SEMUA.search(node.value):
+            out.append(node.value[:80])
+    elif isinstance(node, ast.JoinedStr):
+        out += [p.value[:80] for p in node.values if isinstance(p, ast.Constant) and INGGRIS_SEMUA.search(p.value)]
+    elif isinstance(node, ast.BinOp):
+        out += _teks_inggris(node.left) + _teks_inggris(node.right)
+    return out
+
+
+def pindai_semua(sumber: str) -> list:
+    """detail HTTPException (SEMUA kode) + `message=` kata kunci + dict {"message": ..} (respons sukses / blok)."""
+    hasil = []
+    for n in ast.walk(ast.parse(sumber)):
+        if isinstance(n, ast.Call):
+            if getattr(n.func, "id", getattr(n.func, "attr", None)) == "HTTPException":
+                d = _detail(n)
+                hasil += [(n.lineno, x) for x in _teks_inggris(d)] if d is not None else []
+            hasil += [(n.lineno, x) for kw in n.keywords if kw.arg in ("message", "detail") for x in _teks_inggris(kw.value)]
+        elif isinstance(n, ast.Dict):
+            for k, v in zip(n.keys, n.values):
+                if isinstance(k, ast.Constant) and k.value in ("message", "detail"):
+                    hasil += [(n.lineno, x) for x in _teks_inggris(v)]
+    return sorted(set(hasil))
+
+
+def test_pemindai_semua_bisa_merah():
+    buruk = """
+from fastapi import HTTPException
+def f(n):
+    raise HTTPException(status_code=401, detail="Authentication required")
+    raise HTTPException(status_code=500, detail="Failed to list quotes")
+    return QuoteResponse(success=True, message="Quote created successfully", data=n)
+    return {"success": True, "message": f"Deposit applied to {n} invoice(s)"}
+    return {"success": True, "message": "Sales order updated"}
+"""
+    assert len(pindai_semua(buruk)) == 5, pindai_semua(buruk)
+    assert pindai_semua("def f():\n    return {'message': 'Pesanan diperbarui'}\n") == []
+
+
+@pytest.mark.parametrize("rel", BERKAS_SEMUA)
+def test_semua_pesan_penjualan_berbahasa_indonesia(rel):
+    temuan = pindai_semua((APP / rel).read_text())
+    assert temuan == [], f"{rel}: {temuan}"
