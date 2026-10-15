@@ -54,7 +54,7 @@ from ..utils.metode_pembayaran import label_metode_layar
 from ..services import teks_galat as tg
 from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
 from ..services.so_riwayat import catat_riwayat
-from ..services.deposit_jenis import jenis_dari_purpose, label_deposit, label_kwitansi, sql_jenis_efektif
+from ..services.deposit_jenis import jenis_dari_purpose, label_deposit, label_jenis, label_kwitansi, sql_jenis_efektif
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
 from typing import Optional, Literal
 from uuid import UUID
@@ -1038,7 +1038,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         """
                         SELECT id, deposit_number, amount, status, customer_id, customer_name,
                                deposit_date, payment_method, account_id, bank_account_id,
-                               quote_id, sales_order_id, proforma_id
+                               quote_id, sales_order_id, proforma_id,
+                               """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif
                         FROM customer_deposits
                         WHERE tenant_id = $1 AND idempotency_key = $2
                         """,
@@ -1054,7 +1055,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"{await label_deposit(conn, ctx['tenant_id'], existing['id'])} {existing['deposit_number']} "
+                                f"{label_jenis(existing['jenis_efektif'])} {existing['deposit_number']} "
                                 "sudah tercatat sebelumnya"
                             ),
                             "data": {
@@ -1166,7 +1167,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         """
                         SELECT id, deposit_number, amount, status, customer_id, customer_name,
                                deposit_date, payment_method, account_id, bank_account_id,
-                               quote_id, sales_order_id, proforma_id
+                               quote_id, sales_order_id, proforma_id,
+                               """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif
                         FROM customer_deposits
                         WHERE tenant_id = $1 AND idempotency_key = $2
                         """,
@@ -1178,7 +1180,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"{await label_deposit(conn, ctx['tenant_id'], winner['id'])} {winner['deposit_number']} "
+                                f"{label_jenis(winner['jenis_efektif'])} {winner['deposit_number']} "
                                 "sudah tercatat sebelumnya"
                             ),
                             "data": {

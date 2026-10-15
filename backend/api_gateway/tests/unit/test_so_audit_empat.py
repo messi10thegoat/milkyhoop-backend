@@ -36,7 +36,7 @@ def _tersimpan(**ubah):
     r = {"id": uuid.uuid4(), "deposit_number": "DEP-2609-0009", "amount": D("2000000.00"), "status": "draft",
          "customer_id": PELANGGAN, "customer_name": "Agung", "deposit_date": date(2026, 9, 26),
          "payment_method": "transfer", "account_id": AKUN, "bank_account_id": None, "quote_id": None,
-         "sales_order_id": PESANAN, "proforma_id": None}
+         "sales_order_id": PESANAN, "proforma_id": None, "jenis_efektif": "DP"}  # PELUNASAN-TEKS: SELECT idempoten membawa jenis
     r.update(ubah)
     return r
 
@@ -150,7 +150,8 @@ def test_dp_jalur_balapan_unique_violation_juga_membandingkan():
     # dua titik balasan idempoten (pra-cek + tangkapan UniqueViolation) sama-sama lewat pembanding
     assert src.count("_tolak_bila_maksud_beda(existing, body)") == 1
     assert src.count("_tolak_bila_maksud_beda(winner, body)") == 1
-    assert src.count("quote_id, sales_order_id, proforma_id\n                        FROM customer_deposits") == 2
+    # PELUNASAN-TEKS/#9: SELECT idempoten kini juga membawa jenis efektif (label pesan replay) -- tetap dua kueri yang sama
+    assert src.count('quote_id, sales_order_id, proforma_id,\n                               """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif\n                        FROM customer_deposits') == 2
 
 
 # ------------------------------------------------------------------ 2+3. terkirim / belum dikirim
