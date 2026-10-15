@@ -29,11 +29,14 @@ DELETE /api/cheques/{cheque_id}
 DELETE /api/consolidation/entities/{entity_id}
 DELETE /api/consolidation/groups/{group_id}
 DELETE /api/cost-centers/{cost_center_id}
+DELETE /api/credit-notes/{doc_id}/attachments/{attachment_id}
+DELETE /api/quotes/{doc_id}/attachments/{attachment_id}
 POST /api/credit-notes/bulk/export
 POST /api/credit-notes/bulk/pdf
 POST /api/credit-notes/bulk/share
 POST /api/credit-notes/bulk/share/preview
 DELETE /api/credit-notes/{credit_note_id}
+POST /api/credit-notes/{doc_id}/attachments
 POST /api/customer-deposits/bulk/export
 POST /api/customer-deposits/bulk/pdf
 POST /api/customer-deposits/bulk/share
@@ -74,6 +77,7 @@ POST /api/quotes/bulk/pdf
 POST /api/quotes/bulk/share
 POST /api/quotes/bulk/share/preview
 DELETE /api/quotes/{quote_id}
+POST /api/quotes/{doc_id}/attachments
 POST /api/receive-payments/bulk/export
 POST /api/receive-payments/bulk/pdf
 POST /api/receive-payments/bulk/share
