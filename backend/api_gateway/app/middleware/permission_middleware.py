@@ -1218,7 +1218,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=401,
                     content={
-                        "error": "Authentication required",
+                        "error": "Silakan masuk terlebih dahulu.",
                         "code": "UNAUTHENTICATED",
                     },
                 )
@@ -1291,21 +1291,21 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                     )
 
                     action_names = {
-                        "C": "create",
-                        "R": "view",
-                        "U": "update",
-                        "D": "delete",
-                        "V": "void",
-                        "A": "approve",
-                        "P": "post",
-                        "E": "export",
+                        "C": "membuat",
+                        "R": "melihat",
+                        "U": "mengubah",
+                        "D": "menghapus",
+                        "V": "membatalkan",
+                        "A": "menyetujui",
+                        "P": "memposting",
+                        "E": "mengekspor",
                     }
 
                     return JSONResponse(
                         status_code=403,
                         content={
-                            "error": "Permission denied",
-                            "message": f"You don't have permission to {action_names.get(action, action)} {module.replace('_', ' ')}",
+                            "error": "Akses ditolak.",
+                            "message": f"Anda tidak punya izin untuk {action_names.get(action, action)} {module.replace('_', ' ')}.",
                             "code": "PERMISSION_DENIED",
                             "required_module": module,
                             "required_action": action,
@@ -1329,7 +1329,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=403,
                     content={
-                        "error": "Permission check failed",
+                        "error": "Pemeriksaan izin gagal, coba lagi sebentar lagi.",
                         "message": "Pemeriksaan izin gagal; coba lagi sebentar lagi.",
                         "code": "PERMISSION_CHECK_ERROR",
                     },
@@ -1339,7 +1339,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         # OWNER tetap lolos (konsisten dgn bypass can()), non-owner -> 403 PERMISSION_UNMAPPED. READ tetap terbuka.
         elif method in self._write_methods and not any(p.match(path) for p in self._compiled_write_exempt):
             if not hasattr(request.state, "user") or not request.state.user:
-                return JSONResponse(status_code=401, content={"error": "Authentication required", "code": "UNAUTHENTICATED"})
+                return JSONResponse(status_code=401, content={"error": "Silakan masuk terlebih dahulu.", "code": "UNAUTHENTICATED"})
             user = request.state.user
             try:
                 context = await get_policy_engine().get_user_context(
@@ -1358,14 +1358,14 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=403,
                     content={
-                        "error": "Permission denied",
+                        "error": "Akses ditolak.",
                         "message": "Aksi ini belum diberi izin untuk peran Anda. Hubungi pemilik usaha.",
                         "code": "PERMISSION_UNMAPPED",
                     },
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error(f"PERMISSION_UNMAPPED check error -> DITOLAK: path={path} method={method} err={type(e).__name__}: {e}")
-                return JSONResponse(status_code=403, content={"error": "Permission check failed", "code": "PERMISSION_CHECK_ERROR"})
+                return JSONResponse(status_code=403, content={"error": "Pemeriksaan izin gagal, coba lagi sebentar lagi.", "code": "PERMISSION_CHECK_ERROR"})
 
         # 21 Sep 2026 STEP 2: default-CLOSED for READ. Unmatched GET/HEAD NOT in the READ
         # leave-open allowlist -> OWNER passes (consistent with can() bypass), non-owner -> 403
@@ -1374,7 +1374,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
         # allowlist. Mirrors the WRITE default-closed branch.
         elif method in ("GET", "HEAD") and not any(p.match(path) for p in self._compiled_read_open):
             if not hasattr(request.state, "user") or not request.state.user:
-                return JSONResponse(status_code=401, content={"error": "Authentication required", "code": "UNAUTHENTICATED"})
+                return JSONResponse(status_code=401, content={"error": "Silakan masuk terlebih dahulu.", "code": "UNAUTHENTICATED"})
             user = request.state.user
             try:
                 context = await get_policy_engine().get_user_context(
@@ -1393,7 +1393,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=403,
                     content={
-                        "error": "Permission denied",
+                        "error": "Akses ditolak.",
                         "message": "Anda belum diberi izin melihat data ini. Hubungi pemilik usaha.",
                         "code": "PERMISSION_DENIED",
                         "required_module": None,
@@ -1402,7 +1402,7 @@ class PermissionMiddleware(BaseHTTPMiddleware):
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error(f"READ default-closed check error -> DITOLAK: path={path} method={method} err={type(e).__name__}: {e}")
-                return JSONResponse(status_code=403, content={"error": "Permission check failed", "code": "PERMISSION_CHECK_ERROR"})
+                return JSONResponse(status_code=403, content={"error": "Pemeriksaan izin gagal, coba lagi sebentar lagi.", "code": "PERMISSION_CHECK_ERROR"})
 
         return await call_next(request)
 

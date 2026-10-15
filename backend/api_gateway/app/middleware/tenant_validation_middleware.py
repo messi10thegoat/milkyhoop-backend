@@ -97,9 +97,9 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=403,
                 content={
-                    "error": "Forbidden",
+                    "error": "Akses ditolak.",
                     "code": "TENANT_MISMATCH",
-                    "message": "You don't have permission to access this tenant's resources.",
+                    "message": "Anda tidak punya akses ke data usaha ini.",
                 }
             )
 

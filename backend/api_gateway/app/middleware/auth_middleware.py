@@ -196,7 +196,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=401,
                     content={
-                        "error": "Authentication required",
+                        "error": "Silakan masuk terlebih dahulu.",
                         "code": "MISSING_TOKEN",
                     },
                 )
@@ -205,7 +205,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if not token or token.strip() == "":
                 return JSONResponse(
                     status_code=401,
-                    content={"error": "Invalid token", "code": "EMPTY_TOKEN"},
+                    content={"error": "Sesi tidak valid, silakan masuk lagi.", "code": "EMPTY_TOKEN"},
                 )
 
             try:
@@ -214,7 +214,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if not validation_result.get("valid"):
                     return JSONResponse(
                         status_code=401,
-                        content={"error": "Invalid token", "code": "INVALID_TOKEN"},
+                        content={"error": "Sesi berakhir, silakan masuk lagi.", "code": "INVALID_TOKEN"},
                     )
 
                 # Extract claims from JWT validation result
@@ -289,7 +289,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     status_code=401,
                     content={
-                        "error": "Authentication failed",
+                        "error": "Autentikasi gagal, silakan masuk lagi.",
                         "code": "VALIDATION_ERROR",
                     },
                 )

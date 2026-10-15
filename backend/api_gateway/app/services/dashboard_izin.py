@@ -138,7 +138,7 @@ def wajib_baca_rute(jalur: str):
                     status_code=403,
                     detail={
                         "code": "PERMISSION_DENIED",
-                        "message": f"You don't have permission to view {m.replace('_', ' ')}",
+                        "message": f"Anda tidak punya izin untuk melihat {m.replace('_', ' ')}.",
                         "required_module": m,
                         "required_action": AKSI,
                     },
