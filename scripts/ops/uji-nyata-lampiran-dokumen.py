@@ -7,7 +7,10 @@ SELALU di-ROLLBACK (lampiran uji ditautkan ke faktur tanpa SO + penerimaannya).
   K1 id bill_payments_v2 lewat jenis receive_payment -> 404.
   K2 kaos INV-2609-0048 (tanpa SO) + RCV-2026-0008: lampiran uji di tx-ROLLBACK -> mode dokumen, grup sales_invoice + receive_payment;
      generik lewat penerimaan memberi grup yang sama.
-MODE=merah: hanya P1 + K2 (kontrol merah: sabotase harus GAGAL)."""
+  K3 penerimaan TANPA alokasi & tanpa deposit (dibuat di tx-ROLLBACK: alokasi RCV-2026-0008 dihapus) -> grup penerimaannya sendiri.
+  K4 DP yang ke SO HANYA lewat penawaran (tx-ROLLBACK: sales_order_id/proforma_id DP dikosongkan, quote_id = penawaran SO) -> DP
+     tetap di keluarga SO itu dan generik DP -> mode keluarga_so. (Data nyata hari ini: 0 kasus K3/K4 -> wajib dibuat.)
+MODE=merah: hanya P1 + K2 + K3 + K4 (kontrol merah: sabotase harus GAGAL)."""
 import ast, asyncio, os, sys
 sys.path.insert(0, "/app")
 os.environ.setdefault("OPENAI_API_KEY", "sk-boneka")
@@ -123,6 +126,36 @@ async def k2(c):
         await tx.rollback()
 
 
+async def k3_k4(c):
+    t = "kaos-biru-konveksi"
+    doc = await c.fetchval("SELECT id FROM documents WHERE tenant_id=$1 AND deleted_at IS NULL AND storage_type='s3' LIMIT 1", t)
+    rp = await c.fetchval("SELECT id FROM receive_payments WHERE tenant_id=$1 AND payment_number='RCV-2026-0008'", t)
+    sp = c.transaction(); await sp.start()
+    try:
+        await c.execute("DELETE FROM receive_payment_allocations WHERE payment_id=$1 AND tenant_id=$2", rp, t)
+        await c.execute("""INSERT INTO document_attachments (id, tenant_id, document_id, entity_type, entity_id, display_name)
+                           VALUES (gen_random_uuid(), $1, $2, 'payment', $3, 'UJI HARNESS lampiran.pdf')""", t, doc, rp)
+        r = await LD.tentukan(c, t, "receive_payment", rp)
+        g = {(x["jenis"], str(x["dok_id"])) for x in await SL.baris_keluarga(c, t, None, {"receive_payment": [rp]})}
+        cek(r["so"] == [] and ("receive_payment", str(rp)) in g, "K3 penerimaan tanpa alokasi/deposit -> grupnya sendiri", str(g))
+    finally:
+        await sp.rollback()
+    so = await c.fetchrow("""SELECT s.id, s.quote_id FROM sales_orders s WHERE s.tenant_id=$1 AND s.quote_id IS NOT NULL
+                             AND EXISTS (SELECT 1 FROM customer_deposits c WHERE c.sales_order_id=s.id) LIMIT 1""", t)
+    dp = await c.fetchval("SELECT id FROM customer_deposits WHERE tenant_id=$1 AND sales_order_id=$2 LIMIT 1", t, so["id"])
+    sp = c.transaction(); await sp.start()
+    try:
+        await c.execute("UPDATE customer_deposits SET sales_order_id=NULL, proforma_id=NULL, quote_id=$3 WHERE id=$1 AND tenant_id=$2",
+                        dp, t, so["quote_id"])
+        await c.execute("""INSERT INTO document_attachments (id, tenant_id, document_id, entity_type, entity_id, display_name)
+                           VALUES (gen_random_uuid(), $1, $2, 'customer_deposit', $3, 'UJI HARNESS lampiran.pdf')""", t, doc, dp)
+        ada = any(x["jenis"] == "customer_deposit" and x["dok_id"] == dp for x in await SL.baris_keluarga(c, t, so["id"]))
+        r = await LD.tentukan(c, t, "customer_deposit", dp)
+        cek(ada and r["so"] == [so["id"]], "K4 DP hanya lewat penawaran -> keluarga SO + generik mode keluarga_so", str(r["so"]))
+    finally:
+        await sp.rollback()
+
+
 async def main():
     c = await asyncpg.connect(os.environ["DATABASE_URL"])
     try:
@@ -136,6 +169,7 @@ async def main():
         tx = c.transaction(); await tx.start()
         try:
             await k2(c)
+            await k3_k4(c)
         finally:
             await tx.rollback()
         sisa = await c.fetchval("SELECT count(*) FROM document_attachments WHERE display_name = 'UJI HARNESS lampiran.pdf'")

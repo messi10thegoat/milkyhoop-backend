@@ -62,6 +62,20 @@ def test_satu_sql_berbenih_bukan_salinan():
     assert "FROM receive_payments rp0x" in SL._SQL_META_KELUARGA     # benih penerimaan hanya id receive_payments
 
 
+def test_predikat_keluarga_lama_utuh_dan_benih_penerimaan_tanpa_alokasi():
+    """Data nyata 15 Okt: 0 DP yang ke SO hanya lewat penawaran, 0 penerimaan tanpa alokasi/deposit -> pasangan nyata buta;
+    predikatnya dijaga di sini (+ K3/K4 harness di tx-ROLLBACK)."""
+    m = SL._SQL_META_KELUARGA
+    for p in ("cdx.sales_order_id IN (SELECT id FROM so)", "cdx.quote_id IN (SELECT quote_id FROM so WHERE quote_id IS NOT NULL)",
+              "cdx.proforma_id IN (SELECT id FROM pf)", "rpx.source_deposit_id IN (SELECT id FROM dp)",
+              "rpx.created_deposit_id IN (SELECT id FROM dp)", "alx.invoice_id IN (SELECT id FROM si)",
+              "six.sales_order_id IN (SELECT id FROM so)", "pfx.sales_order_id IN (SELECT id FROM so)",
+              "COALESCE(f.sales_order_id, fsi.sales_order_id) IN (SELECT id FROM so)",
+              "OR rpx.id IN (SELECT id FROM rp0)", "OR cdx.id IN (SELECT id FROM dp0)", "OR f.id IN (SELECT id FROM sj0)",
+              "OR n.id IN (SELECT id FROM nk0)", "OR pfx.id = ANY($6::uuid[])", "OR six.id = ANY($3::uuid[])"):
+        assert p in m, p
+
+
 def test_sql_anggota_dan_calon_bertenant_per_alias():
     assert _tabel_tanpa_tenant(SL._SQL_ANGGOTA_KELUARGA) == []
     for j, sql in LD.SQL_CALON_SO.items():
