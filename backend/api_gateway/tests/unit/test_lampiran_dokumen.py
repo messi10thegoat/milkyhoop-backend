@@ -73,7 +73,9 @@ def test_predikat_keluarga_lama_utuh_dan_benih_penerimaan_tanpa_alokasi():
               "six.sales_order_id IN (SELECT id FROM so)", "pfx.sales_order_id IN (SELECT id FROM so)",
               "COALESCE(f.sales_order_id, fsi.sales_order_id) IN (SELECT id FROM so)",
               "OR rpx.id IN (SELECT id FROM rp0)", "OR cdx.id IN (SELECT id FROM dp0)", "OR f.id IN (SELECT id FROM sj0)",
-              "OR n.id IN (SELECT id FROM nk0)", "OR pfx.id = ANY($6::uuid[])", "OR six.id = ANY($3::uuid[])"):
+              "OR n.id IN (SELECT id FROM nk0)", "OR pfx.id = ANY($6::uuid[])", "OR six.id = ANY($3::uuid[])",
+              # LAMPIRAN-NK-QUOTE: benih penawaran $9 (data nyata tanpa lampiran penawaran -> pasangan nyata buta tanpa K5)
+              "OR q.id = ANY($9::uuid[])", "OR cdx.quote_id = ANY($9::uuid[])", "OR six.quote_id = ANY($9::uuid[])"):
         assert p in m, p
 
 
