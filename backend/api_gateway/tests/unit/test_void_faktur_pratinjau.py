@@ -113,6 +113,8 @@ class _C:
 
     async def fetch(self, sql, *a):
         self.q.append(sql)
+        if "FROM customer_deposits cdl" in sql:  # PELUNASAN-TEKS: label jenis (kosong -> "Uang muka")
+            return []
         if "SELECT DISTINCT rp.payment_number" in sql:
             return [{"payment_number": n} for n in self.bayar]
         if "FROM credit_notes" in sql:
