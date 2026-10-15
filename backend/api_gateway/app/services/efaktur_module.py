@@ -15,7 +15,8 @@ EFAKTUR_MODULE_TABLES = (
     "tax_info", "tax_invoices", "tax_invoice_items", "tax_invoice_sources", "product_djp_mapping",
     "nsfp_assignments", "efaktur_exports", "djp_kode_barang_jasa", "djp_satuan_ukur", "djp_kode_transaksi",
 )
-PESAN = "Fitur Faktur Pajak belum diaktifkan di MilkyHoop. Buat faktur pajak lewat Coretax."
+KODE = "PAJAK_BELUM_TERSEDIA"
+PESAN = "Faktur pajak (e-Faktur/Coretax) belum tersedia."
 
 
 async def efaktur_module_missing(conn) -> list:
@@ -35,5 +36,5 @@ async def require_efaktur_module():
     if missing:
         raise HTTPException(
             status_code=409,
-            detail={"code": "EFAKTUR_NOT_ENABLED", "message": PESAN, "missing_tables": missing},
+            detail={"code": KODE, "message": PESAN, "missing_tables": missing},
         )

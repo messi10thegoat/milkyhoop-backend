@@ -851,7 +851,7 @@ async def get_tax_invoice_by_source(
         }
 
 
-@router.get("/{tax_invoice_id}")
+@router.get("/{tax_invoice_id}", dependencies=[Depends(require_efaktur_module)])
 async def get_tax_invoice(request: Request, tax_invoice_id: str):
     """Get full tax invoice detail with items and sources."""
     ctx = get_user_context(request)
