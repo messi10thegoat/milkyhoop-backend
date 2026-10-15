@@ -44,7 +44,7 @@ POST /api/customer-deposits/bulk/share/preview
 DELETE /api/customer-deposits/{deposit_id}
 DELETE /api/customer-deposits/{deposit_id}/attachments/{attachment_id}
 DELETE /api/customers/{customer_id}
-DELETE /api/deliveries/{delivery_id}/attachments/{attachment_id}
+DELETE /api/deliveries/{doc_id}/attachments/{attachment_id}
 DELETE /api/devices/{device_id}
 DELETE /api/documents/{document_id}
 DELETE /api/documents/{document_id}/detach
@@ -64,7 +64,7 @@ DELETE /api/price-lists/{price_list_id}/items/{item_id}
 DELETE /api/product-djp-mapping/{mapping_id}
 DELETE /api/production/{order_id}
 DELETE /api/purchase-orders/{po_id}
-POST /api/deliveries/{delivery_id}/attachments
+POST /api/deliveries/{doc_id}/attachments
 POST /api/deliveries/{delivery_id}/void
 POST /api/deliveries/{delivery_id}/void/preview
 POST /api/metode-serah
@@ -102,7 +102,7 @@ POST /api/sales-orders/bulk/pdf
 POST /api/sales-orders/bulk/share
 POST /api/sales-orders/bulk/share/preview
 DELETE /api/sales-orders/{order_id}
-DELETE /api/sales-orders/{order_id}/attachments/{attachment_id}
+DELETE /api/sales-orders/{doc_id}/attachments/{attachment_id}
 DELETE /api/stock-adjustments/{adjustment_id}
 DELETE /api/stock-transfers/{transfer_id}
 DELETE /api/storage-locations/{location_id}
@@ -479,7 +479,7 @@ POST /api/sales-invoices/{invoice_id}/post
 POST /api/sales-invoices/{invoice_id}/void
 POST /api/sales-orders
 POST /api/sales-orders/calculate
-POST /api/sales-orders/{order_id}/attachments
+POST /api/sales-orders/{doc_id}/attachments
 POST /api/sales-orders/{order_id}/cancel
 POST /api/sales-orders/{order_id}/close
 POST /api/sales-orders/{order_id}/confirm
