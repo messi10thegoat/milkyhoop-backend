@@ -1054,7 +1054,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"Uang muka {existing['deposit_number']} "
+                                f"{await label_deposit(conn, ctx['tenant_id'], existing['id'])} {existing['deposit_number']} "
                                 "sudah tercatat sebelumnya"
                             ),
                             "data": {
@@ -1178,7 +1178,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                         return {
                             "success": True,
                             "message": (
-                                f"Uang muka {winner['deposit_number']} "
+                                f"{await label_deposit(conn, ctx['tenant_id'], winner['id'])} {winner['deposit_number']} "
                                 "sudah tercatat sebelumnya"
                             ),
                             "data": {
