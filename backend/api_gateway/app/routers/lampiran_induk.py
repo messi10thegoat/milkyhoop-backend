@@ -13,8 +13,9 @@ NOL BUKU: tak ada jurnal/stok. Nama per TAUTAN (document_attachments.display_nam
 """
 import hashlib
 import logging
-from dataclasses import dataclass
-from typing import List
+import sys
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -44,6 +45,14 @@ class SpecLampiran:
     kolom_nomor: str    # nomor dokumen untuk audit/404
     label: str          # nama dokumen untuk pesan ("Nota kredit")
     entitas_audit: str  # entity_type audit_logs (catat_riwayat)
+    # LAMPIRAN-SO-SJ-PABRIK (15 Okt 2026): SO + SJ pindah ke pabrik dengan kontrak HTTP LAMA persis
+    pesan_404: Optional[str] = None                       # teks 404 induk (None -> "{label} tidak ditemukan.")
+    pra_cek: Optional[Callable[..., Awaitable]] = None    # async (conn, tenant_id) di SETIAP rute (SJ: flag pengiriman_serah)
+    event_lepas: str = "LAMPIRAN_DILEPAS"
+    ringkas_lepas: Optional[str] = None                   # templat audit lepas, {nomor}
+    sumber_audit: Optional[str] = None
+    modul_dep: Optional[str] = None                       # modul pemilik get_pool/get_storage_service/simpan_objek_unggahan
+    nama_endpoint: dict = field(default_factory=dict)     # {unggah|daftar|unduh|lepas: nama fungsi} (tabel rute / tes lama)
 
 
 async def get_pool():
@@ -124,10 +133,19 @@ def buat_router(s: SpecLampiran) -> APIRouter:
     router = APIRouter()
     q = sql_spec(s)
 
+    def dep(nama: str):
+        """Ketergantungan dibaca dari modul pemilik (modul_dep) SAAT dipanggil -> tes lama yang menambal SL/DL tetap berlaku."""
+        return getattr(sys.modules[s.modul_dep or __name__], nama)
+
+    async def _cek(conn, tenant_id) -> None:
+        if s.pra_cek is not None:
+            await s.pra_cek(conn, tenant_id)
+
     async def _induk(conn, doc_id, tenant_id) -> str:
+        await _cek(conn, tenant_id)
         r = await conn.fetchrow(q["induk"], doc_id, tenant_id)
         if not r:
-            raise HTTPException(status_code=404, detail=f"{s.label} tidak ditemukan.")
+            raise HTTPException(status_code=404, detail=s.pesan_404 or f"{s.label} tidak ditemukan.")
         return r["nomor"]
 
     @router.post("/{doc_id}/attachments")
@@ -155,8 +173,8 @@ def buat_router(s: SpecLampiran) -> APIRouter:
             except ValueError:
                 raise HTTPException(status_code=400, detail="Konteks tenant tidak sah")
             calon.append((i, nama, ctype, ext, isi, sha, kunci))
-        storage = get_storage_service() if calon else None
-        pool = await get_pool()
+        storage = dep("get_storage_service")() if calon else None
+        pool = await dep("get_pool")()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
@@ -170,7 +188,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
                         hasil[i] = {"nama": nama, "ok": False, "galat": "kuota_penuh"}
                         continue
                     try:
-                        await simpan_objek_unggahan(storage, kunci, isi)
+                        await dep("simpan_objek_unggahan")(storage, kunci, isi)
                     except Exception as e:  # noqa: BLE001
                         logger.error(f"[Lampiran {s.entitas}] simpan objek gagal: {type(e).__name__}")
                         hasil[i] = {"nama": nama, "ok": False, "galat": "penyimpanan"}
@@ -199,7 +217,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
     async def daftar(request: Request, doc_id: UUID):
         ctx = _ctx(request)
         tenant_id = ctx["tenant_id"]
-        pool = await get_pool()
+        pool = await dep("get_pool")()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
@@ -215,21 +233,22 @@ def buat_router(s: SpecLampiran) -> APIRouter:
     async def unduh(request: Request, doc_id: UUID, attachment_id: UUID):
         ctx = _ctx(request)
         tenant_id = ctx["tenant_id"]
-        pool = await get_pool()
+        pool = await dep("get_pool")()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+                await _cek(conn, tenant_id)
                 row = await conn.fetchrow(q["unduh"], attachment_id, doc_id, tenant_id)
         if not row:
             raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
-        return stream_lampiran(row, get_storage_service())
+        return stream_lampiran(row, dep("get_storage_service")())
 
     @router.delete("/{doc_id}/attachments/{attachment_id}")
     async def lepas(request: Request, doc_id: UUID, attachment_id: UUID):
         from ..services.so_riwayat import catat_riwayat
         ctx = _ctx(request)
         tenant_id = ctx["tenant_id"]
-        pool = await get_pool()
+        pool = await dep("get_pool")()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
@@ -239,14 +258,19 @@ def buat_router(s: SpecLampiran) -> APIRouter:
                 if not await conn.fetchval(q["lepas"], attachment_id, doc_id, tenant_id):
                     raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
                 # Law 8/12: tautan dilepas = jejak audit di transaksi yang sama (gagal mencatat = batal)
-                await catat_riwayat(conn, tenant_id, s.entitas_audit, doc_id, nomor, "LAMPIRAN_DILEPAS", ctx["user_id"],
-                                    f"Lampiran {s.label.lower()} dilepas ({nomor})", {"document_id": str(attachment_id)},
-                                    source=f"api:{s.modul_url}.attachments")
+                ringkas = (s.ringkas_lepas or f"Lampiran {s.label.lower()} dilepas ({{nomor}})").format(nomor=nomor)
+                await catat_riwayat(conn, tenant_id, s.entitas_audit, doc_id, nomor, s.event_lepas, ctx["user_id"],
+                                    ringkas, {"document_id": str(attachment_id)},
+                                    source=s.sumber_audit or f"api:{s.modul_url}.attachments")
                 terpakai = await hitung_lampiran_tersedia(conn, tenant_id, s.entitas, doc_id)
         return {"success": True, "kuota": _kuota(terpakai)}
 
-    for r in router.routes:  # nama endpoint unik per modul (tabel rute / OpenAPI)
-        r.endpoint.__name__ = f"{r.endpoint.__name__}_lampiran_{s.entitas}"
+    for r in router.routes:  # nama endpoint unik per modul (tabel rute / OpenAPI); SO/SJ memakai nama lama
+        dasar = r.endpoint.__name__
+        r.endpoint.__name__ = s.nama_endpoint.get(dasar, f"{dasar}_lampiran_{s.entitas}")
+        r.endpoint.__qualname__ = r.endpoint.__name__
+        if s.modul_dep:
+            r.endpoint.__module__ = s.modul_dep
         r.name = r.endpoint.__name__
     return router
 

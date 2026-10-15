@@ -420,13 +420,17 @@ def test_rute_baru_punya_pola_izin(metode, path, modul, aksi):
 
 
 def test_lampiran_sj_entitas_delivery_flag_di_tiap_handler_dan_tanpa_jejak_so():
+    # LAMPIRAN-SO-SJ-PABRIK (15 Okt 2026): handler = pabrik lampiran_induk; spesifikasi SJ memegang flag + audit
     src = inspect.getsource(DL)
     assert "'sales_order'" not in src and "sales_orders" not in src
     assert '_ENTITAS = "delivery"' in src and "invoice_fulfillments" in src
-    for fn in (DL.unggah_lampiran_sj, DL.daftar_lampiran_sj, DL.unduh_lampiran_sj, DL.lepas_lampiran_sj):
-        s = inspect.getsource(fn)
-        assert "pastikan_aktif" in s or "_pastikan_so" in s, fn.__name__
-    assert "catat_riwayat" in inspect.getsource(DL.lepas_lampiran_sj)  # lepas tautan = audit
+    sp = DL.SPEC_LAMPIRAN_SJ
+    assert sp.entitas == "delivery" and sp.tabel == "invoice_fulfillments" and sp.pra_cek is DL._pra_cek
+    assert "pastikan_aktif" in inspect.getsource(DL._pra_cek)
+    from app.routers import lampiran_induk as LI
+    pabrik = inspect.getsource(LI.buat_router)
+    assert pabrik.count("await _cek(conn, tenant_id)") >= 2 and "await _induk(conn, doc_id, tenant_id)" in pabrik  # flag tiap rute
+    assert sp.event_lepas == "SJ_LAMPIRAN_DILEPAS" and "catat_riwayat" in pabrik  # lepas tautan = audit
 
 
 def test_lampiran_sj_tanpa_flag_409(monkeypatch):

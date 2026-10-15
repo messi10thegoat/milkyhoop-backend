@@ -113,6 +113,9 @@ class Conn:
             )
             self.peristiwa.append(("taut", doc_id))
             return
+        if "INSERT INTO audit_logs" in sql:  # LAMPIRAN-SO-SJ-PABRIK: lepas lampiran SO kini diaudit (tambahan, bukan kontrak FE)
+            self.peristiwa.append(("audit", args[1], args[4]))
+            return
         raise AssertionError(f"execute tak dikenal: {sql}")
 
     async def fetchval(self, sql, *args):
@@ -159,6 +162,9 @@ class Conn:
         raise AssertionError(f"fetch tak dikenal: {sql}")
 
     async def fetchrow(self, sql, *args):
+        if sql == SL._SQL_INDUK:  # LAMPIRAN-SO-SJ-PABRIK: induk dibaca pabrik (id + nomor), predikat sama dengan _SQL_SO
+            ada = await self.fetchval(SL._SQL_SO, *args)
+            return {"id": ada, "nomor": "SO-UJI"} if ada else None
         raise AssertionError(f"fetchrow tak dikenal: {sql}")
 
 
@@ -441,22 +447,25 @@ async def test_daftar_so_tak_ada_404(monkeypatch):
 @pytest.mark.asyncio
 async def test_lepas_mengurangi_kuota_dan_404_bila_tak_ada(monkeypatch):
     k = Keadaan(tautan=s3(3))
-    pasang(monkeypatch, k)
+    conns, _ = pasang(monkeypatch, k)
     out = await SL.lepas_lampiran_so(req(), SO, k.tautan[0]["document_id"])
-    assert out["kuota"]["terpakai"] == 2
+    assert out == {"success": True, "kuota": {"terpakai": 2, "maks": AL.MAKS_LAMPIRAN_PER_DOKUMEN}}  # kontrak lama persis
+    # LAMPIRAN-SO-SJ-PABRIK: audit lepas tercatat di koneksi (transaksi) yang SAMA dengan DELETE tautan
+    assert ("audit", "LAMPIRAN_DILEPAS", "SO-UJI") in conns[-1].peristiwa, conns[-1].peristiwa
     with pytest.raises(HTTPException) as ei:
         await SL.lepas_lampiran_so(req(), SO, uuid.uuid4())
     assert ei.value.status_code == 404
 
 
 def test_sql_berpagar_tenant_dan_induk_so():
-    for sql in (SL._SQL_DAFTAR, SL._SQL_UNDUH, SL._SQL_LEPAS):
-        assert "sales_orders so" in sql
-        assert re.search(r"so\.tenant_id = \$\d", sql)
+    for sql in (SL._SQL_DAFTAR, SL._SQL_UNDUH, SL._SQL_LEPAS):  # LAMPIRAN-SO-SJ-PABRIK: alias induk = `ind`
+        assert "sales_orders ind" in sql
+        assert re.search(r"ind\.tenant_id = \$\d", sql)
         assert "da.tenant_id" in sql
         assert "'sales_order'" in sql
     assert "d.tenant_id" in SL._SQL_UNDUH and "d.deleted_at IS NULL" in SL._SQL_UNDUH
-    assert "tenant_id = $2" in SL._SQL_SO
+    assert "tenant_id = $2" in SL._SQL_SO and "tenant_id = $2" in SL._SQL_INDUK
+    assert "tenant_id = $3" in SL._SQL_SUDAH_TERTAUT  # LAMPIRAN-SO-SJ-PABRIK: dulu tanpa tenant
 
 
 # ------------------------------------------------------------------ izin
@@ -544,8 +553,8 @@ def test_sql_nama_per_tautan_so_dan_sj():
         assert "attached_by, display_name" in M._SQL_TAUT and "$5::uuid, $6)" in M._SQL_TAUT and f"'{ent}'" in M._SQL_TAUT
         assert "COALESCE(da.display_name, d.file_name) AS file_name" in M._SQL_DAFTAR
         assert "COALESCE(da.display_name, d.file_name) AS file_name" in M._SQL_UNDUH   # unduhan: Content-Disposition
-        src = inspect.getsource(M)
-        assert 'urutan, ctx["user_id"], nama\n' in src
+        from app.routers import lampiran_induk as LI  # LAMPIRAN-SO-SJ-PABRIK: penulis tautan = pabrik
+        assert 'q["taut"], tenant_id, dok, doc_id, urutan, ctx["user_id"], nama' in inspect.getsource(LI)
 
 
 def test_migrasi_v411_aditif_nullable():
