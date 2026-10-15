@@ -348,6 +348,12 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
                 d["sent"] = k
             elif "sent" not in d:
                 d["sent"] = {"state": "none", "sent_at": None, "viewed_at": None}
+    # DOKUMEN-BATAL-FIELD (15 Okt 2026, MASTER): `batal` per dokumen = penentu YANG SAMA dengan 409 DOKUMEN_BATAL share
+    # (dokumen_batal atas status yang dibaca _baris_dokumen) -> FE menyembunyikan Kirim dengan aturan identik. Aditif.
+    for gr in kelompok:
+        for d in gr["docs"]:
+            row, _ = await _baris_dokumen(conn, tid, d["kind"], UUID(d["id"])) if d["kind"] in JENIS else (None, None)
+            d["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])
     kontak = await conn.fetchrow(
         """SELECT COALESCE(mobile_phone, phone, telepon) AS telepon, email FROM customers
            WHERE id = $1 AND tenant_id = $2""", so["customer_id"], tid) if so["customer_id"] else None
@@ -412,22 +418,32 @@ LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "
 STATUS_BATAL_BAGIKAN = frozenset({"void", "voided", "cancelled", "batal"})
 
 
+def dokumen_batal(kind: str, status) -> bool:
+    """Penentu TUNGGAL "dibatalkan untuk dibagikan": dipakai tolak_batal (409) dan medan `batal` bundel /documents.
+    Penawaran memakai penentunya sendiri (QUOTE_NOT_SHAREABLE) -> selalu False di sini."""
+    return kind != "quotation" and str(status or "").lower() in STATUS_BATAL_BAGIKAN
+
+
 def tolak_batal(kind: str, dok: dict) -> None:
-    if str(dok.get("status") or "").lower() in STATUS_BATAL_BAGIKAN:
+    if dokumen_batal(kind, dok.get("status")):
         raise HTTPException(status_code=409, detail={
             "code": "DOKUMEN_BATAL",
             "message": f"{LABEL_JENIS.get(kind, 'Dokumen')} {dok['nomor']} sudah dibatalkan; tak bisa dibagikan."})
 
 
-async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:
-    """{nomor, status} atau 404; dokumen DRAF (proforma/faktur) belum boleh dibagikan -> 409."""
+async def _baris_dokumen(conn, tid: str, kind: str, uid: UUID):
+    """(baris {nomor, status} | None, status_draf_jenis). Satu pembaca untuk _dokumen_ada dan medan `batal` bundel."""
     if kind == "receipt":
         row = await conn.fetchrow("SELECT deposit_number AS nomor, status FROM customer_deposits WHERE id = $1 AND tenant_id = $2", uid, tid) \
             or await conn.fetchrow("SELECT payment_number AS nomor, status FROM receive_payments WHERE id = $1 AND tenant_id = $2", uid, tid)
-        draf = None
-    else:
-        sql, draf = _DOKUMEN_TABEL[kind]
-        row = await conn.fetchrow(sql, uid, tid)
+        return row, None
+    sql, draf = _DOKUMEN_TABEL[kind]
+    return await conn.fetchrow(sql, uid, tid), draf
+
+
+async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:
+    """{nomor, status} atau 404; dokumen DRAF (proforma/faktur) belum boleh dibagikan -> 409."""
+    row, draf = await _baris_dokumen(conn, tid, kind, uid)
     if not row:
         raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
     if draf and row["status"] == draf:
