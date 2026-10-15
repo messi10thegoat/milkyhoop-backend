@@ -407,6 +407,18 @@ LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "
                "delivery": "Surat Jalan", "invoice": "Faktur", "credit_note": "Nota Kredit"}
 
 
+# Dokumen DIBATALKAN tak boleh dibagikan -- jalur TUNGGAL == jalur MASSAL (W-20261015-BAGIKAN-BATAL, putusan MASTER; pola NetSuite:
+# record void tak dibagikan). Satu penentu dipakai _bagikan (share + pratinjau) dan bulk_dokumen._periksa_bagikan.
+STATUS_BATAL_BAGIKAN = frozenset({"void", "voided", "cancelled", "batal"})
+
+
+def tolak_batal(kind: str, dok: dict) -> None:
+    if str(dok.get("status") or "").lower() in STATUS_BATAL_BAGIKAN:
+        raise HTTPException(status_code=409, detail={
+            "code": "DOKUMEN_BATAL",
+            "message": f"{LABEL_JENIS.get(kind, 'Dokumen')} {dok['nomor']} sudah dibatalkan; tak bisa dibagikan."})
+
+
 async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:
     """{nomor, status} atau 404; dokumen DRAF (proforma/faktur) belum boleh dibagikan -> 409."""
     if kind == "receipt":
@@ -473,6 +485,7 @@ async def _bagikan(conn, request: Request, ctx: dict, kind: str, uid: UUID, chan
                                      "api:dokumen.share")
     else:
         dok = await _dokumen_ada(conn, ctx["tenant_id"], kind, uid)
+        tolak_batal(kind, dok)  # BAGIKAN-BATAL: sama dengan jalur massal
         info = {"status_now": dok["status"], "number": dok["nomor"], "boleh": True, "akan_ditandai_terkirim": False,
                 "code": None, "message": None}
     hasil = await DB.buat_tautan(conn, ctx["tenant_id"], kind, uid, channel, ctx["user_id"])

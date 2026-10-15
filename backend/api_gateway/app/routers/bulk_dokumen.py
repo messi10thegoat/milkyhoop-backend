@@ -37,7 +37,6 @@ for _a in ("pdf", "share"):
     assert _a in bulk.AKSI_DIIZINKAN  # setiap aksi di berkas ini harus ada di daftar putih
 
 BATAS_WAKTU_PDF = 40.0  # detik; sisa dokumen dilewati (tercatat) bila terlampaui -- tak menggantung sampai batas waktu proxy
-_BATAL = {"void", "voided", "cancelled", "batal"}
 
 
 async def get_pool():
@@ -83,9 +82,7 @@ async def _periksa_bagikan(conn, ctx: dict, kind: str, uid):
         return dok
     st = str(dok.get("status") or "").lower()
     label = D.LABEL_JENIS.get(kind, "Dokumen")
-    if st in _BATAL:
-        raise HTTPException(status_code=409, detail={"code": "DOKUMEN_BATAL",
-                                                     "message": f"{label} {dok['nomor']} sudah dibatalkan; tak bisa dibagikan."})
+    D.tolak_batal(kind, dok)  # satu penentu dengan share tunggal (BAGIKAN-BATAL 15 Okt)
     if st == "draft":
         raise HTTPException(status_code=409, detail={"code": "DOKUMEN_DRAF",
                                                      "message": f"{label} {dok['nomor']} masih draf; terbitkan dulu sebelum dibagikan."})
