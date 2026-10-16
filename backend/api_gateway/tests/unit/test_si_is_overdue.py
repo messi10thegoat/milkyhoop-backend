@@ -34,6 +34,8 @@ class DB:
     async def fetch(self, sql, *a):
         if "AS so_id" in sql:  # kode order dokumen anak (3 Okt): tak direkam, tanpa SO
             return []
+        if "receive_payment_allocations" in sql or "FROM credit_notes" in sql:  # LISTPAGE-DATA documents: tanpa kwitansi/NK
+            return []
         self.sql.append(sql)
         self.args.append(a)
         return self.rows
@@ -60,7 +62,7 @@ def _baris(jt):
             "invoice_date": date(2026, 9, 1), "due_date": date(2026, 9, 10), "total_amount": 100,
             "journal_paid": 0, "status": "posted", "operational_status": "SENT", "accounting_status": "POSTED",
             "fulfillment_status": None, "revenue_status": None, "created_at": datetime(2026, 9, 1),
-            "sales_order_id": None, "sales_order_number": None, "is_overdue": jt}
+            "sales_order_id": None, "sales_order_number": None, "is_overdue": jt, "jt_terbuka": jt}
 
 
 async def _daftar(monkeypatch, rows, status=None, skip=0, limit=20):

@@ -1046,14 +1046,17 @@ async def preview_journal(request: Request, body: dict = Body(...)):
 _SISA_AR_POSITIF = "si.id IN (SELECT invoice_id FROM compute_ar_outstanding($1) WHERE outstanding > 0)"
 
 
+_STATUS_TERBUKA_AR = "si.status IN ('posted', 'partial')"
+
+
 def _syarat_terbuka_ar() -> str:
-    """Faktur terbuka (belum lunas) menurut aturan is_overdue/?status=overdue -- SATU sumber dengan
-    jatuh_tempo_terbuka daftar (LISTPAGE-DATA 16 Okt 2026)."""
-    return f"(si.status IN ('posted', 'partial') AND {_SISA_AR_POSITIF})"
+    """Faktur terbuka (belum lunas) menurut aturan is_overdue/?status=overdue -- bagian yang SAMA (_STATUS_TERBUKA_AR +
+    _SISA_AR_POSITIF) dengan _syarat_jatuh_tempo minus tanggal; = jatuh_tempo_terbuka daftar (LISTPAGE-DATA 16 Okt 2026)."""
+    return f"({_STATUS_TERBUKA_AR} AND {_SISA_AR_POSITIF})"
 
 
 def _syarat_jatuh_tempo(p_hari: str) -> str:
-    return f"({_syarat_terbuka_ar()} AND si.due_date < {p_hari}::date)"
+    return f"({_STATUS_TERBUKA_AR} AND si.due_date < {p_hari}::date AND {_SISA_AR_POSITIF})"
 
 
 def _syarat_cari(search: str, mulai: int) -> tuple:

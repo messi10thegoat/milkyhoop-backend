@@ -69,8 +69,10 @@ def test_jatuh_tempo_hari(terbuka, due, hasil):
 
 
 def test_jatuh_tempo_satu_predikat_dengan_is_overdue():
-    terbuka = SI._syarat_terbuka_ar()
-    assert terbuka in SI._syarat_jatuh_tempo("$9")
+    jt = SI._syarat_jatuh_tempo("$9")
+    assert SI._syarat_terbuka_ar() == f"({SI._STATUS_TERBUKA_AR} AND {SI._SISA_AR_POSITIF})"
+    assert jt == f"({SI._STATUS_TERBUKA_AR} AND si.due_date < $9::date AND {SI._SISA_AR_POSITIF})"  # = terbuka + tanggal
+    assert SI._STATUS_TERBUKA_AR == "si.status IN ('posted', 'partial')"  # kontrol merah R5: paid bukan terbuka
     src = inspect.getsource(SI.list_invoices)
     assert "_syarat_terbuka_ar()} AS jt_terbuka" in src
 
