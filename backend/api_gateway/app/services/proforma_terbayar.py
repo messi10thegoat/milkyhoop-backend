@@ -28,6 +28,8 @@ Alokasi ke proforma SO itu:
   paid_P = eksplisit_P + bagian_P.  Draf/batal/kedaluwarsa: eksplisit saja (belum/tidak ditagih).
 PAGAR BATAL proforma tetap memakai eksplisit saja (proformas.compute_paid_amount).
 """
+import contextvars
+import functools
 from decimal import Decimal
 
 NOL = Decimal("0")
@@ -64,7 +66,39 @@ _KOSONG = ("invoiced", "invoice_outstanding", "invoice_settled", "credit_note",
            "dp_received", "dp_applied", "dp_refunded", "dp_unapplied")
 
 
+_MEMO = contextvars.ContextVar("ringkasan_pesanan_memo", default=None)
+
+
+def memo_ringkasan(fn):
+    """PERF-DAFTAR-SO (16 Okt 2026): membuka memo SATU PERMINTAAN untuk ringkasan_pesanan. Satu permintaan daftar/summary SO
+    memanggilnya 3-6x atas himpunan SO tumpang-tindih (halaman, seluruh hasil filter, aksi); tiap SO dihitung dari jurnal
+    SEKALI (Law 1/16/29 tak berubah -- hanya hasil yang sama tak dihitung ulang). HANYA untuk handler GET (baca-saja):
+    dalam satu permintaan baca, jurnal tak berubah. Di luar dekorator = tanpa memo (perilaku lama)."""
+    @functools.wraps(fn)
+    async def bungkus(*a, **k):
+        token = _MEMO.set({})
+        try:
+            return await fn(*a, **k)
+        finally:
+            _MEMO.reset(token)
+    return bungkus
+
+
 async def ringkasan_pesanan(conn, tenant_id: str, so_ids: list) -> dict:
+    """Bentuk & isi SAMA dengan _hitung_ringkasan_pesanan; di dalam @memo_ringkasan hanya SO yang belum pernah dihitung
+    dalam permintaan ini yang dikueri. Mengembalikan SALINAN per SO (pemanggil boleh mengubahnya)."""
+    memo = _MEMO.get()
+    if memo is None:
+        return await _hitung_ringkasan_pesanan(conn, tenant_id, so_ids)
+    ids = list({s for s in so_ids if s is not None})
+    kurang = [s for s in ids if (tenant_id, s) not in memo]
+    if kurang:
+        for s, v in (await _hitung_ringkasan_pesanan(conn, tenant_id, kurang)).items():
+            memo[(tenant_id, s)] = v
+    return {s: dict(memo[(tenant_id, s)]) for s in ids}
+
+
+async def _hitung_ringkasan_pesanan(conn, tenant_id: str, so_ids: list) -> dict:
     """{so_id: {invoiced, invoice_outstanding, invoice_settled, credit_note, dp_received,
     dp_applied, dp_refunded, dp_unapplied, tertutup}} — Decimal, journal-derived."""
     from ..routers.customer_deposits import compute_deposit_remaining_many

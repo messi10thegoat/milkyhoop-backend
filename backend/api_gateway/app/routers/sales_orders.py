@@ -13,6 +13,7 @@ import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.so_faktur_draf import penanda_faktur_so
+from ..services.proforma_terbayar import memo_ringkasan  # PERF-DAFTAR-SO (16 Okt 2026)
 from ..services.so_posisi import fakta_daftar, jumlah_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
@@ -127,6 +128,7 @@ def _syarat_cari(search: str, mulai: int) -> tuple:
 
 
 @router.get("", response_model=SalesOrderListResponse)
+@memo_ringkasan
 async def list_sales_orders(
     request: Request,
     status: Optional[
@@ -361,6 +363,7 @@ async def get_pending_orders(
 
 
 @router.get("/summary", response_model=SalesOrderSummaryResponse)
+@memo_ringkasan
 async def get_sales_order_summary(request: Request, search: Optional[str] = Query(None)):
     """Get sales order statistics summary.
     pending_shipment_value/_count = MENUNGGU KIRIM NYATA (27 Sep): baris PERLU DIKIRIM dgn sisa qty > 0
