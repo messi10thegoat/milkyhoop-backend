@@ -38,7 +38,7 @@ def test_pembungkus_memakai_satu_sumber_tanpa_sum_amount():
         assert "uang_muka_pesanan" in src and "FROM customer_deposits" not in src, fn.__name__
     assert "per_uang_muka" in inspect.getsource(PA.muat_atribusi)
     assert "FROM customer_deposits" not in inspect.getsource(PA.muat_atribusi)
-    assert "per_uang_muka" in inspect.getsource(PT.ringkasan_pesanan)
+    assert "per_uang_muka" in inspect.getsource(PT._hitung_ringkasan_pesanan)  # memo ef40a834 membungkusnya
     b = inspect.getsource(SU.batas_bawah_total)
     assert 'uang_muka_pesanan(conn, tenant_id, [so_id]))[so_id]["neto"]' in b and "received_total_for_order" not in b
 
