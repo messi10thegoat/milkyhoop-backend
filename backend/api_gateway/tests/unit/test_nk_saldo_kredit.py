@@ -70,8 +70,10 @@ def test_posting_membelah_piutang_dan_saldo_kredit():
 
 
 def test_sisa_uang_muka_mengenal_jurnal_nk():
-    s = " ".join(ast.get_source_segment(_src(CD), _fn(CD, "compute_deposit_remaining_many")).split())
-    assert "SELECT journal_id FROM credit_notes WHERE tenant_id = $1 AND created_deposit_id = d.id" in s
+    # PERF-DAFTAR-SO (2): SQL satu-lintasan (CD.SQL_SISA_UANG_MUKA); sumber NK tetap salah satu dari 4 pasangan (jurnal, uang muka)
+    s = " ".join(CD.SQL_SISA_UANG_MUKA.split())
+    assert "SELECT cn.journal_id, cn.created_deposit_id FROM credit_notes cn WHERE cn.tenant_id = $1 AND cn.created_deposit_id = ANY($2::uuid[])" in s
+    assert "SQL_SISA_UANG_MUKA" in ast.get_source_segment(_src(CD), _fn(CD, "compute_deposit_remaining_many"))
 
 
 def test_void_nk_menjaga_saldo_kredit():

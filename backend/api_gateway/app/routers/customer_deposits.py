@@ -215,6 +215,47 @@ async def compute_deposit_remaining(conn, tenant_id: str, deposit_id) -> Decimal
     return next(iter((await compute_deposit_remaining_many(conn, tenant_id, [deposit_id])).values()))
 
 
+# PERF-DAFTAR-SO (2) (16 Okt 2026): SATU lintasan. Dulu: subkueri berkorelasi per uang muka yang memindai SEMUA baris jurnal akun
+# deposit dan memanggil is_effective_journal per baris (biaya = #uang muka x #baris akun -> kuadratik). Kini: (1) pasangan
+# (jurnal, uang muka) dari 4 sumber (UNION = tiap pasangan sekali, sama dengan OR-per-baris lama), (2) keefektifan SEKALI per jurnal
+# kandidat, (3) agregasi baris akun deposit hanya untuk jurnal kandidat. SUM(kredit)-SUM(debit) dipertahankan (SUM parsial
+# lalu SUM = SUM total, NULL ikut semantik lama). Kesetaraan: scripts/ops/uji-kesetaraan-sisa-uang-muka.py.
+SQL_SISA_UANG_MUKA = """
+WITH d AS (SELECT DISTINCT x AS id FROM unnest($2::uuid[]) AS u(x)),
+pasangan AS (
+    SELECT je.id AS journal_id, d.id AS deposit_id
+    FROM d JOIN journal_entries je ON je.source_id = d.id AND je.tenant_id = $1
+    UNION
+    SELECT rp.journal_id, rp.created_deposit_id FROM receive_payments rp
+    WHERE rp.tenant_id = $1 AND rp.created_deposit_id = ANY($2::uuid[]) AND rp.journal_id IS NOT NULL
+    -- 30 Sep 2026: kredit dari KELEBIHAN NOTA KREDIT (credit_notes.created_deposit_id, V352)
+    UNION
+    SELECT cn.journal_id, cn.created_deposit_id FROM credit_notes cn
+    WHERE cn.tenant_id = $1 AND cn.created_deposit_id = ANY($2::uuid[]) AND cn.journal_id IS NOT NULL
+    -- V299: kredit dari LEPAS PEMBAYARAN (jurnal lepas bersumber faktur, Law 29/30)
+    UNION
+    SELECT a.unapply_journal_id, a.unapply_deposit_id FROM receive_payment_allocations a
+    WHERE a.tenant_id = $1 AND a.unapply_deposit_id = ANY($2::uuid[]) AND a.unapply_journal_id IS NOT NULL
+),
+efektif AS (
+    SELECT DISTINCT p.journal_id
+    FROM pasangan p JOIN journal_entries je ON je.id = p.journal_id
+    WHERE je.tenant_id = $1 AND is_effective_journal(je.id)
+),
+baris AS (
+    SELECT jl.journal_id, SUM(jl.credit) AS kr, SUM(jl.debit) AS db
+    FROM journal_lines jl JOIN efektif e ON e.journal_id = jl.journal_id
+    WHERE jl.account_id = $3
+    GROUP BY jl.journal_id
+)
+SELECT d.id, COALESCE(SUM(b.kr) - SUM(b.db), 0) AS remaining
+FROM d
+LEFT JOIN pasangan p ON p.deposit_id = d.id
+LEFT JOIN baris b ON b.journal_id = p.journal_id
+GROUP BY d.id
+"""
+
+
 async def compute_deposit_remaining_many(conn, tenant_id: str, deposit_ids) -> dict:
     """{str(deposit_id): Decimal remaining} -- SATU-SATUNYA SQL sisa uang muka. Dipakai oleh
     compute_deposit_remaining (validasi apply) DAN kedua daftar (dulu daftar membaca CACHE
@@ -226,40 +267,7 @@ async def compute_deposit_remaining_many(conn, tenant_id: str, deposit_ids) -> d
     deposit_account_id = await resolve_account_id_by_role(
         conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY
     )
-    rows = await conn.fetch(
-        """
-        SELECT d.id,
-               COALESCE((
-                   SELECT SUM(jl.credit) - SUM(jl.debit)
-                   FROM journal_lines jl
-                   JOIN journal_entries je ON je.id = jl.journal_id
-                   WHERE je.tenant_id = $1
-                     AND jl.account_id = $3
-                     AND is_effective_journal(je.id)
-                     AND (
-                         je.source_id = d.id
-                         OR je.id IN (
-                             SELECT journal_id FROM receive_payments
-                             WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
-                         )
-                         -- 30 Sep 2026: kredit dari KELEBIHAN NOTA KREDIT (credit_notes.created_deposit_id, V352)
-                         OR je.id IN (
-                             SELECT journal_id FROM credit_notes
-                             WHERE tenant_id = $1 AND created_deposit_id = d.id AND journal_id IS NOT NULL
-                         )
-                         -- V299: kredit dari LEPAS PEMBAYARAN (jurnal lepas bersumber faktur, Law 29/30)
-                         OR je.id IN (
-                             SELECT unapply_journal_id FROM receive_payment_allocations
-                             WHERE tenant_id = $1 AND unapply_deposit_id = d.id AND unapply_journal_id IS NOT NULL
-                         )
-                     )
-               ), 0) AS remaining
-        FROM unnest($2::uuid[]) AS d(id)
-        """,
-        tenant_id,
-        ids,
-        deposit_account_id,
-    )
+    rows = await conn.fetch(SQL_SISA_UANG_MUKA, tenant_id, ids, deposit_account_id)
     # 6b: Decimal, bukan int() -- int() memotong sen, dan faktur ber-PPN ,75 tak pernah lunas.
     return {str(r["id"]): Decimal(str(r["remaining"] or 0)) for r in rows}
 
