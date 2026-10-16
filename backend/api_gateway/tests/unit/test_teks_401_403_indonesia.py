@@ -1,6 +1,5 @@
 """TEKS-401-403-ID (16 Okt 2026): detail HTTPException 401/403 di seluruh app + 429/WAF/lockout berbahasa Indonesia.
-Status, kunci, code TIDAK berubah. PENGECUALIAN SENGAJA: keluarga 'Cannot post ... period' -- FE friendlyApiError.ts
-mencocokkan teks Inggrisnya ("cannot post to closed period"); diterjemahkan setelah FE menerima kedua bahasa."""
+Status, kunci, code TIDAK berubah. Keluarga 'Cannot post ... period' diterjemahkan terpisah (test_teks_periode_id.py, setelah FE r285 dua-bahasa)."""
 import ast
 import re
 from pathlib import Path
@@ -44,11 +43,6 @@ def _detail_401_403():
 def test_detail_401_403_tak_berbahasa_inggris():
     jelek = [(str(p), ln, d[:80]) for p, ln, d in _detail_401_403() if LARANG.search(d) and not KELUARGA_PERIODE.search(d)]
     assert not jelek, jelek[:10]
-
-
-def test_keluarga_periode_tetap_inggris_sampai_fe_menerima_dua_bahasa():
-    ada = [d for _, _, d in _detail_401_403() if KELUARGA_PERIODE.search(d)]
-    assert ada and all("Cannot " in d for d in ada)
 
 
 def test_429_lockout_waf_indonesia_kode_tetap():

@@ -11,6 +11,7 @@ from decimal import Decimal
 import logging
 import asyncpg
 
+from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.payroll import (
     CreatePayrollRequest,
@@ -1500,7 +1501,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})",
+            detail=tg.periode_tertutup(period_name, period_status),
         )
 
 

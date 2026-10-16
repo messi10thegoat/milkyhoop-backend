@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services import teks_galat as tg
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -518,7 +519,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+                    detail=tg.periode_tertutup(period['period_name'], period['status']),
                 )
 
             # Create journal entries
@@ -827,7 +828,7 @@ async def void_sales_receipt(
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+                    detail=tg.periode_tertutup(period['period_name'], period['status']),
                 )
 
             # SR8: Create proper reversal journals (not just mark as VOID)

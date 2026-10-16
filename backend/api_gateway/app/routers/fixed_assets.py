@@ -18,6 +18,7 @@ import uuid as uuid_module
 
 import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from ..services import teks_galat as tg
 from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.fixed_assets import (
@@ -91,7 +92,7 @@ async def check_period_is_open(conn, tenant_id: str, journal_date) -> None:
     if period and period["status"] in ("CLOSED", "LOCKED"):
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+            detail=tg.periode_tertutup(period['period_name'], period['status']),
         )
 
 

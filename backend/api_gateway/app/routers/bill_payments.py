@@ -7,6 +7,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 from fastapi import APIRouter, Body, HTTPException, Request, Query
 from typing import Optional, Literal
 from uuid import UUID
+from ..services import teks_galat as tg
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.rp_periode import batas_periode, argumen_kueri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
@@ -130,7 +131,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     if period and period["status"] in ("CLOSED", "LOCKED"):
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+            detail=tg.periode_tertutup(period['period_name'], period['status']),
         )
 
 

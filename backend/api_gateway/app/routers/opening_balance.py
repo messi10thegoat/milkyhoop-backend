@@ -43,6 +43,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request, Query
 from asyncpg import Connection
 
+from ..services import teks_galat as tg
 from ..schemas.opening_balance import (
     CreateOpeningBalanceRequest,
     UpdateOpeningBalanceRequest,
@@ -656,7 +657,7 @@ async def create_opening_balance(request: Request, body: CreateOpeningBalanceReq
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post opening balance to {period['status'].lower()} period",
+                    detail=tg.periode_tertutup(None, period['status']),
                 )
 
             # Get Opening Balance Equity account
@@ -1061,7 +1062,7 @@ async def update_opening_balance(request: Request, body: UpdateOpeningBalanceReq
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post opening balance to {period['status'].lower()} period",
+                    detail=tg.periode_tertutup(None, period['status']),
                 )
 
             # Mark existing as superseded

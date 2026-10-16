@@ -39,6 +39,7 @@ import json
 import io
 from decimal import Decimal
 
+from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_reconciliation import (
     CreateSessionRequest,
@@ -2609,7 +2610,7 @@ async def categorize_statement_line(
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+                        detail=tg.periode_tertutup(period['period_name'], period['status']),
                     )
 
                 # 7. Generate transaction number
@@ -2893,7 +2894,7 @@ async def complete_session(
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Cannot create adjustment journals in {period['status'].lower()} period",
+                        detail=tg.periode_tertutup(None, period['status']),
                     )
 
                 now = datetime.utcnow()

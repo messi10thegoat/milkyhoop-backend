@@ -31,6 +31,7 @@ import logging
 import asyncpg
 import uuid as uuid_module
 
+from ..services import teks_galat as tg
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.kasbank_v2 import (
@@ -93,7 +94,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
     if period and period["status"] in ("CLOSED", "LOCKED"):
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+            detail=tg.periode_tertutup(period['period_name'], period['status']),
         )
 
 

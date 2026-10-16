@@ -23,6 +23,7 @@ import asyncpg
 from datetime import date
 import uuid as uuid_module
 
+from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_accounts import (
     CreateManualTransactionRequest,
@@ -1898,7 +1899,7 @@ async def create_manual_transaction(
                 if period and period["status"] in ("CLOSED", "LOCKED"):
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Cannot post to {period['status'].lower()} period ({period['period_name']})",
+                        detail=tg.periode_tertutup(period['period_name'], period['status']),
                     )
 
                 # Compute current ledger balance (for running_balance cache)

@@ -12,6 +12,7 @@ import asyncpg
 from datetime import date
 from decimal import Decimal
 
+from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.journals import (
     CreateJournalRequest,
@@ -387,7 +388,7 @@ async def create_journal(request: Request, body: CreateJournalRequest):
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post to {period['status'].lower()} period",
+                    detail=tg.periode_tertutup(None, period['status']),
                 )
 
             # Check approval requirement
@@ -535,7 +536,7 @@ async def post_journal(request: Request, journal_id: UUID):
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post to {period['status'].lower()} period",
+                    detail=tg.periode_tertutup(None, period['status']),
                 )
 
             async with conn.transaction():
@@ -677,7 +678,7 @@ async def reverse_journal(
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot post reversal to {period['status'].lower()} period",
+                    detail=tg.periode_tertutup(None, period['status']),
                 )
 
             # Gate 5: pagar lapisan-turunan yang ada di jalur PEMBUATAN (baris ~483) kini juga di jalur PEMBALIKAN —

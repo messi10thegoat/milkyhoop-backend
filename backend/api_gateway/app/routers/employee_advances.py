@@ -29,6 +29,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..services import teks_galat as tg
 from ..services.nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import tanggal_dokumen, zona_tenant
 from ..services.bank_sync import create_bank_transaction_for_journal, create_reversal_bank_transaction
@@ -493,7 +494,7 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
         period_status = period["status"].lower()
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot post to {period_status} period ({period_name})",
+            detail=tg.periode_tertutup(period_name, period_status),
         )
 
 

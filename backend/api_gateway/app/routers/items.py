@@ -25,6 +25,7 @@ from uuid import UUID
 from datetime import date as dateclass
 from decimal import Decimal
 
+from ..services import teks_galat as tg
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
@@ -3489,7 +3490,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         if period_row and period_row["status"] in ("CLOSED", "LOCKED"):
                             raise HTTPException(
                                 status_code=403,
-                                detail=f"Cannot post to {period_row['status'].lower()} period ({period_row['period_name']})",
+                                detail=tg.periode_tertutup(period_row['period_name'], period_row['status']),
                             )
 
                         date_str = today.isoformat()
