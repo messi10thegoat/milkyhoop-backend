@@ -36,19 +36,26 @@ async def main():
         for t in ("grapgrap-manado", "kaos-biru-konveksi"):
             req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": t, "user_id": None}), headers={})
             w = (await c.fetchval("SELECT split_part(customer_name,' ',1) FROM sales_invoices WHERE tenant_id=$1 GROUP BY 1 ORDER BY count(*) DESC LIMIT 1", t)) or "a"
-            for cari in (None, w):
-                f = {"search": cari} if cari else {}
-                penuh, _ = await semua(req, **f)
-                fl = sorted(r["id"] for r in penuh if r["jatuh_tempo_minggu_ini"])
-                ak, tot = await semua(req, aksi="jatuh_tempo_minggu_ini", **f)
-                s = (await SI.get_invoice_summary(req, **kw(SI.get_invoice_summary, **({"search": cari} if cari else {}))))["data"]
-                nilai = sum((Decimal(r["outstanding_amount"]) for r in ak), Decimal(0))
-                cek(sorted(r["id"] for r in ak) == fl and tot == len(fl) == s["jatuh_tempo_minggu_ini_count"]
-                    and abs(Decimal(str(s["jatuh_tempo_minggu_ini_value"])) - nilai) < Decimal("0.01"),
-                    f"{t} search={cari}: ?aksi == baris berflag == summary", f"{len(fl)} faktur, Σ sisa {nilai}")
-                bad = [r["invoice_number"] for r in penuh if r["jatuh_tempo_minggu_ini"] and not (
-                    r["jatuh_tempo_terbuka"] and r["jatuh_tempo_hari"] is not None and r["jatuh_tempo_hari"] >= 0)]
-                cek(not bad, f"{t} search={cari}: berflag ⇒ terbuka & jatuh_tempo_hari ≥ 0 (telat tak ikut)", str(bad[:3]))
+            from datetime import timedelta
+            from backend.api_gateway.app.utils.tanggal_tenant import tanggal_dokumen as _td
+            asli = await _td(c, t)
+            for geser in (0, -7, -14, -21, 7):   # hari ini + "seolah-olah" minggu lain: data jatuh tempo lebih banyak teruji
+                async def _hari(conn, tid, _g=geser):
+                    return asli + timedelta(days=_g)
+                SI.tanggal_dokumen = _hari
+                for cari in ((None, w) if geser == 0 else (None,)):
+                    f = {"search": cari} if cari else {}
+                    penuh, _ = await semua(req, **f)
+                    fl = sorted(r["id"] for r in penuh if r["jatuh_tempo_minggu_ini"])
+                    ak, tot = await semua(req, aksi="jatuh_tempo_minggu_ini", **f)
+                    s = (await SI.get_invoice_summary(req, **kw(SI.get_invoice_summary, **({"search": cari} if cari else {}))))["data"]
+                    nilai = sum((Decimal(r["outstanding_amount"]) for r in ak), Decimal(0))
+                    cek(sorted(r["id"] for r in ak) == fl and tot == len(fl) == s["jatuh_tempo_minggu_ini_count"]
+                        and abs(Decimal(str(s["jatuh_tempo_minggu_ini_value"])) - nilai) < Decimal("0.01"),
+                        f"{t} hari{geser:+d} search={cari}: ?aksi == baris berflag == summary", f"{len(fl)} faktur, Σ sisa {nilai}")
+                    bad = [r["invoice_number"] for r in penuh if r["jatuh_tempo_minggu_ini"] and not (
+                        r["jatuh_tempo_terbuka"] and r["jatuh_tempo_hari"] is not None and r["jatuh_tempo_hari"] >= 0)]
+                    cek(not bad, f"{t} hari{geser:+d} search={cari}: berflag ⇒ terbuka & jatuh_tempo_hari ≥ 0 (telat tak ikut)", str(bad[:3]))
     finally:
         await tx.rollback(); await c.close()
     print("RINGKAS gagal=%d" % gagal)
