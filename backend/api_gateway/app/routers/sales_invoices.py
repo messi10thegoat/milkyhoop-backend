@@ -413,6 +413,14 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
                 + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1"
                 + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
                 ctx["tenant_id"], hari_ini, _fa.AMBANG_SEGERA_TEMPO, *([] if id_cari is None else [id_cari]))
+            # 16 Okt 2026 (listpage P3): chip "Jatuh tempo minggu ini" -- predikat SAMA dengan ?aksi=jatuh_tempo_minggu_ini
+            from ..services.dashboard_v2 import akhir_minggu
+            mg = await conn.fetchrow(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(ar_fn.outstanding), 0) AS v FROM sales_invoices si "
+                "LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id "
+                f"WHERE si.tenant_id = $1 AND {_syarat_minggu_ini('$2', '$3')}"
+                + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
+                ctx["tenant_id"], hari_ini, akhir_minggu(hari_ini), *([] if id_cari is None else [id_cari]))
 
             return {
                 "success": True,
@@ -434,6 +442,8 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
                     "kredit_nota_belum_terpakai_value": float(row["kredit_value"]),
                     **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
                        for k in _fa.AKSI for m in ("count", "value")},
+                    "jatuh_tempo_minggu_ini_count": int(mg["n"]),
+                    "jatuh_tempo_minggu_ini_value": float(mg["v"]),  # Σ sisa (compute_ar_outstanding)
                 },
             }
 
@@ -1055,6 +1065,15 @@ def _syarat_terbuka_ar() -> str:
     return f"({_STATUS_TERBUKA_AR} AND {_SISA_AR_POSITIF})"
 
 
+AKSI_MINGGU_INI = "jatuh_tempo_minggu_ini"  # kunci aksi TAMBAHAN (tak saling-eksklusif dgn _fa.AKSI; kolom aksi baris tetap)
+
+
+def _syarat_minggu_ini(p_hari: str, p_akhir: str) -> str:
+    """Faktur terbuka (SAMA dgn jatuh_tempo_terbuka) yang jatuh tempo hari ini s.d. akhir minggu (dashboard_v2.akhir_minggu).
+    Kembaran Python: services/faktur_daftar.jatuh_tempo_minggu_ini. Dipakai ?aksi=jatuh_tempo_minggu_ini DAN /summary."""
+    return f"({_STATUS_TERBUKA_AR} AND si.due_date >= {p_hari}::date AND si.due_date <= {p_akhir}::date AND {_SISA_AR_POSITIF})"
+
+
 def _syarat_jatuh_tempo(p_hari: str) -> str:
     return f"({_STATUS_TERBUKA_AR} AND si.due_date < {p_hari}::date AND {_SISA_AR_POSITIF})"
 
@@ -1132,7 +1151,8 @@ async def list_invoices(
     # SATU sumber dengan kartu dashboard "Perlu dikerjakan" (dashboard_v2.id_tugas), aditif terhadap filter lain
     tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini", "belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/faktur_aksi), nilai asing = 422
-    aksi: Optional[Literal["perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo"]] = Query(None),
+    aksi: Optional[Literal["perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo",
+                           "jatuh_tempo_minggu_ini"]] = Query(None),
     # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter (opt-in; FE: muat pertama saja)
     with_totals: bool = Query(False),
 ):
@@ -1198,6 +1218,11 @@ async def list_invoices(
                 conditions.append(_pred)
                 params.extend(_par)
                 param_idx += len(_par)
+            elif aksi == AKSI_MINGGU_INI:  # chip listpage P3; predikat SATU sumber dengan /summary
+                from ..services.dashboard_v2 import akhir_minggu
+                conditions.append(_syarat_minggu_ini(f"${param_idx}", f"${param_idx + 1}"))
+                params.extend([hari_ini, akhir_minggu(hari_ini)])
+                param_idx += 2
 
             if customer_id:
                 # sales_invoices.customer_id = UUID (terverifikasi [SQL] 2026-08-09).
@@ -1325,6 +1350,7 @@ async def list_invoices(
                     # LISTPAGE-DATA (16 Okt 2026): FE hanya memformat; is_overdue == terbuka AND hari < 0
                     "jatuh_tempo_terbuka": bool(row["jt_terbuka"]),
                     "jatuh_tempo_hari": _fd.jatuh_tempo_hari(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
+                    "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(row["status"], bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "documents": dok_faktur.get(row["id"], _fd.dokumen_faktur(0, 0)),
                 }

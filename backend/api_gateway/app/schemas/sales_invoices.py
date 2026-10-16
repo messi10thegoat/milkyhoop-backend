@@ -398,6 +398,7 @@ class InvoiceListItem(BaseModel):
     # 16 Okt 2026 (KEADAAN-LIST, faktur_daftar.jatuh_tempo_keadaan): telat | hari_ini | akan | selesai | tanpa; selalu terisi.
     jatuh_tempo_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     documents: List[Dict[str, str]] = []
+    jatuh_tempo_minggu_ini: bool = False  # listpage P3: terbuka & jatuh tempo hari ini s.d. akhir minggu (Minggu)
 
 
 class InvoiceListResponse(BaseModel):
@@ -435,6 +436,9 @@ class InvoiceSummary(BaseModel):
     belum_lunas_count: int = 0
     belum_lunas_value: float = 0
     segera_tempo_count: int = 0
+    # 16 Okt 2026 (listpage P3): chip "Jatuh tempo minggu ini" (routers/sales_invoices._syarat_minggu_ini), tak eksklusif
+    jatuh_tempo_minggu_ini_count: int = 0
+    jatuh_tempo_minggu_ini_value: float = 0
     segera_tempo_value: float = 0
     jatuh_tempo_count: int = 0
     jatuh_tempo_value: float = 0

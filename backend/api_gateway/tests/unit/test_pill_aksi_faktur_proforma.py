@@ -118,7 +118,8 @@ def _literal_args(fn, nama):
 
 
 def test_param_aksi_daftar_sama_dengan_AKSI():
-    assert _literal_args(SI.list_invoices, "aksi") == FA.AKSI
+    # 16 Okt 2026 (listpage P3): + satu kunci TAMBAHAN tak-eksklusif (SI.AKSI_MINGGU_INI); kunci FA.AKSI tetap berurutan sama
+    assert _literal_args(SI.list_invoices, "aksi") == FA.AKSI + (SI.AKSI_MINGGU_INI,)
     assert _literal_args(PR.list_proformas, "aksi") == PA.AKSI
 
 
@@ -174,7 +175,7 @@ async def test_ringkasan_faktur_empat_aksi_count_value(monkeypatch):
     monkeypatch.setattr(SI, "tanggal_dokumen", hari)
     req = SimpleNamespace(state=SimpleNamespace(user={"user_id": None, "tenant_id": TENANT}))
     r = await SI.get_invoice_summary(req)
-    sql, a = c.kueri[-1]
+    sql, a = [q for q in c.kueri if "AS perlu_diterbitkan_count" in q[0]][-1]   # kueri pill (chip minggu ini = kueri sendiri)
     assert a == (TENANT, H, FA.AMBANG_SEGERA_TEMPO)
     for k in FA.AKSI:
         pred = FA.sql_aksi(k, "$2", "$3", FA.SQL_SISA_POSITIF_JOIN)

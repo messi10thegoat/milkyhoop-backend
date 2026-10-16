@@ -62,6 +62,14 @@ def jatuh_tempo_keadaan(status: str, terbuka: bool, due_date: Optional[date], ha
     return "telat" if d < 0 else "hari_ini" if d == 0 else "akan"
 
 
+def jatuh_tempo_minggu_ini(terbuka: bool, due_date: Optional[date], hari_ini: date) -> bool:
+    """Chip "Jatuh tempo minggu ini" (paket listpage P3, 16 Okt 2026): faktur TERBUKA (bagian belum-lunas is_overdue) yang
+    jatuh temponya hari ini s.d. akhir minggu (Minggu; dashboard_v2.akhir_minggu = definisi "<= akhir minggu" kartu dasbor).
+    Kembaran Python predikat SQL routers/sales_invoices._syarat_minggu_ini (diuji berpasangan). Telat (lewat) TIDAK ikut."""
+    from .dashboard_v2 import akhir_minggu
+    return bool(terbuka) and due_date is not None and hari_ini <= due_date <= akhir_minggu(hari_ini)
+
+
 async def dokumen_per_faktur(conn, tenant_id: str, ids: list) -> dict:
     """-> {invoice_id: [{type}]} untuk faktur di halaman (<= 100). Dua kueri ber-batch."""
     if not ids:
