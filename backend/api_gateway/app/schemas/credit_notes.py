@@ -41,7 +41,7 @@ class CreditNoteItemCreate(BaseModel):
     @classmethod
     def validate_description(cls, v):
         if not v or not v.strip():
-            raise ValueError('Description is required')
+            raise ValueError('Keterangan wajib diisi.')
         return v.strip()
 
 
@@ -84,7 +84,7 @@ class CreateCreditNoteRequest(BaseModel):
     @classmethod
     def validate_customer_name(cls, v):
         if not v or not v.strip():
-            raise ValueError('Customer name is required')
+            raise ValueError('Nama pelanggan wajib diisi.')
         return v.strip()
 
 

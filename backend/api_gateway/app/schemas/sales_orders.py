@@ -33,7 +33,7 @@ class SalesOrderItemCreate(BaseModel):
     @classmethod
     def validate_description(cls, v):
         if not v or not v.strip():
-            raise ValueError('Description is required')
+            raise ValueError('Keterangan wajib diisi.')
         return v.strip()
 
 
@@ -182,7 +182,7 @@ class CreateSalesOrderRequest(BaseModel):
     @classmethod
     def validate_customer_name(cls, v):
         if not v or not v.strip():
-            raise ValueError('Customer name is required')
+            raise ValueError('Nama pelanggan wajib diisi.')
         return v.strip()
 
     # Cermin f1ce3564: "" dari form dinormalisasi ke NULL, supaya create tidak

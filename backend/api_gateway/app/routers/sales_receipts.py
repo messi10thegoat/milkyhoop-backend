@@ -276,7 +276,7 @@ async def get_sales_receipt(request: Request, receipt_id: UUID):
         )
 
         if not row:
-            raise HTTPException(status_code=404, detail="Sales receipt not found")
+            raise HTTPException(status_code=404, detail="Struk penjualan tidak ditemukan.")
 
         items = await conn.fetch(
             "SELECT * FROM sales_receipt_items WHERE sales_receipt_id = $1 ORDER BY line_number",
@@ -380,7 +380,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
             if change_amount < 0:
                 raise HTTPException(
-                    status_code=400, detail="Amount received is less than total"
+                    status_code=400, detail="Jumlah diterima kurang dari total."
                 )
 
             # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
@@ -813,10 +813,10 @@ async def void_sales_receipt(
             )
 
             if not existing:
-                raise HTTPException(status_code=404, detail="Sales receipt not found")
+                raise HTTPException(status_code=404, detail="Struk penjualan tidak ditemukan.")
 
             if existing["status"] == "void":
-                raise HTTPException(status_code=400, detail="Receipt already voided")
+                raise HTTPException(status_code=400, detail="Struk sudah dibatalkan.")
 
             # Law 5: Period check for void date
             void_date = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis

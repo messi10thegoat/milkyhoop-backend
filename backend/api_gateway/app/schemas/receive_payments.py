@@ -82,10 +82,10 @@ class CreateReceivePaymentRequest(BaseModel):
         source_type = info.data.get("source_type", "cash")
         if source_type == "deposit" and not v:
             raise ValueError(
-                "source_deposit_id is required when source_type is deposit"
+                "source_deposit_id wajib diisi bila source_type = deposit."
             )
         if source_type == "cash" and v:
-            raise ValueError("source_deposit_id must be null when source_type is cash")
+            raise ValueError("source_deposit_id harus kosong bila source_type = cash.")
         return v
 
 

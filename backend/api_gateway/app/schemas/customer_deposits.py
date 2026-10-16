@@ -73,7 +73,7 @@ class CreateCustomerDepositRequest(BaseModel):
     @classmethod
     def validate_customer_name(cls, v):
         if not v or not v.strip():
-            raise ValueError('Customer name is required')
+            raise ValueError('Nama pelanggan wajib diisi.')
         return v.strip()
 
 

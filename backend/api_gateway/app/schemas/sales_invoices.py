@@ -208,21 +208,21 @@ class CreateInvoiceRequest(BaseModel):
             return v
         v = v.strip().lower()
         if v not in ("invoice", "delivery"):
-            raise ValueError("recognize_at must be 'invoice' or 'delivery'")
+            raise ValueError("recognize_at harus 'invoice' atau 'delivery'.")
         return v
 
     @field_validator("customer_name")
     @classmethod
     def validate_customer_name(cls, v):
         if not v or not v.strip():
-            raise ValueError("Customer name is required")
+            raise ValueError("Nama pelanggan wajib diisi.")
         return v.strip()
 
     @field_validator("items")
     @classmethod
     def validate_items(cls, v):
         if not v or len(v) == 0:
-            raise ValueError("At least one item is required")
+            raise ValueError("Minimal satu barang wajib diisi.")
         return v
 
 

@@ -33,7 +33,7 @@ class QuoteItemCreate(BaseModel):
     @classmethod
     def validate_description(cls, v):
         if not v or not v.strip():
-            raise ValueError('Description is required')
+            raise ValueError('Keterangan wajib diisi.')
         return v.strip()
 
 
@@ -123,7 +123,7 @@ class CreateQuoteRequest(BaseModel):
     @classmethod
     def validate_customer_name(cls, v):
         if not v or not v.strip():
-            raise ValueError('Customer name is required')
+            raise ValueError('Nama pelanggan wajib diisi.')
         return v.strip()
 
     @field_validator('expiry_date')
@@ -131,7 +131,7 @@ class CreateQuoteRequest(BaseModel):
     def validate_expiry_date(cls, v, info):
         if v is not None and 'quote_date' in info.data:
             if v < info.data['quote_date']:
-                raise ValueError('Expiry date cannot be before quote date')
+                raise ValueError('Tanggal kedaluwarsa tidak boleh sebelum tanggal penawaran.')
         return v
 
 
