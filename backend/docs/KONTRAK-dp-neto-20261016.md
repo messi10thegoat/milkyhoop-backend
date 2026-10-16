@@ -29,8 +29,9 @@ kelas "kisi dua sumber" (memori 23 Sep): layar Sisa (D) dan pagar (A/C) bisa tak
 Kasus kaos (data uji):
 - **SO-2609-0331** (total 400.000): uang muka 50.000, **refund 10.000** → neto 40.000. A = 50.000 (batas bawah ubah SO
   diikat "uang muka diterima" 50.000 → terlalu ketat 10.000, arah aman). **Plafon terima**: sisa yang masih dapat
-  diterima = 400.000 − 50.000 = **350.000**, padahal uang yang masih boleh masuk = 360.000 → **pelunasan penuh
-  pelanggan DITOLAK** (galat "melebihi sisa"). PDF kwitansi mencetak Sisa Nilai Pesanan 350.000 (salah 10.000).
+  diterima = 400.000 − 50.000 = **350.000**, padahal uang yang masih boleh masuk = 360.000 → **pembayaran pesanan
+  sebesar sisa penuh DITOLAK** (uang muka/pelunasan SEBELUM faktur; galat "melebihi sisa"; pembayaran FAKTUR lewat
+  penerimaan tak memakai plafon ini). PDF kwitansi mencetak Sisa Nilai Pesanan 350.000 (salah 10.000).
   Mengganti A saja TIDAK cukup: C (bruto) membuat `tertagih_proforma` tetap 50.000 → batas tetap 50.000.
 - **SO-2609-0003** (total 270.000): uang muka **draf** 1.000 ikut A (163.000) padahal C/D = 162.000. Draf belum uang
   masuk (tanpa jurnal). Batas tak berubah (diikat proforma terbit).
@@ -94,4 +95,4 @@ Semua data sudah ada (jurnal + `customer_deposits`). Nol kolom baru, nol backfil
   sebesar refund)? Usul: ya (NetSuite: refund mengurangi saldo deposit yang bisa diterapkan). Hari ini 0 kasus grapgrap.
 - **P3** Uang muka **draf** di plafon terima: tetap menahan plafon (usul, aman) atau diabaikan sampai diposting?
 - **P4** Prioritas: tetap RENDAH (grapgrap 0 kasus) atau naik karena plafon terima MENOLAK pelunasan sah sesudah refund
-  sebagian (kasus kaos nyata)? Usul: naik ke SEDANG — gejala pertama di grapgrap = pelanggan tak bisa melunasi.
+  sebagian (kasus kaos nyata)? Usul: naik ke SEDANG — gejala pertama di grapgrap = pembayaran pesanan sebesar sisa ditolak sesudah refund sebagian.
