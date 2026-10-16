@@ -39,7 +39,7 @@ async def main():
             from datetime import timedelta
             from backend.api_gateway.app.utils.tanggal_tenant import tanggal_dokumen as _td
             asli = await _td(c, t)
-            for geser in (0, -7, -14, -21, 7):   # hari ini + "seolah-olah" minggu lain: data jatuh tempo lebih banyak teruji
+            for geser in (0, -7, -14, -21, 7, -3, -10, -17, -24):   # minggu lain + hari SELASA (minggu > 3 hari: membedakan dari segera_tempo)
                 async def _hari(conn, tid, _g=geser):
                     return asli + timedelta(days=_g)
                 SI.tanggal_dokumen = _hari
