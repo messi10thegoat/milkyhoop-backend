@@ -195,7 +195,7 @@ async def setup_mfa(request: Request):
     # Get user from request state (set by auth middleware)
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user_id = user.get("user_id")
     email = user.get("email", "user@milkyhoop.com")
@@ -266,7 +266,7 @@ async def verify_mfa_setup(body: MFAVerifyRequest, request: Request):
     """
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user_id = user.get("user_id")
 
@@ -382,7 +382,7 @@ async def disable_mfa(body: MFADisableRequest, request: Request):
 
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user_id = user.get("user_id")
 
@@ -431,7 +431,7 @@ async def get_mfa_status(request: Request):
     """
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user_id = user.get("user_id")
 
@@ -471,7 +471,7 @@ async def regenerate_backup_codes(request: Request):
     """
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user_id = user.get("user_id")
 

@@ -54,10 +54,10 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     user = getattr(request.state, "user", None)
     if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
@@ -252,7 +252,7 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
     Aturan = _rencana_kasbon (dipakai juga /preview); penghalang pertama -> galat lama."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     tenant_id = ctx["tenant_id"]
     try:
         kunci_klien = kunci_idempotensi_klien(request)
@@ -300,7 +300,7 @@ async def preview_grant_advance(request: Request, body: GrantAdvanceRequest):
     SELALU di-ROLLBACK; SEMUA penghalang; 200 walau tak bisa. `payload` = badan persis untuk POST ""."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     tid = ctx["tenant_id"]
     pool = await get_pool()
     hasil, baris, cermin = None, [], None
@@ -748,7 +748,7 @@ async def void_advance(request: Request, advance_id: UUID, body: VoidAdvanceRequ
     Aturan = _rencana_batal_kasbon (dipakai juga /void/preview); penghalang pertama -> galat lama."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -767,7 +767,7 @@ async def preview_void_advance(request: Request, advance_id: UUID, body: VoidAdv
     """PRATINJAU batal kasbon: aturan + penulis yang SAMA, transaksi SELALU di-ROLLBACK, SEMUA penghalang."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
-        raise HTTPException(status_code=401, detail="User ID required")
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     alasan = ((body.reason if body else None) or "").strip() or None
     pool = await get_pool()
     baris = []

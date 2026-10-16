@@ -155,14 +155,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -1209,7 +1209,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
@@ -1748,7 +1748,7 @@ async def update_expense(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
         pool = await get_pool()
         # Optimistic concurrency (opt-in If-Match): reject a stale write.
         from ..services.optimistic_concurrency import assert_if_match_row
@@ -2045,7 +2045,7 @@ async def post_expense(request: Request, expense_id: UUID):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
@@ -2196,7 +2196,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])

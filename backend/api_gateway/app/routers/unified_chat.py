@@ -809,7 +809,7 @@ def _get_user_context(request: Request) -> dict:
     Returns dict with tenant_id, user_id, auth_token.
     """
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
@@ -817,7 +817,7 @@ def _get_user_context(request: Request) -> dict:
 
     if not tenant_id:
         raise HTTPException(
-            status_code=401, detail="Invalid user context: missing tenant_id"
+            status_code=401, detail="Sesi tidak valid, silakan masuk lagi."
         )
 
     # Extract bearer token for downstream API calls

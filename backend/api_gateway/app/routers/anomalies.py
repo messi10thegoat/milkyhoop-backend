@@ -325,7 +325,7 @@ async def list_anomalies(request: Request):
     """Temuan anomali tenant pemanggil. Nol tulis."""
     user = getattr(request.state, "user", None)
     if not user or not user.get("tenant_id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     tid = user["tenant_id"]
     readable = await _readable_modules(user)
     checks, findings = [], []

@@ -28,7 +28,7 @@ async def list_sessions(request: Request):
         if not hasattr(request.state, 'user'):
             raise HTTPException(
                 status_code=401, 
-                detail="Authentication required"
+                detail="Silakan masuk terlebih dahulu."
             )
         
         user = request.state.user
@@ -83,7 +83,7 @@ async def logout_all_sessions(request: Request):
     user = getattr(request.state, "user", None) or {}
     user_id = user.get("user_id")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     ok_redis = session_manager.revoke_all(str(user_id))
     hasil = await auth_client.logout(
         user_id=str(user_id), refresh_token=None, logout_all_devices=True

@@ -37,7 +37,7 @@ def _pengguna(request: Request) -> tuple:
     user = getattr(request.state, "user", None) or {}
     tenant_id, user_id = user.get("tenant_id"), user.get("user_id")
     if not tenant_id or not user_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return str(tenant_id), str(user_id)
 
 

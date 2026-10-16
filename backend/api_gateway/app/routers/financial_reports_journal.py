@@ -88,11 +88,11 @@ async def get_neraca_journal(request: Request, periode: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = str(request.state.user.get("tenant_id"))
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         start_date, end_date = await periode_laporan(periode, tenant_id)
 

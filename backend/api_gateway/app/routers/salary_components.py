@@ -23,11 +23,11 @@ async def get_pool() -> asyncpg.Pool:
 
 def get_user_context(request: Request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
@@ -150,7 +150,7 @@ async def delete_component(request: Request, component_id: UUID):
         if not existing:
             raise HTTPException(404, detail="Component not found")
         if existing["is_system"]:
-            raise HTTPException(403, detail="Cannot delete system salary component")
+            raise HTTPException(403, detail="Komponen gaji bawaan sistem tidak bisa dihapus.")
 
         await conn.execute(
             "UPDATE salary_components SET is_active = false, updated_at = now() WHERE id = $1",

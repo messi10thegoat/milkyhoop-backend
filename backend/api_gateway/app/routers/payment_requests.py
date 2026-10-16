@@ -53,7 +53,7 @@ class MarkPaidDTO(BaseModel):
 # === HELPER ===
 def _get_user_context(request: Request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     return request.state.user
 
 
@@ -161,7 +161,7 @@ async def approve_payment_request(
     business_role = user.get("business_role_code")
     if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
         raise HTTPException(
-            status_code=403, detail="Only Owner or Finance Manager can approve"
+            status_code=403, detail="Hanya Pemilik atau Manajer Keuangan yang bisa menyetujui."
         )
 
     result = await service.approve(
@@ -189,7 +189,7 @@ async def reject_payment_request(
     business_role = user.get("business_role_code")
     if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
         raise HTTPException(
-            status_code=403, detail="Only Owner or Finance Manager can reject"
+            status_code=403, detail="Hanya Pemilik atau Manajer Keuangan yang bisa menolak."
         )
 
     result = await service.reject(
@@ -256,7 +256,7 @@ async def mark_payment_request_paid(
     business_role = user.get("business_role_code")
     if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
         raise HTTPException(
-            status_code=403, detail="Only Owner or Finance Manager can mark as paid"
+            status_code=403, detail="Hanya Pemilik atau Manajer Keuangan yang bisa menandai lunas."
         )
 
     result = await service.mark_paid(

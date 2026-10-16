@@ -536,10 +536,10 @@ async def get_dashboard_all(
 
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Delegate to individual handlers — they each acquire their own connection
         # but with a warm pool this is fast. The key win is ONE HTTP request = ONE auth check.
@@ -669,11 +669,11 @@ async def get_dashboard_summary(
     try:
         # Get tenant_id from auth context
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # If start_date/end_date provided, use them (fiscal period mode)
         if start_date and end_date:
@@ -1076,11 +1076,11 @@ async def get_piutang_detail(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1148,11 +1148,11 @@ async def get_hutang_detail(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1266,11 +1266,11 @@ async def get_kas_bank_detail(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1372,11 +1372,11 @@ async def get_cash_flow_trends(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1622,11 +1622,11 @@ async def get_top_expenses(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1717,11 +1717,11 @@ async def get_overdue_invoices(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1788,11 +1788,11 @@ async def get_overdue_bills(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -1862,11 +1862,11 @@ async def get_reconciliation_status(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -2071,11 +2071,11 @@ async def get_cash_flow_projection(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
@@ -2286,10 +2286,10 @@ async def get_sales_daily(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Tenant not found")
+            raise HTTPException(status_code=401, detail="Usaha tidak ditemukan.")
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.execute(

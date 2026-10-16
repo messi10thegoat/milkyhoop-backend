@@ -98,11 +98,11 @@ async def _resolve_wage_account(conn, tenant_id, role_key, default_role="SALARY_
 
 def get_user_context(request: Request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
@@ -186,7 +186,7 @@ async def create_payroll_run(request: Request, body: CreatePayrollRequest):
         role_code, accessible_ids = await _pg_filter(conn, ctx)
         if role_code not in ("OWNER", "ADMIN") and body.employee_ids:
             if not accessible_ids:
-                raise HTTPException(403, detail="No pay group access to create payroll")
+                raise HTTPException(403, detail="Anda tidak punya akses ke grup gaji untuk membuat penggajian.")
             invalid = await conn.fetchval(
                 "SELECT COUNT(*) FROM employees WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND pay_group_id != ALL($3::uuid[])",
                 [str(e) for e in body.employee_ids],
@@ -354,14 +354,14 @@ async def get_payroll_run(request: Request, run_id: UUID):
         role_code, accessible_ids = await _pg_filter(conn, ctx)
         if role_code not in ("OWNER", "ADMIN"):
             if not accessible_ids:
-                raise HTTPException(403, detail="No pay group access")
+                raise HTTPException(403, detail="Anda tidak punya akses ke grup gaji.")
             visible = await conn.fetchval(
                 "SELECT COUNT(*) FROM payroll_run_employees pre JOIN employees e ON e.id = pre.employee_id WHERE pre.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])",
                 run_id,
                 accessible_ids,
             )
             if not visible:
-                raise HTTPException(403, detail="No visible employees in this payroll")
+                raise HTTPException(403, detail="Tidak ada karyawan yang bisa Anda lihat di penggajian ini.")
 
         # Get payments summary
         payments = await conn.fetch(

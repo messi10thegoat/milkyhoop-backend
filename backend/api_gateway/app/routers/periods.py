@@ -50,14 +50,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -300,7 +300,7 @@ async def update_period(request: Request, period_id: UUID, body: UpdatePeriodReq
 
             if existing["status"] == "LOCKED":
                 raise HTTPException(
-                    status_code=403, detail="Cannot modify locked period"
+                    status_code=403, detail="Periode terkunci tidak bisa diubah."
                 )
 
             # Update fields
@@ -985,7 +985,7 @@ async def reopen_period(request: Request, period_id: UUID, body: ReopenPeriodReq
             if settings_row and not settings_row["allow_period_reopen"]:
                 raise HTTPException(
                     status_code=403,
-                    detail="Period reopening is disabled for this tenant",
+                    detail="Pembukaan kembali periode dinonaktifkan untuk usaha ini.",
                 )
 
             # Check period
@@ -1003,7 +1003,7 @@ async def reopen_period(request: Request, period_id: UUID, body: ReopenPeriodReq
 
             if period["status"] == "LOCKED":
                 raise HTTPException(
-                    status_code=403, detail="Cannot reopen locked period"
+                    status_code=403, detail="Periode terkunci tidak bisa dibuka kembali."
                 )
 
             if period["status"] == "OPEN":

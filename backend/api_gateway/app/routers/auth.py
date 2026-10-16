@@ -528,7 +528,7 @@ async def list_user_tenants(request: Request):
     user_id = user_data.get("user_id")
     tenant_id = user_data.get("tenant_id")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -570,7 +570,7 @@ async def switch_tenant(request: Request, body: SwitchTenantRequest):
     user_email = user_data.get("email")
     target_tenant_id = body.tenant_id
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -596,7 +596,7 @@ async def switch_tenant(request: Request, body: SwitchTenantRequest):
         role_code = await try_resolve_business_role(conn, user_id, target_tenant_id)
 
         if not role_code:
-            raise HTTPException(status_code=403, detail="No access to this tenant")
+            raise HTTPException(status_code=403, detail="Anda tidak punya akses ke data usaha ini.")
 
         await conn.execute(
             'UPDATE "User" SET last_active_tenant_id = $1 WHERE id = $2',

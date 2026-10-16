@@ -33,7 +33,7 @@ async def get_pool() -> asyncpg.Pool:
 def _user(request: Request) -> dict:
     user = getattr(request.state, "user", None)
     if not user or not user.get("tenant_id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     return user
 
 

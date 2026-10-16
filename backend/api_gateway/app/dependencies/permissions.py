@@ -180,8 +180,8 @@ def require_permission(module: str, action: str):
                 raise HTTPException(
                     status_code=403,
                     detail={
-                        "error": "Permission denied",
-                        "message": f"You don't have permission to {action_name.lower()} {normalized_module.replace('_', ' ')}",
+                        "error": "Akses ditolak.",
+                        "message": f"Anda tidak punya izin untuk {action_name.lower()} {normalized_module.replace('_', ' ')}",
                         "code": "PERMISSION_DENIED",
                         "required_action": action,
                         "required_module": normalized_module
@@ -204,8 +204,8 @@ def require_permission(module: str, action: str):
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "Permission check failed",
-                    "message": "Unable to verify permissions",
+                    "error": "Pemeriksaan izin gagal, coba lagi sebentar lagi.",
+                    "message": "Tidak bisa memeriksa izin saat ini.",
                     "code": "PERMISSION_CHECK_ERROR"
                 }
             )
@@ -249,8 +249,8 @@ def require_visibility(level: str):
                 raise HTTPException(
                     status_code=403,
                     detail={
-                        "error": "Access denied",
-                        "message": f"You don't have visibility level {level} required for this data",
+                        "error": "Akses ditolak.",
+                        "message": f"Anda tidak punya tingkat akses {level} yang dibutuhkan untuk data ini",
                         "code": "VISIBILITY_DENIED",
                         "required_level": level
                     }
@@ -266,8 +266,8 @@ def require_visibility(level: str):
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "Visibility check failed",
-                    "message": "Unable to verify visibility level"
+                    "error": "Pemeriksaan tingkat akses gagal.",
+                    "message": "Tidak bisa memeriksa tingkat akses."
                 }
             )
     
@@ -373,8 +373,8 @@ def require_report_access(report_type: str):
                 raise HTTPException(
                     status_code=403,
                     detail={
-                        "error": "Access denied",
-                        "message": f"You don't have permission to access {report_type.replace('_', ' ')} report",
+                        "error": "Akses ditolak.",
+                        "message": f"Anda tidak punya izin mengakses laporan {report_type.replace('_', ' ')}",
                         "code": "FCL_REPORT_DENIED",
                         "required_report": report_type
                     }
@@ -392,8 +392,8 @@ def require_report_access(report_type: str):
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "Access check failed",
-                    "message": "Unable to verify report access"
+                    "error": "Pemeriksaan akses gagal.",
+                    "message": "Tidak bisa memeriksa akses laporan."
                 }
             )
     
@@ -432,7 +432,7 @@ def require_granular_permission(permission_code: str):
         tenant_id = user.get('tenant_id')
         
         if not user_id or not tenant_id:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            raise HTTPException(status_code=401, detail="Anda tidak punya akses.")
         
         try:
             permission_service = get_permission_service()
@@ -450,8 +450,8 @@ def require_granular_permission(permission_code: str):
                 raise HTTPException(
                     status_code=403,
                     detail={
-                        "error": "Permission denied",
-                        "message": f"You don't have permission: {permission_code}",
+                        "error": "Akses ditolak.",
+                        "message": f"Anda tidak punya izin: {permission_code}",
                         "code": "PERMISSION_DENIED",
                         "required_permission": permission_code
                     }
@@ -472,8 +472,8 @@ def require_granular_permission(permission_code: str):
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "Permission check failed",
-                    "message": "Unable to verify permission",
+                    "error": "Pemeriksaan izin gagal, coba lagi sebentar lagi.",
+                    "message": "Tidak bisa memeriksa izin saat ini.",
                     "code": "PERMISSION_CHECK_ERROR"
                 }
             )

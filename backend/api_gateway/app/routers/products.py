@@ -172,11 +172,11 @@ async def get_product_by_barcode(request: Request, barcode: str):
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Connect to database
         conn = await get_db_connection()
@@ -357,11 +357,11 @@ async def get_last_purchase(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Connect to database
         conn = await get_db_connection()
@@ -470,11 +470,11 @@ async def get_all_products(request: Request, limit: int = Query(1000, ge=1, le=2
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Connect to database
         conn = await get_db_connection()
@@ -547,11 +547,11 @@ async def search_products(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Connect to database
         conn = await get_db_connection()
@@ -660,11 +660,11 @@ async def search_products_for_pos(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Use connection pool (fast - no connection overhead!)
         pool = await get_db_pool()
@@ -757,11 +757,11 @@ async def search_products_for_kulakan(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Use connection pool
         pool = await get_db_pool()
@@ -1037,11 +1037,11 @@ async def get_recent_sales_products(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         effective_tenant = tenant_id or request.state.user.get("tenant_id")
         if not effective_tenant:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Connect to database
         conn = await get_db_connection()
@@ -1112,12 +1112,12 @@ async def register_barcode(
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         _user_id = request.state.user.get("user_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Validate barcode format - must be exactly 13 digits
         barcode = body.barcode.strip()

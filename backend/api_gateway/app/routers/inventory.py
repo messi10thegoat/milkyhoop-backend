@@ -203,11 +203,11 @@ async def list_products(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -342,11 +342,11 @@ async def get_product_detail(request: Request, product_id: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -449,12 +449,12 @@ async def add_product(request: Request, body: AddProductRequest):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         user_id = request.state.user.get("user_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Validate required fields
         if not body.nama_produk or not body.nama_produk.strip():
@@ -624,11 +624,11 @@ async def get_low_stock_alerts(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
         try:
@@ -698,11 +698,11 @@ async def get_categories(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -736,11 +736,11 @@ async def get_inventory_summary(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -799,11 +799,11 @@ async def get_product_stock_card(request: Request, product_id: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -1032,11 +1032,11 @@ async def get_top_products(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Date filter (parameterized via SQL, not string interpolation)
 
@@ -1134,11 +1134,11 @@ async def get_slow_moving_products(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Date filter for LEFT JOIN condition (server-generated, safe)
 
@@ -1242,11 +1242,11 @@ async def get_product_margins(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Date filter for sales subquery (server-generated, safe)
 

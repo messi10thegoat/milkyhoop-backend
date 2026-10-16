@@ -17,10 +17,10 @@ router = APIRouter(prefix="/api/reports/profitability", tags=["reports-profitabi
 
 def _get_tenant_id(request: Request) -> str:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(401, detail="Not authenticated")
+        raise HTTPException(401, detail="Silakan masuk terlebih dahulu.")
     tenant_id = request.state.user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(401, detail="No tenant context")
+        raise HTTPException(401, detail="Konteks usaha tidak ditemukan.")
     return tenant_id
 
 

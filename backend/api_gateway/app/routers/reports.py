@@ -82,14 +82,14 @@ async def get_db_connection():
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": user_id, "user": user}
 
@@ -298,10 +298,10 @@ async def get_neraca(request: Request, periode: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
         start_date, end_date = await periode_laporan(periode, tenant_id)
         as_of = end_date.date() if hasattr(end_date, "date") else end_date
         pool = await get_pool()
@@ -571,10 +571,10 @@ async def get_arus_kas(request: Request, periode: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
         start_date, end_date = await periode_laporan(periode, tenant_id)
         sd = start_date.date() if hasattr(start_date, "date") else start_date
         ed = end_date.date() if hasattr(end_date, "date") else end_date
@@ -893,10 +893,10 @@ async def get_laba_rugi(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
         start_date, end_date = await periode_laporan(periode, tenant_id)
         sd = start_date.date() if hasattr(start_date, "date") else start_date
         ed = end_date.date() if hasattr(end_date, "date") else end_date
@@ -1129,11 +1129,11 @@ async def get_trial_balance(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Use AccountingFacade for proper double-entry data
         facade = await get_facade()
@@ -1184,11 +1184,11 @@ async def get_trial_balance_summary(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         facade = await get_facade()
         result = await facade.get_trial_balance_summary(
@@ -1329,11 +1329,11 @@ async def get_trial_balance_full(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -1574,11 +1574,11 @@ async def get_accounting_settings(request: Request):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
         try:
@@ -1661,11 +1661,11 @@ async def update_accounting_settings(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
         try:
@@ -1809,11 +1809,11 @@ async def get_profit_loss_by_basis(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         start_date, end_date = await periode_laporan(periode, tenant_id)
         # Convert to unix timestamp (milliseconds) for bigint column
@@ -2004,11 +2004,11 @@ async def get_cash_accrual_comparison(request: Request, periode: str):
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         start_date, end_date = await periode_laporan(periode, tenant_id)
         # Convert to unix timestamp (milliseconds) for bigint column
@@ -2239,11 +2239,11 @@ async def get_timing_differences(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         conn = await get_db_connection()
 
@@ -2416,11 +2416,11 @@ async def get_ar_aging_summary(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2472,11 +2472,11 @@ async def get_ar_aging_detail(
     """Get AR aging detail by customer."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2552,11 +2552,11 @@ async def get_ar_aging_for_customer(
     """Get AR aging for a single customer."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2627,11 +2627,11 @@ async def get_ap_aging_summary(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2683,11 +2683,11 @@ async def get_ap_aging_detail(
     """Get AP aging detail by vendor."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2761,11 +2761,11 @@ async def get_ap_aging_for_vendor(
     """Get AP aging for a single vendor."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2830,11 +2830,11 @@ async def create_aging_snapshot(request: Request, data: CreateSnapshotRequest):
     """Create an aging snapshot for trend analysis."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         as_of_date = data.as_of_date
         pool = await get_pool()
@@ -2879,11 +2879,11 @@ async def get_aging_trend(
     """Get aging trend from snapshots."""
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 
@@ -2951,11 +2951,11 @@ async def get_drill_down(
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         pool = await get_pool()
 

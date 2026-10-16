@@ -36,8 +36,8 @@ async def get_current_user_from_token(
             raise HTTPException(
                 status_code=401,
                 detail={
-                    "error": "Invalid token",
-                    "message": result.get("message", "Token validation failed")
+                    "error": "Sesi berakhir, silakan masuk lagi.",
+                    "message": result.get("message", "Validasi sesi gagal.")
                 }
             )
         
@@ -55,7 +55,7 @@ async def get_current_user_from_token(
         logger.error(f"Token validation error: {str(e)}")
         raise HTTPException(
             status_code=401,
-            detail="Authentication failed"
+            detail="Autentikasi gagal, silakan masuk lagi."
         )
 
 
@@ -80,7 +80,7 @@ def get_current_user(request: Request) -> Dict:
     if not hasattr(request.state, 'user') or request.state.user is None:
         raise HTTPException(
             status_code=401,
-            detail="Authentication required"
+            detail="Silakan masuk terlebih dahulu."
         )
     
     return request.state.user
@@ -101,7 +101,7 @@ async def verify_admin(
         logger.warning(f"Non-admin access attempt by user {current_user.get('user_id')}")
         raise HTTPException(
             status_code=403,
-            detail="Admin access required"
+            detail="Hanya admin yang bisa melakukan ini."
         )
     
     return current_user
@@ -137,7 +137,7 @@ async def verify_tenant_access(
         )
         raise HTTPException(
             status_code=403,
-            detail="Access denied to this tenant"
+            detail="Anda tidak punya akses ke data usaha ini."
         )
     
     return current_user

@@ -29,7 +29,7 @@ async def get_pool():
 def _ctx(request: Request) -> dict:
     user = getattr(request.state, "user", None)
     if not user or not user.get("tenant_id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     return {"tenant_id": user["tenant_id"], "user_id": user.get("user_id") or user.get("id")}
 
 

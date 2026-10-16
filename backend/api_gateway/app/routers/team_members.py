@@ -109,12 +109,12 @@ class UpdateOverridesRequest(BaseModel):
 def _get_user_context(request: Request) -> dict:
     """Extract user context from request state"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(
-            status_code=401, detail="Invalid user context - missing tenant_id"
+            status_code=401, detail="Sesi tidak valid, silakan masuk lagi."
         )
     return user
 
@@ -727,7 +727,7 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
             if not has_permission:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only Owner or Manager can update member roles",
+                    detail="Hanya Pemilik atau Manajer yang bisa mengubah peran anggota.",
                 )
 
             member_row = await conn.fetchrow(
@@ -753,7 +753,7 @@ async def update_member_role(request: Request, member_id: str, data: UpdateRoleR
             if member_row["current_level"] < user_hierarchy:
                 raise HTTPException(
                     status_code=403,
-                    detail="Cannot modify a member with higher role than yours",
+                    detail="Tidak bisa mengubah anggota yang perannya lebih tinggi dari Anda.",
                 )
 
             if member_row["current_code"] == "OWNER" and new_role["code"] != "OWNER":
@@ -821,7 +821,7 @@ async def remove_team_member(request: Request, member_id: str):
             if not has_permission:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only Owner or Manager can remove team members",
+                    detail="Hanya Pemilik atau Manajer yang bisa mengeluarkan anggota tim.",
                 )
 
             member_row = await conn.fetchrow(
@@ -851,7 +851,7 @@ async def remove_team_member(request: Request, member_id: str):
             if member_row["hierarchy_level"] < user_hierarchy:
                 raise HTTPException(
                     status_code=403,
-                    detail="Cannot remove a member with higher role than yours",
+                    detail="Tidak bisa mengeluarkan anggota yang perannya lebih tinggi dari Anda.",
                 )
 
             if member_row["role_code"] == "OWNER":
@@ -1116,7 +1116,7 @@ async def get_my_permissions(request: Request):
     user_id = user_data.get("user_id")
     tenant_id = user_data.get("tenant_id")
     if not user_id or not tenant_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     try:
         from ..services.policy_engine_client import get_policy_engine

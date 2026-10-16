@@ -596,7 +596,7 @@ async def create_purchase_transaction(
         # ===== 1. GET USER FROM AUTH MIDDLEWARE =====
         # AuthMiddleware already validates token and sets request.state.user
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         user = request.state.user
         tenant_id = user.get("tenant_id")
@@ -605,7 +605,7 @@ async def create_purchase_transaction(
         if not tenant_id or not user_id:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid user context: missing tenant_id or user_id",
+                detail="Sesi tidak valid, silakan masuk lagi.",
             )
 
         logger.info(f"Purchase request from user {user_id} in tenant {tenant_id}")
@@ -868,11 +868,11 @@ async def parse_guided_input(request: Request, body: GuidedInputRequest):
     try:
         # Get user from auth middleware
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         tenant_id = request.state.user.get("tenant_id")
         if not tenant_id:
-            raise HTTPException(status_code=401, detail="Invalid user context")
+            raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
         # Parse the input
         parsed = parse_conversational_input(body.input_text)
@@ -940,7 +940,7 @@ async def create_sales_transaction(request: Request, body: SalesTransactionReque
     try:
         # ===== 1. GET USER FROM AUTH MIDDLEWARE =====
         if not hasattr(request.state, "user") or not request.state.user:
-            raise HTTPException(status_code=401, detail="Authentication required")
+            raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
         user = request.state.user
         tenant_id = user.get("tenant_id")
@@ -949,7 +949,7 @@ async def create_sales_transaction(request: Request, body: SalesTransactionReque
         if not tenant_id or not user_id:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid user context: missing tenant_id or user_id",
+                detail="Sesi tidak valid, silakan masuk lagi.",
             )
 
         logger.info(

@@ -29,7 +29,7 @@ async def refresh_token(request: Request):
     # Check if session exists
     session_data = session_manager.get_session(current_token)
     if not session_data:
-        raise HTTPException(status_code=401, detail="No active session found")
+        raise HTTPException(status_code=401, detail="Sesi tidak ditemukan, silakan masuk lagi.")
     
     try:
         # Call auth service RefreshToken
@@ -67,7 +67,7 @@ async def refresh_token(request: Request):
                 "token_type": "Bearer"
             }
         else:
-            raise HTTPException(status_code=401, detail="Token refresh failed")
+            raise HTTPException(status_code=401, detail="Gagal memperbarui sesi, silakan masuk lagi.")
             
     except grpc.RpcError as e:
         logger.error(f"gRPC refresh error: {e}")
@@ -81,7 +81,7 @@ async def token_info(request: Request):
     """Get current token information and expiry"""
     
     if not hasattr(request.state, 'authenticated') or not request.state.authenticated:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     
     # Extract token
     auth_header = request.headers.get("Authorization", "")
@@ -93,7 +93,7 @@ async def token_info(request: Request):
     # Get session info
     session_data = session_manager.get_session(current_token)
     if not session_data:
-        raise HTTPException(status_code=401, detail="Session not found")
+        raise HTTPException(status_code=401, detail="Sesi tidak ditemukan, silakan masuk lagi.")
     
     from datetime import datetime, timezone
     
@@ -126,7 +126,7 @@ async def auto_refresh_check(request: Request):
     """Check if token needs refresh and optionally refresh it"""
     
     if not hasattr(request.state, 'authenticated') or not request.state.authenticated:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     
     # Get token info
     token_info_response = await token_info(request)

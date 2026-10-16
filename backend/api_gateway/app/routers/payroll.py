@@ -111,14 +111,14 @@ async def get_pool() -> asyncpg.Pool:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {
         "tenant_id": tenant_id,
@@ -1235,7 +1235,7 @@ async def approve_payroll(request: Request, payroll_id: UUID):
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
             raise HTTPException(
                 status_code=403,
-                detail="Only Owner or Finance Manager can approve payroll",
+                detail="Hanya Pemilik atau Manajer Keuangan yang bisa menyetujui penggajian.",
             )
 
         pool = await get_pool()
@@ -1311,7 +1311,7 @@ async def reject_payroll(
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
             raise HTTPException(
                 status_code=403,
-                detail="Only Owner or Finance Manager can reject payroll",
+                detail="Hanya Pemilik atau Manajer Keuangan yang bisa menolak penggajian.",
             )
 
         pool = await get_pool()
@@ -1597,7 +1597,7 @@ async def void_payroll(request: Request, payroll_id: UUID, data: VoidPayrollRequ
         business_role = ctx.get("business_role_code")
         if business_role and business_role not in ["OWNER", "FINANCE_MGR"]:
             raise HTTPException(
-                status_code=403, detail="Only Owner or Finance Manager can void payroll"
+                status_code=403, detail="Hanya Pemilik atau Manajer Keuangan yang bisa membatalkan penggajian."
             )
 
         pool = await get_pool()

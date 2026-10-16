@@ -24,7 +24,7 @@ router = APIRouter()
 def _ctx(request: Request) -> dict:
     u = getattr(request.state, "user", None) or {}
     if not u.get("tenant_id"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     return {"tenant_id": u["tenant_id"], "user_id": u.get("user_id") or u.get("id")}
 
 

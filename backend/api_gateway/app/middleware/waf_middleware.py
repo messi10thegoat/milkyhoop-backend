@@ -197,7 +197,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 f"WAF: Blocked user agent from {get_client_ip(request)}: {user_agent[:50]}"
             )
-            return self._block_request("Forbidden", 403)
+            return self._block_request("Akses ditolak.", 403)
 
         # Check URL path for attacks
         url_path = request.url.path + "?" + str(request.query_params)
@@ -334,7 +334,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
         return JSONResponse(
             status_code=status_code,
             content={
-                "error": "Request blocked by WAF",
+                "error": "Permintaan diblokir.",
                 "message": message,
                 "code": "WAF_BLOCKED",
             },
@@ -375,7 +375,7 @@ class IPReputationMiddleware(BaseHTTPMiddleware):
         if self._is_ip_blocked(client_ip):
             logger.warning(f"IPReputation: Blocked IP {client_ip}")
             return JSONResponse(
-                status_code=403, content={"error": "IP blocked", "code": "IP_BLOCKED"}
+                status_code=403, content={"error": "IP diblokir.", "code": "IP_BLOCKED"}
             )
 
         return await call_next(request)

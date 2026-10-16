@@ -31,11 +31,11 @@ async def get_pool() -> asyncpg.Pool:
 
 def get_user_context(request: Request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
@@ -219,7 +219,7 @@ async def bulk_assign_group(request: Request, body: BulkAssignGroupRequest):
         )
         if role_code not in ("OWNER", "ADMIN"):
             raise HTTPException(
-                status_code=403, detail="Only OWNER/ADMIN can reassign pay groups"
+                status_code=403, detail="Hanya Pemilik atau Admin yang bisa memindahkan grup gaji."
             )
 
         # Validate pay group exists

@@ -160,7 +160,7 @@ async def require_active_membership(request: Request) -> str:
     user = getattr(request.state, "user", None) or {}
     user_id, tenant_id = user.get("user_id"), user.get("tenant_id")
     if not user_id or not tenant_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     pool = await get_db_pool()
     async with pool.acquire() as conn:

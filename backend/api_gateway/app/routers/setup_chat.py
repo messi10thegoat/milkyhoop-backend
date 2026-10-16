@@ -98,7 +98,7 @@ async def setup_mode_chat(
     if not authorization:
         raise HTTPException(
             status_code=401,
-            detail="Authentication required for setup mode. Please provide JWT token."
+            detail="Mode setup butuh token, silakan masuk lagi."
         )
     
     try:
@@ -106,7 +106,7 @@ async def setup_mode_chat(
         if not hasattr(request.state, 'user'):
             raise HTTPException(
                 status_code=401,
-                detail="Invalid authentication state. Token validation failed."
+                detail="Status autentikasi tidak valid, silakan masuk lagi."
             )
         
         # Use tenant_id and user_id from JWT token (via middleware)
@@ -116,7 +116,7 @@ async def setup_mode_chat(
         if not user_id or not tenant_id:
             raise HTTPException(
                 status_code=401,
-                detail="Missing user_id or tenant_id in JWT token"
+                detail="Token tidak lengkap, silakan masuk lagi."
             )
         
         # Generate session ID if not provided

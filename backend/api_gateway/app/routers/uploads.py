@@ -23,13 +23,13 @@ from uuid import UUID as _UUID
 def get_user_context(request) -> dict:
     if not hasattr(request.state, "user") or not request.state.user:
         from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
     if not tenant_id:
         from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": _UUID(user_id) if user_id else None}
 from ..services.db_pool import get_db_pool as get_session_db_pool
 from ..services.storage_service import get_storage_service

@@ -296,14 +296,14 @@ def get_device_service(request: Request) -> DeviceService:
 def get_user_from_request(request: Request) -> dict:
     """Extract authenticated user from request"""
     if not hasattr(request.state, "user"):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     user_id = user.get("user_id")
     tenant_id = user.get("tenant_id")
 
     if not user_id or not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user session")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"user_id": user_id, "tenant_id": tenant_id}
 
@@ -451,7 +451,7 @@ async def get_device_stats(request: Request):
         # Check if user has admin/owner role
         role = request.state.user.get("role", "FREE")
         if role not in ["ADMIN", "CORPORATE"]:
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+            raise HTTPException(status_code=403, detail="Izin Anda tidak cukup.")
 
         from backend.api_gateway.app.services.websocket_hub import websocket_hub
 

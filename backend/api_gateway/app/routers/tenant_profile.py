@@ -117,7 +117,7 @@ async def get_tenant_profile(request: Request):
     """Get current tenant's business profile."""
     tenant_id = _get_tenant_id(request)
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="No tenant context")
+        raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
 
     conn = await get_db_connection()
     try:
@@ -146,7 +146,7 @@ async def get_tenant_today(request: Request):
 
     tenant_id = _get_tenant_id(request)
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="No tenant context")
+        raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         hari = await tanggal_dokumen(conn, tenant_id)
@@ -160,7 +160,7 @@ async def update_tenant_profile(body: UpdateTenantProfileRequest, request: Reque
     """Update tenant business profile fields."""
     tenant_id = _get_tenant_id(request)
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="No tenant context")
+        raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
 
     # Build SET clause dynamically for partial updates
     updates = {}
@@ -229,7 +229,7 @@ async def upload_tenant_logo(request: Request, file: UploadFile = File(...)):
     """Upload tenant logo image. Replaces existing logo."""
     tenant_id = _get_tenant_id(request)
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="No tenant context")
+        raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
 
     # Validate content type
     if file.content_type not in ALLOWED_IMAGE_TYPES:
@@ -291,7 +291,7 @@ async def delete_tenant_logo(request: Request):
     """Delete tenant logo."""
     tenant_id = _get_tenant_id(request)
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="No tenant context")
+        raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
 
     # Remove logo files (fixed-name AND versioned)  # FIX_LOGO_CACHEBUST 2026-06-16
     for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")) + glob.glob(

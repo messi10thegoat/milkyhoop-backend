@@ -52,11 +52,11 @@ class PermissionCheckResponse(BaseModel):
 def _get_user_context(request: Request) -> dict:
     """Extract user context from request state"""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context - missing tenant_id")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return user
 
 
@@ -224,7 +224,7 @@ async def update_role_permissions(request: Request, role_id: str, data: Permissi
             # Check if user is OWNER
             is_owner = await _check_is_owner(conn, tenant_id, user_id)
             if not is_owner:
-                raise HTTPException(status_code=403, detail="Only Owner can update permissions")
+                raise HTTPException(status_code=403, detail="Hanya Pemilik yang bisa mengubah izin.")
 
             # Resolve role_id (accepts both UUID and code)
             resolved_role_id, role_code, role_name = await _resolve_role_id(conn, role_id, tenant_id)
@@ -287,7 +287,7 @@ async def reset_role_permissions(request: Request, role_id: str):
             # Check if user is OWNER
             is_owner = await _check_is_owner(conn, tenant_id, user_id)
             if not is_owner:
-                raise HTTPException(status_code=403, detail="Only Owner can reset permissions")
+                raise HTTPException(status_code=403, detail="Hanya Pemilik yang bisa mengatur ulang izin.")
 
             # Resolve role_id (accepts both UUID and code)
             resolved_role_id, role_code, role_name = await _resolve_role_id(conn, role_id, tenant_id)

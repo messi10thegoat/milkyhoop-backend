@@ -113,10 +113,10 @@ class AccountLockoutMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=429,
                 content={
-                    "error": "Too many failed attempts",
+                    "error": "Terlalu banyak percobaan gagal.",
                     "code": "ACCOUNT_LOCKED",
                     "retry_after": remaining,
-                    "message": f"Account temporarily locked. Try again in {remaining // 60} minutes."
+                    "message": f"Akun terkunci sementara. Coba lagi dalam {remaining // 60} menit."
                 },
                 headers={"Retry-After": str(remaining)}
             )

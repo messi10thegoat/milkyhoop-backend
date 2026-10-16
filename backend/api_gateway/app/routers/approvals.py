@@ -99,14 +99,14 @@ def _status_approval(status: str) -> str:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {
         "tenant_id": tenant_id,
@@ -1050,7 +1050,7 @@ async def approve_request(request: Request, request_id: UUID, body: ApproveReque
 
                 if not can_approve:
                     raise HTTPException(
-                        status_code=403, detail="Not authorized to approve"
+                        status_code=403, detail="Anda tidak berwenang menyetujui."
                     )
 
                 # Record action
@@ -1179,7 +1179,7 @@ async def reject_request(request: Request, request_id: UUID, body: RejectRequest
 
                 if not can_approve:
                     raise HTTPException(
-                        status_code=403, detail="Not authorized to reject"
+                        status_code=403, detail="Anda tidak berwenang menolak."
                     )
 
                 # Record action
@@ -1250,7 +1250,7 @@ async def cancel_request(request: Request, request_id: UUID, body: CancelRequest
 
                 if ar["requested_by"] != ctx["user_id"]:
                     raise HTTPException(
-                        status_code=403, detail="Only requester can cancel"
+                        status_code=403, detail="Hanya pengaju yang bisa membatalkan."
                     )
 
                 await conn.execute(

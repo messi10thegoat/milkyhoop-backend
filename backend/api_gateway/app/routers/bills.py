@@ -212,14 +212,14 @@ async def get_bills_service() -> BillsService:
 def get_user_context(request: Request) -> dict:
     """Extract and validate user context from request."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
@@ -1068,7 +1068,7 @@ async def create_bill(request: Request, body: CreateBillRequest):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         if not body.vendor_name and not body.vendor_id:
             raise HTTPException(
@@ -1182,7 +1182,7 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
 
@@ -1220,7 +1220,7 @@ async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest)
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
 
@@ -1259,7 +1259,7 @@ async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
 
@@ -1297,7 +1297,7 @@ async def upload_attachment(
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         # Validate file size (5MB max)
         content = await file.read()
@@ -1542,7 +1542,7 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         if not body.vendor_name and not body.vendor_id:
             raise HTTPException(
@@ -1609,7 +1609,7 @@ async def post_bill(request: Request, bill_id: UUID):
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
         result = await service.post_bill(
@@ -1643,7 +1643,7 @@ async def update_bill_v2(request: Request, bill_id: UUID, body: UpdateBillReques
         ctx = get_user_context(request)
 
         if not ctx["user_id"]:
-            raise HTTPException(status_code=401, detail="User ID required")
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
         result = await service.update_bill_v2(

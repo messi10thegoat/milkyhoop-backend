@@ -331,10 +331,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=429,
                 content={
-                    "error": "Too many requests",
+                    "error": "Terlalu banyak permintaan.",
                     "code": "RATE_LIMIT_EXCEEDED",
                     "retry_after": retry_after,
-                    "message": f"Rate limit exceeded. Please retry after {retry_after} seconds.",
+                    "message": f"Terlalu banyak permintaan. Coba lagi dalam {retry_after} detik.",
                 },
                 headers={
                     "Retry-After": str(retry_after),

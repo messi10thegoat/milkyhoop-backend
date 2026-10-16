@@ -126,7 +126,7 @@ async def get_user_profile(request: Request):
     """Get current user's account-level profile (display_name)."""
     user_id = _get_user_id(request)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     # Also grab email from JWT for convenience
     user = getattr(request.state, "user", {})
@@ -157,7 +157,7 @@ async def update_user_profile(body: UpdateProfileRequest, request: Request):
     """Update current user's display name."""
     user_id = _get_user_id(request)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
     display_name = body.display_name.strip()[:100]  # Sanitize
     if not display_name:
@@ -214,7 +214,7 @@ async def get_favorites(request: Request):
     user_id = _get_user_id(request)
     tenant_id = get_tenant_id(request)
     if not user_id or not tenant_id:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail="Anda tidak punya akses.")
 
     conn = await get_db_connection()
     try:
@@ -236,7 +236,7 @@ async def put_favorites(request: Request, body: FavoritesResponse):
     user_id = _get_user_id(request)
     tenant_id = get_tenant_id(request)
     if not user_id or not tenant_id:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail="Anda tidak punya akses.")
     if len(body.items) > MAX_FAVORITES:
         raise HTTPException(status_code=400, detail=f"Maksimal {MAX_FAVORITES} favorit")
 
@@ -282,7 +282,7 @@ async def get_tenants_mine(request: Request):
     from ..services.akun_saya import usaha_saya
     user_id = _get_user_id(request)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     conn = await get_db_connection()
     try:
         return {"success": True, **await usaha_saya(conn, user_id, _tenant_jwt(request))}
@@ -296,7 +296,7 @@ async def get_me(request: Request):
     from ..services.akun_saya import akun_saya
     user_id = _get_user_id(request)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = getattr(request.state, "user", {}) or {}
     email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     conn = await get_db_connection()

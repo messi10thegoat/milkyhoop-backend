@@ -37,12 +37,12 @@ router = APIRouter(dependencies=[_Depends(_wajib_anggota)])
 def _get_user_context(request: Request) -> dict:
     """Extract tenant_id and user_id from JWT (set by AuthMiddleware)."""
     if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
     user = request.state.user
     tenant_id = user.get("tenant_id")
     user_id = user.get("user_id")
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Invalid user context")
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     return {"tenant_id": tenant_id, "user_id": user_id or ""}
 
 
