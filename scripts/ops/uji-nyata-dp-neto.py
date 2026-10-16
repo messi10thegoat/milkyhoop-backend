@@ -140,6 +140,9 @@ async def main():
         k = [v for kk, v in dump.items() if kk.startswith(t) and "kwitansi_sisa" in kk and v is not None]
         r0331 = dump[f"{t}|SO-2609-0331|batas_ubah"]
         cek(float(r0331["uang_muka_diterima"]) == 40000.0, "batas ubah SO-2609-0331: uang muka diterima neto 40.000", str(r0331["uang_muka_diterima"]))
+        cek(float(r0331["batas"]) == 40000.0 and float(r0331["tertagih_proforma"]) == 40000.0,
+            "batas ubah SO-2609-0331 SELURUHNYA 40.000 (termasuk tertagih proforma via atribusi neto)",
+            f'{r0331["batas"]} / {r0331["tertagih_proforma"]}')
         cek(dump[f"{t}|SO-2609-0331|plafon_received"] == 40000.0, "plafon SO-2609-0331 = neto 40.000")
         kw = [v for kk, v in dump.items() if kk.startswith(f"{t}|dep:") and kk.endswith("|kwitansi_sisa")
               and dump.get(kk.replace("|kwitansi_sisa", "|so")) == "SO-2609-0331"]
