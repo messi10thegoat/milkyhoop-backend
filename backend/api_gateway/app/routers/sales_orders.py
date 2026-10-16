@@ -13,7 +13,7 @@ import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.so_faktur_draf import penanda_faktur_so
-from ..services.so_posisi import fakta_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
+from ..services.so_posisi import fakta_daftar, jumlah_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..utils.idempotency import (
@@ -114,6 +114,18 @@ def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None) ->
 # ============================================================================
 
 
+def _syarat_cari(search: str, mulai: int) -> tuple:
+    """Predikat ?search= daftar SO (tabel sales_orders tanpa alias; $1 = tenant). SATU sumber untuk GET daftar dan
+    /summary?search= (LISTPAGE-DATA 16 Okt 2026: angka chip dalam konteks pencarian). -> (predikat, parameter);
+    tiap kata = satu parameter mulai $mulai, semua kata wajib cocok (perilaku lama)."""
+    kata = search.strip().split()
+    if not kata:  # hanya spasi: dulu "()" -> 500; kini tanpa penyaring
+        return "TRUE", []
+    syarat = [f"(order_number ILIKE ${mulai + i} OR customer_name ILIKE ${mulai + i} OR search_text ILIKE ${mulai + i} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = sales_orders.tenant_id AND c.search_text ILIKE ${mulai + i}))"
+              for i in range(len(kata))]
+    return (syarat[0] if len(syarat) == 1 else f"({' AND '.join(syarat)})"), [f"%{w}%" for w in kata]
+
+
 @router.get("", response_model=SalesOrderListResponse)
 async def list_sales_orders(
     request: Request,
@@ -144,6 +156,9 @@ async def list_sales_orders(
     # 14 Okt 2026 (AKSI-SO): pill aksi, aditif; kunci asing -> 422. Satu sumber dengan summary <kunci>_count
     aksi: Optional[Literal["telat_kirim", "perlu_minta_dp", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim",
                            "siap_diserahkan", "perlu_ditagih"]] = Query(None),
+    # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter. Opt-in: Sisa = turunan jurnal per SO
+    # (ringkasan_pesanan) atas seluruh hasil -> biaya; pemanggil lama tak membayarnya. FE: kirim pada muat pertama saja.
+    with_totals: bool = Query(False),
 ):
     """List sales orders with filters."""
     try:
@@ -188,24 +203,13 @@ async def list_sales_orders(
                 param_idx += 1
 
             if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = sales_orders.tenant_id AND c.search_text ILIKE ${param_idx}))"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(order_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = sales_orders.tenant_id AND c.search_text ILIKE ${param_idx}))"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+                _c, _p = _syarat_cari(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
 
             where_clause = " AND ".join(conditions)
+            n_param_filter = len(params)  # parameter WHERE saja (LIMIT/OFFSET ditambahkan sesudahnya)
 
             count_query = f"SELECT COUNT(*) FROM sales_orders WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
@@ -272,8 +276,12 @@ async def list_sales_orders(
                 for row in rows
             ]
 
+            jumlah = {}
+            if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati  # LISTPAGE-DATA: agregat atas WHERE yang SAMA dengan COUNT (bukan halaman)
+                jumlah = await jumlah_daftar(conn, ctx["tenant_id"], await conn.fetch(
+                    f"SELECT id, total_amount, status FROM sales_orders WHERE {where_clause}", *params[:n_param_filter]))
             return SalesOrderListResponse(
-                items=items, total=total, has_more=(skip + limit) < total
+                items=items, total=total, has_more=(skip + limit) < total, **jumlah
             )
 
     except HTTPException:
@@ -353,12 +361,15 @@ async def get_pending_orders(
 
 
 @router.get("/summary", response_model=SalesOrderSummaryResponse)
-async def get_sales_order_summary(request: Request):
+async def get_sales_order_summary(request: Request, search: Optional[str] = Query(None)):
     """Get sales order statistics summary.
     pending_shipment_value/_count = MENUNGGU KIRIM NYATA (27 Sep): baris PERLU DIKIRIM dgn sisa qty > 0
     (so_kirim.ringkasan_menunggu_kirim), BUKAN status SO; pending_invoice_value = Σ total SO per STATUS (lama);
     uninvoiced_value = belum ditagih NYATA (turunan jurnal, Q-012) — pakai ini untuk "belum ditagih";
-    uninvoiced_count = jumlah SO dengan sisa belum ditagih > 0 (sumber sama, aggregate?q=uninvoiced.count)."""
+    uninvoiced_count = jumlah SO dengan sisa belum ditagih > 0 (sumber sama, aggregate?q=uninvoiced.count).
+    ?search= (LISTPAGE-DATA 16 Okt 2026, angka chip dalam konteks pencarian): predikat SAMA dengan daftar (_syarat_cari);
+    membatasi HANYA hitungan status (total_orders.._count, total_value, pending_invoice_value) dan kunci pill aksi
+    (<aksi>_count/_value). Medan kirim/tagih/surat jalan/tersedia tetap seluruh tenant (kartu, bukan chip)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -378,13 +389,23 @@ async def get_sales_order_summary(request: Request):
                     COALESCE(SUM(total_amount), 0) as total_value,
                     COALESCE(SUM(total_amount) FILTER (WHERE status IN ('shipped', 'partial_invoiced')), 0) as pending_invoice_value
                 FROM sales_orders
-                WHERE tenant_id = $1
+                WHERE tenant_id = $1 {cari}
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"], so_agregat.STATUS_SELESAI)
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            id_cari = None
+            if isinstance(search, str):  # panggilan langsung tanpa search = objek Query
+                _c, _p = _syarat_cari(search, 2)
+                id_cari = [r["id"] for r in await conn.fetch(
+                    f"SELECT id FROM sales_orders WHERE tenant_id = $1 AND {_c}", ctx["tenant_id"], *_p)]
+            if id_cari is None:
+                row = await conn.fetchrow(query.format(cari=""), ctx["tenant_id"], so_agregat.STATUS_SELESAI)
+            else:
+                row = await conn.fetchrow(query.format(cari="AND id = ANY($3::uuid[])"), ctx["tenant_id"],
+                                          so_agregat.STATUS_SELESAI, id_cari)
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
             kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
             menunggu = await so_kirim.ringkasan_menunggu_kirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
-            pill = so_aksi.ringkasan(await so_aksi.fakta(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"])))
+            pill = so_aksi.ringkasan(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, id_cari))
 
             return SalesOrderSummaryResponse(
                 success=True,

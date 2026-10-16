@@ -49,5 +49,7 @@ def test_jalur_induk_sama_dengan_sumber_so():
 ])
 def test_daftar_memakai_helper(modul, fungsi, jenis):
     src = inspect.getsource(getattr(modul, fungsi))
+    if "_syarat_cari(search" in src:  # LISTPAGE-DATA (16 Okt 2026): predikat cari dipindah ke helper bersama daftar+/summary
+        src = inspect.getsource(modul._syarat_cari)
     assert f'sql_cari_so_induk("{jenis}"' in src, fungsi
     assert "so2.order_number" not in src  # subkueri lama (nomor saja) sudah diganti

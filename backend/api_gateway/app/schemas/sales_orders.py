@@ -329,6 +329,13 @@ class SalesOrderListItem(BaseModel):
     ship_text: Optional[str] = None
     ship_style: Optional[Literal["normal", "muted", "strong"]] = None
     doc_count: int = 0
+    # 16 Okt 2026 (LISTPAGE-DATA): satu per dokumen, urut Penawaran·Proforma·Kwitansi·Surat jalan·Faktur
+    # (so_posisi.dokumen_so; doc_count == len). type = kind panel /documents.
+    documents: List[Dict[str, str]] = []
+    # hari kalender ke tanggal kirim (zona tenant; <0 telat) dari fakta YANG SAMA dgn ship_text (so_posisi.kirim_hari);
+    # null bila kirim tertutup atau tanpa tanggal. FE hanya memformat.
+    kirim_hari: Optional[int] = None
+    kirim_terbuka: bool = False
     # 14 Okt 2026 (AKSI-SO): aksi PALING MENDESAK (services/so_aksi.AKSI) atau null (arsip / tanpa aksi)
     aksi: Optional[str] = None
     created_at: str
@@ -434,6 +441,9 @@ class SalesOrderListResponse(BaseModel):
     items: List[SalesOrderListItem]
     total: int
     has_more: bool = False
+    # 16 Okt 2026 (LISTPAGE-DATA): hanya bila ?with_totals=true; atas SEMUA hasil filter (so_posisi.jumlah_daftar)
+    sum_total: Optional[float] = None
+    sum_sisa: Optional[float] = None
 
 
 class SalesOrderDetailResponse(BaseModel):

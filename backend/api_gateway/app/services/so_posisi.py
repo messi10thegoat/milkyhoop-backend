@@ -100,6 +100,29 @@ def kirim(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bool, h
     return teks, "normal"
 
 
+def kirim_hari(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bool, hari: date) -> tuple:
+    """LISTPAGE-DATA (16 Okt 2026): -> (kirim_hari, kirim_terbuka) dari fakta YANG SAMA dengan kirim().
+    terbuka = kirim() masih menampilkan tanggal (bukan "—"/"Terkirim" karena selesai/batal/tanpa baris kirim/semua
+    terkirim). kirim_hari = tanggal_kirim - hari (hari kalender, `hari` = tanggal usaha zona tenant); None bila tertutup
+    atau tanpa tanggal. <0 == teks ", telat"; 0 == "Hari ini"; 1 == "Besok". FE hanya memformat."""
+    terbuka = status not in SELESAI_KIRIM and perlu_kirim and not semua_terkirim
+    if not terbuka or tanggal_kirim is None:
+        return None, terbuka
+    return (tanggal_kirim - hari).days, True
+
+
+# Urutan tampil tooltip Dok. (paket listpage-polish 03 §3): Penawaran · Proforma · Kwitansi · Surat jalan · Faktur.
+# Kunci = `kind` panel /documents (routers/dokumen.susun_dokumen).
+URUT_DOK_SO = ("quotation", "proforma", "receipt", "delivery", "invoice")
+
+
+def dokumen_so(ada_penawaran: bool, n_proforma: int, n_kwitansi: int, n_sj: int, n_faktur: int) -> list:
+    """-> [{type}] satu per dokumen, urut URUT_DOK_SO. doc_count = len(dokumen_so(...)) (satu sumber)."""
+    n = {"quotation": 1 if ada_penawaran else 0, "proforma": n_proforma, "receipt": n_kwitansi,
+         "delivery": n_sj, "invoice": n_faktur}
+    return [{"type": k} for k in URUT_DOK_SO for _ in range(n[k])]
+
+
 SQL_PROFORMA_SO = """SELECT id, sales_order_id, proforma_number, purpose, amount, status, issued_at
            FROM proformas WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])"""
 SQL_JUMLAH_FAKTUR = """SELECT sales_order_id AS so_id, count(*) AS n FROM sales_invoices
@@ -277,13 +300,15 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         bk = per_so_baris.get(sid, [])
         semua = bool(bk) and all(belum_dikirim(b["quantity"], per_baris.get(b["id"])) == NOL for b in bk)
         teks_kirim, gaya = kirim(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
+        k_hari, k_buka = kirim_hari(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
         # Sama dengan panel: proforma draf tak tampil; proforma batal tampil hanya bila SO batal (cap DIBATALKAN).
-        n_dok = ((1 if r["quote_id"] else 0)
-                 + sum(1 for p in daftar_pf if p["status"] != "draft"
-                       and (p["status"] != "cancelled" or r["status"] == "cancelled"))
-                 + kw.get(sid, 0) + sj.get(sid, 0) + n_faktur)
+        dok = dokumen_so(bool(r["quote_id"]),
+                         sum(1 for p in daftar_pf if p["status"] != "draft"
+                             and (p["status"] != "cancelled" or r["status"] == "cancelled")),
+                         kw.get(sid, 0), sj.get(sid, 0), n_faktur)
         hasil[str(sid)] = {"position_text": teks_pos, "position_muted": muted,
-                           "ship_text": teks_kirim, "ship_style": gaya, "doc_count": n_dok,
+                           "ship_text": teks_kirim, "ship_style": gaya, "doc_count": len(dok), "documents": dok,
+                           "kirim_hari": k_hari, "kirim_terbuka": k_buka,
                            # "Sisa" (7 Okt): total - ringkasan_pesanan.tertutup (journal-derived, Law 1/16/29), tak negatif; draf/batal = null
                            "outstanding_amount": None if r["status"] in ("draft", "cancelled") else float(max(sisa, NOL)),
                            "fase_lokasi": fase, "fase_gudang_id": str(r["fase_gudang_id"]) if fase and r.get("fase_gudang_id") else None,
@@ -295,6 +320,17 @@ async def urut_outstanding(conn, tenant_id: str, rows: list, arah: str = "desc")
     """sort_by=outstanding (7 Okt 2026): id SO terurut menurut "Sisa" (total - ringkasan_pesanan.tertutup, sumber SAMA dengan kolom
     outstanding_amount). rows = {id, total_amount, status} SEMUA yang cocok filter (urut dasar deterministik dari pemanggil);
     draf/batal (tanpa sisa) selalu di ujung. Ringkasan dihitung ber-batch 200."""
+    nilai = await sisa_per_so(conn, tenant_id, rows)
+    ada = [r["id"] for r in rows if nilai[r["id"]] is not None]
+    tak = [r["id"] for r in rows if nilai[r["id"]] is None]
+    ada.sort(key=lambda i: nilai[i], reverse=(arah == "desc"))   # sort stabil: seri mengikuti urutan dasar
+    return ada + tak
+
+
+async def sisa_per_so(conn, tenant_id: str, rows: list) -> dict:
+    """"Sisa" per SO = total - ringkasan_pesanan.tertutup (journal-derived, Law 1/16/29), tak negatif; draf/batal = None.
+    SATU sumber untuk kolom outstanding_amount (fakta_daftar), sort_by=outstanding dan sum_sisa daftar.
+    rows = {id, total_amount, status}; ringkasan ber-batch 200."""
     nilai = {}
     for i in range(0, len(rows), 200):
         potong = rows[i:i + 200]
@@ -302,7 +338,13 @@ async def urut_outstanding(conn, tenant_id: str, rows: list, arah: str = "desc")
         for r in potong:
             nilai[r["id"]] = (None if r["status"] in ("draft", "cancelled")
                               else max(Decimal(str(r["total_amount"] or 0)) - rg[r["id"]]["tertutup"], NOL))
-    ada = [r["id"] for r in rows if nilai[r["id"]] is not None]
-    tak = [r["id"] for r in rows if nilai[r["id"]] is None]
-    ada.sort(key=lambda i: nilai[i], reverse=(arah == "desc"))   # sort stabil: seri mengikuti urutan dasar
-    return ada + tak
+    return nilai
+
+
+async def jumlah_daftar(conn, tenant_id: str, rows: list) -> dict:
+    """LISTPAGE-DATA (16 Okt 2026): agregat baris total daftar atas SEMUA SO yang cocok filter (bukan halaman).
+    rows = {id, total_amount, status} dari WHERE yang SAMA dengan COUNT. sum_total = Σ total_amount (semua status, =
+    Σ kolom Total); sum_sisa = Σ sisa_per_so (draf/batal tak menyumbang, = Σ kolom Sisa)."""
+    sisa = await sisa_per_so(conn, tenant_id, rows)
+    return {"sum_total": float(sum((Decimal(str(r["total_amount"] or 0)) for r in rows), NOL)),
+            "sum_sisa": float(sum((v for v in sisa.values() if v is not None), NOL))}

@@ -391,6 +391,11 @@ class InvoiceListItem(BaseModel):
     is_overdue: bool = False
     outstanding_amount: Optional[str] = None  # sisa journal-derived, desimal teks; lunas "0.00"; draf/void null (5 Okt)
     aksi: Optional[str] = None  # 14 Okt 2026: pill AKSI (services/faktur_aksi.AKSI) atau null
+    # 16 Okt 2026 (LISTPAGE-DATA, services/faktur_daftar): FE hanya memformat. terbuka = bagian "belum lunas" is_overdue;
+    # jatuh_tempo_hari = due_date - hari ini (zona tenant), null bila tak terbuka. documents urut Faktur·Kwitansi·Nota kredit.
+    jatuh_tempo_terbuka: bool = False
+    jatuh_tempo_hari: Optional[int] = None
+    documents: List[Dict[str, str]] = []
 
 
 class InvoiceListResponse(BaseModel):
@@ -399,6 +404,9 @@ class InvoiceListResponse(BaseModel):
     items: List[InvoiceListItem]
     total: int
     has_more: bool
+    # 16 Okt 2026 (LISTPAGE-DATA): hanya bila ?with_totals=true; atas SEMUA hasil filter
+    sum_total: Optional[float] = None
+    sum_sisa: Optional[float] = None
 
 
 # =============================================================================

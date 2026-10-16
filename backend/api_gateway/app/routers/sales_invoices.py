@@ -23,6 +23,7 @@ from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import faktur_aksi as _fa
+from ..services import faktur_daftar as _fd  # LISTPAGE-DATA (16 Okt 2026)
 from fastapi import Response as _Response
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
@@ -353,8 +354,12 @@ _FAKTUR_TERBIT = ("belum_lunas", "segera_tempo", "jatuh_tempo")
 
 
 @router.get("/summary", response_model=InvoiceSummaryResponse)
-async def get_invoice_summary(request: Request):
-    """Get invoice summary statistics."""
+async def get_invoice_summary(request: Request, search: Optional[str] = Query(None)):
+    """Get invoice summary statistics.
+    ?search= (LISTPAGE-DATA 16 Okt 2026, angka chip dalam konteks pencarian): predikat SAMA dengan daftar (_syarat_cari);
+    membatasi SEMUA medan per faktur (hitungan status, overdue/unpaid, total_outstanding/total_overdue, kunci pill aksi).
+    Baris kredit pelanggan (ar_fn tanpa faktur, kredit_nota_belum_terpakai_*) TIDAK disaring -- bukan faktur; invarian
+    faktur_belum_lunas_value - kredit == total_outstanding tetap berlaku."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -364,14 +369,14 @@ async def get_invoice_summary(request: Request):
             query = """
                 WITH ar_fn AS (
                     SELECT invoice_id, outstanding, due_date
-                    FROM compute_ar_outstanding($1)
+                    FROM compute_ar_outstanding($1) {cari_ar}
                 )
                 SELECT
-                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1) as total_count,
-                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'draft') as draft_count,
-                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'posted') as posted_count,
-                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'partial') as partial_count,
-                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 AND status = 'paid') as paid_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 {cari_si}) as total_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 {cari_si} AND status = 'draft') as draft_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 {cari_si} AND status = 'posted') as posted_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 {cari_si} AND status = 'partial') as partial_count,
+                    (SELECT COUNT(*) FROM sales_invoices WHERE tenant_id = $1 {cari_si} AND status = 'paid') as paid_count,
                     -- 5 Okt 2026 (MASTER): overdue = aturan kartu TELAT (dashboard_v2.pilih_faktur_telat) == outstanding-summary
                     -- overdue_count == ?tugas=telat; dulu berbasis status. Dipakai layar lama (pill Jatuh tempo, DebtPanel).
                     (SELECT COUNT(*) FROM ar_fn WHERE invoice_id IS NOT NULL AND outstanding > 0
@@ -387,7 +392,17 @@ async def get_invoice_summary(request: Request):
             """
             # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-            row = await conn.fetchrow(query, ctx["tenant_id"], hari_ini)
+            id_cari = None
+            if isinstance(search, str):  # panggilan langsung tanpa search = objek Query
+                _c, _p = _syarat_cari(search, 2)
+                id_cari = [r["id"] for r in await conn.fetch(
+                    f"SELECT si.id FROM sales_invoices si WHERE si.tenant_id = $1 AND {_c}", ctx["tenant_id"], *_p)]
+            if id_cari is None:
+                row = await conn.fetchrow(query.format(cari_ar="", cari_si=""), ctx["tenant_id"], hari_ini)
+            else:
+                row = await conn.fetchrow(
+                    query.format(cari_ar="WHERE invoice_id IS NULL OR invoice_id = ANY($3::uuid[])",
+                                 cari_si="AND id = ANY($3::uuid[])"), ctx["tenant_id"], hari_ini, id_cari)
             # 14 Okt 2026: pill AKSI (services/faktur_aksi.sql_aksi, SAMA dengan ?aksi= daftar; sisa = compute_ar_outstanding)
             aksi_row = await conn.fetchrow(
                 "WITH ar_fn AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding($1)) SELECT "
@@ -395,8 +410,9 @@ async def get_invoice_summary(request: Request):
                     f"COUNT(*) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}) AS {k}_count, "
                     f"COALESCE(SUM({_fa.sql_nilai(k)}) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}), 0) AS {k}_value"
                     for k in _fa.AKSI)
-                + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1",
-                ctx["tenant_id"], hari_ini, _fa.AMBANG_SEGERA_TEMPO)
+                + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1"
+                + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
+                ctx["tenant_id"], hari_ini, _fa.AMBANG_SEGERA_TEMPO, *([] if id_cari is None else [id_cari]))
 
             return {
                 "success": True,
@@ -1030,8 +1046,26 @@ async def preview_journal(request: Request, body: dict = Body(...)):
 _SISA_AR_POSITIF = "si.id IN (SELECT invoice_id FROM compute_ar_outstanding($1) WHERE outstanding > 0)"
 
 
+def _syarat_terbuka_ar() -> str:
+    """Faktur terbuka (belum lunas) menurut aturan is_overdue/?status=overdue -- SATU sumber dengan
+    jatuh_tempo_terbuka daftar (LISTPAGE-DATA 16 Okt 2026)."""
+    return f"(si.status IN ('posted', 'partial') AND {_SISA_AR_POSITIF})"
+
+
 def _syarat_jatuh_tempo(p_hari: str) -> str:
-    return f"(si.status IN ('posted', 'partial') AND si.due_date < {p_hari}::date AND {_SISA_AR_POSITIF})"
+    return f"({_syarat_terbuka_ar()} AND si.due_date < {p_hari}::date)"
+
+
+def _syarat_cari(search: str, mulai: int) -> tuple:
+    """Predikat ?search= daftar faktur (alias `si`; $1 = tenant). SATU sumber untuk GET daftar dan /summary?search=
+    (LISTPAGE-DATA 16 Okt 2026). -> (predikat, parameter); tiap kata satu parameter mulai $mulai, semua kata wajib cocok."""
+    from ..services.kode_order import sql_cari_so_induk
+    kata = search.strip().split()
+    if not kata:  # hanya spasi: dulu "()" -> 500; kini tanpa penyaring
+        return "TRUE", []
+    syarat = [f"(si.invoice_number ILIKE ${mulai + i} OR si.customer_name ILIKE ${mulai + i} OR si.search_text ILIKE ${mulai + i} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${mulai + i}) OR " + sql_cari_so_induk("sales_invoice", "si", "$1", f"${mulai + i}") + ")"
+              for i in range(len(kata))]
+    return (syarat[0] if len(syarat) == 1 else f"({' AND '.join(syarat)})"), [f"%{w}%" for w in kata]
 
 
 from datetime import date as _date  # noqa: E402  (anotasi query /defaults; modul tak mengimpor date di atas)
@@ -1096,6 +1130,8 @@ async def list_invoices(
     tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini", "belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/faktur_aksi), nilai asing = 422
     aksi: Optional[Literal["perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo"]] = Query(None),
+    # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter (opt-in; FE: muat pertama saja)
+    with_totals: bool = Query(False),
 ):
     """List invoices with search, filtering, and pagination."""
     try:
@@ -1110,23 +1146,10 @@ async def list_invoices(
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             if search:
-                from ..services.kode_order import sql_cari_so_induk
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("sales_invoice", "si", "$1", f"${param_idx}") + ")"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(si.invoice_number ILIKE ${param_idx} OR si.customer_name ILIKE ${param_idx} OR si.search_text ILIKE ${param_idx} OR si.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = si.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("sales_invoice", "si", "$1", f"${param_idx}") + ")"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+                _c, _p = _syarat_cari(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
 
             # Status filter (with dynamic overdue calculation like bills)
             #
@@ -1219,6 +1242,18 @@ async def list_invoices(
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM sales_invoices si WHERE {where_clause}", *params
             )
+            jumlah = {}
+            if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati
+                # LISTPAGE-DATA: WHERE + parameter YANG SAMA dengan COUNT; sisa = ekspresi sisa_faktur kolom Sisa
+                # (compute_ar_outstanding, draf/void tak menyumbang) -> sum_sisa == Σ kolom Sisa seluruh hasil.
+                _j = await conn.fetchrow(
+                    f"""SELECT COALESCE(SUM(si.total_amount), 0) AS t,
+                               COALESCE(SUM(CASE WHEN si.status IN ('draft','void') THEN 0
+                                                 ELSE COALESCE(ar_fn.outstanding, 0) END), 0) AS s
+                        FROM sales_invoices si
+                        LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
+                        WHERE {where_clause}""", *params)
+                jumlah = {"sum_total": float(_j["t"]), "sum_sisa": float(_j["s"])}
 
             # Q-014: penanda jatuh tempo per baris, aturan SAMA dengan filter ?status=overdue
             p_hari = param_idx
@@ -1242,7 +1277,8 @@ async def list_invoices(
                        si.fulfillment_status, si.revenue_status, si.created_at,
                        -- nomor pesanan (permintaan pemilik 25 Sep): JOIN berpagar tenant, NULL bila lepas
                        si.sales_order_id, so.order_number AS sales_order_number,
-                       {_syarat_jatuh_tempo(f"${p_hari}")} AS is_overdue
+                       {_syarat_jatuh_tempo(f"${p_hari}")} AS is_overdue,
+                       {_syarat_terbuka_ar()} AS jt_terbuka
                 FROM sales_invoices si
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
                 LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
@@ -1252,6 +1288,7 @@ async def list_invoices(
             """
             params.extend([limit, skip])
             rows = await conn.fetch(query, *params)
+            dok_faktur = await _fd.dokumen_per_faktur(conn, ctx["tenant_id"], [row["id"] for row in rows])
 
             items = [
                 {
@@ -1282,13 +1319,17 @@ async def list_invoices(
                     "is_overdue": bool(row["is_overdue"]),
                     "outstanding_amount": None if row.get("sisa_faktur") is None else f"{Decimal(str(row['sisa_faktur'])):.2f}",
                     "aksi": _fa.aksi_faktur(row["status"], row.get("sisa_faktur"), row["due_date"], row["invoice_date"], hari_ini),
+                    # LISTPAGE-DATA (16 Okt 2026): FE hanya memformat; is_overdue == terbuka AND hari < 0
+                    "jatuh_tempo_terbuka": bool(row["jt_terbuka"]),
+                    "jatuh_tempo_hari": _fd.jatuh_tempo_hari(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
+                    "documents": dok_faktur.get(row["id"], _fd.dokumen_faktur(0, 0)),
                 }
                 for row in rows
             ]
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "sales_invoice", items)
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
