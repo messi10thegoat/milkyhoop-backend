@@ -17,6 +17,30 @@ from .identitas_pajak import IdentitasPajakPembeli
 # =============================================================================
 
 
+class AlamatPelangganMasuk(BaseModel):
+    """Satu alamat pelanggan (V428 customer_addresses; medan NetSuite addressbook). Semua opsional; PATCH memakai
+    model_fields_set (medan yang dikirim saja). Pembersihan/validasi isi: services/alamat_pelanggan.bersihkan."""
+
+    label: Optional[str] = Field(None, max_length=100)
+    attention: Optional[str] = Field(None, max_length=255)
+    addressee: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=50)
+    addr1: Optional[str] = None
+    addr2: Optional[str] = None
+    addr3: Optional[str] = None
+    city: Optional[str] = Field(None, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    zip: Optional[str] = Field(None, max_length=20)
+    country: Optional[str] = Field(None, max_length=3)
+    is_default_billing: Optional[bool] = None
+    is_default_shipping: Optional[bool] = None
+
+
+class BawaanAlamat(BaseModel):
+    billing: Optional[bool] = None
+    shipping: Optional[bool] = None
+
+
 class CreateCustomerRequest(IdentitasPajakPembeli):
     """Request body for creating a customer."""
 
@@ -44,6 +68,8 @@ class CreateCustomerRequest(IdentitasPajakPembeli):
     city: Optional[str] = Field(None, max_length=100)
     province: Optional[str] = Field(None, max_length=100)
     postal_code: Optional[str] = Field(None, max_length=20)
+    # V428: alamat kirim BAWAAN terpisah (opsional). Kosong/tak dikirim = alamat tagih juga alamat kirim.
+    shipping_address: Optional[AlamatPelangganMasuk] = None
     
     # Tax info (Indonesian compliance)
     tax_id: Optional[str] = Field(None, max_length=50, description="NPWP")
@@ -265,6 +291,10 @@ class CustomerDetail(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     notes: Optional[str] = None
+    # V428 (aditif): alamat aktif terurut bawaan dulu; medan datar address/city/province/postal_code = cermin bawaan tagih
+    addresses: List[Dict[str, Any]] = []
+    default_billing_address_id: Optional[str] = None
+    default_shipping_address_id: Optional[str] = None
 
 
 class CustomerDetailResponse(BaseModel):

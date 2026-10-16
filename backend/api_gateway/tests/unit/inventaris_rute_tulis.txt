@@ -44,6 +44,7 @@ POST /api/customer-deposits/bulk/share/preview
 DELETE /api/customer-deposits/{deposit_id}
 DELETE /api/customer-deposits/{deposit_id}/attachments/{attachment_id}
 DELETE /api/customers/{customer_id}
+DELETE /api/customers/{customer_id}/addresses/{address_id}
 DELETE /api/deliveries/{doc_id}/attachments/{attachment_id}
 DELETE /api/devices/{device_id}
 DELETE /api/documents/{document_id}
@@ -138,6 +139,7 @@ PATCH /api/credit-notes/{credit_note_id}
 PATCH /api/currencies/{currency_id}
 PATCH /api/customer-deposits/{deposit_id}
 PATCH /api/customers/{customer_id}
+PATCH /api/customers/{customer_id}/addresses/{address_id}
 PATCH /api/customers/{customer_id}/reactivate
 PATCH /api/documents/{document_id}
 PATCH /api/employees/bulk-group
@@ -302,6 +304,8 @@ POST /api/customers/merge
 POST /api/customers/merge/preview
 POST /api/customers/{customer_id}/opening-balance
 POST /api/customers/{customer_id}/opening-balance/reverse
+POST /api/customers/{customer_id}/addresses
+POST /api/customers/{customer_id}/addresses/{address_id}/default
 POST /api/devices/logout-all-web
 POST /api/devices/remote-scan/cancel
 POST /api/devices/remote-scan/request

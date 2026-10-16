@@ -17,6 +17,7 @@ from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import alamat_pelanggan as _alamat  # V428 alamat terstruktur
 from ..schemas.customers import (
     CreateCustomerRequest,
     UpdateCustomerRequest,
@@ -454,6 +455,8 @@ async def get_customer(request: Request, customer_id: str):
             )
             # F3: sumber termin menurut aturan YANG SAMA dengan pembuat faktur (termin_bayar)
             _, _termin_sumber = await termin_hari(conn, ctx["tenant_id"], None, customer_id)
+            # V428: alamat aktif (bawaan dulu); medan datar di bawah = cermin bawaan tagih
+            _alamat_daftar = await _alamat.daftar(conn, ctx["tenant_id"], row["id"])
 
             return {
                 "success": True,
@@ -476,6 +479,9 @@ async def get_customer(request: Request, customer_id: str):
                     "city": row["city"],
                     "province": row["province"],
                     "postal_code": row["postal_code"],
+                    "addresses": _alamat_daftar,
+                    "default_billing_address_id": next((a["id"] for a in _alamat_daftar if a["is_default_billing"]), None),
+                    "default_shipping_address_id": next((a["id"] for a in _alamat_daftar if a["is_default_shipping"]), None),
                     # Tax info
                     "tax_id": row["tax_id"],
                     "nik": row["nik"],
@@ -806,6 +812,13 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
                     user_name,
                 )
 
+                # V428: alamat datar -> bawaan tagih (+kirim); alamat kirim terpisah (opsional) -> bawaan kirim
+                await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], new_id, user_id)
+                if body.shipping_address is not None:
+                    _kirim = body.shipping_address.model_dump(include=set(_alamat.MEDAN) & body.shipping_address.model_fields_set)
+                    if any(_alamat._isi(_kirim.get(k)) for k in _alamat.MEDAN_ISI):
+                        await _alamat.tambah(conn, ctx["tenant_id"], new_id, _kirim, kirim=True, oleh=user_id, nama=user_name)
+
                 logger.info(f"Customer created: {new_id}, name={body.name}")
 
                 return {
@@ -922,6 +935,9 @@ async def update_customer(
 
             async with conn.transaction():
                 await conn.execute(query, *params)
+                # V428: medan alamat datar dikirim -> cermin ke baris bawaan tagih (transaksi yang SAMA)
+                if {"address", "city", "province", "postal_code"} & set(update_data):
+                    await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], customer_id, ctx.get("user_id"))
 
                 # Build change details for activity logging
                 field_labels = {
@@ -1828,6 +1844,7 @@ async def _gabung_rincian(conn, tenant_id: str, sasaran, sumber):
         sumber, sasaran,
     )
     cacah["customer_price_lists"] = harga_pindah
+    cacah["customer_addresses"] = await _alamat.hitung_pindah_gabung(conn, tenant_id, sumber)  # V428: jadi alamat biasa
     # Kwitansi penjualan selesai/batal dijaga pemicu prevent_sr_modification (menolak UPDATE apa pun). Pagar itu TIDAK
     # dilemahkan: penggabungan ditolak dengan pesan terbaca.
     kwitansi_beku = await conn.fetchval(
@@ -1909,6 +1926,7 @@ async def merge_customers(request: Request):
                     sasaran, sumber,
                 )
                 pindah["customer_price_lists"] = int(hasil.split()[-1])
+                pindah["customer_addresses"] = await _alamat.pindah_saat_gabung(conn, ctx["tenant_id"], sasaran, sumber)
                 if pindah != cacah:
                     # tak mungkin di dalam kunci; bila terjadi, jangan setengah jadi
                     raise HTTPException(status_code=409, detail="Data pelanggan berubah saat digabung; muat ulang pratinjau.")

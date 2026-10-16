@@ -38,6 +38,7 @@ from .routers import invoices
 from .routers import bills
 from .routers import vendors
 from .routers import customers
+from .routers import alamat_pelanggan  # V428
 from .routers import (
     tax_codes,
     tax_groups,
@@ -507,6 +508,7 @@ app.include_router(vendors.router, prefix="/api/vendors", tags=["vendors"])
 
 # Customers router (Customer Master Data)
 app.include_router(customers.router, prefix="/api/customers", tags=["customers"])
+app.include_router(alamat_pelanggan.router, prefix="/api/customers", tags=["customers"])  # V428 alamat per baris
 
 # Tax Codes router (Tax Master Data)
 app.include_router(tax_codes.router, prefix="/api/tax-codes", tags=["tax-codes"])
