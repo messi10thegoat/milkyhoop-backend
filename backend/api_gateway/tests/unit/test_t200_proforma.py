@@ -42,6 +42,17 @@ def _migration_text() -> str:
     )
 
 
+@pytest.fixture(autouse=True)
+def _tanpa_uang_muka(monkeypatch):
+    """KONTRAK-dp-neto (16 Okt 2026): uang muka diterima kini lewat UMP.per_uang_muka (jurnal). Tes pagar total di
+    berkas ini = SO TANPA uang muka (dulu jawaban kedua {"total": 0})."""
+    from app.services import uang_muka_pesanan as UMP
+
+    async def kosong(conn, tenant_id, so_ids):
+        return []
+    monkeypatch.setattr(UMP, "per_uang_muka", kosong)
+
+
 class _FakeConn:
     """Mencatat tiap SQL; menjawab fetchrow dengan nilai yang KITA tentukan."""
 

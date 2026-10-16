@@ -66,8 +66,21 @@ def test_uang_muka_tak_dikenal_atau_draf_null():
                                                 "attribution": None}
 
 
+@pytest.fixture(autouse=True)
+def _uang_muka_jurnal(monkeypatch):
+    """KONTRAK-dp-neto (16 Okt 2026): muat_atribusi membaca uang muka lewat UMP.per_uang_muka (jurnal, neto refund).
+    Baris `deps` _Conn disajikan sebagai baris jurnal tanpa refund (neto = amount); tenant dicatat seperti kueri lain."""
+    from app.services import uang_muka_pesanan as UMP
+
+    async def palsu(conn, tenant_id, so_ids):
+        conn.sql.append((UMP.SQL_PER_UANG_MUKA, (tenant_id, list(so_ids))))
+        return [{**d, "status": d.get("status", "posted"), "terima": D(str(d["amount"])), "terap": D("0"),
+                 "lain": D("0"), "neto": D(str(d["amount"]))} for d in conn.deps]
+    monkeypatch.setattr(UMP, "per_uang_muka", palsu)
+
+
 class _Conn:
-    """Kueri daftar uang muka SO + dua kueri muat_atribusi (proformas, customer_deposits bukan void/draft)."""
+    """Kueri daftar uang muka SO + muat_atribusi (proformas; uang muka lewat UMP.per_uang_muka = fixture)."""
 
     def __init__(self, daftar, pros, deps):
         self.daftar, self.pros, self.deps, self.sql = daftar, pros, deps, []

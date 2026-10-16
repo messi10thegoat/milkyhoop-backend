@@ -222,32 +222,17 @@ async def issued_total_for_order(
 
 
 async def deposit_totals_for_order(conn, tenant_id: str, sales_order_id) -> dict:
-    """DITERIMA = TURUNAN. Dua angka, satu query, atribusi lewat sales_order_id
-    dan proforma_id — TIDAK PERNAH lewat tanggal.
+    """DITERIMA = TURUNAN JURNAL, neto refund (KONTRAK-dp-neto-20261016; satu sumber services/uang_muka_pesanan).
 
-    received_total   = semua customer_deposits milik SO ini yang bukan 'void'.
-    unbilled_received = bagian dari itu yang TIDAK menunjuk proforma mana pun.
-      Angka ini sengaja tidak disembunyikan: uang yang masuk tanpa tagihan
-      adalah uang yang belum diatribusikan, dan user perlu melihatnya.
-
-    `void` dikecualikan karena depositnya sudah dibatalkan; 'applied' TETAP
-    dihitung karena uangnya benar-benar diterima, hanya sudah dipakai.
+    received_total    = uang muka SO ini (langsung atau lewat proforma) yang BUKAN void/draf: diterima − dikembalikan.
+    unbilled_received = bagian dari itu yang TIDAK menunjuk proforma mana pun (uang belum diatribusikan; ditampilkan).
+    Draf bukan uang diterima (dulu ikut, dan refund dulu tak mengurangi). 'applied' tetap dihitung: uangnya diterima.
     """
-    row = await conn.fetchrow(
-        """
-        SELECT COALESCE(SUM(amount), 0) AS received,
-               COALESCE(SUM(amount) FILTER (WHERE proforma_id IS NULL), 0) AS unbilled
-        FROM customer_deposits
-        WHERE tenant_id = $1
-          AND sales_order_id = $2
-          AND status <> 'void'
-        """,
-        tenant_id,
-        sales_order_id,
-    )
+    from ..services.uang_muka_pesanan import uang_muka_pesanan
+    u = (await uang_muka_pesanan(conn, tenant_id, [sales_order_id]))[sales_order_id]
     return {
-        "received_total": float(row["received"] or 0),
-        "unbilled_received": float(row["unbilled"] or 0),
+        "received_total": float(u["neto"]),
+        "unbilled_received": float(u["neto_tanpa_proforma"]),
     }
 
 

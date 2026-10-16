@@ -122,9 +122,10 @@ async def pemakaian_baris(conn, tenant_id: str, so_id) -> dict:
 
 async def batas_bawah_total(conn, tenant_id: str, so_id, total_lama) -> dict:
     """Uang yang SUDAH terikat pada SO: total baru tak boleh di bawah MAX ketiganya (putusan pemilik: tolak)."""
-    from ..routers.customer_deposits import received_total_for_order
     from ..routers.proformas import rincian_tagih
-    dp = _d(await received_total_for_order(conn, tenant_id, so_id))
+    from .uang_muka_pesanan import uang_muka_pesanan
+    # KONTRAK-dp-neto: uang muka NETO refund (jurnal), tanpa draf -- uang yang benar-benar masih terikat pada SO
+    dp = (await uang_muka_pesanan(conn, tenant_id, [so_id]))[so_id]["neto"]
     r = await rincian_tagih(conn, tenant_id, so_id, float(total_lama))
     tagih = _d(r["issued_total"]) + _d(r["received_not_billed"])
     faktur = _d(await conn.fetchval(

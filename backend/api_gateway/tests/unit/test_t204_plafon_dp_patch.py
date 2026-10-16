@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers import customer_deposits as cd
+from app.services import uang_muka_pesanan as ump
 from app.schemas.customer_deposits import UpdateCustomerDepositRequest
 
 TENANT = "kaos-biru-konveksi"
@@ -83,7 +84,24 @@ class _Pool:
 
 
 def _wire(monkeypatch, rows):
+    # KONTRAK-dp-neto (16 Okt 2026): akumulasi = services/uang_muka_pesanan (jurnal, neto). Baris jurnal per uang muka
+    # dipalsukan: uang muka LAIN bernilai `sudah_lain` + uang muka INI (DEP) sendiri bernilai besar, supaya exclude_id
+    # benar-benar diuji (tanpa exclude, DEP ikut terhitung dan PATCH ditolak keliru).
+    um = [r for r in rows if "__uang_muka__" in r]
+    rows = [r for r in rows if "__uang_muka__" not in r]
     conn = _Conn(rows)
+    sudah_lain = um[0]["__uang_muka__"] if um else 0
+
+    async def _per_uang_muka(c, tenant_id, so_ids):
+        conn.panggil_ump = (tenant_id, list(so_ids))
+        baris = [{"id": DEP, "so_id": so_ids[0], "status": "posted", "amount": 4_999_999, "proforma_id": None,
+                  "terima": ump._d(4_999_999), "terap": ump.NOL, "lain": ump.NOL, "neto": ump._d(4_999_999)}]
+        if sudah_lain:
+            baris.append({"id": "dp-lain", "so_id": so_ids[0], "status": "posted", "amount": sudah_lain,
+                          "proforma_id": None, "terima": ump._d(sudah_lain), "terap": ump.NOL, "lain": ump.NOL,
+                          "neto": ump._d(sudah_lain)})
+        return baris
+    monkeypatch.setattr(ump, "per_uang_muka", _per_uang_muka)
 
     async def _pool():
         return _Pool(conn)
@@ -107,7 +125,7 @@ def _rows(order_total, sudah_lain, sales_order_id=SO):
             "proforma_id": None,
         },
         {"order_number": "SO-2608-0001", "total_amount": order_total, "status": "confirmed"},  # C7: pagar kini membaca status SO
-        {"total": sudah_lain},
+        {"__uang_muka__": sudah_lain},
     ]
 
 
@@ -157,20 +175,16 @@ async def test_patch_tidak_menghitung_dirinya_sendiri(monkeypatch):
     conn = _wire(monkeypatch, _rows(5_000_000, 0))
     body = UpdateCustomerDepositRequest(amount=1_001)
     res = await cd.update_customer_deposit(_REQ, DEP, body)
-    assert res["success"] is True
-    # query akumulasi menerima deposit_id sebagai exclude_id ($3)
-    akum = [i for i, s in enumerate(conn.sqls) if "SUM(amount)" in s]
-    assert akum, conn.sqls
-    assert conn.args[akum[0]][2] == DEP, conn.args[akum[0]]
+    assert res["success"] is True   # DEP sendiri (4.999.999) dikecualikan; tanpa exclude -> ditolak
+    assert conn.panggil_ump == (TENANT, [SO])
 
 
 async def test_query_akumulasi_punya_klausa_exclude(monkeypatch):
-    conn = _wire(monkeypatch, _rows(5_000_000, 0))
-    await cd.update_customer_deposit(
-        _REQ, DEP, UpdateCustomerDepositRequest(amount=1)
-    )
-    sql = [s for s in conn.sqls if "SUM(amount)" in s][0]
-    assert "id <> $3" in sql, sql
+    # exclude kini di jumlahkan() (murni): uang muka ber-id itu tak dihitung
+    b = [{"id": DEP, "so_id": SO, "status": "posted", "amount": 1, "proforma_id": None, "terima": ump._d(7),
+          "terap": ump.NOL, "lain": ump.NOL, "neto": ump._d(7)}]
+    assert ump.jumlahkan(b, [SO])[SO]["neto"] == 7
+    assert ump.jumlahkan(b, [SO], exclude_id=DEP)[SO]["neto"] == 0
 
 
 # ------------------------------------------------------- DEPOSIT TANPA SO
@@ -203,8 +217,8 @@ async def test_akumulasi_patch_mengecualikan_void(monkeypatch):
     await cd.update_customer_deposit(
         _REQ, DEP, UpdateCustomerDepositRequest(amount=1)
     )
-    sql = [s for s in conn.sqls if "SUM(amount)" in s][0]
-    assert "status <> 'void'" in sql, sql
+    assert "cd.status <> 'void'" in ump.SQL_PER_UANG_MUKA
+    assert conn.panggil_ump == (TENANT, [SO])
 
 
 async def test_query_pagar_patch_menyaring_tenant_id(monkeypatch):
@@ -215,9 +229,8 @@ async def test_query_pagar_patch_menyaring_tenant_id(monkeypatch):
     so_i = [i for i, s in enumerate(conn.sqls) if "FROM sales_orders" in s][0]
     assert "tenant_id = $2" in conn.sqls[so_i]
     assert conn.args[so_i] == (SO, TENANT)
-    ak_i = [i for i, s in enumerate(conn.sqls) if "SUM(amount)" in s][0]
-    assert "tenant_id = $1" in conn.sqls[ak_i]
-    assert conn.args[ak_i][0] == TENANT
+    assert "cd.tenant_id = $1" in ump.SQL_PER_UANG_MUKA
+    assert conn.panggil_ump == (TENANT, [SO])
 
 
 # --------------------------------------------- PATCH TANPA amount TAK KENA

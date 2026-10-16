@@ -140,16 +140,14 @@ async def muat_atribusi(conn, tenant_id: str, so_ids: list, exclude_proforma_id=
              AND ($3::uuid IS NULL OR id <> $3::uuid)""",
         tenant_id, so_ids, exclude_proforma_id,
     )
-    deps = await conn.fetch(
-        """SELECT cd.id, cd.amount, cd.proforma_id, cd.created_at,
-                  COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id
-           FROM customer_deposits cd
-           LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
-           WHERE cd.tenant_id = $1 AND cd.status NOT IN ('void', 'draft')
-             AND (cd.sales_order_id = ANY($2::uuid[]) OR p.sales_order_id = ANY($2::uuid[]))
-             AND ($3::uuid IS NULL OR cd.proforma_id IS DISTINCT FROM $3::uuid)""",
-        tenant_id, so_ids, exclude_proforma_id,
-    )
+    # KONTRAK-dp-neto (16 Okt 2026, P2): nominal uang muka = NETO refund dari jurnal (services/uang_muka_pesanan),
+    # bukan cd.amount -- uang yang sudah dikembalikan tak lagi membayar/mengurangi tagihan proforma (NetSuite: deposit
+    # tersedia = diterima − refund). Draf & void tetap di luar. Habis direfund (neto 0): yang TERTAUT tetap (tautannya
+    # tampil, nilai 0); yang lepas dikeluarkan (nominal 0 tak boleh "tercocok" ke proforma yang sudah lunas).
+    from .uang_muka_pesanan import per_uang_muka
+    deps = [{**d, "amount": d["neto"]} for d in await per_uang_muka(conn, tenant_id, so_ids)
+            if d["status"] != "draft" and (d["neto"] > 0 or d["proforma_id"] is not None)
+            and (exclude_proforma_id is None or str(d["proforma_id"]) != str(exclude_proforma_id))]
     per_so_p, per_so_d = {s: [] for s in so_ids}, {s: [] for s in so_ids}
     for p in pros:
         per_so_p[p["sales_order_id"]].append(dict(p))

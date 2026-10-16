@@ -102,7 +102,6 @@ async def _hitung_ringkasan_pesanan(conn, tenant_id: str, so_ids: list) -> dict:
     """{so_id: {invoiced, invoice_outstanding, invoice_settled, credit_note, dp_received,
     dp_applied, dp_refunded, dp_unapplied, tertutup}} — Decimal, journal-derived."""
     from ..routers.customer_deposits import compute_deposit_remaining_many
-    from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 
     so_ids = list({s for s in so_ids if s is not None})
     out = {s: {k: NOL for k in _KOSONG} for s in so_ids}
@@ -151,23 +150,9 @@ async def _hitung_ringkasan_pesanan(conn, tenant_id: str, so_ids: list) -> dict:
             o["invoice_outstanding"] += sisa_f
             o["invoice_settled"] += tagih - sisa_f
             o["credit_note"] += cn.get(f["id"], NOL)
-    akun_dp = await resolve_account_id_by_role(conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
-    deps = await conn.fetch(
-        """SELECT cd.id, COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id,
-                  COALESCE(SUM(jl.credit - jl.debit) FILTER (WHERE je.source_type = 'CUSTOMER_DEPOSIT'), 0) AS terima,
-                  COALESCE(SUM(jl.debit - jl.credit) FILTER (WHERE je.source_type = 'DEPOSIT_APPLICATION'), 0) AS terap,
-                  COALESCE(SUM(jl.debit - jl.credit) FILTER (
-                      WHERE je.source_type NOT IN ('CUSTOMER_DEPOSIT', 'DEPOSIT_APPLICATION')), 0) AS lain
-           FROM customer_deposits cd
-           LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
-           LEFT JOIN journal_entries je ON je.tenant_id = cd.tenant_id AND je.source_id::uuid = cd.id
-                                        AND is_effective_journal(je.id)
-           LEFT JOIN journal_lines jl ON jl.journal_id = je.id AND jl.account_id = $3
-           WHERE cd.tenant_id = $1 AND cd.status <> 'void'
-             AND (cd.sales_order_id = ANY($2::uuid[]) OR p.sales_order_id = ANY($2::uuid[]))
-           GROUP BY cd.id, COALESCE(cd.sales_order_id, p.sales_order_id)""",
-        tenant_id, so_ids, akun_dp,
-    )
+    # KONTRAK-dp-neto (16 Okt 2026): baris jurnal per uang muka = SATU sumber (services/uang_muka_pesanan)
+    from .uang_muka_pesanan import per_uang_muka
+    deps = await per_uang_muka(conn, tenant_id, so_ids)
     if deps:
         sisa_dep = await compute_deposit_remaining_many(conn, tenant_id, [d["id"] for d in deps])
         for d in deps:

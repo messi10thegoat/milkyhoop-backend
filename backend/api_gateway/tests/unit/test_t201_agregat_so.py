@@ -23,71 +23,82 @@ def _kode_saja(src: str) -> str:
 ROUTER_KODE = _kode_saja(ROUTER_SRC)
 
 
-class _FakeConn:
-    def __init__(self, answers=None):
-        self.sqls = []
-        self.args = []
-        self._answers = list(answers or [])
+import pytest
 
-    async def fetchrow(self, sql, *args):
-        self.sqls.append(sql)
-        self.args.append(args)
-        if self._answers:
-            return self._answers.pop(0)
-        return None
+from app.services import uang_muka_pesanan as ump
+
+# KONTRAK-dp-neto (16 Okt 2026): deposit_totals_for_order = pembungkus services/uang_muka_pesanan (jurnal, neto refund).
+# Baris jurnal per uang muka dipalsukan; sifat SQL diuji pada ump.SQL_PER_UANG_MUKA (satu sumber).
+_SQL = " ".join(ump.SQL_PER_UANG_MUKA.split())
+
+
+def _dp(neto, proforma=None, status="posted", refund=0):
+    return {"id": f"dp-{neto}-{proforma}", "so_id": "so-1", "status": status, "amount": neto + refund,
+            "proforma_id": proforma, "terima": ump._d(neto + refund), "terap": ump.NOL, "lain": ump._d(refund),
+            "neto": ump._d(neto)}
+
+
+@pytest.fixture
+def palsu(monkeypatch):
+    catat = {}
+
+    def pasang(baris):
+        async def f(conn, tenant_id, so_ids):
+            catat["arg"] = (tenant_id, list(so_ids))
+            return baris
+        monkeypatch.setattr(ump, "per_uang_muka", f)
+        return catat
+    return pasang
 
 
 # ------------------------------------------------------- received_total
 
 
-async def test_received_total_mengecualikan_void():
-    """`void` HARUS disaring di SQL — deposit batal bukan uang yang diterima."""
-    conn = _FakeConn([{"received": 162000, "unbilled": 0}])
-    await pf.deposit_totals_for_order(conn, "kaos-biru-konveksi", "so-1")
-    sql = conn.sqls[0]
-    assert "customer_deposits" in sql
-    assert "status <> 'void'" in sql, (
-        "received_total tidak menyaring status void — deposit yang dibatalkan "
-        f"akan ikut dihitung. SQL:\n{sql}"
-    )
+async def test_received_total_mengecualikan_void(palsu):
+    """`void` HARUS disaring di SQL; draf (janji, tanpa jurnal) bukan uang diterima."""
+    assert "customer_deposits" in _SQL
+    assert "cd.status <> 'void'" in _SQL, _SQL
+    palsu([_dp(162000), _dp(0, status="draft")])
+    hasil = await pf.deposit_totals_for_order(None, "kaos-biru-konveksi", "so-1")
+    assert hasil["received_total"] == 162000.0
 
 
-async def test_received_total_float_bukan_decimal_atau_string():
+async def test_received_total_neto_setelah_refund(palsu):
+    """KONTRAK-dp-neto: refund mengurangi uang yang diterima pesanan (NetSuite: deposit − refund)."""
+    palsu([_dp(40000, refund=10000)])
+    assert (await pf.deposit_totals_for_order(None, "t", "so-1"))["received_total"] == 40000.0
+
+
+async def test_received_total_float_bukan_decimal_atau_string(palsu):
     """pydantic v2 menyerialkan Decimal jadi STRING → merusak matematika FE."""
-    from decimal import Decimal
-
-    conn = _FakeConn([{"received": Decimal("162000.00"), "unbilled": Decimal("0")}])
-    hasil = await pf.deposit_totals_for_order(conn, "t", "so-1")
+    palsu([_dp(162000)])
+    hasil = await pf.deposit_totals_for_order(None, "t", "so-1")
     assert type(hasil["received_total"]) is float, type(hasil["received_total"])
     assert type(hasil["unbilled_received"]) is float
     assert hasil["received_total"] == 162000.0
 
 
-async def test_received_total_nol_saat_tidak_ada_deposit():
+async def test_received_total_nol_saat_tidak_ada_deposit(palsu):
     """Nol, bukan None — kontrol negatif tidak boleh mengirim null ke FE."""
-    conn = _FakeConn([{"received": None, "unbilled": None}])
-    hasil = await pf.deposit_totals_for_order(conn, "t", "so-1")
+    palsu([])
+    hasil = await pf.deposit_totals_for_order(None, "t", "so-1")
     assert hasil == {"received_total": 0.0, "unbilled_received": 0.0}
 
 
 # ---------------------------------------------------- unbilled_received
 
 
-async def test_unbilled_hanya_deposit_tanpa_proforma_id():
-    """`unbilled_received` = FILTER proforma_id IS NULL, bukan seluruh jumlah."""
-    conn = _FakeConn([{"received": 100, "unbilled": 100}])
-    await pf.deposit_totals_for_order(conn, "t", "so-1")
-    sql = " ".join(conn.sqls[0].split())
-    assert "FILTER (WHERE proforma_id IS NULL)" in sql, (
-        "unbilled_received tidak difilter pada proforma_id IS NULL — deposit "
-        f"yang SUDAH bertaut tagihan ikut terhitung. SQL:\n{sql}"
-    )
+async def test_unbilled_hanya_deposit_tanpa_proforma_id(palsu):
+    """`unbilled_received` = uang muka TANPA proforma_id saja, bukan seluruh jumlah."""
+    palsu([_dp(100000), _dp(1500000, proforma="pf-1")])
+    hasil = await pf.deposit_totals_for_order(None, "t", "so-1")
+    assert hasil["unbilled_received"] == 100000.0
 
 
-async def test_unbilled_terpisah_dari_received():
+async def test_unbilled_terpisah_dari_received(palsu):
     """Dua angka berbeda: sebagian bertaut proforma, sebagian tidak."""
-    conn = _FakeConn([{"received": 1600000, "unbilled": 100000}])
-    hasil = await pf.deposit_totals_for_order(conn, "t", "so-1")
+    palsu([_dp(100000), _dp(1500000, proforma="pf-1")])
+    hasil = await pf.deposit_totals_for_order(None, "t", "so-1")
     assert hasil["received_total"] == 1600000.0
     assert hasil["unbilled_received"] == 100000.0
 
@@ -95,25 +106,23 @@ async def test_unbilled_terpisah_dari_received():
 # ------------------------------------------------------------- ISOLASI
 
 
-async def test_query_menyaring_tenant_id():
+async def test_query_menyaring_tenant_id(palsu):
     """Gateway BYPASSRLS — RLS TIDAK melindungi jalur ini. tenant_id wajib."""
-    conn = _FakeConn([{"received": 0, "unbilled": 0}])
-    await pf.deposit_totals_for_order(conn, "kaos-biru-konveksi", "so-1")
-    sql = " ".join(conn.sqls[0].split())
-    assert "tenant_id = $1" in sql, f"tenant_id tidak disaring. SQL:\n{sql}"
-    assert conn.args[0][0] == "kaos-biru-konveksi"
+    assert "cd.tenant_id = $1" in _SQL, f"tenant_id tidak disaring. SQL:\n{_SQL}"
+    c = palsu([])
+    await pf.deposit_totals_for_order(None, "kaos-biru-konveksi", "so-1")
+    assert c["arg"] == ("kaos-biru-konveksi", ["so-1"])
 
 
 async def test_atribusi_lewat_sales_order_id_bukan_tanggal():
-    """Atribusi lewat kunci relasi. Tanggal TIDAK BOLEH muncul di query ini."""
-    conn = _FakeConn([{"received": 0, "unbilled": 0}])
-    await pf.deposit_totals_for_order(conn, "t", "so-1")
-    sql = " ".join(conn.sqls[0].split()).lower()
-    assert "sales_order_id = $2" in sql
+    """Atribusi lewat kunci relasi. Tanggal TIDAK BOLEH muncul di penyaring (created_at hanya DIPILIH untuk urutan
+    pencocokan proforma_atribusi, bukan untuk atribusi)."""
+    where = _SQL.lower().split(" where cd.tenant_id", 1)[1].split(" group by ", 1)[0]
+    assert "cd.sales_order_id = any($2::uuid[])" in where and "p.sales_order_id = any($2::uuid[])" in where
     for kata in ("deposit_date", "created_at", "date_trunc", "between", "::date"):
-        assert kata not in sql, (
+        assert kata not in where, (
             f"query agregat memakai tanggal ('{kata}') — atribusi harus lewat "
-            f"sales_order_id/proforma_id. SQL:\n{sql}"
+            f"sales_order_id/proforma_id. SQL:\n{_SQL}"
         )
 
 

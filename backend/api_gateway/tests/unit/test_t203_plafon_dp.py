@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers import customer_deposits as cd
+from app.services import uang_muka_pesanan as ump
 
 ROUTER_SRC = Path(cd.__file__).read_text()
 
@@ -58,14 +59,23 @@ class _FakeConn:
         return 0
 
 
+@pytest.fixture(autouse=True)
+def _uang_muka_palsu(monkeypatch):
+    """KONTRAK-dp-neto (16 Okt 2026): akumulasi = services/uang_muka_pesanan (jurnal, neto refund). Baris jurnal per
+    uang muka dipalsukan dari `conn.sudah` (neto); argumen panggilan dicatat untuk uji tenant."""
+    async def palsu(conn, tenant_id, so_ids):
+        conn.panggil_ump = (tenant_id, list(so_ids))
+        n = getattr(conn, "sudah", 0) or 0
+        return [{"id": "dp-1", "so_id": so_ids[0], "status": "posted", "amount": n, "proforma_id": None,
+                 "terima": ump._d(n), "terap": ump.NOL, "lain": ump.NOL, "neto": ump._d(n)}] if n else []
+    monkeypatch.setattr(ump, "per_uang_muka", palsu)
+
+
 def _conn_so(order_total, sudah):
-    """fetchrow #1 = baris sales_orders, #2 = akumulasi deposit."""
-    return _FakeConn(
-        [
-            {"order_number": "SO-2608-0001", "total_amount": order_total, "status": "confirmed"},  # C7: pagar kini membaca status SO
-            {"total": sudah},
-        ]
-    )
+    """fetchrow #1 = baris sales_orders; akumulasi uang muka (neto) = `sudah` lewat _uang_muka_palsu."""
+    c = _FakeConn([{"order_number": "SO-2608-0001", "total_amount": order_total, "status": "confirmed"}])  # C7: status SO
+    c.sudah = sudah
+    return c
 
 
 # ------------------------------------------------------------- PAGAR MENOLAK
@@ -110,19 +120,21 @@ async def test_dp_bertahap_tetap_diizinkan():
 
 
 async def test_akumulasi_mengecualikan_void():
-    conn = _FakeConn([{"total": 1_600_000}])
-    await cd.received_total_for_order(conn, TENANT, SO)
-    sql = conn.sqls[0]
-    assert "status <> 'void'" in sql, sql
+    # KONTRAK-dp-neto: satu sumber = ump.SQL_PER_UANG_MUKA (jurnal); void keluar di sana
+    sql = ump.SQL_PER_UANG_MUKA
+    assert "cd.status <> 'void'" in sql, sql
     assert "customer_deposits" in sql
+    conn = _FakeConn()
+    conn.sudah = 1_600_000
+    assert await cd.received_total_for_order(conn, TENANT, SO) == 1_600_000
 
 
 async def test_akumulasi_menyaring_tenant_id():
     """Gateway BYPASSRLS — WHERE tenant_id WAJIB eksplisit."""
-    conn = _FakeConn([{"total": 0}])
+    assert "cd.tenant_id = $1" in ump.SQL_PER_UANG_MUKA
+    conn = _FakeConn()
     await cd.received_total_for_order(conn, TENANT, SO)
-    assert "tenant_id = $1" in conn.sqls[0]
-    assert conn.args[0][0] == TENANT
+    assert conn.panggil_ump == (TENANT, [SO])
 
 
 async def test_lookup_sales_order_menyaring_tenant_id():

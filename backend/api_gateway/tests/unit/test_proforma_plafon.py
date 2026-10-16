@@ -10,6 +10,18 @@ from fastapi import HTTPException
 from app.routers import proformas as pf
 from app.services import proforma_atribusi as PA
 from app.services import proforma_terbayar as PT
+from app.services import uang_muka_pesanan as UMP
+
+
+@pytest.fixture(autouse=True)
+def _uang_muka_dari_batch(monkeypatch):
+    """KONTRAK-dp-neto (16 Okt 2026): muat_atribusi membaca uang muka lewat UMP.per_uang_muka (jurnal, neto refund).
+    _Conn menyimpan baris uang muka di batch ke-2 -> disajikan sebagai baris jurnal tanpa refund (neto = amount)."""
+    async def palsu(conn, tenant_id, so_ids):
+        conn.sql.append(UMP.SQL_PER_UANG_MUKA)
+        return [{**d, "status": d.get("status", "posted"), "terima": D(str(d["amount"])), "terap": D("0"),
+                 "lain": D("0"), "neto": D(str(d["amount"]))} for d in conn.batch.pop(0)]
+    monkeypatch.setattr(UMP, "per_uang_muka", palsu)
 from app.services.pdf_service import PDFService
 
 
@@ -114,7 +126,10 @@ async def test_rincian_komponen_dan_sql_bukan_void_draft():
     assert r == {"order_total": 5_000_000.0, "issued_total": 1_000_000.0, "received_total": 1_500_000.0,
                  "received_not_billed": 500_000.0, "billable_remaining": 3_500_000.0}
     q = " ".join(" ".join(c.sql).split())
-    assert "cd.status NOT IN ('void', 'draft')" in q and "cd.tenant_id = $1" in q and "p.tenant_id = cd.tenant_id" in q
+    # void keluar di SQL satu sumber; draf (tanpa jurnal) keluar di muat_atribusi
+    assert "cd.status <> 'void'" in q and "cd.tenant_id = $1" in q and "p.tenant_id = cd.tenant_id" in q
+    import inspect
+    assert 'd["status"] != "draft"' in inspect.getsource(PA.muat_atribusi)
 
 
 # ---------------------------------------------------------------- "Sudah Dibayar" (proforma_terbayar)

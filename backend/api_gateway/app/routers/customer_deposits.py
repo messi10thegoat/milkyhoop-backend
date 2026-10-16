@@ -803,27 +803,13 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
 async def received_total_for_order(
     conn, tenant_id: str, sales_order_id, exclude_id=None
 ) -> float:
-    """Akumulasi uang muka non-'void' untuk satu Sales Order.
-
-    'void' DIKECUALIKAN karena depositnya sudah dibatalkan (jurnalnya dibalik).
-    'draft', 'posted', 'partial', 'applied' SEMUA dihitung: uangnya nyata
-    diterima (atau sudah dijanjikan pada draft), hanya sebagian sudah dipakai.
-    Sama persis dengan basis `deposit_totals_for_order` di routers/proformas.py.
-    """
-    row = await conn.fetchrow(
-        """
-        SELECT COALESCE(SUM(amount), 0) AS total
-        FROM customer_deposits
-        WHERE tenant_id = $1
-          AND sales_order_id = $2
-          AND status <> 'void'
-          AND ($3::uuid IS NULL OR id <> $3::uuid)
-        """,
-        tenant_id,
-        sales_order_id,
-        exclude_id,
-    )
-    return float(row["total"] or 0)
+    """PLAFON terima uang muka/pelunasan per Sales Order: uang muka NETO setelah refund (turunan jurnal) + uang muka
+    DRAF (janji yang belum diposting tetap menahan plafon; posting dicek ulang). KONTRAK-dp-neto-20261016 (P3).
+    Dulu SUM(amount) tabel: refund tetap terhitung -> pembayaran sisa penuh ditolak sesudah refund sebagian.
+    Satu sumber: services/uang_muka_pesanan. exclude_id = uang muka yang sedang diubah."""
+    from ..services.uang_muka_pesanan import uang_muka_pesanan
+    u = (await uang_muka_pesanan(conn, tenant_id, [sales_order_id], exclude_id))[sales_order_id]
+    return float(u["neto"] + u["draf"])
 
 
 async def resolve_order_id_for_deposit(
@@ -3485,10 +3471,10 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
             order_total = int(float(so_total_row["total_amount"] or 0))
             # SELURUH DP untuk pesanan ini (termasuk yang sedang dicetak),
             # supaya kwitansi cicilan kedua menunjukkan sisa yang benar.
+            # KONTRAK-dp-neto: uang yang SUDAH diterima neto refund (tanpa draf) -- bukan plafon
+            from ..services.uang_muka_pesanan import uang_muka_pesanan as _ump
             dp_received_total = int(
-                await received_total_for_order(
-                    conn, ctx["tenant_id"], dep["sales_order_id"]
-                )
+                (await _ump(conn, ctx["tenant_id"], [dep["sales_order_id"]]))[dep["sales_order_id"]]["neto"]
             )
             order_remaining = order_total - dp_received_total
             # Baris saldo internal disembunyikan di kasus A.
