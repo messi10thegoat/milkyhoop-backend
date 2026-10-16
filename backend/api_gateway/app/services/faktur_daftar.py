@@ -50,6 +50,18 @@ def jatuh_tempo_hari(terbuka: bool, due_date: Optional[date], hari_ini: date) ->
     return (due_date - hari_ini).days
 
 
+def jatuh_tempo_keadaan(status: str, terbuka: bool, due_date: Optional[date], hari_ini: date) -> str:
+    """KEADAAN-LIST (16 Okt 2026): enum dari fakta YANG SAMA dengan jatuh_tempo_terbuka/_hari. 'telat' (terbuka, hari < 0 ==
+    is_overdue) | 'hari_ini' | 'akan' | 'selesai' (tak terbuka: lunas / sisa 0 -- lunas lewat tempo = selesai, BUKAN telat) |
+    'tanpa' (draf / void / tanpa tanggal). Selalu terisi, tak pernah null."""
+    if status in ("draft", "void") or due_date is None:
+        return "tanpa"
+    if not terbuka:
+        return "selesai"
+    d = (due_date - hari_ini).days
+    return "telat" if d < 0 else "hari_ini" if d == 0 else "akan"
+
+
 async def dokumen_per_faktur(conn, tenant_id: str, ids: list) -> dict:
     """-> {invoice_id: [{type}]} untuk faktur di halaman (<= 100). Dua kueri ber-batch."""
     if not ids:

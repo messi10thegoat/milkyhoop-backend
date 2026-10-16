@@ -336,6 +336,8 @@ class SalesOrderListItem(BaseModel):
     # null bila kirim tertutup atau tanpa tanggal. FE hanya memformat.
     kirim_hari: Optional[int] = None
     kirim_terbuka: bool = False
+    # 16 Okt 2026 (KEADAAN-LIST, so_posisi.kirim_keadaan): telat | hari_ini | akan | selesai (tanggal redup) | tanpa ("—"); selalu terisi.
+    kirim_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     # 14 Okt 2026 (AKSI-SO): aksi PALING MENDESAK (services/so_aksi.AKSI) atau null (arsip / tanpa aksi)
     aksi: Optional[str] = None
     created_at: str

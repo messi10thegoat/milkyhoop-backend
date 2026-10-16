@@ -111,6 +111,21 @@ def kirim_hari(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bo
     return (tanggal_kirim - hari).days, True
 
 
+def kirim_keadaan(status: str, tanggal_kirim, perlu_kirim: bool, semua_terkirim: bool, hari: date) -> str:
+    """KEADAAN-LIST (16 Okt 2026): enum kolom Kirim dari fakta YANG SAMA dengan kirim()/kirim_hari() -- FE berhenti menafsirkan
+    ship_text '—'. 'telat' | 'hari_ini' | 'akan' (tanggal terbuka, belum lewat) | 'selesai' (tanggal tampil REDUP: sudah
+    dikirim semua / SO selesai-tertutup, bertanggal) | 'tanpa' (batal / tanpa baris perlu-kirim / tanpa tanggal -> "—").
+    Selalu terisi, tak pernah null."""
+    if status == "cancelled" or not perlu_kirim:
+        return "tanpa"
+    if status in SELESAI_KIRIM or semua_terkirim:
+        return "selesai" if tanggal_kirim is not None else "tanpa"
+    if tanggal_kirim is None:
+        return "tanpa"
+    d = (tanggal_kirim - hari).days
+    return "telat" if d < 0 else "hari_ini" if d == 0 else "akan"
+
+
 # Urutan tampil tooltip Dok. (paket listpage-polish 03 §3): Penawaran · Proforma · Kwitansi · Surat jalan · Faktur.
 # Kunci = `kind` panel /documents (routers/dokumen.susun_dokumen).
 URUT_DOK_SO = ("quotation", "proforma", "receipt", "delivery", "invoice")
@@ -309,6 +324,7 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         hasil[str(sid)] = {"position_text": teks_pos, "position_muted": muted,
                            "ship_text": teks_kirim, "ship_style": gaya, "doc_count": len(dok), "documents": dok,
                            "kirim_hari": k_hari, "kirim_terbuka": k_buka,
+                           "kirim_keadaan": kirim_keadaan(r["status"], r["expected_ship_date"], bool(bk), semua, hari),
                            # "Sisa" (7 Okt): total - ringkasan_pesanan.tertutup (journal-derived, Law 1/16/29), tak negatif; draf/batal = null
                            "outstanding_amount": None if r["status"] in ("draft", "cancelled") else float(max(sisa, NOL)),
                            "fase_lokasi": fase, "fase_gudang_id": str(r["fase_gudang_id"]) if fase and r.get("fase_gudang_id") else None,

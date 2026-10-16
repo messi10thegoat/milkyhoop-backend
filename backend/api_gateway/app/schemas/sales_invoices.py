@@ -395,6 +395,8 @@ class InvoiceListItem(BaseModel):
     # jatuh_tempo_hari = due_date - hari ini (zona tenant), null bila tak terbuka. documents urut Faktur·Kwitansi·Nota kredit.
     jatuh_tempo_terbuka: bool = False
     jatuh_tempo_hari: Optional[int] = None
+    # 16 Okt 2026 (KEADAAN-LIST, faktur_daftar.jatuh_tempo_keadaan): telat | hari_ini | akan | selesai | tanpa; selalu terisi.
+    jatuh_tempo_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     documents: List[Dict[str, str]] = []
 
 

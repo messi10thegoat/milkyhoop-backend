@@ -1325,6 +1325,7 @@ async def list_invoices(
                     # LISTPAGE-DATA (16 Okt 2026): FE hanya memformat; is_overdue == terbuka AND hari < 0
                     "jatuh_tempo_terbuka": bool(row["jt_terbuka"]),
                     "jatuh_tempo_hari": _fd.jatuh_tempo_hari(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
+                    "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(row["status"], bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "documents": dok_faktur.get(row["id"], _fd.dokumen_faktur(0, 0)),
                 }
                 for row in rows
