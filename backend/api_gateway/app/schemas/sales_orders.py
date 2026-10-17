@@ -376,6 +376,12 @@ class SalesOrderDetail(BaseModel):
     fase_gudang_nama: Optional[str] = None
     fase_at: Optional[str] = None
     order_title_label: str = "Judul order"  # V390: label judul setelan tenant (mis. "Judul SPK")
+    # detailpage (17 Okt 2026): SAMA dengan baris daftar (so_posisi.fakta_daftar; zona tenant). FE hanya memformat.
+    position_text: Optional[str] = None
+    ship_text: Optional[str] = None
+    kirim_hari: Optional[int] = None
+    kirim_terbuka: bool = False
+    kirim_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str

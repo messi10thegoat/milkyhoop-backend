@@ -214,6 +214,8 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
     from ..services.proforma_terbayar import ringkasan_pesanan, terbayar_proforma
     from ..services.so_posisi import fakta_daftar
     from ..services.faktur_cetak import label_metode  # SATU format metode (riwayat faktur / Rekap / bundel)
+    from ..services.deposit_jenis import sql_jenis_efektif  # jenis efektif kwitansi (sumber label_deposit)
+    from ..services.proforma_atribusi import label_rekening  # format rekening SATU (pemilik=False -> '{bank} {nomor}')
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
@@ -265,14 +267,17 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
     # (himpunan yang sama dengan baris PEMBAYARAN Rekap; satu dokumen kwitansi per nomor).
     kw = {}
     for d in await conn.fetch(
-        """SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.payment_method, ba.bank_name
+        f"""SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.payment_method, ba.bank_name,
+                  ba.account_number, ba.account_holder_name, ba.account_name, coa.name AS coa_name,
+                  {sql_jenis_efektif("cd")} AS jenis
            FROM customer_deposits cd
            LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
            LEFT JOIN LATERAL (
-               SELECT b.bank_name FROM bank_accounts b
+               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
                WHERE b.tenant_id = cd.tenant_id AND (b.id = cd.bank_account_id OR b.coa_id = cd.account_id)
                ORDER BY (b.id = cd.bank_account_id) DESC, b.is_default DESC LIMIT 1
            ) ba ON true
+           LEFT JOIN chart_of_accounts coa ON coa.id = cd.account_id AND coa.tenant_id = cd.tenant_id
            WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
              AND (COALESCE(cd.sales_order_id, p.sales_order_id) = $2
                   OR cd.id IN (SELECT cda.deposit_id FROM customer_deposit_applications cda
@@ -282,20 +287,32 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
         kw[d["id"]] = {"kind": "receipt", "id": str(d["id"]), "number": d["deposit_number"],
                        "date": _tgl(d["deposit_date"]), "amount": _uang(d["amount"]),
                        "method": label_metode(d["payment_method"], d["bank_name"]),
+                       # detailpage (17 Okt 2026): jenis efektif (deposit_jenis, sumber label_deposit) + rekening '{bank} {nomor}'
+                       "receipt_kind": SUBTIPE_KWITANSI.get(d["jenis"], "uang_muka"),
+                       "account_label": label_rekening(d, pemilik=False),
                        "installment": None, "paper": "A5-landscape",
                        "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
     for p in await conn.fetch(
-        """SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, SUM(rpa.amount_applied) AS jumlah,
-                  (SELECT b.bank_name FROM bank_accounts b
-                   WHERE b.tenant_id = rp.tenant_id AND (b.id = rp.bank_account_id OR b.coa_id = rp.bank_account_id)
-                   ORDER BY (b.id = rp.bank_account_id) DESC, b.is_default DESC LIMIT 1) AS bank_name
-           FROM receive_payment_allocations rpa
-           JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
-           JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1 AND si.sales_order_id = $2
-           WHERE rpa.status = 'active' GROUP BY 1, 2, 3, 4, rp.tenant_id, rp.bank_account_id""", tid, sid):
+        """SELECT x.*, ba.bank_name, ba.account_number, ba.account_holder_name, ba.account_name, coa.name AS coa_name
+           FROM (
+               SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, SUM(rpa.amount_applied) AS jumlah,
+                      rp.tenant_id, rp.bank_account_id
+               FROM receive_payment_allocations rpa
+               JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
+               JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1 AND si.sales_order_id = $2
+               WHERE rpa.status = 'active' GROUP BY 1, 2, 3, 4, rp.tenant_id, rp.bank_account_id
+           ) x
+           LEFT JOIN LATERAL (
+               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
+               WHERE b.tenant_id = x.tenant_id AND (b.id = x.bank_account_id OR b.coa_id = x.bank_account_id)
+               ORDER BY (b.id = x.bank_account_id) DESC, b.is_default DESC LIMIT 1
+           ) ba ON true
+           LEFT JOIN chart_of_accounts coa ON coa.id = x.bank_account_id AND coa.tenant_id = x.tenant_id""", tid, sid):
         kw[p["id"]] = {"kind": "receipt", "id": str(p["id"]), "number": p["payment_number"],
                        "date": _tgl(p["payment_date"]), "amount": _uang(p["jumlah"]),
                        "method": label_metode(p["payment_method"], p["bank_name"]),
+                       "receipt_kind": "pelunasan",   # penerimaan atas faktur SO = pelunasan
+                       "account_label": label_rekening(p, pemilik=False),
                        "installment": None, "paper": "A5-landscape",
                        "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
     if kw:
@@ -354,6 +371,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
         for d in gr["docs"]:
             row, _ = await _baris_dokumen(conn, tid, d["kind"], UUID(d["id"])) if d["kind"] in JENIS else (None, None)
             d["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])
+            d["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"))
     kontak = await conn.fetchrow(
         """SELECT COALESCE(mobile_phone, phone, telepon) AS telepon, email FROM customers
            WHERE id = $1 AND tenant_id = $2""", so["customer_id"], tid) if so["customer_id"] else None
@@ -416,6 +434,22 @@ LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "
 # Dokumen DIBATALKAN tak boleh dibagikan -- jalur TUNGGAL == jalur MASSAL (W-20261015-BAGIKAN-BATAL, putusan MASTER; pola NetSuite:
 # record void tak dibagikan). Satu penentu dipakai _bagikan (share + pratinjau) dan bulk_dokumen._periksa_bagikan.
 STATUS_BATAL_BAGIKAN = frozenset({"void", "voided", "cancelled", "batal"})
+
+
+# deposit_jenis.JENIS -> receipt_kind kwitansi bundel. BUKAN subtype: pembaca ketat FE live (bacaDokumen.ts) menolak subtype
+# di luar dp/termin/penuh/cicilan untuk SEMUA kind -> panel dokumen gagal (MASTER/WORKSPACE 17 Okt 2026).
+SUBTIPE_KWITANSI = {"DP": "uang_muka", "PELUNASAN": "pelunasan"}
+
+
+def status_dokumen(kind: str, batal: bool, paid) -> str:
+    """detailpage (17 Okt 2026): kata status per dokumen bundel /documents, turunan penentu YANG SAMA (dokumen_batal -> medan batal,
+    medan paid panel). batal menang; proforma: lunas|terbit; faktur: lunas|diposting; kwitansi: diterima;
+    surat jalan & penawaran: terbit; nota kredit: diposting."""
+    if batal:
+        return "batal"
+    if kind in ("proforma", "invoice"):
+        return "lunas" if paid else ("terbit" if kind == "proforma" else "diposting")
+    return {"receipt": "diterima", "credit_note": "diposting"}.get(kind, "terbit")
 
 
 def dokumen_batal(kind: str, status) -> bool:

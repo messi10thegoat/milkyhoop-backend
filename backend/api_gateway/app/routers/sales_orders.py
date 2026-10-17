@@ -589,10 +589,14 @@ async def get_sales_order_detail(request: Request, order_id: str):
             from ..services.kode_order import muat_setelan as _setelan_kode
             _set_kode = await _setelan_kode(conn, ctx["tenant_id"])
             _boleh_kode = await boleh_ganti_kode(conn, ctx["tenant_id"], ctx.get("user_id"), _set_kode)
+            # detailpage (17 Okt 2026): Posisi + Kirim dari fungsi YANG SAMA dengan baris daftar (so_posisi.fakta_daftar)
+            _pos = (await fakta_daftar(conn, ctx["tenant_id"], [order], await tanggal_dokumen(conn, ctx["tenant_id"])))[str(order["id"])]
 
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
+                    position_text=_pos["position_text"], ship_text=_pos["ship_text"],
+                    kirim_hari=_pos["kirim_hari"], kirim_terbuka=_pos["kirim_terbuka"], kirim_keadaan=_pos["kirim_keadaan"],
                     order_code=order.get("order_code"),
                     order_title=order.get("order_title"),
                     order_code_source=order.get("order_code_source"),

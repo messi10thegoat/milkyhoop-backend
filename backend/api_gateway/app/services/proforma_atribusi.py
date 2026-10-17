@@ -95,13 +95,16 @@ ORDER BY cd.created_at, cd.id
 """
 
 
-def label_rekening(r) -> str | None:
+def label_rekening(r, pemilik: bool = True) -> str | None:
     """Rekening penerima dalam format blok bayar PDF: 'BCA 8295032185 a.n. <pemilik>' (pemilik lewat
     faktur_cetak.pemilik_rekening dari account_holder_name; nama akun TIDAK dicetak sebagai pemilik). Kas tanpa
-    nomor -> nama akun Kas & Bank; tanpa akun Kas & Bank -> nama CoA."""
+    nomor -> nama akun Kas & Bank; tanpa akun Kas & Bank -> nama CoA.
+    pemilik=False (detailpage 17 Okt 2026): '{bank} {nomor}' saja -- account_label kwitansi bundel /documents."""
     from . import faktur_cetak
     inti = " ".join(x.strip() for x in (r["bank_name"], r["account_number"]) if x and x.strip() and x.strip() != "-")
     if inti and r["account_number"] and r["account_number"].strip() not in ("", "-"):
+        if not pemilik:
+            return inti
         an = faktur_cetak.pemilik_rekening(r["bank_name"], None, r["account_holder_name"])
         return f"{inti} a.n. {an}" if an else inti
     return r["account_name"] or r["coa_name"]
