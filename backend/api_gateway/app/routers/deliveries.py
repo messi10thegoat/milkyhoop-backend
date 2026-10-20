@@ -489,6 +489,10 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         from ..services import pengiriman_daftar as _pg  # 20 Okt 2026: keadaan serah + aksi (aditif; fungsi SAMA dgn daftar)
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [row["id"]]) if _aktif else {}
         detail.update(_pg.serah_fakta(_aktif, row["status"], *_fs.get(row["id"], (None, None, 0))))
+        # paritas detail == baris daftar (21 Okt 2026): documents[]/doc_count dari kelompok_untuk (fungsi SAMA dgn daftar)
+        _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": row["id"], "invoice_id": row["invoice_id"], "sales_order_id": row["sales_order_id"]}])
+        detail["documents"] = _pg.documents_baris(_kel.get(row["id"], []))
+        detail["doc_count"] = len(detail["documents"])
     return detail
 
 
