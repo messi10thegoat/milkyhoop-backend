@@ -561,6 +561,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                 or ctx["tenant_id"]
             from ..services.kode_order import so_hasil_penawaran as _so_hasil
             _so = (await _so_hasil(conn, ctx["tenant_id"], [quote["id"]]))[str(quote["id"])]
+            from ..services.penawaran_daftar import dokumen_penawaran as _dok_pn_d
+            _dok = (await _dok_pn_d(conn, ctx["tenant_id"], {str(quote["id"]): _so.get("sales_order_id")}))[str(quote["id"])]
 
             return QuoteDetailResponse(
                 success=True,
@@ -642,6 +644,8 @@ async def get_quote_detail(request: Request, quote_id: str):
                     declined_reason=quote["declined_reason"],
                     is_expired=is_expired,
                     **_kead_detail(quote["status"], quote["expiry_date"], _hari_detail),
+                    aksi=aksi_penawaran(quote["status"], quote["expiry_date"], _hari_detail, quote["converted_to_id"]),
+                    documents=_dok, doc_count=len(_dok),
                     customer_phone=_telp or None,
                     business_name=_usaha,
                     **_so,

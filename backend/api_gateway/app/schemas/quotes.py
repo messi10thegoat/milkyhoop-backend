@@ -345,6 +345,10 @@ class QuoteDetail(BaseModel):
     kedaluwarsa_hari: Optional[int] = None
     kedaluwarsa_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     kedaluwarsa_teks: Optional[str] = None
+    # 21 Okt 2026 (paritas detail == baris daftar): pill aksi + documents[] dari fungsi YANG SAMA dgn baris
+    aksi: Optional[str] = None
+    doc_count: int = 0
+    documents: List[Dict[str, str]] = []
     customer_phone: Optional[str] = None  # Q5: kontak pelanggan (bundel SO /documents)
     business_name: Optional[str] = None   # Q5: nama usaha = kop dokumen
     # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
