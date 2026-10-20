@@ -29,6 +29,9 @@ SUBTIPE = {"DP": "dp", "TERMIN": "termin", "PELUNASAN": "penuh"}
 SUBTIPE_KWITANSI = {"DP": "uang_muka", "PELUNASAN": "pelunasan"}
 
 
+DRAF_SEBAGAI_DIRINYA = ("invoice", "proforma", "receipt", "credit_note")  # proforma: jangkar proforma BACKEND2 (21 Okt)
+
+
 def _uang(v) -> str:
     return f"{Decimal(str(v or 0)):.2f}"
 
@@ -80,9 +83,10 @@ async def proforma_so(conn, tid: str, so_id, so_batal: bool, ids: Optional[set] 
     return docs if ids is None else [d for d in docs if d["id"] in ids]
 
 
-async def kwitansi_uang_muka(conn, tid: str, ids: list, jumlah: Optional[dict] = None) -> dict:
+async def kwitansi_uang_muka(conn, tid: str, ids: list, jumlah: Optional[dict] = None, sendiri: bool = False) -> dict:
     """{deposit_id: dok} uang muka ber-jurnal tak void di `ids`. amount = cd.amount, atau jumlah[id] bila jangkar memberi
-    nominal sendiri (mis. faktur: bagian yang DITERAPKAN ke faktur itu)."""
+    nominal sendiri (mis. faktur: bagian yang DITERAPKAN ke faktur itu). sendiri=True (S2-UM b, jangkar uang muka): kwitansi
+    uang muka ITU SENDIRI apa pun statusnya (draf/void tampil sebagai dirinya; status lewat rampungkan)."""
     from .faktur_cetak import label_metode  # SATU format metode (riwayat faktur / Rekap / bundel)
     from .deposit_jenis import sql_jenis_efektif  # jenis efektif kwitansi (sumber label_deposit)
     from .proforma_atribusi import label_rekening  # format rekening SATU (pemilik=False -> '{bank} {nomor}')
@@ -101,7 +105,8 @@ async def kwitansi_uang_muka(conn, tid: str, ids: list, jumlah: Optional[dict] =
                ORDER BY (b.id = cd.bank_account_id) DESC, b.is_default DESC LIMIT 1
            ) ba ON true
            LEFT JOIN chart_of_accounts coa ON coa.id = cd.account_id AND coa.tenant_id = cd.tenant_id
-           WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL AND cd.id = ANY($2::uuid[])""",
+           WHERE cd.tenant_id = $1 AND cd.id = ANY($2::uuid[])"""
+        + ("" if sendiri else " AND cd.status <> 'void' AND cd.journal_id IS NOT NULL"),
             tid, list(ids)):
         out[d["id"]] = {"kind": "receipt", "id": str(d["id"]), "number": d["deposit_number"],
                         "date": _tgl(d["deposit_date"]),
@@ -240,8 +245,8 @@ async def rampungkan(conn, tid: str, kelompok: list) -> list:
         for d in gr["docs"]:
             row, _ = await _baris_dokumen(conn, tid, d["kind"], UUID(d["id"])) if d["kind"] in JENIS else (None, None)
             d["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])
-            # draf HANYA untuk jangkar faktur & proforma (memuat dirinya walau draf). Rekap SO draf tetap "terbit" (bundel SO
-            # tak berubah oleh ekstraksi -- harness SO lama == baru); bundel SO tak pernah memuat proforma draf; kind lain tak masuk dalam draf.
+            # draf HANYA untuk dokumen yang tampil sebagai DIRINYA (jangkar): faktur, proforma (BACKEND2), kwitansi uang muka, NK (S2 b).
+            # Rekap SO draf tetap "terbit" (bundel SO tak berubah -- harness SO lama == baru); bundel SO tak memuat kwitansi/NK draf.
             d["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"),
-                                         draf=d["kind"] in ("invoice", "proforma") and bool(row) and str(row["status"] or "").lower() == "draft")
+                                         draf=d["kind"] in DRAF_SEBAGAI_DIRINYA and bool(row) and str(row["status"] or "").lower() == "draft")
     return kelompok

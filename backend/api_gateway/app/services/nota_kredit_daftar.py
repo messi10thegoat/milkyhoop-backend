@@ -73,3 +73,54 @@ def keadaan_cocok_sisa(keadaan: str, total, sisa) -> bool:
     if keadaan == "utuh":
         return s == a and a > 0
     return 0 < s < a
+
+
+async def kelompok_untuk(conn, tid: str, nota: list) -> dict:
+    """{credit_note_id: [kelompok]} bundel NOTA KREDIT (S2-NK b, 20 Okt 2026), urutan = bundel SO/faktur: rekap · pnw · kw · ki · nk.
+    rekap/pnw = SO lewat faktur asal; kw = uang muka KRD yang dibuat dari kelebihan NK ini (bila terbit); ki = surat jalan + faktur asal;
+    nk = nota kredit ITU SENDIRI (apa pun statusnya). Pembentuk dokumen HANYA dari services/dokumen_bundel; di sini hanya PEMILIHAN id.
+    Dipakai bundel /credit-notes/{id}/documents DAN documents[] daftar."""
+    from . import dokumen_bundel as DB
+    from .uang_muka_daftar import _urut
+    ids = [n["id"] for n in nota]
+    if not ids:
+        return {}
+    rows = {r["id"]: r for r in await conn.fetch(
+        """SELECT cn.id, cn.original_invoice_id, cn.created_deposit_id, si.sales_order_id AS so_id FROM credit_notes cn
+           LEFT JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
+           WHERE cn.tenant_id = $1 AND cn.id = ANY($2::uuid[])""", tid, ids)}
+    so_ids = sorted({r["so_id"] for r in rows.values() if r["so_id"]})
+    quote = {r["id"]: r["quote_id"] for r in await conn.fetch(
+        "SELECT id, quote_id FROM sales_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, so_ids)} if so_ids else {}
+    inv = sorted({r["original_invoice_id"] for r in rows.values() if r["original_invoice_id"]})
+    fak = {d["id"]: d for d in await DB.faktur(conn, tid, inv)}
+    sj_per_inv = {}
+    if inv:
+        for r in await conn.fetch("SELECT id, invoice_id FROM invoice_fulfillments WHERE tenant_id = $1 AND invoice_id = ANY($2::uuid[])",
+                                  tid, inv):
+            sj_per_inv.setdefault(r["invoice_id"], []).append(r["id"])
+    sj = {d["id"]: d for d in await DB.surat_jalan(conn, tid, [i for v in sj_per_inv.values() for i in v])}
+    kw = await DB.kwitansi_uang_muka(conn, tid, [r["created_deposit_id"] for r in rows.values() if r["created_deposit_id"]])
+    sendiri = {d["id"]: d for d in await DB.nota_kredit(conn, tid, ids)}
+    pnw_cache, hasil = {}, {}
+    for cid in ids:
+        r, kel = rows.get(cid), []
+        if r and r["so_id"]:
+            kel.append({"key": "rekap", "label": "Rekap", "docs": [DB.rekap(r["so_id"])]})
+            q = quote.get(r["so_id"])
+            if q:
+                if q not in pnw_cache:
+                    pnw_cache[q] = await DB.penawaran(conn, tid, q)
+                if pnw_cache[q]:
+                    kel.append({"key": "pnw", "label": "Penawaran", "docs": [dict(pnw_cache[q])]})
+        if r and r["created_deposit_id"] in kw:
+            kel.append({"key": "kw", "label": "Pembayaran", "planned": None, "docs": [kw[r["created_deposit_id"]]]})
+        i = r["original_invoice_id"] if r else None
+        ki = _urut([sj[str(x)] for x in sj_per_inv.get(i, []) if str(x) in sj]) if i else []
+        ki += [fak[str(i)]] if i and str(i) in fak else []
+        if ki:
+            kel.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
+        if str(cid) in sendiri:
+            kel.append({"key": "nk", "label": "Nota Kredit", "docs": [sendiri[str(cid)]]})
+        hasil[cid] = kel
+    return hasil

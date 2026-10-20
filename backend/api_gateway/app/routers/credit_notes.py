@@ -545,6 +545,13 @@ async def list_credit_notes(
                 for row in rows
             ]
 
+            # S2-NK b: documents[]/doc_count = bundel /credit-notes/{id}/documents tanpa rekap (SATU definisi, batch per halaman)
+            from ..services.uang_muka_daftar import documents_baris as _documents_baris
+            _kel = await _nkd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"]} for r in rows])
+            for it, row in zip(items, rows):
+                it["documents"] = _documents_baris(_kel.get(row["id"], []))
+                it["doc_count"] = len(it["documents"])
+
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "credit_note", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}

@@ -554,6 +554,12 @@ async def list_customer_deposits(
                 for row in rows
             ]
 
+            # S2-UM b: documents[]/doc_count = bundel /customer-deposits/{id}/documents tanpa rekap (SATU definisi, batch per halaman)
+            _kel = await _umd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"]} for r in rows])
+            for it, row in zip(items, rows):
+                it["documents"] = _umd.documents_baris(_kel.get(row["id"], []))
+                it["doc_count"] = len(it["documents"])
+
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", items)
             return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}

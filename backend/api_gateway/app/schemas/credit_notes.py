@@ -222,6 +222,9 @@ class CreditNoteListItem(BaseModel):
     aksi: Optional[str] = None  # 'belum_terpakai' | null
     sisa_keadaan: Optional[str] = None  # draf|utuh|sebagian|terpakai|dikembalikan|sebagian_dikembalikan|batal
     status_text: Optional[str] = None  # label layar (teks_galat 'cn'; bertaut posted -> Terpakai)
+    # S2 b: dokumen bundel tanpa rekap (kelompok_untuk; SATU definisi dengan /{id}/documents)
+    documents: List[Dict[str, str]] = []
+    doc_count: int = 0
     reason: str
     reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
     created_at: str

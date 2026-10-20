@@ -70,3 +70,76 @@ def keadaan_cocok_sisa(keadaan: str, amount, sisa) -> bool:
     if keadaan in ("terpakai", "dikembalikan"):
         return s == 0
     return 0 < s < a  # sebagian / sebagian_dikembalikan
+
+
+def _urut(ds: list) -> list:
+    return sorted(ds, key=lambda d: (d["date"] or "", d["number"] or ""))  # = ORDER BY tanggal, nomor pembentuk
+
+
+async def kelompok_untuk(conn, tid: str, uang_muka: list) -> dict:
+    """{deposit_id: [kelompok]} bundel UANG MUKA (S2-UM b, 20 Okt 2026), urutan = bundel SO/faktur: rekap · pnw · pro · kw · ki · nk.
+    rekap/pnw/pro = SO induk (sales_order_id atau lewat proforma) + proforma ASAL uang muka ini; kw = kwitansi uang muka ITU SENDIRI
+    (apa pun statusnya); ki = surat jalan + faktur tempat diterapkan (aplikasi aktif); nk = nota kredit asal (KRD). Pembentuk dokumen
+    HANYA dari services/dokumen_bundel; di sini hanya PEMILIHAN id. Dipakai bundel /customer-deposits/{id}/documents DAN documents[] daftar."""
+    from . import dokumen_bundel as DB
+    ids = [u["id"] for u in uang_muka]
+    if not ids:
+        return {}
+    rows = {r["id"]: r for r in await conn.fetch(
+        """SELECT cd.id, cd.proforma_id, COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id FROM customer_deposits cd
+           LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
+           WHERE cd.tenant_id = $1 AND cd.id = ANY($2::uuid[])""", tid, ids)}
+    so_ids = sorted({r["so_id"] for r in rows.values() if r["so_id"]})
+    so = {r["id"]: r for r in await conn.fetch(
+        "SELECT id, status, quote_id FROM sales_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, so_ids)} if so_ids else {}
+    apl = {}
+    for r in await conn.fetch(
+            """SELECT deposit_id, invoice_id FROM customer_deposit_applications
+               WHERE tenant_id = $1 AND deposit_id = ANY($2::uuid[]) AND status = 'active'""", tid, ids):
+        if r["invoice_id"] not in apl.setdefault(r["deposit_id"], []):
+            apl[r["deposit_id"]].append(r["invoice_id"])
+    inv = sorted({i for v in apl.values() for i in v})
+    fak = {d["id"]: d for d in await DB.faktur(conn, tid, inv)}
+    sj_per_inv = {}
+    if inv:
+        for r in await conn.fetch("SELECT id, invoice_id FROM invoice_fulfillments WHERE tenant_id = $1 AND invoice_id = ANY($2::uuid[])",
+                                  tid, inv):
+            sj_per_inv.setdefault(r["invoice_id"], []).append(r["id"])
+    sj = {d["id"]: d for d in await DB.surat_jalan(conn, tid, [i for v in sj_per_inv.values() for i in v])}
+    nk_asal = {r["created_deposit_id"]: r["id"] for r in await conn.fetch(
+        """SELECT id, created_deposit_id FROM credit_notes WHERE tenant_id = $1 AND created_deposit_id = ANY($2::uuid[])
+           AND status NOT IN ('draft', 'void')""", tid, ids)}
+    nk = {d["id"]: d for d in await DB.nota_kredit(conn, tid, list(nk_asal.values()))}
+    kw = await DB.kwitansi_uang_muka(conn, tid, ids, sendiri=True)
+    pnw_cache, hasil = {}, {}
+    for did in ids:
+        r, kel = rows.get(did), []
+        s = so.get(r["so_id"]) if r else None
+        if s:
+            kel.append({"key": "rekap", "label": "Rekap", "docs": [DB.rekap(s["id"])]})
+            if s["quote_id"]:
+                if s["quote_id"] not in pnw_cache:
+                    pnw_cache[s["quote_id"]] = await DB.penawaran(conn, tid, s["quote_id"])
+                if pnw_cache[s["quote_id"]]:
+                    kel.append({"key": "pnw", "label": "Penawaran", "docs": [dict(pnw_cache[s["quote_id"]])]})
+            if r["proforma_id"]:
+                pro = await DB.proforma_so(conn, tid, s["id"], s["status"] == "cancelled", {str(r["proforma_id"])})
+                if pro:
+                    kel.append({"key": "pro", "label": "Tagihan", "docs": pro})
+        if did in kw:
+            kel.append({"key": "kw", "label": "Pembayaran", "planned": None, "docs": [kw[did]]})
+        invs = apl.get(did, [])
+        ki = _urut([sj[str(x)] for i in invs for x in sj_per_inv.get(i, []) if str(x) in sj])
+        ki += _urut([fak[str(i)] for i in invs if str(i) in fak])
+        if ki:
+            kel.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
+        if did in nk_asal and str(nk_asal[did]) in nk:
+            kel.append({"key": "nk", "label": "Nota Kredit", "docs": [nk[str(nk_asal[did])]]})
+        hasil[did] = kel
+    return hasil
+
+
+def documents_baris(kelompok: list) -> list:
+    """documents[{type}] baris daftar = dokumen bundel TANPA rekap -- SATU definisi (penerimaan_daftar.documents_baris)."""
+    from .penerimaan_daftar import documents_baris as _db
+    return _db(kelompok)

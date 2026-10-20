@@ -562,6 +562,99 @@ async def dokumen_penerimaan(request: Request, payment_id: str):
         return await susun_dokumen_penerimaan(conn, ctx, _uuid(payment_id))
 
 
+async def susun_dokumen_uang_muka(conn, ctx: dict, deposit_id: UUID) -> dict:
+    """S2-UM b (20 Okt 2026, MASTER): bundel panel berjangkar UANG MUKA, skema dokumen SAMA (pembentuk bersama services/dokumen_bundel;
+    PEMILIHAN id di services/uang_muka_daftar.kelompok_untuk -- fungsi YANG SAMA dengan documents[] daftar). Jangkar = kwitansi uang muka
+    ITU SENDIRI (selalu, juga draf/void). Kepala `anchor`: position_text = status_text; total = nominal; balance = sisa JURNAL
+    (compute_deposit_remaining_many; draf = null); paid = total - balance."""
+    from ..services import dokumen_bundel as DB
+    from ..services import uang_muka_daftar as UMD
+    from ..services.status_uang_muka import status_detail_dp
+    from .customer_deposits import compute_deposit_remaining_many
+    tid = ctx["tenant_id"]
+    d = await conn.fetchrow(
+        """SELECT cd.id, cd.deposit_number, cd.customer_name, cd.customer_id, cd.status, cd.amount, cd.amount_applied,
+                  cd.amount_refunded, COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id
+           FROM customer_deposits cd LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
+           WHERE cd.id = $1 AND cd.tenant_id = $2""", deposit_id, tid)
+    if not d:
+        raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
+    kelompok = (await UMD.kelompok_untuk(conn, tid, [dict(d)]))[d["id"]]
+    await DB.rampungkan(conn, tid, kelompok)
+    sisa = None if d["status"] == "draft" else (await compute_deposit_remaining_many(conn, tid, [d["id"]]))[str(d["id"])]
+    return await _kepala_jangkar(conn, tid, kelompok, "kw", "receipt", d["id"], d["deposit_number"], d["customer_name"],
+                                 d["customer_id"], d["so_id"],
+                                 UMD.status_text_um(status_detail_dp(d["status"], d["amount_applied"], d["amount_refunded"])),
+                                 d["amount"], sisa)
+
+
+async def susun_dokumen_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
+    """S2-NK b (20 Okt 2026, MASTER): bundel panel berjangkar NOTA KREDIT (pola uang muka). Jangkar = NK ITU SENDIRI (selalu, juga
+    draf/void). Kepala `anchor`: position_text = status_text NK (bertaut posted = Terpakai); total = total_amount; balance = sisa
+    JURNAL NK (nota_kredit_daftar; draf = null); paid = total - balance."""
+    from ..services import dokumen_bundel as DB
+    from ..services import nota_kredit_daftar as NKD
+    from .credit_notes import status_detail_nk
+    tid = ctx["tenant_id"]
+    c = await conn.fetchrow(
+        """SELECT cn.id, cn.credit_note_number, cn.customer_name, cn.customer_id, cn.status, cn.total_amount, cn.amount_applied,
+                  cn.amount_refunded, cn.original_invoice_id, si.sales_order_id AS so_id
+           FROM credit_notes cn LEFT JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
+           WHERE cn.id = $1 AND cn.tenant_id = $2""", credit_note_id, tid)
+    if not c:
+        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
+    kelompok = (await NKD.kelompok_untuk(conn, tid, [dict(c)]))[c["id"]]
+    await DB.rampungkan(conn, tid, kelompok)
+    sisa = None if c["status"] == "draft" else (await NKD.sisa_nk_jurnal_many(conn, tid, [c["id"]]))[str(c["id"])]
+    return await _kepala_jangkar(conn, tid, kelompok, "nk", "credit_note", c["id"], c["credit_note_number"], c["customer_name"],
+                                 c["customer_id"], c["so_id"],
+                                 NKD.status_text_nk(c["status"], status_detail_nk(c["status"], c["amount_applied"], c["amount_refunded"]),
+                                                    c["original_invoice_id"]),
+                                 c["total_amount"], sisa)
+
+
+async def _kepala_jangkar(conn, tid, kelompok, grup, kind, did, nomor, pelanggan, customer_id, so_id, posisi, total, sisa) -> dict:
+    """Kepala `anchor` + default (dokumen jangkar di kelompok `grup`) untuk bundel UM/NK (S2 b). sisa None (draf) -> paid/balance null."""
+    from ..services import dokumen_bundel as DB
+    so = await conn.fetchrow("SELECT id, order_number, order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                             so_id, tid) if so_id else None
+    kontak = await _kontak(conn, tid, customer_id)
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    gi = next((i for i, g in enumerate(kelompok) if g["key"] == grup), None)
+    di = next((k for k, d in enumerate(kelompok[gi]["docs"]) if d["id"] == str(did)), None) if gi is not None else None
+    return {
+        "anchor": {"kind": kind, "id": str(did), "number": nomor, "customer": pelanggan or "", "position_text": posisi,
+                   "total": DB._uang(total), "paid": None if sisa is None else DB._uang(Decimal(str(total or 0)) - sisa),
+                   "balance": None if sisa is None else DB._uang(sisa),
+                   "sales_order_id": str(so["id"]) if so else None, "sales_order_number": so["order_number"] if so else None,
+                   "order_code": so["order_code"] if so else None, "order_title": so["order_title"] if so else None,
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        # dibuka pertama = dokumen jangkar sendiri
+        "default": {"group": grup, "index": di} if di is not None else None,
+        "groups": kelompok,
+    }
+
+
+@router.get("/customer-deposits/{deposit_id}/documents")
+async def dokumen_uang_muka(request: Request, deposit_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_uang_muka(conn, ctx, _uuid(deposit_id))
+
+
+@router.get("/credit-notes/{credit_note_id}/documents")
+async def dokumen_nota_kredit(request: Request, credit_note_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_nota_kredit(conn, ctx, _uuid(credit_note_id))
+
+
 @router.get("/sales-orders/{order_id}/documents")
 async def dokumen_pesanan(request: Request, order_id: str, sertakan: Optional[str] = Query(None),
                           bentuk: Optional[str] = Query(None)):
