@@ -218,6 +218,10 @@ class CreditNoteListItem(BaseModel):
     customer_credit: Optional[NkSaldoKredit] = None  # null = NK tanpa saldo kredit KRD
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
+    # S2-NK (20 Okt 2026, services/nota_kredit_daftar): server menghitung, FE memformat
+    aksi: Optional[str] = None  # 'belum_terpakai' | null
+    sisa_keadaan: Optional[str] = None  # draf|utuh|sebagian|terpakai|dikembalikan|sebagian_dikembalikan|batal
+    status_text: Optional[str] = None  # label layar (teks_galat 'cn'; bertaut posted -> Terpakai)
     reason: str
     reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
     created_at: str
@@ -259,6 +263,10 @@ class CreditNoteDetail(BaseModel):
     # Status & dates
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
+    # S2-NK (20 Okt 2026, services/nota_kredit_daftar): server menghitung, FE memformat
+    aksi: Optional[str] = None  # 'belum_terpakai' | null
+    sisa_keadaan: Optional[str] = None  # draf|utuh|sebagian|terpakai|dikembalikan|sebagian_dikembalikan|batal
+    status_text: Optional[str] = None  # label layar (teks_galat 'cn'; bertaut posted -> Terpakai)
     credit_note_date: str
     reason: str
     reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
@@ -307,6 +315,9 @@ class CreditNoteListResponse(BaseModel):
     items: List[CreditNoteListItem]
     total: int
     has_more: bool
+    # S2-NK: ?with_totals=true -> atas SEMUA hasil filter: Σ nominal (bukan void), Σ sisa jurnal
+    sum_total: Optional[float] = None
+    sum_sisa: Optional[float] = None
 
 
 class CreditNoteSummaryResponse(BaseModel):

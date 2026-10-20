@@ -291,6 +291,9 @@ async def get_invoice_remaining_from_journal(conn, tenant_id: str, invoice_id) -
 # =============================================================================
 
 
+from ..services import nota_kredit_daftar as _nkd  # noqa: E402  S2-NK (20 Okt 2026)
+
+
 # status_detail NK (MASTER+WORKSPACE 5 Okt): TURUNAN TAMPILAN, pola uang muka (status_detail_dp). Status tersimpan (trigger
 # update_credit_note_status) dan SEMUA penjaga (status in posted/partial, remaining) TIDAK disentuh. 'partially_refunded' =
 # ada refund, belum diterapkan ke faktur, sisa > 0; 'refunded' = habis karena refund saja. Kasus campuran (diterapkan DAN
@@ -376,6 +379,19 @@ def status_detail_nk(status, amount_applied, amount_refunded) -> str:
     return status
 
 
+def _syarat_cari_nk(search: str, mulai: int) -> tuple:
+    """(sql, params) ?search= nota kredit -- SATU predikat untuk daftar DAN /summary (S2-NK). Tiap kata wajib cocok."""
+    from ..services.kode_order import sql_cari_so_induk
+    conds, params, i = [], [], mulai
+    for word in search.strip().split():
+        conds.append(
+            f"(credit_note_number ILIKE ${i} OR customer_name ILIKE ${i} OR search_text ILIKE ${i} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = credit_notes.tenant_id AND c.search_text ILIKE ${i}) OR " + sql_cari_so_induk("credit_note", "credit_notes", "$1", f"${i}") + ")"
+        )
+        params.append(f"%{word}%")
+        i += 1
+    return (conds[0] if len(conds) == 1 else f"({' AND '.join(conds)})"), params
+
+
 @router.get("", response_model=CreditNoteListResponse)
 async def list_credit_notes(
     request: Request,
@@ -394,6 +410,9 @@ async def list_credit_notes(
         "credit_note_date", "credit_note_number", "total_amount", "created_at"
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    # S2-NK (20 Okt 2026): pill AKSI (predikat SAMA dengan /summary) + total atas SEMUA hasil filter (opt-in)
+    aksi: Optional[Literal["belum_terpakai"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
     """List credit notes with filters and pagination."""
     try:
@@ -416,24 +435,11 @@ async def list_credit_notes(
                 params.append(customer_id)  # BATCH1: credit_notes.customer_id is VARCHAR -> bind str, not UUID(...)
                 param_idx += 1
 
-            if search:
-                from ..services.kode_order import sql_cari_so_induk
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(credit_note_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = credit_notes.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("credit_note", "credit_notes", "$1", f"${param_idx}") + ")"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(credit_note_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = credit_notes.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("credit_note", "credit_notes", "$1", f"${param_idx}") + ")"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+            if isinstance(search, str) and search.strip():
+                _c, _p = _syarat_cari_nk(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
 
             if date_from:
                 conditions.append(f"credit_note_date >= ${param_idx}")
@@ -444,6 +450,9 @@ async def list_credit_notes(
                 conditions.append(f"credit_note_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
+
+            if aksi in _nkd.AKSI_NK:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
+                conditions.append(_nkd.sql_aksi(aksi))
 
             where_clause = " AND ".join(conditions)
 
@@ -460,6 +469,13 @@ async def list_credit_notes(
             # Count total
             count_query = f"SELECT COUNT(*) FROM credit_notes WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True`
+                t = await conn.fetchrow(
+                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                               COALESCE(SUM({_nkd.sql_sisa_nk()}), 0) AS sum_sisa
+                        FROM credit_notes WHERE {where_clause}""", *params)
+                jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}
 
             # Get items
             query = f"""
@@ -476,6 +492,7 @@ async def list_credit_notes(
 
             rows = await conn.fetch(query, *params)
             _kredit = await saldo_kredit_nk_many(conn, ctx["tenant_id"], [r.get("created_deposit_id") for r in rows])
+            _sisa_j = await _nkd.sisa_nk_jurnal_many(conn, ctx["tenant_id"], [r["id"] for r in rows])  # S2-NK: sisa jurnal
 
             # U9: SO induk lewat faktur asal (NK tak punya sales_order_id) -- satu kueri per halaman, tenant eksplisit
             _inv_ids = [r["original_invoice_id"] for r in rows if r["original_invoice_id"]]
@@ -518,13 +535,19 @@ async def list_credit_notes(
                     "sales_order_number": (_so_of.get(row["original_invoice_id"]) or (None, None))[1],
                     "voided_at": row["voided_at"].isoformat() if row["voided_at"] else None,
                     "void_reason": row["voided_reason"],
+                    # S2-NK: server menghitung, FE memformat
+                    "aksi": _nkd.aksi_nk(row["status"], row["original_invoice_id"], _sisa_j.get(str(row["id"]))),
+                    "sisa_keadaan": _nkd.keadaan_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
+                                                    row["original_invoice_id"]),
+                    "status_text": _nkd.status_text_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
+                                                       row["original_invoice_id"]),
                 }
                 for row in rows
             ]
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "credit_note", items)
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
@@ -539,13 +562,18 @@ async def list_credit_notes(
 
 
 @router.get("/summary", response_model=CreditNoteSummaryResponse)
-async def get_credit_notes_summary(request: Request):
+async def get_credit_notes_summary(request: Request, search: Optional[str] = Query(None)):
     """Get summary statistics for credit notes."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            # S2-NK: ?search= SAMA dengan daftar (_syarat_cari_nk), lewat himpunan id agar alias `cn` di bawah tak berubah
+            _cari_sql, _cari_par = "", []
+            if isinstance(search, str) and search.strip():
+                _c, _cari_par = _syarat_cari_nk(search, 2)
+                _cari_sql = f" AND cn.id IN (SELECT credit_notes.id FROM credit_notes WHERE credit_notes.tenant_id = $1 AND {_c})"
             # Law 16: Counts from table, amounts from journal (truth)
             query = f"""
                 WITH cn_journal AS (
@@ -574,12 +602,19 @@ async def get_credit_notes_summary(request: Request):
                         FILTER (WHERE cn.status IN ('posted', 'partial') AND cn.original_invoice_id IS NULL), 0) as available_balance
                 FROM credit_notes cn
                 LEFT JOIN cn_journal cnj ON cnj.id = cn.id
-                WHERE cn.tenant_id = $1 AND cn.status != 'void'
+                WHERE cn.tenant_id = $1 AND cn.status != 'void'{_cari_sql}
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], *_cari_par)
+            # S2-NK: pill AKSI -- predikat SAMA dengan ?aksi= daftar (_nkd.sql_aksi), dibatasi ?search= yang sama
+            _w = f" AND {_c}" if _cari_par else ""
+            aksi_row = await conn.fetchrow(
+                f"""SELECT COUNT(*) FILTER (WHERE {_nkd.sql_aksi(_nkd.AKSI_BELUM_TERPAKAI)}) AS n,
+                           COALESCE(SUM({_nkd.sql_sisa_nk()}) FILTER (WHERE {_nkd.sql_aksi(_nkd.AKSI_BELUM_TERPAKAI)}), 0) AS v
+                    FROM credit_notes WHERE credit_notes.tenant_id = $1{_w}""", ctx["tenant_id"], *_cari_par)
             # U9: hitungan void TERPISAH -- total/nilai di atas tetap TANPA void (arti lama tak berubah)
             void_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM credit_notes WHERE tenant_id = $1 AND status = 'void'", ctx["tenant_id"])
+                "SELECT COUNT(*) FROM credit_notes WHERE tenant_id = $1 AND status = 'void'"
+                + (f" AND {_c}" if _cari_par else ""), ctx["tenant_id"], *_cari_par)
 
             return {
                 "success": True,
@@ -596,6 +631,8 @@ async def get_credit_notes_summary(request: Request):
                     "total_applied": float(row["total_applied"] or 0),
                     "total_refunded": float(row["total_refunded"] or 0),
                     "available_balance": float(row["available_balance"] or 0),
+                    f"{_nkd.AKSI_BELUM_TERPAKAI}_count": aksi_row["n"] or 0,
+                    f"{_nkd.AKSI_BELUM_TERPAKAI}_value": float(aksi_row["v"] or 0),
                 },
             }
 
@@ -722,6 +759,13 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                         str(cn["created_deposit_id"])) if cn["created_deposit_id"] else None,
                     "status": cn["status"],
                     "status_detail": status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
+                    # S2-NK: fungsi YANG SAMA dengan baris daftar (diuji berpasangan)
+                    "aksi": _nkd.aksi_nk(cn["status"], cn["original_invoice_id"],
+                                         (await _nkd.sisa_nk_jurnal_many(conn, ctx["tenant_id"], [cn["id"]])).get(str(cn["id"]))),
+                    "sisa_keadaan": _nkd.keadaan_nk(cn["status"], status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
+                                                    cn["original_invoice_id"]),
+                    "status_text": _nkd.status_text_nk(cn["status"], status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
+                                                       cn["original_invoice_id"]),
                     "credit_note_date": cn["credit_note_date"].isoformat(),
                     "reason": cn["reason"],
                     "reason_label": LABEL_ALASAN_NK.get(cn["reason"], cn["reason"]),

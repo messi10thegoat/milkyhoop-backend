@@ -13,8 +13,10 @@ from app.routers import credit_notes as C
 
 
 MEDAN = {"total", "draft_count", "posted_count", "partial_count", "applied_count", "total_value", "total_applied",
-         "total_refunded", "available_balance", "void_count", "partially_refunded_count", "refunded_count"}
-# void_count: U9 (kueri TERPISAH); partially_refunded_count/refunded_count: U11 (status_detail turunan, 5 Okt)
+         "total_refunded", "available_balance", "void_count", "partially_refunded_count", "refunded_count",
+         "belum_terpakai_count", "belum_terpakai_value"}
+# void_count: U9 (kueri TERPISAH); partially_refunded_count/refunded_count: U11 (status_detail turunan, 5 Okt);
+# belum_terpakai_*: S2-NK 20 Okt (pill aksi; kueri TERPISAH, predikat sama dengan ?aksi= daftar)
 
 
 def test_summary_terdaftar_sebelum_rute_parameter():
@@ -41,6 +43,8 @@ class _Konn:
         self.baris, self.args, self.void, self.args_void = baris, None, void, None
 
     async def fetchrow(self, sql, *a):
+        if "AS n," in sql:  # S2-NK: kueri hitungan pill belum_terpakai (terpisah)
+            return {"n": 0, "v": 0}
         self.args = a
         return self.baris
 
