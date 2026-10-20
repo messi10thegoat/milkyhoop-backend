@@ -77,6 +77,29 @@ router = APIRouter()
 # Account codes (resolved dynamically via Law 27)
 AR_ACCOUNT_CODE = "1-10400"  # Piutang Usaha
 SALES_RETURN_ACCOUNT_CODE = "4-10300"  # Retur Penjualan
+SALES_DISCOUNT_ACCOUNT_CODE = "4-10200"  # Diskon Penjualan
+# PUTUSAN PEMILIK LANGSUNG 21 Okt 2026 (sesi BACKEND): NK POTONGAN HARGA (discount + pricing_error) dibukukan ke 4-10200
+# Diskon Penjualan dan DIBLOK bila melebihi sisa faktur; retur/rusak/lainnya tetap 4-10300 dan kelebihannya tetap jadi
+# kredit pelanggan (putusan 30 Sep). Pola NetSuite/SAP: potongan harga != retur barang.
+ALASAN_POTONGAN = frozenset({"discount", "pricing_error"})
+
+
+def kode_akun_nk(reason) -> str:
+    """Akun sisi Dr NK (pendapatan berkurang) per alasan -- SATU penentu untuk posting."""
+    return SALES_DISCOUNT_ACCOUNT_CODE if reason in ALASAN_POTONGAN else SALES_RETURN_ACCOUNT_CODE
+
+
+async def pastikan_potongan_muat_sisa(conn, tenant_id: str, faktur, total_cn, reason) -> None:
+    """NK potongan (ALASAN_POTONGAN) bertaut faktur: nilai <= SISA faktur (compute_ar_outstanding, Law 1/16) -> selainnya 400.
+    Alasan lain tak dibatasi di sini (batas nilai faktur - NK lain tetap lewat pastikan_cn_muat_faktur)."""
+    if reason not in ALASAN_POTONGAN or faktur is None:
+        return
+    sisa = await _sisa_faktur_nk(conn, tenant_id, faktur["id"])
+    if sisa is None:  # faktur draf/void: penjaga faktur yang lain sudah menolak
+        return
+    if Decimal(str(total_cn)) > Decimal(str(sisa)):
+        raise HTTPException(status_code=400, detail=(
+            f"Melebihi sisa faktur {tg.rp(sisa)}: potongan {tg.rp(total_cn)} atas {faktur.get('invoice_number') or 'faktur'}."))
 # Fase D2-wrap C4: VAT keluaran (PPN Output) di credit note (retur penjualan)
 # di-resolve via role VAT_OUTPUT dengan PKP guard. Const legacy
 # TAX_PAYABLE_ACCOUNT_CODE = "2-10300" dihapus karena 2-10300 sekarang generic
@@ -910,7 +933,7 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
             "lines": lebih})
 
 
-ALASAN_WAJIB_BARIS = frozenset({"discount", "pricing_error"})
+ALASAN_WAJIB_BARIS = ALASAN_POTONGAN  # pagar (c): potongan wajib berbaris eksplisit
 
 
 def tolak_potongan_tanpa_baris(reason, items) -> None:
@@ -1111,6 +1134,10 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
                 await pastikan_cn_muat_faktur(conn, tid, faktur, doc["total_amount"])
             except HTTPException as e:
                 blocks.append({"code": "CN_EXCEEDS_INVOICE", "message": _pesan_galat(e)})
+            try:
+                await pastikan_potongan_muat_sisa(conn, tid, faktur, doc["total_amount"], body.reason)
+            except HTTPException as e:
+                blocks.append({"code": "CN_MELEBIHI_SISA", "message": _pesan_galat(e)})
     if faktur is not None:
         try:
             await periksa_bisa_dinotakan(conn, tid, faktur["id"], [i.model_dump() for i in body.items])
@@ -1802,6 +1829,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
         )
         await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"], kecuali_cn=credit_note_id)
+        await pastikan_potongan_muat_sisa(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"], cn["reason"])
         await periksa_bisa_dinotakan(
             conn, ctx["tenant_id"], faktur_asal["id"],
             [dict(r) for r in await conn.fetch(
@@ -1825,8 +1853,9 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     ar_account_id = await resolve_account_id(
         conn, ctx["tenant_id"], AR_ACCOUNT_CODE
     )
+    # 21 Okt 2026 (putusan pemilik): akun sisi Dr per alasan -- potongan harga -> 4-10200 Diskon, selainnya 4-10300 Retur
     sales_return_account_id = await resolve_account_id(
-        conn, ctx["tenant_id"], SALES_RETURN_ACCOUNT_CODE
+        conn, ctx["tenant_id"], kode_akun_nk(cn["reason"])
     )
 
     if not ar_account_id or not sales_return_account_id:
@@ -1926,7 +1955,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             line_number,
             sales_return_account_id,
             subtotal - u_tertunda,
-            f"Retur Penjualan - {cn['credit_note_number']}",
+            f"{'Diskon Penjualan' if cn['reason'] in ALASAN_POTONGAN else 'Retur Penjualan'} - {cn['credit_note_number']}",
         )
         line_number += 1
 
@@ -2455,6 +2484,7 @@ async def apply_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) ->
 
     invoice = await faktur_tenant_untuk_pelanggan(conn, ctx["tenant_id"], app.invoice_id, cn["customer_id"])
     await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], invoice, total_cn)
+    await pastikan_potongan_muat_sisa(conn, ctx["tenant_id"], invoice, total_cn, cn["reason"])
 
     import uuid as uuid_module
 
@@ -3458,6 +3488,7 @@ async def _rencana_nk(conn, ctx: dict, cn_id, aksi: str, reason) -> list:
             try:
                 faktur_asal = await faktur_tenant_untuk_pelanggan(conn, tid, cn["original_invoice_id"], cn["customer_id"])
                 await pastikan_cn_muat_faktur(conn, tid, faktur_asal, cn["total_amount"], kecuali_cn=cn_id)
+                await pastikan_potongan_muat_sisa(conn, tid, faktur_asal, cn["total_amount"], cn["reason"])
                 await periksa_bisa_dinotakan(
                     conn, tid, faktur_asal["id"],
                     [dict(r) for r in await conn.fetch(
@@ -3623,6 +3654,7 @@ async def _rencana_nk_aksi(conn, ctx: dict, cn_id, aksi: str, body) -> list:
             try:
                 faktur = await faktur_tenant_untuk_pelanggan(conn, tid, app.invoice_id, cn["customer_id"])
                 await pastikan_cn_muat_faktur(conn, tid, faktur, total_cn)
+                await pastikan_potongan_muat_sisa(conn, tid, faktur, total_cn, cn["reason"])
             except HTTPException as e:
                 blok.append(_blok_nk("CN_FAKTUR", e.status_code, e.detail))
         return blok
