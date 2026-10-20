@@ -10,6 +10,7 @@ dengan bundel SO sebelum ekstraksi (dibuktikan harness scripts/ops/uji-nyata-dok
   proforma_so(conn, tid, so_id, so_batal, ids)   Proforma SO (term & lunas RELATIF ke SO-nya); ids = saring hasil
   kwitansi_uang_muka(conn, tid, ids, jumlah)     uang muka ber-jurnal tak void; jumlah {id: Decimal} = nominal per jangkar
   kwitansi_penerimaan(conn, tid, invoice_ids)    penerimaan posted beralokasi AKTIF ke faktur itu; amount = Σ alokasi ke faktur itu
+  kwitansi_penerimaan_sendiri(conn, tid, ids)    kwitansi penerimaan ITU SENDIRI (posted/voided; amount = total_amount) -- jangkar penerimaan
   surat_jalan(conn, tid, ids)                    Surat jalan aktif
   faktur(conn, tid, ids)                         Faktur; paid = terbit AND sisa jurnal <= 0
   nota_kredit(conn, tid, ids)                    Nota kredit
@@ -113,10 +114,29 @@ async def kwitansi_uang_muka(conn, tid: str, ids: list, jumlah: Optional[dict] =
     return out
 
 
-async def kwitansi_penerimaan(conn, tid: str, invoice_ids: list) -> dict:
-    """{payment_id: dok} penerimaan posted beralokasi AKTIF ke `invoice_ids`; amount = Σ alokasi ke faktur-faktur itu."""
+_SQL_REKENING_KWITANSI = """
+           LEFT JOIN LATERAL (
+               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
+               WHERE b.tenant_id = x.tenant_id AND (b.id = x.bank_account_id OR b.coa_id = x.bank_account_id)
+               ORDER BY (b.id = x.bank_account_id) DESC, b.is_default DESC LIMIT 1
+           ) ba ON true
+           LEFT JOIN chart_of_accounts coa ON coa.id = x.bank_account_id AND coa.tenant_id = x.tenant_id"""
+
+
+def _dok_kwitansi_penerimaan(p) -> dict:
+    """Bentuk dokumen kwitansi penerimaan (SATU tempat): dipakai kwitansi_penerimaan (per faktur) dan kwitansi_penerimaan_sendiri."""
     from .faktur_cetak import label_metode
     from .proforma_atribusi import label_rekening
+    return {"kind": "receipt", "id": str(p["id"]), "number": p["payment_number"],
+            "date": _tgl(p["payment_date"]), "amount": _uang(p["jumlah"]),
+            "method": label_metode(p["payment_method"], p["bank_name"]),
+            "receipt_kind": "pelunasan",   # penerimaan atas faktur = pelunasan
+            "account_label": label_rekening(p, pemilik=False),
+            "installment": None, "paper": "A5-landscape", "sent": _belum_kirim()}
+
+
+async def kwitansi_penerimaan(conn, tid: str, invoice_ids: list) -> dict:
+    """{payment_id: dok} penerimaan posted beralokasi AKTIF ke `invoice_ids`; amount = Σ alokasi ke faktur-faktur itu."""
     if not invoice_ids:
         return {}
     out = {}
@@ -130,20 +150,29 @@ async def kwitansi_penerimaan(conn, tid: str, invoice_ids: list) -> dict:
                JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1
                WHERE rpa.status = 'active' AND rpa.invoice_id = ANY($2::uuid[])
                GROUP BY 1, 2, 3, 4, rp.tenant_id, rp.bank_account_id
-           ) x
-           LEFT JOIN LATERAL (
-               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
-               WHERE b.tenant_id = x.tenant_id AND (b.id = x.bank_account_id OR b.coa_id = x.bank_account_id)
-               ORDER BY (b.id = x.bank_account_id) DESC, b.is_default DESC LIMIT 1
-           ) ba ON true
-           LEFT JOIN chart_of_accounts coa ON coa.id = x.bank_account_id AND coa.tenant_id = x.tenant_id""",
+           ) x""" + _SQL_REKENING_KWITANSI,
             tid, list(invoice_ids)):
-        out[p["id"]] = {"kind": "receipt", "id": str(p["id"]), "number": p["payment_number"],
-                        "date": _tgl(p["payment_date"]), "amount": _uang(p["jumlah"]),
-                        "method": label_metode(p["payment_method"], p["bank_name"]),
-                        "receipt_kind": "pelunasan",   # penerimaan atas faktur = pelunasan
-                        "account_label": label_rekening(p, pemilik=False),
-                        "installment": None, "paper": "A5-landscape", "sent": _belum_kirim()}
+        out[p["id"]] = _dok_kwitansi_penerimaan(p)
+    return out
+
+
+async def kwitansi_penerimaan_sendiri(conn, tid: str, payment_ids: list) -> dict:
+    """{payment_id: dok} kwitansi penerimaan ITU SENDIRI (jangkar penerimaan, PENJUALAN-SERAGAM 20 Okt 2026): penerimaan posted ATAU
+    voided (voided tampil sebagai dirinya, `batal` lewat rampungkan); draf tak punya kwitansi. amount = total_amount penerimaan
+    (bukan Σ alokasi) -- tetap tampil walau semua alokasinya dilepas."""
+    if not payment_ids:
+        return {}
+    out = {}
+    for p in await conn.fetch(
+        """SELECT x.*, ba.bank_name, ba.account_number, ba.account_holder_name, ba.account_name, coa.name AS coa_name
+           FROM (
+               SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, rp.total_amount AS jumlah,
+                      rp.tenant_id, rp.bank_account_id
+               FROM receive_payments rp
+               WHERE rp.tenant_id = $1 AND rp.id = ANY($2::uuid[]) AND rp.status IN ('posted', 'voided')
+           ) x""" + _SQL_REKENING_KWITANSI,
+            tid, list(payment_ids)):
+        out[p["id"]] = _dok_kwitansi_penerimaan(p)
     return out
 
 

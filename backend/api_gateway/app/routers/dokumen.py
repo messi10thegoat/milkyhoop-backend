@@ -394,12 +394,64 @@ async def susun_dokumen_faktur(conn, ctx: dict, invoice_id: UUID) -> dict:
     }
 
 
+async def susun_dokumen_penerimaan(conn, ctx: dict, payment_id: UUID) -> dict:
+    """PENJUALAN-SERAGAM (20 Okt 2026, MASTER): bundel panel berjangkar PENERIMAAN PEMBAYARAN, skema dokumen SAMA dengan bundel SO/faktur
+    (pembentuk bersama services/dokumen_bundel; PEMILIHAN id di services/penerimaan_daftar.kelompok_untuk -- fungsi YANG SAMA dengan
+    kolom documents[] daftar). Kelompok: rekap + pnw (bila semua faktur teralokasi satu SO) · kw = kwitansi penerimaan ITU SENDIRI
+    (posted/voided; amount = total_amount) · ki = surat jalan + faktur teralokasi · nk = nota kredit asal. Kepala `anchor` (bukan `so`):
+    position_text/paid/balance = teks alokasi / Σ alokasi aktif / belum dialokasikan (turunan alokasi, bukan cache wrapper)."""
+    from ..services import dokumen_bundel as DB
+    from ..services import penerimaan_daftar as PD
+    tid = ctx["tenant_id"]
+    rp = await conn.fetchrow(
+        """SELECT id, payment_number, customer_name, customer_id, status, total_amount FROM receive_payments
+           WHERE id = $1 AND tenant_id = $2""", payment_id, tid)
+    if not rp:
+        raise HTTPException(status_code=404, detail="Penerimaan tidak ditemukan.")
+    kelompok = (await PD.kelompok_untuk(conn, tid, [dict(rp)]))[rp["id"]]
+    await DB.rampungkan(conn, tid, kelompok)
+    dialokasi = await conn.fetchval(f"SELECT {PD.sql_dialokasi('rp')} FROM receive_payments rp WHERE rp.id = $1 AND rp.tenant_id = $2",
+                                    rp["id"], tid)
+    f = PD.alokasi_fakta(True, rp["status"], rp["total_amount"], dialokasi)
+    so = None
+    rekap = next((g for g in kelompok if g["key"] == "rekap"), None)
+    if rekap:
+        so = await conn.fetchrow("SELECT id, order_number, order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                 UUID(rekap["docs"][0]["id"]), tid)
+    kontak = await _kontak(conn, tid, rp["customer_id"])
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    i_kw = next((i for i, g in enumerate(kelompok) if g["key"] == "kw"), None)
+    return {
+        "anchor": {"kind": "receipt", "id": str(rp["id"]), "number": rp["payment_number"], "customer": rp["customer_name"] or "",
+                   "position_text": f["alokasi_teks"], "total": DB._uang(rp["total_amount"]), "paid": DB._uang(dialokasi),
+                   "balance": DB._uang(f["belum_dialokasikan"]),
+                   "sales_order_id": str(so["id"]) if so else None, "sales_order_number": so["order_number"] if so else None,
+                   "order_code": so["order_code"] if so else None, "order_title": so["order_title"] if so else None,
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        # dibuka pertama = kwitansi penerimaan ini (jangkar tampil sebagai dirinya); draf tak punya kwitansi -> tanpa default
+        "default": {"group": "kw", "index": 0} if i_kw is not None else None,
+        "groups": kelompok,
+    }
+
+
 @router.get("/sales-invoices/{invoice_id}/documents")
 async def dokumen_faktur(request: Request, invoice_id: str):
     ctx = _ctx(request)
     pool = await _pool()
     async with pool.acquire() as conn:
         return await susun_dokumen_faktur(conn, ctx, _uuid(invoice_id))
+
+
+@router.get("/receive-payments/{payment_id}/documents")
+async def dokumen_penerimaan(request: Request, payment_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_penerimaan(conn, ctx, _uuid(payment_id))
 
 
 @router.get("/sales-orders/{order_id}/documents")

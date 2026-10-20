@@ -256,6 +256,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/receipts/pdf$", ["GET"], "receive_payment", "R"),
     (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-invoices/[^/]+/documents$", ["GET"], "sales_invoice", "R"),  # S1-U2 bundel faktur
+    (r"^/api/receive-payments/[^/]+/documents$", ["GET"], "receive_payment", "R"),  # PENJUALAN-SERAGAM bundel penerimaan
     # P5 tautan publik: membagikan = EKSPOR dokumen itu (E), daftar tautan = baca (R). Kwitansi uang muka: + E
     # customer_deposit di handler.
     (r"^/api/documents/rekap/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),

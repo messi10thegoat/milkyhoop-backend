@@ -395,6 +395,17 @@ _SQL_PENERIMAAN_VOIDED = """
                 ),"""
 
 
+def _syarat_cari(search, alias: str, mulai: int) -> tuple:
+    """(predikat, [parameter]) ?search= -- SATU sumber untuk daftar (alias `q`) dan /summary?search= (alias `rp`), $mulai = placeholder.
+    Tanpa teks -> (None, [])."""
+    from ..services.kode_order import sql_cari_so_induk
+    if not isinstance(search, str) or not search:
+        return None, []
+    p = f"${mulai}"
+    return (f"({alias}.payment_number ILIKE {p} OR {alias}.customer_name ILIKE {p} OR {alias}.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = $1 AND c.search_text ILIKE {p}) OR "
+            + sql_cari_so_induk("receive_payment", alias, "$1", p) + ")"), [f"%{search}%"]
+
+
 @router.get("", response_model=ReceivePaymentListResponse)
 async def list_receive_payments(
     request: Request,
@@ -415,6 +426,10 @@ async def list_receive_payments(
     sort_order: Literal["asc", "desc"] = Query("desc"),
     include_voided: bool = Query(
         False, description="U8: sertakan penerimaan VOIDED (wrapper) di daftar; bawaan false = perilaku lama PERSIS"),
+    # 20 Okt 2026 (PENJUALAN-SERAGAM): saring 'penerimaan saja' di SERVER (dulu FE menyaring 100 baris di klien -> total/has_more salah)
+    penerimaan_saja: bool = Query(False, description="hanya penerimaan ber-wrapper (settlement_type RECEIVE_PAYMENT); false = bentuk lama"),
+    aksi: Optional[Literal["belum_dialokasikan"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
     """
     List receive payments with filters and pagination.
@@ -467,14 +482,20 @@ async def list_receive_payments(
                 params.append(source_type)
                 param_idx += 1
 
-            if search:
-                from ..services.kode_order import sql_cari_so_induk
-                outer_conditions.append(
-                    f"(q.payment_number ILIKE ${param_idx} OR q.customer_name ILIKE ${param_idx} OR q.customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = $1 AND c.search_text ILIKE ${param_idx}) OR "
-                    + sql_cari_so_induk("receive_payment", "q", "$1", f"${param_idx}") + ")"
-                )
-                params.append(f"%{search}%")
+            if search:  # predikat di _syarat_cari -- SATU sumber dgn /summary?search=
+                _pred_cari, _par_cari = _syarat_cari(search, "q", param_idx)
+                outer_conditions.append(_pred_cari)
+                params.extend(_par_cari)
                 param_idx += 1
+
+            from ..services import penerimaan_daftar as _pd
+            _BD = f"CASE WHEN w.id IS NOT NULL AND q.status = 'posted' THEN {_pd.sql_belum('w')} ELSE 0 END"
+            _JOIN_W = "\n                LEFT JOIN receive_payments w ON w.id = q.id AND w.tenant_id = $1 AND q.settlement_type = 'RECEIVE_PAYMENT'"
+            if penerimaan_saja is True:  # panggilan langsung (uji) = objek Query -> mati
+                outer_conditions.append("q.settlement_type = 'RECEIVE_PAYMENT'")
+            if aksi == "belum_dialokasikan":
+                outer_conditions.append(f"({_BD}) > 0.005")
+            _JOIN_HITUNG = _JOIN_W if (aksi == "belum_dialokasikan" or with_totals is True) else ""
 
             if date_from:
                 outer_conditions.append(f"q.payment_date >= ${param_idx}")
@@ -605,7 +626,7 @@ async def list_receive_payments(
                     UNION ALL
                     SELECT * FROM draft_items{_x_union}
                 )
-                SELECT * FROM unified q
+                SELECT * FROM unified q{_JOIN_HITUNG}
                 WHERE TRUE {outer_where}
                 ORDER BY {sort_field} {sort_dir}
                 LIMIT {limit_param} OFFSET {offset_param}
@@ -700,7 +721,7 @@ async def list_receive_payments(
                     UNION ALL
                     SELECT * FROM draft_items{_x_union}
                 )
-                SELECT COUNT(*) FROM unified q
+                SELECT COUNT(*) FROM unified q{_JOIN_HITUNG}
                 WHERE TRUE {outer_where}
             """  # nosec B608
 
@@ -711,6 +732,9 @@ async def list_receive_payments(
             # Execute main query
             rows = await conn.fetch(base_query, *params)
 
+            # 20 Okt 2026: belum_dialokasikan/aksi/alokasi_keadaan TURUNAN alokasi aktif (batch halaman), bukan cache wrapper
+            _wr = [r["id"] for r in rows if r["settlement_type"] == "RECEIVE_PAYMENT"]
+            _ba = await _pd.bruto_dialokasi(conn, ctx["tenant_id"], _wr)
             items = [
                 {
                     "id": str(row["id"]),
@@ -737,9 +761,16 @@ async def list_receive_payments(
                     "source_document_type": row["source_document_type"],
                     "source_document_id": row["source_document_id"],
                     "source_document_number": row["source_document_number"],
+                    **_pd.alokasi_fakta(row["settlement_type"] == "RECEIVE_PAYMENT", row["status"], *_ba.get(row["id"], (None, None))),
                 }
                 for row in rows
             ]
+
+            # documents[]/doc_count = bundel /receive-payments/{id}/documents tanpa rekap (SATU definisi, batch per halaman)
+            _kel = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": i} for i in _wr])
+            for it, row in zip(items, rows):
+                it["documents"] = _pd.documents_baris(_kel.get(row["id"], []))
+                it["doc_count"] = len(it["documents"])
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "receive_payment", items)
@@ -748,11 +779,20 @@ async def list_receive_payments(
                 "total": total or 0,
                 "has_more": (skip + limit) < (total or 0),
             }
+            if with_totals is True:  # agregat atas WHERE yang SAMA dgn COUNT; sum_total tanpa voided (uang tak masuk)
+                _tot = await conn.fetchrow(count_query.replace(
+                    "SELECT COUNT(*) FROM unified q",
+                    f"SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE q.status <> 'voided'), 0) AS st, COALESCE(SUM({_BD}), 0) AS ss FROM unified q", 1),
+                    *count_params)
+                hasil["sum_total"], hasil["sum_sisa"] = float(_tot["st"] or 0), float(_tot["ss"] or 0)
             if not incl_void:
                 return hasil  # bentuk lama PERSIS (response_model lama)
             # U8: koersi angka SAMA dgn response_model (model_dump json), lalu tambah voided_at + void_reason per baris
             from fastapi.responses import JSONResponse
             keluar = ReceivePaymentListResponse(**hasil).model_dump(mode="json")
+            for _k in ("sum_total", "sum_sisa"):  # aditif: kunci total hanya bila with_totals (bentuk lama PERSIS bila tidak)
+                if keluar.get(_k) is None:
+                    keluar.pop(_k, None)
             for it, row in zip(keluar["items"], rows):
                 it["voided_at"] = row["voided_at"].isoformat() if row["voided_at"] else None
                 it["void_reason"] = row["void_reason"]
@@ -771,7 +811,7 @@ async def list_receive_payments(
 
 
 @router.get("/summary", response_model=ReceivePaymentSummaryResponse)
-async def get_receive_payments_summary(request: Request):
+async def get_receive_payments_summary(request: Request, search: Optional[str] = Query(None)):
     """Ringkasan penerimaan pembayaran + periode HARI INI / MINGGU INI / BULAN INI.
 
     amount_today/amount_this_week/amount_this_month (+ count_*) — tanggal BISNIS tenant
@@ -791,8 +831,18 @@ async def get_receive_payments_summary(request: Request):
             # services/rp_periode.py. Satu kueri.
             batas = batas_periode(await tanggal_dokumen(conn, ctx["tenant_id"]))
             argumen = argumen_kueri(ctx["tenant_id"], batas)
-            row = await conn.fetchrow(SQL_RINGKASAN, *argumen)
-            per_metode = await conn.fetch(SQL_PER_METODE, *argumen)
+            # 20 Okt 2026 (PENJUALAN-SERAGAM): ?search= membatasi SEMUA hitungan/uang penerimaan ber-wrapper (predikat daftar, _syarat_cari);
+            # total_settled_noncash (pelunasan non-kas) tetap seluruh tenant. Tanpa search = konstanta SQL apa adanya.
+            from ..services import penerimaan_daftar as _pd
+            _cari, _par_cari = _syarat_cari(search, "rp", 7)
+            sql_ringkasan = SQL_RINGKASAN + f"  AND {_cari}\n" if _cari else SQL_RINGKASAN
+            sql_per_metode = SQL_PER_METODE.replace("    GROUP BY rp.payment_method", f"      AND {_cari}\n    GROUP BY rp.payment_method") if _cari else SQL_PER_METODE
+            row = await conn.fetchrow(sql_ringkasan, *argumen, *_par_cari)
+            per_metode = await conn.fetch(sql_per_metode, *argumen, *_par_cari)
+            belum = await conn.fetchrow(
+                f"SELECT COUNT(*) FILTER (WHERE b > 0.005) AS n, COALESCE(SUM(b) FILTER (WHERE b > 0.005), 0) AS v FROM "
+                f"(SELECT {_pd.sql_belum('rp')} AS b FROM receive_payments rp WHERE rp.tenant_id = $1 AND rp.status = 'posted'"
+                + (f" AND {_cari.replace('$7', '$2')}" if _cari else "") + ") x", ctx["tenant_id"], *_par_cari) or {}
 
             # PELUNASAN NON-KAS -- supaya ringkasan dan daftar bisa dicocokkan.
             # Daftar (Law 29) memuat setiap kredit Piutang; `total_received`
@@ -830,6 +880,8 @@ async def get_receive_payments_summary(request: Request):
                     "total_received": float(row["total_received"] or 0),
                     "total_allocated": float(row["total_allocated"] or 0),
                     "total_unapplied": float(row["total_unapplied"] or 0),
+                    "belum_dialokasikan_count": belum.get("n") or 0,  # pill AKSI (turunan alokasi aktif; = ?aksi=belum_dialokasikan)
+                    "belum_dialokasikan_value": float(belum.get("v") or 0),
                     **medan_periode(row, batas),
                     "by_method": rincian_metode(per_metode, METODE_SAH),
                 },

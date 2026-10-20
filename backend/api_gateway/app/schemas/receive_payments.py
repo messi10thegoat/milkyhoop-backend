@@ -166,6 +166,13 @@ class ReceivePaymentListItem(BaseModel):
     status: str
     invoice_count: int = 0
     created_at: str
+    # 20 Okt 2026 (PENJUALAN-SERAGAM, services/penerimaan_daftar): TURUNAN alokasi aktif (bukan cache wrapper allocated_amount/unapplied_amount)
+    belum_dialokasikan: float = 0.0
+    aksi: Optional[str] = None
+    alokasi_keadaan: Literal["belum", "sebagian", "penuh", "tanpa"] = "tanpa"
+    alokasi_teks: Optional[str] = None
+    doc_count: int = 0
+    documents: List[Dict[str, str]] = []
     # JENIS PELUNASAN yang sahih, dari `journal_entries.source_type`:
     # RECEIVE_PAYMENT / DEPOSIT_APPLICATION / CREDIT_NOTE hari ini. Law 29
     # sengaja membuat daftar ini proyeksi SETIAP kredit Piutang; yang salah
@@ -287,6 +294,8 @@ class ReceivePaymentListResponse(BaseModel):
     items: List[ReceivePaymentListItem]
     total: int
     has_more: bool = False
+    sum_total: Optional[float] = None  # 20 Okt 2026: Σ total_amount hasil filter (tanpa voided), with_totals=true
+    sum_sisa: Optional[float] = None   # Σ belum_dialokasikan hasil filter
 
 
 class ReceivePaymentSummaryResponse(BaseModel):

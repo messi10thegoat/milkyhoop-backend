@@ -39,7 +39,8 @@ class _Konn:
         return len(self.baris)
 
     async def fetch(self, sql, *a):
-        self.sql.append(("main", sql))
+        # PENJUALAN-SERAGAM (20 Okt): kueri tambahan batch halaman (alokasi/dokumen) diberi label sendiri agar hash "main" tetap kueri daftar
+        self.sql.append(("main" if "unified" in sql else "extra", sql))
         return list(self.baris) if "unified" in sql else []
 
     async def fetchrow(self, sql, *a):
