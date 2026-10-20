@@ -180,7 +180,8 @@ def urut_kwitansi(kw: dict) -> list:
     return sorted(kw.values(), key=lambda x: (x["date"] or "", x["number"] or ""))
 
 
-async def surat_jalan(conn, tid: str, ids: list) -> list:
+async def surat_jalan(conn, tid: str, ids: list, termasuk_batal: bool = False) -> list:
+    """Surat jalan aktif; `termasuk_batal=True` (jangkar Pengiriman: Surat Jalan voided tetap tampil sebagai dirinya, `batal` lewat rampungkan)."""
     from .so_kirim import _AKTIF
     if not ids:
         return []
@@ -188,7 +189,7 @@ async def surat_jalan(conn, tid: str, ids: list) -> list:
              "paper": "A4", "sent": _belum_kirim()}
             for f in await conn.fetch(
                 f"""SELECT f.id, f.fulfillment_number, f.fulfillment_date FROM invoice_fulfillments f
-                    WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[]) AND {_AKTIF}
+                    WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[]){'' if termasuk_batal else f' AND {_AKTIF}'}
                     ORDER BY f.fulfillment_date, f.fulfillment_number""", tid, list(ids))]
 
 

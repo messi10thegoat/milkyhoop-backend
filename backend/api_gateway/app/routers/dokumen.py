@@ -438,12 +438,68 @@ async def susun_dokumen_penerimaan(conn, ctx: dict, payment_id: UUID) -> dict:
     }
 
 
+async def susun_dokumen_pengiriman(conn, ctx: dict, delivery_id: UUID) -> dict:
+    """PENJUALAN-SERAGAM (20 Okt 2026, MASTER): bundel panel berjangkar SURAT JALAN, skema dokumen SAMA dengan bundel SO/faktur (pembentuk
+    bersama services/dokumen_bundel; PEMILIHAN id di services/pengiriman_daftar.kelompok_untuk -- fungsi YANG SAMA dengan kolom documents[]
+    daftar). Kelompok: rekap + pnw (bila ber-SO) · ki = Surat Jalan ITU SENDIRI (juga voided -> batal) + faktur asal. Kepala `anchor`
+    (kind=delivery): position_text = teks keadaan serah; Pengiriman tanpa kolom uang -> total/paid/balance = null."""
+    from ..services import dokumen_bundel as DB
+    from ..services import pengiriman_daftar as PG
+    from ..services import pengiriman_serah as SERAH
+    tid = ctx["tenant_id"]
+    r = await conn.fetchrow(
+        """SELECT f.id, f.fulfillment_number, f.status, f.invoice_id,
+                  COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id,
+                  COALESCE(si.customer_id, so.customer_id) AS customer_id, c.nama AS customer_name
+           FROM invoice_fulfillments f
+           LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+           LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+           LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)
+           WHERE f.id = $1 AND f.tenant_id = $2""", delivery_id, tid)
+    if not r:
+        raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
+    kelompok = (await PG.kelompok_untuk(conn, tid, [dict(r)]))[r["id"]]
+    await DB.rampungkan(conn, tid, kelompok)
+    aktif = await SERAH.aktif(conn, tid)
+    fs = await PG.fakta_serah(conn, tid, [r["id"]]) if aktif else {}
+    fakta = PG.serah_fakta(aktif, r["status"], *fs.get(r["id"], (None, None, 0)))
+    so = None
+    if any(g["key"] == "rekap" for g in kelompok):
+        so = await conn.fetchrow("SELECT id, order_number, order_code, order_title FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                 r["sales_order_id"], tid)
+    kontak = await _kontak(conn, tid, r["customer_id"])
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    i_ki = next((i for i, g in enumerate(kelompok) if g["key"] == "ki"), None)
+    return {
+        "anchor": {"kind": "delivery", "id": str(r["id"]), "number": r["fulfillment_number"], "customer": r["customer_name"] or "",
+                   "position_text": fakta["serah_teks"], "total": None, "paid": None, "balance": None,
+                   "sales_order_id": str(so["id"]) if so else None, "sales_order_number": so["order_number"] if so else None,
+                   "order_code": so["order_code"] if so else None, "order_title": so["order_title"] if so else None,
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        # dibuka pertama = Surat Jalan ini (dokumen pertama kelompok ki: jangkar tampil sebagai dirinya)
+        "default": {"group": "ki", "index": 0} if i_ki is not None else None,
+        "groups": kelompok,
+    }
+
+
 @router.get("/sales-invoices/{invoice_id}/documents")
 async def dokumen_faktur(request: Request, invoice_id: str):
     ctx = _ctx(request)
     pool = await _pool()
     async with pool.acquire() as conn:
         return await susun_dokumen_faktur(conn, ctx, _uuid(invoice_id))
+
+
+@router.get("/deliveries/{delivery_id}/documents")
+async def dokumen_pengiriman(request: Request, delivery_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_pengiriman(conn, ctx, _uuid(delivery_id))
 
 
 @router.get("/receive-payments/{payment_id}/documents")

@@ -77,6 +77,10 @@ def _baris_dl(so=True):
 def _lst(monkeypatch, rows, **kw):
     k = _KonnDL(rows)
     _pool(monkeypatch, DL, k)
+    from app.services import pengiriman_daftar as _pg  # PENJUALAN-SERAGAM: bundel/dokumen baris diuji di test_pengiriman_seragam + harness nyata
+    async def _kel(conn, tid, sj):
+        return {}
+    monkeypatch.setattr(_pg, "kelompok_untuk", _kel)
     a = dict(status=None, customer_id=None, search=None, date_from=None, date_to=None, sort_by="delivery_date",
              sort_order="desc", page=1, per_page=20)
     a.update(kw)

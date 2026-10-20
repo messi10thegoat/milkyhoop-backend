@@ -36,31 +36,74 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
+def _syarat_cari(search, mulai: int) -> tuple:
+    """(predikat, [parameter]) ?search= -- SATU sumber untuk daftar dan /summary?search= (alias f, si, c; $1 tenant)."""
+    from ..services.kode_order import sql_cari_so_induk
+    if not isinstance(search, str) or not search:
+        return None, []
+    p = f"${mulai}"
+    return (f"(f.fulfillment_number ILIKE {p} OR c.nama ILIKE {p} OR si.invoice_number ILIKE {p} OR c.search_text ILIKE {p} OR "
+            + sql_cari_so_induk("delivery", "f", "$1", p) + ")"), [f"%{search}%"]
+
+
+_FROM_GABUNG = """FROM invoice_fulfillments f
+            LEFT JOIN sales_invoices si ON si.id = f.invoice_id
+            LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id
+            LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)"""
+
+
 @router.get("/summary")
-async def get_deliveries_summary(request: Request):
-    """Summary counts for Pengiriman Barang dashboard."""
+async def get_deliveries_summary(request: Request, search: Optional[str] = Query(None)):
+    """Summary counts for Pengiriman Barang dashboard.
+
+    20 Okt 2026 (PENJUALAN-SERAGAM): + perlu_resi_count / belum_dicatat_count (pill aksi, services/pengiriman_daftar; 0 bila fitur serah
+    OFF) dan ?search= (predikat daftar, _syarat_cari; membatasi SEMUA hitungan). Tanpa search = hitungan lama dari tabel apa adanya."""
+    from ..services import pengiriman_daftar as _pg
     ctx = get_user_context(request)
     pool = await get_pool()
+    _cari, _par = _syarat_cari(search, 2)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-        row = await conn.fetchrow(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'posted') AS total_posted,
-                COUNT(*) FILTER (WHERE status = 'voided') AS total_voided,
-                COUNT(*) FILTER (WHERE fulfillment_date = tanggal_bisnis($1)) AS today_count,  -- kelompok C 26 Sep: hari ini = tanggal bisnis tenant
-                COUNT(*) AS total_all
-            FROM invoice_fulfillments
-            WHERE tenant_id = $1
-            """,
-            ctx["tenant_id"],
-        )
+        if _cari:
+            row = await conn.fetchrow(
+                f"""
+                SELECT
+                    COUNT(*) FILTER (WHERE f.status = 'posted') AS total_posted,
+                    COUNT(*) FILTER (WHERE f.status = 'voided') AS total_voided,
+                    COUNT(*) FILTER (WHERE f.fulfillment_date = tanggal_bisnis($1)) AS today_count,
+                    COUNT(*) AS total_all
+                {_FROM_GABUNG}
+                WHERE f.tenant_id = $1 AND {_cari}
+                """,
+                ctx["tenant_id"], *_par,
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'posted') AS total_posted,
+                    COUNT(*) FILTER (WHERE status = 'voided') AS total_voided,
+                    COUNT(*) FILTER (WHERE fulfillment_date = tanggal_bisnis($1)) AS today_count,  -- kelompok C 26 Sep: hari ini = tanggal bisnis tenant
+                    COUNT(*) AS total_all
+                FROM invoice_fulfillments
+                WHERE tenant_id = $1
+                """,
+                ctx["tenant_id"],
+            )
+        aksi = {k: 0 for k in _pg.AKSI}
+        if await _serah.aktif(conn, ctx["tenant_id"]):
+            a = await conn.fetchrow(
+                "SELECT " + ", ".join(f"COUNT(*) FILTER (WHERE {_pg.sql_aksi(k)}) AS {k}" for k in _pg.AKSI)
+                + f" {_FROM_GABUNG if _cari else 'FROM invoice_fulfillments f'} WHERE f.tenant_id = $1" + (f" AND {_cari}" if _cari else ""),
+                ctx["tenant_id"], *_par)
+            aksi = {k: a[k] or 0 for k in _pg.AKSI}
     return {
         "total_posted": row["total_posted"],
         "total_voided": row["total_voided"],
         "today_count": row["today_count"],
         "total_all": row["total_all"],
+        **{f"{k}_count": v for k, v in aksi.items()},
     }
 
 
@@ -79,6 +122,10 @@ async def list_deliveries(
     sort_order: str = Query("desc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    # 20 Okt 2026 (PENJUALAN-SERAGAM, aditif): skip/offset di samping page (prioritas offset > page > skip) + has_more di respons
+    skip: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0),
+    aksi: Optional[Literal["perlu_resi", "belum_dicatat"]] = Query(None),
 ):
     """List deliveries with pagination, filters, and sorting."""
     ctx = get_user_context(request)
@@ -114,12 +161,9 @@ async def list_deliveries(
         idx += 1
 
     if search:
-        from ..services.kode_order import sql_cari_so_induk
-        conditions.append(
-            f"(f.fulfillment_number ILIKE ${idx} OR c.nama ILIKE ${idx} OR si.invoice_number ILIKE ${idx} OR c.search_text ILIKE ${idx} OR "
-            + sql_cari_so_induk("delivery", "f", "$1", f"${idx}") + ")"
-        )
-        params.append(f"%{search}%")
+        _pred_cari, _par_cari = _syarat_cari(search, idx)  # SATU sumber dgn /summary?search=
+        conditions.append(_pred_cari)
+        params.extend(_par_cari)
         idx += 1
 
     if date_from:
@@ -132,8 +176,15 @@ async def list_deliveries(
         params.append(date_to)
         idx += 1
 
+    from ..services import pengiriman_daftar as _pg
+    async with pool.acquire() as _c0:
+        _serah_aktif = await _serah.aktif(_c0, ctx["tenant_id"])
+    if aksi in _pg.AKSI:  # panggilan langsung tanpa aksi = objek Query -> mati. Fitur serah OFF -> pill kosong (bukan semua baris)
+        conditions.append(_pg.sql_aksi(aksi) if _serah_aktif else "FALSE")
     where_clause = " AND ".join(conditions)
-    offset = (page - 1) * per_page
+    _i = lambda v, d: v if isinstance(v, int) else d  # noqa: E731  (panggilan langsung tanpa argumen = objek Query)
+    _offset, _page, _skip = _i(offset, 0), _i(page, 1), _i(skip, 0)
+    offset = _offset if _offset > 0 else ((_page - 1) * per_page if _page > 1 else _skip)
 
     async with pool.acquire() as conn:
         await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
@@ -222,13 +273,22 @@ async def list_deliveries(
     from ..services.kode_order import tempel_kode as _tempel_kode
     async with pool.acquire() as _c:
         await _tempel_kode(_c, ctx["tenant_id"], "delivery", items)
-        if items and await _serah.aktif(_c, ctx["tenant_id"]):
+        if items and _serah_aktif:
             _m = await _serah.muat(_c, ctx["tenant_id"], [i["id"] for i in items])
             for i in items:
                 i["serah"] = _m[i["id"]]
+        # 20 Okt 2026 (PENJUALAN-SERAGAM): serah_keadaan/serah_teks/aksi (pill) + documents[]/doc_count (= bundel tanpa rekap, satu definisi)
+        import uuid as _uuid
+        _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [r["id"] for r in rows]) if _serah_aktif else {}
+        _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": r["id"], "invoice_id": r["invoice_id"], "sales_order_id": r["sales_order_id"]} for r in rows])
+        for i, r in zip(items, rows):
+            i.update(_pg.serah_fakta(_serah_aktif, r["status"], *_fs.get(r["id"], (None, None, 0))))
+            i["documents"] = _pg.documents_baris(_kel.get(r["id"], []))
+            i["doc_count"] = len(i["documents"])
     return {
         "items": items,
         "total": total,
+        "has_more": (offset + per_page) < (total or 0),
         "page": page,
         "per_page": per_page,
         "total_pages": (total + per_page - 1) // per_page if total else 0,
@@ -423,8 +483,12 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         await _tempel_kode(_c, ctx["tenant_id"], "delivery", [detail])
         detail.update(await sisa_faktur_sumber(_c, ctx["tenant_id"], row["invoice_id"])
                       if row["invoice_id"] else {"invoice_total": None, "invoice_outstanding": None})
-        if await _serah.aktif(_c, ctx["tenant_id"]):  # tanpa flag: respons TAK membawa kunci serah (byte-identik)
+        _aktif = await _serah.aktif(_c, ctx["tenant_id"])
+        if _aktif:  # tanpa flag: respons TAK membawa kunci serah (byte-identik)
             detail["serah"] = (await _serah.muat(_c, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
+        from ..services import pengiriman_daftar as _pg  # 20 Okt 2026: keadaan serah + aksi (aditif; fungsi SAMA dgn daftar)
+        _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [row["id"]]) if _aktif else {}
+        detail.update(_pg.serah_fakta(_aktif, row["status"], *_fs.get(row["id"], (None, None, 0))))
     return detail
 
 
