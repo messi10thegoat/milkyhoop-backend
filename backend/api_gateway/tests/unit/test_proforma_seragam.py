@@ -86,7 +86,8 @@ def test_status_dokumen_draf_proforma():
     assert DK.status_dokumen("proforma", True, False, draf=True) == "batal"
     assert DK.status_dokumen("proforma", False, True) == "lunas" and DK.status_dokumen("proforma", False, False) == "terbit"
     src = inspect.getsource(DB.rampungkan)
-    assert 'd["kind"] in ("invoice", "proforma")' in src
+    # S2 b (BACKEND, 20 Okt): himpunan jangkar-draf kini DB.DRAF_SEBAGAI_DIRINYA (faktur, proforma, kwitansi UM, NK) -- proforma tetap di dalamnya
+    assert 'd["kind"] in DRAF_SEBAGAI_DIRINYA' in src and "proforma" in DB.DRAF_SEBAGAI_DIRINYA
 
 
 def test_documents_baris_tanpa_rekap():
