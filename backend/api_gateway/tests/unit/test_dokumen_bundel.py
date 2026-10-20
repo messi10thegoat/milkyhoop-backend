@@ -40,8 +40,9 @@ def test_status_draf_faktur(kind, batal, paid, draf, harap):
 
 
 def test_draf_hanya_untuk_faktur():
-    # Rekap SO draf tetap "terbit" (bundel SO tak berubah oleh ekstraksi)
-    assert 'draf=d["kind"] == "invoice"' in inspect.getsource(DBN.rampungkan)
+    # Rekap SO draf tetap "terbit" (bundel SO tak berubah oleh ekstraksi). PENJUALAN-SERAGAM (21 Okt): jangkar PROFORMA juga memuat dirinya walau draf
+    # (bundel SO tak pernah memuat proforma draf -> harness SO lama == baru tetap); kind lain tidak.
+    assert 'draf=d["kind"] in ("invoice", "proforma")' in inspect.getsource(DBN.rampungkan)
 
 
 def test_izin_rute_bundel_faktur():

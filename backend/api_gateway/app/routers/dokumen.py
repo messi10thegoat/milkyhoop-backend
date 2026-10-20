@@ -486,12 +486,64 @@ async def susun_dokumen_pengiriman(conn, ctx: dict, delivery_id: UUID) -> dict:
     }
 
 
+async def susun_dokumen_proforma(conn, ctx: dict, proforma_id: UUID) -> dict:
+    """PENJUALAN-SERAGAM (21 Okt 2026, MASTER): bundel panel berjangkar PROFORMA, skema dokumen SAMA dengan bundel SO/faktur (pembentuk bersama
+    services/dokumen_bundel; PEMILIHAN id di services/proforma_daftar.kelompok_untuk -- fungsi YANG SAMA dgn kolom documents[] daftar).
+    Kelompok: rekap + pnw (penawaran SO) · pro = proforma ITU SENDIRI (draf -> "draf", batal -> "batal") · kw = kwitansi uang muka bertaut.
+    Kepala `anchor` (kind=proforma): position_text = keadaan bayar; total = nominal, paid = terbayar, balance = sisa (terbit saja)."""
+    from ..services import dokumen_bundel as DB
+    from ..services import proforma_daftar as PD
+    from ..services.proforma_terbayar import terbayar_proforma
+    from ..services.proforma_aksi import proforma_lunas
+    tid = ctx["tenant_id"]
+    p = await conn.fetchrow(
+        """SELECT p.id, p.proforma_number, p.status, p.amount, p.sales_order_id, p.customer_id, p.customer_name, so.status AS so_status,
+                  so.order_number, so.order_code, so.order_title
+           FROM proformas p LEFT JOIN sales_orders so ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
+           WHERE p.id = $1 AND p.tenant_id = $2""", proforma_id, tid)
+    if not p:
+        raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
+    kelompok = (await PD.kelompok_untuk(conn, tid, [dict(p)]))[p["id"]]
+    await DB.rampungkan(conn, tid, kelompok)
+    tb = await terbayar_proforma(conn, tid, [p["sales_order_id"]])
+    paid = Decimal(str(tb[p["id"]]["paid"])) if p["id"] in tb else Decimal("0")
+    lunas = proforma_lunas(p["amount"], paid)
+    terbit = p["status"] == "issued"
+    teks = {"draft": "Draf", "cancelled": "Dibatalkan", "expired": "Kedaluwarsa"}.get(p["status"]) or (
+        "Lunas" if lunas else ("Dibayar sebagian" if paid > 0 else "Menunggu bayar"))
+    kontak = await _kontak(conn, tid, p["customer_id"])
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    i_pro = next((i for i, g in enumerate(kelompok) if g["key"] == "pro"), None)
+    return {
+        "anchor": {"kind": "proforma", "id": str(p["id"]), "number": p["proforma_number"], "customer": p["customer_name"] or "",
+                   "position_text": teks, "total": DB._uang(p["amount"]), "paid": DB._uang(paid) if terbit else None,
+                   "balance": DB._uang(max(Decimal(str(p["amount"] or 0)) - paid, Decimal("0"))) if terbit else None,
+                   "sales_order_id": str(p["sales_order_id"]), "sales_order_number": p["order_number"],
+                   "order_code": p["order_code"], "order_title": p["order_title"],
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        "default": {"group": "pro", "index": 0} if i_pro is not None else None,
+        "groups": kelompok,
+    }
+
+
 @router.get("/sales-invoices/{invoice_id}/documents")
 async def dokumen_faktur(request: Request, invoice_id: str):
     ctx = _ctx(request)
     pool = await _pool()
     async with pool.acquire() as conn:
         return await susun_dokumen_faktur(conn, ctx, _uuid(invoice_id))
+
+
+@router.get("/proformas/{proforma_id}/documents")
+async def dokumen_proforma(request: Request, proforma_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_proforma(conn, ctx, _uuid(proforma_id))
 
 
 @router.get("/deliveries/{delivery_id}/documents")

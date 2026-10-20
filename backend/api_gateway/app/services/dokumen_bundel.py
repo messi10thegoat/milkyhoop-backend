@@ -7,7 +7,7 @@ dengan bundel SO sebelum ekstraksi (dibuktikan harness scripts/ops/uji-nyata-dok
 
   rekap(so_id)                                   Rekap pesanan
   penawaran(conn, tid, quote_id)                 Penawaran (atau None)
-  proforma_so(conn, tid, so_id, so_batal, ids)   Proforma SO (term & lunas RELATIF ke SO-nya); ids = saring hasil
+  proforma_so(conn, tid, so_id, so_batal, ids, termasuk_semua)  Proforma SO (term & lunas RELATIF ke SO-nya); ids = saring hasil; termasuk_semua = jangkar proforma (draf & batal ikut)
   kwitansi_uang_muka(conn, tid, ids, jumlah)     uang muka ber-jurnal tak void; jumlah {id: Decimal} = nominal per jangkar
   kwitansi_penerimaan(conn, tid, invoice_ids)    penerimaan posted beralokasi AKTIF ke faktur itu; amount = Σ alokasi ke faktur itu
   kwitansi_penerimaan_sendiri(conn, tid, ids)    kwitansi penerimaan ITU SENDIRI (posted/voided; amount = total_amount) -- jangkar penerimaan
@@ -57,15 +57,15 @@ async def penawaran(conn, tid: str, quote_id) -> Optional[dict]:
                      "sent_at": q["sent_at"].isoformat() if q["sent_at"] else None, "viewed_at": None}}
 
 
-async def proforma_so(conn, tid: str, so_id, so_batal: bool, ids: Optional[set] = None) -> list:
-    """Proforma SO (bukan draf; batal hanya bila SO batal). term = urutan TERMIN di SO; paid = terbayar_proforma SO.
+async def proforma_so(conn, tid: str, so_id, so_batal: bool, ids: Optional[set] = None, termasuk_semua: bool = False) -> list:
+    """Proforma SO (bukan draf; batal hanya bila SO batal; `termasuk_semua=True` = jangkar Proforma: draf & batal ikut, `status` lewat rampungkan). term = urutan TERMIN di SO; paid = terbayar_proforma SO.
     ids (set str) = saring HASIL (term & lunas tetap dihitung relatif ke seluruh SO -> medan identik dengan bundel SO)."""
     from .proforma_terbayar import terbayar_proforma
     pros = await conn.fetch(
         """SELECT id, proforma_number, proforma_date, purpose, amount, status, issued_at FROM proformas
-           WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'draft'
-           ORDER BY issued_at NULLS LAST, proforma_number""", tid, so_id)
-    pros = [p for p in pros if p["status"] != "cancelled" or so_batal]
+           WHERE tenant_id = $1 AND sales_order_id = $2 AND ($3 OR status <> 'draft')
+           ORDER BY issued_at NULLS LAST, proforma_number""", tid, so_id, termasuk_semua)
+    pros = [p for p in pros if termasuk_semua or p["status"] != "cancelled" or so_batal]
     terbayar = await terbayar_proforma(conn, tid, [so_id]) if pros else {}
     termin = [p["id"] for p in pros if p["purpose"] == "TERMIN" and p["status"] != "cancelled"]
     docs = []
@@ -240,8 +240,8 @@ async def rampungkan(conn, tid: str, kelompok: list) -> list:
         for d in gr["docs"]:
             row, _ = await _baris_dokumen(conn, tid, d["kind"], UUID(d["id"])) if d["kind"] in JENIS else (None, None)
             d["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])
-            # draf HANYA untuk faktur: bundel faktur memuat faktur dirinya walau draf. Rekap SO draf tetap "terbit" (bundel SO
-            # tak berubah oleh ekstraksi -- harness SO lama == baru); kind lain tak pernah masuk bundel dalam keadaan draf.
+            # draf HANYA untuk jangkar faktur & proforma (memuat dirinya walau draf). Rekap SO draf tetap "terbit" (bundel SO
+            # tak berubah oleh ekstraksi -- harness SO lama == baru); bundel SO tak pernah memuat proforma draf; kind lain tak masuk dalam draf.
             d["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"),
-                                         draf=d["kind"] == "invoice" and bool(row) and str(row["status"] or "").lower() == "draft")
+                                         draf=d["kind"] in ("invoice", "proforma") and bool(row) and str(row["status"] or "").lower() == "draft")
     return kelompok

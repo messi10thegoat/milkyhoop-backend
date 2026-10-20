@@ -342,6 +342,19 @@ def serialize_proforma(row, order_number=None, paid_amount=None, paid_breakdown=
 # ============================================================================
 
 
+def _syarat_cari(search, mulai: int) -> tuple:
+    """(predikat, [parameter]) ?search= -- SATU sumber untuk daftar dan /summary?search= (alias `p`; $1 = tenant)."""
+    from ..services.kode_order import sql_cari_so_induk
+    if not isinstance(search, str) or not search:
+        return None, []
+    q = f"${mulai}"
+    return (f"(p.proforma_number ILIKE {q} OR p.customer_name ILIKE {q} "
+            f"OR p.search_text ILIKE {q} OR p.customer_id::text IN "
+            f"(SELECT c.id::text FROM customers c WHERE c.tenant_id = p.tenant_id "
+            f"AND c.search_text ILIKE {q}) OR "
+            + sql_cari_so_induk("proforma", "p", "$1", q) + ")"), [f"%{search}%"]
+
+
 @router.get("")
 async def list_proformas(
     request: Request,
@@ -365,6 +378,8 @@ async def list_proformas(
     tugas: Optional[Literal["terbit_belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/proforma_aksi, tanggal bisnis), nilai asing = 422
     aksi: Optional[Literal["perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo"]] = Query(None),
+    # 21 Okt 2026 (PENJUALAN-SERAGAM): sum_total/sum_sisa atas SEMUA hasil filter, opt-in (FE: muat pertama saja)
+    with_totals: bool = Query(False),
 ):
     """List proformas with filters."""
     try:
@@ -399,16 +414,10 @@ async def list_proformas(
                 extras.append(f"p.sales_order_id = ${idx}::uuid")
                 params.append(_uuid_or_404(sales_order_id, "Sales Order"))
                 idx += 1
-            if search:
-                from ..services.kode_order import sql_cari_so_induk
-                extras.append(
-                    f"(p.proforma_number ILIKE ${idx} OR p.customer_name ILIKE ${idx} "
-                    f"OR p.search_text ILIKE ${idx} OR p.customer_id::text IN "
-                    f"(SELECT c.id::text FROM customers c WHERE c.tenant_id = p.tenant_id "
-                    f"AND c.search_text ILIKE ${idx}) OR "
-                    + sql_cari_so_induk("proforma", "p", "$1", f"${idx}") + ")"
-                )
-                params.append(f"%{search}%")
+            if search:  # predikat di _syarat_cari -- SATU sumber dgn /summary?search=
+                _pred_cari, _par_cari = _syarat_cari(search, idx)
+                extras.append(_pred_cari)
+                params.extend(_par_cari)
                 idx += 1
 
             extra = ("".join(f" AND {c}" for c in extras)) if extras else ""
@@ -417,6 +426,13 @@ async def list_proformas(
                 f"SELECT COUNT(*) FROM proformas p WHERE p.tenant_id = $1{extra}",
                 *params,
             )
+
+            jumlah = {}
+            if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dgn COUNT
+                _tr = await conn.fetch(f"SELECT p.id, p.sales_order_id, p.status, p.amount FROM proformas p WHERE p.tenant_id = $1{extra}", *params)
+                _kls = await kelas_bayar_terbit(conn, ctx["tenant_id"], _tr)
+                jumlah = {"sum_total": float(sum((Decimal(str(r["amount"] or 0)) for r in _tr if r["status"] != "cancelled"), Decimal("0"))),
+                          "sum_sisa": float(sum((max(Decimal("0"), nom - bayar) for _, nom, bayar in _kls.values()), Decimal("0")))}
 
             rows = await conn.fetch(
                 f"""
@@ -440,11 +456,15 @@ async def list_proformas(
                 for r in rows
             ]
             # 14 Okt 2026: aksi per baris = SATU aturan dgn ?aksi= & /summary (terbayar = sumber yang sama dgn kolom `paid`)
+            from ..services import proforma_daftar as _pd
+            _kel = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"], "sales_order_id": r["sales_order_id"]} for r in rows])
             for it, r in zip(items, rows):
-                it["aksi"] = _pa.aksi_proforma(
-                    r["status"], r["so_status"],
-                    _pa.proforma_lunas(r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0),
-                    r["due_date"], hari_ini)
+                _lunas = _pa.proforma_lunas(r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0)
+                it["aksi"] = _pa.aksi_proforma(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini)
+                # 21 Okt 2026 (PENJUALAN-SERAGAM): keadaan jatuh tempo + documents[] (bundel tanpa rekap, satu definisi)
+                it.update(_pd.jatuh_tempo_fakta(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini))
+                it["documents"] = _pd.documents_baris(_kel.get(r["id"], []))
+                it["doc_count"] = len(it["documents"])
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "proforma", items)
 
@@ -458,6 +478,7 @@ async def list_proformas(
                 "page": page,
                 "limit": limit,
                 "total_pages": total_pages,
+                **jumlah,
             }
 
     except HTTPException:
@@ -482,14 +503,15 @@ async def kelas_bayar_terbit(conn, tid: str, rows) -> dict:
     return hasil
 
 
-async def aksi_semua_proforma(conn, tid: str, hari_ini) -> dict:
+async def aksi_semua_proforma(conn, tid: str, hari_ini, cari=None) -> dict:
     """{id proforma: (kunci aksi, nilai Decimal)} untuk SEMUA proforma tenant yang punya aksi -- SATU pemilih untuk
     ?aksi= daftar DAN /summary (14 Okt 2026). Nilai: draf = nominal, terbit = SISA (nominal - terbayar). lunas =
     kelas_bayar_terbit (rumus tunggal proforma_lunas)."""
+    pred, par = cari if cari else (None, [])  # 21 Okt 2026: ?search= /summary (predikat daftar _syarat_cari)
     rows = await conn.fetch(
         """SELECT p.id, p.sales_order_id, p.status, p.amount, p.due_date, so.status AS so_status
              FROM proformas p LEFT JOIN sales_orders so ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
-            WHERE p.tenant_id = $1""", tid)
+            WHERE p.tenant_id = $1""" + (f" AND {pred}" if pred else ""), tid, *par)
     kelas = await kelas_bayar_terbit(conn, tid, rows)
     hasil = {}
     for r in rows:
@@ -510,7 +532,7 @@ async def id_terbit_belum_lunas(conn, tid: str) -> list:
 
 
 @router.get("/summary")
-async def get_proforma_summary(request: Request):
+async def get_proforma_summary(request: Request, search: Optional[str] = Query(None)):
     """Kartu ringkasan Proforma (U2 CW, 4 Okt 2026), pola /sales-orders/summary. Terbayar = SUMBER YANG SAMA dengan
     daftar (services/proforma_terbayar.terbayar_proforma, atribusi bersama plafon & PDF) dan RUMUS yang sama dengan
     serialize_proforma (lunas = terbayar + 0,005 >= nominal; sisa = nominal - terbayar). Tenant eksplisit. DI ATAS
@@ -519,9 +541,11 @@ async def get_proforma_summary(request: Request):
     tid = ctx["tenant_id"]
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, sales_order_id, status, amount FROM proformas WHERE tenant_id = $1", tid)
+        # 21 Okt 2026 (PENJUALAN-SERAGAM): ?search= membatasi SEMUA hitungan/nilai (predikat daftar). Tanpa search = perilaku lama persis.
+        _pred, _par = _syarat_cari(search, 2)
+        rows = await conn.fetch("SELECT p.id, p.sales_order_id, p.status, p.amount FROM proformas p WHERE p.tenant_id = $1" + (f" AND {_pred}" if _pred else ""), tid, *_par)
         kelas = await kelas_bayar_terbit(conn, tid, rows)
-        aksi_map = await aksi_semua_proforma(conn, tid, await tanggal_dokumen(conn, tid))
+        aksi_map = await aksi_semua_proforma(conn, tid, await tanggal_dokumen(conn, tid), (_pred, _par) if _pred else None)
     per = {}
     for r in rows:
         n, j = per.get(r["status"], (0, Decimal("0")))
@@ -579,7 +603,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT p.*, so.order_number, so.total_amount AS order_total_amount
+                SELECT p.*, so.order_number, so.total_amount AS order_total_amount, so.status AS so_status
                 FROM proformas p
                 LEFT JOIN sales_orders so
                        ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
@@ -605,6 +629,9 @@ async def get_proforma_detail(request: Request, proforma_id: str):
 
             data = serialize_proforma(row, row["order_number"], paid, paid_breakdown)
             data["order_total_amount"] = _f(row["order_total_amount"])
+            from ..services import proforma_daftar as _pd  # 21 Okt 2026: keadaan jatuh tempo (aditif; fungsi SAMA dgn daftar)
+            data.update(_pd.jatuh_tempo_fakta(row["status"], row["so_status"], _pa.proforma_lunas(row["amount"], paid),
+                                              row["due_date"], await tanggal_dokumen(conn, ctx["tenant_id"])))
             data["deposits"] = [
                 {
                     "id": str(d["id"]),

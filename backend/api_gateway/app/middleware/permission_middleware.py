@@ -1011,6 +1011,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/production/[^/]+$", ["GET"], "item", "R"),
     (r"^/api/production/[^/]+/cost\-analysis$", ["GET"], "item", "R"),
     (r"^/api/proformas$", ["GET"], "proforma", "R"),
+    (r"^/api/proformas/[^/]+/documents$", ["GET"], "proforma", "R"),  # PENJUALAN-SERAGAM bundel proforma
     (r"^/api/proformas/[^/]+$", ["GET"], "proforma", "R"),
     (r"^/api/proformas/[^/]+/pdf$", ["GET"], "proforma", "R"),
     (r"^/api/proformas/[^/]+/history$", ["GET"], "proforma", "R"),  # U2 CW 4 Okt 2026 (GET tak-terpetakan = tertutup)
