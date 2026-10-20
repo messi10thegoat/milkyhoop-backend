@@ -66,10 +66,14 @@ class _Konn:
         return len(self.rows)
 
     async def fetch(self, sql, *a):
+        if "AS sisa FROM credit_notes" in sql:  # S2-NK: sisa jurnal per halaman (tak direkam)
+            return []
         self.sql.append((sql, a))
         return [] if "FROM sales_invoices" in sql else self.rows
 
     async def fetchrow(self, sql, *a):
+        if "AS n," in sql:  # S2-NK: hitungan pill belum_terpakai (tak direkam)
+            return {"n": 0, "v": 0}
         self.sql.append((sql, a))
         return self.row
 

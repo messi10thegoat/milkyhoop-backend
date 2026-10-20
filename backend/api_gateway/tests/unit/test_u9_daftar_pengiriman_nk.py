@@ -126,10 +126,14 @@ class _KonnNK:
         return self.void if "status = 'void'" in sql else len(self.rows)
 
     async def fetch(self, sql, *a):
+        if "AS sisa FROM credit_notes" in sql:  # S2-NK: sisa jurnal per halaman (tak direkam)
+            return []
         self.sql.append(("fetch", sql, a))
         return self.so_rows if "FROM sales_invoices" in sql else self.rows
 
     async def fetchrow(self, sql, *a):
+        if "AS n," in sql:  # S2-NK: hitungan pill belum_terpakai (tak direkam)
+            return {"n": 0, "v": 0}
         self.sql.append(("row", sql, a))
         return {"total": 3, "draft_count": 1, "posted_count": 1, "partial_count": 1, "applied_count": 0,
                 "total_value": 300, "total_applied": 10, "total_refunded": 0, "available_balance": 290,
