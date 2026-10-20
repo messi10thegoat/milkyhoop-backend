@@ -90,6 +90,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/credit-notes/[^/]+/attachments/[^/]+/download$", ["GET"], "credit_note", "R"),
     (r"^/api/credit-notes/[^/]+/attachments/[^/]+$", ["DELETE"], "credit_note", "D"),
     (r"^/api/quotes/[^/]+/attachments$", ["POST"], "quote", "U"),
+    (r"^/api/quotes/[^/]+/documents$", ["GET"], "quote", "R"),  # PENJUALAN-SERAGAM bundel penawaran (eksplisit; juga tercakup prefix ^/api/quotes)
     (r"^/api/quotes/[^/]+/attachments$", ["GET"], "quote", "R"),
     (r"^/api/quotes/[^/]+/attachments/[^/]+/download$", ["GET"], "quote", "R"),
     (r"^/api/quotes/[^/]+/attachments/[^/]+$", ["DELETE"], "quote", "D"),

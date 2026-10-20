@@ -81,6 +81,24 @@ async def main():
                     cek(f"{t} documents==SO {q['quote_number']}", q["documents"] == dok_so.get(q["sales_order_id"]), (q["documents"], dok_so.get(q["sales_order_id"])))
                 else:
                     cek(f"{t} tanpa SO = quotation {q['quote_number']}", q["documents"] == [{"type": "quotation"}])
+            # 21 Okt: GET /quotes/{id}/documents -- jangkar tampil sebagai dirinya; documents[] baris == bundel tanpa rekap & tanpa nota kredit; terkonversi: groups == bundel SO
+            from uuid import UUID as _U
+            from app.routers import dokumen as DK
+            for q in qs:
+                b = await DK.susun_dokumen_penawaran(c, {'tenant_id': t, 'user_id': None}, _U(q['id']))
+                tipe = [{'type': x['kind']} for g in b['groups'] if g['key'] != 'rekap' for x in g['docs'] if x['kind'] != 'credit_note']
+                cek(f"{t} bundel==documents {q['quote_number']}", q['documents'] == tipe, (q['documents'], tipe))
+                pn = [x for g in b['groups'] if g['key'] == 'pnw' for x in g['docs']]
+                esp = 'draf' if q['status'] == 'draft' else 'batal' if q['status'] == 'void' else 'terbit'
+                cek(f"{t} jangkar {q['quote_number']}", len(pn) == 1 and pn[0]['id'] == q['id'] and pn[0]['status'] == esp and pn[0]['batal'] == (q['status'] == 'void'), pn)
+                cek(f"{t} anchor {q['quote_number']}", b['anchor']['kind'] == 'quotation' and b['anchor']['id'] == q['id'] and b['anchor']['paid'] is None and b['default'] == {'group': 'pnw', 'index': 0}, b['anchor'])
+                cek(f"{t} lengkap {q['quote_number']}", all({'sent', 'batal', 'status'} <= set(x) for g in b['groups'] for x in g['docs']))
+                if q['sales_order_id']:
+                    so_b = await DK.susun_dokumen(c, {'tenant_id': t, 'user_id': None}, _U(q['sales_order_id']), sertakan_nk=True)
+                    kunci = lambda gs: [(g['key'], [(x['kind'], x['id']) for x in g['docs']]) for g in gs]  # noqa: E731
+                    cek(f"{t} groups==bundel SO {q['quote_number']}", kunci(b['groups']) == kunci(so_b['groups']), (kunci(b['groups']), kunci(so_b['groups'])))
+                else:
+                    cek(f"{t} tanpa SO = pnw saja {q['quote_number']}", [g['key'] for g in b['groups']] == ['pnw'], [g['key'] for g in b['groups']])
             first = d(await QU.list_quotes(**kw(QU.list_quotes, r, limit=100, with_totals=True)))
             cek(f"{t} sum_total", abs(first["sum_total"] - sum(float(q["total_amount"]) for q in qs)) < 0.005, (first["sum_total"], sum(float(q['total_amount']) for q in qs)))
             cek(f"{t} total==semua halaman", first["total"] == len(qs))

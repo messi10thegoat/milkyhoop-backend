@@ -530,12 +530,74 @@ async def susun_dokumen_proforma(conn, ctx: dict, proforma_id: UUID) -> dict:
     }
 
 
+async def susun_dokumen_penawaran(conn, ctx: dict, quote_id: UUID) -> dict:
+    """PENJUALAN-SERAGAM (21 Okt 2026, MASTER): bundel panel berjangkar PENAWARAN, skema SAMA dgn bundel SO/faktur. Penawaran SELALU tampil
+    sebagai dirinya (kelompok `pnw`, juga draf/void; status dokumen "draf"/"batal"/"terbit"). Belum jadi SO: hanya `pnw`. Sudah jadi SO: kelompok
+    bundel SO-nya APA ADANYA (rekap · pnw · pro · kw · ki · nk; susun_dokumen(sertakan_nk=True)) -- `documents[]` baris daftar = bundel tanpa
+    rekap dan tanpa nota kredit (kolom Dok. Pesanan). Kepala `anchor` (kind=quotation): position_text = status penawaran; total = total_amount;
+    paid/balance = null (Penawaran tanpa sisa)."""
+    from ..services import dokumen_bundel as DB
+    tid = ctx["tenant_id"]
+    q = await conn.fetchrow(
+        """SELECT id, quote_number, customer_id, customer_name, status, total_amount, expiry_date, converted_to_type, converted_to_id
+           FROM quotes WHERE id = $1 AND tenant_id = $2""", quote_id, tid)
+    if not q:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+    so_id = None
+    if q["converted_to_type"] == "sales_order" and q["converted_to_id"]:
+        so_id = await conn.fetchval("SELECT id FROM sales_orders WHERE id = $1 AND tenant_id = $2", q["converted_to_id"], tid)
+    so_info = {}
+    if so_id:
+        b = await susun_dokumen(conn, ctx, so_id, sertakan_nk=True)
+        kelompok, so_info = b["groups"], b["so"]
+    else:
+        kelompok = []
+    if not any(g["key"] == "pnw" for g in kelompok):  # jangkar selalu tampil sebagai dirinya
+        dq = await DB.penawaran(conn, tid, q["id"])
+        kelompok.insert(1 if kelompok and kelompok[0]["key"] == "rekap" else 0, {"key": "pnw", "label": "Penawaran", "docs": [dq]})
+        await DB.rampungkan(conn, tid, [kelompok[1 if kelompok and kelompok[0]["key"] == "rekap" else 0]])
+    i_pnw = next(i for i, g in enumerate(kelompok) if g["key"] == "pnw")
+    for d in kelompok[i_pnw]["docs"]:  # status dokumen penawaran dari status penawaran (rampungkan memberi "terbit" utk semua)
+        if d["id"] == str(q["id"]):
+            d["batal"] = q["status"] == "void"
+            d["status"] = "draf" if q["status"] == "draft" else ("batal" if q["status"] == "void" else "terbit")
+    teks = {"draft": "Draf", "sent": "Terkirim", "viewed": "Dilihat", "accepted": "Diterima", "declined": "Ditolak",
+            "converted": "Jadi pesanan", "void": "Dibatalkan", "expired": "Kedaluwarsa"}.get(q["status"], q["status"])
+    from ..services.penawaran_kedaluwarsa import kedaluwarsa
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    if kedaluwarsa(q["status"], q["expiry_date"], await tanggal_dokumen(conn, tid)):
+        teks = "Kedaluwarsa"
+    kontak = await _kontak(conn, tid, q["customer_id"])
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    return {
+        "anchor": {"kind": "quotation", "id": str(q["id"]), "number": q["quote_number"], "customer": q["customer_name"] or "",
+                   "position_text": teks, "total": DB._uang(q["total_amount"]), "paid": None, "balance": None,
+                   "sales_order_id": str(so_id) if so_id else None, "sales_order_number": so_info.get("number"),
+                   "order_code": so_info.get("order_code"), "order_title": so_info.get("order_title"),
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        "default": {"group": "pnw", "index": 0},  # dibuka pertama = penawaran ini (jangkar tampil sebagai dirinya)
+        "groups": kelompok,
+    }
+
+
 @router.get("/sales-invoices/{invoice_id}/documents")
 async def dokumen_faktur(request: Request, invoice_id: str):
     ctx = _ctx(request)
     pool = await _pool()
     async with pool.acquire() as conn:
         return await susun_dokumen_faktur(conn, ctx, _uuid(invoice_id))
+
+
+@router.get("/quotes/{quote_id}/documents")
+async def dokumen_penawaran(request: Request, quote_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_penawaran(conn, ctx, _uuid(quote_id))
 
 
 @router.get("/proformas/{proforma_id}/documents")

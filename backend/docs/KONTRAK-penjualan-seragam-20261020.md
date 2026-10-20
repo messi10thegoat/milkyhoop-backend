@@ -22,7 +22,7 @@ Daftar (item) + detail membawa: `kedaluwarsa_terbuka` (sent/viewed ∧ bertangga
 - `documents`: tanpa SO = `[quotation]`; sudah jadi SO = daftar dokumen SO itu (sama dgn kolom Dok. Pesanan).
 - Daftar: `?with_totals=true` → `sum_total` (Σ total_amount hasil filter; **tanpa sum_sisa**). Paginasi: `skip/limit/page/offset` + `has_more`.
 - `GET /api/quotes/summary?search=` ; pill count/value: `perlu_dikirim, perlu_dipesan, tunggu_jawaban, segera_habis, lewat_masa`.
-- Bundel: belum ada rute `/quotes/{id}/documents` (jangkar Penawaran memakai bundel SO bila sudah jadi SO).
+- `GET /api/quotes/{id}/documents` (21 Okt): `anchor.kind="quotation"` (position_text = Draf/Terkirim/Dilihat/Diterima/Ditolak/Jadi pesanan/Dibatalkan/**Kedaluwarsa**; `total`=total_amount; `paid/balance = null`; sales_order_* bila sudah jadi SO). Penawaran SELALU tampil sebagai dirinya di kelompok `pnw` (draf → status `draf`, void → `batal` + `batal=true`, lainnya `terbit`). Belum jadi SO: hanya `pnw`. Sudah jadi SO: kelompok bundel SO-nya apa adanya (`rekap · pnw · pro · kw · ki · nk`, `sertakan_nk`). `default={group:"pnw",index:0}`. `documents[]` baris = bundel TANPA rekap dan TANPA `credit_note`. Izin: `quote` R.
 
 ## 2. Penerimaan Pembayaran — `GET /api/receive-payments`
 
@@ -53,7 +53,7 @@ Daftar (item) + detail membawa: `kedaluwarsa_terbuka` (sent/viewed ∧ bertangga
 
 ## 5. Yang BELUM / tiket
 
-Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik) · `response_model` Pengiriman · pill `belum_diterima`/`perlu_difaktur` · bundel `/quotes/{id}/documents` · paritas detail Uang Muka/Nota Kredit/Faktur (BACKEND S2) · pesan validasi default Pydantic masih Inggris (FE mencocokkan teksnya).
+Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik) · `response_model` Pengiriman · pill `belum_diterima`/`perlu_difaktur` · paritas detail Uang Muka/Nota Kredit/Faktur (BACKEND S2) · pesan validasi default Pydantic masih Inggris (FE mencocokkan teksnya).
 
 ## 6. Bukti / alat
 

@@ -82,3 +82,13 @@ def test_skema_dan_tanda_tangan():
 
 def test_search_bukan_string_dipanggil_langsung_tanpa_saring():
     assert PD.syarat_cari(object(), 2) == (None, [])
+
+
+def test_bundel_penawaran_rute_izin_dan_jangkar():
+    from app.middleware.permission_middleware import izin_untuk_jalur
+    from app.routers import dokumen as DK
+    assert izin_untuk_jalur("/api/quotes/0b3c/documents", "GET") == ("quote", "R")
+    assert any(getattr(r, "path", "") == "/quotes/{quote_id}/documents" for r in DK.router.routes) and hasattr(DK, "susun_dokumen_penawaran")
+    src = inspect.getsource(DK.susun_dokumen_penawaran)
+    assert "susun_dokumen(conn, ctx, so_id, sertakan_nk=True)" in src and '"kind": "quotation"' in src and '"group": "pnw"' in src
+    assert '"draf" if q["status"] == "draft"' in src and 'q["status"] == "void"' in src
