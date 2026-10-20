@@ -46,6 +46,14 @@ def _pool(monkeypatch, mod, conn):
     import app.services.kode_order as KO
     monkeypatch.setattr(KO, "tempel_kode", tk)
 
+    # S2 b: documents[] baris diuji di test_dokumen_um_nk + harness nyata (uji-nyata-dokumen-um-nk); di sini bundel = kosong
+    from app.services import nota_kredit_daftar as _nkd, uang_muka_daftar as _umd
+
+    async def _kel(conn, tid, xs):
+        return {}
+    monkeypatch.setattr(_nkd, "kelompok_untuk", _kel)
+    monkeypatch.setattr(_umd, "kelompok_untuk", _kel)
+
 
 class _KonnDL:
     def __init__(self, rows):

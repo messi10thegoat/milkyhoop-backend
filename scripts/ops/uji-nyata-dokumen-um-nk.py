@@ -65,7 +65,9 @@ async def main():
                     ("NK", CN.list_credit_notes, DK.susun_dokumen_nota_kredit, "nk", "credit_note", "credit_note_number")):
                 rows = await semua(fn, req)
                 sisa_nk = await NKD.sisa_nk_jurnal_many(c, t, [r["id"] for r in rows]) if jenis == "NK" else {}
-                e_doc, e_jkr, e_sub, e_kep, n_dok, n_so = [], [], [], [], 0, 0
+                pf_um = {str(r["id"]): str(r["proforma_id"]) for r in await c.fetch(
+                    "SELECT id, proforma_id FROM customer_deposits WHERE tenant_id=$1 AND proforma_id IS NOT NULL", t)}
+                e_doc, e_jkr, e_sub, e_kep, e_pro, e_st, n_dok, n_so = [], [], [], [], [], [], 0, 0
                 for x in rows:
                     B = js(await susun(c, ctx, UUID(x["id"])))
                     docs = [(g["key"], d) for g in B["groups"] for d in g["docs"]]
@@ -77,6 +79,15 @@ async def main():
                     dd = next((g for g in B["groups"] if g["key"] == (df or {}).get("group")), None)
                     if not df or not dd or (dd["docs"][df["index"]]["kind"], dd["docs"][df["index"]]["id"]) != (akind, x["id"]):
                         e_jkr.append((x[nomor], x["status"], df))
+                    # proforma = HANYA proforma asal uang muka ini (UM); NK tak punya kelompok proforma
+                    pro = {d["id"] for k, d in docs if d["kind"] == "proforma"}
+                    if pro and (jenis == "NK" or pro != {pf_um.get(x["id"])}):
+                        e_pro.append((x[nomor], sorted(pro), pf_um.get(x["id"])))
+                    # status dokumen jangkar: draf -> "draf", void -> "batal"
+                    jd = dd["docs"][df["index"]] if (df and dd) else None
+                    harap_st = {"draft": "draf", "void": "batal"}.get(x["status"])
+                    if jd and harap_st and jd["status"] != harap_st:
+                        e_st.append((x[nomor], x["status"], jd["status"]))
                     so_id = B["anchor"]["sales_order_id"]
                     if so_id:
                         n_so += 1
@@ -101,6 +112,8 @@ async def main():
                 cek(not e_jkr, f"{t} {jenis}: jangkar selalu tampil sebagai dirinya + default menunjuknya", str(e_jkr[:3]))
                 cek(not e_sub, f"{t} {jenis}: dokumen SO ⊆ bundel SO, medan identik ({n_so} ber-SO)", str(e_sub[:3]))
                 cek(not e_kep, f"{t} {jenis}: kepala anchor == baris (posisi, sisa)", str(e_kep[:3]))
+                cek(not e_pro, f"{t} {jenis}: proforma = HANYA proforma asal uang muka", str(e_pro[:3]))
+                cek(not e_st, f"{t} {jenis}: status jangkar draf/void = draf/batal", str(e_st[:3]))
     finally:
         await tx.rollback(); await c.close()
     print("RINGKAS gagal=%d" % gagal)
