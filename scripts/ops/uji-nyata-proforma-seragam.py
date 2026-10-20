@@ -117,7 +117,8 @@ async def banding():
             for i, (p, q) in enumerate(zip(x["items"], y["items"])):
                 if p != {kk: v for kk, v in q.items() if kk not in BARU}: beda.append((k, f"item{i}"))
         elif "|PD|" in k:
-            if x["data"] != {kk: v for kk, v in y["data"].items() if kk not in BARU}: beda.append((k, "detail"))
+            # aksi di DETAIL ditambah unit paritas detail==baris (21 Okt) -> bukan medan lama
+            if x["data"] != {kk: v for kk, v in y["data"].items() if kk not in BARU | {"aksi"}}: beda.append((k, "detail"))
         elif x != y: beda.append((k, "summary"))
     print("BANDING: %d variant, BEDA=%d %s" % (len(a), len(beda), beda[:5])); sys.exit(1 if beda else 0)
 
