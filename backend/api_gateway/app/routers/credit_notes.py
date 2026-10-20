@@ -910,9 +910,24 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
             "lines": lebih})
 
 
+ALASAN_WAJIB_BARIS = frozenset({"discount", "pricing_error"})
+
+
+def tolak_potongan_tanpa_baris(reason, items) -> None:
+    """NK POTONGAN NOMINAL (21 Okt 2026, MASTER): alasan potongan harga / koreksi harga WAJIB membawa baris eksplisit (`items`).
+    Tanpa itu pratinjau "dari faktur" mengisi SEMUA baris faktur (akar NK Rp 2.340.000 grapgrap) -> 422 berpesan, tanpa menulis."""
+    if reason in ALASAN_WAJIB_BARIS and not items:
+        alasan = str(LABEL_ALASAN_NK.get(reason, reason)).lower()
+        raise HTTPException(status_code=422, detail={
+            "code": "CN_BARIS_WAJIB",
+            "message": f"Nota kredit {alasan} wajib berisi baris nominal (mis. Potongan keterlambatan 1 x nominal); "
+                       "baris tidak diisi otomatis dari faktur."})
+
+
 async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
     """Inti POST /credit-notes (draf), di transaksi PEMANGGIL: rute create DAN /credit-notes/preview (savepoint lalu
     rollback). Isi = isi transaksi rute lama tanpa perubahan (30 Sep 2026)."""
+    tolak_potongan_tanpa_baris(body.reason, body.items)  # pertahanan kedua (skema POST sudah mewajibkan items >= 1)
     # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
     # dulu body mentah -> CN-2608-0001 menyimpan NAMA "Toko Melati" sebagai customer_id).
     pelanggan_cn = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
@@ -1365,6 +1380,7 @@ async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        tolak_potongan_tanpa_baris(body.reason, body.items)  # NK potongan: bentuk "dari faktur" (items absen) ditolak 422
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
         async with pool.acquire() as conn:
