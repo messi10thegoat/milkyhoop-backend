@@ -474,11 +474,14 @@ async def list_customer_deposits(
             if aksi in _umd.AKSI_UM:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
                 conditions.append(_umd.sql_aksi(aksi))
 
-            # S2-UM: sisa JURNAL semua uang muka tenant (CTE; teks diturunkan dari SQL_SISA_UANG_MUKA) untuk aksi/total
-            _akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
-            cte = f"WITH {_umd.CTE_SISA} AS ({_umd.sql_sisa_semua(f'${param_idx}')}) "
-            params.append(_akun)
-            param_idx += 1
+            # S2-UM: sisa JURNAL semua uang muka tenant (CTE; teks diturunkan dari SQL_SISA_UANG_MUKA) -- HANYA bila
+            # ?aksi= / with_totals dipakai: tanpa keduanya SQL & parameter daftar PERSIS seperti sebelumnya.
+            cte = ""
+            if aksi in _umd.AKSI_UM or with_totals is True:
+                _akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+                cte = f"WITH {_umd.CTE_SISA} AS ({_umd.sql_sisa_semua(f'${param_idx}')}) "
+                params.append(_akun)
+                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
