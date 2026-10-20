@@ -78,6 +78,8 @@ class _C:
         self.q.append(sql)
 
     async def fetchrow(self, sql, *a):
+        if "FROM compute_ar_outstanding" in sql:  # 21 Okt: blok potongan > sisa (pastikan_potongan_muat_sisa) -> sisa sebelum
+            return {"outstanding": Decimal("80000")}
         if "JOIN customer_deposits cd ON cd.id = cn.created_deposit_id" in sql:
             return None  # tanpa kelebihan -> tanpa saldo kredit
         if "FROM fiscal_periods" in sql:

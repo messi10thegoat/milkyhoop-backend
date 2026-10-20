@@ -85,6 +85,8 @@ async def main():
         tr = c.transaction(); await tr.start()
         try:
             return await fn()
+        except Exception as e:  # galat tak terduga = FAIL terbaca (bukan harness mati diam)
+            cek(False, f"{fn.__name__}: galat tak terduga", f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:160]}")
         finally:
             await tr.rollback()
 

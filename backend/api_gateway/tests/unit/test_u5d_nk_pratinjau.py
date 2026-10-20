@@ -120,6 +120,7 @@ class _Conn:
 
 def _cn(**u):
     d = {"id": uuid.uuid4(), "credit_note_number": "CN-1", "status": "posted", "total_amount": 100, "amount_applied": 0,
+         "reason": "return",  # 21 Okt: baris NK nyata selalu beralasan (penentu akun/blok potongan membacanya)
          "amount_refunded": 0, "original_invoice_id": None, "created_deposit_id": None, "customer_id": uuid.uuid4(),
          "credit_note_date": date(2026, 10, 4)}
     d.update(u)
