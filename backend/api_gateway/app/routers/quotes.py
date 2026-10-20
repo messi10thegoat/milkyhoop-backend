@@ -238,6 +238,8 @@ async def list_quotes(
     limit: int = Query(20, ge=1, le=100),
     page: int = Query(1, ge=1),
     offset: int = Query(0, ge=0),
+    # 17 Okt 2026 (PENJUALAN-SERAGAM): sum_total atas SEMUA hasil filter, opt-in (FE: muat pertama saja)
+    with_totals: bool = Query(False),
 ):
     """List quotes with filters."""
     # Terima 3 konvensi paginasi: skip (warisan) + page/offset (dulu DIABAIKAN diam —
@@ -289,32 +291,24 @@ async def list_quotes(
                 params.append(end_date)
                 param_idx += 1
 
-            # U1e: ?search= juga mencocokkan nomor/kode/judul SO HASIL konversi (helper sama dgn 6 modul lain)
-            from ..services.kode_order import sql_cari_so_induk as _cari_so
-
-            if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}) OR {_cari_so('quote', 'quotes', '$1', f'${param_idx}')})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(quote_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR subject ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = quotes.tenant_id AND c.search_text ILIKE ${param_idx}) OR {_cari_so('quote', 'quotes', '$1', f'${param_idx}')})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+            # U1e: ?search= juga mencocokkan nomor/kode/judul SO HASIL konversi (helper sama dgn 6 modul lain);
+            # 17 Okt 2026: predikat dipindah ke services/penawaran_daftar.syarat_cari -- SATU sumber dgn /summary?search=
+            from ..services.penawaran_daftar import syarat_cari as _syarat_cari
+            _pred_cari, _par_cari = _syarat_cari(search, param_idx)
+            if _pred_cari:
+                conditions.append(_pred_cari)
+                params.extend(_par_cari)
+                param_idx += len(_par_cari)
 
             where_clause = " AND ".join(conditions)
 
             # Count
             count_query = f"SELECT COUNT(*) FROM quotes WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dgn COUNT
+                jumlah = {"sum_total": float(await conn.fetchval(
+                    f"SELECT COALESCE(SUM(total_amount), 0) FROM quotes WHERE {where_clause}", *params))}
 
             # List
             list_query = f"""
@@ -331,6 +325,8 @@ async def list_quotes(
             rows = await conn.fetch(list_query, *params)
             from ..services.kode_order import so_hasil_penawaran as _so_hasil
             so_hasil = await _so_hasil(conn, ctx["tenant_id"], [r["id"] for r in rows])  # batch, nol N+1
+            from ..services.penawaran_daftar import dokumen_penawaran as _dok_pn, kedaluwarsa_fakta as _kead
+            dok_pn = await _dok_pn(conn, ctx["tenant_id"], {k: v["sales_order_id"] for k, v in so_hasil.items()})  # batch, nol N+1
 
             items = []
             for row in rows:
@@ -361,6 +357,8 @@ async def list_quotes(
                         created_at=row["created_at"].isoformat(),
                         is_expired=is_expired,
                         aksi=aksi_penawaran(row["status"], row["expiry_date"], hari_ini, row["converted_to_id"]),
+                        **_kead(row["status"], row["expiry_date"], hari_ini),
+                        documents=dok_pn[str(row["id"])], doc_count=len(dok_pn[str(row["id"])]),
                         **so_hasil[str(row["id"])],
                     )
                 )
@@ -375,6 +373,7 @@ async def list_quotes(
                 page=page,
                 limit=limit,
                 total_pages=total_pages,
+                **jumlah,
             )
 
     except HTTPException:
@@ -445,13 +444,16 @@ async def get_expiring_quotes(
 
 
 @router.get("/summary", response_model=QuoteSummaryResponse)
-async def get_quote_summary(request: Request):
-    """Get quote statistics summary."""
+async def get_quote_summary(request: Request, search: Optional[str] = Query(None)):
+    """Get quote statistics summary. ?search= (17 Okt 2026, chip dalam konteks cari): predikat SAMA dgn daftar
+    (services/penawaran_daftar.syarat_cari); membatasi SEMUA hitungan/nilai (semuanya berbasis baris penawaran)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
+            from ..services.penawaran_daftar import syarat_cari as _syarat_cari
+            _pred_cari, _par_cari = _syarat_cari(search, 4)  # $1 tenant, $2 hari ini, $3 ambang
             query = """
                 SELECT
                     COUNT(*) as total_quotes,
@@ -476,14 +478,14 @@ async def get_quote_summary(request: Request):
                     -- 13 Okt 2026: pill AKSI (sql_aksi, sama dengan ?aksi= daftar)
                     {aksi_kolom}
                 FROM quotes
-                WHERE tenant_id = $1
-            """.format(aktif=sql_menunggu_aktif("$2"), lewat=sql_kedaluwarsa("$2"),
+                WHERE tenant_id = $1{cari}
+            """.format(aktif=sql_menunggu_aktif("$2"), lewat=sql_kedaluwarsa("$2"), cari=(f" AND {_pred_cari}" if _pred_cari else ""),
                        aksi_kolom=",\n".join(
                            f"COUNT(*) FILTER (WHERE {sql_aksi(k, '$2', '$3')}) as {k}_count, "
                            f"COALESCE(SUM(total_amount) FILTER (WHERE {sql_aksi(k, '$2', '$3')}), 0) as {k}_value"
                            for k in AKSI))
             row = await conn.fetchrow(query, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]),
-                                      AMBANG_SEGERA_HABIS)
+                                      AMBANG_SEGERA_HABIS, *_par_cari)
 
             return QuoteSummaryResponse(
                 success=True,
@@ -548,7 +550,9 @@ async def get_quote_detail(request: Request, quote_id: str):
             items = await conn.fetch(items_query, uuid_module.UUID(quote_id), ctx["tenant_id"])
 
             # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
-            is_expired = kedaluwarsa(quote["status"], quote["expiry_date"], await tanggal_dokumen(conn, ctx["tenant_id"]))
+            from ..services.penawaran_daftar import kedaluwarsa_fakta as _kead_detail
+            _hari_detail = await tanggal_dokumen(conn, ctx["tenant_id"])
+            is_expired = kedaluwarsa(quote["status"], quote["expiry_date"], _hari_detail)
             # Q5 (3 Okt): kontak + nama usaha untuk pesan Kirim -- sumber & aturan SAMA dgn bundel SO /documents
             _telp = await conn.fetchval(
                 """SELECT COALESCE(mobile_phone, phone, telepon) FROM customers WHERE id = $1 AND tenant_id = $2""",
@@ -637,6 +641,7 @@ async def get_quote_detail(request: Request, quote_id: str):
                     else None,
                     declined_reason=quote["declined_reason"],
                     is_expired=is_expired,
+                    **_kead_detail(quote["status"], quote["expiry_date"], _hari_detail),
                     customer_phone=_telp or None,
                     business_name=_usaha,
                     **_so,

@@ -228,21 +228,9 @@ async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
     return out
 
 
-async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
-    """rows: baris sales_orders (id, status, total_amount, expected_ship_date, quote_id).
-    -> {str(so_id): {position_text, position_muted, ship_text, ship_style, doc_count}}."""
-    ids = [r["id"] for r in rows]
-    if not ids:
-        return {}
-    rg = await ringkasan_pesanan(conn, tenant_id, ids)
-
-    pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
-    # Terbayar per proforma = SATU sumber kanonik (terbayar_proforma: atribusi uang muka tertaut/tercocok + kolam
-    # pesanan tanpa uang muka di luar tagihan) -- sama dengan detail proforma & Rekap. Dulu P1 memakai alokasikan
-    # dengan eksplisit = Σ uang muka ber-proforma_id saja (versi ringkas; diukur 1 Okt: lihat commit).
-    terbayar = await terbayar_proforma(conn, tenant_id, ids) if pfs else {}
-    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, ids)}
-    sj = {r["so_id"]: r["n"] for r in await conn.fetch(
+async def jumlah_sj_per_so(conn, tenant_id: str, ids: list) -> dict:
+    """{so_id: jumlah Surat Jalan aktif} -- SATU definisi untuk kolom Dok. Pesanan (fakta_daftar) DAN Penawaran (dokumen_per_so)."""
+    return {r["so_id"]: r["n"] for r in await conn.fetch(
         f"""SELECT x.so_id, count(DISTINCT x.fid) AS n FROM (
                 SELECT si.sales_order_id AS so_id, f.id AS fid
                 FROM invoice_fulfillments f JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
@@ -253,19 +241,14 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
             ) x GROUP BY 1""",
         tenant_id, ids,
     )}
-    baris = await conn.fetch(
-        """SELECT soi.id, soi.sales_order_id AS so_id, soi.quantity
-           FROM sales_order_items soi
-           JOIN sales_orders so ON so.id = soi.sales_order_id AND so.tenant_id = $1
-           LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = so.tenant_id
-           WHERE soi.sales_order_id = ANY($2::uuid[]) AND COALESCE(soi.perlu_kirim, p.track_inventory, false)""",
-        tenant_id, ids,
-    )
-    per_baris, _ = await terkirim_per_baris(conn, tenant_id, ids)
+
+
+async def jumlah_kwitansi_per_so(conn, tenant_id: str, ids: list) -> dict:
+    """{so_id: jumlah Kwitansi unik} -- SATU definisi untuk kolom Dok. Pesanan DAN Penawaran."""
     # Kwitansi = himpunan yang SAMA dengan kelompok "Pembayaran" panel /documents (routers/dokumen.susun_dokumen):
     # uang muka tertaut ber-jurnal + uang muka lepas yang diterapkan ke faktur SO + penerimaan atas faktur SO,
     # dihitung per nomor unik. Dulu uang muka dihitung tanpa syarat jurnal & tanpa yang diterapkan (gerbang 05 D3).
-    kw = {r["so_id"]: r["n"] for r in await conn.fetch(
+    return {r["so_id"]: r["n"] for r in await conn.fetch(
         """SELECT so_id, count(DISTINCT id) AS n FROM (
                SELECT COALESCE(cd.sales_order_id, p.sales_order_id) AS so_id, cd.id
                FROM customer_deposits cd
@@ -288,6 +271,59 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
            ) x GROUP BY 1""",
         tenant_id, ids,
     )}
+
+
+def dokumen_baris_so(status: str, ada_penawaran: bool, daftar_pf: list, n_kwitansi: int, n_sj: int, n_faktur: int) -> list:
+    """documents[{type}] SATU SO: proforma draf tak tampil; proforma batal tampil hanya bila SO batal (cap DIBATALKAN).
+    SATU aturan untuk baris Pesanan (fakta_daftar) dan baris Penawaran (dokumen_per_so)."""
+    return dokumen_so(ada_penawaran,
+                      sum(1 for p in daftar_pf if p["status"] != "draft" and (p["status"] != "cancelled" or status == "cancelled")),
+                      n_kwitansi, n_sj, n_faktur)
+
+
+async def dokumen_per_so(conn, tenant_id: str, rows: list) -> dict:
+    """KEADAAN-LIST Penawaran (17 Okt 2026): {so_id: [{type}]} untuk baris SO {id, status, quote_id} TANPA menghitung posisi/kirim.
+    Memakai fungsi/SQL YANG SAMA dengan fakta_daftar (SQL_PROFORMA_SO, SQL_JUMLAH_FAKTUR, jumlah_sj_per_so, jumlah_kwitansi_per_so,
+    dokumen_baris_so) -- kolom Dok. Penawaran == kolom Dok. Pesanan hasil konversinya."""
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return {}
+    pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
+    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, ids)}
+    sj = await jumlah_sj_per_so(conn, tenant_id, ids)
+    kw = await jumlah_kwitansi_per_so(conn, tenant_id, ids)
+    per_pf = {}
+    for p in pfs:
+        per_pf.setdefault(p["sales_order_id"], []).append(p)
+    return {r["id"]: dokumen_baris_so(r["status"], bool(r["quote_id"]), per_pf.get(r["id"], []), kw.get(r["id"], 0), sj.get(r["id"], 0),
+                                      faktur.get(r["id"], 0)) for r in rows}
+
+
+async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
+    """rows: baris sales_orders (id, status, total_amount, expected_ship_date, quote_id).
+    -> {str(so_id): {position_text, position_muted, ship_text, ship_style, doc_count}}."""
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return {}
+    rg = await ringkasan_pesanan(conn, tenant_id, ids)
+
+    pfs = [dict(p) for p in await conn.fetch(SQL_PROFORMA_SO, tenant_id, ids)]
+    # Terbayar per proforma = SATU sumber kanonik (terbayar_proforma: atribusi uang muka tertaut/tercocok + kolam
+    # pesanan tanpa uang muka di luar tagihan) -- sama dengan detail proforma & Rekap. Dulu P1 memakai alokasikan
+    # dengan eksplisit = Σ uang muka ber-proforma_id saja (versi ringkas; diukur 1 Okt: lihat commit).
+    terbayar = await terbayar_proforma(conn, tenant_id, ids) if pfs else {}
+    faktur = {r["so_id"]: r["n"] for r in await conn.fetch(SQL_JUMLAH_FAKTUR, tenant_id, ids)}
+    sj = await jumlah_sj_per_so(conn, tenant_id, ids)
+    baris = await conn.fetch(
+        """SELECT soi.id, soi.sales_order_id AS so_id, soi.quantity
+           FROM sales_order_items soi
+           JOIN sales_orders so ON so.id = soi.sales_order_id AND so.tenant_id = $1
+           LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = so.tenant_id
+           WHERE soi.sales_order_id = ANY($2::uuid[]) AND COALESCE(soi.perlu_kirim, p.track_inventory, false)""",
+        tenant_id, ids,
+    )
+    per_baris, _ = await terkirim_per_baris(conn, tenant_id, ids)
+    kw = await jumlah_kwitansi_per_so(conn, tenant_id, ids)
 
     # 7 Okt 2026: nama gudang fase lokasi (satu kueri, hanya bila ada SO berfase; tenant eksplisit)
     gid = list({r.get("fase_gudang_id") for r in rows if r.get("fase_gudang_id")})
@@ -317,10 +353,7 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
         teks_kirim, gaya = kirim(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
         k_hari, k_buka = kirim_hari(r["status"], r["expected_ship_date"], bool(bk), semua, hari)
         # Sama dengan panel: proforma draf tak tampil; proforma batal tampil hanya bila SO batal (cap DIBATALKAN).
-        dok = dokumen_so(bool(r["quote_id"]),
-                         sum(1 for p in daftar_pf if p["status"] != "draft"
-                             and (p["status"] != "cancelled" or r["status"] == "cancelled")),
-                         kw.get(sid, 0), sj.get(sid, 0), n_faktur)
+        dok = dokumen_baris_so(r["status"], bool(r["quote_id"]), daftar_pf, kw.get(sid, 0), sj.get(sid, 0), n_faktur)
         hasil[str(sid)] = {"position_text": teks_pos, "position_muted": muted,
                            "ship_text": teks_kirim, "ship_style": gaya, "doc_count": len(dok), "documents": dok,
                            "kirim_hari": k_hari, "kirim_terbuka": k_buka,

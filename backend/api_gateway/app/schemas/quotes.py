@@ -283,6 +283,13 @@ class QuoteListItem(BaseModel):
     created_at: str
     is_expired: bool = False
     aksi: Optional[str] = None  # 13 Okt 2026: pill AKSI (services/penawaran_kedaluwarsa.AKSI) atau null
+    # 17 Okt 2026 (PENJUALAN-SERAGAM, services/penawaran_daftar): server menghitung, FE hanya memformat
+    kedaluwarsa_terbuka: bool = False
+    kedaluwarsa_hari: Optional[int] = None
+    kedaluwarsa_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
+    kedaluwarsa_teks: Optional[str] = None
+    doc_count: int = 0
+    documents: List[Dict[str, str]] = []  # quotation + dokumen SO hasil konversi (sama dgn kolom Dok. Pesanan)
     # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
     sales_order_id: Optional[str] = None
     sales_order_number: Optional[str] = None
@@ -334,6 +341,10 @@ class QuoteDetail(BaseModel):
     declined_at: Optional[str] = None
     declined_reason: Optional[str] = None
     is_expired: bool = False
+    kedaluwarsa_terbuka: bool = False
+    kedaluwarsa_hari: Optional[int] = None
+    kedaluwarsa_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
+    kedaluwarsa_teks: Optional[str] = None
     customer_phone: Optional[str] = None  # Q5: kontak pelanggan (bundel SO /documents)
     business_name: Optional[str] = None   # Q5: nama usaha = kop dokumen
     # U1e (4 Okt 2026): SO HASIL konversi (null bila belum/ke faktur) -- nama sama dgn dokumen anak U0
@@ -372,6 +383,8 @@ class QuoteListResponse(BaseModel):
     page: int = 1
     limit: int = 20
     total_pages: int = 1
+    sum_total: Optional[float] = None  # 17 Okt 2026: Σ total_amount SEMUA hasil filter (with_totals=true)
+
 
 
 class QuoteDetailResponse(BaseModel):
