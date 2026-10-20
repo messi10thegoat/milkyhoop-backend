@@ -630,8 +630,14 @@ async def get_proforma_detail(request: Request, proforma_id: str):
             data = serialize_proforma(row, row["order_number"], paid, paid_breakdown)
             data["order_total_amount"] = _f(row["order_total_amount"])
             from ..services import proforma_daftar as _pd  # 21 Okt 2026: keadaan jatuh tempo (aditif; fungsi SAMA dgn daftar)
-            data.update(_pd.jatuh_tempo_fakta(row["status"], row["so_status"], _pa.proforma_lunas(row["amount"], paid),
-                                              row["due_date"], await tanggal_dokumen(conn, ctx["tenant_id"])))
+            _hari_d = await tanggal_dokumen(conn, ctx["tenant_id"])
+            _lunas_d = _pa.proforma_lunas(row["amount"], paid)
+            data.update(_pd.jatuh_tempo_fakta(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d))
+            # paritas detail == baris daftar (21 Okt 2026): aksi + documents[]/doc_count dari fungsi SAMA dgn daftar
+            data["aksi"] = _pa.aksi_proforma(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d)
+            _kel_d = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": row["id"], "sales_order_id": row["sales_order_id"]}])
+            data["documents"] = _pd.documents_baris(_kel_d.get(row["id"], []))
+            data["doc_count"] = len(data["documents"])
             data["deposits"] = [
                 {
                     "id": str(d["id"]),
