@@ -62,6 +62,24 @@ def jatuh_tempo_keadaan(status: str, terbuka: bool, due_date: Optional[date], ha
     return "telat" if d < 0 else "hari_ini" if d == 0 else "akan"
 
 
+POSISI_FAKTUR = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")
+
+
+def posisi_faktur(status: str, total, sisa) -> str:
+    """S1 detail faktur (20 Okt 2026, MASTER): teks Posisi faktur = siklus bayar dari SISA JURNAL (compute_ar_outstanding),
+    bukan cache status. Kata == kolom Status daftar FE r288 (statusSiklusFaktur: Draf · Belum lunas · Sebagian · Lunas · Batal).
+    Telat BUKAN posisi (ada di jatuh_tempo_keadaan; NetSuite memisahkan Status dari Days Overdue). sisa None = tanpa baris AR."""
+    from decimal import Decimal
+    if status == "draft":
+        return "Draf"
+    if status == "void":
+        return "Batal"
+    s = Decimal(str(sisa or 0))
+    if s <= 0:
+        return "Lunas"
+    return "Sebagian" if s < Decimal(str(total or 0)) else "Belum lunas"
+
+
 def jatuh_tempo_minggu_ini(terbuka: bool, due_date: Optional[date], hari_ini: date) -> bool:
     """Chip "Jatuh tempo minggu ini" (paket listpage P3, 16 Okt 2026): faktur TERBUKA (bagian belum-lunas is_overdue) yang
     jatuh temponya hari ini s.d. akhir minggu (Minggu; dashboard_v2.akhir_minggu = definisi "<= akhir minggu" kartu dasbor).

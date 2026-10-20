@@ -398,6 +398,8 @@ class InvoiceListItem(BaseModel):
     # 16 Okt 2026 (KEADAAN-LIST, faktur_daftar.jatuh_tempo_keadaan): telat | hari_ini | akan | selesai | tanpa; selalu terisi.
     jatuh_tempo_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     documents: List[Dict[str, str]] = []
+    # S1 (20 Okt 2026): Draf | Belum lunas | Sebagian | Lunas | Batal dari sisa jurnal (faktur_daftar.posisi_faktur).
+    position_text: Optional[str] = None
     jatuh_tempo_minggu_ini: bool = False  # listpage P3: terbuka & jatuh tempo hari ini s.d. akhir minggu (Minggu)
 
 

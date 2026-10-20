@@ -1353,6 +1353,7 @@ async def list_invoices(
                     "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(row["status"], bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "documents": dok_faktur.get(row["id"], _fd.dokumen_faktur(0, 0)),
+                    "position_text": _fd.posisi_faktur(row["status"], row["total_amount"], row.get("sisa_faktur")),
                 }
                 for row in rows
             ]
@@ -1518,10 +1519,17 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # Detail == daftar (26 Sep 2026): SATU aturan jatuh tempo (_syarat_jatuh_tempo, Q-014) di tanggal BISNIS
             # tenant — FE tak lagi menghitung dari tanggal klien di header detail.
             _hari_jt = await tanggal_dokumen(conn, ctx["tenant_id"])
-            _jt = bool(await conn.fetchval(
-                f"SELECT {_syarat_jatuh_tempo('$3')} FROM sales_invoices si WHERE si.id = $2 AND si.tenant_id = $1",
+            _jt_row = await conn.fetchrow(
+                f"SELECT {_syarat_jatuh_tempo('$3')} AS jt, {_syarat_terbuka_ar()} AS terbuka"
+                " FROM sales_invoices si WHERE si.id = $2 AND si.tenant_id = $1",
                 ctx["tenant_id"], invoice_id, _hari_jt,
-            ))
+            )
+            _jt, _terbuka = bool(_jt_row["jt"]), bool(_jt_row["terbuka"])
+            # S1 detail faktur (20 Okt 2026): medan baris daftar dari fungsi YANG SAMA (detail == baris daftar, diuji
+            # berpasangan). sisa = aturan daftar: draf/void NULL, selain itu outstanding jurnal (tanpa baris AR = 0).
+            _sisa_daftar = None if invoice["status"] in ("draft", "void") else (ar_row["outstanding"] if ar_row else 0)
+            _dok = (await _fd.dokumen_per_faktur(conn, ctx["tenant_id"], [invoice["id"]])).get(
+                invoice["id"], _fd.dokumen_faktur(0, 0))
             from ..services.kode_order import tempel_kode as _tempel_kode
             _kode = (await _tempel_kode(conn, ctx["tenant_id"], "sales_invoice", [{"id": invoice["id"]}]))[0]
             _kode.pop("id")
@@ -1540,6 +1548,13 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "due_date": invoice["due_date"].isoformat(),
                     "is_overdue": _jt,
                     "overdue_days": hari_terlambat(_jt, invoice["due_date"], _hari_jt),
+                    "aksi": _fa.aksi_faktur(invoice["status"], _sisa_daftar, invoice["due_date"], invoice["invoice_date"], _hari_jt),
+                    "jatuh_tempo_terbuka": _terbuka,
+                    "jatuh_tempo_hari": _fd.jatuh_tempo_hari(_terbuka, invoice["due_date"], _hari_jt),
+                    "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(_terbuka, invoice["due_date"], _hari_jt),
+                    "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(invoice["status"], _terbuka, invoice["due_date"], _hari_jt),
+                    "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar),
+                    "documents": _dok,
                     "ref_no": invoice["ref_no"],
                     "purchase_order_no": invoice["purchase_order_no"],
                     "delivery_order_no": invoice["delivery_order_no"],
