@@ -233,7 +233,7 @@ async def list_deliveries(
             LEFT JOIN customers c ON c.id = COALESCE(si.customer_id, so.customer_id)
             LEFT JOIN warehouses w ON w.id = f.warehouse_id
             WHERE {where_clause}
-            ORDER BY {db_sort} {direction}
+            ORDER BY {db_sort} {direction}, f.id
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
             *params,
