@@ -36,13 +36,16 @@ def test_label_rekening_tanpa_pemilik():
 
 
 def test_bundel_memakai_satu_penentu():
-    src = inspect.getsource(DK.susun_dokumen)
-    assert 'd["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"))' in src
-    assert src.count("label_rekening(") == 2 and "pemilik=False" in src
+    # S1-U2 (20 Okt 2026): bentuk dokumen pindah ke pembentuk per-kind BERSAMA (services/dokumen_bundel).
+    from app.services import dokumen_bundel as DBN
+    src = inspect.getsource(DBN)
+    assert 'd["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"),' in inspect.getsource(DBN.rampungkan)
+    assert src.count("label_rekening(d, pemilik=False)") == 1 and src.count("label_rekening(p, pemilik=False)") == 1
     assert 'sql_jenis_efektif("cd")' in src and '"receipt_kind": "pelunasan"' in src
     # kwitansi TAK BOLEH membawa subtype (pembaca FE live menolak nilai di luar dp/termin/penuh/cicilan)
-    blok_kw = src[src.index('"kind": "receipt"'):src.index('kelompok.append({"key": "kw"')]
-    assert '"subtype"' not in blok_kw
+    for fn in (DBN.kwitansi_uang_muka, DBN.kwitansi_penerimaan):
+        assert '"subtype"' not in inspect.getsource(fn)
+    assert "DB.rampungkan(conn, tid, kelompok)" in inspect.getsource(DK.susun_dokumen)
 
 
 def test_detail_so_dari_fakta_daftar():

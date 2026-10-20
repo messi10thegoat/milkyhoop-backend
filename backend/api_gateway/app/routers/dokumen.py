@@ -211,11 +211,8 @@ def _tgl(v) -> Optional[str]:
 async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False) -> dict:
     """Bundel per skema so-documents. Kelompok hanya yang berisi (Rekap selalu). Angka dari sumber yang sama dengan
     Rekap/Posisi (ringkasan_pesanan, terbayar_proforma, compute_ar_outstanding). Filter tenant eksplisit."""
-    from ..services.proforma_terbayar import ringkasan_pesanan, terbayar_proforma
+    from ..services.proforma_terbayar import ringkasan_pesanan
     from ..services.so_posisi import fakta_daftar
-    from ..services.faktur_cetak import label_metode  # SATU format metode (riwayat faktur / Rekap / bundel)
-    from ..services.deposit_jenis import sql_jenis_efektif  # jenis efektif kwitansi (sumber label_deposit)
-    from ..services.proforma_atribusi import label_rekening  # format rekening SATU (pemilik=False -> '{bank} {nomor}')
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
     so = await conn.fetchrow(
@@ -232,149 +229,56 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
     posisi = (await fakta_daftar(conn, tid, [so], await tanggal_dokumen(conn, tid)))[str(sid)]
     kelompok = [{"key": "rekap", "label": "Rekap", "docs": [{"kind": "rekap", "id": str(sid), "paper": "A4"}]}]
 
+    # S1-U2 (20 Okt 2026): bentuk dokumen dari pembentuk per-kind BERSAMA (services/dokumen_bundel); di sini hanya PEMILIHAN id
+    # milik pesanan ini. Medan & urutan identik dengan sebelum ekstraksi (harness uji-nyata-dokumen-faktur: SO lama == baru).
+    from ..services import dokumen_bundel as DB
     if so["quote_id"]:
-        q = await conn.fetchrow("""SELECT id, quote_number, quote_date, expiry_date, total_amount, sent_at FROM quotes
-                                   WHERE id = $1 AND tenant_id = $2""", so["quote_id"], tid)
+        q = await DB.penawaran(conn, tid, so["quote_id"])
         if q:
-            kelompok.append({"key": "pnw", "label": "Penawaran", "docs": [{
-                "kind": "quotation", "id": str(q["id"]), "number": q["quote_number"], "date": _tgl(q["quote_date"]),
-                "amount": _uang(q["total_amount"]), "paper": "A4",
-                "valid_until": _tgl(q["expiry_date"]),  # P5 pesan Kirim "berlaku sampai {tgl}"
-                "sent": {"state": "sent" if q["sent_at"] else "none",
-                         "sent_at": q["sent_at"].isoformat() if q["sent_at"] else None, "viewed_at": None}}]})
+            kelompok.append({"key": "pnw", "label": "Penawaran", "docs": [q]})
 
-    pros = await conn.fetch(
-        """SELECT id, proforma_number, proforma_date, purpose, amount, status, issued_at FROM proformas
-           WHERE tenant_id = $1 AND sales_order_id = $2 AND status <> 'draft'
-           ORDER BY issued_at NULLS LAST, proforma_number""", tid, sid)
-    pros = [p for p in pros if p["status"] != "cancelled" or batal]
-    terbayar = await terbayar_proforma(conn, tid, [sid]) if pros else {}
-    termin = [p["id"] for p in pros if p["purpose"] == "TERMIN" and p["status"] != "cancelled"]
-    docs_pro = []
-    for p in pros:
-        lunas = (not batal and p["status"] == "issued"
-                 and terbayar.get(p["id"], {}).get("paid", NOL) >= Decimal(str(p["amount"] or 0)))
-        docs_pro.append({"kind": "proforma", "id": str(p["id"]), "number": p["proforma_number"],
-                         "date": _tgl(p["proforma_date"]), "amount": _uang(p["amount"]),
-                         "subtype": SUBTIPE.get(p["purpose"]),
-                         "term": (termin.index(p["id"]) + 1) if p["id"] in termin else None,
-                         "installments": None, "paid": lunas, "paper": "A4",
-                         "sent": {"state": "none", "sent_at": None, "viewed_at": None}})
+    docs_pro = await DB.proforma_so(conn, tid, sid, batal)
     if docs_pro:
         kelompok.append({"key": "pro", "label": "Tagihan", "docs": docs_pro})
 
     # Kwitansi: uang muka tertaut SO + penerimaan atas faktur SO + uang muka LEPAS yang diterapkan ke faktur SO
     # (himpunan yang sama dengan baris PEMBAYARAN Rekap; satu dokumen kwitansi per nomor).
-    kw = {}
-    for d in await conn.fetch(
-        f"""SELECT cd.id, cd.deposit_number, cd.deposit_date, cd.amount, cd.payment_method, ba.bank_name,
-                  ba.account_number, ba.account_holder_name, ba.account_name, coa.name AS coa_name,
-                  {sql_jenis_efektif("cd")} AS jenis
-           FROM customer_deposits cd
+    dep_ids = [r["id"] for r in await conn.fetch(
+        """SELECT cd.id FROM customer_deposits cd
            LEFT JOIN proformas p ON p.id = cd.proforma_id AND p.tenant_id = cd.tenant_id
-           LEFT JOIN LATERAL (
-               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
-               WHERE b.tenant_id = cd.tenant_id AND (b.id = cd.bank_account_id OR b.coa_id = cd.account_id)
-               ORDER BY (b.id = cd.bank_account_id) DESC, b.is_default DESC LIMIT 1
-           ) ba ON true
-           LEFT JOIN chart_of_accounts coa ON coa.id = cd.account_id AND coa.tenant_id = cd.tenant_id
            WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
              AND (COALESCE(cd.sales_order_id, p.sales_order_id) = $2
                   OR cd.id IN (SELECT cda.deposit_id FROM customer_deposit_applications cda
                                JOIN sales_invoices si ON si.id = cda.invoice_id AND si.tenant_id = $1
                                WHERE cda.tenant_id = $1 AND cda.status = 'active' AND si.sales_order_id = $2))""",
-            tid, sid):
-        kw[d["id"]] = {"kind": "receipt", "id": str(d["id"]), "number": d["deposit_number"],
-                       "date": _tgl(d["deposit_date"]), "amount": _uang(d["amount"]),
-                       "method": label_metode(d["payment_method"], d["bank_name"]),
-                       # detailpage (17 Okt 2026): jenis efektif (deposit_jenis, sumber label_deposit) + rekening '{bank} {nomor}'
-                       "receipt_kind": SUBTIPE_KWITANSI.get(d["jenis"], "uang_muka"),
-                       "account_label": label_rekening(d, pemilik=False),
-                       "installment": None, "paper": "A5-landscape",
-                       "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
-    for p in await conn.fetch(
-        """SELECT x.*, ba.bank_name, ba.account_number, ba.account_holder_name, ba.account_name, coa.name AS coa_name
-           FROM (
-               SELECT rp.id, rp.payment_number, rp.payment_date, rp.payment_method, SUM(rpa.amount_applied) AS jumlah,
-                      rp.tenant_id, rp.bank_account_id
-               FROM receive_payment_allocations rpa
-               JOIN receive_payments rp ON rp.id = rpa.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
-               JOIN sales_invoices si ON si.id = rpa.invoice_id AND si.tenant_id = $1 AND si.sales_order_id = $2
-               WHERE rpa.status = 'active' GROUP BY 1, 2, 3, 4, rp.tenant_id, rp.bank_account_id
-           ) x
-           LEFT JOIN LATERAL (
-               SELECT b.bank_name, b.account_number, b.account_holder_name, b.account_name FROM bank_accounts b
-               WHERE b.tenant_id = x.tenant_id AND (b.id = x.bank_account_id OR b.coa_id = x.bank_account_id)
-               ORDER BY (b.id = x.bank_account_id) DESC, b.is_default DESC LIMIT 1
-           ) ba ON true
-           LEFT JOIN chart_of_accounts coa ON coa.id = x.bank_account_id AND coa.tenant_id = x.tenant_id""", tid, sid):
-        kw[p["id"]] = {"kind": "receipt", "id": str(p["id"]), "number": p["payment_number"],
-                       "date": _tgl(p["payment_date"]), "amount": _uang(p["jumlah"]),
-                       "method": label_metode(p["payment_method"], p["bank_name"]),
-                       "receipt_kind": "pelunasan",   # penerimaan atas faktur SO = pelunasan
-                       "account_label": label_rekening(p, pemilik=False),
-                       "installment": None, "paper": "A5-landscape",
-                       "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
+        tid, sid)]
+    fak_so = [r["id"] for r in await conn.fetch(
+        "SELECT id FROM sales_invoices WHERE tenant_id = $1 AND sales_order_id = $2", tid, sid)]
+    kw = {**await DB.kwitansi_uang_muka(conn, tid, dep_ids), **await DB.kwitansi_penerimaan(conn, tid, fak_so)}
     if kw:
-        kelompok.append({"key": "kw", "label": "Pembayaran", "planned": None,
-                         "docs": sorted(kw.values(), key=lambda x: (x["date"] or "", x["number"] or ""))})
+        kelompok.append({"key": "kw", "label": "Pembayaran", "planned": None, "docs": DB.urut_kwitansi(kw)})
 
-    from ..services.so_kirim import _AKTIF
-    ki = [{"kind": "delivery", "id": str(f["id"]), "number": f["fulfillment_number"], "date": _tgl(f["fulfillment_date"]),
-           "paper": "A4", "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
-          for f in await conn.fetch(
-              f"""SELECT f.id, f.fulfillment_number, f.fulfillment_date FROM invoice_fulfillments f
-                  LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-                  WHERE f.tenant_id = $1 AND COALESCE(f.sales_order_id, si.sales_order_id) = $2 AND {_AKTIF}
-                  ORDER BY f.fulfillment_date, f.fulfillment_number""", tid, sid)]
-    fak = await conn.fetch(
-        """SELECT id, invoice_number, invoice_date, total_amount FROM sales_invoices
-           WHERE tenant_id = $1 AND sales_order_id = $2 AND status NOT IN ('draft', 'void')
-           ORDER BY invoice_date, invoice_number""", tid, sid)
-    sisa_f = {}
-    if fak:
-        sisa_f = {x["invoice_id"]: Decimal(str(x["outstanding"])) for x in await conn.fetch(
-            "SELECT invoice_id, outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = ANY($2::uuid[])",
-            tid, [f["id"] for f in fak])}
-    ki += [{"kind": "invoice", "id": str(f["id"]), "number": f["invoice_number"], "date": _tgl(f["invoice_date"]),
-            "amount": _uang(f["total_amount"]), "paid": sisa_f.get(f["id"], NOL) <= NOL, "paper": "A4",
-            "sent": {"state": "none", "sent_at": None, "viewed_at": None}} for f in fak]
+    ki = await DB.surat_jalan(conn, tid, [r["id"] for r in await conn.fetch(
+        """SELECT f.id FROM invoice_fulfillments f
+           LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+           WHERE f.tenant_id = $1 AND COALESCE(f.sales_order_id, si.sales_order_id) = $2""", tid, sid)])
+    ki += await DB.faktur(conn, tid, [r["id"] for r in await conn.fetch(
+        """SELECT id FROM sales_invoices WHERE tenant_id = $1 AND sales_order_id = $2
+           AND status NOT IN ('draft', 'void')""", tid, sid)])
     if ki:
         kelompok.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
     if sertakan_nk:
         # Nota kredit atas faktur SO ini (lewat faktur asal); draf & void tak masuk panel (sama dengan faktur).
-        nk = [{"kind": "credit_note", "id": str(c["id"]), "number": c["credit_note_number"],
-               "date": _tgl(c["credit_note_date"]), "amount": _uang(c["total_amount"]), "paper": "A4",
-               "sent": {"state": "none", "sent_at": None, "viewed_at": None}}
-              for c in await conn.fetch(
-                  """SELECT cn.id, cn.credit_note_number, cn.credit_note_date, cn.total_amount
-                     FROM credit_notes cn
-                     JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
-                     WHERE cn.tenant_id = $1 AND si.sales_order_id = $2 AND cn.status NOT IN ('draft', 'void')
-                     ORDER BY cn.credit_note_date, cn.credit_note_number""", tid, sid)]
+        nk = await DB.nota_kredit(conn, tid, [r["id"] for r in await conn.fetch(
+            """SELECT cn.id FROM credit_notes cn
+               JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
+               WHERE cn.tenant_id = $1 AND si.sales_order_id = $2 AND cn.status NOT IN ('draft', 'void')""", tid, sid)])
         if nk:
             kelompok.append({"key": "nk", "label": "Nota Kredit", "docs": nk})
 
-    # P5: status kirim dari document_shares (tautan publik); penawaran tanpa tautan tetap memakai quotes.sent_at.
-    from ..services.dokumen_bagikan import keadaan_kirim
-    kirim = await keadaan_kirim(conn, tid, [(d["kind"], d["id"]) for gr in kelompok for d in gr["docs"]])
-    for gr in kelompok:
-        for d in gr["docs"]:
-            k = kirim.get((d["kind"], d["id"]))
-            if k:
-                d["sent"] = k
-            elif "sent" not in d:
-                d["sent"] = {"state": "none", "sent_at": None, "viewed_at": None}
-    # DOKUMEN-BATAL-FIELD (15 Okt 2026, MASTER): `batal` per dokumen = penentu YANG SAMA dengan 409 DOKUMEN_BATAL share
-    # (dokumen_batal atas status yang dibaca _baris_dokumen) -> FE menyembunyikan Kirim dengan aturan identik. Aditif.
-    for gr in kelompok:
-        for d in gr["docs"]:
-            row, _ = await _baris_dokumen(conn, tid, d["kind"], UUID(d["id"])) if d["kind"] in JENIS else (None, None)
-            d["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])
-            d["status"] = status_dokumen(d["kind"], d["batal"], d.get("paid"))
-    kontak = await conn.fetchrow(
-        """SELECT COALESCE(mobile_phone, phone, telepon) AS telepon, email FROM customers
-           WHERE id = $1 AND tenant_id = $2""", so["customer_id"], tid) if so["customer_id"] else None
+    # P5 status kirim + DOKUMEN-BATAL-FIELD + status per dokumen: satu penyelesai bersama.
+    await DB.rampungkan(conn, tid, kelompok)
+    kontak = await _kontak(conn, tid, so["customer_id"])
 
     # Dibuka pertama = proforma yang belum dibayar (01 §C), kalau tidak ada -> Rekap.
     bawaan = {"group": "rekap", "index": 0}
@@ -396,11 +300,106 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
                "customer_email": (kontak["email"] if kontak else None) or None,
                # P5: "— {nama usaha}" di pesan Kirim. Aturan nama SAMA dgn kop (rekap_pesanan.muat_kop:
                # display_name, kalau kosong id) tanpa membaca berkas logo.
-               "business_name": (await conn.fetchval(
-                   'SELECT display_name FROM "Tenant" WHERE id = $1', tid)) or tid},
+               "business_name": await _nama_usaha(conn, tid)},
         "default": bawaan,
         "groups": kelompok,
     }
+
+
+async def _kontak(conn, tid: str, customer_id) -> Optional[dict]:
+    """P5: telepon/email pelanggan untuk wa.me / email di FE."""
+    if not customer_id:
+        return None
+    return await conn.fetchrow(
+        """SELECT COALESCE(mobile_phone, phone, telepon) AS telepon, email FROM customers
+           WHERE id = $1 AND tenant_id = $2""", customer_id, tid)
+
+
+async def _nama_usaha(conn, tid: str) -> str:
+    # P5: "— {nama usaha}" di pesan Kirim. Aturan nama SAMA dgn kop (rekap_pesanan.muat_kop: display_name, kalau kosong id).
+    return (await conn.fetchval('SELECT display_name FROM "Tenant" WHERE id = $1', tid)) or tid
+
+
+async def susun_dokumen_faktur(conn, ctx: dict, invoice_id: UUID) -> dict:
+    """S1-U2 (20 Okt 2026, MASTER): bundel panel berjangkar FAKTUR, skema dokumen SAMA dengan bundel SO (pembentuk bersama
+    services/dokumen_bundel). Kelompok (urutan SO): rekap + pnw (bila ber-SO) · pro = proforma ASAL (milik uang muka yang
+    diterapkan ke faktur ini) · kw = kwitansi faktur (himpunan SAMA dengan documents[] daftar, faktur_daftar.SQL_KWITANSI_FAKTUR;
+    amount = bagian yang diterapkan ke faktur INI) · ki = surat jalan faktur + faktur sendiri (selalu, juga draf/batal) ·
+    nk = nota kredit asal. Kepala `anchor` (bukan `so`): position_text/paid/balance = detail faktur (sisa jurnal)."""
+    from ..services import dokumen_bundel as DB
+    from ..services.faktur_daftar import posisi_faktur, sisa_baris
+    from .sales_invoices import _t43_dibayar_dan_sisa
+    tid = ctx["tenant_id"]
+    si = await conn.fetchrow(
+        """SELECT id, invoice_number, customer_name, customer_id, status, total_amount, sales_order_id
+           FROM sales_invoices WHERE id = $1 AND tenant_id = $2""", invoice_id, tid)
+    if not si:
+        raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
+    so = await conn.fetchrow(
+        """SELECT id, order_number, status, quote_id, order_code, order_title FROM sales_orders
+           WHERE id = $1 AND tenant_id = $2""", si["sales_order_id"], tid) if si["sales_order_id"] else None
+    kelompok = []
+    if so:
+        kelompok.append({"key": "rekap", "label": "Rekap", "docs": [DB.rekap(so["id"])]})
+        if so["quote_id"]:
+            q = await DB.penawaran(conn, tid, so["quote_id"])
+            if q:
+                kelompok.append({"key": "pnw", "label": "Penawaran", "docs": [q]})
+    jumlah = {r["deposit_id"]: r["jumlah"] for r in await conn.fetch(
+        """SELECT deposit_id, SUM(amount_applied) AS jumlah FROM customer_deposit_applications
+           WHERE tenant_id = $1 AND invoice_id = $2 AND status = 'active' GROUP BY 1""", tid, si["id"])}
+    kw_dp = await DB.kwitansi_uang_muka(conn, tid, list(jumlah), jumlah)
+    if so and kw_dp:
+        asal = {str(r["proforma_id"]) for r in await conn.fetch(
+            """SELECT proforma_id FROM customer_deposits WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+               AND proforma_id IS NOT NULL""", tid, list(kw_dp))}
+        pro = await DB.proforma_so(conn, tid, so["id"], so["status"] == "cancelled", asal) if asal else []
+        if pro:
+            kelompok.append({"key": "pro", "label": "Tagihan", "docs": pro})
+    kw = {**kw_dp, **await DB.kwitansi_penerimaan(conn, tid, [si["id"]])}
+    if kw:
+        kelompok.append({"key": "kw", "label": "Pembayaran", "planned": None, "docs": DB.urut_kwitansi(kw)})
+    ki = await DB.surat_jalan(conn, tid, [r["id"] for r in await conn.fetch(
+        "SELECT id FROM invoice_fulfillments WHERE tenant_id = $1 AND invoice_id = $2", tid, si["id"])])
+    ki += await DB.faktur(conn, tid, [si["id"]])
+    kelompok.append({"key": "ki", "label": "Kirim & Faktur", "docs": ki})
+    nk = await DB.nota_kredit(conn, tid, [r["id"] for r in await conn.fetch(
+        """SELECT id FROM credit_notes WHERE tenant_id = $1 AND original_invoice_id = $2
+           AND status NOT IN ('draft', 'void')""", tid, si["id"])])
+    if nk:
+        kelompok.append({"key": "nk", "label": "Nota Kredit", "docs": nk})
+    await DB.rampungkan(conn, tid, kelompok)
+
+    ar = await conn.fetchval(
+        "SELECT outstanding FROM compute_ar_outstanding($1) WHERE invoice_id = $2", tid, si["id"])
+    dibayar, sisa = _t43_dibayar_dan_sisa(si["status"], si["total_amount"], ar)
+    kontak = await _kontak(conn, tid, si["customer_id"])
+    from ..services.kode_order import muat_setelan as _setelan_kode
+    _st_kode = await _setelan_kode(conn, tid)
+    i_ki = next(i for i, g in enumerate(kelompok) if g["key"] == "ki")
+    return {
+        "anchor": {"kind": "invoice", "id": str(si["id"]), "number": si["invoice_number"],
+                   "customer": si["customer_name"] or "",
+                   "position_text": posisi_faktur(si["status"], si["total_amount"], sisa_baris(si["status"], ar)),
+                   "total": DB._uang(si["total_amount"]), "paid": DB._uang(dibayar), "balance": DB._uang(sisa),
+                   "sales_order_id": str(so["id"]) if so else None, "sales_order_number": so["order_number"] if so else None,
+                   "order_code": so["order_code"] if so else None, "order_title": so["order_title"] if so else None,
+                   "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
+                   "customer_phone": (kontak["telepon"] if kontak else None) or None,
+                   "customer_email": (kontak["email"] if kontak else None) or None,
+                   "business_name": await _nama_usaha(conn, tid)},
+        # dibuka pertama = faktur ini (dokumen terakhir kelompok ki)
+        "default": {"group": "ki", "index": len(kelompok[i_ki]["docs"]) - 1},
+        "groups": kelompok,
+    }
+
+
+@router.get("/sales-invoices/{invoice_id}/documents")
+async def dokumen_faktur(request: Request, invoice_id: str):
+    ctx = _ctx(request)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await susun_dokumen_faktur(conn, ctx, _uuid(invoice_id))
 
 
 @router.get("/sales-orders/{order_id}/documents")
@@ -438,15 +437,17 @@ STATUS_BATAL_BAGIKAN = frozenset({"void", "voided", "cancelled", "batal"})
 
 # deposit_jenis.JENIS -> receipt_kind kwitansi bundel. BUKAN subtype: pembaca ketat FE live (bacaDokumen.ts) menolak subtype
 # di luar dp/termin/penuh/cicilan untuk SEMUA kind -> panel dokumen gagal (MASTER/WORKSPACE 17 Okt 2026).
-SUBTIPE_KWITANSI = {"DP": "uang_muka", "PELUNASAN": "pelunasan"}
+from ..services.dokumen_bundel import SUBTIPE_KWITANSI  # noqa: E402  satu definisi
 
 
-def status_dokumen(kind: str, batal: bool, paid) -> str:
+def status_dokumen(kind: str, batal: bool, paid, draf: bool = False) -> str:
     """detailpage (17 Okt 2026): kata status per dokumen bundel /documents, turunan penentu YANG SAMA (dokumen_batal -> medan batal,
     medan paid panel). batal menang; proforma: lunas|terbit; faktur: lunas|diposting; kwitansi: diterima;
     surat jalan & penawaran: terbit; nota kredit: diposting."""
     if batal:
         return "batal"
+    if draf:  # S1-U2: hanya bundel FAKTUR yang memuat dokumen draf (faktur dirinya); bundel SO tak pernah
+        return "draf"
     if kind in ("proforma", "invoice"):
         return "lunas" if paid else ("terbit" if kind == "proforma" else "diposting")
     return {"receipt": "diterima", "credit_note": "diposting"}.get(kind, "terbit")

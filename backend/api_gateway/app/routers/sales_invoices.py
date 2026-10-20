@@ -1526,8 +1526,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
             )
             _jt, _terbuka = bool(_jt_row["jt"]), bool(_jt_row["terbuka"])
             # S1 detail faktur (20 Okt 2026): medan baris daftar dari fungsi YANG SAMA (detail == baris daftar, diuji
-            # berpasangan). sisa = aturan daftar: draf/void NULL, selain itu outstanding jurnal (tanpa baris AR = 0).
-            _sisa_daftar = None if invoice["status"] in ("draft", "void") else (ar_row["outstanding"] if ar_row else 0)
+            # berpasangan). sisa = aturan baris daftar (faktur_daftar.sisa_baris).
+            _sisa_daftar = _fd.sisa_baris(invoice["status"], ar_row["outstanding"] if ar_row else None)
             _dok = (await _fd.dokumen_per_faktur(conn, ctx["tenant_id"], [invoice["id"]])).get(
                 invoice["id"], _fd.dokumen_faktur(0, 0))
             from ..services.kode_order import tempel_kode as _tempel_kode

@@ -62,6 +62,14 @@ def jatuh_tempo_keadaan(status: str, terbuka: bool, due_date: Optional[date], ha
     return "telat" if d < 0 else "hari_ini" if d == 0 else "akan"
 
 
+def sisa_baris(status: str, outstanding):
+    """Sisa faktur menurut aturan BARIS DAFTAR (routers/sales_invoices.list_invoices, kolom sisa_faktur): draf/void = None,
+    selain itu outstanding compute_ar_outstanding (tanpa baris AR = 0, lunas). Dipakai detail & bundel faktur (S1)."""
+    if status in ("draft", "void"):
+        return None
+    return outstanding if outstanding is not None else 0
+
+
 POSISI_FAKTUR = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")
 
 
