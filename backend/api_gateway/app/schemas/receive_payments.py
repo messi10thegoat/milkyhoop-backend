@@ -221,6 +221,14 @@ class ReceivePaymentDetail(BaseModel):
 
     # Status
     status: str
+    # 21 Okt 2026 (paritas detail == baris daftar; services/penerimaan_daftar, fungsi YANG SAMA)
+    belum_dialokasikan: float = 0.0
+    aksi: Optional[str] = None
+    alokasi_keadaan: Literal["belum", "sebagian", "penuh", "tanpa"] = "tanpa"
+    alokasi_teks: Optional[str] = None
+    invoice_count: int = 0
+    doc_count: int = 0
+    documents: List[Dict[str, str]] = []
 
     # Reference
     reference_number: Optional[str] = None

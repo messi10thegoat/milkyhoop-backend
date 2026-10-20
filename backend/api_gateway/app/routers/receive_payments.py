@@ -899,6 +899,11 @@ async def get_receive_payments_summary(request: Request, search: Optional[str] =
 # =============================================================================
 
 
+from ..services import penerimaan_daftar as _penerimaan_daftar  # noqa: E402
+# paritas detail == baris daftar (21 Okt 2026): detail baris non-wrapper (jurnal) = alokasi 'tanpa' (fungsi SAMA dgn daftar)
+_PARITAS_JURNAL = _penerimaan_daftar.alokasi_fakta(False, None, None, None)
+
+
 @router.get("/{payment_id}", response_model=ReceivePaymentDetailResponse)
 async def get_receive_payment(request: Request, payment_id: UUID):
     """Get detailed information for a receive payment."""
@@ -1058,6 +1063,9 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     return {
                         "success": True,
                         "data": {
+                            # paritas detail == baris daftar: baris non-wrapper (jurnal) -> alokasi 'tanpa', tanpa dokumen
+                            **_PARITAS_JURNAL,
+                            "invoice_count": 0, "documents": [], "doc_count": 0,
                             "id": str(journal_row["id"]),
                             "payment_number": journal_row["journal_number"],
                             "customer_id": str(dok_pelanggan_id)
@@ -1157,10 +1165,18 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             from ..services.kode_order import tempel_kode as _tempel_kode
             _kode = (await _tempel_kode(conn, ctx["tenant_id"], "receive_payment", [{"id": payment["id"]}]))[0]
             _kode.pop("id")
+            # paritas detail == baris daftar (21 Okt 2026): fungsi SAMA dgn list_receive_payments (bruto_dialokasi, alokasi_fakta, kelompok_untuk)
+            from ..services import penerimaan_daftar as _pd_d
+            _ba_d = await _pd_d.bruto_dialokasi(conn, ctx["tenant_id"], [payment["id"]])
+            _kel_d = await _pd_d.kelompok_untuk(conn, ctx["tenant_id"], [{"id": payment["id"]}])
+            _docs_d = _pd_d.documents_baris(_kel_d.get(payment["id"], []))
+            _paritas = {**_pd_d.alokasi_fakta(True, payment["status"], *_ba_d.get(payment["id"], (None, None))),
+                        "invoice_count": len(allocations), "documents": _docs_d, "doc_count": len(_docs_d)}
             return {
                 "success": True,
                 "data": {
                     **_kode,
+                    **_paritas,
                     "id": str(payment["id"]),
                     "payment_number": payment["payment_number"],
                     "customer_id": str(payment["customer_id"])
