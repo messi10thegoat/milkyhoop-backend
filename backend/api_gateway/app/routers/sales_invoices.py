@@ -1515,6 +1515,11 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 invoice["total_amount"],
                 ar_row["outstanding"] if ar_row else None,
             )
+            # S1-U3 (20 Okt 2026): rincian pelunasan dari jurnal (V430 compute_ar_rincian; cabang SAMA dgn
+            # compute_ar_outstanding, digerbang outstanding sama untuk semua faktur). Draf/void tak punya baris.
+            _rincian = await conn.fetchrow(
+                "SELECT * FROM compute_ar_rincian($1) WHERE invoice_id = $2", ctx["tenant_id"], invoice_id,
+            )
 
             # Detail == daftar (26 Sep 2026): SATU aturan jatuh tempo (_syarat_jatuh_tempo, Q-014) di tanggal BISNIS
             # tenant — FE tak lagi menghitung dari tanggal klien di header detail.
@@ -1554,6 +1559,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(_terbuka, invoice["due_date"], _hari_jt),
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(invoice["status"], _terbuka, invoice["due_date"], _hari_jt),
                     "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar),
+                    "payment_summary": _fd.ringkasan_bayar_faktur(invoice["status"], invoice["total_amount"], _rincian),
                     "documents": _dok,
                     "ref_no": invoice["ref_no"],
                     "purchase_order_no": invoice["purchase_order_no"],

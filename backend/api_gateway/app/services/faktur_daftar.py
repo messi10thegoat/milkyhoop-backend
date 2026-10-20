@@ -70,6 +70,24 @@ def sisa_baris(status: str, outstanding):
     return outstanding if outstanding is not None else 0
 
 
+def ringkasan_bayar_faktur(status: str, total_amount, rincian) -> dict:
+    """payment_summary detail faktur (S1-U3, 20 Okt 2026): rincian pelunasan dari JURNAL lewat compute_ar_rincian (V430;
+    Law 1/16/29, bukan SUM wrapper). rincian = baris fungsi itu (None untuk draf/void). Float untuk JSON (pola
+    payment_summary SO). Draf: belum piutang -> sisa = total; void: tak ditagih -> sisa 0 (sama dengan _t43 detail).
+    paid_amount = receipt + dp_applied + credit_note; remaining_amount = outstanding jurnal."""
+    from decimal import Decimal
+    nol = Decimal("0")
+    if status in ("draft", "void") or rincian is None:
+        total = Decimal(str(total_amount or 0))
+        return {"invoice_total": float(total), "receipt_amount": 0.0, "dp_applied_amount": 0.0,
+                "credit_note_amount": 0.0, "paid_amount": 0.0,
+                "remaining_amount": float(total if status == "draft" else nol)}
+    return {"invoice_total": float(rincian["invoice_total"]), "receipt_amount": float(rincian["receipt_amount"]),
+            "dp_applied_amount": float(rincian["dp_applied_amount"]),
+            "credit_note_amount": float(rincian["credit_note_amount"]), "paid_amount": float(rincian["paid_amount"]),
+            "remaining_amount": float(rincian["outstanding"])}
+
+
 POSISI_FAKTUR = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")
 
 
