@@ -18,7 +18,9 @@ def test_penentu_tunggal(kind, status, harap):
 
 def test_tolak_batal_dan_bundel_memakai_penentu_yang_sama():
     assert "dokumen_batal(kind, dok.get(\"status\"))" in inspect.getsource(DK.tolak_batal)
-    src = inspect.getsource(DK.susun_dokumen)
+    from app.services import dokumen_bundel as _DBN  # S1-U2: penyelesai bersama rampungkan()
+    src = inspect.getsource(_DBN.rampungkan)
+    assert "DB.rampungkan(conn, tid, kelompok)" in inspect.getsource(DK.susun_dokumen)
     assert 'd["batal"] = bool(row) and dokumen_batal(d["kind"], row["status"])' in src
     assert "_baris_dokumen(conn, tid, d[\"kind\"]" in src
     assert "_baris_dokumen(conn, tid, kind, uid)" in inspect.getsource(DK._dokumen_ada)   # satu pembaca status

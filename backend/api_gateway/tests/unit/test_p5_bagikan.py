@@ -167,6 +167,7 @@ def test_iframe_tak_menyusut_di_layar_sempit():
 
 def test_documents_membawa_nama_usaha_dan_berlaku_penawaran():
     """Kartu Kirim (FE P5): pesan memakai nama usaha + berlaku sampai penawaran dari /documents (satu panggilan)."""
-    src = inspect.getsource(DK.susun_dokumen)
+    from app.services import dokumen_bundel as _DBN  # S1-U2
+    src = inspect.getsource(DK.susun_dokumen) + inspect.getsource(DK._nama_usaha) + inspect.getsource(_DBN.penawaran)
     assert "\"business_name\"" in src and "display_name FROM \"Tenant\"" in src
     assert "\"valid_until\": _tgl(q[\"expiry_date\"])" in src

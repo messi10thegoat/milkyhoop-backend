@@ -53,3 +53,35 @@ def test_kepala_faktur_dari_sumber_detail():
     src = inspect.getsource(DK.susun_dokumen_faktur)
     assert "_t43_dibayar_dan_sisa(" in src and "posisi_faktur(" in src and "sisa_baris(" in src
     assert '"default": {"group": "ki"' in src
+
+
+class _Conn:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def fetch(self, sql, *args):
+        return self.rows
+
+
+def test_kwitansi_uang_muka_nominal_jangkar():
+    """Data nyata hari ini: setiap uang muka diterapkan PENUH ke satu faktur -> harness nyata buta untuk kasus sebagian
+    (kontrol merah R2 lolos). Kasus sebagian dikunci di sini: nominal = bagian yang diterapkan, medan lain identik."""
+    import asyncio
+    from datetime import date
+    from decimal import Decimal
+    from uuid import uuid4
+    rid = uuid4()
+    row = {"id": rid, "deposit_number": "UM-2610-0001", "deposit_date": date(2026, 10, 1), "amount": Decimal("500000"),
+           "payment_method": "bank_transfer", "bank_name": "BCA", "account_number": "123", "account_holder_name": "A",
+           "account_name": "BCA Masuk", "coa_name": "Bank", "jenis": "DP"}
+    penuh = asyncio.run(DBN.kwitansi_uang_muka(_Conn([row]), "t", [rid]))[rid]
+    sebagian = asyncio.run(DBN.kwitansi_uang_muka(_Conn([row]), "t", [rid], {rid: Decimal("200000")}))[rid]
+    assert penuh["amount"] == "500000.00" and sebagian["amount"] == "200000.00"
+    assert {k: v for k, v in penuh.items() if k != "amount"} == {k: v for k, v in sebagian.items() if k != "amount"}
+    assert penuh["receipt_kind"] == "uang_muka" and "subtype" not in penuh
+
+
+def test_bundel_faktur_memberi_nominal_bagian_faktur():
+    src = inspect.getsource(DK.susun_dokumen_faktur)
+    assert "DB.kwitansi_uang_muka(conn, tid, list(jumlah), jumlah)" in src
+    assert "status = 'active' GROUP BY 1" in src   # penerapan AKTIF saja

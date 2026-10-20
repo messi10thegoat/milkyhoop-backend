@@ -110,7 +110,7 @@ def test_kwitansi_uang_muka_wajib_izin_customer_deposit():
     assert blok.index('_wajib_izin(request, "R", "customer_deposit")') < blok.index("muat_pdf_kwitansi_uang_muka")
 
 
-@pytest.mark.parametrize("berkas", ["services/rekap_pesanan.py", "routers/dokumen.py"])
+@pytest.mark.parametrize("berkas", ["services/rekap_pesanan.py", "services/dokumen_bundel.py"])  # S1-U2: label metode bundel pindah
 def test_metode_pembayaran_satu_format(berkas):
     """MASTER 1 Okt: Rekap menulis "Transfer" (uang muka) vs "Transfer BCA" (penerimaan). Satu format = label_metode
     (metode + nama bank) seperti riwayat faktur; tak ada label metode rakitan sendiri."""

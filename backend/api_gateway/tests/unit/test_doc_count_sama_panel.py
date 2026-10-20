@@ -7,11 +7,13 @@ import inspect
 from app.routers import dokumen as DK
 from app.services import so_posisi as SP
 
+from app.services import dokumen_bundel as _DBN  # noqa: E402  S1-U2
+
 
 def test_kwitansi_himpunan_sama_dengan_panel():
     # PENJUALAN-SERAGAM (17 Okt): aturan dipindah ke fungsi bersama (kolom Dok. Pesanan DAN Penawaran memakainya)
     daftar = "".join(inspect.getsource(f) for f in (SP.fakta_daftar, SP.jumlah_kwitansi_per_so, SP.dokumen_baris_so))
-    panel = inspect.getsource(DK.susun_dokumen)
+    panel = inspect.getsource(DK.susun_dokumen) + inspect.getsource(_DBN)  # S1-U2: pembentuk per-kind bersama
     for sisi in (daftar, panel):
         assert "cd.journal_id IS NOT NULL" in sisi          # uang muka tanpa jurnal bukan kwitansi
         assert "customer_deposit_applications" in sisi       # uang muka lepas yang diterapkan ke faktur SO
@@ -22,7 +24,7 @@ def test_kwitansi_himpunan_sama_dengan_panel():
 def test_proforma_draf_tak_dihitung_batal_hanya_di_so_batal():
     # PENJUALAN-SERAGAM (17 Okt): aturan dipindah ke fungsi bersama (kolom Dok. Pesanan DAN Penawaran memakainya)
     daftar = "".join(inspect.getsource(f) for f in (SP.fakta_daftar, SP.jumlah_kwitansi_per_so, SP.dokumen_baris_so))
-    panel = inspect.getsource(DK.susun_dokumen)
-    assert "status <> 'draft'" in panel and 'p["status"] != "cancelled" or batal' in panel
+    panel = inspect.getsource(DK.susun_dokumen) + inspect.getsource(_DBN)  # S1-U2: pembentuk per-kind bersama
+    assert "status <> 'draft'" in panel and 'p["status"] != "cancelled" or so_batal' in panel
     assert 'p["status"] != "draft"' in daftar
     assert '(p["status"] != "cancelled" or status == "cancelled")' in daftar
