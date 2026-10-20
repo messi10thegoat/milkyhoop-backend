@@ -167,6 +167,7 @@ class ReceivePaymentListItem(BaseModel):
     invoice_count: int = 0
     created_at: str
     # 20 Okt 2026 (PENJUALAN-SERAGAM, services/penerimaan_daftar): TURUNAN alokasi aktif (bukan cache wrapper allocated_amount/unapplied_amount)
+    dialokasikan: float = 0.0  # Σ alokasi AKTIF ("Ke faktur"; bukan cache allocated_amount)
     belum_dialokasikan: float = 0.0
     aksi: Optional[str] = None
     alokasi_keadaan: Literal["belum", "sebagian", "penuh", "tanpa"] = "tanpa"
@@ -222,6 +223,7 @@ class ReceivePaymentDetail(BaseModel):
     # Status
     status: str
     # 21 Okt 2026 (paritas detail == baris daftar; services/penerimaan_daftar, fungsi YANG SAMA)
+    dialokasikan: float = 0.0  # Σ alokasi AKTIF ("Ke faktur"; bukan cache allocated_amount)
     belum_dialokasikan: float = 0.0
     aksi: Optional[str] = None
     alokasi_keadaan: Literal["belum", "sebagian", "penuh", "tanpa"] = "tanpa"

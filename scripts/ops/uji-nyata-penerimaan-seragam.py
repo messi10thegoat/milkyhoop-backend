@@ -86,6 +86,11 @@ async def main():
                 esp = max(Decimal(str(row["total_amount"])) - Decimal(str(dial)), Decimal(0)) if row["status"] == "posted" else Decimal(0)
                 cek(f"{t} belum_dialokasikan {it['payment_number']}", abs(Decimal(str(it["belum_dialokasikan"])) - esp) < Decimal("0.005"), (it["belum_dialokasikan"], esp))
                 cek(f"{t} aksi {it['payment_number']}", (it["aksi"] == "belum_dialokasikan") == (esp > Decimal("0.005")))
+                # 21 Okt: dialokasikan ("Ke faktur") = Σ alokasi AKTIF (SQL independen), bukan cache; dialokasikan + belum == total (posted wrapper)
+                esp_dial = Decimal(str(dial)) if row["status"] == "posted" else Decimal(0)
+                cek(f"{t} dialokasikan {it['payment_number']}", abs(Decimal(str(it["dialokasikan"])) - esp_dial) < Decimal("0.005"), (it["dialokasikan"], esp_dial))
+                if row["status"] == "posted" and esp_dial <= Decimal(str(row["total_amount"])):
+                    cek(f"{t} dialokasikan+belum==total {it['payment_number']}", abs(Decimal(str(it["dialokasikan"])) + Decimal(str(it["belum_dialokasikan"])) - Decimal(str(row["total_amount"]))) < Decimal("0.005"), (it["dialokasikan"], it["belum_dialokasikan"], row["total_amount"]))
                 if esp > Decimal("0.005"): n_belum += 1; tot_belum += esp
                 bundel = await DK.susun_dokumen_penerimaan(c, {"tenant_id": t, "user_id": None}, UUID(it["id"]))
                 tipe = [{"type": x["kind"]} for g in bundel["groups"] if g["key"] != "rekap" for x in g["docs"]]
@@ -96,6 +101,7 @@ async def main():
                 cek(f"{t} independen faktur/kwitansi/NK {it['payment_number']}", kinds.count("invoice") == len(inv_ids) and kinds.count("receipt") == (1 if row["status"] in ("posted", "voided") else 0) and kinds.count("credit_note") == n_nk, (kinds, len(inv_ids), n_nk))
                 cek(f"{t} bundel lengkap {it['payment_number']}", all({"sent", "batal", "status"} <= set(x) for g in bundel["groups"] for x in g["docs"]))
                 cek(f"{t} anchor balance {it['payment_number']}", Decimal(bundel["anchor"]["balance"]) == esp.quantize(Decimal("0.01")), bundel["anchor"]["balance"])
+                cek(f"{t} anchor.paid == dialokasikan {it['payment_number']}", Decimal(bundel["anchor"]["paid"]) == Decimal(str(dial)).quantize(Decimal("0.01")) and (row["status"] != "posted" or Decimal(bundel["anchor"]["paid"]) == Decimal(str(it["dialokasikan"])).quantize(Decimal("0.01"))), (bundel["anchor"]["paid"], it["dialokasikan"], dial))
                 n_dok += 1
             tot = d(await RP.list_receive_payments(**kw(RP.list_receive_payments, r, limit=100, include_voided=True, penerimaan_saja=True, with_totals=True)))
             exp_total = sum(Decimal(str(i["total_amount"])) for i in wrap if i["status"] != "voided")
@@ -119,7 +125,7 @@ async def main():
 
 async def banding():
     a, b = json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
-    BARU = {"belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count"}
+    BARU = {"dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count"}
     beda = []
     for k in a:
         x, y = a[k], b.get(k)

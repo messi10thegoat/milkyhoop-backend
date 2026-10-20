@@ -1,5 +1,7 @@
 """PENJUALAN-SERAGAM / Penerimaan Pembayaran (20 Okt 2026): data daftar/bundel dihitung SERVER, FE hanya memformat.
 
+  dialokasikan       = Σ alokasi AKTIF ("Ke faktur"; fungsi SAMA dgn bruto_dialokasi / anchor.paid bundel); hanya wrapper posted, lainnya 0.
+                       dialokasikan + belum_dialokasikan == total_amount (posted wrapper).
   belum_dialokasikan = GREATEST(receive_payments.total_amount − Σ alokasi AKTIF, 0) -- TURUNAN alokasi, BUKAN cache wrapper
                        (`allocated_amount`/`unapplied_amount` basi untuk penerimaan yang alokasinya dilepas: kaos 6 baris, 20 Okt).
                        Hanya penerimaan wrapper berstatus posted; lainnya 0.   (Law 16: angka dari data sumber, bukan cache)
@@ -29,11 +31,12 @@ def sql_belum(rp: str) -> str:
 def alokasi_fakta(wrapper: bool, status: Optional[str], bruto, dialokasi) -> dict:
     """Pure: bruto = receive_payments.total_amount, dialokasi = Σ alokasi aktif (keduanya None untuk non-wrapper)."""
     if not wrapper or status != "posted" or bruto is None:
-        belum, kd = NOL, "tanpa"
+        belum, kd, ke_faktur = NOL, "tanpa", NOL
     else:
-        belum = max(Decimal(str(bruto)) - Decimal(str(dialokasi or 0)), NOL)
+        ke_faktur = Decimal(str(dialokasi or 0))
+        belum = max(Decimal(str(bruto)) - ke_faktur, NOL)
         kd = "penuh" if belum <= TOLERANSI else ("belum" if belum >= Decimal(str(bruto)) - TOLERANSI else "sebagian")
-    return {"belum_dialokasikan": float(belum), "aksi": "belum_dialokasikan" if belum > TOLERANSI else None,
+    return {"dialokasikan": float(ke_faktur), "belum_dialokasikan": float(belum), "aksi": "belum_dialokasikan" if belum > TOLERANSI else None,
             "alokasi_keadaan": kd, "alokasi_teks": TEKS[kd]}
 
 

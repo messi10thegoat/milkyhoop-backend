@@ -22,9 +22,12 @@ def test_kisi_alokasi_fakta():
         assert f["alokasi_keadaan"] in ("belum", "sebagian", "penuh", "tanpa")
         assert f["alokasi_teks"] == PD.TEKS[f["alokasi_keadaan"]]
         if not wrapper or st != "posted" or bruto is None:
-            assert f["alokasi_keadaan"] == "tanpa" and f["belum_dialokasikan"] == 0.0 and f["aksi"] is None
+            assert f["alokasi_keadaan"] == "tanpa" and f["belum_dialokasikan"] == 0.0 and f["aksi"] is None and f["dialokasikan"] == 0.0
             continue
         belum = max(bruto - dial, D(0))
+        assert D(str(f["dialokasikan"])) == dial                                            # "Ke faktur" = Σ alokasi aktif (bukan cache)
+        if dial <= bruto:
+            assert abs(D(str(f["dialokasikan"])) + D(str(f["belum_dialokasikan"])) - bruto) < D("0.0001")  # dialokasikan + belum == total
         assert abs(D(str(f["belum_dialokasikan"])) - belum) < D("0.0001")
         assert (f["aksi"] == "belum_dialokasikan") == (belum > D("0.005"))
         assert f["alokasi_keadaan"] == ("penuh" if belum <= D("0.005") else "belum" if belum >= bruto - D("0.005") else "sebagian")
@@ -33,7 +36,7 @@ def test_kisi_alokasi_fakta():
 def test_teks_persis_putusan_master():
     assert PD.TEKS == {"belum": "Belum dialokasikan", "sebagian": "Sebagian dialokasikan", "penuh": "Teralokasi penuh", "tanpa": "—"}
     f = PD.alokasi_fakta(True, "posted", D("16284600"), D("0"))   # kasus nyata kaos: alokasi dilepas, cache wrapper masih 'penuh'
-    assert f == {"belum_dialokasikan": 16284600.0, "aksi": "belum_dialokasikan", "alokasi_keadaan": "belum", "alokasi_teks": "Belum dialokasikan"}
+    assert f == {"dialokasikan": 0.0, "belum_dialokasikan": 16284600.0, "aksi": "belum_dialokasikan", "alokasi_keadaan": "belum", "alokasi_teks": "Belum dialokasikan"}
     assert PD.alokasi_fakta(True, "posted", D("500"), D("200"))["alokasi_keadaan"] == "sebagian"
     assert PD.alokasi_fakta(True, "posted", D("500"), D("500"))["alokasi_keadaan"] == "penuh"
 

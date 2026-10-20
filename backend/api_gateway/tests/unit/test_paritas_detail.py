@@ -27,8 +27,8 @@ def test_penerimaan_detail_memakai_fungsi_baris():
     for fn in ("alokasi_fakta(", "bruto_dialokasi(", "kelompok_untuk(", "documents_baris(", "_PARITAS_JURNAL"):
         assert fn in d, fn
     assert "alokasi_fakta(" in _src(RP.list_receive_payments) and "kelompok_untuk(" in _src(RP.list_receive_payments)
-    assert {"belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "invoice_count", "doc_count", "documents"} <= set(ReceivePaymentDetail.model_fields)
-    assert RP._PARITAS_JURNAL == {"belum_dialokasikan": 0.0, "aksi": None, "alokasi_keadaan": "tanpa", "alokasi_teks": "—"}
+    assert {"dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "invoice_count", "doc_count", "documents"} <= set(ReceivePaymentDetail.model_fields)
+    assert RP._PARITAS_JURNAL == {"dialokasikan": 0.0, "belum_dialokasikan": 0.0, "aksi": None, "alokasi_keadaan": "tanpa", "alokasi_teks": "—"}
 
 
 def test_pengiriman_detail_memakai_fungsi_baris():
