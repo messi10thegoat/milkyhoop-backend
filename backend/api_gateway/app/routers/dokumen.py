@@ -561,12 +561,9 @@ async def susun_dokumen_penawaran(conn, ctx: dict, quote_id: UUID) -> dict:
         if d["id"] == str(q["id"]):
             d["batal"] = q["status"] == "void"
             d["status"] = "draf" if q["status"] == "draft" else ("batal" if q["status"] == "void" else "terbit")
-    teks = {"draft": "Draf", "sent": "Terkirim", "viewed": "Dilihat", "accepted": "Diterima", "declined": "Ditolak",
-            "converted": "Jadi pesanan", "void": "Dibatalkan", "expired": "Kedaluwarsa"}.get(q["status"], q["status"])
-    from ..services.penawaran_kedaluwarsa import kedaluwarsa
+    from ..services.penawaran_daftar import position_text as _position_text
     from ..utils.tanggal_tenant import tanggal_dokumen
-    if kedaluwarsa(q["status"], q["expiry_date"], await tanggal_dokumen(conn, tid)):
-        teks = "Kedaluwarsa"
+    teks = _position_text(q["status"], q["expiry_date"], await tanggal_dokumen(conn, tid))  # fungsi SAMA dgn baris daftar/detail
     kontak = await _kontak(conn, tid, q["customer_id"])
     from ..services.kode_order import muat_setelan as _setelan_kode
     _st_kode = await _setelan_kode(conn, tid)

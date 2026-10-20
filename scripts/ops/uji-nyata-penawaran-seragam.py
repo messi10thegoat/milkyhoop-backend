@@ -92,6 +92,10 @@ async def main():
                 esp = 'draf' if q['status'] == 'draft' else 'batal' if q['status'] == 'void' else 'terbit'
                 cek(f"{t} jangkar {q['quote_number']}", len(pn) == 1 and pn[0]['id'] == q['id'] and pn[0]['status'] == esp and pn[0]['batal'] == (q['status'] == 'void'), pn)
                 cek(f"{t} anchor {q['quote_number']}", b['anchor']['kind'] == 'quotation' and b['anchor']['id'] == q['id'] and b['anchor']['paid'] is None and b['default'] == {'group': 'pnw', 'index': 0}, b['anchor'])
+                cek(f"{t} position_text baris==anchor {q['quote_number']}", q.get('position_text') == b['anchor']['position_text'] and q.get('position_text'), (q.get('position_text'), b['anchor']['position_text']))
+                cek(f"{t} position_text~is_expired {q['quote_number']}", (q.get('position_text') == 'Kedaluwarsa') == q['is_expired'], (q.get('position_text'), q['is_expired']))
+                _peta = {'draft': 'Draf', 'sent': 'Terkirim', 'viewed': 'Dilihat', 'accepted': 'Diterima', 'declined': 'Ditolak', 'converted': 'Jadi pesanan', 'void': 'Dibatalkan'}
+                cek(f"{t} position_text independen {q['quote_number']}", q.get('position_text') == ('Kedaluwarsa' if q['is_expired'] else _peta[q['status']]), (q.get('position_text'), q['status'], q['is_expired']))
                 cek(f"{t} lengkap {q['quote_number']}", all({'sent', 'batal', 'status'} <= set(x) for g in b['groups'] for x in g['docs']))
                 if q['sales_order_id']:
                     so_b = await DK.susun_dokumen(c, {'tenant_id': t, 'user_id': None}, _U(q['sales_order_id']), sertakan_nk=True)
@@ -119,7 +123,7 @@ async def main():
 
 async def banding():
     a, b = json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
-    BARU = {"kedaluwarsa_terbuka", "kedaluwarsa_hari", "kedaluwarsa_keadaan", "kedaluwarsa_teks", "documents", "doc_count", "sum_total"}
+    BARU = {"kedaluwarsa_terbuka", "kedaluwarsa_hari", "kedaluwarsa_keadaan", "kedaluwarsa_teks", "documents", "doc_count", "sum_total", "position_text"}
     beda = []
     for k in a:
         x, y = a[k], b.get(k)

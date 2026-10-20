@@ -92,3 +92,15 @@ def test_bundel_penawaran_rute_izin_dan_jangkar():
     src = inspect.getsource(DK.susun_dokumen_penawaran)
     assert "susun_dokumen(conn, ctx, so_id, sertakan_nk=True)" in src and '"kind": "quotation"' in src and '"group": "pnw"' in src
     assert '"draf" if q["status"] == "draft"' in src and 'q["status"] == "void"' in src
+
+
+def test_position_text_kolom_status_satu_fungsi():
+    for st, tgl in itertools.product(STATUS, TGL):
+        t = PD.position_text(st, tgl, HARI)
+        assert t in set(PD.POSISI.values()) or t == st
+        assert (t == "Kedaluwarsa") == kedaluwarsa(st, tgl, HARI)                       # Kedaluwarsa == is_expired
+    assert [PD.position_text(s, None, HARI) for s in STATUS] == ["Draf", "Terkirim", "Dilihat", "Diterima", "Ditolak", "Jadi pesanan", "Dibatalkan"]
+    assert PD.position_text("sent", HARI - timedelta(days=1), HARI) == "Kedaluwarsa" and PD.position_text("draft", HARI - timedelta(days=1), HARI) == "Draf"
+    src = inspect.getsource(QR.list_quotes) + inspect.getsource(QR.get_quote_detail)
+    assert src.count("position_text=") == 2 and "position_text" in inspect.getsource(__import__("app.routers.dokumen", fromlist=["x"]).susun_dokumen_penawaran)
+    assert "position_text" in QuoteListItem.model_fields and "position_text" in QuoteDetail.model_fields

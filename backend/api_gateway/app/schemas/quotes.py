@@ -283,6 +283,7 @@ class QuoteListItem(BaseModel):
     created_at: str
     is_expired: bool = False
     aksi: Optional[str] = None  # 13 Okt 2026: pill AKSI (services/penawaran_kedaluwarsa.AKSI) atau null
+    position_text: Optional[str] = None  # kolom Status FE (penawaran_daftar.position_text; == anchor bundel)
     # 17 Okt 2026 (PENJUALAN-SERAGAM, services/penawaran_daftar): server menghitung, FE hanya memformat
     kedaluwarsa_terbuka: bool = False
     kedaluwarsa_hari: Optional[int] = None
@@ -347,6 +348,7 @@ class QuoteDetail(BaseModel):
     kedaluwarsa_teks: Optional[str] = None
     # 21 Okt 2026 (paritas detail == baris daftar): pill aksi + documents[] dari fungsi YANG SAMA dgn baris
     aksi: Optional[str] = None
+    position_text: Optional[str] = None
     doc_count: int = 0
     documents: List[Dict[str, str]] = []
     customer_phone: Optional[str] = None  # Q5: kontak pelanggan (bundel SO /documents)

@@ -17,7 +17,7 @@ Rujukan untuk WORKSPACE/FRONTEND. Semua perubahan **aditif** (medan lama tidak b
 
 ## 1. Penawaran — `GET /api/quotes`
 
-Daftar (item) + detail membawa: `kedaluwarsa_terbuka` (sent/viewed ∧ bertanggal) · `kedaluwarsa_hari` (expiry − hari ini; null bila tak terbuka; <0 lewat) · `kedaluwarsa_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` · `kedaluwarsa_teks` (`"Hari ini"` / `"Besok"` / `"24 Okt"` / `"12 Okt, lewat masa"` / `"—"`) · `aksi` (`perlu_dikirim · tunggu_jawaban · segera_habis · lewat_masa · perlu_dipesan`) · `documents`/`doc_count`.
+Daftar (item) + detail membawa: `position_text` (kolom Status: Draf · Terkirim · Dilihat · Diterima · Ditolak · Jadi pesanan · Dibatalkan · **Kedaluwarsa** [sent/viewed lewat tanggal == is_expired]; fungsi SAMA dgn `anchor.position_text`) · `kedaluwarsa_terbuka` (sent/viewed ∧ bertanggal) · `kedaluwarsa_hari` (expiry − hari ini; null bila tak terbuka; <0 lewat) · `kedaluwarsa_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` · `kedaluwarsa_teks` (`"Hari ini"` / `"Besok"` / `"24 Okt"` / `"12 Okt, lewat masa"` / `"—"`) · `aksi` (`perlu_dikirim · tunggu_jawaban · segera_habis · lewat_masa · perlu_dipesan`) · `documents`/`doc_count`.
 - `telat` ⇔ `is_expired`. `selesai` = accepted/converted/declined bertanggal (tanggal redup). `tanpa` = draf/void/tanpa tanggal.
 - `documents`: tanpa SO = `[quotation]`; sudah jadi SO = daftar dokumen SO itu (sama dgn kolom Dok. Pesanan).
 - Daftar: `?with_totals=true` → `sum_total` (Σ total_amount hasil filter; **tanpa sum_sisa**). Paginasi: `skip/limit/page/offset` + `has_more`.

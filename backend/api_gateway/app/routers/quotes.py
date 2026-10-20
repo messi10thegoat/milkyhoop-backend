@@ -325,7 +325,7 @@ async def list_quotes(
             rows = await conn.fetch(list_query, *params)
             from ..services.kode_order import so_hasil_penawaran as _so_hasil
             so_hasil = await _so_hasil(conn, ctx["tenant_id"], [r["id"] for r in rows])  # batch, nol N+1
-            from ..services.penawaran_daftar import dokumen_penawaran as _dok_pn, kedaluwarsa_fakta as _kead
+            from ..services.penawaran_daftar import dokumen_penawaran as _dok_pn, kedaluwarsa_fakta as _kead, position_text as _pos_pn
             dok_pn = await _dok_pn(conn, ctx["tenant_id"], {k: v.get("sales_order_id") for k, v in so_hasil.items()})  # batch, nol N+1
 
             items = []
@@ -358,6 +358,7 @@ async def list_quotes(
                         is_expired=is_expired,
                         aksi=aksi_penawaran(row["status"], row["expiry_date"], hari_ini, row["converted_to_id"]),
                         **_kead(row["status"], row["expiry_date"], hari_ini),
+                        position_text=_pos_pn(row["status"], row["expiry_date"], hari_ini),
                         documents=dok_pn[str(row["id"])], doc_count=len(dok_pn[str(row["id"])]),
                         **so_hasil[str(row["id"])],
                     )
@@ -550,7 +551,7 @@ async def get_quote_detail(request: Request, quote_id: str):
             items = await conn.fetch(items_query, uuid_module.UUID(quote_id), ctx["tenant_id"])
 
             # Q-017: SATU aturan (services/penawaran_kedaluwarsa) di tanggal BISNIS tenant
-            from ..services.penawaran_daftar import kedaluwarsa_fakta as _kead_detail
+            from ..services.penawaran_daftar import kedaluwarsa_fakta as _kead_detail, position_text as _pos_detail
             _hari_detail = await tanggal_dokumen(conn, ctx["tenant_id"])
             is_expired = kedaluwarsa(quote["status"], quote["expiry_date"], _hari_detail)
             # Q5 (3 Okt): kontak + nama usaha untuk pesan Kirim -- sumber & aturan SAMA dgn bundel SO /documents
@@ -645,6 +646,7 @@ async def get_quote_detail(request: Request, quote_id: str):
                     is_expired=is_expired,
                     **_kead_detail(quote["status"], quote["expiry_date"], _hari_detail),
                     aksi=aksi_penawaran(quote["status"], quote["expiry_date"], _hari_detail, quote["converted_to_id"]),
+                    position_text=_pos_detail(quote["status"], quote["expiry_date"], _hari_detail),
                     documents=_dok, doc_count=len(_dok),
                     customer_phone=_telp or None,
                     business_name=_usaha,

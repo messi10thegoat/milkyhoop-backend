@@ -30,6 +30,18 @@ def kedaluwarsa_fakta(status: Optional[str], expiry_date: Optional[date], hari_i
     return {"kedaluwarsa_terbuka": terbuka, "kedaluwarsa_hari": hari, "kedaluwarsa_keadaan": keadaan, "kedaluwarsa_teks": teks}
 
 
+POSISI = {"draft": "Draf", "sent": "Terkirim", "viewed": "Dilihat", "accepted": "Diterima", "declined": "Ditolak",
+          "converted": "Jadi pesanan", "void": "Dibatalkan", "expired": "Kedaluwarsa"}
+
+
+def position_text(status: Optional[str], expiry_date: Optional[date], hari_ini: date) -> str:
+    """Kolom Status FE (SATU fungsi: baris daftar, detail, anchor bundel). sent/viewed lewat tanggal -> "Kedaluwarsa" (== is_expired)."""
+    from .penawaran_kedaluwarsa import kedaluwarsa
+    if kedaluwarsa(status, expiry_date, hari_ini):
+        return POSISI["expired"]
+    return POSISI.get(status or "", status or "")
+
+
 def syarat_cari(search: Optional[str], mulai: int) -> tuple:
     """(predikat, parameter) ?search= daftar Penawaran (tabel `quotes`, $1 = tenant); tiap kata satu parameter mulai $mulai,
     semua kata wajib cocok. Kosong -> (None, [])."""
