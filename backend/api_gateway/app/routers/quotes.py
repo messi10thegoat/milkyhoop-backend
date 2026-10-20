@@ -326,7 +326,7 @@ async def list_quotes(
             from ..services.kode_order import so_hasil_penawaran as _so_hasil
             so_hasil = await _so_hasil(conn, ctx["tenant_id"], [r["id"] for r in rows])  # batch, nol N+1
             from ..services.penawaran_daftar import dokumen_penawaran as _dok_pn, kedaluwarsa_fakta as _kead
-            dok_pn = await _dok_pn(conn, ctx["tenant_id"], {k: v["sales_order_id"] for k, v in so_hasil.items()})  # batch, nol N+1
+            dok_pn = await _dok_pn(conn, ctx["tenant_id"], {k: v.get("sales_order_id") for k, v in so_hasil.items()})  # batch, nol N+1
 
             items = []
             for row in rows:

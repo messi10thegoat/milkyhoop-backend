@@ -126,6 +126,11 @@ def _daftar(monkeypatch, search=None, baris=None, **kw):
     monkeypatch.setattr(Q, "get_pool", pool)
     monkeypatch.setattr(Q, "tanggal_dokumen", hari)
 
+    async def dok_pn(conn, tid, so_per_quote):  # PENJUALAN-SERAGAM: kolom Dok. diuji di test_penawaran_seragam + harness nyata
+        return {q: [{"type": "quotation"}] for q in so_per_quote}
+    from app.services import penawaran_daftar as _pd
+    monkeypatch.setattr(_pd, "dokumen_penawaran", dok_pn)
+
     class _Req:
         class state:
             user = {"tenant_id": T, "user_id": str(uuid.uuid4())}

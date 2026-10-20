@@ -9,7 +9,9 @@ from app.services import so_posisi as SP
 
 
 def test_kwitansi_himpunan_sama_dengan_panel():
-    daftar, panel = inspect.getsource(SP.fakta_daftar), inspect.getsource(DK.susun_dokumen)
+    # PENJUALAN-SERAGAM (17 Okt): aturan dipindah ke fungsi bersama (kolom Dok. Pesanan DAN Penawaran memakainya)
+    daftar = "".join(inspect.getsource(f) for f in (SP.fakta_daftar, SP.jumlah_kwitansi_per_so, SP.dokumen_baris_so))
+    panel = inspect.getsource(DK.susun_dokumen)
     for sisi in (daftar, panel):
         assert "cd.journal_id IS NOT NULL" in sisi          # uang muka tanpa jurnal bukan kwitansi
         assert "customer_deposit_applications" in sisi       # uang muka lepas yang diterapkan ke faktur SO
@@ -18,7 +20,9 @@ def test_kwitansi_himpunan_sama_dengan_panel():
 
 
 def test_proforma_draf_tak_dihitung_batal_hanya_di_so_batal():
-    daftar, panel = inspect.getsource(SP.fakta_daftar), inspect.getsource(DK.susun_dokumen)
+    # PENJUALAN-SERAGAM (17 Okt): aturan dipindah ke fungsi bersama (kolom Dok. Pesanan DAN Penawaran memakainya)
+    daftar = "".join(inspect.getsource(f) for f in (SP.fakta_daftar, SP.jumlah_kwitansi_per_so, SP.dokumen_baris_so))
+    panel = inspect.getsource(DK.susun_dokumen)
     assert "status <> 'draft'" in panel and 'p["status"] != "cancelled" or batal' in panel
     assert 'p["status"] != "draft"' in daftar
-    assert '(p["status"] != "cancelled" or r["status"] == "cancelled")' in daftar
+    assert '(p["status"] != "cancelled" or status == "cancelled")' in daftar
