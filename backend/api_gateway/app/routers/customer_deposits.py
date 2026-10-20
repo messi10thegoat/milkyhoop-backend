@@ -53,6 +53,7 @@ from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.metode_pembayaran import label_metode_layar
 from ..services import teks_galat as tg
 from ..services.status_uang_muka import SQL_STATUS_DETAIL as _SQL_STATUS_DETAIL, status_detail_dp
+from ..services import uang_muka_daftar as _umd  # S2-UM (20 Okt 2026): aksi / sisa_keadaan / status_text / sisa semua
 from ..services.so_riwayat import catat_riwayat
 from ..services.deposit_jenis import jenis_dari_purpose, label_deposit, label_jenis, label_kwitansi, sql_jenis_efektif
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
@@ -383,6 +384,20 @@ async def _assert_ar_side_is_ar_trade(conn, tenant_id: str, ar_line_account_id) 
 # =============================================================================
 
 
+def _syarat_cari_um(search: str, mulai: int) -> tuple:
+    """(sql, params) ?search= uang muka -- SATU predikat untuk daftar DAN /summary (S2-UM). Tiap kata wajib cocok
+    (nomor / nama pelanggan / search_text / pelanggan / kode SO induk)."""
+    from ..services.kode_order import sql_cari_so_induk
+    conds, params, i = [], [], mulai
+    for word in search.strip().split():
+        conds.append(
+            f"(deposit_number ILIKE ${i} OR customer_name ILIKE ${i} OR search_text ILIKE ${i} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${i}) OR " + sql_cari_so_induk("customer_deposit", "customer_deposits", "$1", f"${i}") + ")"
+        )
+        params.append(f"%{word}%")
+        i += 1
+    return (conds[0] if len(conds) == 1 else f"({' AND '.join(conds)})"), params
+
+
 @router.get("", response_model=CustomerDepositListResponse)
 async def list_customer_deposits(
     request: Request,
@@ -405,6 +420,9 @@ async def list_customer_deposits(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    # S2-UM (20 Okt 2026): pill AKSI (predikat SAMA dengan /summary) + total atas SEMUA hasil filter (opt-in)
+    aksi: Optional[Literal["belum_diterapkan"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
     """List customer deposits with filters and pagination."""
     try:
@@ -437,24 +455,11 @@ async def list_customer_deposits(
                 params.append(uuid_module.UUID(sales_order_id))
                 param_idx += 1
 
-            if search:
-                from ..services.kode_order import sql_cari_so_induk
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("customer_deposit", "customer_deposits", "$1", f"${param_idx}") + ")"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(deposit_number ILIKE ${param_idx} OR customer_name ILIKE ${param_idx} OR search_text ILIKE ${param_idx} OR customer_id::text IN (SELECT c.id::text FROM customers c WHERE c.tenant_id = customer_deposits.tenant_id AND c.search_text ILIKE ${param_idx}) OR " + sql_cari_so_induk("customer_deposit", "customer_deposits", "$1", f"${param_idx}") + ")"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+            if isinstance(search, str) and search.strip():
+                _c, _p = _syarat_cari_um(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
 
             if date_from:
                 conditions.append(f"deposit_date >= ${param_idx}")
@@ -465,6 +470,15 @@ async def list_customer_deposits(
                 conditions.append(f"deposit_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
+
+            if aksi in _umd.AKSI_UM:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
+                conditions.append(_umd.sql_aksi(aksi))
+
+            # S2-UM: sisa JURNAL semua uang muka tenant (CTE; teks diturunkan dari SQL_SISA_UANG_MUKA) untuk aksi/total
+            _akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+            cte = f"WITH {_umd.CTE_SISA} AS ({_umd.sql_sisa_semua(f'${param_idx}')}) "
+            params.append(_akun)
+            param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -479,11 +493,18 @@ async def list_customer_deposits(
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
             # Count total
-            count_query = f"SELECT COUNT(*) FROM customer_deposits WHERE {where_clause}"
+            count_query = f"{cte}SELECT COUNT(*) FROM customer_deposits WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True`
+                t = await conn.fetchrow(
+                    f"""{cte}SELECT COALESCE(SUM(amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                               COALESCE(SUM({_umd.sql_sisa_baris()}) FILTER (WHERE status NOT IN ('draft', 'void')), 0) AS sum_sisa
+                        FROM customer_deposits WHERE {where_clause}""", *params)
+                jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}
 
             # Get items
-            query = f"""
+            query = f"""{cte}
                 SELECT id, deposit_number, customer_id, customer_name,
                        deposit_date, amount, amount_applied, amount_refunded,
                        status, payment_method, reference, created_at,
@@ -522,13 +543,17 @@ async def list_customer_deposits(
                     "reference": row["reference"],
                     "created_at": row["created_at"].isoformat(),
                     "jenis": row["jenis"],  # V422 jenis efektif
+                    # S2-UM: server menghitung, FE memformat
+                    "aksi": _umd.aksi_um(row["status"], None if row["status"] == "draft" else _sisa.get(str(row["id"]), 0)),
+                    "sisa_keadaan": _umd.keadaan_um(status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"])),
+                    "status_text": _umd.status_text_um(status_detail_dp(row["status"], row["amount_applied"], row["amount_refunded"])),
                 }
                 for row in rows
             ]
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", items)
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
@@ -563,7 +588,7 @@ async def saldo_buku_uang_muka(conn, tenant_id: str):
 
 
 @router.get("/summary", response_model=CustomerDepositSummaryResponse)
-async def get_customer_deposits_summary(request: Request):
+async def get_customer_deposits_summary(request: Request, search: Optional[str] = Query(None)):
     """Get summary statistics for customer deposits."""
     try:
         ctx = get_user_context(request)
@@ -571,6 +596,10 @@ async def get_customer_deposits_summary(request: Request):
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            _cari_sql, _cari_par = "", []
+            if isinstance(search, str) and search.strip():  # S2-UM: ?search= SAMA dengan daftar
+                _c, _cari_par = _syarat_cari_um(search, 2)
+                _cari_sql = f" AND {_c}"
 
             query = f"""
                 SELECT
@@ -585,9 +614,18 @@ async def get_customer_deposits_summary(request: Request):
                     COALESCE(SUM(amount_applied), 0) as total_applied,
                     COALESCE(SUM(amount_refunded), 0) as total_refunded
                 FROM customer_deposits
-                WHERE tenant_id = $1 AND status != 'void'
+                WHERE tenant_id = $1 AND status != 'void'{_cari_sql}
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], *_cari_par)
+            # S2-UM: pill AKSI -- predikat SAMA dengan ?aksi= daftar (_umd.sql_aksi), dibatasi ?search= yang sama
+            _akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+            _p_akun = 2 + len(_cari_par)
+            aksi_row = await conn.fetchrow(
+                f"""WITH {_umd.CTE_SISA} AS ({_umd.sql_sisa_semua(f'${_p_akun}')})
+                    SELECT COUNT(*) FILTER (WHERE {_umd.sql_aksi(_umd.AKSI_BELUM_DITERAPKAN)}) AS n,
+                           COALESCE(SUM({_umd.sql_sisa_baris()}) FILTER (WHERE {_umd.sql_aksi(_umd.AKSI_BELUM_DITERAPKAN)}), 0) AS v
+                    FROM customer_deposits WHERE tenant_id = $1{_cari_sql}""",
+                ctx["tenant_id"], *_cari_par, _akun)
 
             # 4 Okt 2026 (MASTER): saldo tersedia = saldo BUKU PENUH akun peran CUSTOMER_DEPOSIT_LIABILITY
             # (Law 1/16/29). Penyaring source_id lama (jurnal uang muka + receive_payments.created_deposit_id)
@@ -609,6 +647,8 @@ async def get_customer_deposits_summary(request: Request):
                     "total_applied": float(row["total_applied"] or 0),
                     "total_refunded": float(row["total_refunded"] or 0),
                     "available_balance": float(available_balance or 0),
+                    f"{_umd.AKSI_BELUM_DITERAPKAN}_count": aksi_row["n"] or 0,
+                    f"{_umd.AKSI_BELUM_DITERAPKAN}_value": float(aksi_row["v"] or 0),
                 },
             }
 
@@ -733,6 +773,10 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "notes": dep["notes"],
                     "status": dep["status"],
                     "status_detail": status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"]),
+                    # S2-UM: fungsi YANG SAMA dengan baris daftar (diuji berpasangan)
+                    "aksi": _umd.aksi_um(dep["status"], remaining),
+                    "sisa_keadaan": _umd.keadaan_um(status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"])),
+                    "status_text": _umd.status_text_um(status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"])),
                     "jenis": dep["jenis_efektif"],  # V422 jenis efektif
                     "journal_id": str(dep["journal_id"]) if dep["journal_id"] else None,
                     "journal_number": dep["journal_number"],

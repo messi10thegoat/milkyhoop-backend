@@ -180,6 +180,10 @@ class CustomerDepositListItem(BaseModel):
     reference: Optional[str] = None
     created_at: str
     jenis: str = "DP"  # V422: jenis EFEKTIF (services/deposit_jenis), tak pernah null: DP | PELUNASAN
+    # S2-UM (20 Okt 2026, services/uang_muka_daftar): server menghitung, FE memformat
+    aksi: Optional[str] = None  # 'belum_diterapkan' | null
+    sisa_keadaan: Optional[str] = None  # draf|utuh|sebagian|terpakai|dikembalikan|sebagian_dikembalikan|batal
+    status_text: Optional[str] = None  # label layar (teks_galat.status_id "dp") == peta FE
 
 
 class CustomerDepositDetail(BaseModel):
@@ -218,6 +222,10 @@ class CustomerDepositDetail(BaseModel):
     status: str
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     jenis: str = "DP"  # V422: jenis EFEKTIF (services/deposit_jenis), tak pernah null: DP | PELUNASAN
+    # S2-UM (20 Okt 2026): SAMA dengan baris daftar (services/uang_muka_daftar)
+    aksi: Optional[str] = None
+    sisa_keadaan: Optional[str] = None
+    status_text: Optional[str] = None
 
     # Accounting links
     journal_id: Optional[str] = None
@@ -259,6 +267,9 @@ class CustomerDepositListResponse(BaseModel):
     items: List[CustomerDepositListItem]
     total: int
     has_more: bool = False
+    # S2-UM: ?with_totals=true -> atas SEMUA hasil filter: Σ nominal (bukan void), Σ sisa jurnal (bukan draf/void)
+    sum_total: Optional[float] = None
+    sum_sisa: Optional[float] = None
 
 
 class CustomerDepositSummaryResponse(BaseModel):
