@@ -32,8 +32,8 @@ def test_sumber_angka_jurnal_bukan_kolom_dan_pagar_tenant():
     assert "coa.account_type = 'RECEIVABLE' AND jl.credit > 0" in src          # nilai dari kredit piutang jurnal
     assert "je.status = 'POSTED' AND je.reversed_by_id IS NULL" in src         # hanya jurnal efektif
     assert "je.source_type = 'CREDIT_NOTE'" in src
-    assert src.count("cn.tenant_id = $1") == 2                                 # CTE jurnal + kueri utama
-    assert src.count("cn.status != 'void'") == 2                               # NK void tak dihitung
+    assert src.count("cn.tenant_id = $1") == 3                                 # CTE jurnal + kueri utama + himpunan id untuk total_applied (21 Okt)
+    assert src.count("cn.status != 'void'") == 3                               # NK void tak dihitung (CTE jurnal + kueri utama + himpunan id total_applied)
     assert "FILTER (WHERE cn.status = 'draft')" in src and "FILTER (WHERE cn.status IN ('posted', 'partial') AND cn.original_invoice_id IS NULL)"  # 12 Okt: NK bertaut = sisa 0 in src
     assert "ORDER BY" not in src and "current_balance" not in src
 
@@ -47,6 +47,9 @@ class _Konn:
             return {"n": 0, "v": 0}
         self.args = a
         return self.baris
+
+    async def fetch(self, sql, *a):  # 21 Okt: himpunan id NK + rincian jurnal untuk total_applied (tiruan: tak ada NK)
+        return [{"id": "a"}] if sql.lstrip().startswith("SELECT cn.id FROM credit_notes cn") else []
 
     async def fetchval(self, sql, *a):  # U9: hitungan void = kueri terpisah (kueri utama TANPA void)
         self.args_void = a
@@ -103,6 +106,10 @@ def test_angka_dilewatkan_apa_adanya(monkeypatch):
     baris = {"total": 5, "draft_count": 1, "posted_count": 2, "partial_count": 1, "applied_count": 1,
              "total_value": Decimal("1234567.50"), "total_applied": Decimal("200000.25"), "total_refunded": Decimal("0"),
              "available_balance": Decimal("1034367.25"), "partially_refunded_count": 1, "refunded_count": 0}
+    from app.services import nota_kredit_daftar as _nkd  # 21 Okt: total_applied = Σ terpakai JURNAL (bukan kolom cache baris di atas)
+    async def _rinc(conn, tid, ids):
+        return {"a": {"terpakai": Decimal("200000.25")}}
+    monkeypatch.setattr(_nkd, "rincian_nk_many", _rinc)
     _, out = _panggil(monkeypatch, baris, void=4)
     d = out["data"]
     assert d["void_count"] == 4 and d["total"] == 5 and d["total_value"] == 1234567.5 and d["available_balance"] == 1034367.25

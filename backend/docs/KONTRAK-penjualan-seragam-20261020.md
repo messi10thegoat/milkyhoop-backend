@@ -66,3 +66,10 @@ Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik)
 - Header yang berlaku: `X-Idempotency-Key` (alias `Idempotency-Key`). Medan body `idempotency_key` di /receive-payments = metadata, TIDAK dipakai dedup.
 - Source_type aksi (void/apply/fulfill/refund...) tidak diperiksa.
 - Tiket terpisah (tak diubah): kunci `INVOICE_PAYMENT:{id}:{amount}` tanpa tanggal/bank men-dedup dua cicilan sah bernominal sama dalam 24 j. Terukur: grapgrap 0 kejadian, kaos 1 (nominal sama, beda hari).
+
+## 8. Pengiriman `perlu_difaktur` + summary NK `total_applied` (21 Okt 2026)
+
+- **Pengiriman pill `perlu_difaktur`** (pola NetSuite Pending Billing; SATU definisi dgn pill SO `perlu_ditagih`, DEFINISI-TAGIH e90843af): Surat Jalan `asal=so`, posted, yang punya baris SO "perlu kirim" dengan [terkirim aktif − qty faktur TERBIT] > 0; mati bila tenant memakai flag `tagih_sebelum_kirim`. Subset dari `perlu_ditagih` SO. Bebas dari fitur serah. Prioritas pill tunggal: `perlu_resi` > `belum_dicatat` > `perlu_difaktur`.
+- Baris + detail: `aksi` = salah satu kunci itu atau null. `?aksi=perlu_difaktur`; `GET /deliveries/summary` + `perlu_difaktur_count` (dibatasi `?search=`). Data nyata hari ini 0 baris; predikat dibuktikan di data sintetis (`uji-nyata-pengiriman-perlu-difaktur`).
+- **Summary NK `total_applied`** = Σ `terpakai` JURNAL (`rincian_nk_many`, fungsi sama dgn baris daftar/detail) atas NK non-void + `?search=`. Kolom cache `credit_notes.amount_applied` TIDAK dipakai: NK BERTAUT faktur tidak mengisinya (posting memotong piutang faktur lewat jurnal).
+- **JANGAN backfill `credit_notes.amount_applied` untuk NK bertaut** (diukur 21 Okt): guard void (`amount_applied > 0` → "Lepas penerapannya dulu") akan memblokir pembatalan NK bertaut yang tidak punya rute lepas-penerapan. Apply/refund NK bertaut sudah dijaga `tolak_nk_bertaut` (original_invoice_id) + `sisa_kredit_nk` (0), tak bergantung cache; tes `test_nk_bertaut_tanpa_sisa.py`.

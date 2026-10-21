@@ -649,6 +649,12 @@ async def get_credit_notes_summary(request: Request, search: Optional[str] = Que
                 "SELECT COUNT(*) FROM credit_notes WHERE tenant_id = $1 AND status = 'void'"
                 + (f" AND {_c}" if _cari_par else ""), ctx["tenant_id"], *_cari_par)
 
+            # 21 Okt 2026 (MASTER): total_applied = Σ `terpakai` JURNAL (rincian_nk_many, fungsi SAMA dgn baris daftar/detail) atas himpunan
+            # yang sama dgn hitungan di atas (non-void + ?search=); kolom cache amount_applied TIDAK dipakai (NK bertaut tak mengisinya).
+            _ids_nk = [r_["id"] for r_ in await conn.fetch(
+                "SELECT cn.id FROM credit_notes cn WHERE cn.tenant_id = $1 AND cn.status != 'void'" + _cari_sql,
+                ctx["tenant_id"], *_cari_par)]
+            _total_terpakai = _nkd.jumlah_terpakai(await _nkd.rincian_nk_many(conn, ctx["tenant_id"], _ids_nk))
             return {
                 "success": True,
                 "data": {
@@ -661,7 +667,7 @@ async def get_credit_notes_summary(request: Request, search: Optional[str] = Que
                     "partially_refunded_count": row["partially_refunded_count"] or 0,
                     "refunded_count": row["refunded_count"] or 0,
                     "total_value": float(row["total_value"] or 0),
-                    "total_applied": float(row["total_applied"] or 0),
+                    "total_applied": float(_total_terpakai),
                     "total_refunded": float(row["total_refunded"] or 0),
                     "available_balance": float(row["available_balance"] or 0),
                     f"{_nkd.AKSI_BELUM_TERPAKAI}_count": aksi_row["n"] or 0,

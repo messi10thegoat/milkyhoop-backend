@@ -31,7 +31,7 @@ def test_kisi_serah_fakta():
 
 
 def test_urutan_desak_dan_belum_diterima_bukan_pill():
-    assert PG.AKSI == ("perlu_resi", "belum_dicatat")
+    assert PG.AKSI_SERAH == ("perlu_resi", "belum_dicatat")
     assert "belum_diterima" not in PG.AKSI                                     # putusan MASTER: derau permanen -> tiket
     assert PG.serah_fakta(True, "posted", "kurir", None, 0)["aksi"] == "perlu_resi"
     assert PG.serah_fakta(True, "posted", "kurir", None, 1)["aksi"] is None   # kurir sudah beresi tak jadi pill

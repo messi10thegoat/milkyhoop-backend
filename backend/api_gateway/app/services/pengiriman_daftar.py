@@ -8,18 +8,69 @@
   position_text = kolom Status: voided -> "Dibatalkan", selain itu == serah_teks (serah_teks TETAP = kolom Serah). SATU fungsi untuk
                   baris daftar, detail, dan anchor /deliveries/{id}/documents (putusan MASTER 21 Okt 2026).
   documents     = kelompok bundel (kelompok_untuk) tanpa rekap -- SATU definisi dgn /deliveries/{id}/documents.
+  perlu_difaktur (21 Okt 2026, MASTER; pola NetSuite Pending Billing, SATU definisi dgn so_aksi.perlu_ditagih / DEFINISI-TAGIH e90843af):
+                  Surat Jalan asal 'so' (tanpa faktur), posted, yang punya baris SO 'perlu kirim' dengan [terkirim aktif - difaktur TERBIT] > 0,
+                  dan tenant TIDAK memakai tagih_sebelum_kirim (flag MATI = bawaan). Subset dari pill SO perlu_ditagih. Bebas dari fitur serah.
+                  Prioritas pill tunggal: perlu_resi > belum_dicatat > perlu_difaktur.
 """
 from datetime import date
 from typing import Optional
 
 from .so_posisi import BULAN
 
-AKSI = ("perlu_resi", "belum_dicatat")  # urutan desak
+AKSI_SERAH = ("perlu_resi", "belum_dicatat")  # urutan desak; hanya bila fitur serah aktif
+AKSI = AKSI_SERAH + ("perlu_difaktur",)       # urutan desak seluruhnya
+FLAG_TAGIH_SEBELUM_KIRIM = "tagih_sebelum_kirim"  # SAMA dgn so_aksi.FLAG_TAGIH_SEBELUM_KIRIM (tenant_features; MATI = tagih sesudah kirim)
 TEKS = {"belum_dicatat": "Serah belum dicatat", "belum_diterima": "Belum diterima", "tanpa": "—"}
+
+
+def sql_perlu_difaktur(f: str = "f") -> str:
+    """Predikat SQL perlu_difaktur (alias `f` = invoice_fulfillments; $1 = tenant). Pemanggil WAJIB menggantinya dengan FALSE bila tenant memakai
+    tagih_sebelum_kirim. Per baris SO: terkirim aktif (jalur faktur + jalur asal-so; = so_kirim.SQL_TERKIRIM_PER_BARIS) - qty faktur TERBIT
+    (status NOT IN draft/void; = sj_so.PRED_FAKTUR_TERBIT) > 0, hanya baris 'perlu kirim' (= so_aksi.SQL_BARIS)."""
+    return (
+        f"({f}.status = 'posted' AND {f}.voided_at IS NULL AND {f}.asal = 'so' AND EXISTS ("
+        "SELECT 1 FROM invoice_fulfillment_items pdi "
+        "JOIN sales_order_items pds ON pds.id = pdi.sales_order_item_id "
+        f"LEFT JOIN products pdp ON pdp.id = pds.item_id AND pdp.tenant_id = {f}.tenant_id "
+        f"WHERE pdi.fulfillment_id = {f}.id AND COALESCE(pds.perlu_kirim, pdp.track_inventory, false) "
+        "AND (COALESCE((SELECT SUM(x.q) FROM ("
+        "SELECT ifj.quantity AS q FROM invoice_fulfillment_items ifj "
+        "JOIN sales_invoice_items sij ON sij.id = ifj.invoice_item_id "
+        "JOIN invoice_fulfillments f2 ON f2.id = ifj.fulfillment_id AND f2.tenant_id = $1 AND f2.voided_at IS NULL AND f2.status <> 'voided' "
+        "WHERE sij.sales_order_item_id = pds.id "
+        "UNION ALL SELECT ifk.quantity FROM invoice_fulfillment_items ifk "
+        "JOIN invoice_fulfillments f3 ON f3.id = ifk.fulfillment_id AND f3.tenant_id = $1 AND f3.asal = 'so' AND f3.voided_at IS NULL AND f3.status <> 'voided' "
+        "WHERE ifk.sales_order_item_id = pds.id) x), 0) "
+        "- COALESCE((SELECT SUM(sq.quantity) FROM sales_invoice_items sq "
+        "JOIN sales_invoices si2 ON sq.invoice_id = si2.id AND si2.tenant_id = $1 AND si2.status NOT IN ('draft', 'void') "
+        "WHERE sq.sales_order_item_id = pds.id), 0)) > 0))")
+
+
+def gabung_aksi(aksi_serah: Optional[str], perlu_difaktur: bool) -> Optional[str]:
+    """Pure. Satu pill: aksi serah (perlu_resi > belum_dicatat) menang; perlu_difaktur hanya bila tak ada aksi serah."""
+    return aksi_serah or ("perlu_difaktur" if perlu_difaktur else None)
+
+
+async def tagih_sesudah_kirim(conn, tid: str) -> bool:
+    """True = tenant memakai tagih-sesudah-kirim (flag tagih_sebelum_kirim TIDAK menyala; bawaan)."""
+    return not await conn.fetchval(
+        "SELECT 1 FROM tenant_features WHERE tenant_id = $1 AND feature = $2 AND enabled", tid, FLAG_TAGIH_SEBELUM_KIRIM)
+
+
+async def perlu_difaktur_ids(conn, tid: str, ids: list) -> set:
+    """Himpunan fulfillment_id (dari `ids`) yang perlu difaktur; kosong bila tenant memakai tagih_sebelum_kirim."""
+    if not ids or not await tagih_sesudah_kirim(conn, tid):
+        return set()
+    return {r["id"] for r in await conn.fetch(
+        f"SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[]) AND {sql_perlu_difaktur('f')}",
+        tid, list(ids))}
 
 
 def sql_aksi(aksi: str, f: str = "f") -> str:
     """Predikat SQL (alias `f` = invoice_fulfillments; $1 = tenant) setara aksi_serah(...) == aksi."""
+    if aksi == "perlu_difaktur":
+        return sql_perlu_difaktur(f)
     return {
         "perlu_resi": (f"({f}.status = 'posted' AND EXISTS (SELECT 1 FROM pengiriman_serah s WHERE s.tenant_id = $1 AND s.fulfillment_id = {f}.id "
                        f"AND s.jenis_serah = 'kurir') AND NOT EXISTS (SELECT 1 FROM pengiriman_resi r WHERE r.tenant_id = $1 AND r.fulfillment_id = {f}.id))"),

@@ -101,7 +101,7 @@ def test_pengiriman_daftar_membawa_so_induk(monkeypatch):
     k, h = _lst(monkeypatch, [_baris_dl(), _baris_dl(so=False)])
     assert h["items"][0]["sales_order_id"] == SO and h["items"][0]["sales_order_number"] == "SO-1"
     assert h["items"][1]["sales_order_id"] is None and h["items"][1]["sales_order_number"] is None
-    main = " ".join(k.sql[-1][0].split())
+    main = next(" ".join(s.split()) for s, _ in k.sql if "LEFT JOIN sales_orders so ON" in s)  # kueri daftar (kueri perlu_difaktur 21 Okt menyusul sesudahnya)
     assert "LEFT JOIN sales_orders so ON so.id = COALESCE(f.sales_order_id, si.sales_order_id) AND so.tenant_id = f.tenant_id" in main
 
 

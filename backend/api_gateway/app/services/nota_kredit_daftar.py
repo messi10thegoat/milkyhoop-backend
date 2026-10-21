@@ -154,6 +154,11 @@ async def rincian_nk_many(conn, tenant_id: str, ids: list) -> dict:
     return out
 
 
+def jumlah_terpakai(rincian: dict) -> Decimal:
+    """Σ terpakai dari hasil rincian_nk_many (SATU definisi: kartu summary == Σ baris)."""
+    return sum((v["terpakai"] for v in rincian.values()), Decimal("0"))
+
+
 def medan_rincian(r) -> dict:
     r = r or {}
     return {"terpakai": float(r.get("terpakai", 0)), "dikembalikan": float(r.get("dikembalikan", 0))}
