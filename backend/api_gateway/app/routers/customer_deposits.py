@@ -556,9 +556,12 @@ async def list_customer_deposits(
 
             # S2-UM b: documents[]/doc_count = bundel /customer-deposits/{id}/documents tanpa rekap (SATU definisi, batch per halaman)
             _kel = await _umd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"]} for r in rows])
+            # 21 Okt (MASTER): diterapkan/dikembalikan turunan JURNAL (rincian_um_many), kolom cache lama tetap
+            _rinc = await _umd.rincian_um_many(conn, ctx["tenant_id"], [r["id"] for r in rows if r["status"] != "draft"])
             for it, row in zip(items, rows):
                 it["documents"] = _umd.documents_baris(_kel.get(row["id"], []))
                 it["doc_count"] = len(it["documents"])
+                it.update(_umd.medan_rincian(_rinc.get(str(row["id"]))))
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", items)
@@ -753,7 +756,9 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
             _kode.pop("id")
             _so = await so_induk_uang_muka(conn, ctx["tenant_id"], dep)
             _docs = _umd.documents_baris((await _umd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": dep["id"]}])).get(dep["id"], []))
-            _umd_dok = {"documents": _docs, "doc_count": len(_docs)}
+            _umd_dok = {"documents": _docs, "doc_count": len(_docs),
+                        **_umd.medan_rincian((await _umd.rincian_um_many(conn, ctx["tenant_id"], [dep["id"]] if dep["status"] != "draft" else []))
+                                             .get(str(dep["id"])))}
             return {
                 "success": True,
                 "data": {

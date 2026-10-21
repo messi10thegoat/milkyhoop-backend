@@ -124,3 +124,36 @@ async def kelompok_untuk(conn, tid: str, nota: list) -> dict:
             kel.append({"key": "nk", "label": "Nota Kredit", "docs": [sendiri[str(cid)]]})
         hasil[cid] = kel
     return hasil
+
+
+SQL_RINCIAN_NK = """
+SELECT credit_notes.id,
+       COALESCE((SELECT SUM(jl.credit) FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id
+                 JOIN chart_of_accounts coa ON coa.id = jl.account_id AND coa.account_type = 'RECEIVABLE'
+                 WHERE je.tenant_id = $1 AND je.source_id = credit_notes.id AND je.source_type = 'CREDIT_NOTE'
+                   AND is_effective_journal(je.id)), 0) AS kredit_piutang,
+       COALESCE((SELECT SUM(jl.debit) FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id
+                 JOIN chart_of_accounts coa ON coa.id = jl.account_id AND coa.account_type = 'RECEIVABLE'
+                 WHERE je.tenant_id = $1 AND je.source_id = credit_notes.id AND je.source_type = 'CREDIT_NOTE_REFUND'
+                   AND is_effective_journal(je.id)), 0) AS dikembalikan,
+       {sisa} AS sisa
+FROM credit_notes WHERE credit_notes.tenant_id = $1 AND credit_notes.id = ANY($2::uuid[])
+"""
+
+
+async def rincian_nk_many(conn, tenant_id: str, ids: list) -> dict:
+    """{str(id): {terpakai, dikembalikan, sisa, kredit_piutang}} turunan JURNAL (21 Okt 2026, MASTER), bukan cache:
+    dikembalikan = debit Piutang jurnal CREDIT_NOTE_REFUND efektif; terpakai = kredit Piutang jurnal CREDIT_NOTE efektif - dikembalikan -
+    sisa jurnal (NK bertaut = porsi yang memotong faktur; kelebihan ke KRD TIDAK termasuk -> customer_credit; NK bebas = 0)."""
+    if not ids:
+        return {}
+    out = {}
+    for r in await conn.fetch(SQL_RINCIAN_NK.replace("{sisa}", sql_sisa_nk()), tenant_id, list(ids)):
+        kp, rf, s = (Decimal(str(r[k] or 0)) for k in ("kredit_piutang", "dikembalikan", "sisa"))
+        out[str(r["id"])] = {"terpakai": kp - rf - s, "dikembalikan": rf, "sisa": s, "kredit_piutang": kp}
+    return out
+
+
+def medan_rincian(r) -> dict:
+    r = r or {}
+    return {"terpakai": float(r.get("terpakai", 0)), "dikembalikan": float(r.get("dikembalikan", 0))}

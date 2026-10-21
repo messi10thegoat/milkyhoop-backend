@@ -571,9 +571,12 @@ async def list_credit_notes(
             # S2-NK b: documents[]/doc_count = bundel /credit-notes/{id}/documents tanpa rekap (SATU definisi, batch per halaman)
             from ..services.uang_muka_daftar import documents_baris as _documents_baris
             _kel = await _nkd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"]} for r in rows])
+            # 21 Okt (MASTER): terpakai/dikembalikan turunan JURNAL (rincian_nk_many), kolom cache lama tetap
+            _rinc = await _nkd.rincian_nk_many(conn, ctx["tenant_id"], [r["id"] for r in rows])
             for it, row in zip(items, rows):
                 it["documents"] = _documents_baris(_kel.get(row["id"], []))
                 it["doc_count"] = len(it["documents"])
+                it.update(_nkd.medan_rincian(_rinc.get(str(row["id"]))))
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "credit_note", items)
@@ -747,7 +750,8 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
 
             from ..services.uang_muka_daftar import documents_baris as _documents_baris
             _docs = _documents_baris((await _nkd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": cn["id"]}])).get(cn["id"], []))
-            _nkd_dok = {"documents": _docs, "doc_count": len(_docs)}
+            _nkd_dok = {"documents": _docs, "doc_count": len(_docs),
+                        **_nkd.medan_rincian((await _nkd.rincian_nk_many(conn, ctx["tenant_id"], [cn["id"]])).get(str(cn["id"])))}
             # Build response
             remaining = sisa_kredit_nk(
                 cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"],

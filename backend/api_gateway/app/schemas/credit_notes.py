@@ -225,6 +225,8 @@ class CreditNoteListItem(BaseModel):
     # S2 b: dokumen bundel tanpa rekap (kelompok_untuk; SATU definisi dengan /{id}/documents)
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
+    terpakai: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
+    dikembalikan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
     reason: str
     reason_label: Optional[str] = None  # label layar alasan NK (credit_notes.LABEL_ALASAN_NK), 5 Okt
     created_at: str
@@ -273,6 +275,8 @@ class CreditNoteDetail(BaseModel):
     # paritas detail == baris (21 Okt): kunci & sumber SAMA dengan CreditNoteListItem
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
+    terpakai: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
+    dikembalikan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
     void_reason: Optional[str] = None
     credit_note_date: str
     reason: str

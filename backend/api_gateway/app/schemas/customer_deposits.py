@@ -187,6 +187,8 @@ class CustomerDepositListItem(BaseModel):
     # S2 b: dokumen bundel tanpa rekap (kelompok_untuk; SATU definisi dengan /{id}/documents)
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
+    diterapkan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
+    dikembalikan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
 
 
 class CustomerDepositDetail(BaseModel):
@@ -228,6 +230,8 @@ class CustomerDepositDetail(BaseModel):
     # S2-UM (20 Okt 2026): SAMA dengan baris daftar (services/uang_muka_daftar)
     documents: List[Dict[str, str]] = []  # paritas detail == baris (21 Okt)
     doc_count: int = 0
+    diterapkan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
+    dikembalikan: float = 0  # turunan JURNAL (21 Okt; cache amount_applied/refunded tetap)
     aksi: Optional[str] = None
     sisa_keadaan: Optional[str] = None
     status_text: Optional[str] = None

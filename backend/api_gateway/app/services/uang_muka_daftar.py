@@ -143,3 +143,43 @@ def documents_baris(kelompok: list) -> list:
     """documents[{type}] baris daftar = dokumen bundel TANPA rekap -- SATU definisi (penerimaan_daftar.documents_baris)."""
     from .penerimaan_daftar import documents_baris as _db
     return _db(kelompok)
+
+
+def sql_rincian_um() -> str:
+    """Rincian jurnal per uang muka (21 Okt 2026, MASTER): pasangan jurnal & keefektifan = TEKS SQL_SISA_UANG_MUKA (bagian sebelum
+    `baris AS (`), lalu baris akun CUSTOMER_DEPOSIT_LIABILITY dipecah per source_type. $1 tenant, $2 uuid[], $3 akun.
+    -> id, remaining (== compute_deposit_remaining_many), diterapkan (D-K DEPOSIT_APPLICATION), dikembalikan (D-K DEPOSIT_REFUND),
+    masuk (K-D jurnal lain: CUSTOMER_DEPOSIT, lepas bayar, kelebihan penerimaan/NK). Identitas: masuk - diterapkan - dikembalikan = remaining."""
+    from ..routers.customer_deposits import SQL_SISA_UANG_MUKA as S
+    assert S.count("baris AS (") == 1
+    return S[:S.index("baris AS (")] + """baris AS (
+    SELECT jl.journal_id, je.source_type, SUM(jl.credit) AS kr, SUM(jl.debit) AS db
+    FROM journal_lines jl JOIN efektif e ON e.journal_id = jl.journal_id JOIN journal_entries je ON je.id = jl.journal_id
+    WHERE jl.account_id = $3
+    GROUP BY jl.journal_id, je.source_type
+)
+SELECT d.id, COALESCE(SUM(b.kr) - SUM(b.db), 0) AS remaining,
+       COALESCE(SUM(b.db - b.kr) FILTER (WHERE b.source_type = 'DEPOSIT_APPLICATION'), 0) AS diterapkan,
+       COALESCE(SUM(b.db - b.kr) FILTER (WHERE b.source_type = 'DEPOSIT_REFUND'), 0) AS dikembalikan,
+       COALESCE(SUM(b.kr - b.db) FILTER (WHERE b.source_type NOT IN ('DEPOSIT_APPLICATION', 'DEPOSIT_REFUND')), 0) AS masuk
+FROM d
+LEFT JOIN pasangan p ON p.deposit_id = d.id
+LEFT JOIN baris b ON b.journal_id = p.journal_id
+GROUP BY d.id"""
+
+
+async def rincian_um_many(conn, tenant_id: str, ids) -> dict:
+    """{str(id): {remaining, diterapkan, dikembalikan, masuk}} (Decimal) -- turunan JURNAL, bukan cache amount_applied/refunded."""
+    from .role_resolver import AccountRole, resolve_account_id_by_role
+    ids = [str(i) for i in ids]
+    if not ids:
+        return {}
+    akun = await resolve_account_id_by_role(conn, tenant_id, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+    return {str(r["id"]): {k: Decimal(str(r[k] or 0)) for k in ("remaining", "diterapkan", "dikembalikan", "masuk")}
+            for r in await conn.fetch(sql_rincian_um(), tenant_id, ids, akun)}
+
+
+def medan_rincian(r) -> dict:
+    """Medan daftar/detail UM (float JSON): diterapkan, dikembalikan. Tanpa jurnal (draf) = 0."""
+    r = r or {}
+    return {"diterapkan": float(r.get("diterapkan", 0)), "dikembalikan": float(r.get("dikembalikan", 0))}
