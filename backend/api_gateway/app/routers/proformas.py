@@ -470,6 +470,7 @@ async def list_proformas(
                 it["aksi"] = _pa.aksi_proforma(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini)
                 # 21 Okt 2026 (PENJUALAN-SERAGAM): keadaan jatuh tempo + documents[] (bundel tanpa rekap, satu definisi)
                 it.update(_pd.jatuh_tempo_fakta(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini))
+                it["position_text"] = _pd.position_text(r["status"], r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0)
                 it["documents"] = _pd.documents_baris(_kel.get(r["id"], []))
                 it["doc_count"] = len(it["documents"])
             from ..services.kode_order import tempel_kode as _tempel_kode
@@ -640,6 +641,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
             _hari_d = await tanggal_dokumen(conn, ctx["tenant_id"])
             _lunas_d = _pa.proforma_lunas(row["amount"], paid)
             data.update(_pd.jatuh_tempo_fakta(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d))
+            data["position_text"] = _pd.position_text(row["status"], row["amount"], paid)
             # paritas detail == baris daftar (21 Okt 2026): aksi + documents[]/doc_count dari fungsi SAMA dgn daftar
             data["aksi"] = _pa.aksi_proforma(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d)
             _kel_d = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": row["id"], "sales_order_id": row["sales_order_id"]}])

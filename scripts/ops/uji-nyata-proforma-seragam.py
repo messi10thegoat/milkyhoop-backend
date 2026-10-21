@@ -107,7 +107,7 @@ async def main():
 
 async def banding():
     a, b = json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
-    BARU = {"jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks", "documents", "doc_count"}
+    BARU = {"jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks", "documents", "doc_count", "position_text"}
     beda = []
     for k, x in a.items():
         y = b.get(k)

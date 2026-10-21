@@ -15,12 +15,12 @@ PAR = {
     "Penawaran": ["position_text", "aksi", "documents", "doc_count", "kedaluwarsa_terbuka", "kedaluwarsa_hari", "kedaluwarsa_keadaan", "kedaluwarsa_teks", "is_expired", "status",
                   "quote_number", "sales_order_id", "sales_order_number", "order_code", "order_title"],
     "Penerimaan": ["allocated_amount", "unapplied_amount", "dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count", "invoice_count", "payment_number", "settlement_type"],
-    "Pengiriman": ["serah_keadaan", "serah_teks", "aksi", "documents", "doc_count", "status", "delivery_number", "asal", "order_code", "order_title"],
-    "Proforma": ["aksi", "jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks", "documents", "doc_count", "status", "proforma_number",
+    "Pengiriman": ["position_text", "serah_keadaan", "serah_teks", "aksi", "documents", "doc_count", "status", "delivery_number", "asal", "order_code", "order_title"],
+    "Proforma": ["position_text", "aksi", "jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks", "documents", "doc_count", "status", "proforma_number",
                  "outstanding_amount", "paid_amount", "is_fully_paid", "order_code", "order_title"],
 }
 BARU = {"Penawaran": {"position_text", "aksi", "documents", "doc_count"}, "Penerimaan": {"dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count", "invoice_count"},
-        "Pengiriman": {"documents", "doc_count"}, "Proforma": {"aksi", "documents", "doc_count", "jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks"}}
+        "Pengiriman": {"documents", "doc_count", "position_text"}, "Proforma": {"position_text", "aksi", "documents", "doc_count", "jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks"}}
 
 
 def req(t, uid):

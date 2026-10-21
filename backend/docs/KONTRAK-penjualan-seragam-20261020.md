@@ -38,15 +38,15 @@ Daftar (item) + detail membawa: `position_text` (kolom Status: Draf · Terkirim 
 
 - Paginasi: `page/per_page` **dan** `skip/offset` (prioritas offset > page > skip) + `has_more`. Urutan seri deterministik (`, f.id`).
 - `?aksi=perlu_resi|belum_dicatat`. **Tanpa with_totals/uang** (Pengiriman tanpa kolom uang).
-- Per baris + detail: `serah_keadaan` ∈ `belum_dicatat | belum_diterima | diterima | tanpa` · `serah_teks` (`"Serah belum dicatat"` / `"Belum diterima"` / `"Diterima 17 Okt"` / `"—"`; **netral, tidak merah**) · `aksi` (`perlu_resi` > `belum_dicatat` | null) · `documents`/`doc_count`.
+- Per baris + detail: `position_text` (kolom Status; 21 Okt: voided -> "Dibatalkan", selain itu == `serah_teks`; fungsi SAMA `pengiriman_daftar.position_text` dgn `anchor.position_text`) · `serah_keadaan` ∈ `belum_dicatat | belum_diterima | diterima | tanpa` · `serah_teks` (`"Serah belum dicatat"` / `"Belum diterima"` / `"Diterima 17 Okt"` / `"—"`; **netral, tidak merah**) · `aksi` (`perlu_resi` > `belum_dicatat` | null) · `documents`/`doc_count`.
 - `tanpa` = voided ATAU fitur `pengiriman_serah` OFF. `perlu_resi` = posted ∧ jenis `kurir` ∧ nol resi. `belum_dicatat` = posted ∧ (tak ada baris serah ∨ jenis kosong). `belum_diterima` BUKAN pill.
 - `GET /api/deliveries/summary?search=` : `total_posted, total_voided, today_count, total_all` + `perlu_resi_count`, `belum_dicatat_count` (tanpa value).
-- `GET /api/deliveries/{id}/documents`: `anchor.kind="delivery"`, `position_text = serah_teks`, **`total/paid/balance = null`**; groups `rekap · pnw · ki (Surat Jalan itu sendiri [voided pun] + faktur asal)`; `default={group:"ki",index:0}`. Izin: `sales_invoice` R.
+- `GET /api/deliveries/{id}/documents`: `anchor.kind="delivery"`, `position_text` = baris (voided "Dibatalkan", selain itu serah_teks), **`total/paid/balance = null`**; groups `rekap · pnw · ki (Surat Jalan itu sendiri [voided pun] + faktur asal)`; `default={group:"ki",index:0}`. Izin: `sales_invoice` R.
 
 ## 4. Proforma — `GET /api/proformas`
 
 - `?with_totals=true` → `sum_total` (Σ amount **tanpa cancelled**) + `sum_sisa` (Σ outstanding terbit belum lunas; == `summary.issued_outstanding_amount`).
-- Per baris + detail: `jatuh_tempo_terbuka` (terbit ∧ SO tak batal ∧ belum lunas ∧ bertanggal) · `jatuh_tempo_hari` · `jatuh_tempo_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` · `jatuh_tempo_teks` (`"Hari ini"` / `"Besok"` / `"28 Okt"` / `"12 Okt, lewat tempo"` / `"—"`) · `aksi` (`perlu_diterbitkan · menunggu_bayar · segera_tempo · lewat_tempo`) · `documents`/`doc_count`.
+- Per baris + detail: `position_text` (kolom Status; 21 Okt: Draf · Dibatalkan · Kedaluwarsa · Lunas · Dibayar sebagian · Menunggu bayar; fungsi SAMA `proforma_daftar.position_text` dgn `anchor.position_text`) · `jatuh_tempo_terbuka` (terbit ∧ SO tak batal ∧ belum lunas ∧ bertanggal) · `jatuh_tempo_hari` · `jatuh_tempo_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` · `jatuh_tempo_teks` (`"Hari ini"` / `"Besok"` / `"28 Okt"` / `"12 Okt, lewat tempo"` / `"—"`) · `aksi` (`perlu_diterbitkan · menunggu_bayar · segera_tempo · lewat_tempo`) · `documents`/`doc_count`.
 - `telat` ⇔ aksi `lewat_tempo`. `selesai` = terbit LUNAS bertanggal. `tanpa` = draf/batal/kedaluwarsa/terbit-pada-SO-batal/tanpa due_date.
 - `GET /api/proformas/summary?search=`: semua hitungan/nilai/pill dibatasi search.
 - `GET /api/proformas/{id}/documents`: `anchor.kind="proforma"`; `position_text` ∈ `Draf · Dibatalkan · Kedaluwarsa · Lunas · Dibayar sebagian · Menunggu bayar`; `total=nominal`, `paid/balance` hanya untuk terbit (else null); groups `rekap · pnw · pro (proforma itu sendiri) · kw (kwitansi uang muka bertaut)`; `default={group:"pro",index:0}`. Izin: `proforma` R.
@@ -57,7 +57,7 @@ Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik)
 
 ## 6. Bukti / alat
 
-`scripts/ops/uji-nyata-{penawaran,penerimaan,pengiriman,proforma}-seragam.sh`, `uji-nyata-paritas-detail.sh` (485 detail = semua baris kaos+grapgrap), `uji-nyata-dokumen-faktur.sh` (bundel SO lama==baru 664). Semua baca-saja, kontainer sekali-pakai. Tes: `tests/unit/test_{penawaran,penerimaan,pengiriman,proforma}_seragam.py`, `test_paritas_detail.py`, `test_pengiriman_tiebreak.py`.
+`scripts/ops/uji-nyata-{penawaran,penerimaan,pengiriman,proforma}-seragam.sh`, `uji-nyata-paritas-detail.sh` (485 detail = semua baris kaos+grapgrap), `uji-nyata-dokumen-faktur.sh` (bundel SO lama==baru 664), `uji-nyata-posisi-pro-kirim.sh` (position_text baris==detail==anchor==aturan; `MERAH=1` = kontrol merah). Semua baca-saja, kontainer sekali-pakai. Tes: `tests/unit/test_{penawaran,penerimaan,pengiriman,proforma}_seragam.py`, `test_paritas_detail.py`, `test_pengiriman_tiebreak.py`.
 
 ## 7. Idempotensi: replay hanya bila dokumen sumber masih ada (21 Okt 2026)
 

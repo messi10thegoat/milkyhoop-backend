@@ -473,7 +473,7 @@ async def susun_dokumen_pengiriman(conn, ctx: dict, delivery_id: UUID) -> dict:
     i_ki = next((i for i, g in enumerate(kelompok) if g["key"] == "ki"), None)
     return {
         "anchor": {"kind": "delivery", "id": str(r["id"]), "number": r["fulfillment_number"], "customer": r["customer_name"] or "",
-                   "position_text": fakta["serah_teks"], "total": None, "paid": None, "balance": None,
+                   "position_text": PG.position_text(r["status"], fakta["serah_teks"]), "total": None, "paid": None, "balance": None,
                    "sales_order_id": str(so["id"]) if so else None, "sales_order_number": so["order_number"] if so else None,
                    "order_code": so["order_code"] if so else None, "order_title": so["order_title"] if so else None,
                    "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"],
@@ -494,7 +494,6 @@ async def susun_dokumen_proforma(conn, ctx: dict, proforma_id: UUID) -> dict:
     from ..services import dokumen_bundel as DB
     from ..services import proforma_daftar as PD
     from ..services.proforma_terbayar import terbayar_proforma
-    from ..services.proforma_aksi import proforma_lunas
     tid = ctx["tenant_id"]
     p = await conn.fetchrow(
         """SELECT p.id, p.proforma_number, p.status, p.amount, p.sales_order_id, p.customer_id, p.customer_name, so.status AS so_status,
@@ -507,10 +506,8 @@ async def susun_dokumen_proforma(conn, ctx: dict, proforma_id: UUID) -> dict:
     await DB.rampungkan(conn, tid, kelompok)
     tb = await terbayar_proforma(conn, tid, [p["sales_order_id"]])
     paid = Decimal(str(tb[p["id"]]["paid"])) if p["id"] in tb else Decimal("0")
-    lunas = proforma_lunas(p["amount"], paid)
     terbit = p["status"] == "issued"
-    teks = {"draft": "Draf", "cancelled": "Dibatalkan", "expired": "Kedaluwarsa"}.get(p["status"]) or (
-        "Lunas" if lunas else ("Dibayar sebagian" if paid > 0 else "Menunggu bayar"))
+    teks = PD.position_text(p["status"], p["amount"], paid)  # fungsi SAMA dgn baris daftar/detail
     kontak = await _kontak(conn, tid, p["customer_id"])
     from ..services.kode_order import muat_setelan as _setelan_kode
     _st_kode = await _setelan_kode(conn, tid)

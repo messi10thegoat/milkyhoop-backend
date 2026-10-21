@@ -287,6 +287,7 @@ async def list_deliveries(
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": r["id"], "invoice_id": r["invoice_id"], "sales_order_id": r["sales_order_id"]} for r in rows])
         for i, r in zip(items, rows):
             i.update(_pg.serah_fakta(_serah_aktif, r["status"], *_fs.get(r["id"], (None, None, 0))))
+            i["position_text"] = _pg.position_text(r["status"], i["serah_teks"])
             i["documents"] = _pg.documents_baris(_kel.get(r["id"], []))
             i["doc_count"] = len(i["documents"])
     return {
@@ -493,6 +494,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         from ..services import pengiriman_daftar as _pg  # 20 Okt 2026: keadaan serah + aksi (aditif; fungsi SAMA dgn daftar)
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [row["id"]]) if _aktif else {}
         detail.update(_pg.serah_fakta(_aktif, row["status"], *_fs.get(row["id"], (None, None, 0))))
+        detail["position_text"] = _pg.position_text(row["status"], detail["serah_teks"])
         # paritas detail == baris daftar (21 Okt 2026): documents[]/doc_count dari kelompok_untuk (fungsi SAMA dgn daftar)
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": row["id"], "invoice_id": row["invoice_id"], "sales_order_id": row["sales_order_id"]}])
         detail["documents"] = _pg.documents_baris(_kel.get(row["id"], []))

@@ -5,6 +5,8 @@
   aksi (pill; putusan MASTER 20 Okt): perlu_resi (jenis kurir, nol resi) > belum_dicatat (TIDAK ada baris serah ATAU jenis_serah kosong =
                   data serah yang benar-benar kurang). `belum_diterima` BUKAN pill (diterima_pada = 0 di mana pun -> derau permanen; tiket).
   aksi per baris, ?aksi= dan hitungan summary memakai predikat SQL (sql_aksi) yang setara dgn serah_fakta (diuji berpasangan + harness nyata).
+  position_text = kolom Status: voided -> "Dibatalkan", selain itu == serah_teks (serah_teks TETAP = kolom Serah). SATU fungsi untuk
+                  baris daftar, detail, dan anchor /deliveries/{id}/documents (putusan MASTER 21 Okt 2026).
   documents     = kelompok bundel (kelompok_untuk) tanpa rekap -- SATU definisi dgn /deliveries/{id}/documents.
 """
 from datetime import date
@@ -40,6 +42,10 @@ def serah_fakta(aktif: bool, status: Optional[str], jenis: Optional[str], diteri
     else:
         teks = TEKS[kd]
     return {"serah_keadaan": kd, "serah_teks": teks, "aksi": aksi}
+
+
+def position_text(status: Optional[str], serah_teks: str) -> str:
+    return "Dibatalkan" if status == "voided" else serah_teks
 
 
 async def fakta_serah(conn, tid: str, ids: list) -> dict:

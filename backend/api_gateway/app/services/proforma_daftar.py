@@ -5,6 +5,8 @@
   jatuh_tempo_keadaan = telat | hari_ini | akan | selesai (terbit LUNAS bertanggal; tanggal redup) | tanpa (draf/batal/kedaluwarsa/terbit pada SO batal/tanpa tanggal)
   jatuh_tempo_teks    = "Hari ini" / "Besok" / "24 Okt" / "12 Okt, lewat tempo" / "—"
   sisa/terbayar       = SUMBER YANG SAMA dgn kolom paid/aksi/summary (routers/proformas.kelas_bayar_terbit, terbayar_proforma)
+  position_text       = kolom Status (Draf · Dibatalkan · Kedaluwarsa · Lunas · Dibayar sebagian · Menunggu bayar) -- SATU fungsi untuk
+                        baris daftar, detail, dan anchor /proformas/{id}/documents (21 Okt 2026)
   documents           = kelompok bundel (kelompok_untuk) tanpa rekap -- SATU definisi dgn /proformas/{id}/documents
   ?search=            = routers/proformas._syarat_cari (SATU sumber daftar & /summary?search=)
 """
@@ -67,6 +69,20 @@ async def kelompok_untuk(conn, tid: str, proformas: list) -> dict:
             kel.append({"key": "kw", "label": "Pembayaran", "planned": None, "docs": k})
         hasil[p["id"]] = kel
     return hasil
+
+
+POSISI_PROFORMA = {"draft": "Draf", "cancelled": "Dibatalkan", "expired": "Kedaluwarsa"}
+
+
+def position_text(status: Optional[str], nominal, terbayar) -> str:
+    """Teks kolom Status. Status non-terbit -> POSISI_PROFORMA; terbit -> keadaan bayar (lunas = proforma_lunas, rumus tunggal)."""
+    from decimal import Decimal
+    from .proforma_aksi import proforma_lunas
+    if status in POSISI_PROFORMA:
+        return POSISI_PROFORMA[status]
+    if proforma_lunas(nominal, terbayar):
+        return "Lunas"
+    return "Dibayar sebagian" if Decimal(str(terbayar or 0)) > 0 else "Menunggu bayar"
 
 
 def documents_baris(kelompok: list) -> list:
