@@ -76,6 +76,8 @@ for par in "perlu-difaktur:uji-nyata-pengiriman-perlu-difaktur.py" "nk-total-app
   nama=${par%%:*}; py="$OPS/${par#*:}"
   if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/$nama.out"; nilai "$nama" $? "$LOG/$nama.out"; else catat "$nama" SKIP "harness belum ada"; fi
 done
+py="$OPS/uji-nyata-pill-partisi.py"
+if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/pill.out"; nilai "pill-partisi(8 modul)" $? "$LOG/pill.out"; else catat "pill-partisi" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-paritas-detail.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru /out/par.json > "$LOG/paritas.out"; nilai "paritas-detail(4 modul)" $? "$LOG/paritas.out"; else catat "paritas-detail" SKIP "harness belum ada"; fi
 
