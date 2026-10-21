@@ -1682,7 +1682,8 @@ class BillsService:
                         reference_number, notes, created_by,
                         posted_at, posted_by,
                         operational_status, accounting_status,
-                        pph_tax_code_id, pph_amount
+                        pph_tax_code_id, pph_amount,
+                        allocated_amount, unapplied_amount
                     ) VALUES (
                         $1, $2, $3, $4, $5,
                         $6, $7, $8, $9,
@@ -1690,7 +1691,8 @@ class BillsService:
                         $12, $13, $14,
                         NOW(), $14,
                         'CONFIRMED', 'POSTED',
-                        $15::uuid, $16
+                        $15::uuid, $16,
+                        $10, 0
                     )
                     """,
                     payment_id,
@@ -1710,6 +1712,8 @@ class BillsService:
                     UUID(pph_tax_code_id) if pph_tax_code_id else None,
                     pph_amount,
                 )
+                # (22 Okt 2026) cache allocated_amount/unapplied_amount DIISI: satu tagihan, seluruh pembayaran teralokasi (8b di bawah).
+                # Dulu kolom tak disebut -> default 0 -> 24/26 pembayaran tampil "dialokasikan 0" (pembaca kini memakai turunan alokasi).
 
                 # 8b. INSERT bill_payment_allocations
                 await conn.execute(

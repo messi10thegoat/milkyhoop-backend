@@ -196,10 +196,23 @@ class BillPaymentListItem(BaseModel):
     status: str
     bill_count: int = 0
     created_at: str
+    # PEMBELIAN-SERAGAM (2), 22 Okt 2026: turunan alokasi (services/pembayaran_keluar_daftar)
+    dialokasikan: float = 0
+    belum_dialokasikan: float = 0
+    aksi: Optional[str] = None
+    alokasi_keadaan: str = "tanpa"
+    alokasi_teks: str = "—"
 
 
 class BillPaymentDetail(BaseModel):
     """Full bill payment detail."""
+
+    # PEMBELIAN-SERAGAM (2), 22 Okt 2026: turunan alokasi (services/pembayaran_keluar_daftar)
+    dialokasikan: float = 0
+    belum_dialokasikan: float = 0
+    aksi: Optional[str] = None
+    alokasi_keadaan: str = "tanpa"
+    alokasi_teks: str = "—"
 
     id: str
     payment_number: str

@@ -602,8 +602,8 @@ async def list_bill_payments(
     sort_order: Literal["asc", "desc"] = Query("desc"),
 ):
     """
-    List bill payments — journal-derived with LEFT JOIN to wrapper table (Rule 6).
-    Amounts from journal_lines (PAYABLE debit), metadata from bill_payments_v2.
+    List bill payments -- WRAPPER bill_payments_v2 (PEMBELIAN-SERAGAM (2), 22 Okt 2026); dialokasikan/belum = turunan alokasi.
+    Sisa hutang per tagihan tetap dari jurnal (compute_ap_outstanding / compute_ap_rincian).
     """
     try:
         ctx = get_user_context(request)
@@ -677,41 +677,29 @@ async def list_bill_payments(
             limit_idx = param_idx
             skip_idx = param_idx + 1
 
-            # Journal-derived settlements CTE + LEFT JOIN bill_payments_v2 (Rule 6)
-            base_cte = """
-                WITH settlements AS (
-                    SELECT je.id AS journal_id, je.journal_number, je.journal_date,
-                           je.source_id, je.source_type, je.created_at AS je_created_at,
-                           SUM(jl.debit) AS settlement_amount
-                    FROM journal_lines jl
-                    JOIN journal_entries je ON je.id = jl.journal_id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
-                      AND je.status = 'POSTED' AND je.tenant_id = $1
-                      AND je.reversed_by_id IS NULL
-                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
-                    GROUP BY je.id, je.journal_number, je.journal_date,
-                             je.source_id, je.source_type, je.created_at
-                ),
-                joined AS (
+            # PEMBELIAN-SERAGAM (2), 22 Okt 2026: daftar berbasis WRAPPER bill_payments_v2 (dulu: jurnal ber-debit AP + LEFT JOIN wrapper ->
+            # jurnal MANUAL/VENDOR_OPENING_BALANCE tampil sebagai pembayaran hantu ber-detail 404; voided/draf tak pernah tampil). Dialokasikan/
+            # belum = TURUNAN alokasi (services/pembayaran_keluar_daftar), bukan cache wrapper.
+            from ..services import pembayaran_keluar_daftar as _pk
+            base_cte = f"""
+                WITH joined AS (
                     SELECT
-                        COALESCE(bp.id, s.journal_id)::text AS id,
-                        COALESCE(bp.payment_number, s.journal_number) AS payment_number,
+                        bp.id::text AS id,
+                        bp.payment_number,
                         bp.vendor_id,
-                        COALESCE(bp.vendor_name, 'Settlement') AS vendor_name,
-                        COALESCE(bp.payment_date, s.journal_date) AS payment_date,
+                        COALESCE(bp.vendor_name, '') AS vendor_name,
+                        bp.payment_date,
                         COALESCE(bp.payment_method, 'bank_transfer') AS payment_method,
-                        s.settlement_amount AS total_amount,
-                        COALESCE(bp.allocated_amount, s.settlement_amount) AS allocated_amount,
-                        COALESCE(bp.unapplied_amount, 0) AS unapplied_amount,
-                        COALESCE(bp.status, 'posted') AS status,
-                        COALESCE(bp.created_at, s.je_created_at) AS created_at,
-                        COALESCE(
-                            (SELECT COUNT(*) FROM bill_payment_allocations bpa WHERE bpa.payment_id = bp.id),
-                            0
-                        ) AS bill_count
-                    FROM settlements s
-                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
+                        bp.total_amount,
+                        bp.allocated_amount,
+                        bp.unapplied_amount,
+                        {_pk.sql_bruto('bp')} AS bruto,
+                        {_pk.sql_dialokasi('bp')} AS dialokasi,
+                        COALESCE(bp.status, 'draft') AS status,
+                        bp.created_at,
+                        (SELECT COUNT(*) FROM bill_payment_allocations bpa WHERE bpa.payment_id = bp.id) AS bill_count
+                    FROM bill_payments_v2 bp
+                    WHERE bp.tenant_id = $1
                 )
             """
 
@@ -726,15 +714,17 @@ async def list_bill_payments(
             list_query = f"""
                 {base_cte}
                 SELECT q.* FROM joined q WHERE 1=1{outer_where}
-                ORDER BY {sort_col} {order}
+                ORDER BY {sort_col} {order}, q.id {order}
                 LIMIT ${limit_idx} OFFSET ${skip_idx}
             """
             params.append(limit)
             params.append(skip)
             rows = await conn.fetch(list_query, *params)
 
-            items = [
-                BillPaymentListItem(
+            items = []
+            for r in rows:
+                _f = _pk.dengan_turunan(_pk.alokasi_fakta(r["status"], r["bruto"], r["dialokasi"]))
+                items.append(BillPaymentListItem(
                     id=str(r["id"]),
                     payment_number=r["payment_number"] or "",
                     vendor_id=str(r["vendor_id"]) if r["vendor_id"] else None,
@@ -744,14 +734,14 @@ async def list_bill_payments(
                     else "",
                     payment_method=r["payment_method"] or "bank_transfer",
                     total_amount=r["total_amount"] or 0,
-                    allocated_amount=r["allocated_amount"] or 0,
-                    unapplied_amount=r["unapplied_amount"] or 0,
+                    allocated_amount=_f.get("allocated_amount", r["allocated_amount"] or 0),
+                    unapplied_amount=_f.get("unapplied_amount", r["unapplied_amount"] or 0),
                     status=r["status"] or "draft",
                     bill_count=r["bill_count"] or 0,
                     created_at=r["created_at"].isoformat() if r["created_at"] else "",
-                )
-                for r in rows
-            ]
+                    dialokasikan=_f["dialokasikan"], belum_dialokasikan=_f["belum_dialokasikan"], aksi=_f["aksi"],
+                    alokasi_keadaan=_f["alokasi_keadaan"], alokasi_teks=_f["alokasi_teks"],
+                ))
 
             return BillPaymentListResponse(
                 items=items, total=total or 0, has_more=(skip + limit) < (total or 0)
@@ -766,8 +756,7 @@ async def list_bill_payments(
 @router.get("/summary", response_model=BillPaymentSummaryResponse)
 async def get_bill_payments_summary(request: Request):
     """
-    Summary — journal-derived with LEFT JOIN to wrapper table (Rule 6).
-    Amounts from journal_lines (PAYABLE debit), metadata from bill_payments_v2.
+    Summary -- WRAPPER bill_payments_v2, sumber SAMA dgn daftar (PEMBELIAN-SERAGAM (2), 22 Okt 2026).
     """
     try:
         ctx = get_user_context(request)
@@ -779,71 +768,33 @@ async def get_bill_payments_summary(request: Request):
             # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             # Periode = services/rp_periode.batas_periode (SAMA dengan Penerimaan): hari ini, Senin–Minggu, tgl 1–akhir bulan.
             _b = batas_periode(await tanggal_dokumen(conn, ctx["tenant_id"]))
-            # Journal-derived summary (Rule 6)
+            # PEMBELIAN-SERAGAM (2), 22 Okt 2026: SUMBER SAMA dgn daftar = wrapper bill_payments_v2 (dulu jurnal ber-debit AP -> jurnal
+            # MANUAL/saldo awal ikut terhitung; draf tak pernah terhitung). Voided dikecualikan seperti dulu.
             summary = await conn.fetchrow(
                 """
-                WITH settlements AS (
-                    SELECT je.id AS journal_id, je.journal_date,
-                           SUM(jl.debit) AS settlement_amount
-                    FROM journal_lines jl
-                    JOIN journal_entries je ON je.id = jl.journal_id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
-                      AND je.status = 'POSTED' AND je.tenant_id = $1
-                      AND je.reversed_by_id IS NULL
-                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
-                    GROUP BY je.id, je.journal_date
-                ),
-                joined AS (
-                    SELECT s.settlement_amount,
-                           COALESCE(bp.status, 'posted') AS status,
-                           COALESCE(bp.payment_date, s.journal_date) AS payment_date,
-                           COALESCE(bp.payment_method, 'bank_transfer') AS payment_method
-                    FROM settlements s
-                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
-                )
                 SELECT
                     COUNT(*) AS total_count,
-                    COALESCE(SUM(settlement_amount), 0) AS total_paid,
-                    COALESCE(SUM(CASE WHEN status = 'draft' THEN settlement_amount ELSE 0 END), 0) AS draft_amount,
+                    COALESCE(SUM(total_amount), 0) AS total_paid,
+                    COALESCE(SUM(CASE WHEN status = 'draft' THEN total_amount ELSE 0 END), 0) AS draft_amount,
                     COUNT(CASE WHEN status = 'draft' THEN 1 END) AS draft_count,
-                    COALESCE(SUM(CASE WHEN status = 'posted' THEN settlement_amount ELSE 0 END), 0) AS posted_amount,
+                    COALESCE(SUM(CASE WHEN status = 'posted' THEN total_amount ELSE 0 END), 0) AS posted_amount,
                     COUNT(CASE WHEN status = 'posted' THEN 1 END) AS posted_count,
-                    COALESCE(SUM(CASE WHEN payment_date = $2::date THEN settlement_amount ELSE 0 END), 0) AS today_amount,
-                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $3::date AND $4::date THEN settlement_amount ELSE 0 END), 0) AS week_amount,
-                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $5::date AND $6::date THEN settlement_amount ELSE 0 END), 0) AS month_amount
-                FROM joined
-                WHERE status != 'voided'
+                    COALESCE(SUM(CASE WHEN payment_date = $2::date THEN total_amount ELSE 0 END), 0) AS today_amount,
+                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $3::date AND $4::date THEN total_amount ELSE 0 END), 0) AS week_amount,
+                    COALESCE(SUM(CASE WHEN payment_date BETWEEN $5::date AND $6::date THEN total_amount ELSE 0 END), 0) AS month_amount
+                FROM bill_payments_v2
+                WHERE tenant_id = $1 AND COALESCE(status, 'draft') != 'voided'
                 """,
                 *argumen_kueri(ctx["tenant_id"], _b),
             )
 
-            # Journal-derived method breakdown (Rule 6)
             method_breakdown = await conn.fetch(
                 """
-                WITH settlements AS (
-                    SELECT je.id AS journal_id,
-                           SUM(jl.debit) AS settlement_amount
-                    FROM journal_lines jl
-                    JOIN journal_entries je ON je.id = jl.journal_id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE coa.account_type = 'PAYABLE' AND jl.debit > 0
-                      AND je.status = 'POSTED' AND je.tenant_id = $1
-                      AND je.reversed_by_id IS NULL
-                      AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
-                    GROUP BY je.id
-                ),
-                joined AS (
-                    SELECT s.settlement_amount,
-                           COALESCE(bp.status, 'posted') AS status,
-                           COALESCE(bp.payment_method, 'bank_transfer') AS payment_method
-                    FROM settlements s
-                    LEFT JOIN bill_payments_v2 bp ON bp.journal_id = s.journal_id
-                )
-                SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(settlement_amount), 0) AS amount
-                FROM joined
-                WHERE status != 'voided'
-                GROUP BY payment_method
+                SELECT COALESCE(payment_method, 'bank_transfer') AS payment_method, COUNT(*) AS count,
+                       COALESCE(SUM(total_amount), 0) AS amount
+                FROM bill_payments_v2
+                WHERE tenant_id = $1 AND COALESCE(status, 'draft') != 'voided'
+                GROUP BY COALESCE(payment_method, 'bank_transfer')
                 """,
                 ctx["tenant_id"],
             )
@@ -1047,6 +998,12 @@ async def get_bill_payment(request: Request, payment_id: str):
                 for r in allocations
             ]
 
+            # PEMBELIAN-SERAGAM (2): dialokasikan/belum = TURUNAN alokasi (fungsi SAMA dgn daftar), bukan cache wrapper
+            from ..services import pembayaran_keluar_daftar as _pk
+            _f = _pk.dengan_turunan(_pk.alokasi_fakta(
+                payment["status"], (payment["total_amount"] or 0) + (payment.get("discount_amount") or 0),
+                sum((r["amount_applied"] or 0) for r in allocations)))
+
             detail = BillPaymentDetail(
                 id=str(payment["id"]),
                 payment_number=payment["payment_number"] or "",
@@ -1067,8 +1024,10 @@ async def get_bill_payment(request: Request, payment_id: str):
                 if payment.get("source_deposit_id")
                 else None,
                 total_amount=payment["total_amount"] or 0,
-                allocated_amount=payment["allocated_amount"] or 0,
-                unapplied_amount=payment["unapplied_amount"] or 0,
+                allocated_amount=_f.get("allocated_amount", payment["allocated_amount"] or 0),
+                unapplied_amount=_f.get("unapplied_amount", payment["unapplied_amount"] or 0),
+                dialokasikan=_f["dialokasikan"], belum_dialokasikan=_f["belum_dialokasikan"], aksi=_f["aksi"],
+                alokasi_keadaan=_f["alokasi_keadaan"], alokasi_teks=_f["alokasi_teks"],
                 discount_amount=payment.get("discount_amount") or 0,
                 discount_account_id=str(payment["discount_account_id"])
                 if payment.get("discount_account_id")
@@ -1908,34 +1867,35 @@ async def void_bill_payment(
                     await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
 
                 # Fase 2.3: Void withholding_tax_records linked to this payment
-            await conn.execute(
-                """
-                UPDATE withholding_tax_records
-                SET status = 'void', updated_at = NOW()
-                WHERE payment_id = $1::uuid AND tenant_id = $2
-                  AND status != 'void'
-            """,
-                payment_id,
-                ctx["tenant_id"],
-            )
-
-            # Update payment status and link void journal
-            await conn.execute(
-                """
-                UPDATE bill_payments_v2
-                SET status = 'voided',
-                    void_journal_id = $1,
-                    voided_at = NOW(),
-                    voided_by = $2,
-                    void_reason = $3,
-                    updated_at = NOW()
-                WHERE id = $4::uuid
+                # (22 Okt 2026) DI DALAM transaksi: dulu di luar (autocommit) -> jurnal void bisa terbalik sementara wrapper tetap posted.
+                await conn.execute(
+                    """
+                    UPDATE withholding_tax_records
+                    SET status = 'void', updated_at = NOW()
+                    WHERE payment_id = $1::uuid AND tenant_id = $2
+                      AND status != 'void'
                 """,
-                void_journal_id,
-                ctx["user_id"],
-                payload.void_reason,
-                payment_id,
-            )
+                    payment_id,
+                    ctx["tenant_id"],
+                )
+
+                # Update payment status and link void journal
+                await conn.execute(
+                    """
+                    UPDATE bill_payments_v2
+                    SET status = 'voided',
+                        void_journal_id = $1,
+                        voided_at = NOW(),
+                        voided_by = $2,
+                        void_reason = $3,
+                        updated_at = NOW()
+                    WHERE id = $4::uuid
+                    """,
+                    void_journal_id,
+                    ctx["user_id"],
+                    payload.void_reason,
+                    payment_id,
+                )
 
             logger.info(
                 f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
