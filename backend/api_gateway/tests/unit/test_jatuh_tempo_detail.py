@@ -42,4 +42,8 @@ def test_detail_tagihan_memakai_status_terhitung(fn):
     assert '"is_overdue": bill["calculated_status"] == "overdue"' in seg
     assert 'hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini)' in seg
     assert "hari_ini = await tanggal_dokumen(conn, tenant_id)" in seg
-    assert "b.due_date < $3::date THEN 'overdue'" in seg             # CASE yang sama dengan daftar
+    # CASE yang sama dengan daftar: satu ungkapan services/tagihan_daftar.sql_keadaan (V440, PEMBELIAN-SERAGAM (1))
+    assert 'TD.sql_keadaan("$3::date")' in seg
+    from app.services import tagihan_daftar as TD
+    assert "b.due_date < $3::date THEN 'overdue'" in TD.sql_keadaan("$3::date")
+    assert "TD.sql_keadaan(" in inspect.getsource(BS.BillsService.list_bills)

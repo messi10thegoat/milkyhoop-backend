@@ -89,46 +89,7 @@ from ..utils.sorting import build_order_by_clause  # noqa: E402
 from ..utils.money import cents_to_decimal_string  # noqa: E402
 from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 
-# Law 16: Journal-derived amount_paid CTE (used by list_bills, get_outstanding_summary)
-# Computes per-bill paid amount from journal_lines via BOTH payment table paths
-BILL_JOURNAL_PAID_CTE = """
-    bill_journal_paid AS (
-        SELECT
-            bill_id,
-            COALESCE(SUM(paid), 0) AS journal_paid
-        FROM (
-            -- Path 1: bill_payment_allocations + bill_payments_v2
-            SELECT bpa.bill_id, SUM(jl.debit) AS paid
-            FROM bill_payment_allocations bpa
-            JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-            JOIN journal_entries je ON je.id = bpv2.journal_id
-            JOIN journal_lines jl ON jl.journal_id = je.id
-            JOIN chart_of_accounts coa ON coa.id = jl.account_id
-            WHERE bpv2.tenant_id = $1
-              AND je.status = 'POSTED'
-              AND je.reversed_by_id IS NULL
-              AND bpv2.journal_id IS NOT NULL
-              AND coa.account_type = 'PAYABLE'
-              AND jl.debit > 0
-            GROUP BY bpa.bill_id
-            UNION ALL
-            -- Path 3: Adjustments (source_type = ADJUSTMENT, source_id = bill_id)
-            SELECT je.source_id::uuid AS bill_id, SUM(jl.debit) AS paid
-            FROM journal_entries je
-            JOIN journal_lines jl ON jl.journal_id = je.id
-            JOIN chart_of_accounts coa ON coa.id = jl.account_id
-            WHERE je.tenant_id = $1
-              AND je.status = 'POSTED'
-              AND je.reversed_by_id IS NULL
-              AND je.source_type = 'ADJUSTMENT'
-              AND coa.account_type = 'PAYABLE'
-              AND jl.debit > 0
-            GROUP BY je.source_id
-        ) combined
-        GROUP BY bill_id
-    )
-"""
-
+from . import tagihan_daftar as TD  # noqa: E402  PEMBELIAN-SERAGAM (1): uang+keadaan tagihan dari compute_ap_rincian (V440)
 
 logger = logging.getLogger(__name__)
 
@@ -447,17 +408,7 @@ class BillsService:
             # The raw status column may not match computed values like
             # unpaid/partial/overdue, so we use the same CASE logic as SELECT.
             if status != "all":
-                computed_status_expr = """
-                    CASE
-                        WHEN b.status = 'void' THEN 'void'
-                        WHEN b.status_v2 = 'draft' THEN 'draft'
-                        WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < __HARI_INI__ THEN 'overdue'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < __HARI_INI__ THEN 'overdue'
-                        ELSE 'unpaid'
-                    END
-                """
+                computed_status_expr = TD.sql_keadaan(TOK_HARI_INI)  # SATU ungkapan dgn kolom status (V440)
                 if status == "active":
                     # Exclude draft & void — for hutang/AP queries
                     conditions.append(
@@ -534,19 +485,10 @@ class BillsService:
                 "supplier": "b.vendor_name",
                 "due_date": "b.due_date",
                 "amount": "COALESCE(b.grand_total, b.amount)",
-                "balance": "(COALESCE(b.amount, 0) - COALESCE(bjp.journal_paid, 0))",
+                "balance": TD.sql_sisa(),
                 "updated_at": "b.updated_at",
-                # Status ordering: overdue(1) > unpaid(2) > partial(3) > paid(4) > void(6)
-                # Law 16: uses journal-derived bjp.journal_paid
-                "status": """CASE
-                    WHEN b.status = 'void' THEN 6
-                    WHEN b.status_v2 = 'draft' THEN 5
-                    WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 4
-                    WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < __HARI_INI__ THEN 1
-                    WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 3
-                    WHEN b.due_date < __HARI_INI__ THEN 1
-                    ELSE 2
-                END""",
+                # Status ordering: overdue(1) > unpaid(2) > partial(3) > paid(4) > draft(5) > void(6) -- ungkapan keadaan yang SAMA (V440)
+                "status": TD.sql_urut_keadaan(TOK_HARI_INI),
                 # Legacy aliases
                 "vendor_name": "b.vendor_name",
                 "invoice_number": "b.invoice_number",
@@ -558,9 +500,8 @@ class BillsService:
 
             # Get total count
             count_query = f"""
-                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT COUNT(*) FROM bills b
-                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                {TD.join_rincian()}
                 WHERE {where_clause}
             """
             # Count hanya memakai WHERE: sertakan hari_ini HANYA bila dirujuk
@@ -573,26 +514,17 @@ class BillsService:
             param_idx += 1
 
             # Get items with dynamic status calculation
-            # Law 16: Journal-derived amount_paid via CTE
+            # Law 1/16/29: terbayar/sisa/keadaan dari compute_ap_rincian (V440) -- services/tagihan_daftar
             query = f"""
-                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
                     b.id,
                     b.invoice_number,
                     b.vendor_id,
                     b.vendor_name,
                     b.amount,
-                    COALESCE(bjp.journal_paid, 0) as amount_paid,
-                    (b.amount - COALESCE(bjp.journal_paid, 0)) as amount_due,
-                    CASE
-                        WHEN b.status = 'void' THEN 'void'
-                        WHEN b.status_v2 = 'draft' THEN 'draft'
-                        WHEN COALESCE(bjp.journal_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 AND b.due_date < {hari_ph} THEN 'overdue'
-                        WHEN COALESCE(bjp.journal_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < {hari_ph} THEN 'overdue'
-                        ELSE 'unpaid'
-                    END as status,
+                    {TD.sql_dibayar()} as amount_paid,
+                    {TD.sql_sisa()} as amount_due,
+                    {TD.sql_keadaan(hari_ph)} as status,
                     b.issue_date,
                     b.due_date,
                     b.created_at,
@@ -600,7 +532,7 @@ class BillsService:
                     b.operational_status,
                     b.accounting_status
                 FROM bills b
-                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                {TD.join_rincian()}
                 WHERE {where_clause}
                 ORDER BY {order_by_clause}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -662,35 +594,15 @@ class BillsService:
         """
         async with self.pool.acquire() as conn:
             hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
-            # Get bill -- Law 16: journal-derived amount_paid via compute_ap_outstanding()
-            bill_query = """
+            # Get bill -- Law 1/16/29: terbayar/sisa/keadaan dari compute_ap_rincian (V440), ungkapan SAMA dgn daftar
+            bill_query = f"""
                 SELECT
                     b.*,
-                    COALESCE(ap_paid.total_paid, 0) AS journal_paid,
-                    (b.amount - COALESCE(ap_paid.total_paid, 0)) as amount_due,
-                    CASE
-                        WHEN b.status = 'void' THEN 'void'
-                        WHEN b.status_v2 = 'draft' THEN 'draft'
-                        WHEN COALESCE(ap_paid.total_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < $3::date THEN 'overdue'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < $3::date THEN 'overdue'
-                        ELSE 'unpaid'
-                    END as calculated_status
+                    {TD.sql_dibayar()} AS journal_paid,
+                    {TD.sql_sisa()} as amount_due,
+                    {TD.sql_keadaan("$3::date")} as calculated_status
                 FROM bills b
-                LEFT JOIN LATERAL (
-                    SELECT COALESCE(SUM(jl.debit), 0) AS total_paid
-                    FROM bill_payment_allocations bpa
-                    JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-                    JOIN journal_entries je ON je.id = bpv2.journal_id
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE bpa.bill_id = b.id
-                      AND je.status = 'POSTED'
-                      AND je.reversed_by_id IS NULL
-                      AND coa.account_type = 'PAYABLE'
-                      AND jl.debit > 0
-                ) ap_paid ON true
+                LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
             bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
@@ -1940,19 +1852,25 @@ class BillsService:
             {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
-            # Get bill
+            # Get bill -- keadaan & sisa dari compute_ap_rincian (V440), BUKAN cache amount_paid/status (dulu: cache basi -> bayar lebih/menolak)
+            hari_ini = await tanggal_dokumen(conn, tenant_id)
             bill = await conn.fetchrow(
-                """
-                SELECT id, amount, amount_paid, status
-                FROM bills
-                WHERE id = $1 AND tenant_id = $2
+                f"""
+                SELECT b.id, {TD.sql_sisa()} AS amount_due, {TD.sql_keadaan("$3::date")} AS status
+                FROM bills b
+                LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
+                WHERE b.id = $1 AND b.tenant_id = $2
             """,
                 bill_id,
                 tenant_id,
+                hari_ini,
             )
 
             if not bill:
                 return {"success": False, "message": "Bill not found", "data": None}
+
+            if bill["status"] == "draft":
+                return {"success": False, "message": "Tagihan draf belum bisa dibayar. Posting dulu.", "data": None}
 
             if bill["status"] == "void":
                 return {
@@ -1968,7 +1886,7 @@ class BillsService:
                     "data": None,
                 }
 
-            amount_due = bill["amount"] - bill["amount_paid"]
+            amount_due = bill["amount_due"]
 
             # Create payment for remaining amount
             payment_request = {
@@ -2381,33 +2299,31 @@ class BillsService:
                     end_date = today
                     period_label = today.strftime("%B %Y")
 
-            # Get summary statistics -- Law 16: journal-derived amount_paid via CTE
+            # Get summary statistics -- Law 1/16/29: compute_ap_rincian (V440); bucket = ungkapan keadaan YANG SAMA dgn kolom status daftar
+            # (partial/overdue tak lagi tumpang-tindih). amount = sisa jurnal; tagihan aktif tanpa kredit AP efektif (jurnal dibalik) = void -> keluar.
             # NOTE: amount = sisa tagihan yang belum dibayar (remaining), bukan total faktur
+            kd = TD.sql_keadaan("$4::date")
+            sisa = TD.sql_sisa()
             query = f"""
-                WITH {BILL_JOURNAL_PAID_CTE}
                 SELECT
                     COUNT(*) as total_count,
                     COALESCE(SUM(b.amount), 0) as total_amount,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)), 0) as total_remaining,
+                    COALESCE(SUM({sisa}), 0) as total_remaining,
                     COUNT(DISTINCT b.vendor_name) as vendor_count,
-                    -- Paid: sudah lunas, sisa = 0
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) >= b.amount AND b.status_v2 NOT IN ('draft', 'void')) as paid_count,
+                    COUNT(*) FILTER (WHERE {kd} = 'paid') as paid_count,
                     0 as paid_remaining,
-                    -- Partial: bayar sebagian, sisa = amount - journal_paid
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')) as partial_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) > 0 AND COALESCE(bjp.journal_paid, 0) < b.amount AND b.status_v2 NOT IN ('draft', 'void')), 0) as partial_remaining,
-                    -- Unpaid: belum bayar sama sekali, sisa = amount (full)
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= $4::date AND b.status_v2 NOT IN ('draft', 'void')) as unpaid_count,
-                    COALESCE(SUM(b.amount) FILTER (WHERE COALESCE(bjp.journal_paid, 0) = 0 AND b.due_date >= $4::date AND b.status_v2 NOT IN ('draft', 'void')), 0) as unpaid_remaining,
-                    -- Overdue: jatuh tempo dan belum lunas, sisa = amount - journal_paid
-                    COUNT(*) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < $4::date AND b.status_v2 NOT IN ('draft', 'void')) as overdue_count,
-                    COALESCE(SUM(b.amount - COALESCE(bjp.journal_paid, 0)) FILTER (WHERE COALESCE(bjp.journal_paid, 0) < b.amount AND b.due_date < $4::date AND b.status_v2 NOT IN ('draft', 'void')), 0) as overdue_remaining
+                    COUNT(*) FILTER (WHERE {kd} = 'partial') as partial_count,
+                    COALESCE(SUM({sisa}) FILTER (WHERE {kd} = 'partial'), 0) as partial_remaining,
+                    COUNT(*) FILTER (WHERE {kd} = 'unpaid') as unpaid_count,
+                    COALESCE(SUM({sisa}) FILTER (WHERE {kd} = 'unpaid'), 0) as unpaid_remaining,
+                    COUNT(*) FILTER (WHERE {kd} = 'overdue') as overdue_count,
+                    COALESCE(SUM({sisa}) FILTER (WHERE {kd} = 'overdue'), 0) as overdue_remaining
                 FROM bills b
-                LEFT JOIN bill_journal_paid bjp ON bjp.bill_id = b.id
+                {TD.join_rincian()}
                 WHERE b.tenant_id = $1
                     AND b.issue_date >= $2
                     AND b.issue_date < $3
-                    AND b.status_v2 NOT IN ('draft', 'void')
+                    AND {kd} NOT IN ('draft', 'void')
             """
 
             row = await conn.fetchrow(query, tenant_id, start_date, end_date, today)
@@ -4294,35 +4210,15 @@ class BillsService:
         """
         async with self.pool.acquire() as conn:
             hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
-            # Get bill with V2 fields -- Law 16: journal-derived amount_paid (direct journal query, not compute_ap_outstanding which excludes paid bills)
-            bill_query = """
+            # Get bill with V2 fields -- Law 1/16/29: compute_ap_rincian (V440; termasuk tagihan lunas), ungkapan SAMA dgn daftar & detail v1
+            bill_query = f"""
                 SELECT
                     b.*,
-                    COALESCE(ap_paid.total_paid, 0) AS journal_paid,
-                    GREATEST(b.amount - COALESCE(ap_paid.total_paid, 0), 0) as amount_due,
-                    CASE
-                        WHEN b.status = 'void' OR b.status_v2 = 'void' THEN 'void'
-                        WHEN b.status_v2 = 'draft' THEN 'draft'
-                        WHEN COALESCE(ap_paid.total_paid, 0) >= b.amount THEN 'paid'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 AND b.due_date < $3::date THEN 'overdue'
-                        WHEN COALESCE(ap_paid.total_paid, 0) > 0 THEN 'partial'
-                        WHEN b.due_date < $3::date THEN 'overdue'
-                        ELSE 'unpaid'
-                    END as calculated_status
+                    {TD.sql_dibayar()} AS journal_paid,
+                    {TD.sql_sisa()} as amount_due,
+                    {TD.sql_keadaan("$3::date")} as calculated_status
                 FROM bills b
-                LEFT JOIN LATERAL (
-                    SELECT COALESCE(SUM(jl.debit), 0) AS total_paid
-                    FROM bill_payment_allocations bpa
-                    JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-                    JOIN journal_entries je ON je.id = bpv2.journal_id
-                    JOIN journal_lines jl ON jl.journal_id = je.id
-                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                    WHERE bpa.bill_id = b.id
-                      AND je.status = 'POSTED'
-                      AND je.reversed_by_id IS NULL
-                      AND coa.account_type = 'PAYABLE'
-                      AND jl.debit > 0
-                ) ap_paid ON true
+                LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
                 WHERE b.id = $1 AND b.tenant_id = $2
             """
             bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
