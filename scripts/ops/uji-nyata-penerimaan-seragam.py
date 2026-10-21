@@ -80,18 +80,28 @@ async def main():
             cek(f"{t} penerimaan_saja ids == filter klien", [i["id"] for i in ps] == [i["id"] for i in wrap], (len(ps), len(wrap)))
             cek(f"{t} penerimaan_saja total", resp["total"] == len(wrap), (resp["total"], len(wrap)))
             n_dok, n_belum, tot_belum = 0, 0, Decimal(0)
+            n_koreksi, rp_koreksi, tot_dial = 0, Decimal(0), Decimal(0)
             for it in wrap:
-                row = await c.fetchrow("SELECT total_amount, status FROM receive_payments WHERE id=$1 AND tenant_id=$2", UUID(it["id"]), t)
+                row = await c.fetchrow("SELECT total_amount + COALESCE(discount_amount,0) AS total_amount, status, COALESCE(allocated_amount,0) AS cache_alloc, COALESCE(unapplied_amount,0) AS cache_unapp FROM receive_payments WHERE id=$1 AND tenant_id=$2", UUID(it["id"]), t)
                 dial = await c.fetchval("SELECT COALESCE(SUM(amount_applied),0) FROM receive_payment_allocations WHERE payment_id=$1 AND status='active'", UUID(it["id"]))
                 esp = max(Decimal(str(row["total_amount"])) - Decimal(str(dial)), Decimal(0)) if row["status"] == "posted" else Decimal(0)
                 cek(f"{t} belum_dialokasikan {it['payment_number']}", abs(Decimal(str(it["belum_dialokasikan"])) - esp) < Decimal("0.005"), (it["belum_dialokasikan"], esp))
                 cek(f"{t} aksi {it['payment_number']}", (it["aksi"] == "belum_dialokasikan") == (esp > Decimal("0.005")))
+                # 21 Okt KOREKSI CACHE: posted -> allocated_amount == Σ alokasi aktif, unapplied_amount == belum_dialokasikan (turunan); lainnya == kolom cache DB
+                if row["status"] == "posted":
+                    cek(f"{t} allocated_amount turunan {it['payment_number']}", abs(Decimal(str(it["allocated_amount"])) - Decimal(str(dial))) < Decimal("0.005"), (it["allocated_amount"], dial))
+                    cek(f"{t} unapplied_amount turunan {it['payment_number']}", abs(Decimal(str(it["unapplied_amount"])) - esp) < Decimal("0.005"), (it["unapplied_amount"], esp))
+                    if abs(Decimal(str(it["allocated_amount"])) - Decimal(str(row["cache_alloc"]))) > Decimal("0.005"):
+                        n_koreksi += 1; rp_koreksi += abs(Decimal(str(it["allocated_amount"])) - Decimal(str(row["cache_alloc"])))
+                else:
+                    cek(f"{t} cache apa adanya (non-posted) {it['payment_number']}", abs(Decimal(str(it["allocated_amount"])) - Decimal(str(row["cache_alloc"]))) < Decimal("0.005") and abs(Decimal(str(it["unapplied_amount"])) - Decimal(str(row["cache_unapp"]))) < Decimal("0.005"), (it["allocated_amount"], row["cache_alloc"]))
                 # 21 Okt: dialokasikan ("Ke faktur") = Σ alokasi AKTIF (SQL independen), bukan cache; dialokasikan + belum == total (posted wrapper)
                 esp_dial = Decimal(str(dial)) if row["status"] == "posted" else Decimal(0)
                 cek(f"{t} dialokasikan {it['payment_number']}", abs(Decimal(str(it["dialokasikan"])) - esp_dial) < Decimal("0.005"), (it["dialokasikan"], esp_dial))
                 if row["status"] == "posted" and esp_dial <= Decimal(str(row["total_amount"])):
                     cek(f"{t} dialokasikan+belum==total {it['payment_number']}", abs(Decimal(str(it["dialokasikan"])) + Decimal(str(it["belum_dialokasikan"])) - Decimal(str(row["total_amount"]))) < Decimal("0.005"), (it["dialokasikan"], it["belum_dialokasikan"], row["total_amount"]))
                 if esp > Decimal("0.005"): n_belum += 1; tot_belum += esp
+                if row["status"] == "posted": tot_dial += Decimal(str(dial))
                 bundel = await DK.susun_dokumen_penerimaan(c, {"tenant_id": t, "user_id": None}, UUID(it["id"]))
                 tipe = [{"type": x["kind"]} for g in bundel["groups"] if g["key"] != "rekap" for x in g["docs"]]
                 cek(f"{t} documents==bundel {it['payment_number']}", it["documents"] == tipe and it["doc_count"] == len(tipe), (it["documents"], tipe))
@@ -115,6 +125,11 @@ async def main():
                 sc = d(await RP.get_receive_payments_summary(**kw(RP.get_receive_payments_summary, r, search=cari)))["data"]
                 lc = d(await RP.list_receive_payments(**kw(RP.list_receive_payments, r, limit=1, status="posted", penerimaan_saja=True, search=cari)))
                 cek(f"{t} summary?search={cari} posted_count == daftar", sc["posted_count"] == lc["total"], (sc["posted_count"], lc["total"]))
+            cek(f"{t} summary total_allocated == Σ alokasi aktif posted", abs(Decimal(str(sm['total_allocated'])) - tot_dial) < Decimal('0.01'), (sm['total_allocated'], tot_dial))
+            cek(f"{t} summary total_unapplied == Σ belum_dialokasikan", abs(Decimal(str(sm['total_unapplied'])) - tot_belum) < Decimal('0.01'), (sm['total_unapplied'], tot_belum))
+            esp_n = await c.fetchval("SELECT count(*) FROM receive_payments rp WHERE rp.tenant_id=$1 AND rp.status='posted' AND abs(coalesce(rp.allocated_amount,0) - coalesce((SELECT sum(a.amount_applied) FROM receive_payment_allocations a WHERE a.payment_id=rp.id AND a.status='active'),0)) > 0.005", t)
+            cek(f"{t} jumlah baris terkoreksi == SQL independen", n_koreksi == esp_n, (n_koreksi, esp_n))
+            print(f"[baru] {t}: KOREKSI CACHE menyentuh {n_koreksi} baris posted, selisih allocated Rp {rp_koreksi}")
             print(f"[baru] {t}: {len(wrap)} penerimaan wrapper, {n_dok} bundel dicek, belum_dialokasikan={n_belum} (Rp {tot_belum})")
     if mode in ("lama", "baru"):
         json.dump(out, open(sys.argv[2], "w"), default=str, sort_keys=True); print(mode, len(out), "variant")

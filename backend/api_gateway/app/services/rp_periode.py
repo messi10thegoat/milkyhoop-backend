@@ -66,8 +66,8 @@ SQL_RINGKASAN = _CTE_UANG + """
         COUNT(*) FILTER (WHERE rp.status = 'posted') as posted_count,
         COUNT(*) FILTER (WHERE rp.status = 'voided') as voided_count,
         COALESCE(SUM(ja.journal_amount), 0) as total_received,
-        COALESCE(SUM(rp.allocated_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_allocated,
-        COALESCE(SUM(rp.unapplied_amount) FILTER (WHERE rp.status = 'posted'), 0) as total_unapplied,
+        COALESCE(SUM(__DIAL__) FILTER (WHERE rp.status = 'posted'), 0) as total_allocated,    -- koreksi cache 21 Okt: turunan alokasi aktif
+        COALESCE(SUM(__BELUM__) FILTER (WHERE rp.status = 'posted'), 0) as total_unapplied,
         COALESCE(SUM(ja.journal_amount) FILTER (WHERE rp.payment_date = $2::date), 0) as amount_today,
         COUNT(ja.payment_id) FILTER (WHERE rp.payment_date = $2::date) as count_today,
         COALESCE(SUM(ja.journal_amount)
@@ -82,6 +82,10 @@ SQL_RINGKASAN = _CTE_UANG + """
     LEFT JOIN journal_amounts ja ON ja.payment_id = rp.id
     WHERE rp.tenant_id = $1
 """
+
+
+from .penerimaan_daftar import sql_belum as _sql_belum, sql_dialokasi as _sql_dialokasi  # noqa: E402
+SQL_RINGKASAN = SQL_RINGKASAN.replace("__DIAL__", _sql_dialokasi("rp")).replace("__BELUM__", _sql_belum("rp"))
 
 
 # Rincian per metode (payment_method) — CTE uang yang SAMA, periode yang SAMA, argumen sama.

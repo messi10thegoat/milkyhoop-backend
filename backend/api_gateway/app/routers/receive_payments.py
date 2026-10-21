@@ -761,7 +761,7 @@ async def list_receive_payments(
                     "source_document_type": row["source_document_type"],
                     "source_document_id": row["source_document_id"],
                     "source_document_number": row["source_document_number"],
-                    **_pd.alokasi_fakta(row["settlement_type"] == "RECEIVE_PAYMENT", row["status"], *_ba.get(row["id"], (None, None))),
+                    **_pd.dengan_turunan(_pd.alokasi_fakta(row["settlement_type"] == "RECEIVE_PAYMENT", row["status"], *_ba.get(row["id"], (None, None)))),
                 }
                 for row in rows
             ]
@@ -1170,7 +1170,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
             _ba_d = await _pd_d.bruto_dialokasi(conn, ctx["tenant_id"], [payment["id"]])
             _kel_d = await _pd_d.kelompok_untuk(conn, ctx["tenant_id"], [{"id": payment["id"]}])
             _docs_d = _pd_d.documents_baris(_kel_d.get(payment["id"], []))
-            _paritas = {**_pd_d.alokasi_fakta(True, payment["status"], *_ba_d.get(payment["id"], (None, None))),
+            _paritas = {**_pd_d.dengan_turunan(_pd_d.alokasi_fakta(True, payment["status"], *_ba_d.get(payment["id"], (None, None)))),
                         "invoice_count": len(allocations), "documents": _docs_d, "doc_count": len(_docs_d)}
             return {
                 "success": True,
@@ -1201,8 +1201,9 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                     else None,
                     "source_deposit_number": payment["source_deposit_number"],
                     "total_amount": payment["total_amount"],
-                    "allocated_amount": payment["allocated_amount"] or 0,
-                    "unapplied_amount": payment["unapplied_amount"] or 0,
+                    # koreksi cache 21 Okt: posted wrapper -> turunan alokasi aktif (_paritas); lainnya kolom cache apa adanya
+                    "allocated_amount": _paritas.get("allocated_amount", payment["allocated_amount"] or 0),
+                    "unapplied_amount": _paritas.get("unapplied_amount", payment["unapplied_amount"] or 0),
                     "discount_amount": payment["discount_amount"] or 0,
                     "discount_account_id": str(payment["discount_account_id"])
                     if payment["discount_account_id"]

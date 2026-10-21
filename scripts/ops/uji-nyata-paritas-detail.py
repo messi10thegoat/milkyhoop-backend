@@ -14,7 +14,7 @@ gagal = []
 PAR = {
     "Penawaran": ["position_text", "aksi", "documents", "doc_count", "kedaluwarsa_terbuka", "kedaluwarsa_hari", "kedaluwarsa_keadaan", "kedaluwarsa_teks", "is_expired", "status",
                   "quote_number", "sales_order_id", "sales_order_number", "order_code", "order_title"],
-    "Penerimaan": ["dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count", "invoice_count", "payment_number", "settlement_type"],
+    "Penerimaan": ["allocated_amount", "unapplied_amount", "dialokasikan", "belum_dialokasikan", "aksi", "alokasi_keadaan", "alokasi_teks", "documents", "doc_count", "invoice_count", "payment_number", "settlement_type"],
     "Pengiriman": ["serah_keadaan", "serah_teks", "aksi", "documents", "doc_count", "status", "delivery_number", "asal", "order_code", "order_title"],
     "Proforma": ["aksi", "jatuh_tempo_terbuka", "jatuh_tempo_hari", "jatuh_tempo_keadaan", "jatuh_tempo_teks", "documents", "doc_count", "status", "proforma_number",
                  "outstanding_amount", "paid_amount", "is_fully_paid", "order_code", "order_title"],
@@ -42,6 +42,16 @@ def J(x):
     if hasattr(x, "body"): return json.loads(x.body)
     if hasattr(x, "model_dump"): return x.model_dump(mode="json")
     return json.loads(json.dumps(x, default=str))
+
+
+def _sama(x, y):
+    # angka uang: daftar float vs detail Decimal-string ({1000.0} vs {"1000.00"}) = representasi, bukan nilai
+    if isinstance(x, (int, float, str)) and isinstance(y, (int, float, str)) and not isinstance(x, bool) and not isinstance(y, bool):
+        try:
+            return abs(float(x) - float(y)) < 0.005
+        except (TypeError, ValueError):
+            pass
+    return x == y
 
 
 def cek(nama, ok, rinci=""):
@@ -84,7 +94,7 @@ async def main():
                     for k in PAR[nama]:
                         if k not in det:
                             cek(f"{t} {nama} {row.get('payment_number') or row.get('quote_number') or row.get('delivery_number') or row.get('proforma_number')} ADA {k}", False, "kunci hilang di detail")
-                        elif k in row and det[k] != row[k]:
+                        elif k in row and not _sama(det[k], row[k]):
                             cek(f"{t} {nama} {row['id'][:8]} {k}", False, (row[k], det[k]))
                     n_cmp += 1
             if mode == "baru":

@@ -92,3 +92,24 @@ def test_kwitansi_penerimaan_sendiri_posted_dan_voided_nominal_total(monkeypatch
     assert "receive_payment_allocations" not in dipanggil["sql"]       # amount = total, bukan Σ alokasi
     assert hasil[pid]["kind"] == "receipt" and hasil[pid]["amount"] == "16284600.00" and hasil[pid]["receipt_kind"] == "pelunasan"
     assert asyncio.run(DB.kwitansi_penerimaan_sendiri(Conn(), "t", [])) == {}
+
+
+def test_koreksi_cache_turunan_hanya_posted_wrapper():
+    f = PD.alokasi_fakta(True, "posted", D("16284600"), D("0"))
+    t = PD.dengan_turunan(f)
+    assert t["allocated_amount"] == 0.0 and t["unapplied_amount"] == 16284600.0 and t["dialokasikan"] == 0.0     # kasus nyata kaos: cache 'penuh' basi
+    f2 = PD.alokasi_fakta(True, "posted", D("10000"), D("10000"))
+    assert PD.dengan_turunan(f2)["allocated_amount"] == 10000.0 and PD.dengan_turunan(f2)["unapplied_amount"] == 0.0
+    for wrapper, st in ((True, "voided"), (True, "draft"), (False, "posted")):
+        g = PD.dengan_turunan(PD.alokasi_fakta(wrapper, st, D("5"), D("5")))
+        assert "allocated_amount" not in g and "unapplied_amount" not in g                                        # cache apa adanya
+
+
+def test_bruto_efektif_memuat_potongan():
+    assert "discount_amount" in PD.sql_bruto("w") and "w.total_amount" in PD.sql_bruto("w")
+    # potongan Rp50: bayar 1000 + potongan 50, teralokasi 900 -> belum 150 (== rumus tulis unapplied = (total+diskon) - alokasi)
+    assert PD.alokasi_fakta(True, "posted", D("1050"), D("900"))["belum_dialokasikan"] == 150.0
+    src = inspect.getsource(RP.list_receive_payments) + inspect.getsource(RP.get_receive_payment)
+    assert src.count("dengan_turunan(") == 2
+    from app.services import rp_periode as RPE
+    assert "__DIAL__" not in RPE.SQL_RINGKASAN and "receive_payment_allocations" in RPE.SQL_RINGKASAN and "discount_amount" in RPE.SQL_RINGKASAN

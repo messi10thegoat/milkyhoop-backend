@@ -24,12 +24,17 @@ def sql_dialokasi(rp: str) -> str:
     return f"COALESCE((SELECT SUM(a.amount_applied) FROM receive_payment_allocations a WHERE a.payment_id = {rp}.id AND a.status = 'active'), 0)"
 
 
+def sql_bruto(rp: str) -> str:
+    """Jumlah EFEKTIF yang harus teralokasi = uang diterima + potongan (rumus tulis: unapplied = (total_amount + discount_amount) - alokasi)."""
+    return f"({rp}.total_amount + COALESCE({rp}.discount_amount, 0))"
+
+
 def sql_belum(rp: str) -> str:
-    return f"GREATEST({rp}.total_amount - {sql_dialokasi(rp)}, 0)"
+    return f"GREATEST({sql_bruto(rp)} - {sql_dialokasi(rp)}, 0)"
 
 
 def alokasi_fakta(wrapper: bool, status: Optional[str], bruto, dialokasi) -> dict:
-    """Pure: bruto = receive_payments.total_amount, dialokasi = Σ alokasi aktif (keduanya None untuk non-wrapper)."""
+    """Pure: bruto = receive_payments.total_amount + discount_amount (jumlah efektif), dialokasi = Σ alokasi aktif (keduanya None untuk non-wrapper)."""
     if not wrapper or status != "posted" or bruto is None:
         belum, kd, ke_faktur = NOL, "tanpa", NOL
     else:
@@ -40,12 +45,20 @@ def alokasi_fakta(wrapper: bool, status: Optional[str], bruto, dialokasi) -> dic
             "alokasi_keadaan": kd, "alokasi_teks": TEKS[kd]}
 
 
+def dengan_turunan(fakta: dict) -> dict:
+    """KOREKSI cache (21 Okt 2026, izin pemilik): untuk penerimaan wrapper POSTED `allocated_amount` = Σ alokasi aktif dan `unapplied_amount` =
+    belum_dialokasikan (TURUNAN, fungsi SAMA dgn alokasi_fakta); draf/voided/non-wrapper tak berubah (kunci tak ditambahkan). Kolom cache DB tetap ada."""
+    if fakta["alokasi_keadaan"] == "tanpa":
+        return dict(fakta)
+    return {**fakta, "allocated_amount": fakta["dialokasikan"], "unapplied_amount": fakta["belum_dialokasikan"]}
+
+
 async def bruto_dialokasi(conn, tid: str, ids: list) -> dict:
-    """{payment_id: (total_amount, Σ alokasi aktif)} untuk penerimaan wrapper -- formula SAMA dgn sql_belum (sql_dialokasi)."""
+    """{payment_id: (total_amount + discount_amount, Σ alokasi aktif)} untuk penerimaan wrapper -- formula SAMA dgn sql_belum (sql_dialokasi)."""
     if not ids:
         return {}
     return {r["id"]: (r["bruto"], r["dialokasi"]) for r in await conn.fetch(
-        f"SELECT rp.id, rp.total_amount AS bruto, {sql_dialokasi('rp')} AS dialokasi FROM receive_payments rp "
+        f"SELECT rp.id, {sql_bruto('rp')} AS bruto, {sql_dialokasi('rp')} AS dialokasi FROM receive_payments rp "
         "WHERE rp.tenant_id = $1 AND rp.id = ANY($2::uuid[])", tid, list(ids))}
 
 

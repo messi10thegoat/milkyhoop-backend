@@ -48,7 +48,9 @@ def test_sql_periode_memakai_parameter_bukan_jam_db():
     assert "rp.payment_date = $2::date" in q
     assert "BETWEEN $3::date AND $4::date" in q and "BETWEEN $5::date AND $6::date" in q
     # uang periode hanya dari journal_amounts (posted + jurnal tak dibalik), bukan rp.total_amount
-    assert "rp.total_amount" not in q
+    # (kecuali kolom total_unapplied: koreksi cache 21 Okt 2026 = total+potongan - alokasi aktif; BUKAN uang periode)
+    assert "rp.total_amount" not in "\n".join(l for l in q.splitlines() if "as total_unapplied" not in l)
+    assert "__DIAL__" not in q and "__BELUM__" not in q
     # pagar di DALAM CTE uang (FILTER posted_count di luar CTE tak boleh menutupi hilangnya pagar)
     cte = q.split("WITH journal_amounts AS (", 1)[1].split("GROUP BY rp.id", 1)[0]
     for pagar in ("AND rp.status = 'posted'", "AND je.reversed_by_id IS NULL", "AND je.status = 'POSTED'",
