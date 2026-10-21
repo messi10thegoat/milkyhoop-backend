@@ -745,6 +745,9 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                 credit_note_id,
             )
 
+            from ..services.uang_muka_daftar import documents_baris as _documents_baris
+            _docs = _documents_baris((await _nkd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": cn["id"]}])).get(cn["id"], []))
+            _nkd_dok = {"documents": _docs, "doc_count": len(_docs)}
             # Build response
             remaining = sisa_kredit_nk(
                 cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"],
@@ -857,6 +860,9 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     if cn["voided_at"]
                     else None,
                     "voided_reason": cn["voided_reason"],
+                    # PARITAS detail == baris (21 Okt 2026): kunci & sumber YANG SAMA dengan daftar
+                    "void_reason": cn["voided_reason"],
+                    **_nkd_dok,
                     "created_at": cn["created_at"].isoformat(),
                     "updated_at": cn["updated_at"].isoformat(),
                     "created_by": str(cn["created_by"]) if cn["created_by"] else None,

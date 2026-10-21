@@ -752,6 +752,8 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
             _kode = (await _tempel_kode(conn, ctx["tenant_id"], "customer_deposit", [{"id": dep["id"]}]))[0]
             _kode.pop("id")
             _so = await so_induk_uang_muka(conn, ctx["tenant_id"], dep)
+            _docs = _umd.documents_baris((await _umd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": dep["id"]}])).get(dep["id"], []))
+            _umd_dok = {"documents": _docs, "doc_count": len(_docs)}
             return {
                 "success": True,
                 "data": {
@@ -786,6 +788,8 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                     "aksi": _umd.aksi_um(dep["status"], remaining),
                     "sisa_keadaan": _umd.keadaan_um(status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"])),
                     "status_text": _umd.status_text_um(status_detail_dp(dep["status"], dep["amount_applied"], dep["amount_refunded"])),
+                    # PARITAS detail == baris (21 Okt 2026): documents/doc_count dari kelompok_untuk YANG SAMA dengan daftar
+                    **_umd_dok,
                     "jenis": dep["jenis_efektif"],  # V422 jenis efektif
                     "journal_id": str(dep["journal_id"]) if dep["journal_id"] else None,
                     "journal_number": dep["journal_number"],

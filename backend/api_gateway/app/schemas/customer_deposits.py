@@ -226,6 +226,8 @@ class CustomerDepositDetail(BaseModel):
     status_detail: Optional[str] = None  # turunan tampilan: partially_refunded | refunded | = status (5 Okt)
     jenis: str = "DP"  # V422: jenis EFEKTIF (services/deposit_jenis), tak pernah null: DP | PELUNASAN
     # S2-UM (20 Okt 2026): SAMA dengan baris daftar (services/uang_muka_daftar)
+    documents: List[Dict[str, str]] = []  # paritas detail == baris (21 Okt)
+    doc_count: int = 0
     aksi: Optional[str] = None
     sisa_keadaan: Optional[str] = None
     status_text: Optional[str] = None

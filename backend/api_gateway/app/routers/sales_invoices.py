@@ -1559,6 +1559,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(_terbuka, invoice["due_date"], _hari_jt),
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(invoice["status"], _terbuka, invoice["due_date"], _hari_jt),
                     "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar),
+                    # PARITAS detail == baris (21 Okt 2026): format SAMA dengan baris daftar (string 2 desimal / null)
+                    "outstanding_amount": None if _sisa_daftar is None else f"{Decimal(str(_sisa_daftar)):.2f}",
                     "payment_summary": _fd.ringkasan_bayar_faktur(invoice["status"], invoice["total_amount"], _rincian),
                     "documents": _dok,
                     "ref_no": invoice["ref_no"],
