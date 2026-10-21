@@ -86,7 +86,7 @@ def test_alasan_wajib_untuk_diterima(monkeypatch, reason):
     assert not kon.update
 
 
-@pytest.mark.parametrize("status", ["draft", "sent"])
+@pytest.mark.parametrize("status", ["draft", "sent", "viewed"])
 def test_alasan_opsional_untuk_draf_dan_terkirim(monkeypatch, status):
     kon = Kon(status)
     r = _jalan(monkeypatch, kon, Q.void_quote, None)
@@ -146,4 +146,4 @@ def test_pratinjau_dan_rute_memakai_penentu_yang_sama():
     import inspect
     assert "_rencana_void_penawaran(conn" in inspect.getsource(Q.void_quote)
     assert "_rencana_void_penawaran(conn" in inspect.getsource(Q.preview_void_quote)
-    assert Q.VOID_STATUS == ("draft", "sent", "accepted")
+    assert Q.VOID_STATUS == ("draft", "sent", "viewed", "accepted")

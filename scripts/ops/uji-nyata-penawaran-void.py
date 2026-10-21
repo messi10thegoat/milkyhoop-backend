@@ -36,7 +36,7 @@ async def main():
             st = q["status"]
             if st == "void": harap = ["QUOTE_SUDAH_BATAL"]
             elif st == "converted": harap = ["QUOTE_SUDAH_DIKONVERSI"] if (turunan or target) else ["QUOTE_STATUS_TAK_BOLEH_BATAL"]
-            elif st in ("draft", "sent", "accepted"):
+            elif st in ("draft", "sent", "viewed", "accepted"):
                 harap = (["QUOTE_SUDAH_DIKONVERSI"] if (st == "accepted" and turunan) else [])
                 if st == "accepted" and not (alasan or "").strip(): harap = harap + ["ALASAN_WAJIB"]
             else: harap = ["QUOTE_STATUS_TAK_BOLEH_BATAL"]

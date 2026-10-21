@@ -1664,7 +1664,7 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
 # (Diterima) SELAMA belum jadi pesanan/faktur. Yang sudah dikonversi tetap ditolak ("sudah jadi pesanan SO-xxx"). Alasan WAJIB untuk
 # accepted, opsional untuk draft/sent. Alasan dicatat di RIWAYAT berakor (catat_riwayat QUOTE_VOIDED: aktor + teks) -- tabel quotes tak punya
 # kolom alasan batal (hanya declined_reason, makna lain), jadi tanpa migrasi.
-VOID_STATUS = ("draft", "sent", "accepted")
+VOID_STATUS = ("draft", "sent", "viewed", "accepted")  # viewed = dilihat pelanggan (decline menerimanya juga); alasan opsional kecuali accepted
 
 
 async def _turunan_penawaran(conn, tenant_id: str, quote) -> Optional[str]:
