@@ -64,6 +64,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import cn_tertunda
+from ..services import nk_potongan_pajak as NKP
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,8 @@ async def _cn_line_code(conn, tenant_id, ln, cache):
     return cache[key]
 
 
-async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, header_tax_rate) -> dict:
+async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, header_tax_rate,
+                  reason=None, invoice_id=None) -> dict:
     """3(c) -- nota kredit lewat kalkulator bersama (services/sales_doc_calc), SAMA dengan faktur:
     diskon baris MENGURANGI total (dulu subtotal header = SIGMA BRUTO baris, diskon baris hilang),
     diskon dokumen dialokasikan SEBELUM PPN, faktor DPP per kode. tax_rate header (lama: 'pajak
@@ -230,6 +232,16 @@ async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, hea
     from ..services.sales_doc_calc import compute_document, DocumentDiscountError, LineAmountError
     from ..services.tax_factor import attach_dpp_factors
     lines = [dict(it) for it in items]
+    # NK POTONGAN BRUTO PKP (putusan pemilik 21 Okt 2026): nominal = bruto, dipecah harga jual + PPN keluaran menurut komposisi
+    # pajak faktur asal (services/nk_potongan_pajak). Non-PKP / faktur tanpa PPN / bentuk lain -> None -> kalkulator lama persis.
+    if invoice_id and NKP.bentuk_potongan_bruto(reason, lines, discount_percent, discount_amount, header_tax_rate):
+        try:
+            _inv = invoice_id if isinstance(invoice_id, UUID) else UUID(str(invoice_id))
+        except ValueError:
+            _inv = None
+        _pb = await NKP.doc_potongan_bruto(conn, tenant_id, _inv, lines) if _inv else None
+        if _pb is not None:
+            return _pb
     hr = Decimal(str(header_tax_rate or 0))
     cache = {}
     for ln in lines:
@@ -980,6 +992,7 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
     _doc = await _cn_doc(
         conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
         body.discount_percent, body.discount_amount, body.tax_rate,
+        reason=body.reason, invoice_id=body.original_invoice_id,
     )
     calculated_items = _doc["items"]
     subtotal = _doc["gross_subtotal"]
@@ -1136,7 +1149,7 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
     doc = None
     try:
         doc = await _cn_doc(conn, tid, [i.model_dump() for i in body.items], body.discount_percent,
-                            body.discount_amount, body.tax_rate)
+                            body.discount_amount, body.tax_rate, reason=body.reason, invoice_id=body.original_invoice_id)
     except HTTPException as e:
         blocks.append({"code": "CN_DISCOUNT_INVALID", "message": _pesan_galat(e)})
     faktur = None
@@ -1511,6 +1524,12 @@ async def update_credit_note(
                                            "jumlah_baris")}
                         for r in _rows
                     ]
+                    # NK potongan PKP yang sudah dipecah: gabung kembali jadi satu baris bruto agar dipecah ulang (bukan PPN di atas)
+                    _alasan_t = update_data.get("reason") or await conn.fetchval(
+                        "SELECT reason FROM credit_notes WHERE id = $1", credit_note_id)
+                    _gab = NKP.gabung_tersimpan([dict(r) for r in _rows]) if _alasan_t in NKP.ALASAN_POTONGAN else None
+                    if _gab:
+                        update_data["items"] = _gab
                 if _recalc:
                     _cur = await conn.fetchrow(
                         "SELECT discount_percent, discount_amount, tax_rate FROM credit_notes WHERE id = $1",
@@ -1536,8 +1555,11 @@ async def update_credit_note(
                     discount_percent = update_data.get("discount_percent", _cur["discount_percent"] or 0)
                     discount_amount = update_data.get("discount_amount", _cur["discount_amount"] or 0)
                     tax_rate = update_data.get("tax_rate", _cur["tax_rate"] or 0)
+                    _alasan_e = update_data.get("reason") or await conn.fetchval(
+                        "SELECT reason FROM credit_notes WHERE id = $1", credit_note_id)
                     _doc = await _cn_doc(conn, ctx["tenant_id"], _items, discount_percent,
-                                         discount_amount if not discount_percent else 0, tax_rate)
+                                         discount_amount if not discount_percent else 0, tax_rate,
+                                         reason=_alasan_e, invoice_id=_f_eff)
                     calculated_items = _doc["items"]
                     subtotal = _doc["gross_subtotal"]
                     overall_discount = _doc["doc_discount"]

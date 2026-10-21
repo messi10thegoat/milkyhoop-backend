@@ -120,7 +120,7 @@ def pasang(monkeypatch):
             return v
         monkeypatch.setattr(CN, "pelanggan_kanonik_tenant", pelanggan)
 
-        async def doc(conn, tid, items, dp, da, tr):
+        async def doc(conn, tid, items, dp, da, tr, reason=None, invoice_id=None):
             if diskon_salah:
                 raise HTTPException(400, "Diskon dokumen melebihi subtotal")
             return {"items": [{"description": "Koreksi", "quantity": Decimal("1"), "unit_price": Decimal("50000"),
