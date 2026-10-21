@@ -71,7 +71,7 @@ def acuan(sj, ifi, soi, prod, fak_item, fak, tenant):
     return hasil
 
 
-def cte(sj, ifi, soi, prod, fak_item, fak):
+def cte(sj, ifi, soi, prod, fak_item, fak, serah=(), resi=()):
     def vals(nama, kolom, baris):
         if not baris:
             return f"{nama} AS (SELECT {', '.join(f'NULL::{t} AS {c}' for c, t in kolom)} WHERE false)"
@@ -87,6 +87,8 @@ def cte(sj, ifi, soi, prod, fak_item, fak):
         vals("sales_invoice_items", [("id", "uuid"), ("invoice_id", "uuid"), ("sales_order_item_id", "uuid"), ("quantity", "numeric")],
              [{"id": y["id"], "invoice_id": y["inv"], "sales_order_item_id": y["soi"], "quantity": y["q"]} for y in fak_item]),
         vals("sales_invoices", [("id", "uuid"), ("tenant_id", "text"), ("status", "text")], fak),
+        vals("pengiriman_serah", [("fulfillment_id", "uuid"), ("tenant_id", "text"), ("jenis_serah", "text")], list(serah)),
+        vals("pengiriman_resi", [("fulfillment_id", "uuid"), ("tenant_id", "text")], list(resi)),
     ])
 
 
@@ -123,13 +125,35 @@ async def sintetis(c):
     kasus("dua SJ satu baris: satu batal", q=5, faktur=[("posted", 5, None)], sj_lain=[("voided", None, 5)])
     kasus("kelebihan faktur", faktur=[("posted", 12, None)])
     kasus("faktur tenant lain tak dihitung", faktur=[("posted", 10, "tenant-lain")])
+    # --- partisi dgn pill serah (fitur serah AKTIF): satu baris = satu pill; yang pill-nya perlu_resi/belum_dicatat tidak ikut ---
+    serah, resi = [], []
+    f_bc = kasus("serah: belum dicatat (tak ada baris serah)")
+    f_kt = kasus("serah: kurir tanpa resi"); serah.append({"fulfillment_id": f_kt, "tenant_id": T, "jenis_serah": "kurir"})
+    f_kr = kasus("serah: kurir dengan resi"); serah.append({"fulfillment_id": f_kr, "tenant_id": T, "jenis_serah": "kurir"}); resi.append({"fulfillment_id": f_kr, "tenant_id": T})
+    f_as = kasus("serah: ambil_sendiri"); serah.append({"fulfillment_id": f_as, "tenant_id": T, "jenis_serah": "ambil_sendiri"})
+    f_nj = kasus("serah: baris serah tanpa jenis"); serah.append({"fulfillment_id": f_nj, "tenant_id": T, "jenis_serah": None})
     harap = acuan(sj, ifi, soi, prod, fak_item, fak, T)
-    sql = (cte(sj, ifi, soi, prod, fak_item, fak) + " SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND " + PG.sql_perlu_difaktur("f"))
+    sql = (cte(sj, ifi, soi, prod, fak_item, fak, serah, resi) + " SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND " + PG.sql_perlu_difaktur("f"))
     dapat = {str(r["id"]) for r in await c.fetch(sql, T)}
     cek("sintetis: himpunan SQL == acuan Python", dapat == {str(x) for x in harap}, (sorted(nama[x] for x in dapat - {str(y) for y in harap}), sorted(nama[y] for y in harap if str(y) not in dapat)))
     nama_dapat = sorted(nama[u] for u in dapat if u in nama)
-    harapan_nama = sorted(["belum difaktur", "sebagian", "faktur draf tak dihitung", "faktur void tak dihitung", "perlu_kirim NULL ikut stok", "faktur tenant lain tak dihitung"])
-    cek("sintetis: himpunan == yang dimaksud skenario", nama_dapat == harapan_nama, (nama_dapat, harapan_nama))
+    harapan_nama = sorted(["belum difaktur", "sebagian", "faktur draf tak dihitung", "faktur void tak dihitung", "perlu_kirim NULL ikut stok", "faktur tenant lain tak dihitung",
+                           "serah: belum dicatat (tak ada baris serah)", "serah: kurir tanpa resi", "serah: kurir dengan resi", "serah: ambil_sendiri", "serah: baris serah tanpa jenis"])
+    cek("sintetis: himpunan == yang dimaksud skenario (serah OFF = tanpa partisi)", nama_dapat == harapan_nama, (nama_dapat, harapan_nama))
+    # serah AKTIF: partisi -- pill serah menang
+    sql2 = (cte(sj, ifi, soi, prod, fak_item, fak, serah, resi) + " SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND " + PG.sql_aksi("perlu_difaktur", "f", True))
+    dapat2 = {str(r["id"]) for r in await c.fetch(sql2, T)}
+    punya_jenis = {str(x["fulfillment_id"]): x["jenis_serah"] for x in serah}
+    resi_ada = {str(x["fulfillment_id"]) for x in resi}
+    def pill_serah(fid):   # acuan Python: aksi serah baris (perlu_resi > belum_dicatat)
+        j = punya_jenis.get(fid)
+        if j is None: return "belum_dicatat"
+        return "perlu_resi" if j == "kurir" and fid not in resi_ada else None
+    harap2 = {str(x) for x in harap if pill_serah(str(x)) is None}
+    cek("sintetis: serah AKTIF -> perlu_difaktur memartisi pill serah (SQL == acuan)", dapat2 == harap2, (sorted(nama[u] for u in dapat2 ^ harap2),))
+    cek("sintetis: serah AKTIF -> hanya yang serahnya lengkap (kurir+resi, ambil_sendiri)", sorted(nama[u] for u in dapat2) == sorted(["serah: kurir dengan resi", "serah: ambil_sendiri"]), sorted(nama[u] for u in dapat2))
+    # partisi: tak ada baris di dua pill sekaligus
+    cek("sintetis: serah AKTIF -> tak tumpang-tindih dgn belum_dicatat/perlu_resi", all(pill_serah(u) is None for u in dapat2))
     return acuan, harap
 
 
@@ -155,6 +179,7 @@ async def nyata(c):
         lst = await DL.list_deliveries(**kw(DL.list_deliveries, r, per_page=100, aksi="perlu_difaktur"))
         sm = await DL.get_deliveries_summary(**kw(DL.get_deliveries_summary, r))
         cek(f"{t} nyata: ?aksi total == len == summary == acuan", lst["total"] == len(lst["items"]) == sm["perlu_difaktur_count"] == len(harap), (lst["total"], len(lst["items"]), sm["perlu_difaktur_count"], len(harap)))
+        cek(f"{t} nyata: partisi -- semua baris ?aksi=perlu_difaktur punya aksi perlu_difaktur", all(x["aksi"] == "perlu_difaktur" for x in lst["items"]), [x["aksi"] for x in lst["items"]])
         for it in lst["items"][:20]:
             d = await DL.get_delivery_detail(**kw(DL.get_delivery_detail, r, delivery_id=it["id"]))
             cek(f"{t} detail==baris {it['delivery_number']}", d["aksi"] == it["aksi"], (d["aksi"], it["aksi"]))

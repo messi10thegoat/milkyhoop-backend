@@ -58,3 +58,14 @@ def test_jumlah_terpakai():
     r = {"a": {"terpakai": Decimal("100000")}, "b": {"terpakai": Decimal("10000.50")}, "c": {"terpakai": Decimal("0")}}
     assert NKD.jumlah_terpakai(r) == Decimal("110000.50")
     assert NKD.jumlah_terpakai({}) == Decimal("0")
+
+
+def test_partisi_dengan_pill_serah_bila_serah_aktif():
+    tanpa = PG.sql_aksi("perlu_difaktur", "f")
+    dengan = PG.sql_aksi("perlu_difaktur", "f", True)
+    assert tanpa == PG.sql_perlu_difaktur("f")                       # serah OFF: tak ada pill serah -> tanpa partisi
+    assert dengan.startswith("(" + tanpa)
+    assert "AND NOT " + PG.sql_aksi("perlu_resi", "f") in dengan and "AND NOT " + PG.sql_aksi("belum_dicatat", "f") in dengan
+    src = inspect.getsource(DL)
+    assert "_pg.sql_aksi(k, 'f', _serah_on)" in src and '_pg.sql_aksi(aksi, "f", _serah_aktif)' in src
+    assert 'perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], _serah_aktif)' in src

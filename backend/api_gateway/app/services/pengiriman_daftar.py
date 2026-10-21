@@ -58,18 +58,23 @@ async def tagih_sesudah_kirim(conn, tid: str) -> bool:
         "SELECT 1 FROM tenant_features WHERE tenant_id = $1 AND feature = $2 AND enabled", tid, FLAG_TAGIH_SEBELUM_KIRIM)
 
 
-async def perlu_difaktur_ids(conn, tid: str, ids: list) -> set:
-    """Himpunan fulfillment_id (dari `ids`) yang perlu difaktur; kosong bila tenant memakai tagih_sebelum_kirim."""
+async def perlu_difaktur_ids(conn, tid: str, ids: list, serah_aktif: bool = False) -> set:
+    """Himpunan fulfillment_id (dari `ids`) yang pill-nya perlu_difaktur; kosong bila tenant memakai tagih_sebelum_kirim.
+    `serah_aktif` True -> yang pill-nya aksi serah dikeluarkan (partisi, = sql_aksi)."""
     if not ids or not await tagih_sesudah_kirim(conn, tid):
         return set()
     return {r["id"] for r in await conn.fetch(
-        f"SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[]) AND {sql_perlu_difaktur('f')}",
+        f"SELECT f.id FROM invoice_fulfillments f WHERE f.tenant_id = $1 AND f.id = ANY($2::uuid[]) AND {sql_aksi('perlu_difaktur', 'f', serah_aktif)}",
         tid, list(ids))}
 
 
-def sql_aksi(aksi: str, f: str = "f") -> str:
-    """Predikat SQL (alias `f` = invoice_fulfillments; $1 = tenant) setara aksi_serah(...) == aksi."""
+def sql_aksi(aksi: str, f: str = "f", serah_aktif: bool = False) -> str:
+    """Predikat SQL (alias `f` = invoice_fulfillments; $1 = tenant) setara aksi_serah(...) == aksi.
+    perlu_difaktur = PARTISI dgn pill serah: bila fitur serah aktif, baris yang pill-nya perlu_resi/belum_dicatat TIDAK ikut
+    (satu baris = satu pill; ?aksi=, hitungan summary, dan `aksi` baris memakai predikat yang sama)."""
     if aksi == "perlu_difaktur":
+        if serah_aktif:
+            return f"({sql_perlu_difaktur(f)} AND NOT {sql_aksi('perlu_resi', f)} AND NOT {sql_aksi('belum_dicatat', f)})"
         return sql_perlu_difaktur(f)
     return {
         "perlu_resi": (f"({f}.status = 'posted' AND EXISTS (SELECT 1 FROM pengiriman_serah s WHERE s.tenant_id = $1 AND s.fulfillment_id = {f}.id "

@@ -93,12 +93,13 @@ async def get_deliveries_summary(request: Request, search: Optional[str] = Query
             )
         aksi = {k: 0 for k in _pg.AKSI}
         # aksi serah hanya bila fitur serah aktif; perlu_difaktur bebas dari fitur serah, mati bila tenant tagih_sebelum_kirim
-        _kunci = [k for k in _pg.AKSI_SERAH if await _serah.aktif(conn, ctx["tenant_id"])]
+        _serah_on = await _serah.aktif(conn, ctx["tenant_id"])
+        _kunci = [k for k in _pg.AKSI_SERAH if _serah_on]
         if await _pg.tagih_sesudah_kirim(conn, ctx["tenant_id"]):
             _kunci.append("perlu_difaktur")
         if _kunci:
             a = await conn.fetchrow(
-                "SELECT " + ", ".join(f"COUNT(*) FILTER (WHERE {_pg.sql_aksi(k)}) AS {k}" for k in _kunci)
+                "SELECT " + ", ".join(f"COUNT(*) FILTER (WHERE {_pg.sql_aksi(k, 'f', _serah_on)}) AS {k}" for k in _kunci)
                 + f" {_FROM_GABUNG if _cari else 'FROM invoice_fulfillments f'} WHERE f.tenant_id = $1" + (f" AND {_cari}" if _cari else ""),
                 ctx["tenant_id"], *_par)
             aksi.update({k: a[k] or 0 for k in _kunci})
@@ -191,7 +192,7 @@ async def list_deliveries(
         if aksi == "perlu_difaktur":
             async with pool.acquire() as _c1:
                 _tagih = await _pg.tagih_sesudah_kirim(_c1, ctx["tenant_id"])
-            conditions.append(_pg.sql_aksi(aksi) if _tagih else "FALSE")
+            conditions.append(_pg.sql_aksi(aksi, "f", _serah_aktif) if _tagih else "FALSE")
         else:
             conditions.append(_pg.sql_aksi(aksi) if _serah_aktif else "FALSE")
     where_clause = " AND ".join(conditions)
@@ -294,7 +295,7 @@ async def list_deliveries(
         import uuid as _uuid
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [r["id"] for r in rows]) if _serah_aktif else {}
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": r["id"], "invoice_id": r["invoice_id"], "sales_order_id": r["sales_order_id"]} for r in rows])
-        _pd = await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows])
+        _pd = await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], _serah_aktif)
         for i, r in zip(items, rows):
             i.update(_pg.serah_fakta(_serah_aktif, r["status"], *_fs.get(r["id"], (None, None, 0))))
             i["aksi"] = _pg.gabung_aksi(i["aksi"], r["id"] in _pd)
@@ -505,7 +506,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         from ..services import pengiriman_daftar as _pg  # 20 Okt 2026: keadaan serah + aksi (aditif; fungsi SAMA dgn daftar)
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [row["id"]]) if _aktif else {}
         detail.update(_pg.serah_fakta(_aktif, row["status"], *_fs.get(row["id"], (None, None, 0))))
-        detail["aksi"] = _pg.gabung_aksi(detail["aksi"], row["id"] in await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [row["id"]]))
+        detail["aksi"] = _pg.gabung_aksi(detail["aksi"], row["id"] in await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [row["id"]], _aktif))
         detail["position_text"] = _pg.position_text(row["status"], detail["serah_teks"])
         # paritas detail == baris daftar (21 Okt 2026): documents[]/doc_count dari kelompok_untuk (fungsi SAMA dgn daftar)
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": row["id"], "invoice_id": row["invoice_id"], "sales_order_id": row["sales_order_id"]}])
