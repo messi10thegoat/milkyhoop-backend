@@ -126,8 +126,12 @@ async def list_deliveries(
     skip: int = Query(0, ge=0),
     offset: int = Query(0, ge=0),
     aksi: Optional[Literal["perlu_resi", "belum_dicatat"]] = Query(None),
+    # 21 Okt 2026 (paginasi seragam, aditif): limit = alias per_page (setara modul lain)
+    limit: Optional[int] = Query(None, ge=1, le=100),
 ):
     """List deliveries with pagination, filters, and sorting."""
+    if isinstance(limit, int):
+        per_page = limit
     ctx = get_user_context(request)
     pool = await get_pool()
 

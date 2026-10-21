@@ -1311,7 +1311,7 @@ async def list_invoices(
                 LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id
                 LEFT JOIN sales_orders so ON so.id = si.sales_order_id AND so.tenant_id = si.tenant_id
                 WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {sort_field} {sort_dir}, si.id
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])

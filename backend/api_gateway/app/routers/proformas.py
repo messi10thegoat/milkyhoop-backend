@@ -374,6 +374,10 @@ async def list_proformas(
     search: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    # 21 Okt 2026 (paginasi seragam, aditif): page/offset/per_page setara modul lain (prioritas offset > page > skip; per_page = alias limit)
+    page: int = Query(1, ge=1),
+    offset: int = Query(0, ge=0),
+    per_page: Optional[int] = Query(None, ge=1, le=100),
     # 5 Okt 2026: SATU pemilih dengan kartu "Terbit belum lunas" (kelas_bayar_terbit), aditif terhadap filter lain
     tugas: Optional[Literal["terbit_belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/proforma_aksi, tanggal bisnis), nilai asing = 422
@@ -382,6 +386,9 @@ async def list_proformas(
     with_totals: bool = Query(False),
 ):
     """List proformas with filters."""
+    _i = lambda v, d: v if isinstance(v, int) else d  # noqa: E731  (panggilan langsung tanpa argumen = objek Query)
+    limit = _i(per_page, _i(limit, 20))
+    skip = _i(offset, 0) if _i(offset, 0) > 0 else ((_i(page, 1) - 1) * limit if _i(page, 1) > 1 else _i(skip, 0))
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -441,7 +448,7 @@ async def list_proformas(
                 LEFT JOIN sales_orders so
                        ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
                 WHERE p.tenant_id = $1{extra}
-                ORDER BY p.proforma_date DESC, p.created_at DESC
+                ORDER BY p.proforma_date DESC, p.created_at DESC, p.id
                 LIMIT ${idx} OFFSET ${idx + 1}
                 """,
                 *params,

@@ -234,7 +234,7 @@ async def list_sales_orders(
                     SELECT {_kolom_daftar}
                     FROM sales_orders
                     WHERE {where_clause}
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id
                     LIMIT ${param_idx} OFFSET ${param_idx + 1}
                 """
                 params.extend([limit, skip])

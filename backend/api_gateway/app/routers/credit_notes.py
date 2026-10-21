@@ -508,7 +508,7 @@ async def list_credit_notes(
                        original_invoice_id, original_invoice_number, voided_at, voided_reason, created_deposit_id
                 FROM credit_notes
                 WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {sort_field} {sort_dir}, id
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])

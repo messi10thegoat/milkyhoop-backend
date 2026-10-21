@@ -16,12 +16,13 @@ import pytest
 from app.routers import receive_payments as RP
 
 # Hash SQL ternormalisasi (spasi dirapatkan) dari kode LAMA (master 7c054bcd, sebelum U8) per panggilan lama.
+# 21 Okt 2026 (urutan seri deterministik): hash "main" diperbarui SENGAJA -- ORDER BY kini ", q.id" (pembeda id); hash "count" tak berubah.
 HASH_LAMA = {
-    "bawaan": {"count": "f67eb897f5f7e57e", "main": "0dcb5b578cd12767"},
-    "cari": {"count": "689c9cef86e00b3e", "main": "3695fde8630a41fe"},
-    "cash": {"count": "3be3e3407bb16ada", "main": "ca29693690b16032"},
-    "posted": {"count": "06042848d4c14e9a", "main": "0014f6c1b5e6e2db"},
-    "tgl": {"count": "e5215cea13d70c86", "main": "96884ff47f3960d1"},
+    "bawaan": {"count": "f67eb897f5f7e57e", "main": "38d86ad68fd3f7ec"},
+    "cari": {"count": "689c9cef86e00b3e", "main": "d9642d5cbcfd0fb0"},
+    "cash": {"count": "3be3e3407bb16ada", "main": "768846e27afd97af"},
+    "posted": {"count": "06042848d4c14e9a", "main": "f612c7b4f35510fc"},
+    "tgl": {"count": "e5215cea13d70c86", "main": "63f98e1ea52af570"},
 }
 PANGGILAN = {"bawaan": {}, "posted": {"status": "posted"}, "cash": {"source_type": "cash"}, "cari": {"search": "abc"},
              "tgl": {"date_from": date(2026, 1, 1)}}

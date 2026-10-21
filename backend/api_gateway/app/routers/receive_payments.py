@@ -628,7 +628,7 @@ async def list_receive_payments(
                 )
                 SELECT * FROM unified q{_JOIN_HITUNG}
                 WHERE TRUE {outer_where}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {sort_field} {sort_dir}, q.id
                 LIMIT {limit_param} OFFSET {offset_param}
             """  # nosec B608
 

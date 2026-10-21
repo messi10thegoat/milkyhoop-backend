@@ -68,6 +68,8 @@ for m in penawaran penerimaan pengiriman proforma; do
   if [ ! -f "$py" ]; then catat "$m" SKIP "harness belum ada"; continue; fi
   jalan_py "$AKAR" "$py" baru /out/$m.json > "$LOG/$m.out"; nilai "$m" $? "$LOG/$m.out"
 done
+py="$OPS/uji-nyata-paginasi-urut.py"
+if [ -f "$py" ]; then jalan_py "$AKAR" "$py" > "$LOG/paginasi.out"; nilai "paginasi+urutan(4 modul)" $? "$LOG/paginasi.out"; else catat "paginasi+urutan" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-paritas-detail.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru /out/par.json > "$LOG/paritas.out"; nilai "paritas-detail(4 modul)" $? "$LOG/paritas.out"; else catat "paritas-detail" SKIP "harness belum ada"; fi
 

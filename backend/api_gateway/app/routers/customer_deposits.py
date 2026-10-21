@@ -514,7 +514,7 @@ async def list_customer_deposits(
                        {sql_jenis_efektif("customer_deposits")} AS jenis
                 FROM customer_deposits
                 WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {sort_field} {sort_dir}, id
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, skip])

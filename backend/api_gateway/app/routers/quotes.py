@@ -238,10 +238,14 @@ async def list_quotes(
     limit: int = Query(20, ge=1, le=100),
     page: int = Query(1, ge=1),
     offset: int = Query(0, ge=0),
+    # 21 Okt 2026 (paginasi seragam, aditif): per_page = alias limit
+    per_page: Optional[int] = Query(None, ge=1, le=100),
     # 17 Okt 2026 (PENJUALAN-SERAGAM): sum_total atas SEMUA hasil filter, opt-in (FE: muat pertama saja)
     with_totals: bool = Query(False),
 ):
     """List quotes with filters."""
+    if isinstance(per_page, int):
+        limit = per_page
     # Terima 3 konvensi paginasi: skip (warisan) + page/offset (dulu DIABAIKAN diam —
     # hanya skip bekerja). Prioritas: offset > page > skip -> satu OFFSET efektif.
     eff_offset = offset if offset > 0 else ((page - 1) * limit if page > 1 else skip)
@@ -318,7 +322,7 @@ async def list_quotes(
                        converted_to_type, converted_to_id, created_at
                 FROM quotes
                 WHERE {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([limit, eff_offset])
