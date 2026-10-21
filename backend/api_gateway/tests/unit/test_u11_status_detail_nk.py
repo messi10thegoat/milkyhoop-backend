@@ -111,6 +111,8 @@ def _pool(monkeypatch, k):
         return {}
     monkeypatch.setattr(_nkd, "kelompok_untuk", _kel)
     monkeypatch.setattr(_umd, "kelompok_untuk", _kel)
+    monkeypatch.setattr(_nkd, "rincian_nk_many", _kel)  # 21 Okt: rincian jurnal diuji di test_paritas_um_nk_faktur + harness nyata
+    monkeypatch.setattr(_umd, "rincian_um_many", _kel)
 
 
 def _baris(status, ap, rf):
