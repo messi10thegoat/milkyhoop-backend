@@ -1660,43 +1660,122 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
 # ============================================================================
 
 
+# 22 Okt 2026 (MASTER, pola NetSuite: estimate yang belum dikonversi boleh ditutup kapan saja): void diizinkan juga untuk 'accepted'
+# (Diterima) SELAMA belum jadi pesanan/faktur. Yang sudah dikonversi tetap ditolak ("sudah jadi pesanan SO-xxx"). Alasan WAJIB untuk
+# accepted, opsional untuk draft/sent. Alasan dicatat di RIWAYAT berakor (catat_riwayat QUOTE_VOIDED: aktor + teks) -- tabel quotes tak punya
+# kolom alasan batal (hanya declined_reason, makna lain), jadi tanpa migrasi.
+VOID_STATUS = ("draft", "sent", "accepted")
+
+
+async def _turunan_penawaran(conn, tenant_id: str, quote) -> Optional[str]:
+    """Nomor dokumen turunan (pesanan/faktur) penawaran ini, atau None. Dibaca DI DALAM lock penawaran."""
+    so = await conn.fetchrow(
+        "SELECT order_number FROM sales_orders WHERE tenant_id = $1 AND quote_id = $2 AND status <> 'cancelled' ORDER BY created_at LIMIT 1",
+        tenant_id, quote["id"])
+    if so:
+        return so["order_number"]
+    fk = await conn.fetchrow(
+        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND quote_id = $2 AND status <> 'void' ORDER BY created_at LIMIT 1",
+        tenant_id, quote["id"])
+    if fk:
+        return fk["invoice_number"]
+    if quote["status"] == "converted" and quote["converted_to_id"]:
+        if quote["converted_to_type"] in ("sales_order", "order", "so"):
+            r = await conn.fetchrow("SELECT order_number FROM sales_orders WHERE tenant_id = $1 AND id = $2", tenant_id, quote["converted_to_id"])
+            return r["order_number"] if r else None
+        r = await conn.fetchrow("SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND id = $2", tenant_id, quote["converted_to_id"])
+        return r["invoice_number"] if r else None
+    return None
+
+
+async def _rencana_void_penawaran(conn, tenant_id: str, quote, reason) -> list:
+    """SATU penentu void (rute + pratinjau): -> daftar blok [{code, message, status}]. Kosong = boleh."""
+    blok = []
+    nomor = quote["quote_number"]
+    if quote["status"] == "void":
+        blok.append({"code": "QUOTE_SUDAH_BATAL", "message": f"Penawaran {nomor} sudah dibatalkan.", "status": 400})
+        return blok
+    if quote["status"] not in VOID_STATUS:
+        turunan = await _turunan_penawaran(conn, tenant_id, quote) if quote["status"] == "converted" else None
+        pesan = (f"Penawaran {nomor} sudah jadi pesanan {turunan}." if turunan
+                 else tg.tak_bisa_status("quote", quote["status"], "dibatalkan", nomor)
+                 + " Hanya penawaran berstatus Draf, Terkirim, atau Diterima (belum jadi pesanan) yang bisa dibatalkan.")
+        blok.append({"code": "QUOTE_SUDAH_DIKONVERSI" if turunan else "QUOTE_STATUS_TAK_BOLEH_BATAL", "message": pesan, "status": 400})
+        return blok
+    if quote["status"] == "accepted":
+        turunan = await _turunan_penawaran(conn, tenant_id, quote)
+        if turunan:
+            blok.append({"code": "QUOTE_SUDAH_DIKONVERSI", "message": f"Penawaran {nomor} sudah jadi pesanan {turunan}.", "status": 400})
+        if not (reason or "").strip():
+            blok.append({"code": "ALASAN_WAJIB", "message": "Alasan pembatalan wajib diisi untuk penawaran yang sudah diterima.", "status": 422})
+    try:
+        await _tolak_bila_ada_uang_muka_aktif(conn, quote["id"], tenant_id, "dibatalkan")
+    except HTTPException as e:
+        blok.append({"code": "QUOTE_ADA_UANG_MUKA", "message": e.detail if isinstance(e.detail, str) else str(e.detail), "status": e.status_code})
+    return blok
+
+
+async def _ambil_penawaran_void(conn, tenant_id: str, quote_id: str):
+    """Kunci QUOTE + FOR UPDATE (2 Okt 2026) lalu baca; semua pemeriksaan sesudahnya DI DALAM lock."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{tenant_id}:{quote_id}")
+    quote = await conn.fetchrow(
+        """
+        SELECT id, status, quote_number, total_amount, customer_name, converted_to_type, converted_to_id
+        FROM quotes
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+    """,
+        uuid_module.UUID(quote_id),
+        tenant_id,
+    )
+    if not quote:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+    return quote
+
+
+@router.post("/{quote_id}/void/preview")
+async def preview_void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None):
+    """Pratinjau batal penawaran: penentu YANG SAMA dgn /void, NOL tulisan (transaksi SELALU di-ROLLBACK). 200 walau diblok."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                quote = await _ambil_penawaran_void(conn, ctx["tenant_id"], quote_id)
+                blok = await _rencana_void_penawaran(conn, ctx["tenant_id"], quote, body.reason if body else None)
+            finally:
+                await tr.rollback()
+        return {"success": True, "data": {
+            "ok": not blok, "quote_number": quote["quote_number"], "status": quote["status"],
+            "alasan_wajib": quote["status"] == "accepted",
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in blok]}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing void quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pembatalan.")
+
+
 @router.post("/{quote_id}/void", response_model=QuoteResponse)
 async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None):
     """
-    Void a quote. Only quotes in 'draft' or 'sent' status can be voided.
-    Quotes have no accounting impact, so no journal reversals are needed.
+    Batalkan penawaran. Boleh untuk Draf, Terkirim, dan Diterima (selama belum jadi pesanan/faktur; alasan WAJIB untuk Diterima).
+    Penawaran tak berdampak akuntansi (nol jurnal). Alasan -> riwayat berakor.
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn, conn.transaction():
-            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
-            quote = await conn.fetchrow(
-                """
-                SELECT id, status, quote_number, total_amount, customer_name
-                FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-                FOR UPDATE
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-            if quote["status"] not in ("draft", "sent"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=tg.tak_bisa_status("quote", quote["status"], "dibatalkan", quote["quote_number"])
-                + " Hanya penawaran berstatus Draf atau Terkirim yang bisa dibatalkan.",
-                )
-
-            await _tolak_bila_ada_uang_muka_aktif(
-                conn, uuid_module.UUID(quote_id), ctx["tenant_id"], "dibatalkan"
-            )
+            quote = await _ambil_penawaran_void(conn, ctx["tenant_id"], quote_id)
+            alasan = (body.reason.strip() if body and body.reason else None)
+            blok = await _rencana_void_penawaran(conn, ctx["tenant_id"], quote, alasan)
+            if blok:
+                b = blok[0]
+                raise HTTPException(status_code=b["status"], detail=b["message"] if b["code"] != "ALASAN_WAJIB"
+                                    else {"code": b["code"], "message": b["message"]})
 
             await conn.execute(
                 """
@@ -1707,16 +1786,15 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                 ctx["tenant_id"],
             )
 
-            reason_str = body.reason if body and body.reason else "No reason given"
             logger.info(
                 f"Quote voided: {quote['quote_number']} "
                 f"(customer={quote['customer_name']}, amount={quote['total_amount']}, "
-                f"reason={reason_str})"
+                f"dari={quote['status']}, alasan={alasan or '-'})"
             )
 
             await catat_riwayat(
                 conn, ctx["tenant_id"], "quotes", quote["id"], quote["quote_number"], "QUOTE_VOIDED", ctx.get("user_id"),
-                f"Penawaran {quote['quote_number']} dibatalkan" + (f": {body.reason}" if body and body.reason else ""), source="api:quotes",
+                f"Penawaran {quote['quote_number']} dibatalkan" + (f": {alasan}" if alasan else ""), source="api:quotes",
             )
 
             return QuoteResponse(
