@@ -1640,6 +1640,7 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                     _res = await execute_idempotent(
                         conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _op,
                         payload_hash=sidik,
+                        kunci_default=not request.headers.get("X-Idempotency-Key"),
                     )
                 except KunciIdempotensiDipakai as e:
                     lama = (e.respons or {}).get("data") or {}

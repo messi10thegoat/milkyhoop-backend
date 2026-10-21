@@ -4299,7 +4299,12 @@ async def record_payment(
                 if existing_idem and existing_idem["result"]:
                     import json as json_mod
 
-                    return json_mod.loads(existing_idem["result"])
+                    _lama = json_mod.loads(existing_idem["result"])
+                    # dokumen penerimaan hasilnya sudah dihapus/dibatalkan -> bukan replay (id hantu); proses baru
+                    from ..utils.idempotency import sumber_basi
+                    if not await sumber_basi(conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _lama,
+                                             None, not request.headers.get("X-Idempotency-Key")):
+                        return _lama
 
                 # Lock domain per-pelanggan yang SAMA dengan POST /receive-payments, DIAMBIL SEBELUM
                 # FOR UPDATE faktur: create memegang domain lalu mengunci baris faktur -> urutan sama,

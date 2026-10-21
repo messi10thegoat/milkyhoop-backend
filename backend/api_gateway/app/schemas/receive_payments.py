@@ -67,7 +67,7 @@ class CreateReceivePaymentRequest(BaseModel):
     save_as_draft: bool = Field(
         False, description="If true, save as draft without posting"
     )
-    idempotency_key: Optional[str] = Field(None, max_length=255, description="Unique key to prevent duplicate payments")
+    idempotency_key: Optional[str] = Field(None, max_length=255, description="Metadata saja (disimpan di kolom), TIDAK dipakai dedup. Dedup memakai header X-Idempotency-Key; tanpa header = kunci default dari isi.")
 
     @field_validator("customer_name")
     @classmethod

@@ -58,3 +58,11 @@ Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik)
 ## 6. Bukti / alat
 
 `scripts/ops/uji-nyata-{penawaran,penerimaan,pengiriman,proforma}-seragam.sh`, `uji-nyata-paritas-detail.sh` (485 detail = semua baris kaos+grapgrap), `uji-nyata-dokumen-faktur.sh` (bundel SO lama==baru 664). Semua baca-saja, kontainer sekali-pakai. Tes: `tests/unit/test_{penawaran,penerimaan,pengiriman,proforma}_seragam.py`, `test_paritas_detail.py`, `test_pengiriman_tiebreak.py`.
+
+## 7. Idempotensi: replay hanya bila dokumen sumber masih ada (21 Okt 2026)
+
+- Kunci idempotensi tersimpan = respons dokumen yang pernah dibuat. Dulu replay hanya memeriksa masa berlaku 24 j: draf yang DIHAPUS / penerimaan yang dibatalkan tetap di-replay -> 201 dengan id hantu, GET 404.
+- Sekarang (`utils/idempotency.py`: `SUMBER_BUAT`, `sumber_basi`): dokumen TIDAK ADA -> permintaan diproses baru (semua jalur, kunci default maupun header). Dokumen VOIDED -> proses baru HANYA untuk kunci default-isi (POST /receive-payments, /bill-payments, /sales-invoices/{id}/payments tanpa header); kunci header klien + voided tetap replay (semantik retry).
+- Header yang berlaku: `X-Idempotency-Key` (alias `Idempotency-Key`). Medan body `idempotency_key` di /receive-payments = metadata, TIDAK dipakai dedup.
+- Source_type aksi (void/apply/fulfill/refund...) tidak diperiksa.
+- Tiket terpisah (tak diubah): kunci `INVOICE_PAYMENT:{id}:{amount}` tanpa tanggal/bank men-dedup dua cicilan sah bernominal sama dalam 24 j. Terukur: grapgrap 0 kejadian, kaos 1 (nominal sama, beda hari).

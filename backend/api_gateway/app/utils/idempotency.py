@@ -40,6 +40,66 @@ class IdempotencyResult:
     idempotency_key: str
 
 
+# ── Replay hanya bila DOKUMEN SUMBER masih ada (unit idempotensi-sumber, 21 Okt 2026) ──
+# Kunci tersimpan = respons dokumen yang PERNAH dibuat. Dokumen dihapus (draf) / dibatalkan sesudahnya ->
+# replay mengembalikan id HANTU (201 lalu GET 404). Peta di bawah = source_type "buat dokumen" -> (tabel, kolom
+# status, status yang membuat replay kunci-DEFAULT-isi basi). Literal kode, bukan masukan pengguna.
+#   dokumen TIDAK ADA            -> basi untuk SEMUA jalur (kunci default maupun header klien)
+#   dokumen berstatus di daftar  -> basi HANYA untuk kunci default-isi (tak ada niat klien; orang membatalkan lalu
+#                                   mencatat ulang yang sama). Kunci header klien tetap replay (semantik retry).
+# Source_type aksi (void/apply/fulfill...) TIDAK ada di peta -> tak diperiksa (id-nya dokumen yang ada).
+SUMBER_BUAT = {
+    "RECEIVE_PAYMENT": ("receive_payments", "status", ("voided",)),
+    "BILL_PAYMENT": ("bill_payments_v2", "status", ("voided",)),
+    "SALES_ORDER_CREATE": ("sales_orders", None, ()),
+    "QUOTE_CREATE": ("quotes", None, ()),
+    "SI_CREATE": ("sales_invoices", None, ()),
+    "PROFORMA_CREATE": ("proformas", None, ()),
+    "CN_CREATE": ("credit_notes", None, ()),
+}
+
+
+def id_dokumen_tersimpan(result, result_id=None):
+    """UUID dokumen dari result tersimpan (bentuk lama {data:{id}} / klien {response:{id|data:{id}}}) atau kolom result_id."""
+    kandidat = [result_id]
+    if isinstance(result, dict):
+        resp = result.get("response") if isinstance(result.get("response"), dict) else result
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+        kandidat += [data.get("id"), resp.get("id"), resp.get("created_payment_id")]
+    for k in kandidat:
+        if k:
+            try:
+                return UUID(str(k))
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+async def sumber_basi(conn, tenant_id: str, key: str, source_type: str, result, result_id=None,
+                      kunci_default: bool = False) -> bool:
+    """True bila entri idempotensi ini BASI (dokumen sumbernya tak ada, atau dibatalkan untuk kunci default-isi).
+    Basi -> barisnya DIHAPUS di transaksi pemanggil (rollback memulihkannya) dan pemanggil memproses sebagai MISS.
+    source_type di luar SUMBER_BUAT / id tak terbaca -> False (perilaku lama; tak pernah menebak)."""
+    peta = SUMBER_BUAT.get(source_type)
+    if not peta:
+        return False
+    doc_id = id_dokumen_tersimpan(result, result_id)
+    if doc_id is None:
+        return False
+    tabel, kolom_status, status_basi = peta
+    if kolom_status and status_basi and kunci_default:
+        row = await conn.fetchrow(
+            f"SELECT {kolom_status} AS st FROM {tabel} WHERE id = $1 AND tenant_id = $2", doc_id, tenant_id)  # nosec B608
+        basi = row is None or row["st"] in status_basi
+    else:
+        basi = not await conn.fetchval(
+            f"SELECT 1 FROM {tabel} WHERE id = $1 AND tenant_id = $2", doc_id, tenant_id)  # nosec B608
+    if basi:
+        logger.info(f"Idempotency basi dibuang: {source_type} key={key} dokumen={doc_id}")
+        await conn.execute("DELETE FROM idempotency_keys WHERE tenant_id = $1 AND key = $2", tenant_id, key)
+    return basi
+
+
 async def execute_idempotent(
     conn,
     tenant_id: str,
@@ -48,6 +108,7 @@ async def execute_idempotent(
     operation: Callable[[], Awaitable[dict]],
     ttl_hours: int = 24,
     payload_hash: Optional[str] = None,
+    kunci_default: bool = False,
 ) -> IdempotencyResult:
     """
     Execute an operation with idempotency guarantee.
@@ -91,6 +152,13 @@ async def execute_idempotent(
         """,
         tenant_id, idempotency_key
     )
+    if existing and existing['result']:
+        _res = existing['result']
+        if isinstance(_res, str):
+            _res = json.loads(_res)
+        if await sumber_basi(conn, tenant_id, idempotency_key, source_type, _res,
+                             existing['result_id'], kunci_default):
+            existing = None
 
     if existing and existing['result']:
         logger.info(f"Idempotency hit: {source_type} key={idempotency_key}")
@@ -239,7 +307,7 @@ async def ambil_replay_klien(conn, tenant_id: str, kunci_penuh: str, sidik: str)
     Kembali: dict respons asli, atau None. Isi beda -> KunciIdempotensiDipakai (LookupError; pemanggil -> 409).
     """
     baris = await conn.fetchrow(
-        "SELECT result FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
+        "SELECT result, result_id, source_type FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND expires_at > NOW()",
         tenant_id, kunci_penuh,
     )
     if not baris or baris["result"] is None:
@@ -247,6 +315,9 @@ async def ambil_replay_klien(conn, tenant_id: str, kunci_penuh: str, sidik: str)
     simpan = baris["result"]
     if isinstance(simpan, str):
         simpan = json.loads(simpan)
+    # dokumen sumber sudah tak ada (draf dihapus) -> bukan replay: proses sebagai permintaan baru
+    if await sumber_basi(conn, tenant_id, kunci_penuh, baris.get("source_type"), simpan, baris.get("result_id"), False):
+        return None
     if simpan.get("payload_hash") != sidik:
         raise KunciIdempotensiDipakai(simpan.get("response"))
     return simpan.get("response")

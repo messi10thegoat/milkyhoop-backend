@@ -1523,7 +1523,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     }
 
                 _res = await execute_idempotent(
-                    conn, ctx["tenant_id"], idem_key, "BILL_PAYMENT", _op
+                    conn, ctx["tenant_id"], idem_key, "BILL_PAYMENT", _op,
+                    kunci_default=not request.headers.get("X-Idempotency-Key"),
                 )
                 return {**_res.data, "was_cached": _res.was_cached}
     except HTTPException:

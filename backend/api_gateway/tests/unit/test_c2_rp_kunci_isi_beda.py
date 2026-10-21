@@ -138,8 +138,9 @@ def klien(monkeypatch):
     async def pra(*a, **k):
         return None
 
-    async def idem(conn, tenant, key, st, op, ttl_hours=24, payload_hash=None):
+    async def idem(conn, tenant, key, st, op, ttl_hours=24, payload_hash=None, kunci_default=False):
         tangkap["sidik"] = payload_hash
+        tangkap["kunci_default"] = kunci_default
         if tangkap.get("tolak"):
             raise IDEM.KunciIdempotensiDipakai(ASLI)
         return IDEM.IdempotencyResult(data=dict(ASLI), was_cached=True, idempotency_key=key)
@@ -174,3 +175,4 @@ def test_tanpa_header_tanpa_sidik(klien):
     # status tak dinilai: respons tiruan tak memenuhi response_model (alat). Yang dinilai:
     # handler SAMPAI ke execute_idempotent dan TIDAK mengirim sidik.
     assert "sidik" in t and t["sidik"] is None
+    assert t["kunci_default"] is True  # tanpa header = kunci default-isi (voided boleh dicatat ulang)
