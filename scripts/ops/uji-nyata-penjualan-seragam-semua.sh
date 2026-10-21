@@ -103,6 +103,14 @@ PY
   fi
 done
 
+# ---- DAFTAR: harness BACKEND kode live tanpa lama/baru (21 Okt): paritas UM/NK/Faktur + rincian jurnal UM/NK + position_text Proforma/Pengiriman
+# (uji-nyata-nk-potongan SENGAJA tak di sini: ia MENULIS kaos di transaksi ROLLBACK -- penjaga ini baca-saja.)
+for par in "paritas-um-nk-faktur:uji-nyata-paritas-s2.py:paritas" "rincian-um-nk:uji-nyata-rincian-um-nk.py:" "posisi-proforma-pengiriman:uji-nyata-posisi-pro-kirim.py:"; do
+  nama=${par%%:*}; sisa=${par#*:}; berkas=${sisa%%:*}; arg=${sisa#*:}; py="$OPS/$berkas"
+  if [ ! -f "$py" ]; then catat "$nama" SKIP "harness belum ada"; continue; fi
+  jalan_py "$AKAR" "$py" $arg > "$LOG/$nama.out"; nilai "$nama" $? "$LOG/$nama.out"
+done
+
 # ---- tinjauan gabungan DRAF_SEBAGAI_DIRINYA (rampungkan): invoice+proforma wajib ada -----------------------------------------------
 cat > "$O/draf.py" <<'PY'
 import os, sys
