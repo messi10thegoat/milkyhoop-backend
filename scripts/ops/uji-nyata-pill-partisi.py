@@ -60,6 +60,19 @@ async def main():
            ("faktur", SI, SI.list_invoices, SI.get_invoice_summary), ("pesanan", SO, SO.list_sales_orders, SO.get_sales_order_summary)]
     for t in TEN:
         uid = str(await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id=$1 AND created_by IS NOT NULL LIMIT 1", t)); r = req(t, uid)
+        # SO: detail == baris (aksi, aksi_semua) untuk 25 SO pertama
+        semuaSO = (await SO.list_sales_orders(**kw(SO.list_sales_orders, r, limit=100)))
+        semuaSO = datar(semuaSO)["items"]
+        bedaSO = []
+        for it in semuaSO[:25]:
+            d = datar(await SO.get_sales_order_detail(**kw(SO.get_sales_order_detail, r, order_id=it["id"])))["data"]
+            if d.get("aksi") != it.get("aksi") or d.get("aksi_semua") != it.get("aksi_semua"): bedaSO.append((it["order_number"], d.get("aksi"), it.get("aksi")))
+        print(("PASS " if not bedaSO else "FAIL ") + f"{t} pesanan detail==baris (aksi, aksi_semua) pada {min(25, len(semuaSO))} SO" + ("" if not bedaSO else f" {bedaSO[:3]}"))
+        if bedaSO: gagal.append(f"{t} pesanan detail!=baris")
+        # aksi_semua konsisten dgn aksi utama di SEMUA baris
+        tak = [i["order_number"] for i in semuaSO if (i.get("aksi_semua") or [None])[0] != i.get("aksi")]
+        print(("PASS " if not tak else "FAIL ") + f"{t} pesanan aksi == aksi_semua[0] di {len(semuaSO)} baris")
+        if tak: gagal.append(f"{t} pesanan aksi!=aksi_semua[0]")
         for nama, mod, lst, smf in MOD:
             keys = kunci_literal(lst)
             sm = datar(await smf(**kw(smf, r)))
@@ -78,10 +91,8 @@ async def main():
                 bukan = [i for i in items if not punya(i.get("aksi"), k)]
                 if k == "jatuh_tempo_minggu_ini":      # kunci TAMBAHAN faktur (bukan pill): medan boolean baris sendiri, tak saling-eksklusif
                     bukan = [i for i in items if not i.get("jatuh_tempo_minggu_ini")]
-                tumpang = len(bukan) if nama == "pesanan" else 0
-                if nama == "pesanan":      # SO: ?aksi= = keanggotaan dalam DAFTAR aksi; baris hanya membawa aksi UTAMA -> INFO, bukan gagal
-                    if bukan: info.append(f"{t} pesanan ?aksi={k}: {len(bukan)} dari {len(items)} baris berpill utama LAIN (keanggotaan multi-kunci, by design; FE tak bisa melihat kunci k di baris)")
-                    bukan = []
+                if nama == "pesanan":      # SO (A, 21 Okt): ?aksi=k = keanggotaan k dalam aksi_semua; aksi (utama) == aksi_semua[0]
+                    bukan = [i for i in items if k not in (i.get("aksi_semua") or []) or i.get("aksi") != (i["aksi_semua"][0] if i.get("aksi_semua") else None)]
                 cnt = None
                 for nm in (f"{k}_count", f"{k}"):
                     if isinstance(sm, dict) and nm in sm and isinstance(sm[nm], int): cnt = sm[nm]; break

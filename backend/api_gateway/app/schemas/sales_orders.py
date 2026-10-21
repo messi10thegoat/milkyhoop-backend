@@ -340,6 +340,9 @@ class SalesOrderListItem(BaseModel):
     kirim_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
     # 14 Okt 2026 (AKSI-SO): aksi PALING MENDESAK (services/so_aksi.AKSI) atau null (arsip / tanpa aksi)
     aksi: Optional[str] = None
+    # 21 Okt 2026 (MASTER, audit pill): SEMUA kunci aksi yang berlaku (urut so_aksi.AKSI; aksi = aksi_semua[0]).
+    # ?aksi=<k> = KEANGGOTAAN k dalam daftar ini; FE: chip k aktif -> pill baris = k, tanpa filter -> aksi (utama).
+    aksi_semua: List[str] = []
     created_at: str
 
 
@@ -382,6 +385,9 @@ class SalesOrderDetail(BaseModel):
     kirim_hari: Optional[int] = None
     kirim_terbuka: bool = False
     kirim_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
+    # 21 Okt 2026 (paritas detail == baris): aksi utama + semua kunci, dari so_aksi.fakta YANG SAMA dgn daftar
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str

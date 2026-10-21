@@ -73,3 +73,8 @@ Koreksi `allocated_amount`/`unapplied_amount` Penerimaan (turunan; izin pemilik)
 - Baris + detail: `aksi` = salah satu kunci itu atau null. `?aksi=perlu_difaktur`; `GET /deliveries/summary` + `perlu_difaktur_count` (dibatasi `?search=`). Data nyata hari ini 0 baris; predikat dibuktikan di data sintetis (`uji-nyata-pengiriman-perlu-difaktur`).
 - **Summary NK `total_applied`** = Σ `terpakai` JURNAL (`rincian_nk_many`, fungsi sama dgn baris daftar/detail) atas NK non-void + `?search=`. Kolom cache `credit_notes.amount_applied` TIDAK dipakai: NK BERTAUT faktur tidak mengisinya (posting memotong piutang faktur lewat jurnal).
 - **JANGAN backfill `credit_notes.amount_applied` untuk NK bertaut** (diukur 21 Okt): guard void (`amount_applied > 0` → "Lepas penerapannya dulu") akan memblokir pembatalan NK bertaut yang tidak punya rute lepas-penerapan. Apply/refund NK bertaut sudah dijaga `tolak_nk_bertaut` (original_invoice_id) + `sisa_kredit_nk` (0), tak bergantung cache; tes `test_nk_bertaut_tanpa_sisa.py`.
+
+## 9. Pesanan (SO) `aksi_semua` (21 Okt 2026, putusan MASTER A)
+
+- Baris daftar SO + detail SO membawa `aksi_semua: [kunci…]` (urut `so_aksi.AKSI`, dari `so_aksi.fakta` yang SAMA) dan `aksi` = `aksi_semua[0]` (utama; detail kini juga membawa `aksi`). `?aksi=<k>` = KEANGGOTAAN k dalam `aksi_semua` (hitungan kartu dashboard/summary tidak berubah).
+- FE: chip k aktif -> pill baris = k (bila k ∈ aksi_semua); tanpa filter -> `aksi` (utama). Pill modul lain (Penawaran/Penerimaan/Pengiriman/Proforma/NK/UM/Faktur) sudah partisi (satu baris = satu pill); diaudit `uji-nyata-pill-partisi`.

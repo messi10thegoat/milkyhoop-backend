@@ -273,6 +273,7 @@ async def list_sales_orders(
                     **penanda[str(row["id"])],
                     **posisi[str(row["id"])],
                     aksi=so_aksi.aksi_utama(_aksi_baris.get(row["id"], {}).get("aksi", [])),
+                    aksi_semua=list(_aksi_baris.get(row["id"], {}).get("aksi", [])),
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
@@ -590,13 +591,17 @@ async def get_sales_order_detail(request: Request, order_id: str):
             _set_kode = await _setelan_kode(conn, ctx["tenant_id"])
             _boleh_kode = await boleh_ganti_kode(conn, ctx["tenant_id"], ctx.get("user_id"), _set_kode)
             # detailpage (17 Okt 2026): Posisi + Kirim dari fungsi YANG SAMA dengan baris daftar (so_posisi.fakta_daftar)
-            _pos = (await fakta_daftar(conn, ctx["tenant_id"], [order], await tanggal_dokumen(conn, ctx["tenant_id"])))[str(order["id"])]
+            _hari_det = await tanggal_dokumen(conn, ctx["tenant_id"])
+            _pos = (await fakta_daftar(conn, ctx["tenant_id"], [order], _hari_det))[str(order["id"])]
+            # 21 Okt 2026: aksi/aksi_semua detail == baris daftar (so_aksi.fakta, fungsi SAMA)
+            _aksi_det = list((await so_aksi.fakta(conn, ctx["tenant_id"], _hari_det, [order["id"]])).get(order["id"], {}).get("aksi", []))
 
             return SalesOrderDetailResponse(
                 success=True,
                 data=SalesOrderDetail(
                     position_text=_pos["position_text"], ship_text=_pos["ship_text"],
                     kirim_hari=_pos["kirim_hari"], kirim_terbuka=_pos["kirim_terbuka"], kirim_keadaan=_pos["kirim_keadaan"],
+                    aksi=so_aksi.aksi_utama(_aksi_det), aksi_semua=_aksi_det,
                     order_code=order.get("order_code"),
                     order_title=order.get("order_title"),
                     order_code_source=order.get("order_code_source"),
