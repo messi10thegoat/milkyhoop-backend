@@ -40,6 +40,8 @@ import asyncpg
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from ..utils.tanggal_tenant import tanggal_dokumen
+
 from ..schemas.purchase_orders import (
     CreatePurchaseOrderRequest,
     UpdatePurchaseOrderRequest,
@@ -1004,11 +1006,12 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Get PO
+                # Law 13 / P-U1 G1: PO dikunci (FOR UPDATE) sebelum baca sisa -> dua penerimaan bersamaan tak bisa melebihi qty
                 po = await conn.fetchrow(
                     """
                     SELECT * FROM purchase_orders
                     WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
                 """,
                     po_id,
                     ctx["tenant_id"],
@@ -1016,14 +1019,22 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 
                 if not po:
                     raise HTTPException(
-                        status_code=404, detail="Purchase order not found"
+                        status_code=404, detail="Pesanan pembelian tidak ditemukan."
                     )
 
                 if po["status"] not in ("sent", "partial_received"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot receive goods for PO with status '{po['status']}'",
+                        detail=f"Barang tidak bisa diterima untuk pesanan pembelian berstatus '{po['status']}'.",
                     )
+
+                # receive_date dulu DIABAIKAN: kini divalidasi (tanggal bisnis tenant; tidak sebelum tanggal PO). Penyimpanan
+                # tanggal per penerimaan menunggu dokumen GRN (P-U4); sampai itu penghitung kumulatif tak punya kolom tanggal.
+                _hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+                if body.receive_date > _hari_ini:
+                    raise HTTPException(status_code=400, detail="Tanggal terima tidak boleh di masa depan.")
+                if body.receive_date < po["po_date"]:
+                    raise HTTPException(status_code=400, detail="Tanggal terima tidak boleh sebelum tanggal pesanan.")
 
                 items_received = []
 
@@ -1033,6 +1044,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         """
                         SELECT * FROM purchase_order_items
                         WHERE id = $1 AND po_id = $2
+                        FOR UPDATE
                     """,
                         UUID(recv_item.po_item_id),
                         po_id,
@@ -1041,23 +1053,24 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     if not po_item:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"PO item {recv_item.po_item_id} not found",
+                            detail=f"Baris pesanan {recv_item.po_item_id} tidak ditemukan.",
                         )
 
-                    # Check quantity
-                    remaining = Decimal(po_item["quantity"]) - Decimal(
-                        po_item["quantity_received"] or 0
+                    # Check quantity (Decimal murni -- Law 25)
+                    _qty_terima = Decimal(str(recv_item.quantity_received))
+                    remaining = Decimal(str(po_item["quantity"])) - Decimal(
+                        str(po_item["quantity_received"] or 0)
                     )
-                    if recv_item.quantity_received > remaining:
+                    if _qty_terima > remaining:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Receive quantity ({recv_item.quantity_received}) exceeds remaining ({remaining})",
+                            detail=f"Jumlah diterima ({_qty_terima}) melebihi sisa ({remaining}).",
                         )
 
                     # Update quantity_received
                     new_qty_received = (
-                        Decimal(po_item["quantity_received"] or 0)
-                        + recv_item.quantity_received
+                        Decimal(str(po_item["quantity_received"] or 0))
+                        + _qty_terima
                     )
 
                     await conn.execute(
@@ -1073,7 +1086,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     items_received.append(
                         {
                             "po_item_id": recv_item.po_item_id,
-                            "quantity_received": recv_item.quantity_received,
+                            "quantity_received": _qty_terima,
                             "total_received": new_qty_received,
                         }
                     )
@@ -1100,7 +1113,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 )
 
                 all_received = all(
-                    Decimal(item["quantity_received"] or 0) >= Decimal(item["quantity"])
+                    Decimal(str(item["quantity_received"] or 0)) >= Decimal(str(item["quantity"]))
                     for item in all_items
                 )
 

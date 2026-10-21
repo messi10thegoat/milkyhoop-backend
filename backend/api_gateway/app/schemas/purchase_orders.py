@@ -110,7 +110,7 @@ class UpdatePurchaseOrderRequest(BaseModel):
 class ReceiveItemRequest(BaseModel):
     """Single item to receive."""
     po_item_id: str = Field(..., description="PO item UUID")
-    quantity_received: float = Field(..., gt=0)
+    quantity_received: Decimal = Field(..., gt=0)  # P-U1 G1: Decimal (dulu float -> Decimal + float = TypeError -> /receive selalu 500)
 
 
 class ReceiveGoodsRequest(BaseModel):

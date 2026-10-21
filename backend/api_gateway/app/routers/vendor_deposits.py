@@ -5,6 +5,7 @@ Advance payments to vendors before receiving goods.
 Creates journal entries on post, apply, and refund.
 """
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -34,7 +35,8 @@ from ..schemas.vendor_deposits import (
     VoidDepositResponse,
     VendorDepositStatus,
 )
-from ..services.resolve_account import resolve_account_id
+from ..services.role_resolver import AccountRole
+from ..services import uang_muka_vendor as UMV  # akun PERAN + sisa dari jurnal (P-U1, 22 Okt 2026)
 from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
@@ -73,7 +75,7 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE je.tenant_id = $1
           AND je.status = 'POSTED'
-          AND coa.account_code = '2-10100'
+          AND coa.id = $3
           AND (
               -- Original bill journal (AP credit)
               (je.source_type = 'BILL' AND je.source_id = $2::uuid)
@@ -103,6 +105,7 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
     """,
         tenant_id,
         bill_id_str,
+        await UMV.akun_peran(conn, tenant_id, AccountRole.AP_TRADE),
     )
     return int(result or 0)
 
@@ -414,7 +417,7 @@ async def delete_vendor_deposit(request: Request, deposit_id: UUID):
 async def post_vendor_deposit(request: Request, deposit_id: UUID):
     """
     Post vendor deposit - creates journal entry:
-    Dr. Uang Muka Vendor (1-10800)    amount
+    Dr. Uang Muka Pembelian (peran AP_PREPAID)    amount
         Cr. Kas/Bank                      amount
     """
     ctx = get_user_context(request)
@@ -425,48 +428,33 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        vd = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id,
-            ctx["tenant_id"],
-        )
-        if not vd:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
-
-        if vd["status"] != "draft":
-            raise HTTPException(status_code=400, detail="Deposit is already posted")
-
-        # Get accounts
-        vendor_deposit_account = await resolve_account_id(
-            conn, ctx["tenant_id"], "1-10800"
-        )
-        if not vendor_deposit_account:
-            # Seed account if not exists
-            await conn.execute(
-                "SELECT seed_vendor_deposit_account($1)", ctx["tenant_id"]
-            )
-            vendor_deposit_account = await resolve_account_id(
-                conn, ctx["tenant_id"], "1-10800"
-            )
-
-        bank_account = None
-        if vd["bank_account_id"]:
-            bank_account = await conn.fetchrow(
-                "SELECT coa_id FROM bank_accounts WHERE id = $1", vd["bank_account_id"]
-            )
-
-        if not bank_account:
-            # Use default cash account
-            cash_account = await resolve_account_id(conn, ctx["tenant_id"], "1-10100")
-        else:
-            cash_account = bank_account["coa_id"]
-
         async with conn.transaction():
-            # Law 13: Advisory lock
+            # Law 13: lock DULU, baru baca & periksa di DALAM (G4: dulu status dibaca di luar lock -> dua post sama-sama 'draft' -> dua jurnal)
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"VENDOR_DEPOSIT:{deposit_id}",
             )
+            vd = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id,
+                ctx["tenant_id"],
+            )
+            if not vd:
+                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+            if vd["status"] != "draft":
+                raise HTTPException(status_code=400, detail="Uang muka ini sudah diposting.")
+            # Law 27: akun dari PERAN (dulu kode hardcode 1-10800 = PPN Masukan di semua tenant)
+            vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
+            bank_account = None
+            if vd["bank_account_id"]:
+                bank_account = await conn.fetchrow(
+                    "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",  # Law 24: tenant eksplisit
+                    vd["bank_account_id"], ctx["tenant_id"],
+                )
+            if not bank_account:
+                cash_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.CASH_GENERAL)
+            else:
+                cash_account = bank_account["coa_id"]
 
             # Law 5: Period check
             period_row = await conn.fetchrow(
@@ -600,8 +588,8 @@ async def apply_vendor_deposit(
 ):
     """
     Apply vendor deposit to bill - creates journal entry:
-    Dr. Hutang Usaha (2-10100)        applied_amount
-        Cr. Uang Muka Vendor (1-10800)    applied_amount
+    Dr. Hutang Usaha (peran AP_TRADE)        applied_amount
+        Cr. Uang Muka Pembelian (peran AP_PREPAID)    applied_amount
     """
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -611,62 +599,55 @@ async def apply_vendor_deposit(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        vd = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id,
-            ctx["tenant_id"],
-        )
-        if not vd:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
-
-        if vd["status"] not in ("posted", "partial"):
-            raise HTTPException(
-                status_code=400, detail="Deposit must be posted before applying"
-            )
-
-        if vd["remaining_amount"] < data.amount:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient deposit balance. Available: {vd['remaining_amount']}",
-            )
-
-        bill = await conn.fetchrow(
-            "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3",
-            data.bill_id,
-            vd["vendor_id"],
-            ctx["tenant_id"],
-        )
-        if not bill:
-            raise HTTPException(
-                status_code=400, detail="Bill not found or vendor mismatch"
-            )
-
-        if bill["status"] not in ("posted", "partial"):
-            raise HTTPException(status_code=400, detail="Bill must be posted")
-
-        bill_remaining = await get_bill_remaining_from_journal(
-            conn, ctx["tenant_id"], bill["id"]
-        )
-        if data.amount > bill_remaining:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Amount exceeds bill balance. Bill balance: {bill_remaining}",
-            )
-
-        applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-
-        # Get accounts
-        ap_account = await resolve_account_id(conn, ctx["tenant_id"], "2-10100")
-        vendor_deposit_account = await resolve_account_id(
-            conn, ctx["tenant_id"], "1-10800"
-        )
-
         async with conn.transaction():
-            # Law 13: Advisory lock
+            # Law 13: kunci SALDO bersama apply/refund/void + kunci apply; semua pemeriksaan di DALAM lock (G4: dulu di luar -> over-apply)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"VENDOR_DEPOSIT_SALDO:{deposit_id}",
+            )
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"DEPOSIT_APPLY:{deposit_id}",
             )
+            vd = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id,
+                ctx["tenant_id"],
+            )
+            if not vd:
+                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+            if vd["status"] not in ("posted", "partial"):
+                raise HTTPException(status_code=400, detail="Uang muka harus diposting dulu sebelum diterapkan.")
+            # sisa dari JURNAL (Law 1/16), bukan kolom cache remaining_amount
+            sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)
+            if Decimal(str(data.amount)) > sisa:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
+                )
+            bill = await conn.fetchrow(
+                "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3 FOR UPDATE",
+                data.bill_id,
+                vd["vendor_id"],
+                ctx["tenant_id"],
+            )
+            if not bill:
+                raise HTTPException(
+                    status_code=400, detail="Tagihan tidak ditemukan atau bukan milik vendor ini."
+                )
+            if bill["status"] not in ("posted", "partial"):
+                raise HTTPException(status_code=400, detail="Tagihan harus sudah diposting.")
+            bill_remaining = await get_bill_remaining_from_journal(
+                conn, ctx["tenant_id"], bill["id"]
+            )
+            if data.amount > bill_remaining:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Jumlah melebihi sisa tagihan. Sisa tagihan: {bill_remaining}",
+                )
+            applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+            ap_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_TRADE)
+            vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
 
             # Law 5: Period check
             period_row = await conn.fetchrow(
@@ -793,7 +774,7 @@ async def refund_vendor_deposit(
     """
     Refund vendor deposit - creates journal entry:
     Dr. Kas/Bank                      refund_amount
-        Cr. Uang Muka Vendor (1-10800)    refund_amount
+        Cr. Uang Muka Pembelian (peran AP_PREPAID)    refund_amount
     """
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -803,44 +784,39 @@ async def refund_vendor_deposit(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        vd = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id,
-            ctx["tenant_id"],
-        )
-        if not vd:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
-
-        if vd["status"] not in ("posted", "partial"):
-            raise HTTPException(status_code=400, detail="Deposit must be posted")
-
-        if vd["remaining_amount"] < data.amount:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient balance. Available: {vd['remaining_amount']}",
-            )
-
-        # Get accounts
-        vendor_deposit_account = await resolve_account_id(
-            conn, ctx["tenant_id"], "1-10800"
-        )
-
-        bank_account_coa = None
-        if data.bank_account_id:
-            bank_account_coa = await conn.fetchval(
-                "SELECT coa_id FROM bank_accounts WHERE id = $1", data.bank_account_id
-            )
-        if not bank_account_coa:
-            bank_account_coa = await resolve_account_id(
-                conn, ctx["tenant_id"], "1-10100"
-            )
-
         async with conn.transaction():
-            # Law 13: Advisory lock
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                f"VENDOR_DEPOSIT_SALDO:{deposit_id}",
+            )
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"DEPOSIT_REFUND:{deposit_id}",
             )
+            vd = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id,
+                ctx["tenant_id"],
+            )
+            if not vd:
+                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+            if vd["status"] not in ("posted", "partial"):
+                raise HTTPException(status_code=400, detail="Uang muka harus sudah diposting.")
+            sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)  # dari JURNAL (G4), bukan kolom cache
+            if Decimal(str(data.amount)) > sisa:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
+                )
+            vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
+            bank_account_coa = None
+            if data.bank_account_id:
+                bank_account_coa = await conn.fetchval(
+                    "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",  # Law 24
+                    data.bank_account_id, ctx["tenant_id"],
+                )
+            if not bank_account_coa:
+                bank_account_coa = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.CASH_GENERAL)
 
             # Law 5: Period check
             period_row = await conn.fetchrow(

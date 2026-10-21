@@ -80,6 +80,8 @@ py="$OPS/uji-nyata-pill-partisi.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/pill.out"; nilai "pill-partisi(8 modul)" $? "$LOG/pill.out"; else catat "pill-partisi" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-penawaran-void.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/penawaran-void.out"; nilai "penawaran-void" $? "$LOG/penawaran-void.out"; else catat "penawaran-void" SKIP "harness belum ada"; fi
+py="$OPS/uji-nyata-pembelian-p0.py"
+if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/pembelian-p0.out"; nilai "pembelian-p0" $? "$LOG/pembelian-p0.out"; else catat "pembelian-p0" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-paritas-detail.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru /out/par.json > "$LOG/paritas.out"; nilai "paritas-detail(4 modul)" $? "$LOG/paritas.out"; else catat "paritas-detail" SKIP "harness belum ada"; fi
 
