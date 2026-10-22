@@ -41,11 +41,9 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,  # noqa: F401
 )
-from ..utils.idempotency import (  # Law 14
-    _norm_amount,
-    build_idempotency_default,
+from ..utils.idempotency import (  # Law 14 (kunci HANYA dari klien sejak 22 Okt 2026)
     execute_idempotent,
-    get_idempotency_key,
+    kunci_idempotensi_klien,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 
@@ -1083,26 +1081,15 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # ── Law 14: kunci idempotency (server-default deterministik) ──
-                # Header X-Idempotency-Key MENIMPA default bila klien mengirim.
-                # bank_fee_amount & pph IKUT hash: dua pembayaran yang hanya beda
-                # biaya transfer adalah transaksi BERBEDA (jurnalnya berbeda).
-                idem_key = get_idempotency_key(
-                    request,
-                    build_idempotency_default(
-                        "BP",
-                        [
-                            payload.vendor_id,
-                            payload.payment_date,
-                            payload.bank_account_id,
-                            _norm_amount(payload.total_amount),
-                            _norm_amount(payload.discount_amount),
-                            _norm_amount(payload.bank_fee_amount),
-                            _norm_amount(payload.pph_amount),
-                        ],
-                        [(a.bill_id, a.amount_applied) for a in payload.allocations],
-                    ),
-                )
+                # ── Law 14: kunci idempotency = HANYA header klien (putusan pemilik LANGSUNG 22 Okt 2026, sejajar SO/SI) ──
+                # Dulu kunci SERVER-DEFAULT (vendor+tanggal+rekening+nominal+alokasi, TTL 24 jam): dua pembayaran SAH identik
+                # (mis. dua cicilan sama di hari yang sama) -> yang kedua 200 tanpa pembayaran baru (tertelan diam). Kini: tanpa
+                # header = proses biasa (dokumen sah boleh kembar); perlindungan kirim-ulang = kunci klien (FE per buka form, agen
+                # chat = pending_action_id).
+                try:
+                    idem_key = kunci_idempotensi_klien(request)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
 
                 # ── DUA lock, sengaja. LOCK cegah RACE; IDEMPOTENCY cegah DUPLIKAT. ──
                 # (1) DOMAIN lock per-vendor — LAPIS KEDUA, bukan penjaga utama.
@@ -1125,10 +1112,11 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BILL_PAYMENT_CREATE:{ctx['tenant_id']}:{payload.vendor_id}",
                 )
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"IDEM:{ctx['tenant_id']}:{idem_key}",
-                )
+                if idem_key:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"IDEM:{ctx['tenant_id']}:{idem_key}",
+                    )
 
                 # Law 14: bungkus seluruh operasi -> request kedua me-REPLAY hasil,
                 # bukan menerima error atas sesuatu yang sudah berhasil.
@@ -1456,9 +1444,10 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         },
                     }
 
+                if not idem_key:  # tanpa kunci klien = tanpa dedup (putusan pemilik 22 Okt)
+                    return {**(await _op()), "was_cached": False}
                 _res = await execute_idempotent(
-                    conn, ctx["tenant_id"], idem_key, "BILL_PAYMENT", _op,
-                    kunci_default=not request.headers.get("X-Idempotency-Key"),
+                    conn, ctx["tenant_id"], idem_key, "BILL_PAYMENT", _op, kunci_default=False,
                 )
                 return {**_res.data, "was_cached": _res.was_cached}
     except HTTPException:

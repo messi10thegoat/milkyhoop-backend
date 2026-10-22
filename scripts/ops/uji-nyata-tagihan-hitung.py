@@ -198,6 +198,23 @@ async def main():
             cek(await nbp() == sebelum + 2, "D KONTROL bayar tanpa kunci -> +1")
         else:
             cek(False, "D bayar rute lama: tak ada tagihan kaos ber-sisa / rekening (alat tak bisa menguji)")
+        # E: POST /bill-payments kunci HANYA klien (putusan pemilik 22 Okt): tanpa header 2x badan identik -> 2 pembayaran (dulu 1, tertelan);
+        #    header sama 2x -> 1 (replay). Tagihan kaos ber-sisa, posted, rekening aktif; semua di-ROLLBACK.
+        from app.routers import bill_payments as BPR
+        from app.schemas import bill_payments as SBP
+        BPR.get_pool = gp
+        if tb and ba:
+            vb = await c.fetchrow("SELECT vendor_id, vendor_name FROM bills WHERE id = $1", tb["id"])
+            bdy = SBP.CreateBillPaymentRequest(vendor_id=str(vb["vendor_id"]), vendor_name=vb["vendor_name"], payment_date=date(2026, 10, 22),
+                                               bank_account_id=str(ba), total_amount=500,
+                                               allocations=[SBP.BillAllocationInput(bill_id=str(tb["id"]), amount_applied=500)])
+            nbp0 = await nbp()
+            await BPR.create_bill_payment(req_k(None), bdy); await BPR.create_bill_payment(req_k(None), bdy)
+            cek(await nbp() == nbp0 + 2, "E /bill-payments tanpa kunci 2x badan identik -> 2 pembayaran (cicilan sah tak tertelan)", f"{nbp0} -> {await nbp()}")
+            k = str(uuid.uuid4())
+            a1 = await BPR.create_bill_payment(req_k(k), bdy); a2 = await BPR.create_bill_payment(req_k(k), bdy)
+            cek(await nbp() == nbp0 + 3 and a2.get("was_cached") is True and a1["data"]["id"] == a2["data"]["id"],
+                "E /bill-payments kunci sama 2x -> 1 pembayaran (replay)", f"{await nbp()} cached={a2.get('was_cached')}")
     finally:
         await tx.rollback(); await c.close()
     print("RINGKAS gagal=%d %s" % (len(gagal), gagal[:6])); sys.exit(1 if gagal else 0)

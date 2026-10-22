@@ -154,7 +154,8 @@ async def test_klien_dokumen_ada_isi_beda_tetap_409_dan_isi_sama_replay():
 
 def test_peta_sumber_hanya_source_type_buat_dan_tabel_literal():
     assert set(IDEM.SUMBER_BUAT) == {"RECEIVE_PAYMENT", "BILL_PAYMENT", "SALES_ORDER_CREATE", "QUOTE_CREATE",
-                                     "SI_CREATE", "PROFORMA_CREATE", "CN_CREATE", "PO_CREATE", "VD_CREATE"}
+                                     "SI_CREATE", "PROFORMA_CREATE", "CN_CREATE", "PO_CREATE", "VD_CREATE",
+                                     "BILL_CREATE", "VC_CREATE"}
     for tabel, kol, st in IDEM.SUMBER_BUAT.values():
         assert tabel.replace("_", "").isalnum() and (kol is None or kol.isidentifier())
 
@@ -162,6 +163,8 @@ def test_peta_sumber_hanya_source_type_buat_dan_tabel_literal():
 def test_tiga_jalur_default_meneruskan_kunci_default():
     import inspect
     from app.routers import receive_payments as RP, bill_payments as BP, sales_invoices as SI
-    for mod in (RP, BP):
-        assert 'kunci_default=not request.headers.get("X-Idempotency-Key")' in inspect.getsource(mod)
+    assert 'kunci_default=not request.headers.get("X-Idempotency-Key")' in inspect.getsource(RP)
+    # bill_payments: kunci HANYA klien (putusan pemilik 22 Okt 2026) -> tanpa header = tanpa dedup, tak ada kunci default
+    src = inspect.getsource(BP.create_bill_payment)
+    assert "kunci_idempotensi_klien(request)" in src and "build_idempotency_default" not in src and "kunci_default=False" in src
     assert "sumber_basi(conn" in inspect.getsource(SI.record_payment)
