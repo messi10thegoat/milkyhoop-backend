@@ -299,3 +299,31 @@ def test_idempotensi_create_terdaftar_sumber_buat():
     from app.services import idem_buat
     assert I.SUMBER_BUAT["PO_CREATE"] == ("purchase_orders", None, ())
     assert idem_buat._TABEL["purchase_orders"] == "po_number"
+
+
+# ------------------------------------------------------------------ pemulihan saat bill dihapus/void (dipanggil BACKEND)
+class KonPulih(KonSink):
+    def __init__(self, status, baris, po_ids):
+        super().__init__(status, baris)
+        self.po_ids, self.log = po_ids, []
+    async def fetch(self, sql, *a):
+        q = " ".join(sql.split())
+        if "SELECT DISTINCT i.po_id" in q: return [{"po_id": p} for p in self.po_ids]
+        return self.baris
+    async def fetchrow(self, sql, *a):
+        self.log.append(("fetchrow", " ".join(sql.split())[:80]))
+        return {"id": PID, "status": self.status}
+    async def execute(self, sql, *a):
+        self.log.append(("exec", " ".join(sql.split())[:80]))
+        return await super().execute(sql, *a)
+
+
+def test_pulihkan_tagih_mengunci_lalu_sinkron_dan_mengurutkan_po():
+    p2 = uuid.uuid4()
+    kon = KonPulih("partial_billed", _brs(("10", "10", "0")), [PID, p2])
+    ids = asyncio.run(PD.po_terkait_bill(kon, T, uuid.uuid4()))
+    assert set(ids) == {PID, p2}
+    h = asyncio.run(PD.pulihkan_tagih(kon, T, ids + [PID]))                  # duplikat dibuang
+    assert [x["po_id"] for x in h] == sorted({PID, p2}, key=str) and all(x["status"] == "received" for x in h)
+    urutan = [k for k, q in kon.log]
+    assert urutan[:2] == ["exec", "fetchrow"] and "pg_advisory_xact_lock" in kon.log[0][1] and "FOR UPDATE" in kon.log[1][1]

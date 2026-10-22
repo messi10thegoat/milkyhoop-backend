@@ -266,3 +266,22 @@ async def sinkron_tagih(conn, tenant_id: str, po_id) -> dict:
     await conn.execute("UPDATE purchase_orders SET amount_billed = $2, status = $3, updated_at = NOW() WHERE id = $1",
                        po_id, jml["amount_billed"], status)
     return {"status": status, "amount_billed": jml["amount_billed"]}
+
+
+async def po_terkait_bill(conn, tenant_id: str, bill_id) -> list:
+    """id PO yang terkait bill ini lewat bill_items.purchase_order_item_id. Panggil SEBELUM bill DIHAPUS (baris tertaut ikut hilang); untuk void cukup sesudah."""
+    return [r["po_id"] for r in await conn.fetch(
+        """SELECT DISTINCT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id
+           JOIN purchase_orders po ON po.id = i.po_id WHERE bi.bill_id = $1 AND po.tenant_id = $2""", bill_id, tenant_id)]
+
+
+async def pulihkan_tagih(conn, tenant_id: str, po_ids: list) -> list:
+    """Pemulihan qty tertagih PO sesudah bill di-void/dihapus (BACKEND memanggil dari bills.py di transaksi yang SAMA, SESUDAH bill berubah):
+    tiap PO dikunci (advisory PO:{tenant}:{id} + FOR UPDATE; urutan id menaik -> tanpa kebuntuan) lalu sinkron_tagih. -> [{po_id, status}]."""
+    hasil = []
+    for pid in sorted(set(po_ids), key=str):
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PO:{tenant_id}:{pid}")
+        await conn.fetchrow("SELECT id FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", pid, tenant_id)
+        h = await sinkron_tagih(conn, tenant_id, pid)
+        hasil.append({"po_id": pid, **h})
+    return hasil
