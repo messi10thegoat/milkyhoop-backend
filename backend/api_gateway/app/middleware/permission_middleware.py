@@ -839,7 +839,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bills/v2/[^/]+$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/activity$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/(documents|history)$", ["GET"], "purchase_invoice", "R"),
-    (r"^/api/bills/[^/]+/edit/preview$", ["POST"], "purchase_invoice", "U"),  # pratinjau ubah draf (22 Okt), izin = PATCH /bills/v2/{id}  # kontrak seragam 22 Okt 2026 (bundel + riwayat)
+    (r"^/api/bills/[^/]+/edit/preview$", ["POST"], "purchase_invoice", "U"),  # pratinjau ubah draf (22 Okt), izin = PATCH /bills/v2/{id}
     (r"^/api/bills/[^/]+/attachments$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/journals$", ["GET"], "purchase_invoice", "R"),
