@@ -2,7 +2,7 @@
 # Harness ALUR pratinjau->tulis UM Pembelian (CW penuh, 22 Okt 2026): scratch DB dari dump terbaru, lalu uji-nyata-um-pratinjau.py (kode router ASLI)
 # dalam transaksi ROLLBACK. Berat (restore dump di kontainer postgres) -> JANGAN saat window/restart/apply_mig sesi lain (slot suite).
 #   bash scripts/ops/uji-nyata-um-pratinjau.sh                  # kode pohon ini
-#   bash scripts/ops/uji-nyata-um-pratinjau.sh --kontrol-merah  # salinan pohon disabotase (lepas tanpa reversed_by_id) -> HARUS gagal
+#   bash scripts/ops/uji-nyata-um-pratinjau.sh --kontrol-merah  # salinan pohon disabotase (rencana jurnal terapkan ditukar) -> HARUS gagal
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PGC=milkyhoop-dev-postgres-1; DB=scratch_ump_$$
@@ -12,12 +12,12 @@ done
 POHON="$REPO"; SAB=""
 if [ "${1:-}" = "--kontrol-merah" ]; then
   SAB=$(mktemp -d /root/.ump-sab-XXXX); cp -a "$REPO/backend" "$SAB/backend"; POHON="$SAB"
-  python3 - "$SAB/backend/api_gateway/app/routers/vendor_deposits.py" <<'PY'
+  python3 - "$SAB/backend/api_gateway/app/services/uang_muka_vendor_rencana.py" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
-a = '"UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2 AND reversed_by_id IS NULL", rev_id, asli["id"])'
+a = '[await _baris(conn, tid, ap, jumlah, 0), await _baris(conn, tid, um, 0, jumlah)]'
 assert s.count(a) == 1, "pola sabotase tak ditemukan"
-s = s.replace(a, '"SELECT $1::uuid, $2::uuid", rev_id, asli["id"])').replace('if ditandai != "UPDATE 1":', 'if False:')
+s = s.replace(a, '[await _baris(conn, tid, ap, 0, jumlah), await _baris(conn, tid, um, jumlah, 0)]')  # rencana terapkan != tulisan
 open(p, "w").write(s)
 PY
 fi
