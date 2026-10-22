@@ -68,3 +68,32 @@ bukan penjualan. Widget wajib memberi catatan metode per tenant (perpetual vs pe
 4. Laba kotor non-stok = biaya beli periodik — catatan metode / putusan tampilan.
 5. Margin per barang tak tersedia untuk non-stok; untuk ber-stok via ledger.
 6. Ember aging: konfirmasi "lewat jatuh tempo" (fungsi yang ada) vs "umur dokumen".
+
+## 7. Putusan MASTER 22 Okt: ember aging
+Lewat jatuh tempo, pola QBO/NetSuite/Xero: **Belum jatuh tempo (Current) / 1–30 / 31–60 / 61–90 / >90**. Current TERPISAH dari 1–30.
+Fungsi yang ada dipakai; ember dipetakan di lapisan respons (>90 = 91–120 + 120+).
+
+## 8. Akar selisih persediaan kaos Rp 47.994 (ledger − GL), baca-saja, TANPA koreksi data
+Rekonsiliasi per jenis sumber (ledger Σ qty×biaya vs GL akun 1-10600; semua produk ber-stok kaos memakai 1-10600):
+cocok tepat untuk INVOICE_FULFILLMENT (−9.391.921), *_VOID/REVERSAL (+605.000), MATERIAL_ISSUE (−6.318.530), DELIVERY_NOTE ±110.000,
+STOCK_ADJUSTMENT/CREDIT_NOTE (net 0). PRODUCTION_OUTPUT: GL +10.704.958 vs ledger +5.244.990 — selisih 5.459.968 diimbangi PERSIS oleh
+jurnal MANUAL −5.459.968 (koreksi lama) → net cocok. Sisa selisih = dua akar:
+
+| akar | ledger | GL | ledger − GL | contoh |
+|---|---|---|---|---|
+| A. Saldo awal stok TANPA jurnal | +128.000 | 0 | **+128.000** | `inventory_ledger` OPENING_BALANCE 2026-09-04 "Cotton Combed Maroon 20s" 1 × 128.000, `journal_id` NULL, `source_id` menunjuk ketiadaan |
+| B. Tagihan mendebit Persediaan TANPA gerak stok | 0 | +80.006 | **−80.006** | BILL-2609-0008 "maklun uji" (baris tanpa produk) 50.000 · ZSEARCHBILL-1/2/3 (baris total 0, header didebit ke Persediaan) 10.001 + 10.002 + 10.003 · ZDRAFTBILL-1 5.001 (void → REV-2609-0005 −5.001, net 0) |
+| **jumlah** | | | **+47.994** ✓ | |
+
+- **A** = cacat jalur LAMA yang SUDAH diperbaiki ke depan (cc3e6efb 10 Okt + c78e2f44 11 Okt, `services/saldo_awal_stok`: saldo awal stok kini
+  berjurnal Dr Persediaan / Cr Modal Saldo Awal, atau ditolak bila usaha sudah berjalan — Law 28). Baris kaos 2026-09-04 tertinggal (disebut
+  di docstring modul). Koreksi = putusan pemilik (jurnal penyesuaian Dr Persediaan / Cr ekuitas saldo awal, atau penyesuaian stok) — TIDAK dilakukan.
+- **B** = baris tagihan TANPA produk ber-stok (deskripsi bebas / total 0) didebit ke peran INVENTORY_MERCHANDISE bawaan (bills_service, berkas
+  BACKEND), sehingga GL Persediaan naik tanpa kartu stok. Kelas yang sama dengan grapgrap (4.667.990) yang sudah direklas
+  (`RECLASSIFY_BILL_INVENTORY`). Tiga dari empat tagihan = data uji (awalan Z, 2026-09-02). Ke depan: penjaga "baris tanpa barang ber-stok
+  tak boleh mendebit Persediaan" (tiket BACKEND); data lama = reklas dengan izin pemilik — TIDAK dilakukan.
+
+## 9. Tiket bermigrasi
+- `get_ap_aging_detail` + `get_ap_aging_vendor` (DB): kolom HANTU `bills.bill_date` (+ cache `total_amount`/`paid_amount`) → galat. Rute
+  `GET /reports/ap-aging/detail` diparkir. Perbaikan = `CREATE OR REPLACE` di atas `compute_ap_outstanding` (kembar `ar_aging_open_invoices` +
+  `get_ar_aging_detail`), migrasi + izin pemilik, sebelum widget AP per vendor.
