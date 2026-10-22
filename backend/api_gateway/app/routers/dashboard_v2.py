@@ -93,10 +93,18 @@ async def tugas(request: Request):
         async with pool.acquire() as c:
             return await dv2.tugas_tenant(c, tenant_id, hari_ini)
 
+    async def hitung_pengingat():
+        from ..services import pengingat as P
+        async with pool.acquire() as c:
+            return await P.hitung(c, tenant_id, hari_ini)
+
     semua = await cached_fetch(f"dashboard:v2tasks:{tenant_id}:{hari_ini.isoformat()}",
                                hitung, ttl=CACHE_DETIK, stale_ttl=CACHE_DETIK)
+    pengingat = await cached_fetch(f"dashboard:v2pengingat:{tenant_id}:{hari_ini.isoformat()}",
+                                   hitung_pengingat, ttl=CACHE_DETIK, stale_ttl=CACHE_DETIK)
     boleh = [t for t in semua if await boleh_semua(request, dv2.TUGAS_MODUL[t["type"]])]
-    return dv2.rangkum_tugas(boleh, dismissed, done_today, as_of)
+    boleh_p = [p for p in pengingat if await boleh_semua(request, (p["izin"],))]  # tanpa izin modul = tak dikirim (pola tasks)
+    return dv2.rangkum_tugas(boleh, dismissed, done_today, as_of, boleh_p)
 
 
 def _kunci_sah(key: str) -> str:

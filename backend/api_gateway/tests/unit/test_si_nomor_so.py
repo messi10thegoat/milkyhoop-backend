@@ -83,6 +83,8 @@ class DB:
         self.rows, self.sql, self.args = rows, [], []
 
     async def fetchval(self, sql, *a):
+        if "pengingat_segera_hari" in sql:  # 22 Okt: ambang N tenant (pengingat.ambang_segera) -> bawaan 7, tak direkam
+            return None
         self.sql.append(sql)
         self.args.append(a)
         return len(self.rows)

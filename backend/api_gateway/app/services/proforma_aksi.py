@@ -3,7 +3,7 @@
 
   perlu_diterbitkan = status draft
   menunggu_bayar    = terbit, SO tidak batal, terbayar < nominal, jatuh tempo kosong ATAU > hari ini + 3
-  segera_tempo      = terbit, SO tidak batal, terbayar < nominal, hari ini <= jatuh tempo <= hari ini + 3
+  segera_tempo      = terbit, SO tidak batal, terbayar < nominal, hari ini <= jatuh tempo <= hari ini + N (pengingat.ambang_segera; bawaan 7, dulu 3)
   lewat_tempo       = terbit, SO tidak batal, terbayar < nominal, jatuh tempo < hari ini
   (lunas / batal / kedaluwarsa / terbit pada SO batal = bukan aksi)
 
@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-AMBANG_SEGERA_TEMPO = 3
+AMBANG_SEGERA_TEMPO = 7  # bawaan == pengingat.AMBANG_BAWAAN; nilai tenant = pengingat.ambang_segera
 AKSI = ("perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo")
 TOLERANSI_LUNAS = Decimal("0.005")
 

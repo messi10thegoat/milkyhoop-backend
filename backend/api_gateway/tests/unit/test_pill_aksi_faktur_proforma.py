@@ -45,7 +45,7 @@ HR = lambda n: H + timedelta(days=n)  # noqa: E731
     ("void", None, None, HR(-60), None),
 ])
 def test_aturan_aksi_faktur(status, sisa, due, tgl, harap):
-    assert FA.aksi_faktur(status, sisa, due, tgl, H) == harap
+    assert FA.aksi_faktur(status, sisa, due, tgl, H, 3) == harap  # aturan diuji pada ambang 3 (eksplisit); bawaan tenant = 7
 
 
 def test_jatuh_tempo_efektif_satu_helper():
@@ -55,9 +55,11 @@ def test_jatuh_tempo_efektif_satu_helper():
     assert FA.SQL_JATUH_TEMPO_EFEKTIF == "COALESCE(si.due_date, si.invoice_date)"
 
 
-def test_ambang_bawaan_tiga_dan_bisa_diganti():
-    assert FA.AMBANG_SEGERA_TEMPO == 3
-    assert FA.aksi_faktur("posted", 1, HR(5), HR(-1), H, ambang=7) == "segera_tempo"
+def test_ambang_bawaan_tujuh_dan_bisa_diganti():
+    # 22 Okt 2026 (putusan pemilik LANGSUNG): SATU definisi "segera" = N hari tenant, bawaan 7 (dulu 3)
+    assert FA.AMBANG_SEGERA_TEMPO == PA.AMBANG_SEGERA_TEMPO == 7
+    assert FA.aksi_faktur("posted", 1, HR(5), HR(-1), H) == "segera_tempo"
+    assert FA.aksi_faktur("posted", 1, HR(5), HR(-1), H, ambang=3) == "belum_lunas"
 
 
 def test_kunci_faktur_saling_eksklusif_dan_gabungan_tiga_sama_dengan_pilih_belum_lunas():
@@ -144,6 +146,10 @@ class Conn:
         self._cek(sql, a)
         self.kueri.append((sql, a))
         return {k: 0 for k in re.findall(r"\bas (\w+)", sql, flags=re.I)}
+
+    async def fetchval(self, sql, *a):  # 22 Okt: pengingat.ambang_segera -> tanpa baris pengaturan = bawaan 7
+        assert "pengingat_segera_hari" in sql
+        return None
 
 
 class Pool:
@@ -241,7 +247,7 @@ def test_skema_ringkasan_mendeklarasikan_medan_payung():  # response_model membu
     ("issued", None, False, HR(-1), "lewat_tempo"),                # SO tak terbaca (LEFT JOIN) tak dianggap batal
 ])
 def test_aturan_aksi_proforma(status, so, lunas, due, harap):
-    assert PA.aksi_proforma(status, so, lunas, due, H) == harap
+    assert PA.aksi_proforma(status, so, lunas, due, H, 3) == harap  # aturan diuji pada ambang 3 (eksplisit); bawaan tenant = 7
 
 
 def test_proforma_tak_punya_kunci_perlu_dikonversi_dan_berlaku():
@@ -279,7 +285,7 @@ async def test_pemilih_semua_proforma_sama_dengan_aturan_per_baris(monkeypatch):
     async def tb(conn, tid, so_ids):
         return {r_["id"]: {"paid": pembayaran.get(r_["id"], Decimal("0")), "paid_breakdown": {}} for r_ in rows}
     monkeypatch.setattr(PR, "terbayar_proforma", tb)
-    hasil = await PR.aksi_semua_proforma(_Rows(rows), TENANT, H)
+    hasil = await PR.aksi_semua_proforma(_Rows(rows), TENANT, H, ambang=3)
     assert {k: v[0] for k, v in hasil.items()} == {
         "p1": "perlu_diterbitkan", "p2": "lewat_tempo", "p3": "segera_tempo", "p5": "menunggu_bayar"}
     assert hasil["p1"][1] == Decimal("100")      # draf = nominal
@@ -287,7 +293,7 @@ async def test_pemilih_semua_proforma_sama_dengan_aturan_per_baris(monkeypatch):
     # aturan per baris yang dipakai daftar = fungsi murni yang SAMA
     for x in rows:
         lunas = PA.proforma_lunas(x["amount"], pembayaran.get(x["id"], 0))
-        a = PA.aksi_proforma(x["status"], x["so_status"], lunas, x["due_date"], H)
+        a = PA.aksi_proforma(x["status"], x["so_status"], lunas, x["due_date"], H, 3)
         assert (hasil.get(x["id"]) or (None,))[0] == a, x["id"]
 
 

@@ -408,10 +408,12 @@ async def list_proformas(
                 params.append(await id_terbit_belum_lunas(conn, ctx["tenant_id"]))
                 idx += 1
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            from ..services.pengingat import ambang_segera
+            _ambang = await ambang_segera(conn, ctx["tenant_id"])  # SATU definisi "segera" (N hari tenant)
             if aksi in _pa.AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
                 extras.append(f"p.id = ANY(${idx}::uuid[])")
                 params.append([pid for pid, (k, _) in
-                               (await aksi_semua_proforma(conn, ctx["tenant_id"], hari_ini)).items() if k == aksi])
+                               (await aksi_semua_proforma(conn, ctx["tenant_id"], hari_ini, ambang=_ambang)).items() if k == aksi])
                 idx += 1
             if customer_id:
                 extras.append(f"p.customer_id = ${idx}::uuid")
@@ -467,7 +469,7 @@ async def list_proformas(
             _kel = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": r["id"], "sales_order_id": r["sales_order_id"]} for r in rows])
             for it, r in zip(items, rows):
                 _lunas = _pa.proforma_lunas(r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0)
-                it["aksi"] = _pa.aksi_proforma(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini)
+                it["aksi"] = _pa.aksi_proforma(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini, _ambang)
                 # 21 Okt 2026 (PENJUALAN-SERAGAM): keadaan jatuh tempo + documents[] (bundel tanpa rekap, satu definisi)
                 it.update(_pd.jatuh_tempo_fakta(r["status"], r["so_status"], _lunas, r["due_date"], hari_ini))
                 it["position_text"] = _pd.position_text(r["status"], r["amount"], tb[r["id"]]["paid"] if r["id"] in tb else 0)
@@ -511,11 +513,14 @@ async def kelas_bayar_terbit(conn, tid: str, rows) -> dict:
     return hasil
 
 
-async def aksi_semua_proforma(conn, tid: str, hari_ini, cari=None) -> dict:
+async def aksi_semua_proforma(conn, tid: str, hari_ini, cari=None, ambang=None) -> dict:
     """{id proforma: (kunci aksi, nilai Decimal)} untuk SEMUA proforma tenant yang punya aksi -- SATU pemilih untuk
     ?aksi= daftar DAN /summary (14 Okt 2026). Nilai: draf = nominal, terbit = SISA (nominal - terbayar). lunas =
     kelas_bayar_terbit (rumus tunggal proforma_lunas)."""
     pred, par = cari if cari else (None, [])  # 21 Okt 2026: ?search= /summary (predikat daftar _syarat_cari)
+    if ambang is None:  # 22 Okt 2026: SATU definisi "segera" = N hari tenant (pengingat.ambang_segera)
+        from ..services.pengingat import ambang_segera
+        ambang = await ambang_segera(conn, tid)
     rows = await conn.fetch(
         """SELECT p.id, p.sales_order_id, p.status, p.amount, p.due_date, so.status AS so_status
              FROM proformas p LEFT JOIN sales_orders so ON so.id = p.sales_order_id AND so.tenant_id = p.tenant_id
@@ -528,7 +533,7 @@ async def aksi_semua_proforma(conn, tid: str, hari_ini, cari=None) -> dict:
             lunas, nilai = k == "lunas", max(Decimal("0"), nominal - bayar)
         else:
             lunas, nilai = False, Decimal(str(r["amount"] or 0))
-        a = _pa.aksi_proforma(r["status"], r["so_status"], lunas, r["due_date"], hari_ini)
+        a = _pa.aksi_proforma(r["status"], r["so_status"], lunas, r["due_date"], hari_ini, ambang)
         if a:
             hasil[r["id"]] = (a, nilai)
     return hasil
@@ -643,7 +648,9 @@ async def get_proforma_detail(request: Request, proforma_id: str):
             data.update(_pd.jatuh_tempo_fakta(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d))
             data["position_text"] = _pd.position_text(row["status"], row["amount"], paid)
             # paritas detail == baris daftar (21 Okt 2026): aksi + documents[]/doc_count dari fungsi SAMA dgn daftar
-            data["aksi"] = _pa.aksi_proforma(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d)
+            from ..services.pengingat import ambang_segera as _ambang_segera_d
+            data["aksi"] = _pa.aksi_proforma(row["status"], row["so_status"], _lunas_d, row["due_date"], _hari_d,
+                                             await _ambang_segera_d(conn, ctx["tenant_id"]))
             _kel_d = await _pd.kelompok_untuk(conn, ctx["tenant_id"], [{"id": row["id"], "sales_order_id": row["sales_order_id"]}])
             data["documents"] = _pd.documents_baris(_kel_d.get(row["id"], []))
             data["doc_count"] = len(data["documents"])

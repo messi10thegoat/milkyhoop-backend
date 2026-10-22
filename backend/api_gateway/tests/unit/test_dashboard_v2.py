@@ -486,6 +486,9 @@ async def test_rute_tugas_saring_izin_dan_dismiss_per_pengguna(monkeypatch):
         return H
 
     async def _cache(key, fn, ttl, stale_ttl):
+        if key.startswith("dashboard:v2pengingat:"):  # 22 Okt: pengingat satu sumber (cache sendiri)
+            assert key == "dashboard:v2pengingat:t:2026-09-28" and ttl == 60
+            return []
         assert key == "dashboard:v2tasks:t:2026-09-28" and ttl == 60
         return json.loads(json.dumps(tugas))
 

@@ -5,8 +5,10 @@ Python `aksi_faktur` dan SQL `sql_aksi` WAJIB setara (diuji berpasangan + harnes
 
   perlu_diterbitkan = status draft
   jatuh_tempo       = terbit, sisa > 0, jatuh tempo EFEKTIF < hari ini
-  segera_tempo      = terbit, sisa > 0, hari ini <= jatuh tempo efektif <= hari ini + 3
-  belum_lunas       = terbit, sisa > 0, jatuh tempo efektif > hari ini + 3
+  segera_tempo      = terbit, sisa > 0, hari ini <= jatuh tempo efektif <= hari ini + N
+  belum_lunas       = terbit, sisa > 0, jatuh tempo efektif > hari ini + N
+  N = pengingat.ambang_segera (accounting_settings.pengingat_segera_hari, V450; bawaan 7) -- SATU definisi "segera jatuh tempo"
+  (putusan pemilik LANGSUNG 22 Okt; dulu 3 hari)
   (lunas / void = bukan aksi)
 
 Sisa = compute_ar_outstanding (turunan jurnal, Iron Law 1/16/29) -- SATU sumber dengan ?tugas=belum_lunas /
@@ -20,7 +22,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-AMBANG_SEGERA_TEMPO = 3  # hari; bawaan, kelak bisa diatur per tenant
+AMBANG_SEGERA_TEMPO = 7  # bawaan == pengingat.AMBANG_BAWAAN; nilai tenant = pengingat.ambang_segera (pemanggil WAJIB meneruskannya)
 AKSI = ("perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo")
 
 SQL_JATUH_TEMPO_EFEKTIF = "COALESCE(si.due_date, si.invoice_date)"
@@ -77,3 +79,18 @@ def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date, ambang: int = AMBAN
 def sql_nilai(aksi: str) -> str:
     """Kolom nilai ringkasan (query ber-JOIN ar_fn): draf = total_amount, terbit = SISA tagihan journal-derived."""
     return "si.total_amount" if aksi == "perlu_diterbitkan" else "ar_fn.outstanding"
+
+
+async def ringkas_aksi(conn, tenant_id: str, hari_ini: date, ambang: int, id_cari=None) -> dict:
+    """{kunci: {count, amount Decimal}} per AKSI -- SATU sumber /sales-invoices/summary DAN pengingat dashboard (22 Okt 2026).
+    Nilai: draf = total, terbit = SISA (compute_ar_outstanding)."""
+    row = await conn.fetchrow(
+        "WITH ar_fn AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding($1)) SELECT "
+        + ", ".join(
+            f"COUNT(*) FILTER (WHERE {sql_aksi(k, '$2', '$3', SQL_SISA_POSITIF_JOIN)}) AS {k}_count, "
+            f"COALESCE(SUM({sql_nilai(k)}) FILTER (WHERE {sql_aksi(k, '$2', '$3', SQL_SISA_POSITIF_JOIN)}), 0) AS {k}_value"
+            for k in AKSI)
+        + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1"
+        + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
+        tenant_id, hari_ini, ambang, *([] if id_cari is None else [id_cari]))
+    return {k: {"count": int(row[f"{k}_count"]), "amount": Decimal(str(row[f"{k}_value"]))} for k in AKSI}

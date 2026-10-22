@@ -27,13 +27,13 @@ def test_kembaran_python(hari, due, terbuka, harap):
     assert FD.jatuh_tempo_minggu_ini(terbuka, due, hari) is harap
 
 
-def test_predikat_sql_satu_sumber_dengan_terbuka():
-    p = SI._syarat_minggu_ini("$7", "$8")
-    assert SI._STATUS_TERBUKA_AR in p and SI._SISA_AR_POSITIF in p
-    assert "si.due_date >= $7::date" in p and "si.due_date <= $8::date" in p
+def test_chip_minggu_ini_usang_alias_segera_tempo():
+    """22 Okt 2026 (KONTRAK-dashboard-pengingat §7, putusan pemilik): SATU definisi "segera" = N hari tenant. ?aksi=jatuh_tempo_minggu_ini
+    dan summary jatuh_tempo_minggu_ini_* = ALIAS USANG segera_tempo (dipertahankan sampai FE T1 terverifikasi); predikat akhir-minggu dicabut."""
     daftar, ringkas = inspect.getsource(SI.list_invoices), inspect.getsource(SI.get_invoice_summary)
-    assert "_syarat_minggu_ini(" in daftar and "_syarat_minggu_ini(" in ringkas
-    assert daftar.count("akhir_minggu(hari_ini)") >= 1 and ringkas.count("akhir_minggu(hari_ini)") >= 1
+    assert "if aksi == AKSI_MINGGU_INI" in daftar and 'aksi = "segera_tempo"' in daftar
+    assert 'aksi_row["segera_tempo_count"]' in ringkas and 'aksi_row["segera_tempo_value"]' in ringkas
+    assert "_syarat_minggu_ini(" not in daftar and "_syarat_minggu_ini(" not in ringkas
 
 
 def test_kontrak_medan():

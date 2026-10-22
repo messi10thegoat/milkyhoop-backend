@@ -403,24 +403,11 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
                 row = await conn.fetchrow(
                     query.format(cari_ar="WHERE invoice_id IS NULL OR invoice_id = ANY($3::uuid[])",
                                  cari_si="AND id = ANY($3::uuid[])"), ctx["tenant_id"], hari_ini, id_cari)
-            # 14 Okt 2026: pill AKSI (services/faktur_aksi.sql_aksi, SAMA dengan ?aksi= daftar; sisa = compute_ar_outstanding)
-            aksi_row = await conn.fetchrow(
-                "WITH ar_fn AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding($1)) SELECT "
-                + ", ".join(
-                    f"COUNT(*) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}) AS {k}_count, "
-                    f"COALESCE(SUM({_fa.sql_nilai(k)}) FILTER (WHERE {_fa.sql_aksi(k, '$2', '$3', _fa.SQL_SISA_POSITIF_JOIN)}), 0) AS {k}_value"
-                    for k in _fa.AKSI)
-                + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1"
-                + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
-                ctx["tenant_id"], hari_ini, _fa.AMBANG_SEGERA_TEMPO, *([] if id_cari is None else [id_cari]))
-            # 16 Okt 2026 (listpage P3): chip "Jatuh tempo minggu ini" -- predikat SAMA dengan ?aksi=jatuh_tempo_minggu_ini
-            from ..services.dashboard_v2 import akhir_minggu
-            mg = await conn.fetchrow(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(ar_fn.outstanding), 0) AS v FROM sales_invoices si "
-                "LEFT JOIN compute_ar_outstanding($1) ar_fn ON ar_fn.invoice_id = si.id "
-                f"WHERE si.tenant_id = $1 AND {_syarat_minggu_ini('$2', '$3')}"
-                + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
-                ctx["tenant_id"], hari_ini, akhir_minggu(hari_ini), *([] if id_cari is None else [id_cari]))
+            # 14 Okt 2026: pill AKSI (services/faktur_aksi.sql_aksi, SAMA dengan ?aksi= daftar; sisa = compute_ar_outstanding).
+            # 22 Okt 2026: SATU fungsi dgn pengingat dashboard (faktur_aksi.ringkas_aksi) + ambang N tenant (pengingat.ambang_segera).
+            from ..services.pengingat import ambang_segera
+            _ra = await _fa.ringkas_aksi(conn, ctx["tenant_id"], hari_ini, await ambang_segera(conn, ctx["tenant_id"]), id_cari)
+            aksi_row = {f"{k}_{m}": (v["count"] if m == "count" else v["amount"]) for k, v in _ra.items() for m in ("count", "value")}
 
             return {
                 "success": True,
@@ -442,8 +429,9 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
                     "kredit_nota_belum_terpakai_value": float(row["kredit_value"]),
                     **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
                        for k in _fa.AKSI for m in ("count", "value")},
-                    "jatuh_tempo_minggu_ini_count": int(mg["n"]),
-                    "jatuh_tempo_minggu_ini_value": float(mg["v"]),  # Σ sisa (compute_ar_outstanding)
+                    # USANG (alias segera_tempo, KONTRAK-dashboard-pengingat §7): dipertahankan sampai FE T1 terverifikasi
+                    "jatuh_tempo_minggu_ini_count": int(aksi_row["segera_tempo_count"]),
+                    "jatuh_tempo_minggu_ini_value": float(aksi_row["segera_tempo_value"]),
                 },
             }
 
@@ -1213,16 +1201,15 @@ async def list_invoices(
                 params.append(await id_tugas(conn, ctx["tenant_id"], tugas, hari_ini))
                 param_idx += 1
 
+            from ..services.pengingat import ambang_segera
+            _ambang = await ambang_segera(conn, ctx["tenant_id"])  # SATU definisi "segera" (N hari tenant, bawaan 7)
+            if aksi == AKSI_MINGGU_INI:  # USANG: alias segera_tempo (KONTRAK-dashboard-pengingat §7) sampai FE T1 terverifikasi
+                aksi = "segera_tempo"
             if aksi in _fa.AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
-                _pred, _par = _fa.sql_aksi_berparam(aksi, param_idx, hari_ini)
+                _pred, _par = _fa.sql_aksi_berparam(aksi, param_idx, hari_ini, _ambang)
                 conditions.append(_pred)
                 params.extend(_par)
                 param_idx += len(_par)
-            elif aksi == AKSI_MINGGU_INI:  # chip listpage P3; predikat SATU sumber dengan /summary
-                from ..services.dashboard_v2 import akhir_minggu
-                conditions.append(_syarat_minggu_ini(f"${param_idx}", f"${param_idx + 1}"))
-                params.extend([hari_ini, akhir_minggu(hari_ini)])
-                param_idx += 2
 
             if customer_id:
                 # sales_invoices.customer_id = UUID (terverifikasi [SQL] 2026-08-09).
@@ -1346,11 +1333,12 @@ async def list_invoices(
                     "sales_order_number": row["sales_order_number"],
                     "is_overdue": bool(row["is_overdue"]),
                     "outstanding_amount": None if row.get("sisa_faktur") is None else f"{Decimal(str(row['sisa_faktur'])):.2f}",
-                    "aksi": _fa.aksi_faktur(row["status"], row.get("sisa_faktur"), row["due_date"], row["invoice_date"], hari_ini),
+                    "aksi": _fa.aksi_faktur(row["status"], row.get("sisa_faktur"), row["due_date"], row["invoice_date"], hari_ini, _ambang),
                     # LISTPAGE-DATA (16 Okt 2026): FE hanya memformat; is_overdue == terbuka AND hari < 0
                     "jatuh_tempo_terbuka": bool(row["jt_terbuka"]),
                     "jatuh_tempo_hari": _fd.jatuh_tempo_hari(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
-                    "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(bool(row["jt_terbuka"]), row["due_date"], hari_ini),
+                    # USANG: alias segera_tempo (satu definisi N hari)
+                    "jatuh_tempo_minggu_ini": _fa.aksi_faktur(row["status"], row.get("sisa_faktur"), row["due_date"], row["invoice_date"], hari_ini, _ambang) == "segera_tempo",
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(row["status"], bool(row["jt_terbuka"]), row["due_date"], hari_ini),
                     "documents": dok_faktur.get(row["id"], _fd.dokumen_faktur(0, 0)),
                     "position_text": _fd.posisi_faktur(row["status"], row["total_amount"], row.get("sisa_faktur")),
@@ -1524,6 +1512,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # Detail == daftar (26 Sep 2026): SATU aturan jatuh tempo (_syarat_jatuh_tempo, Q-014) di tanggal BISNIS
             # tenant — FE tak lagi menghitung dari tanggal klien di header detail.
             _hari_jt = await tanggal_dokumen(conn, ctx["tenant_id"])
+            from ..services.pengingat import ambang_segera as _ambang_segera_d
+            _ambang_d = await _ambang_segera_d(conn, ctx["tenant_id"])  # SATU definisi "segera" (paritas detail == baris)
             _jt_row = await conn.fetchrow(
                 f"SELECT {_syarat_jatuh_tempo('$3')} AS jt, {_syarat_terbuka_ar()} AS terbuka"
                 " FROM sales_invoices si WHERE si.id = $2 AND si.tenant_id = $1",
@@ -1553,10 +1543,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "due_date": invoice["due_date"].isoformat(),
                     "is_overdue": _jt,
                     "overdue_days": hari_terlambat(_jt, invoice["due_date"], _hari_jt),
-                    "aksi": _fa.aksi_faktur(invoice["status"], _sisa_daftar, invoice["due_date"], invoice["invoice_date"], _hari_jt),
+                    "aksi": _fa.aksi_faktur(invoice["status"], _sisa_daftar, invoice["due_date"], invoice["invoice_date"], _hari_jt, _ambang_d),
                     "jatuh_tempo_terbuka": _terbuka,
                     "jatuh_tempo_hari": _fd.jatuh_tempo_hari(_terbuka, invoice["due_date"], _hari_jt),
-                    "jatuh_tempo_minggu_ini": _fd.jatuh_tempo_minggu_ini(_terbuka, invoice["due_date"], _hari_jt),
+                    "jatuh_tempo_minggu_ini": _fa.aksi_faktur(invoice["status"], _sisa_daftar, invoice["due_date"], invoice["invoice_date"], _hari_jt, _ambang_d) == "segera_tempo",  # USANG: alias segera_tempo
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(invoice["status"], _terbuka, invoice["due_date"], _hari_jt),
                     "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar),
                     # PARITAS detail == baris (21 Okt 2026): format SAMA dengan baris daftar (string 2 desimal / null)

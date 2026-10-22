@@ -42,7 +42,9 @@ def _sumber(fn):
 
 def test_detail_dan_daftar_satu_sumber():
     d, l = _sumber(SI.get_invoice), _sumber(SI.list_invoices)
-    for f in ("_fd.posisi_faktur(", "_fd.jatuh_tempo_hari(", "_fd.jatuh_tempo_minggu_ini(", "_fd.jatuh_tempo_keadaan(",
+    # 22 Okt: jatuh_tempo_minggu_ini = alias USANG segera_tempo (aksi_faktur dgn ambang N) -- KONTRAK-dashboard-pengingat §7
+    assert "_ambang_d) == \"segera_tempo\"" in d and "_ambang) == \"segera_tempo\"" in l
+    for f in ("_fd.posisi_faktur(", "_fd.jatuh_tempo_hari(", "_fd.jatuh_tempo_keadaan(",
               "_fa.aksi_faktur(", "_fd.dokumen_per_faktur("):
         assert f in d and f in l, f
     for k in ('"position_text"', '"jatuh_tempo_terbuka"', '"jatuh_tempo_hari"', '"jatuh_tempo_minggu_ini"',

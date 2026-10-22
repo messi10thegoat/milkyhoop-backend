@@ -443,7 +443,9 @@ TUGAS_MODUL = {
     "bank_recon": ("kas_bank",),
 }
 JENIS_TUGAS = tuple(TUGAS_MODUL)
-POLA_KUNCI = re.compile(r"^(%s):[^\s]{1,280}$" % "|".join(JENIS_TUGAS))
+# 22 Okt 2026: kunci pengingat (services/pengingat, "{modul}:{kunci_aksi}:{count}:{amount}") juga bisa di-dismiss
+from .pengingat import MODUL_DAFTAR as _MODUL_PENGINGAT  # noqa: E402
+POLA_KUNCI = re.compile(r"^(%s):[^\s]{1,280}$" % "|".join(JENIS_TUGAS + _MODUL_PENGINGAT))
 
 
 def _pesan_wa(nama, nomor_faktur, sisa, due, hari_ini, rekening, usaha) -> str:
@@ -855,8 +857,12 @@ async def tugas_tenant(conn, tenant_id: str, hari_ini: date) -> list:
     )
 
 
-def rangkum_tugas(tugas: List[dict], dismissed: set, done_today: int, as_of: str) -> dict:
+def rangkum_tugas(tugas: List[dict], dismissed: set, done_today: int, as_of: str, pengingat: Optional[List[dict]] = None) -> dict:
+    """tasks + sum_now = USANG (KONTRAK-dashboard-pengingat §3/§7, dipertahankan selama transisi FE); reminders + sum_in/sum_out =
+    SATU sumber (services/pengingat, predikat ?aksi daftar). reminders/sum_in/sum_out/pengingat_versi SELALU ada."""
+    from . import pengingat as P
     aktif = [t for t in tugas if t["key"] not in dismissed]
     sum_now = sum((d(t["amount"]) for t in aktif if t["lane"] == "now" and t["amount"]), NOL)
     return {"as_of": as_of, "sum_now": uang(sum_now), "done_today": done_today,
-            "total_today": done_today + len(aktif), "tasks": aktif}
+            "total_today": done_today + len(aktif), "tasks": aktif,
+            **P.rangkum([x for x in (pengingat or []) if x["key"] not in dismissed])}
