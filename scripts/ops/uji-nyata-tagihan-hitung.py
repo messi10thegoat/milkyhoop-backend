@@ -72,7 +72,7 @@ async def main():
                     beda += 1
                     contoh.append((b["invoice_number"], str(D(b["grand_total"])), str(D(h["akhir"]["grand_total"])), str(D(b["tax_amount"])),
                                    str(D(h["akhir"]["tax_amount"])), "PO" if b["purchase_order_id"] else ""))
-            print(f"INFO A {t}: {n} tagihan ber-baris dihitung ulang, beda dari tersimpan = {beda} {contoh[:8]}", flush=True)
+            print(f"LAPOR A {t}: {n} tagihan ber-baris dihitung ulang, beda dari tersimpan = {beda} {contoh[:8]}", flush=True)
 
         # ---------------- B: sintetis kaos
         T = "kaos-biru-konveksi"
@@ -99,8 +99,13 @@ async def main():
             bid = uuid.UUID(cr["data"]["id"]) if cr.get("success") else None
             b = await c.fetchrow("SELECT * FROM bills WHERE id = $1", bid) if bid else None
             its = await c.fetch("SELECT * FROM bill_items WHERE bill_id = $1 ORDER BY line_number", bid) if bid else []
-            ok = bool(b) and d["ok"] and all(D(d[k]) == D(b[k]) for k in ("subtotal", "item_discount_total", "invoice_discount_total",
-                                                                       "cash_discount_total", "dpp", "tax_amount", "grand_total"))
+            beda_k = [(k, d[k], b[k]) for k in ("subtotal", "item_discount_total", "invoice_discount_total", "cash_discount_total", "dpp",
+                                                "tax_amount", "grand_total") if b and (D(d[k]) != D(b[k]) if k != "dpp"
+                      # bills.dpp = BIGINT (kolom tersimpan membulatkan ke rupiah; tiket) -> banding pada presisi kolom
+                      else D(d[k]).quantize(Decimal("1")) != D(b[k]))]
+            if b and beda_k:
+                print(f"LAPOR {nama}: beda kepala {beda_k}", flush=True)
+            ok = bool(b) and d["ok"] and not beda_k
             ok = ok and len(its) == len(d["items"]) and all(D(x["ppn"]) == D(i["tax_amount"]) and D(x["dpp"]) == D(i["dpp"]) and D(x["total"]) == D(i["total"])
                                                            for x, i in zip(d["items"], its))
             ok = ok and hasil["calculation"]["grand_total"] == d["grand_total"]
@@ -110,7 +115,7 @@ async def main():
                 lama = BS.BillCalculator.calculate(items=body.model_dump()["items"], invoice_discount_percent=body.invoice_discount_percent,
                                                    invoice_discount_amount=body.invoice_discount_amount, cash_discount_percent=body.cash_discount_percent,
                                                    cash_discount_amount=body.cash_discount_amount, tax_rate=body.tax_rate, dpp_manual=body.dpp_manual, dpp_factor=f)
-                print(f"INFO {nama}: /calculate LAMA grand_total {lama['grand_total']} vs tersimpan {b['grand_total']} (lama menyimpang = {D(lama['grand_total']) != D(b['grand_total'])})", flush=True)
+                print(f"LAPOR {nama}: /calculate LAMA grand_total {lama['grand_total']} vs tersimpan {b['grand_total']} (lama menyimpang = {D(lama['grand_total']) != D(b['grand_total'])})", flush=True)
             # edit/preview == update_bill_v2 tersimpan
             if bid:
                 ubah = {"items": [brg("TES C", 5, 9999.99, tax_rate=11), brg("TES D", 1, 1234)], "invoice_discount_amount": 1000}
