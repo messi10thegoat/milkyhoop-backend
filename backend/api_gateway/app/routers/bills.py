@@ -39,6 +39,7 @@ from ..schemas.bills import (
     UploadAttachmentResponse,
     # V2 schemas
     CreateBillRequestV2,
+    CalculateBillRequestV2,
     UpdateBillRequestV2,
     CreateBillResponseV2,
     CalculateBillResponse,
@@ -1755,49 +1756,63 @@ async def get_bill_v2(request: Request, bill_id: UUID):
 
 
 @router.post("/calculate", response_model=CalculateBillResponse)
-async def calculate_bill_totals(request: Request, body: CreateBillRequestV2):
-    """
-    Preview bill calculation without saving.
-
-    Use this endpoint to show calculated totals in the UI before submitting.
-    This is a read-only operation that doesn't modify any data.
-
-    **Returns:**
-    - subtotal: Sum of (qty * price) for all items
-    - item_discount_total: Sum of item-level discounts
-    - invoice_discount_total: Invoice-level discount amount
-    - cash_discount_total: Cash/early payment discount
-    - dpp: Dasar Pengenaan Pajak (tax base)
-    - tax_amount: Calculated tax
-    - grand_total: Final total
-    """
+async def calculate_bill_totals(request: Request, body: CalculateBillRequestV2):
+    """Pratinjau BUAT form Faktur Pembelian tanpa menyimpan (kontrak tahap 2, 22 Okt 2026; sejajar PO /calculate a1599359).
+    Penentu SATU dengan POST /bills/v2 (services/tagihan_rencana): blok (vendor milik tenant, due_date, item) + kalkulator YANG SAMA
+    (pajak kepala 0 bila ada pajak per baris; PPN per baris ikut grand_total). READ ONLY tanpa kunci; 200 walau diblok.
+    `calculation` = bentuk lama (kepala, kini == nilai tersimpan); `data` = {ok, blocks, kepala, pajak_per_baris, items[], payload}."""
+    from ..services import tagihan_rencana as TR
     try:
-        _ctx = get_user_context(request)  # Validate auth
-        _pool = await get_pool()
-        async with _pool.acquire() as _fconn:
-            _dpp_factor = await resolve_dpp_factor(
-                _fconn, _ctx["tenant_id"], getattr(body, "tax_code_id", None),
-                body.tax_rate, "input",
-            )
-
-        result = BillCalculator.calculate(
-            items=[item.model_dump() for item in body.items],
-            invoice_discount_percent=body.invoice_discount_percent,
-            invoice_discount_amount=body.invoice_discount_amount,
-            cash_discount_percent=body.cash_discount_percent,
-            cash_discount_amount=body.cash_discount_amount,
-            tax_rate=body.tax_rate,
-            dpp_manual=body.dpp_manual,
-            dpp_factor=_dpp_factor,
-        )
-
-        return {"success": True, "calculation": result}
-
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        req = body.model_dump()
+        async with pool.acquire() as conn:
+            async with conn.transaction(readonly=True):
+                bloks = await TR.blok_buat(conn, ctx["tenant_id"], req)
+                h = await TR.hitung(conn, ctx["tenant_id"], req)
+        j = TR.hitung_json(req, h)
+        kepala = {k: j[k] for k in ("subtotal", "item_discount_total", "invoice_discount_total", "cash_discount_total", "dpp", "tax_amount", "grand_total")}
+        return {"success": True, "calculation": kepala,
+                "data": {"ok": not bloks, "blocks": bloks, **j, "payload": body.model_dump(mode="json")}}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error calculating bill: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to calculate")
+        raise HTTPException(status_code=500, detail="Gagal menghitung faktur pembelian.")
+
+
+@router.post("/{bill_id}/edit/preview")
+async def preview_edit_bill(request: Request, bill_id: UUID, body: UpdateBillRequestV2):
+    """Pratinjau UBAH draf (badan = PATCH /bills/v2/{id}): blok penentu SATU dgn update_bill_v2 (tagihan_rencana.blok_ubah: bukan draf,
+    vendor bukan milik tenant, due_date/items dikosongkan) + angka sesudah bila items dikirim (kalkulator SATU). READ ONLY tanpa kunci; 200.
+    payload = badan PATCH (hanya medan yang dikirim)."""
+    from ..services import tagihan_rencana as TR
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        req = body.model_dump(exclude_unset=True)
+        async with pool.acquire() as conn:
+            async with conn.transaction(readonly=True):
+                bill = await conn.fetchrow(
+                    "SELECT id, invoice_number, status_v2, vendor_id, tax_rate, tax_code_id FROM bills WHERE id = $1 AND tenant_id = $2",
+                    bill_id, ctx["tenant_id"])
+                if not bill:
+                    raise HTTPException(status_code=404, detail="Faktur pembelian tidak ditemukan.")
+                bloks = await TR.blok_ubah(conn, ctx["tenant_id"], bill, req)
+                angka = None
+                if req.get("items"):
+                    h = await TR.hitung(conn, ctx["tenant_id"], req)
+                    angka = TR.hitung_json(req, h)
+        out = {"bill_id": str(bill["id"]), "invoice_number": bill["invoice_number"], "status": bill["status_v2"],
+               "ok": not bloks, "blocks": bloks, "payload": body.model_dump(mode="json", exclude_unset=True)}
+        if angka is not None:
+            out.update(angka)
+        return {"success": True, "data": out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing bill edit {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat pratinjau ubah faktur pembelian.")
 
 
 # =============================================================================

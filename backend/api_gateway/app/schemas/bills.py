@@ -477,6 +477,19 @@ class UpdateBillRequestV2(BaseModel):
 # =============================================================================
 
 
+class CalculateBillRequestV2(CreateBillRequestV2):
+    """Badan POST /bills/calculate (pratinjau form, 22 Okt 2026): bentuk SAMA dengan POST /bills/v2, tetapi due_date & items boleh kosong
+    supaya kekurangan form dijawab sebagai BLOK (200), bukan 422 (tagihan_rencana.blok_buat)."""
+
+    due_date: Optional[date] = Field(None, description="Payment due date (wajib saat simpan; kosong = blok)")
+    items: List[BillItemRequestV2] = Field(default_factory=list, description="Line items (kosong = blok)")
+
+    @field_validator("items")
+    @classmethod
+    def validate_items(cls, v):
+        return v
+
+
 class BillCalculationResult(BaseModel):
     """Calculated totals for a bill."""
 
@@ -525,10 +538,11 @@ class OutstandingSummaryResponse(BaseModel):
 
 
 class CalculateBillResponse(BaseModel):
-    """Response for bill calculation preview."""
+    """Response for bill calculation preview. `calculation` = bentuk lama (kepala); `data` = kontrak pratinjau (ok, blocks, kepala, items, payload)."""
 
     success: bool = True
     calculation: BillCalculationResult
+    data: Optional[Dict[str, Any]] = None
 
 
 # =============================================================================

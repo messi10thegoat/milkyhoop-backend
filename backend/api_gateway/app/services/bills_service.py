@@ -89,6 +89,7 @@ from ..utils.sorting import build_order_by_clause  # noqa: E402
 from ..utils.money import cents_to_decimal_string  # noqa: E402
 from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 
+from . import tagihan_rencana as TR  # noqa: E402  penentu hitung + blok SATU (create/update v2, /calculate, edit/preview)
 from . import tagihan_daftar as TD  # noqa: E402  PEMBELIAN-SERAGAM (1): uang+keadaan tagihan dari compute_ap_rincian (V440)
 
 logger = logging.getLogger(__name__)
@@ -2648,6 +2649,12 @@ class BillsService:
         async with self.pool.acquire() as conn:
             await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
+                # 0. Blok (penentu SATU dgn POST /bills/calculate; tagihan_rencana.blok_buat): pertama -> pesan lama, SEBELUM nomor/vendor
+                #    dibuat (dulu nomor & vendor otomatis tercipta lalu tetap ter-commit walau galat due_date/item).
+                _bloks = await TR.blok_buat(conn, tenant_id, request)
+                if _bloks:
+                    return {"success": False, "message": _bloks[0]["message"], "data": None}
+
                 # 1. Generate invoice number if not provided
                 invoice_number = request.get("invoice_number")
                 if not invoice_number:
@@ -2714,29 +2721,10 @@ class BillsService:
                         "data": None,
                     }
 
-                # If any item has per-item tax, use 0 for header tax (avoid double-counting)
-                has_per_item_tax = any(
-                    item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0
-                    for item in items
-                )
-                header_tax_rate = 0 if has_per_item_tax else request.get("tax_rate", 0)
-                _dpp_factor = await resolve_dpp_factor(
-                    conn, tenant_id, request.get("tax_code_id"), header_tax_rate, "input"
-                )
-                calc = BillCalculator.calculate(
-                    items=items,
-                    invoice_discount_percent=Decimal(
-                        str(request.get("invoice_discount_percent", 0))
-                    ),
-                    invoice_discount_amount=request.get("invoice_discount_amount", 0),
-                    cash_discount_percent=Decimal(
-                        str(request.get("cash_discount_percent", 0))
-                    ),
-                    cash_discount_amount=request.get("cash_discount_amount", 0),
-                    tax_rate=header_tax_rate,
-                    dpp_manual=request.get("dpp_manual"),
-                    dpp_factor=_dpp_factor,
-                )
+                # Kalkulator SATU (tagihan_rencana.hitung == /calculate == edit/preview): pajak kepala 0 bila ada pajak per baris,
+                # header BillCalculator + PPN per baris (_bill_line_tax + 3(b2)). Angka TIDAK berubah (aturan diangkat apa adanya).
+                _h = await TR.hitung(conn, tenant_id, request)
+                calc = dict(_h["header"])
 
                 # 4. Determine status and dates
                 status = request.get("status", "draft")
@@ -2806,7 +2794,6 @@ class BillsService:
                 # T14: nama master menang bila product_id ter-resolve
                 await _timpa_nama_dari_master(conn, tenant_id, items)
 
-                _line_allocs = _bill_line_allocs(items, calc, request, has_per_item_tax)  # 3(b2)
                 for idx, item in enumerate(items, start=1):
                     # Validate required item fields
                     if "qty" not in item or item["qty"] is None:
@@ -2833,19 +2820,11 @@ class BillsService:
                         }
 
                     discount_pct = Decimal(str(item.get("discount_percent", 0)))
-                    item_calc = BillCalculator.calculate_item_total(
-                        qty, price, discount_pct
-                    )
-
-                    # Per-item tax calculation
+                    # Per-item: hasil kalkulator SATU (tagihan_rencana.hitung; 3(b) DPP neto x faktor kode pajak, 3(b2) bagian diskon kepala)
+                    item_calc = _h["baris"][idx - 1]["item_calc"]
                     item_tax_code_id = item.get("tax_code_id")
                     item_tax_rate = float(item.get("tax_rate") or 0)
-                    # 3(b): DPP = NETO baris (sesudah diskon baris) lewat faktor DPP kode pajak.
-                    # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
-                    # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
-                    item_dpp, item_tax_amount = await _bill_line_tax(
-                        conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None, _line_allocs[idx - 1]
-                    )
+                    item_dpp, item_tax_amount = _h["baris"][idx - 1]["dpp"], _h["baris"][idx - 1]["ppn"]
 
                     # Convert exp_date string to date if provided
                     # Accepts both YYYY-MM and YYYY-MM-DD formats
@@ -4016,12 +3995,10 @@ class BillsService:
             if not bill:
                 return {"success": False, "message": "Bill not found", "data": None}
 
-            if bill["status_v2"] != "draft":
-                return {
-                    "success": False,
-                    "message": f"Cannot edit bill with status '{bill['status_v2']}'. Only draft bills can be edited.",
-                    "data": None,
-                }
+            # Blok (penentu SATU dgn POST /bills/{id}/edit/preview; tagihan_rencana.blok_ubah): pertama -> pesan.
+            _bloks = await TR.blok_ubah(conn, tenant_id, bill, request)
+            if _bloks:
+                return {"success": False, "message": _bloks[0]["message"], "data": None}
 
             async with conn.transaction():
                 # Resolve vendor if changed
@@ -4042,34 +4019,9 @@ class BillsService:
                 calc = None
 
                 if items:
-                    # If any item has per-item tax, use 0 for header tax (avoid double-counting)
-                    has_per_item_tax = any(
-                        item.get("tax_rate") and float(item.get("tax_rate", 0)) > 0
-                        for item in items
-                    )
-                    header_tax_rate = (
-                        0 if has_per_item_tax else request.get("tax_rate", 0)
-                    )
-                    _dpp_factor = await resolve_dpp_factor(
-                        conn, tenant_id, request.get("tax_code_id"), header_tax_rate, "input"
-                    )
-
-                    calc = BillCalculator.calculate(
-                        items=items,
-                        invoice_discount_percent=Decimal(
-                            str(request.get("invoice_discount_percent", 0))
-                        ),
-                        invoice_discount_amount=request.get(
-                            "invoice_discount_amount", 0
-                        ),
-                        cash_discount_percent=Decimal(
-                            str(request.get("cash_discount_percent", 0))
-                        ),
-                        cash_discount_amount=request.get("cash_discount_amount", 0),
-                        tax_rate=header_tax_rate,
-                        dpp_manual=request.get("dpp_manual"),
-                        dpp_factor=_dpp_factor,
-                    )
+                    # Kalkulator SATU (tagihan_rencana.hitung == create v2 == /calculate == edit/preview); angka tak berubah
+                    _h = await TR.hitung(conn, tenant_id, request)
+                    calc = dict(_h["header"])
 
                     # Delete existing items
                     await conn.execute(
@@ -4080,14 +4032,11 @@ class BillsService:
                     # T14: nama master menang bila product_id ter-resolve
                     await _timpa_nama_dari_master(conn, tenant_id, items)
 
-                    _line_allocs = _bill_line_allocs(items, calc, request, has_per_item_tax)  # 3(b2)
                     for idx, item in enumerate(items, start=1):
                         qty = Decimal(str(item["qty"]))  # decimal qty support (Law 25)
                         price = Decimal(str(item["price"]))
                         discount_pct = Decimal(str(item.get("discount_percent", 0)))
-                        item_calc = BillCalculator.calculate_item_total(
-                            qty, price, discount_pct
-                        )
+                        item_calc = _h["baris"][idx - 1]["item_calc"]  # kalkulator SATU
 
                         # Accepts both YYYY-MM and YYYY-MM-DD formats
                         exp_date = None
@@ -4104,9 +4053,7 @@ class BillsService:
                         # 3(b): DPP = NETO baris (sesudah diskon baris) lewat faktor DPP kode pajak.
                         # Dulu: item_calc['subtotal'] = BRUTO (qty x harga, SEBELUM diskon) dan tanpa faktor
                         # -> baris 12% @11/12 kena PPN atas DPP penuh; diskon baris tak mengurangi PPN.
-                        item_dpp, item_tax_amount = await _bill_line_tax(
-                            conn, tenant_id, item_calc, item_tax_code_id, item_tax_rate, None, _line_allocs[idx - 1]
-                        )
+                        item_dpp, item_tax_amount = _h["baris"][idx - 1]["dpp"], _h["baris"][idx - 1]["ppn"]
 
                         await conn.execute(
                             """
