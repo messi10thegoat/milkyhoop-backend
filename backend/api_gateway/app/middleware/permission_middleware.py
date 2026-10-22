@@ -394,6 +394,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-deposits/[^/]+/apply$", ["POST"], "vendor_deposit", "P"),
     (r"^/api/vendor-deposits/[^/]+/refund$", ["POST"], "vendor_deposit", "V"),
     (r"^/api/vendor-deposits/[^/]+/void$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+/applications/[^/]+/unapply$", ["POST"], "vendor_deposit", "V"),  # P-U3b lepas penerapan (setara void)
     (r"^/api/vendor-deposits/[^/]+$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+$", ["PATCH", "PUT"], "vendor_deposit", "U"),
     (r"^/api/vendor-deposits/[^/]+$", ["DELETE"], "vendor_deposit", "D"),

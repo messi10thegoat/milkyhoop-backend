@@ -57,6 +57,7 @@ SUMBER_BUAT = {
     "PROFORMA_CREATE": ("proformas", None, ()),
     "CN_CREATE": ("credit_notes", None, ()),
     "PO_CREATE": ("purchase_orders", None, ()),  # P-U2: PO terhapus -> kunci basi, proses baru
+    "VD_CREATE": ("vendor_deposits", None, ()),  # P-U3b: uang muka vendor draf terhapus -> kunci basi, proses baru
 }
 
 

@@ -2,7 +2,8 @@
 Vendor Deposits (Uang Muka Vendor) Schemas
 """
 from datetime import datetime, date
-from typing import Optional, List
+from decimal import Decimal
+from typing import Annotated, Optional, List
 from uuid import UUID
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -23,6 +24,11 @@ class PaymentMethod(str, Enum):
     giro = "giro"
 
 
+# P-U3b (22 Okt 2026): nominal REQUEST = Decimal > 0, maks 2 desimal (lebih -> 422; dulu int -> sen ditolak/terpotong, Law 9);
+# nominal RESPONS = float (pola PO; Decimal di JSON pydantic v2 = string).
+Uang = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
+
+
 # ============================================
 # Vendor Deposit Schemas
 # ============================================
@@ -30,7 +36,6 @@ class PaymentMethod(str, Enum):
 class VendorDepositBase(BaseModel):
     deposit_date: date
     vendor_id: UUID
-    amount: int
     payment_method: PaymentMethod = PaymentMethod.transfer
     bank_account_id: Optional[UUID] = None
     reference: Optional[str] = Field(None, max_length=100)
@@ -39,12 +44,12 @@ class VendorDepositBase(BaseModel):
 
 
 class VendorDepositCreate(VendorDepositBase):
-    pass
+    amount: Uang
 
 
 class VendorDepositUpdate(BaseModel):
     deposit_date: Optional[date] = None
-    amount: Optional[int] = None
+    amount: Optional[Uang] = None
     payment_method: Optional[PaymentMethod] = None
     bank_account_id: Optional[UUID] = None
     reference: Optional[str] = Field(None, max_length=100)
@@ -56,8 +61,9 @@ class VendorDepositResponse(VendorDepositBase):
     id: UUID
     tenant_id: str
     deposit_number: str
-    applied_amount: int
-    remaining_amount: int
+    amount: float
+    applied_amount: float
+    remaining_amount: float
     status: VendorDepositStatus
     journal_id: Optional[UUID] = None
     created_at: datetime
@@ -93,7 +99,7 @@ class VendorDepositDetailResponse(VendorDepositResponse):
 
 class VendorDepositApplicationCreate(BaseModel):
     bill_id: UUID
-    amount: int
+    amount: Uang
     applied_date: Optional[date] = None  # defaults to today
 
 
@@ -103,11 +109,15 @@ class VendorDepositApplicationResponse(BaseModel):
     bill_id: UUID
     bill_number: Optional[str] = None
     bill_date: Optional[date] = None
-    amount: int
+    amount: float
     applied_date: date
     journal_id: Optional[UUID] = None
     created_at: datetime
     created_by: Optional[UUID] = None
+    # V437 / P-U3b: penerapan yang DILEPAS tetap tercatat (riwayat append-only)
+    status: str = "active"
+    reversed_by_id: Optional[UUID] = None
+    reversed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -119,7 +129,7 @@ class VendorDepositApplicationResponse(BaseModel):
 
 class VendorDepositRefundCreate(BaseModel):
     refund_date: date
-    amount: int
+    amount: Uang
     bank_account_id: Optional[UUID] = None
     reference: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
@@ -129,7 +139,7 @@ class VendorDepositRefundResponse(BaseModel):
     id: UUID
     vendor_deposit_id: UUID
     refund_date: date
-    amount: int
+    amount: float
     bank_account_id: Optional[UUID] = None
     bank_account_name: Optional[str] = None
     reference: Optional[str] = None
@@ -148,7 +158,7 @@ class VendorDepositRefundResponse(BaseModel):
 
 class ApplyDepositRequest(BaseModel):
     bill_id: UUID
-    amount: int
+    amount: Uang
     applied_date: Optional[date] = None
 
 
@@ -158,9 +168,9 @@ class ApplyDepositResponse(BaseModel):
     deposit_number: str
     bill_id: UUID
     bill_number: str
-    applied_amount: int
-    deposit_remaining: int
-    bill_remaining: int
+    applied_amount: float
+    deposit_remaining: float
+    bill_remaining: float
     journal_id: UUID
 
 
@@ -172,9 +182,9 @@ class AvailableDepositItem(BaseModel):
     id: UUID
     deposit_number: str
     deposit_date: date
-    amount: int
-    applied_amount: int
-    remaining_amount: int
+    amount: float
+    applied_amount: float
+    remaining_amount: float
     reference: Optional[str] = None
 
 
@@ -182,7 +192,7 @@ class AvailableDepositsResponse(BaseModel):
     vendor_id: UUID
     vendor_name: str
     items: List[AvailableDepositItem]
-    total_available: int
+    total_available: float
 
 
 # ============================================
@@ -193,9 +203,9 @@ class VendorDepositsForVendorResponse(BaseModel):
     vendor_id: UUID
     vendor_name: str
     items: List[VendorDepositResponse]
-    total_deposits: int
-    total_applied: int
-    total_remaining: int
+    total_deposits: float
+    total_applied: float
+    total_remaining: float
 
 
 # ============================================

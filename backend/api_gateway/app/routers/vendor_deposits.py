@@ -10,11 +10,12 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import Depends, APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from ..services import idem_buat  # P-U3b: idempotensi header X-Idempotency-Key (pola PO / W0)
+from ..services.so_riwayat import catat_riwayat  # P-U3b: riwayat beraktor (lepas penerapan)
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
-from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.vendor_deposits import (
     VendorDepositCreate,
@@ -64,53 +65,30 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
-    """
-    Compute bill remaining balance from journal lines on AP account (Law 16).
-    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
-    """
-    bill_id_str = str(bill_id)
-    result = await conn.fetchval(
-        """
-        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-        WHERE je.tenant_id = $1
-          AND je.status = 'POSTED'
-          AND coa.id = $3
-          AND (
-              -- Original bill journal (AP credit)
-              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
-              -- Bill payment journals (via allocations)
-              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              -- Bill payment void journals
-              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              -- Vendor credit application journals
-              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
-                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
-                  WHERE vca.bill_id = $2::uuid
-              ))
-              -- Vendor deposit application journals
-              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
-                  SELECT vda.journal_id FROM vendor_deposit_applications vda
-                  WHERE vda.bill_id = $2::uuid
-              ))
-          )
-    """,
-        tenant_id,
-        bill_id_str,
-        await UMV.akun_peran(conn, tenant_id, AccountRole.AP_TRADE),
-    )
-    return int(result or 0)
+SQL_SISA_TAGIHAN = "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding($1) WHERE bill_id = $2"
+
+
+async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> Decimal:
+    """Sisa tagihan dari JURNAL lewat compute_ap_outstanding (arap Rule 5: SATU sumber; Law 1/16/29) -- sumber yang SAMA dgn
+    segarkan_cache_hutang_tagihan. P-U3b (22 Okt 2026): dulu kueri sendiri tanpa saring reversed_by_id (penerapan yang dilepas
+    tetap mengurangi sisa) dan int() memotong sen. Baris hilang dari fungsi = sisa 0."""
+    v = await conn.fetchval(SQL_SISA_TAGIHAN, tenant_id, bill_id)
+    return max(Decimal("0"), Decimal(str(v or 0)))
+
+
+SQL_BERGANTUNG = """SELECT (SELECT count(*) FROM vendor_deposit_applications WHERE vendor_deposit_id = $1 AND status = 'active') AS n_terap,
+                           (SELECT count(*) FROM vendor_deposit_refunds WHERE vendor_deposit_id = $1) AS n_refund"""
+
+
+def _kunci_idem(request):
+    """X-Idempotency-Key (alias Idempotency-Key) atau None; tanpa header = perilaku lama. Objek uji tanpa .headers -> None."""
+    if getattr(request, "headers", None) is None:
+        return None
+    return idem_buat.kunci_dari(request)
+
+
+def _f(v) -> float:
+    return float(PD.r2(v or 0))
 
 
 # ============================================================================
@@ -344,15 +322,19 @@ async def get_vendor_deposit_documents(request: Request, deposit_id: UUID):
 
 
 @router.post("", response_model=VendorDepositResponse, status_code=201)
-async def create_vendor_deposit(request: Request, data: VendorDepositCreate):
-    """Create vendor deposit (draft)"""
+async def create_vendor_deposit(request: Request, data: VendorDepositCreate, response: Response = None):
+    """Buat uang muka pembelian (draf). P-U3b (22 Okt 2026): Law 14 X-Idempotency-Key (kunci sama + isi sama = respons asli; isi beda
+    = 409; deposit terhapus = kunci basi -> proses baru, SUMBER_BUAT VD_CREATE); nominal 2 desimal."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
+        kp, sidik, lama = await idem_buat.mulai(conn, ctx, _kunci_idem(request), "VD_CREATE", data, "vendor_deposits", "deposit", response)
+        if lama is not None:
+            return lama
 
         # Validate vendor
         vendor = await conn.fetchrow(
@@ -361,7 +343,7 @@ async def create_vendor_deposit(request: Request, data: VendorDepositCreate):
             ctx["tenant_id"],
         )
         if not vendor:
-            raise HTTPException(status_code=400, detail="Vendor not found")
+            raise HTTPException(status_code=422, detail={"code": "VENDOR_TIDAK_DITEMUKAN", "message": "Vendor tidak ditemukan."})
 
         # Generate deposit number
         deposit_number = await conn.fetchval(
@@ -390,11 +372,12 @@ async def create_vendor_deposit(request: Request, data: VendorDepositCreate):
             ctx.get("user_id"),
         )
 
-        return VendorDepositResponse(
+        resp = VendorDepositResponse(
             **dict(row),
             vendor_name=vendor["name"],
             vendor_code=vendor["code"],
         )
+        return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_CREATE", resp, row["id"])
 
 
 @router.patch("/{deposit_id}", response_model=VendorDepositResponse)
@@ -510,11 +493,12 @@ async def delete_vendor_deposit(request: Request, deposit_id: UUID):
 
 
 @router.post("/{deposit_id}/post", response_model=PostDepositResponse)
-async def post_vendor_deposit(request: Request, deposit_id: UUID):
+async def post_vendor_deposit(request: Request, deposit_id: UUID, response: Response = None):
     """
     Post vendor deposit - creates journal entry:
     Dr. Uang Muka Pembelian (peran AP_PREPAID)    amount
         Cr. Kas/Bank                      amount
+    P-U3b: kirim ulang dgn X-Idempotency-Key sama = respons asli (bukan 400 "sudah diposting").
     """
     ctx = get_user_context(request)
     pool = await get_pool()
@@ -525,6 +509,9 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
         )
 
         async with conn.transaction():
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "VD_POST", deposit_id, {}, response)
+            if lama is not None:
+                return lama
             # Law 13: lock DULU, baru baca & periksa di DALAM (G4: dulu status dibaca di luar lock -> dua post sama-sama 'draft' -> dua jurnal)
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -664,13 +651,14 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
                 journal["id"],
             )
 
-            return PostDepositResponse(
+            resp = PostDepositResponse(
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
                 status=VendorDepositStatus.posted,
                 journal_id=journal["id"],
                 journal_number=journal["journal_number"],
             )
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_POST", resp, deposit_id)
 
 
 # ============================================================================
@@ -680,15 +668,18 @@ async def post_vendor_deposit(request: Request, deposit_id: UUID):
 
 @router.post("/{deposit_id}/apply", response_model=ApplyDepositResponse)
 async def apply_vendor_deposit(
-    request: Request, deposit_id: UUID, data: ApplyDepositRequest
+    request: Request, deposit_id: UUID, data: ApplyDepositRequest, response: Response = None
 ):
     """
     Apply vendor deposit to bill - creates journal entry:
     Dr. Hutang Usaha (peran AP_TRADE)        applied_amount
         Cr. Uang Muka Pembelian (peran AP_PREPAID)    applied_amount
+    P-U3b: Law 14 X-Idempotency-Key (tap ganda = respons asli, bukan penerapan kedua); nominal Decimal 2dp; sisa tagihan
+    compute_ap_outstanding; respons sisa = JURNAL (bukan kolom cache).
     """
     ctx = get_user_context(request)
     pool = await get_pool()
+    jumlah = Decimal(str(data.amount))
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -696,6 +687,10 @@ async def apply_vendor_deposit(
         )
 
         async with conn.transaction():
+            kp, sidik, lama = await idem_buat.mulai_aksi(
+                conn, ctx, _kunci_idem(request), "VD_APPLY", deposit_id, lambda: data.model_dump(mode="json"), response)
+            if lama is not None:
+                return lama
             # Law 13: kunci SALDO bersama apply/refund/void + kunci apply; semua pemeriksaan di DALAM lock (G4: dulu di luar -> over-apply)
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -716,7 +711,7 @@ async def apply_vendor_deposit(
                 raise HTTPException(status_code=400, detail="Uang muka harus diposting dulu sebelum diterapkan.")
             # sisa dari JURNAL (Law 1/16), bukan kolom cache remaining_amount
             sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)
-            if Decimal(str(data.amount)) > sisa:
+            if jumlah > sisa:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
@@ -736,7 +731,7 @@ async def apply_vendor_deposit(
             bill_remaining = await get_bill_remaining_from_journal(
                 conn, ctx["tenant_id"], bill["id"]
             )
-            if data.amount > bill_remaining:
+            if jumlah > bill_remaining:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Jumlah melebihi sisa tagihan. Sisa tagihan: {bill_remaining}",
@@ -782,7 +777,7 @@ async def apply_vendor_deposit(
                 applied_date,
                 f"Apply Deposit {vd['deposit_number']} to Bill {bill['invoice_number']}",
                 deposit_id,
-                data.amount,
+                jumlah,
                 ctx.get("user_id"),
             )
 
@@ -794,7 +789,7 @@ async def apply_vendor_deposit(
                 """,
                 journal["id"],
                 ap_account,
-                data.amount,
+                jumlah,
                 f"Apply Deposit to Bill {bill['invoice_number']}",
             )
 
@@ -806,7 +801,7 @@ async def apply_vendor_deposit(
                 """,
                 journal["id"],
                 vendor_deposit_account,
-                data.amount,
+                jumlah,
                 f"Apply Deposit {vd['deposit_number']}",
             )
 
@@ -826,7 +821,7 @@ async def apply_vendor_deposit(
                 """,
                 deposit_id,
                 data.bill_id,
-                data.amount,
+                jumlah,
                 applied_date,
                 journal["id"],
                 ctx.get("user_id"),
@@ -836,26 +831,128 @@ async def apply_vendor_deposit(
             # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
             await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], data.bill_id)
 
-            # Fetch updated values
-            updated_vd = await conn.fetchrow(
-                "SELECT remaining_amount FROM vendor_deposits WHERE id = $1", deposit_id
-            )
-            updated_bill = await conn.fetchrow(
-                "SELECT amount - COALESCE(amount_paid, 0) as remaining FROM bills WHERE id = $1",
-                data.bill_id,
-            )
-
-            return ApplyDepositResponse(
+            # Sisa sesudah penerapan = JURNAL (deposit: UMV.sisa_jurnal; tagihan: compute_ap_outstanding), bukan kolom cache
+            resp = ApplyDepositResponse(
                 application_id=app["id"],
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
                 bill_id=data.bill_id,
                 bill_number=bill["invoice_number"],
-                applied_amount=data.amount,
-                deposit_remaining=updated_vd["remaining_amount"],
-                bill_remaining=updated_bill["remaining"],
+                applied_amount=jumlah,
+                deposit_remaining=await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id),
+                bill_remaining=await get_bill_remaining_from_journal(conn, ctx["tenant_id"], data.bill_id),
                 journal_id=journal["id"],
             )
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_APPLY", resp, deposit_id)
+
+
+# ============================================================================
+# LEPAS PENERAPAN (UNAPPLY) -- P-U3b, 22 Okt 2026
+# ============================================================================
+
+
+def _jawab_lepas(vd, a, rev_id, rev_no, sisa_um, sisa_tagihan, sudah: bool) -> dict:
+    return {
+        "success": True,
+        "message": "Penerapan uang muka sudah dilepas sebelumnya." if sudah else "Penerapan uang muka dilepas.",
+        "data": {
+            "deposit_id": str(vd["id"]), "deposit_number": vd["deposit_number"], "application_id": str(a["id"]),
+            "bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "amount": _f(a["amount"]),
+            "reversal_journal_id": str(rev_id) if rev_id else None, "reversal_journal_number": rev_no,
+            "deposit_remaining": _f(sisa_um), "bill_remaining": _f(sisa_tagihan), "status": "reversed",
+        },
+    }
+
+
+@router.post("/{deposit_id}/applications/{application_id}/unapply")
+async def unapply_vendor_deposit(request: Request, deposit_id: UUID, application_id: UUID):
+    """Lepas SATU penerapan uang muka pembelian dari tagihan (pola QBO/Xero "unapply", NetSuite: unapply = jurnal pembalik, bukan hapus).
+
+    Jurnal pembalik DRAFT->POSTED (Law 20), baris ditukar: Dr Uang Muka Pembelian / Cr Utang Usaha. source_type DEPOSIT_APPLICATION,
+    source_id = TAGIHAN (opsi B, kembar uang muka pelanggan): Cr Utang wajib bersumber kewajiban yang ada (guard_arap_requires_obligation;
+    DEPOSIT_APPLICATION tak di daftar putih). Jurnal asli tetap POSTED + reversed_by_id (Law 2/26) -> sisa uang muka (jurnal, UMD/UMV)
+    membuang asli DAN pembalik; sisa tagihan (compute_ap_outstanding bagian 6) membuang asli. Penerapan -> status 'reversed' (V437,
+    riwayat append-only); pemicu menyegarkan cache deposit. Kunci SALDO bersama apply/refund/void (Law 13). Idempoten ALAMI:
+    lepas kedua = 200 "sudah dilepas" + jurnal pembalik yang sama, nol jurnal baru (Law 14)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT_SALDO:{deposit_id}")
+            vd = await conn.fetchrow(
+                "SELECT id, deposit_number, status FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE", deposit_id, tid)
+            if not vd:
+                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+            a = await conn.fetchrow(
+                """SELECT a.id, a.bill_id, a.amount, a.journal_id, a.status, a.reversed_by_id, b.invoice_number AS bill_number
+                   FROM vendor_deposit_applications a LEFT JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $3
+                   WHERE a.id = $1 AND a.vendor_deposit_id = $2 FOR UPDATE OF a""", application_id, deposit_id, tid)
+            if not a:
+                raise HTTPException(status_code=404, detail="Penerapan uang muka tidak ditemukan.")
+            if a["status"] == "reversed":
+                rev_no = await conn.fetchval("SELECT journal_number FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+                                             a["reversed_by_id"], tid)
+                return _jawab_lepas(vd, a, a["reversed_by_id"], rev_no, await UMV.sisa_jurnal(conn, tid, deposit_id),
+                                    await get_bill_remaining_from_journal(conn, tid, a["bill_id"]), sudah=True)
+            if a["bill_id"] is not None:
+                await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", a["bill_id"], tid)
+            asli = await conn.fetchrow(
+                "SELECT id, status, reversed_by_id FROM journal_entries WHERE id = $1 AND tenant_id = $2", a["journal_id"], tid)
+            if not asli or asli["status"] != "POSTED":
+                raise HTTPException(status_code=409, detail={"code": "JURNAL_PENERAPAN_TIDAK_ADA",
+                                                             "message": "Jurnal penerapan ini tidak ditemukan; tak bisa dilepas."})
+            if asli["reversed_by_id"]:
+                raise HTTPException(status_code=409, detail={"code": "JURNAL_PENERAPAN_SUDAH_DIBALIK",
+                                                             "message": "Jurnal penerapan ini sudah dibalik oleh proses lain."})
+
+            hari_ini = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis: tanggal jurnal pembalik
+            periode = await conn.fetchrow(
+                "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, hari_ini)
+            if periode and periode["status"] != "OPEN":  # Law 5
+                raise HTTPException(status_code=409, detail={"code": "PERIODE_TERTUTUP",
+                                                             "message": f"Periode akuntansi sudah {periode['status']}."})
+
+            baris = await conn.fetch(
+                "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", asli["id"])
+            total_d = sum((Decimal(str(b["debit"] or 0)) for b in baris), Decimal("0"))
+            total_k = sum((Decimal(str(b["credit"] or 0)) for b in baris), Decimal("0"))
+            if not baris or total_d != total_k or total_d != Decimal(str(a["amount"])):  # Law 4: baris == kepala == penerapan
+                raise HTTPException(status_code=500, detail="Jurnal penerapan tidak seimbang dengan nilai penerapan; lepas dibatalkan.")
+
+            rev_no = await conn.fetchval("SELECT get_next_journal_number($1, $2, $3)", tid, "JV", hari_ini)
+            rev_id = await conn.fetchval(
+                """INSERT INTO journal_entries (tenant_id, journal_number, journal_date, description, source_type, source_id,
+                                                reversal_of_id, total_debit, total_credit, status, created_by)
+                   VALUES ($1, $2, $3, $4, 'DEPOSIT_APPLICATION', $5, $6, $7, $7, 'DRAFT', $8) RETURNING id""",
+                tid, rev_no, hari_ini, f"Lepas penerapan {vd['deposit_number']} dari tagihan {a['bill_number'] or ''}".strip(),
+                a["bill_id"], asli["id"], total_d, ctx.get("user_id"))
+            for i, b in enumerate(baris, 1):
+                await conn.execute(
+                    """INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    rev_id, i, b["account_id"], b["credit"], b["debit"], f"Lepas - {b['memo'] or ''}")
+            await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rev_id)
+            ditandai = await conn.execute(
+                "UPDATE journal_entries SET reversed_by_id = $1 WHERE id = $2 AND reversed_by_id IS NULL", rev_id, asli["id"])
+            if ditandai != "UPDATE 1":  # Law 26: satu pembalik per jurnal
+                raise HTTPException(status_code=409, detail={"code": "JURNAL_PENERAPAN_SUDAH_DIBALIK",
+                                                             "message": "Jurnal penerapan ini sudah dibalik oleh proses lain."})
+            await conn.execute(
+                """UPDATE vendor_deposit_applications
+                   SET status = 'reversed', reversed_by_id = $2, reversed_at = NOW(), reversed_by = $3
+                   WHERE id = $1 AND status = 'active'""", application_id, rev_id, ctx.get("user_id"))
+            if a["bill_id"] is not None:
+                await segarkan_cache_hutang_tagihan(conn, tid, a["bill_id"])
+            await catat_riwayat(conn, tid, "vendor_deposit", deposit_id, vd["deposit_number"], "VD_UNAPPLIED", ctx.get("user_id"),
+                                f"Penerapan uang muka {vd['deposit_number']} ke tagihan {a['bill_number'] or '-'} dilepas",
+                                meta={"application_id": str(application_id), "bill_id": str(a["bill_id"]),
+                                      "amount": f"{PD.r2(a['amount']):.2f}", "reversal_journal_id": str(rev_id)},
+                                source="api:vendor_deposits.unapply")
+            return _jawab_lepas(vd, a, rev_id, rev_no, await UMV.sisa_jurnal(conn, tid, deposit_id),
+                                await get_bill_remaining_from_journal(conn, tid, a["bill_id"]), sudah=False)
 
 
 # ============================================================================
@@ -865,15 +962,17 @@ async def apply_vendor_deposit(
 
 @router.post("/{deposit_id}/refund", response_model=VendorDepositRefundResponse)
 async def refund_vendor_deposit(
-    request: Request, deposit_id: UUID, data: VendorDepositRefundCreate
+    request: Request, deposit_id: UUID, data: VendorDepositRefundCreate, response: Response = None
 ):
     """
     Refund vendor deposit - creates journal entry:
     Dr. Kas/Bank                      refund_amount
         Cr. Uang Muka Pembelian (peran AP_PREPAID)    refund_amount
+    P-U3b: Law 14 X-Idempotency-Key (tap ganda = respons asli, bukan refund kedua); nominal Decimal 2dp.
     """
     ctx = get_user_context(request)
     pool = await get_pool()
+    jumlah = Decimal(str(data.amount))
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -881,6 +980,10 @@ async def refund_vendor_deposit(
         )
 
         async with conn.transaction():
+            kp, sidik, lama = await idem_buat.mulai_aksi(
+                conn, ctx, _kunci_idem(request), "VD_REFUND", deposit_id, lambda: data.model_dump(mode="json"), response)
+            if lama is not None:
+                return lama
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"VENDOR_DEPOSIT_SALDO:{deposit_id}",
@@ -899,7 +1002,7 @@ async def refund_vendor_deposit(
             if vd["status"] not in ("posted", "partial"):
                 raise HTTPException(status_code=400, detail="Uang muka harus sudah diposting.")
             sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)  # dari JURNAL (G4), bukan kolom cache
-            if Decimal(str(data.amount)) > sisa:
+            if jumlah > sisa:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
@@ -949,7 +1052,7 @@ async def refund_vendor_deposit(
                 data.refund_date,
                 f"Refund Deposit {vd['deposit_number']}",
                 deposit_id,
-                data.amount,
+                jumlah,
                 ctx.get("user_id"),
             )
 
@@ -961,7 +1064,7 @@ async def refund_vendor_deposit(
                 """,
                 journal["id"],
                 bank_account_coa,
-                data.amount,
+                jumlah,
                 f"Refund Deposit {vd['deposit_number']}",
             )
 
@@ -973,7 +1076,7 @@ async def refund_vendor_deposit(
                 """,
                 journal["id"],
                 vendor_deposit_account,
-                data.amount,
+                jumlah,
                 f"Refund Deposit {vd['deposit_number']}",
             )
 
@@ -1003,7 +1106,7 @@ async def refund_vendor_deposit(
                         journal_id=journal["id"],
                         transaction_date=data.refund_date,
                         transaction_type="deposit",
-                        amount=data.amount,
+                        amount=jumlah,
                         reference_type="VENDOR_DEPOSIT_REFUND",
                         reference_id=deposit_id,
                         reference_number=data.reference,
@@ -1022,7 +1125,7 @@ async def refund_vendor_deposit(
                 """,
                 deposit_id,
                 data.refund_date,
-                data.amount,
+                jumlah,
                 data.bank_account_id,
                 data.reference,
                 journal["id"],
@@ -1036,10 +1139,11 @@ async def refund_vendor_deposit(
                     "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2", data.bank_account_id, ctx["tenant_id"]
                 )
 
-            return VendorDepositRefundResponse(
+            resp = VendorDepositRefundResponse(
                 **dict(refund),
                 bank_account_name=bank_name,
             )
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_REFUND", resp, deposit_id)
 
 
 # ============================================================================
@@ -1077,6 +1181,8 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 f"VENDOR_DEPOSIT_VOID:{deposit_id}",
             )
+            # P-U3b: kunci SALDO bersama apply/refund/unapply -> void tak bisa menyela penerapan/pelepasan yang sedang berjalan
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT_SALDO:{deposit_id}")
             await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], deposit_id)  # rekon bank: 409 sebelum tulisan
 
             # Read AFTER lock with FOR UPDATE (fixes TOCTOU)
@@ -1102,12 +1208,14 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
                     detail="Cannot void draft deposit. Delete it instead.",
                 )
 
-            # C5: Dependency check — no applications
-            if (vd["applied_amount"] or 0) > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot void deposit with applications. Reverse applications first.",
-                )
+            # C5: Dependency check -- penerapan AKTIF atau refund menahan void (P-U3b: penerapan yang sudah DILEPAS tidak;
+            # dulu kolom cache applied_amount yang ikut menjumlah penerapan terlepas)
+            bergantung = await conn.fetchrow(SQL_BERGANTUNG, deposit_id)
+            if bergantung["n_terap"] or bergantung["n_refund"]:
+                raise HTTPException(status_code=409, detail={
+                    "code": "UANG_MUKA_MASIH_DIPAKAI",
+                    "message": "Uang muka ini masih diterapkan ke tagihan atau sudah dikembalikan. Lepas penerapannya dulu.",
+                    "penerapan_aktif": bergantung["n_terap"], "refund": bergantung["n_refund"]})
 
             # Create reversal journal if deposit was posted
             reversal_id = None
@@ -1243,96 +1351,82 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID):
 # ============================================================================
 
 
-@router.get("/by-vendor/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=VendorDepositsForVendorResponse)
+SQL_PER_VENDOR = """
+    SELECT vd.*, v.name AS vendor_name, v.code AS vendor_code, ba.account_name AS bank_account_name, po.po_number AS purchase_order_number
+    FROM vendor_deposits vd
+    JOIN vendors v ON v.id = vd.vendor_id AND v.tenant_id = vd.tenant_id
+    LEFT JOIN bank_accounts ba ON ba.id = vd.bank_account_id AND ba.tenant_id = vd.tenant_id
+    LEFT JOIN purchase_orders po ON po.id = vd.purchase_order_id AND po.tenant_id = vd.tenant_id
+    WHERE vd.tenant_id = $1 AND vd.vendor_id = $2 AND ($3::text IS NULL OR vd.status = $3)
+    ORDER BY vd.deposit_date DESC, vd.deposit_number DESC, vd.id"""
+
+
+def sql_tersedia() -> str:
+    """Uang muka vendor yang BISA diterapkan = predikat pill `belum_diterapkan` YANG SAMA (UMD.sql_aksi) atas agregat jurnal YANG SAMA."""
+    return f"""
+    SELECT vd.id, vd.deposit_number, vd.deposit_date, vd.amount, vd.reference, ag.sisa, ag.terpakai, ag.dikembalikan
+    FROM vendor_deposits vd {UMD.sql_agregat('$3')}
+    WHERE vd.tenant_id = $1 AND vd.vendor_id = $2 AND {UMD.sql_aksi(UMD.AKSI_BELUM_DITERAPKAN)}
+    ORDER BY vd.deposit_date, vd.deposit_number, vd.id"""
+
+
+async def _vendor_tenant(conn, tenant_id: str, vendor_id: UUID):
+    v = await conn.fetchrow("SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, tenant_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Vendor tidak ditemukan.")
+    return v
+
+
+@router.get("/by-vendor/{vendor_id}", response_model=VendorDepositsForVendorResponse)
 async def get_vendor_deposits_for_vendor(
     request: Request,
     vendor_id: UUID,
     status: Optional[VendorDepositStatus] = None,
 ):
-    """Get all deposits for a vendor"""
+    """Semua uang muka satu vendor (P-U3b, buka parkir). Dulu fungsi DB get_vendor_deposits (RUSAK: BIGINT != numeric). Kini kueri langsung,
+    tenant eksplisit; tiap baris memakai fakta_vd YANG SAMA dgn daftar/detail (sisa/terpakai/dikembalikan dari JURNAL).
+    Total: deposit = Σ jumlah (tanpa void); applied = Σ terpakai + dikembalikan (jurnal); remaining = Σ sisa (jurnal, terbit)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        vendor = await conn.fetchrow(
-            "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-            vendor_id,
-            ctx["tenant_id"],
-        )
-        if not vendor:
-            raise HTTPException(status_code=404, detail="Vendor not found")
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_vendor_deposits($1, $2)",
-            vendor_id,
-            status.value if status else None,
-        )
-
-        items = [
-            VendorDepositResponse(
-                id=row["id"],
-                tenant_id=ctx["tenant_id"],
-                deposit_number=row["deposit_number"],
-                deposit_date=row["deposit_date"],
-                vendor_id=vendor_id,
-                amount=row["amount"],
-                applied_amount=row["applied_amount"],
-                remaining_amount=row["remaining_amount"],
-                status=row["status"],
-                reference=row["reference"],
-                purchase_order_id=row["purchase_order_id"],
-                payment_method="transfer",
-                vendor_name=vendor["name"],
-            )
-            for row in rows
-        ]
-
-        total_deposits = sum(i.amount for i in items)
-        total_applied = sum(i.applied_amount for i in items)
-
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        vendor = await _vendor_tenant(conn, ctx["tenant_id"], vendor_id)
+        rows = await conn.fetch(SQL_PER_VENDOR, ctx["tenant_id"], vendor_id, status.value if status else None)
+        akun = await UMD.akun_baca(conn, ctx["tenant_id"])
+        fakta = await UMD.fakta_vd(conn, ctx["tenant_id"], akun, [r["id"] for r in rows])
+        items, nol = [], Decimal("0")
+        t_dep = t_pakai = t_sisa = nol
+        for r in rows:
+            f = fakta[r["id"]]
+            items.append(VendorDepositResponse(**{
+                **dict(r), "sisa": None if f["sisa"] is None else float(f["sisa"]), "terpakai": float(f["terpakai"]),
+                "dikembalikan": float(f["dikembalikan"]), "sisa_keadaan": f["sisa_keadaan"], "status_text": f["status_text"],
+                "position_text": f["position_text"], "aksi": f["aksi"]}))
+            if r["status"] != "void":
+                t_dep += Decimal(str(r["amount"] or 0))
+                t_pakai += f["terpakai"] + f["dikembalikan"]
+            if f["sisa"] is not None:
+                t_sisa += f["sisa"]
         return VendorDepositsForVendorResponse(
-            vendor_id=vendor_id,
-            vendor_name=vendor["name"],
-            items=items,
-            total_deposits=total_deposits,
-            total_applied=total_applied,
-            total_remaining=total_deposits - total_applied,
-        )
+            vendor_id=vendor_id, vendor_name=vendor["name"], items=items,
+            total_deposits=_f(t_dep), total_applied=_f(t_pakai), total_remaining=_f(t_sisa))
 
 
-@router.get("/available/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=AvailableDepositsResponse)
+@router.get("/available/{vendor_id}", response_model=AvailableDepositsResponse)
 async def get_available_deposits_for_vendor(request: Request, vendor_id: UUID):
-    """Get available deposits for application"""
+    """Uang muka vendor yang masih bisa diterapkan (P-U3b, buka parkir). Dulu fungsi DB get_available_vendor_deposits (RUSAK). Kini predikat
+    pill `belum_diterapkan` (terbit, bukan draf/void, sisa JURNAL > 0) -- himpunan SAMA dgn ?aksi=belum_diterapkan pada daftar."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        vendor = await conn.fetchrow(
-            "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-            vendor_id,
-            ctx["tenant_id"],
-        )
-        if not vendor:
-            raise HTTPException(status_code=404, detail="Vendor not found")
-
-        rows = await conn.fetch(
-            "SELECT * FROM get_available_vendor_deposits($1)", vendor_id
-        )
-
-        items = [AvailableDepositItem(**dict(row)) for row in rows]
-        total_available = sum(i.remaining_amount for i in items)
-
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        vendor = await _vendor_tenant(conn, ctx["tenant_id"], vendor_id)
+        akun = await UMD.akun_baca(conn, ctx["tenant_id"])
+        rows = await conn.fetch(sql_tersedia(), ctx["tenant_id"], vendor_id, akun)
+        items = [AvailableDepositItem(
+            id=r["id"], deposit_number=r["deposit_number"], deposit_date=r["deposit_date"], amount=_f(r["amount"]),
+            applied_amount=_f(Decimal(str(r["terpakai"] or 0)) + Decimal(str(r["dikembalikan"] or 0))),
+            remaining_amount=_f(r["sisa"]), reference=r["reference"]) for r in rows]
         return AvailableDepositsResponse(
-            vendor_id=vendor_id,
-            vendor_name=vendor["name"],
-            items=items,
-            total_available=total_available,
-        )
+            vendor_id=vendor_id, vendor_name=vendor["name"], items=items,
+            total_available=_f(sum((Decimal(str(r["sisa"] or 0)) for r in rows), Decimal("0"))))

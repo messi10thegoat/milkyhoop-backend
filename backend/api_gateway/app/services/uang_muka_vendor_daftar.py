@@ -133,7 +133,8 @@ async def kelompok_untuk(conn, tenant_id: str, ids: list) -> dict:
     for b in await conn.fetch(
         """SELECT DISTINCT a.vendor_deposit_id, b.id, b.invoice_number, b.issue_date, b.grand_total, b.status_v2, b.status
            FROM vendor_deposit_applications a JOIN bills b ON b.id = a.bill_id
-           WHERE b.tenant_id = $1 AND a.vendor_deposit_id = ANY($2::uuid[]) ORDER BY b.issue_date, b.invoice_number""", tenant_id, ids):
+           WHERE b.tenant_id = $1 AND a.vendor_deposit_id = ANY($2::uuid[]) AND a.status = 'active'  -- V437: penerapan dilepas bukan dokumen terkait
+           ORDER BY b.issue_date, b.invoice_number""", tenant_id, ids):
         fak.setdefault(b["vendor_deposit_id"], []).append(b)
     hasil = {}
     for i in ids:
@@ -163,7 +164,7 @@ async def akun_baca(conn, tenant_id: str):
 
 # Detail: penerapan & pengembalian (kueri langsung; $1 = deposit, $2 = tenant). Bentuk = VendorDepositApplicationResponse / VendorDepositRefundResponse.
 SQL_APLIKASI = """SELECT a.id, a.vendor_deposit_id, a.bill_id, b.invoice_number AS bill_number, b.issue_date AS bill_date, a.amount, a.applied_date,
-                         a.journal_id, a.created_at, a.created_by
+                         a.journal_id, a.created_at, a.created_by, a.status, a.reversed_by_id, a.reversed_at
                   FROM vendor_deposit_applications a JOIN vendor_deposits d ON d.id = a.vendor_deposit_id
                   LEFT JOIN bills b ON b.id = a.bill_id AND b.tenant_id = d.tenant_id
                   WHERE a.vendor_deposit_id = $1 AND d.tenant_id = $2 ORDER BY a.applied_date, a.created_at, a.id"""
