@@ -239,6 +239,7 @@ POST /api/bills/calculate
 POST /api/bills/preview-journal
 POST /api/bills/v2
 POST /api/bills/{bill_id}/attachments
+POST /api/bills/{bill_id}/edit/preview
 POST /api/bills/{bill_id}/payments
 POST /api/bills/{bill_id}/post
 POST /api/bills/{bill_id}/void
