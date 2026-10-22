@@ -54,6 +54,7 @@ ENTITAS_AUDIT = {
     "stock_transfers": "stock_transfer", "stock_transfer": "stock_transfer",
     "purchase_orders": "purchase_order", "purchase_order": "purchase_order",  # 22 Okt 2026: riwayat PO (services/po_riwayat)
     "bills": "bill", "bill": "bill",  # 22 Okt 2026: riwayat faktur pembelian (services/tagihan_riwayat)
+    "bill_payments": "payment_out", "bill_payments_v2": "payment_out", "payment_out": "payment_out",  # riwayat pembayaran keluar
 }
 
 # Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).

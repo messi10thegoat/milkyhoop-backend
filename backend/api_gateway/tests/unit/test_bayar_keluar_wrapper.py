@@ -47,7 +47,8 @@ def test_daftar_dan_summary_berbasis_wrapper():
     assert "FROM bill_payments_v2 bp" in daftar and "WHERE bp.tenant_id = $1" in daftar
     assert "_pk.sql_dialokasi('bp')" in daftar and "_pk.dengan_turunan(_pk.alokasi_fakta(" in daftar
     assert "ORDER BY {sort_col} {order}, q.id {order}" in daftar      # tiebreak id
-    assert ring.count("FROM bill_payments_v2") == 2 and "!= 'voided'" in ring
+    # 3 = ringkasan + per metode + pill belum_dialokasikan (kontrak seragam 22 Okt 2026); semuanya wrapper
+    assert ring.count("FROM bill_payments_v2") == 3 and "!= 'voided'" in ring
 
 
 def test_detail_memakai_turunan_yang_sama():

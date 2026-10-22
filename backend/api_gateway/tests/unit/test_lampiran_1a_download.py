@@ -236,20 +236,13 @@ async def test_bp_daftar_url_relatif_dan_join_induk(monkeypatch):
     assert args == (INDUK, TENANT)
 
 
-@pytest.mark.asyncio
-async def test_bp_documents_file_url_relatif_dan_kolom_ada(monkeypatch):
-    conn = FakeConn(
-        on_fetchrow=lambda s, a: {"id": INDUK, "payment_number": "PAY-1"},
-        on_fetch=lambda s, a: [baris_dok()],
-    )
-    pasang(monkeypatch, bp, conn)
-    out = await bp.get_payment_documents(req(), str(INDUK))
-    assert out["total"] == 1
-    url_sah(out["data"][0]["file_url"], "bill-payments")
-    # Kolom yang dulu dibaca TIDAK ADA di `documents` (information_schema 24 Sep).
-    for _, sql, _ in conn.calls:
-        assert not re.search(r"(?<![a-z_.])entity_type\s*=\s*'payment'\s+AND\s+entity_id", sql)
-        assert "created_by" not in sql
+def test_bp_documents_kini_bundel_lampiran_tetap_di_attachments():
+    """Kontrak seragam 22 Okt 2026: GET /bill-payments/{id}/documents = BUNDEL (pola /receive-payments/{id}/documents); dulu salinan
+    daftar lampiran (0 permintaan nginx 14 hari, FE tak memanggil). Lampiran tetap di /attachments (diuji di atas)."""
+    import inspect
+    src = inspect.getsource(bp.get_payment_documents)
+    assert "kelompok_untuk(" in src and "_bp_att_daftar" not in src
+    assert "_bp_att_daftar(" in inspect.getsource(bp.list_payment_attachments)
 
 
 @pytest.mark.asyncio

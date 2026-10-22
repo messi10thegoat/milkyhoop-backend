@@ -19,7 +19,7 @@ This mirrors ReceivePayments for the payable side.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Literal
+from typing import Any, Dict, Optional, List, Literal
 from datetime import date
 
 
@@ -202,6 +202,10 @@ class BillPaymentListItem(BaseModel):
     aksi: Optional[str] = None
     alokasi_keadaan: str = "tanpa"
     alokasi_teks: str = "—"
+    # Kontrak seragam (22 Okt 2026): posisi + bundel (services/pembayaran_keluar_daftar, fungsi SAMA daftar/detail/bundel)
+    position_text: Optional[str] = None
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 class BillPaymentDetail(BaseModel):
@@ -213,6 +217,10 @@ class BillPaymentDetail(BaseModel):
     aksi: Optional[str] = None
     alokasi_keadaan: str = "tanpa"
     alokasi_teks: str = "—"
+    # Kontrak seragam (22 Okt 2026): posisi + bundel (services/pembayaran_keluar_daftar, fungsi SAMA daftar/detail/bundel)
+    position_text: Optional[str] = None
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
     id: str
     payment_number: str
@@ -316,6 +324,8 @@ class BillPaymentListResponse(BaseModel):
     items: List[BillPaymentListItem]
     total: int
     has_more: bool = False
+    sum_total: Optional[float] = None  # ?with_totals=true
+    sum_sisa: Optional[float] = None
 
 
 class BillPaymentSummaryResponse(BaseModel):

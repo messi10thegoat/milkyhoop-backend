@@ -553,6 +553,9 @@ async def list_bill_payments(
         "payment_date", "payment_number", "vendor_name", "total_amount", "created_at"
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    # Kontrak seragam (22 Okt 2026, kembar receive_payments): pill aksi (nilai asing = 422) + total atas SEMUA hasil filter (opt-in)
+    aksi: Optional[Literal["belum_dialokasikan"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
     """
     List bill payments -- WRAPPER bill_payments_v2 (PEMBELIAN-SERAGAM (2), 22 Okt 2026); dialokasikan/belum = turunan alokasi.
@@ -585,23 +588,15 @@ async def list_bill_payments(
                 params.append(payment_method)
                 param_idx += 1
 
-            if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    outer_conditions.append(
-                        f"(q.payment_number ILIKE ${param_idx} OR q.vendor_name ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(q.payment_number ILIKE ${param_idx} OR q.vendor_name ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    outer_conditions.append(f"({' AND '.join(word_conds)})")
+            from ..services import pembayaran_keluar_daftar as _pk
+            _c, _p = _pk.syarat_cari(search, "q", param_idx)  # SATU predikat dgn /summary?search=
+            if _c:
+                outer_conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
+
+            if aksi == "belum_dialokasikan":  # == aksi baris (alokasi_fakta, toleransi sama)
+                outer_conditions.append(f"q.belum > {_pk.TOLERANSI}")
 
             if date_from:
                 outer_conditions.append(f"q.payment_date >= ${param_idx}")
@@ -633,7 +628,6 @@ async def list_bill_payments(
             # PEMBELIAN-SERAGAM (2), 22 Okt 2026: daftar berbasis WRAPPER bill_payments_v2 (dulu: jurnal ber-debit AP + LEFT JOIN wrapper ->
             # jurnal MANUAL/VENDOR_OPENING_BALANCE tampil sebagai pembayaran hantu ber-detail 404; voided/draf tak pernah tampil). Dialokasikan/
             # belum = TURUNAN alokasi (services/pembayaran_keluar_daftar), bukan cache wrapper.
-            from ..services import pembayaran_keluar_daftar as _pk
             base_cte = f"""
                 WITH joined AS (
                     SELECT
@@ -648,6 +642,9 @@ async def list_bill_payments(
                         bp.unapplied_amount,
                         {_pk.sql_bruto('bp')} AS bruto,
                         {_pk.sql_dialokasi('bp')} AS dialokasi,
+                        {_pk.sql_belum('bp')} AS belum,
+                        bp.reference_number,
+                        bp.notes,
                         COALESCE(bp.status, 'draft') AS status,
                         bp.created_at,
                         (SELECT COUNT(*) FROM bill_payment_allocations bpa WHERE bpa.payment_id = bp.id) AS bill_count
@@ -662,6 +659,13 @@ async def list_bill_payments(
                 SELECT COUNT(*) FROM joined q WHERE 1=1{outer_where}
             """
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # WHERE + parameter SAMA dgn COUNT; sum_total tanpa voided (uang tak keluar), sum_sisa = Σ belum_dialokasikan
+                _t = await conn.fetchrow(count_query.replace(
+                    "SELECT COUNT(*) FROM joined q",
+                    "SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE q.status <> 'voided'), 0) AS st, "
+                    f"COALESCE(SUM(q.belum) FILTER (WHERE q.belum > {_pk.TOLERANSI}), 0) AS ss FROM joined q", 1), *params)
+                jumlah = {"sum_total": float(_t["st"]), "sum_sisa": float(_t["ss"])}
 
             # List with filters, sort, pagination
             list_query = f"""
@@ -673,10 +677,12 @@ async def list_bill_payments(
             params.append(limit)
             params.append(skip)
             rows = await conn.fetch(list_query, *params)
+            _kel = await _pk.kelompok_untuk(conn, ctx["tenant_id"], [UUID(r["id"]) for r in rows])
 
             items = []
             for r in rows:
                 _f = _pk.dengan_turunan(_pk.alokasi_fakta(r["status"], r["bruto"], r["dialokasi"]))
+                _dok = _pk.documents_baris(_kel.get(UUID(r["id"]), []))
                 items.append(BillPaymentListItem(
                     id=str(r["id"]),
                     payment_number=r["payment_number"] or "",
@@ -694,10 +700,11 @@ async def list_bill_payments(
                     created_at=r["created_at"].isoformat() if r["created_at"] else "",
                     dialokasikan=_f["dialokasikan"], belum_dialokasikan=_f["belum_dialokasikan"], aksi=_f["aksi"],
                     alokasi_keadaan=_f["alokasi_keadaan"], alokasi_teks=_f["alokasi_teks"],
+                    position_text=_pk.posisi_bayar(r["status"], _f), documents=_dok, doc_count=len(_dok),
                 ))
 
             return BillPaymentListResponse(
-                items=items, total=total or 0, has_more=(skip + limit) < (total or 0)
+                items=items, total=total or 0, has_more=(skip + limit) < (total or 0), **jumlah
             )
     except HTTPException:
         raise
@@ -707,7 +714,7 @@ async def list_bill_payments(
 
 
 @router.get("/summary", response_model=BillPaymentSummaryResponse)
-async def get_bill_payments_summary(request: Request):
+async def get_bill_payments_summary(request: Request, search: Optional[str] = Query(None)):
     """
     Summary -- WRAPPER bill_payments_v2, sumber SAMA dgn daftar (PEMBELIAN-SERAGAM (2), 22 Okt 2026).
     """
@@ -721,6 +728,10 @@ async def get_bill_payments_summary(request: Request):
             # Sapuan tanggal bisnis A (26 Sep 2026): hari ini = tanggal_dokumen (zona tenant), bukan CURRENT_DATE/date.today() UTC.
             # Periode = services/rp_periode.batas_periode (SAMA dengan Penerimaan): hari ini, Senin–Minggu, tgl 1–akhir bulan.
             _b = batas_periode(await tanggal_dokumen(conn, ctx["tenant_id"]))
+            # Kontrak seragam (22 Okt 2026): ?search= = predikat SAMA dgn daftar (syarat_cari), membatasi SEMUA hitungan/uang
+            from ..services import pembayaran_keluar_daftar as _pk
+            _c7, _p7 = _pk.syarat_cari(search, "bp", 7)
+            _c2, _p2 = _pk.syarat_cari(search, "bp", 2)
             # PEMBELIAN-SERAGAM (2), 22 Okt 2026: SUMBER SAMA dgn daftar = wrapper bill_payments_v2 (dulu jurnal ber-debit AP -> jurnal
             # MANUAL/saldo awal ikut terhitung; draf tak pernah terhitung). Voided dikecualikan seperti dulu.
             summary = await conn.fetchrow(
@@ -735,22 +746,28 @@ async def get_bill_payments_summary(request: Request):
                     COALESCE(SUM(CASE WHEN payment_date = $2::date THEN total_amount ELSE 0 END), 0) AS today_amount,
                     COALESCE(SUM(CASE WHEN payment_date BETWEEN $3::date AND $4::date THEN total_amount ELSE 0 END), 0) AS week_amount,
                     COALESCE(SUM(CASE WHEN payment_date BETWEEN $5::date AND $6::date THEN total_amount ELSE 0 END), 0) AS month_amount
-                FROM bill_payments_v2
+                FROM bill_payments_v2 bp
                 WHERE tenant_id = $1 AND COALESCE(status, 'draft') != 'voided'
-                """,
-                *argumen_kueri(ctx["tenant_id"], _b),
+                """ + (f" AND {_c7}" if _c7 else ""),
+                *argumen_kueri(ctx["tenant_id"], _b), *_p7,
             )
 
             method_breakdown = await conn.fetch(
                 """
                 SELECT COALESCE(payment_method, 'bank_transfer') AS payment_method, COUNT(*) AS count,
                        COALESCE(SUM(total_amount), 0) AS amount
-                FROM bill_payments_v2
+                FROM bill_payments_v2 bp
                 WHERE tenant_id = $1 AND COALESCE(status, 'draft') != 'voided'
+                """ + (f" AND {_c2}" if _c2 else "") + """
                 GROUP BY COALESCE(payment_method, 'bank_transfer')
                 """,
-                ctx["tenant_id"],
+                ctx["tenant_id"], *_p2,
             )
+            # pill AKSI: ungkapan SAMA dgn ?aksi=belum_dialokasikan daftar (sql_belum, toleransi sama)
+            belum = await conn.fetchrow(
+                f"SELECT COUNT(*) FILTER (WHERE b > {_pk.TOLERANSI}) AS n, COALESCE(SUM(b) FILTER (WHERE b > {_pk.TOLERANSI}), 0) AS v FROM "
+                f"(SELECT {_pk.sql_belum('bp')} AS b FROM bill_payments_v2 bp WHERE bp.tenant_id = $1 AND bp.status = 'posted'"
+                + (f" AND {_c2}" if _c2 else "") + ") x", ctx["tenant_id"], *_p2)
 
             by_method = {
                 r["payment_method"]: {"count": r["count"], "amount": r["amount"]}
@@ -776,6 +793,8 @@ async def get_bill_payments_summary(request: Request):
                     "today_amount": summary["today_amount"],
                     "this_week_amount": summary["week_amount"],
                     "this_month_amount": summary["month_amount"],
+                    "belum_dialokasikan_count": int(belum["n"] or 0),
+                    "belum_dialokasikan_value": float(belum["v"] or 0),
                 },
             )
     except HTTPException:
@@ -956,6 +975,8 @@ async def get_bill_payment(request: Request, payment_id: str):
             _f = _pk.dengan_turunan(_pk.alokasi_fakta(
                 payment["status"], (payment["total_amount"] or 0) + (payment.get("discount_amount") or 0),
                 sum((r["amount_applied"] or 0) for r in allocations)))
+            # kontrak seragam: documents/position_text == baris daftar (fungsi SAMA)
+            _dok = _pk.documents_baris((await _pk.kelompok_untuk(conn, ctx["tenant_id"], [payment["id"]])).get(payment["id"], []))
 
             detail = BillPaymentDetail(
                 id=str(payment["id"]),
@@ -981,6 +1002,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                 unapplied_amount=_f.get("unapplied_amount", payment["unapplied_amount"] or 0),
                 dialokasikan=_f["dialokasikan"], belum_dialokasikan=_f["belum_dialokasikan"], aksi=_f["aksi"],
                 alokasi_keadaan=_f["alokasi_keadaan"], alokasi_teks=_f["alokasi_teks"],
+                position_text=_pk.posisi_bayar(payment["status"], _f), documents=_dok, doc_count=len(_dok),
                 discount_amount=payment.get("discount_amount") or 0,
                 discount_account_id=str(payment["discount_account_id"])
                 if payment.get("discount_account_id")
@@ -2337,59 +2359,58 @@ async def _bp_att_daftar(conn, payment_id: UUID, tenant_id: str):
 
 @router.get("/{payment_id}/documents")
 async def get_payment_documents(request: Request, payment_id: str):
-    """
-    Tab: Documents - Get attached documents for this payment.
-
-    Unit 1a: dulu membaca `documents.entity_type/entity_id/created_by/file_url`
-    -- tiga kolom pertama TIDAK ADA di tabel `documents` (diukur
-    information_schema 24 Sep), jadi rute ini selalu 500. Kini lewat
-    `document_attachments` (sumber yang sama dengan /attachments) dan
-    `file_url` = path relatif rute download.
-    """
+    """Bundel panel berjangkar PEMBAYARAN KELUAR (kontrak seragam 22 Okt 2026, kembar /receive-payments/{id}/documents): skema SAMA dgn
+    bundel faktur/PO/tagihan {anchor, default, groups}; pembentuk SATU tempat (pembayaran_keluar_daftar.kelompok_untuk) = documents[] baris.
+    Dulu rute ini = daftar LAMPIRAN (salinan /attachments); diukur 22 Okt: 0 permintaan nginx 14 hari + FE tak memanggilnya. Lampiran tetap
+    di GET /{payment_id}/attachments (pola Penjualan). anchor.position_text/paid/balance = posisi / dialokasikan / belum dialokasikan."""
+    from ..services import pembayaran_keluar_daftar as _pk
     try:
         pid = validate_uuid(payment_id, "payment_id")
         ctx = get_user_context(request)
-        tenant_id = ctx["tenant_id"]
+        tid = ctx["tenant_id"]
         pool = await get_pool()
-
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.tenant_id', $1, true)", tenant_id
-                )
-                payment = await conn.fetchrow(
-                    "SELECT id, payment_number FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                    pid,
-                    tenant_id,
-                )
-                if not payment:
-                    raise HTTPException(status_code=404, detail="Payment not found")
-                documents = await _bp_att_daftar(conn, pid, tenant_id)
-
-        return {
-            "success": True,
-            "data": [
-                {
-                    "id": str(d["id"]),
-                    "file_name": d["file_name"],
-                    "file_type": d["mime_type"],
-                    "file_size": d["file_size"],
-                    "file_url": url_unduh_lampiran(_BP_ATT_MODUL_URL, pid, d["id"]),
-                    "description": d["description"],
-                    "created_at": d["created_at"].isoformat()
-                    if d["created_at"]
-                    else None,
-                    "created_by": str(d["uploaded_by"]) if d["uploaded_by"] else None,
-                }
-                for d in documents
-            ],
-            "total": len(documents),
-        }
+            p = await conn.fetchrow(
+                f"""SELECT bp.id, bp.payment_number, bp.vendor_name, bp.vendor_id, bp.total_amount, COALESCE(bp.status, 'draft') AS status,
+                           {_pk.sql_bruto('bp')} AS bruto, {_pk.sql_dialokasi('bp')} AS dialokasi
+                    FROM bill_payments_v2 bp WHERE bp.id = $1 AND bp.tenant_id = $2""", pid, tid)
+            if not p:
+                raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
+            kel = (await _pk.kelompok_untuk(conn, tid, [pid])).get(pid, [])
+            f = _pk.alokasi_fakta(p["status"], p["bruto"], p["dialokasi"])
+            kontak = await conn.fetchrow(
+                "SELECT COALESCE(mobile_phone, phone) AS phone, email FROM vendors WHERE id = $1 AND tenant_id = $2",
+                p["vendor_id"], tid) if p["vendor_id"] else None
+            i_bayar = next(i for i, g in enumerate(kel) if g["key"] == "bayar")
+            return {
+                "anchor": {"kind": "payment_out", "id": str(p["id"]), "number": p["payment_number"], "vendor": p["vendor_name"] or "",
+                           "position_text": _pk.posisi_bayar(p["status"], f), "total": f"{Decimal(str(p['total_amount'] or 0)):.2f}",
+                           "paid": f"{Decimal(str(f['dialokasikan'])):.2f}", "balance": f"{Decimal(str(f['belum_dialokasikan'])):.2f}",
+                           "vendor_phone": (kontak["phone"] if kontak else None) or None,
+                           "vendor_email": (kontak["email"] if kontak else None) or None},
+                "default": {"group": "bayar", "index": 0} if i_bayar is not None else None,
+                "groups": kel,
+            }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting payment documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get documents")
+        raise HTTPException(status_code=500, detail="Gagal memuat dokumen pembayaran.")
+
+
+@router.get("/{payment_id}/history")
+async def get_payment_history(request: Request, payment_id: str, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat Pembayaran Keluar, bentuk SAMA dengan riwayat SO/PO/tagihan (services/bayar_keluar_riwayat). Terbaru dulu."""
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.bayar_keluar_riwayat import riwayat_bayar_keluar
+    pid = validate_uuid(payment_id, "payment_id")
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_bayar_keluar(conn, ctx["tenant_id"], pid, lambda m: boleh_baca(request, m), limit if isinstance(limit, int) else 200)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
+    return {"success": True, "data": data}
 
 
 @router.get("/{payment_id}/attachments")

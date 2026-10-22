@@ -141,6 +141,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bill-payments/[^/]+$", ["DELETE"], "send_payment", "D"),
     (r"^/api/bill-payments/[^/]+/post$", ["POST"], "send_payment", "P"),
     (r"^/api/bill-payments/[^/]+/void$", ["POST"], "send_payment", "V"),
+    (r"^/api/bill-payments/[^/]+/(documents|history)$", ["GET"], "send_payment", "R"),  # kontrak seragam 22 Okt 2026 (bundel + riwayat)
     # Customers
     (r"^/api/customers/summary$", ["GET"], "customer", "R"),
     (r"^/api/customers$", ["GET"], "customer", "R"),
