@@ -56,6 +56,7 @@ MODULE_NAME_MAPPING = {
     "quote": "QUOTE",
     "sales_order": "SALES_ORDER",
     "receive_payment": "RECEIPT",
+    "customer_deposit": "CUSTOMER_DEPOSIT",  # 22 Okt: eksplisit (dulu lewat fallback upper; role_permissions memakai kode ini)
     "customer": "CUSTOMER",
     "credit_note": "CREDIT_NOTE",
     "ar_aging": "AR_AGING",
@@ -67,6 +68,7 @@ MODULE_NAME_MAPPING = {
     "supplier": "VENDOR",
     "vendor": "VENDOR",
     "debit_note": "DEBIT_NOTE",
+    "vendor_deposit": "VENDOR_DEPOSIT",  # 22 Okt: eksplisit (dulu lewat fallback upper; role_permissions memakai kode ini)
     # Expense
     "expense": "EXPENSE",
     # HR & Payroll
