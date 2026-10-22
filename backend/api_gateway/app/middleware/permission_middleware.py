@@ -836,6 +836,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bills/presets/[^/]+/apply$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/v2/[^/]+$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/activity$", ["GET"], "purchase_invoice", "R"),
+    (r"^/api/bills/[^/]+/(documents|history)$", ["GET"], "purchase_invoice", "R"),  # kontrak seragam 22 Okt 2026 (bundel + riwayat)
     (r"^/api/bills/[^/]+/attachments$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills/[^/]+/journals$", ["GET"], "purchase_invoice", "R"),

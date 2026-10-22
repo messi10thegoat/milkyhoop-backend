@@ -1,0 +1,63 @@
+# KONTRAK BE — Faktur Pembelian (bills) daftar seragam — 22 Okt 2026
+
+Menutup celah WORKSPACE no. 1 (diukur di master 47ae217a). Acuan: kontrak Penjualan seragam (`KONTRAK-penjualan-seragam-20261020.md`, sales_invoices) dan
+Pesanan Pembelian (`KONTRAK-pembelian-po-seragam-20261022.md`, kind dokumen K3). Semua perubahan **aditif** (medan lama tak berubah), dihitung **SERVER**,
+FE hanya memformat. "Hari ini" = tanggal BISNIS tenant. Uang = journal-derived lewat `compute_ap_rincian` (V440/V441; Law 1/16/29).
+Satu modul sumber: `services/tagihan_daftar.py` (aksi, jatuh tempo, posisi, cari, bundel) + `services/tagihan_riwayat.py`.
+
+## 0. Putusan (pola SaaS, tanpa tanya — aturan pemilik 22 Okt)
+
+| # | Putusan | Acuan |
+|---|---|---|
+| B1 | Pill aksi = **partisi** 3 kunci: `lewat_jatuh_tempo` · `jatuh_tempo_minggu_ini` · `perlu_diposting`. Tagihan terbuka yang jatuh tempo SESUDAH minggu ini = bukan pill (keadaan normal, derau; tampil lewat `jatuh_tempo_*`). Payung semua tagihan terbuka ada di summary (`tagihan_terbuka_*`) | NetSuite Bills: Overdue / Due this week / Pending Approval; alasan sama dgn `menunggu_barang` PO K1 |
+| B2 | `jatuh_tempo_minggu_ini` = hari ini s.d. akhir minggu (Minggu; `dashboard_v2.akhir_minggu`) — definisi SAMA dengan chip Penjualan | Penjualan P3 |
+| B3 | Jatuh tempo efektif untuk aksi = `due_date`, kosong → `issue_date` (due on receipt) | faktur_aksi Penjualan |
+| B4 | Kata posisi = Penjualan: Draf · Batal · Lunas · Sebagian · Belum lunas. Telat BUKAN posisi | NetSuite Status vs Days Overdue |
+| B5 | `sum_total` = Σ `amount` **tanpa batal** (PO juga tanpa cancelled); `sum_sisa` = Σ `outstanding_amount` (draf/batal tak menyumbang) | QBO/Xero total list tak menghitung voided |
+| B6 | Kind dokumen: `bill` · `purchase_order` · `vendor_deposit` · `payment_out` (K3 PO) + **`debit_note`** (Nota Debit). Status dok bill: `draf · batal · lunas · diposting` (== faktur Penjualan; PO bundel masih `diposting` tanpa `lunas` → BACKEND2 diberi tahu) | — |
+| B7 | Summary pill dihitung **sepanjang waktu** (== daftar yang tak berperiode); medan periode lama tetap per `period` | — |
+
+## 1. `GET /api/bills` (daftar)
+
+Param **tambahan**: `?aksi=<kunci B1>` (422 kunci asing; PARTISI: baris dengan `aksi == k`), `?with_totals=true` → `sum_total`, `sum_sisa` (string "1234.00")
+atas SEMUA hasil filter (tanpa `with_totals` = `null`). `?search=` kini satu predikat (`TD.syarat_cari`) dengan `/summary?search=`: tiap kata wajib cocok salah
+satu dari nomor, `vendor_name`, `ref_no`, `notes`, nama/kode vendor master.
+
+Per item **tambahan** (`TD.fakta_baris`, fungsi SAMA dengan detail):
+- `aksi` (kunci B1 atau null) · `aksi_semua` (`[aksi]` atau `[]`; partisi → paling banyak satu).
+  - `perlu_diposting` = draf.
+  - `lewat_jatuh_tempo` = terbuka (aktif, ber-kredit AP, sisa jurnal > 0) ∧ jatuh tempo efektif < hari ini.
+  - `jatuh_tempo_minggu_ini` = terbuka ∧ hari ini ≤ jatuh tempo efektif ≤ akhir minggu.
+- `position_text` (B4) · `outstanding_amount` (string; draf/batal = null; lunas = "0.00").
+- `jatuh_tempo_terbuka` · `jatuh_tempo_hari` (due − hari ini; null bila tak terbuka) · `jatuh_tempo_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` ·
+  `jatuh_tempo_teks` (`"Hari ini"` / `"Besok"` / `"24 Okt"` / `"12 Okt, lewat tempo"` / `"—"`; selesai = tanggal) · `jatuh_tempo_minggu_ini` (bool).
+  `selesai` = lunas bertanggal; `tanpa` = draf/batal/tanpa tanggal. `status == "overdue"` ⇔ `jatuh_tempo_keadaan == "telat"`.
+- `documents` = `[{type}]` urut bundel (§4, tanpa rekap) · `doc_count`.
+Medan lama (`amount`, `amount_paid`, `amount_due`, `status`, …) tidak berubah.
+
+## 2. `GET /api/bills/summary`
+Medan lama tetap (per `period`). **Tambah**: `?search=` (membatasi SEMUA medan per tagihan, termasuk `overdue_count/total_overdue`);
+`<k>_count` + `<k>_value` tiap kunci B1 (nilai: draf = `amount`, terbuka = sisa jurnal); `tagihan_terbuka_count/_value` (payung; == Σ baris tagihan
+`compute_ap_outstanding` > 0). Pill = sepanjang waktu (B7).
+
+## 3. `GET /api/bills/{id}` dan `GET /api/bills/v2/{id}` (detail)
+Semua medan §1 ada di detail dengan nilai SAMA (`aksi`, `aksi_semua`, `position_text`, `outstanding_amount`, `jatuh_tempo_*`, `documents`, `doc_count`).
+
+## 4. `GET /api/bills/{id}/documents` (bundel) — BARU
+Skema SAMA dgn bundel faktur/PO: `{anchor, default, groups[{key,label,docs[]}]}`; tiap dok `sent`, `batal`, `status`.
+- `anchor`: `kind="bill"`, `id`, `number`, `vendor`, `position_text`, `total` (= `amount`), `paid` (= `amount_paid`), `balance` (= `amount_due`), `vendor_phone`, `vendor_email`.
+- groups (urutan bundel PO): `po` (PO asal: `bills.purchase_order_id` ATAU baris bertaut) · `faktur` (tagihan ITU sendiri, selalu; draf/batal tampil sebagai dirinya) ·
+  `uang_muka` (UM vendor tak void yang DITERAPKAN; `amount` = bagian diterapkan) · `bayar` (Pembayaran Keluar posted beralokasi; `amount` = Σ alokasi ke tagihan ini) ·
+  `nota_debit` (ND `original_bill_id` = tagihan ini, bukan draf/void).
+- `default = {group:"faktur", index:0}`. Izin: `purchase_invoice` R.
+
+## 5. `GET /api/bills/{id}/history` (riwayat) — BARU
+Bentuk SAMA dengan `/sales-orders/{id}/history` & `/purchase-orders/{id}/history`: `{success, data:{bill_id, invoice_number, events[], total, omitted[]}}`.
+Kejadian: `TAGIHAN_DIBUAT` (+ "dari pesanan X") · `TAGIHAN_DIPOSTING` · `TAGIHAN_DIBATALKAN` (aktor null: kolom tak ada) · `PEMBAYARAN_DIBAYAR`/`PEMBAYARAN_DIBATALKAN`
+(izin `send_payment`) · `UANG_MUKA_DITERAPKAN` (izin `vendor_deposit`) · `NOTA_DEBIT_DITERAPKAN`/`NOTA_DEBIT_DILEPAS` (izin `debit_note`) + audit_logs entitas `bills`.
+Tanpa izin → modul tercantum di `omitted`. 404 bila tagihan tak ada di tenant. Izin rute: `purchase_invoice` R. `/activity` lama tetap.
+
+## 6. Bukti & alat
+- Tes unit `tests/unit/test_tagihan_kontrak_seragam.py` (aksi/posisi/jatuh tempo/cari/dok/izin rute/satu sumber).
+- Uji nyata BACA-SAJA `scripts/ops/uji-nyata-tagihan-kontrak.sh` (grapgrap + kaos, 3 "hari ini"): pasangan SQL `?aksi=` == Python per baris; summary == baris;
+  payung == AP jurnal; detail v1 == v2 == baris; bundel == baris; with_totals; search daftar == summary; riwayat. Kontrol merah `MERAH=1` (Python disabotase → gagal).

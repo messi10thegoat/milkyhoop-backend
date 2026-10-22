@@ -115,3 +115,216 @@ async def sisa_tagihan_jurnal(conn, tenant_id: str, bill_id) -> Optional[Decimal
     if not r or Decimal(str(r["bill_total"] or 0)) == 0:
         return None
     return Decimal(str(r["outstanding"]))
+
+
+# ==== KONTRAK DAFTAR seragam Faktur Pembelian (22 Okt 2026, celah WORKSPACE; acuan sales_invoices + PO P-U2) ==================
+# Server menghitung, FE hanya memformat. Kunci aksi = PARTISI (saling eksklusif; pola NetSuite Bills: Overdue / Due this week / Pending Approval):
+#   perlu_diposting        = keadaan draft
+#   lewat_jatuh_tempo      = TERBUKA (aktif, ber-kredit AP, sisa jurnal > 0) ∧ jatuh tempo efektif < hari ini
+#   jatuh_tempo_minggu_ini = TERBUKA ∧ hari ini <= jatuh tempo efektif <= akhir minggu (dashboard_v2.akhir_minggu, == chip Penjualan)
+#   (terbuka di luar minggu ini / lunas / batal = bukan aksi). Jatuh tempo efektif = due_date, kosong -> issue_date (== faktur_aksi).
+# "Hari ini" = tanggal BISNIS tenant. Python `aksi_tagihan` dan SQL `sql_aksi` WAJIB setara (uji berpasangan + harness nyata).
+AKSI_TAGIHAN = ("lewat_jatuh_tempo", "jatuh_tempo_minggu_ini", "perlu_diposting")
+TERBUKA = ("unpaid", "partial", "overdue")
+POSISI_TAGIHAN = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")  # == kata posisi_faktur Penjualan
+
+
+def _bulan():
+    from .so_posisi import BULAN
+    return BULAN
+
+
+def sql_terbuka(a: str = "b") -> str:
+    """Setara keadaan_tagihan(...) IN TERBUKA (butuh join_rincian): aktif, ber-kredit AP efektif, sisa jurnal > 0."""
+    return f"(NOT {_sql_void(a)} AND NOT {_sql_draft(a)} AND NOT {_sql_tanpa_kredit()} AND apr.outstanding > 0)"
+
+
+def sql_jt_efektif(a: str = "b") -> str:
+    return f"COALESCE({a}.due_date, {a}.issue_date)"
+
+
+def sql_aksi(aksi: str, p_hari: str, p_akhir: str, a: str = "b") -> str:
+    """Predikat SQL setara `aksi_tagihan(...) == aksi` (butuh join_rincian). p_hari/p_akhir = placeholder tanggal (hari ini, akhir minggu)."""
+    eff = sql_jt_efektif(a)
+    return {
+        "perlu_diposting": _sql_draft(a),
+        "lewat_jatuh_tempo": f"({sql_terbuka(a)} AND {eff} < {p_hari}::date)",
+        "jatuh_tempo_minggu_ini": f"({sql_terbuka(a)} AND {eff} >= {p_hari}::date AND {eff} <= {p_akhir}::date)",
+    }[aksi]
+
+
+def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date) -> tuple:
+    """(predikat, parameter) mulai $mulai -- hanya parameter yang dirujuk (asyncpg menolak $N tak terpakai)."""
+    from .dashboard_v2 import akhir_minggu
+    pakai = {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,),
+             "jatuh_tempo_minggu_ini": (hari_ini, akhir_minggu(hari_ini))}[aksi]
+    return sql_aksi(aksi, f"${mulai}", f"${mulai + 1}"), list(pakai)
+
+
+def sql_hutang(a: str = "b") -> str:
+    """Sisa hutang kolom `outstanding_amount` (== sisa_baris Penjualan): draf/batal/tanpa kredit AP = NULL, lainnya sisa jurnal."""
+    return f"(CASE WHEN {_sql_void(a)} OR {_sql_draft(a)} OR {_sql_tanpa_kredit()} THEN NULL ELSE apr.outstanding END)"
+
+
+def aksi_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[date], hari_ini: date) -> Optional[str]:
+    """Kunci aksi satu tagihan (atau None). keadaan = keadaan_tagihan / kolom status daftar."""
+    from .dashboard_v2 import akhir_minggu
+    if keadaan == "draft":
+        return "perlu_diposting"
+    if keadaan not in TERBUKA:
+        return None
+    eff = due_date if due_date is not None else issue_date
+    if eff is None:
+        return None
+    if eff < hari_ini:
+        return "lewat_jatuh_tempo"
+    if eff <= akhir_minggu(hari_ini):
+        return "jatuh_tempo_minggu_ini"
+    return None
+
+
+def posisi_tagihan(keadaan: str, dibayar) -> str:
+    """Teks Posisi (baris, detail, jangkar bundel): Draf · Batal · Lunas · Sebagian (terbayar > 0, sisa > 0) · Belum lunas.
+    Telat BUKAN posisi (ada di jatuh_tempo_keadaan; pola NetSuite Status vs Days Overdue, == posisi_faktur Penjualan)."""
+    if keadaan == "draft":
+        return "Draf"
+    if keadaan == "void":
+        return "Batal"
+    if keadaan == "paid":
+        return "Lunas"
+    return "Sebagian" if _d(dibayar) > 0 else "Belum lunas"
+
+
+def jatuh_tempo_fakta(keadaan: str, due_date: Optional[date], hari_ini: date) -> dict:
+    """jatuh_tempo_terbuka/_hari/_keadaan/_teks/_minggu_ini (bentuk == proforma_daftar.jatuh_tempo_fakta, kata == faktur Penjualan).
+    terbuka = keadaan TERBUKA ∧ bertanggal; keadaan: telat | hari_ini | akan | selesai (lunas bertanggal; tanggal redup) | tanpa."""
+    from .dashboard_v2 import akhir_minggu
+    tgl = f"{due_date.day} {_bulan()[due_date.month - 1]}" if due_date is not None else None
+    terbuka = keadaan in TERBUKA and due_date is not None
+    hari = (due_date - hari_ini).days if terbuka else None
+    if terbuka:
+        kd = "telat" if hari < 0 else "hari_ini" if hari == 0 else "akan"
+        teks = f"{tgl}, lewat tempo" if hari < 0 else "Hari ini" if hari == 0 else "Besok" if hari == 1 else tgl
+    elif keadaan == "paid" and due_date is not None:
+        kd, teks = "selesai", tgl
+    else:
+        kd, teks = "tanpa", "—"
+    return {"jatuh_tempo_terbuka": terbuka, "jatuh_tempo_hari": hari, "jatuh_tempo_keadaan": kd, "jatuh_tempo_teks": teks,
+            "jatuh_tempo_minggu_ini": terbuka and hari_ini <= due_date <= akhir_minggu(hari_ini)}
+
+
+def fakta_baris(keadaan: str, dibayar, hutang, due_date: Optional[date], issue_date: Optional[date], hari_ini: date) -> dict:
+    """SEMUA medan turunan kontrak untuk satu tagihan -- SATU fungsi untuk baris daftar DAN detail v1/v2 (paritas)."""
+    ak = aksi_tagihan(keadaan, due_date, issue_date, hari_ini)
+    return {"aksi": ak, "aksi_semua": [ak] if ak else [],
+            "position_text": posisi_tagihan(keadaan, dibayar),
+            "outstanding_amount": None if hutang is None else f"{_d(hutang):.2f}",
+            **jatuh_tempo_fakta(keadaan, due_date, hari_ini)}
+
+
+def syarat_cari(search: str, mulai: int, a: str = "b") -> tuple:
+    """Predikat ?search= (SATU sumber daftar & /summary?search=). Tiap kata wajib cocok salah satu: nomor, nama vendor, ref_no, catatan,
+    nama/kode vendor master. -> (predikat, parameter); hanya spasi = TRUE."""
+    kata = (search or "").strip().split()
+    if not kata:
+        return "TRUE", []
+    syarat = [f"({a}.invoice_number ILIKE ${mulai + i} OR {a}.vendor_name ILIKE ${mulai + i} OR {a}.ref_no ILIKE ${mulai + i} "
+              f"OR {a}.notes ILIKE ${mulai + i} OR {a}.vendor_id IN (SELECT v.id FROM vendors v WHERE v.tenant_id = {a}.tenant_id "
+              f"AND (v.name ILIKE ${mulai + i} OR v.code ILIKE ${mulai + i})))" for i in range(len(kata))]
+    return (syarat[0] if len(syarat) == 1 else f"({' AND '.join(syarat)})"), [f"%{w}%" for w in kata]
+
+
+# ---- Bundel dokumen berjangkar TAGIHAN (GET /bills/{id}/documents) + documents[] baris = turunannya ---------------------------------
+# Kelompok (urutan bundel PO, kind K3 kontrak PO): po (PO asal: bills.purchase_order_id ATAU baris bertaut) · faktur (tagihan ITU
+# SENDIRI; draf/batal tampil sebagai dirinya) · uang_muka (UM vendor tak void yang DITERAPKAN ke tagihan ini; amount = bagian diterapkan) ·
+# bayar (Pembayaran Keluar posted beralokasi ke tagihan ini; amount = Σ alokasi ke tagihan ini) · nota_debit (ND bertaut
+# original_bill_id, bukan draf/void). Filter tenant EKSPLISIT tiap kueri.
+def _tgl(v) -> Optional[str]:
+    return v.isoformat() if isinstance(v, date) else (str(v)[:10] if v else None)
+
+
+def _uang(v) -> str:
+    return f"{_d(v):.2f}"
+
+
+def _belum_kirim() -> dict:
+    return {"state": "none", "sent_at": None, "viewed_at": None}
+
+
+def sql_keadaan_dok(a: str = "b") -> str:
+    """Keadaan dokumen bundel TANPA tanggal (telat tetap 'diposting'): void | draft | paid | terbuka. Cabang SAMA dengan sql_keadaan."""
+    return (f"(CASE WHEN {_sql_void(a)} THEN 'void' WHEN {_sql_draft(a)} THEN 'draft' WHEN {_sql_tanpa_kredit()} THEN 'void' "
+            f"WHEN apr.outstanding <= 0 THEN 'paid' ELSE 'terbuka' END)")
+
+
+def dok_tagihan(b, keadaan: str) -> dict:
+    """Dokumen tagihan: status draf | batal | lunas | diposting (== kata faktur Penjualan); paid = keadaan paid."""
+    st = {"draft": "draf", "void": "batal", "paid": "lunas"}.get(keadaan, "diposting")
+    return {"kind": "bill", "id": str(b["id"]), "number": b["invoice_number"], "date": _tgl(b["issue_date"]), "amount": _uang(b["amount"]),
+            "paid": keadaan == "paid", "paper": "A4", "sent": _belum_kirim(), "batal": keadaan == "void", "status": st}
+
+
+async def kelompok_tagihan(conn, tenant_id: str, bill_ids: list) -> dict:
+    """{bill_id: [kelompok]} -- pembentuk SATU tempat untuk bundel dan documents[] baris (<= 100 id, kueri ber-batch)."""
+    from .po_daftar import dok_purchase_order, dok_vendor_deposit
+    if not bill_ids:
+        return {}
+    ids = list(bill_ids)
+    bills = {r["id"]: r for r in await conn.fetch(
+        f"""SELECT b.id, b.invoice_number, b.issue_date, b.amount, b.purchase_order_id, {sql_keadaan_dok()} AS keadaan
+            FROM bills b {join_rincian()} WHERE b.tenant_id = $1 AND b.id = ANY($2::uuid[])""", tenant_id, ids)}
+    po_bill: dict = {}
+    for r in await conn.fetch(
+        """SELECT DISTINCT b.id AS bill_id, po.id, po.po_number, po.po_date, po.total_amount, po.status, po.sent_at
+           FROM bills b
+           JOIN purchase_orders po ON po.tenant_id = $1 AND (po.id = b.purchase_order_id OR po.id IN (
+                SELECT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id WHERE bi.bill_id = b.id))
+           WHERE b.tenant_id = $1 AND b.id = ANY($2::uuid[]) ORDER BY po.po_date, po.po_number""", tenant_id, ids):
+        po_bill.setdefault(r["bill_id"], []).append(r)
+    um: dict = {}
+    for r in await conn.fetch(
+        """SELECT vda.bill_id, vd.id, vd.deposit_number, vd.deposit_date, vd.status, SUM(vda.amount) AS amount
+           FROM vendor_deposit_applications vda JOIN vendor_deposits vd ON vd.id = vda.vendor_deposit_id AND vd.tenant_id = $1
+           WHERE vda.bill_id = ANY($2::uuid[]) AND vd.status <> 'void'
+           GROUP BY vda.bill_id, vd.id, vd.deposit_number, vd.deposit_date, vd.status ORDER BY vd.deposit_date, vd.deposit_number""",
+            tenant_id, ids):
+        um.setdefault(r["bill_id"], []).append(dok_vendor_deposit(r))
+    bayar: dict = {}
+    for r in await conn.fetch(
+        """SELECT bpa.bill_id, bp.id, bp.payment_number, bp.payment_date, SUM(bpa.amount_applied) AS jumlah
+           FROM bill_payment_allocations bpa JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id AND bp.tenant_id = $1 AND bp.status = 'posted'
+           WHERE bpa.bill_id = ANY($2::uuid[])
+           GROUP BY bpa.bill_id, bp.id, bp.payment_number, bp.payment_date ORDER BY bp.payment_date, bp.payment_number""", tenant_id, ids):
+        bayar.setdefault(r["bill_id"], []).append(
+            {"kind": "payment_out", "id": str(r["id"]), "number": r["payment_number"], "date": _tgl(r["payment_date"]),
+             "amount": _uang(r["jumlah"]), "paper": "A5-landscape", "sent": _belum_kirim(), "batal": False, "status": "dibayar"})
+    nd: dict = {}
+    for r in await conn.fetch(
+        """SELECT original_bill_id AS bill_id, id, credit_number, credit_date, total_amount FROM vendor_credits
+           WHERE tenant_id = $1 AND original_bill_id = ANY($2::uuid[]) AND status NOT IN ('draft', 'void')
+           ORDER BY credit_date, credit_number""", tenant_id, ids):
+        nd.setdefault(r["bill_id"], []).append(
+            {"kind": "debit_note", "id": str(r["id"]), "number": r["credit_number"], "date": _tgl(r["credit_date"]),
+             "amount": _uang(r["total_amount"]), "paper": "A4", "sent": _belum_kirim(), "batal": False, "status": "diposting"})
+    hasil = {}
+    for bid in ids:
+        b = bills.get(bid)
+        if not b:
+            continue
+        kel = []
+        if po_bill.get(bid):
+            kel.append({"key": "po", "label": "Pesanan Pembelian", "docs": [dok_purchase_order(p) for p in po_bill[bid]]})
+        kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [dok_tagihan(b, b["keadaan"])]})
+        if um.get(bid):
+            kel.append({"key": "uang_muka", "label": "Uang Muka", "docs": um[bid]})
+        if bayar.get(bid):
+            kel.append({"key": "bayar", "label": "Pembayaran", "docs": bayar[bid]})
+        if nd.get(bid):
+            kel.append({"key": "nota_debit", "label": "Nota Debit", "docs": nd[bid]})
+        hasil[bid] = kel
+    return hasil
+
+
+def documents_baris(kelompok: list) -> list:
+    """documents[{type}] baris daftar = dokumen bundel (urut kelompok); type = kind."""
+    return [{"type": d["kind"]} for g in kelompok for d in g["docs"]]

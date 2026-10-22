@@ -209,6 +209,18 @@ class BillListItem(BaseModel):
     operational_status: Optional[str] = None
     doc_status: Optional[str] = None
     accounting_status: Optional[str] = None
+    # Kontrak seragam (22 Okt 2026; services/tagihan_daftar.fakta_baris -- SAMA dengan detail & bundel)
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    position_text: Optional[str] = None
+    outstanding_amount: Optional[str] = None
+    jatuh_tempo_terbuka: bool = False
+    jatuh_tempo_hari: Optional[int] = None
+    jatuh_tempo_keadaan: Optional[str] = None
+    jatuh_tempo_teks: Optional[str] = None
+    jatuh_tempo_minggu_ini: bool = False
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 class BillListResponse(BaseModel):
@@ -217,6 +229,8 @@ class BillListResponse(BaseModel):
     items: List[BillListItem]
     total: int
     has_more: bool
+    sum_total: Optional[str] = None  # ?with_totals=true
+    sum_sisa: Optional[str] = None
 
 
 class BillDetailResponse(BaseModel):

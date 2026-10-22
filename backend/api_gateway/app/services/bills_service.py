@@ -383,9 +383,13 @@ class BillsService:
         vendor_id: Optional[UUID] = None,
         amount_min: Optional[float] = None,
         amount_max: Optional[float] = None,
+        aksi: Optional[str] = None,
+        with_totals: bool = False,
     ) -> Dict[str, Any]:
         """
         List bills with filtering, sorting, and pagination.
+        Kontrak seragam (22 Okt 2026): ?aksi= partisi TD.AKSI_TAGIHAN, with_totals (sum_total tanpa batal + sum_sisa = Σ outstanding_amount),
+        medan turunan TD.fakta_baris + documents/doc_count (TD.kelompok_tagihan) -- fungsi SAMA dengan detail & bundel.
 
         Returns:
             {items: [...], total: int, has_more: bool}
@@ -424,24 +428,19 @@ class BillsService:
                     params.append(status)
                     param_idx += 1
 
-            # Search filter
+            # Search filter -- SATU predikat dengan /summary?search= (TD.syarat_cari)
             if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(b.invoice_number ILIKE ${param_idx} OR b.vendor_name ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+                _c, _p = TD.syarat_cari(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
+
+            # Pill aksi (partisi; predikat == TD.aksi_tagihan per baris)
+            if aksi in TD.AKSI_TAGIHAN:
+                _c, _p = TD.sql_aksi_berparam(aksi, param_idx, hari_ini)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
 
             # Date range filter
             if due_date_from:
@@ -508,6 +507,14 @@ class BillsService:
             # (asyncpg menolak argumen yang tak dirujuk kueri).
             count_params = params + [hari_ini] if where_uses_hari else params
             total = await conn.fetchval(count_query, *count_params)
+            jumlah = {}
+            if with_totals is True:
+                # WHERE + parameter SAMA dengan COUNT; sum_sisa == Σ kolom outstanding_amount seluruh hasil (draf/batal tak menyumbang)
+                _j = await conn.fetchrow(
+                    f"""SELECT COALESCE(SUM(b.amount) FILTER (WHERE {TD.sql_keadaan_dok()} <> 'void'), 0) AS t,
+                               COALESCE(SUM({TD.sql_hutang()}), 0) AS s
+                        FROM bills b {TD.join_rincian()} WHERE {where_clause}""", *count_params)
+                jumlah = {"sum_total": f"{Decimal(str(_j['t'])):.2f}", "sum_sisa": f"{Decimal(str(_j['s'])):.2f}"}
 
             # SELECT di bawah SELALU merujuk hari_ph (kolom status).
             params.append(hari_ini)
@@ -525,6 +532,7 @@ class BillsService:
                     {TD.sql_dibayar()} as amount_paid,
                     {TD.sql_sisa()} as amount_due,
                     {TD.sql_keadaan(hari_ph)} as status,
+                    {TD.sql_hutang()} as hutang,
                     b.issue_date,
                     b.due_date,
                     b.created_at,
@@ -540,9 +548,11 @@ class BillsService:
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            kel = await TD.kelompok_tagihan(conn, tenant_id, [row["id"] for row in rows])
 
             items = []
             for row in rows:
+                _dok = TD.documents_baris(kel.get(row["id"], []))
                 # Generate initials from vendor name
                 vendor_name = row["vendor_name"] or ""
                 words = vendor_name.split()
@@ -577,10 +587,13 @@ class BillsService:
                         if row["vendor_id"]
                         else None,
                         "vendor_name": row["vendor_name"],
+                        **TD.fakta_baris(row["status"], row["amount_paid"], row["hutang"], row["due_date"], row["issue_date"], hari_ini),
+                        "documents": _dok,
+                        "doc_count": len(_dok),
                     }
                 )
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     # =========================================================================
     # GET BILL DETAIL
@@ -600,7 +613,8 @@ class BillsService:
                     b.*,
                     {TD.sql_dibayar()} AS journal_paid,
                     {TD.sql_sisa()} as amount_due,
-                    {TD.sql_keadaan("$3::date")} as calculated_status
+                    {TD.sql_keadaan("$3::date")} as calculated_status,
+                    {TD.sql_hutang()} AS hutang_baris
                 FROM bills b
                 LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
                 WHERE b.id = $1 AND b.tenant_id = $2
@@ -694,6 +708,7 @@ class BillsService:
             else:
                 initials = "??"
 
+            _dok_tgh = TD.documents_baris((await TD.kelompok_tagihan(conn, tenant_id, [bill["id"]])).get(bill["id"], []))  # == baris daftar
             return {
                 "id": str(bill["id"]),
                 "invoice_number": bill["invoice_number"],
@@ -708,6 +723,10 @@ class BillsService:
                 ),  # Law 16: journal-derived
                 "amount_due": self._money_str(bill["amount_due"]),
                 "status": bill["calculated_status"],
+                # kontrak seragam (22 Okt 2026): medan turunan == baris daftar (TD.fakta_baris, fungsi SAMA)
+                **TD.fakta_baris(bill["calculated_status"], bill["journal_paid"], bill["hutang_baris"], bill["due_date"], bill["issue_date"], hari_ini),
+                "documents": _dok_tgh,
+                "doc_count": len(_dok_tgh),
                 "issue_date": bill["issue_date"].isoformat(),
                 "due_date": bill["due_date"].isoformat(),
                 # Detail == daftar (26 Sep 2026): jatuh tempo = calculated_status 'overdue' (CASE yang sama dgn daftar,
@@ -2266,7 +2285,7 @@ class BillsService:
     # GET SUMMARY
     # =========================================================================
     async def get_summary(
-        self, tenant_id: str, period: str = "current_month"
+        self, tenant_id: str, period: str = "current_month", search: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get bills summary statistics.
@@ -2340,9 +2359,19 @@ class BillsService:
                     AND b.issue_date >= $2
                     AND b.issue_date < $3
                     AND {kd} NOT IN ('draft', 'void')
+                    {{cari}}
             """
 
-            row = await conn.fetchrow(query, tenant_id, start_date, end_date, today)
+            # ?search= (kontrak seragam 22 Okt 2026): predikat SAMA dengan daftar (TD.syarat_cari); membatasi SEMUA medan per tagihan
+            id_cari = None
+            if isinstance(search, str):  # panggilan langsung tanpa search = objek Query
+                _c, _p = TD.syarat_cari(search, 2)
+                id_cari = [r["id"] for r in await conn.fetch(
+                    f"SELECT b.id FROM bills b WHERE b.tenant_id = $1 AND {_c}", tenant_id, *_p)]
+            if id_cari is None:
+                row = await conn.fetchrow(query.format(cari=""), tenant_id, start_date, end_date, today)
+            else:
+                row = await conn.fetchrow(query.format(cari="AND b.id = ANY($5::uuid[])"), tenant_id, start_date, end_date, today, id_cari)
 
             # Hutang jatuh tempo (ALL-TIME, journal-derived) -- sejajar dgn
             # /api/sales-invoices/summary. compute_ap_outstanding = sumber tunggal
@@ -2353,10 +2382,27 @@ class BillsService:
                        COALESCE(SUM(outstanding), 0) AS total_overdue
                 FROM compute_ap_outstanding($1)
                 WHERE due_date < $2::date AND outstanding > 0
-                """,
+                """ + ("" if id_cari is None else " AND bill_id = ANY($3::uuid[])"),
                 tenant_id,
                 today,
+                *([] if id_cari is None else [id_cari]),
             )
+
+            # Pill AKSI (kontrak seragam): predikat SAMA dengan ?aksi= daftar (TD.sql_aksi), SEPANJANG WAKTU (bukan periode; == daftar).
+            # nilai: draf = amount, terbuka = sisa jurnal. Payung tagihan_terbuka = SEMUA tagihan terbuka (== Σ baris tagihan
+            # compute_ap_outstanding > 0; lewat_jatuh_tempo + jatuh_tempo_minggu_ini adalah bagiannya).
+            from .dashboard_v2 import akhir_minggu
+            _nilai = f"(CASE WHEN {TD.sql_aksi('perlu_diposting', '$2', '$3')} THEN b.amount ELSE apr.outstanding END)"
+            aksi_row = await conn.fetchrow(
+                "SELECT " + ", ".join(
+                    f"COUNT(*) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}) AS {k}_count, "
+                    f"COALESCE(SUM({_nilai}) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}), 0) AS {k}_value"
+                    for k in TD.AKSI_TAGIHAN)
+                + f", COUNT(*) FILTER (WHERE {TD.sql_terbuka()}) AS terbuka_count,"
+                  f" COALESCE(SUM(apr.outstanding) FILTER (WHERE {TD.sql_terbuka()}), 0) AS terbuka_value"
+                + f" FROM bills b {TD.join_rincian()} WHERE b.tenant_id = $1"
+                + ("" if id_cari is None else " AND b.id = ANY($4::uuid[])"),
+                tenant_id, today, akhir_minggu(today), *([] if id_cari is None else [id_cari]))
 
             total_amount = int(row["total_amount"])
             total_remaining = int(row["total_remaining"])
@@ -2377,6 +2423,10 @@ class BillsService:
                     "vendor_count": row["vendor_count"],
                     "overdue_count": overdue_row["overdue_count"],
                     "total_overdue": int(overdue_row["total_overdue"]),
+                    **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
+                       for k in TD.AKSI_TAGIHAN for m in ("count", "value")},
+                    "tagihan_terbuka_count": int(aksi_row["terbuka_count"]),
+                    "tagihan_terbuka_value": float(aksi_row["terbuka_value"]),
                     "breakdown": {
                         "paid": {
                             "count": row["paid_count"],
@@ -4232,7 +4282,8 @@ class BillsService:
                     b.*,
                     {TD.sql_dibayar()} AS journal_paid,
                     {TD.sql_sisa()} as amount_due,
-                    {TD.sql_keadaan("$3::date")} as calculated_status
+                    {TD.sql_keadaan("$3::date")} as calculated_status,
+                    {TD.sql_hutang()} AS hutang_baris
                 FROM bills b
                 LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
                 WHERE b.id = $1 AND b.tenant_id = $2
@@ -4351,6 +4402,7 @@ class BillsService:
                 for item in items
             ]
 
+            _dok_tgh = TD.documents_baris((await TD.kelompok_tagihan(conn, tenant_id, [bill["id"]])).get(bill["id"], []))  # == baris daftar
             return {
                 "id": str(bill["id"]),
                 "invoice_number": bill["invoice_number"],
@@ -4361,6 +4413,10 @@ class BillsService:
                     "initials": initials,
                 },
                 "status": bill["calculated_status"],
+                # kontrak seragam (22 Okt 2026): medan turunan == baris daftar (TD.fakta_baris, fungsi SAMA)
+                **TD.fakta_baris(bill["calculated_status"], bill["journal_paid"], bill["hutang_baris"], bill["due_date"], bill["issue_date"], hari_ini),
+                "documents": _dok_tgh,
+                "doc_count": len(_dok_tgh),
                 "is_overdue": bill["calculated_status"] == "overdue",  # detail == daftar (26 Sep 2026)
                 "overdue_days": hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini),
                 # tanggal + alasan pembatalan -> baris tanda DIBATALKAN di PDF tagihan (pdf_service._tanda_batal)

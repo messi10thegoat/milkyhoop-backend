@@ -573,6 +573,10 @@ async def list_bills(
     vendor_id: Optional[UUID] = Query(None, description="Filter by vendor"),
     amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
     amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
+    # Kontrak seragam (22 Okt 2026): pill AKSI = partisi services/tagihan_daftar.AKSI_TAGIHAN (nilai asing = 422)
+    aksi: Optional[Literal["lewat_jatuh_tempo", "jatuh_tempo_minggu_ini", "perlu_diposting"]] = Query(None),
+    # sum_total (tanpa batal) / sum_sisa (Σ outstanding_amount) atas SEMUA hasil filter (opt-in)
+    with_totals: bool = Query(False),
 ):
     """
     List bills with filtering, sorting, and pagination.
@@ -610,6 +614,8 @@ async def list_bills(
             vendor_id=vendor_id,
             amount_min=amount_min,
             amount_max=amount_max,
+            aksi=aksi if isinstance(aksi, str) else None,
+            with_totals=with_totals is True,  # panggilan langsung (uji) = objek Query -> mati
         )
 
         return result
@@ -631,6 +637,7 @@ async def get_bills_summary(
         "current_month",
         description="Period: current_month, last_month, current_year, or YYYY-MM",
     ),
+    search: Optional[str] = Query(None, description="Predikat SAMA dengan ?search= daftar"),
 ):
     """
     Get bills summary statistics for dashboard.
@@ -641,7 +648,7 @@ async def get_bills_summary(
         ctx = get_user_context(request)
         service = await get_bills_service()
 
-        result = await service.get_summary(tenant_id=ctx["tenant_id"], period=period)
+        result = await service.get_summary(tenant_id=ctx["tenant_id"], period=period, search=search if isinstance(search, str) else None)
 
         return result
 
@@ -836,6 +843,60 @@ async def get_bill_detail(request: Request, bill_id: UUID):
 # =============================================================================
 # GET BILL JOURNALS
 # =============================================================================
+@router.get("/{bill_id}/documents")
+async def get_bill_documents(request: Request, bill_id: UUID):
+    """Bundel panel berjangkar FAKTUR PEMBELIAN (kontrak seragam 22 Okt 2026): skema SAMA dgn bundel faktur/PO {anchor, default, groups};
+    pembentuk SATU tempat (services/tagihan_daftar.kelompok_tagihan) = sumber documents[] baris daftar & detail.
+    anchor.position_text/paid/balance = detail tagihan (compute_ap_rincian, ungkapan SAMA dgn kolom amount_paid/amount_due)."""
+    from ..services import tagihan_daftar as TD
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tid = ctx["tenant_id"]
+            hari_ini = await tanggal_dokumen(conn, tid)
+            b = await conn.fetchrow(
+                f"""SELECT b.id, b.invoice_number, b.vendor_name, b.vendor_id, b.amount,
+                           {TD.sql_keadaan("$3::date")} AS keadaan, {TD.sql_dibayar()} AS dibayar, {TD.sql_sisa()} AS sisa
+                    FROM bills b {TD.join_rincian("$2")} WHERE b.id = $1 AND b.tenant_id = $2""", bill_id, tid, hari_ini)
+            if not b:
+                raise HTTPException(status_code=404, detail="Faktur pembelian tidak ditemukan.")
+            kel = (await TD.kelompok_tagihan(conn, tid, [bill_id])).get(bill_id, [])
+            kontak = await conn.fetchrow(
+                "SELECT COALESCE(mobile_phone, phone) AS phone, email FROM vendors WHERE id = $1 AND tenant_id = $2",
+                b["vendor_id"], tid) if b["vendor_id"] else None
+            return {
+                "anchor": {"kind": "bill", "id": str(b["id"]), "number": b["invoice_number"], "vendor": b["vendor_name"] or "",
+                           "position_text": TD.posisi_tagihan(b["keadaan"], b["dibayar"]),
+                           "total": TD._uang(b["amount"]), "paid": TD._uang(b["dibayar"]), "balance": TD._uang(b["sisa"]),
+                           "vendor_phone": (kontak["phone"] if kontak else None) or None,
+                           "vendor_email": (kontak["email"] if kontak else None) or None},
+                "default": {"group": "faktur", "index": 0},
+                "groups": kel,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting bill documents {bill_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat dokumen faktur pembelian.")
+
+
+@router.get("/{bill_id}/history")
+async def get_bill_history(request: Request, bill_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat Faktur Pembelian, bentuk SAMA dengan GET /sales-orders/{id}/history & /purchase-orders/{id}/history (services/tagihan_riwayat):
+    tagihan beraktor + pembayaran keluar / uang muka / nota debit atas tagihan ini (per izin baca; tanpa izin -> `omitted`). Terbaru dulu."""
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.tagihan_riwayat import riwayat_tagihan
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_tagihan(conn, ctx["tenant_id"], bill_id, lambda m: boleh_baca(request, m), limit if isinstance(limit, int) else 200)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Faktur pembelian tidak ditemukan.")
+    return {"success": True, "data": data}
+
+
 @router.get("/{bill_id}/journals")
 async def get_bill_journals(request: Request, bill_id: UUID):
     """
