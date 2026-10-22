@@ -138,6 +138,18 @@ async def nyata(c):
     await PD.dokumen_po(c, "kaos-biru-konveksi", [uuid.uuid4()])
     await c.fetch(PD.SQL_BAYAR, "kaos-biru-konveksi", [uuid.uuid4()])
     cek("SQL bundel (po/faktur/uang_muka/bayar) terurai & berjalan di skema nyata", True)
+    # riwayat PO: SQL siklus + tagihan bertaut terurai di skema nyata; PO tak ada -> 404
+    import inspect as _ins, re as _re
+    from app.services import po_riwayat as PRW
+    for _s in _re.findall(r'"""(.*?)"""', _ins.getsource(PRW.riwayat_po), flags=_re.S):
+        if _re.match(r"\s*SELECT", _s):
+            await c.prepare(_s)
+    r0 = req("kaos-biru-konveksi", str(uuid.uuid4()))
+    try:
+        await PO.get_purchase_order_history(**kw(PO.get_purchase_order_history, r0, po_id=uuid.uuid4()))
+        cek("riwayat PO tak ada -> 404", False, "tidak 404")
+    except Exception as e:
+        cek("riwayat PO: SQL terurai di skema nyata; PO tak ada -> 404", getattr(e, "status_code", None) == 404, e)
     print("INFO PO nyata = %d baris (0 = pembuktian andalkan sintetis + uji tulis TES E2E)" % await c.fetchval("SELECT count(*) FROM purchase_orders"))
 
 
