@@ -3243,6 +3243,10 @@ DIRECT_ACTIONS: dict[str, DirectActionConfig] = {
             ),
             FieldSpec(name="reference", label="Referensi"),
             FieldSpec(name="notes", label="Catatan"),
+            # 22 Okt 2026 (putusan MASTER, temuan WORKSPACE): chat mengumumkan "berhasil dicatat" + creates_journal=True, padahal
+            # bawaan API = DRAF (tanpa jurnal) -> klaim palsu. Agen SELALU "Simpan & posting" (sama dgn UI CW UM Pembelian).
+            FieldSpec(name="simpan_dan_posting", label="Simpan & posting", field_type="boolean", default="true", hidden=True,
+                      editable=False),
         ],
     ),
     "void_vendor_deposit": DirectActionConfig(
