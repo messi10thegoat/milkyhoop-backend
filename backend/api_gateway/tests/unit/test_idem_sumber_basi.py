@@ -154,7 +154,7 @@ async def test_klien_dokumen_ada_isi_beda_tetap_409_dan_isi_sama_replay():
 
 def test_peta_sumber_hanya_source_type_buat_dan_tabel_literal():
     assert set(IDEM.SUMBER_BUAT) == {"RECEIVE_PAYMENT", "BILL_PAYMENT", "SALES_ORDER_CREATE", "QUOTE_CREATE",
-                                     "SI_CREATE", "PROFORMA_CREATE", "CN_CREATE"}
+                                     "SI_CREATE", "PROFORMA_CREATE", "CN_CREATE", "PO_CREATE"}
     for tabel, kol, st in IDEM.SUMBER_BUAT.values():
         assert tabel.replace("_", "").isalnum() and (kol is None or kol.isidentifier())
 
