@@ -44,6 +44,7 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
+from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
 from fastapi import Response
 
@@ -53,6 +54,8 @@ from ..schemas.purchase_orders import (
     ReceiveGoodsRequest,
     ConvertToBillRequest,
     CancelPurchaseOrderRequest,
+    ReceivePreviewRequest,
+    CancelPreviewRequest,
     PurchaseOrderResponse,
     PurchaseOrderDetailResponse,
     PurchaseOrderListResponse,
@@ -103,16 +106,19 @@ async def _kunci_po(conn, tenant_id: str, po_id, kolom: str = "*"):
 
 async def _vendor_tenant(conn, tenant_id: str, vendor_id):
     """Law 24: vendor_id WAJIB milik tenant (422 bila bukan). None bila vendor_id kosong."""
-    if not vendor_id:
-        return None
-    try:
-        vid = UUID(str(vendor_id))
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=422, detail={"code": "VENDOR_TIDAK_SAH", "message": "ID vendor tidak sah."})
-    v = await conn.fetchrow("SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tenant_id)
-    if not v:
-        raise HTTPException(status_code=422, detail={"code": "VENDOR_TIDAK_DITEMUKAN", "message": "Vendor tidak ditemukan di usaha ini."})
+    v, bloks = await PR.blok_vendor(conn, tenant_id, vendor_id)  # penentu SAMA dengan /calculate
+    _tolak(bloks)
     return v
+
+
+def _tolak(bloks: list) -> None:
+    """Endpoint TULIS: blok pertama -> galat HTTP. 400 = pesan teks (bentuk lama); selain itu {code, message}."""
+    if not bloks:
+        return
+    b = bloks[0]
+    if b["status"] == 400:
+        raise HTTPException(status_code=400, detail=b["message"])
+    raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
 
 
 async def _simpan_baris(conn, po_id, baris: list):
@@ -802,23 +808,17 @@ async def update_purchase_order(
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id)
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
 
-                if po["status"] not in ("draft", "sent"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa diubah. Hanya Draf atau Terkirim.",
-                    )
+                _tolak((await PR.rencana_ubah(conn, ctx["tenant_id"], po, body))["blocks"])  # = /edit/preview
 
                 update_data = body.model_dump(exclude_unset=True)
                 if not update_data:
                     return {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(po_id)}}
 
                 ubah_uang = False
-                if update_data.get("vendor_id"):
-                    await _vendor_tenant(conn, ctx["tenant_id"], update_data["vendor_id"])
 
                 if "items" in update_data and update_data["items"]:
                     await conn.execute("DELETE FROM purchase_order_items WHERE po_id = $1", po_id)
@@ -887,11 +887,7 @@ async def delete_purchase_order(request: Request, po_id: UUID):
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                if po["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Hanya pesanan pembelian berstatus Draf yang bisa dihapus. Yang sudah terkirim dibatalkan.",
-                    )
+                _tolak(PR.rencana_hapus(po)["blocks"])  # = /delete/preview
                 await conn.execute("DELETE FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
 
             logger.info(f"Purchase order deleted: {po_id}")
@@ -930,11 +926,7 @@ async def send_purchase_order(request: Request, po_id: UUID):
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                if po["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dikirim. Hanya Draf.",
-                    )
+                _tolak(PR.rencana_kirim(po)["blocks"])  # = /send/preview
                 await conn.execute(
                     """
                     UPDATE purchase_orders
@@ -1006,19 +998,10 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         status_code=404, detail="Pesanan pembelian tidak ditemukan."
                     )
 
-                if po["status"] not in ("sent", "partial_received"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Barang tidak bisa diterima untuk pesanan pembelian berstatus '{po['status']}'.",
-                    )
-
-                # receive_date dulu DIABAIKAN: kini divalidasi (tanggal bisnis tenant; tidak sebelum tanggal PO). Penyimpanan
+                # Penentu SAMA dengan /receive/preview (status, tanggal bisnis tenant, baris milik PO, qty <= sisa). Penyimpanan
                 # tanggal per penerimaan menunggu dokumen GRN (P-U4); sampai itu penghitung kumulatif tak punya kolom tanggal.
                 _hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-                if body.receive_date > _hari_ini:
-                    raise HTTPException(status_code=400, detail="Tanggal terima tidak boleh di masa depan.")
-                if body.receive_date < po["po_date"]:
-                    raise HTTPException(status_code=400, detail="Tanggal terima tidak boleh sebelum tanggal pesanan.")
+                _tolak((await PR.rencana_terima(conn, po, body.receive_date, [i.model_dump() for i in body.items], _hari_ini))["blocks"])
 
                 items_received = []
 
@@ -1431,18 +1414,7 @@ async def cancel_purchase_order(
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                if po["status"] in ("cancelled", "closed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibatalkan.",
-                    )
-                q = await conn.fetchrow(
-                    "SELECT COALESCE(SUM(quantity_received), 0) AS diterima, COALESCE(SUM(quantity_billed), 0) AS ditagih "
-                    "FROM purchase_order_items WHERE po_id = $1", po_id)
-                if Decimal(str(q["diterima"])) > 0:
-                    raise HTTPException(status_code=400, detail="Pesanan pembelian yang barangnya sudah diterima tidak bisa dibatalkan.")
-                if Decimal(str(q["ditagih"])) > 0:
-                    raise HTTPException(status_code=400, detail="Pesanan pembelian yang sudah ditagih tidak bisa dibatalkan.")
+                _tolak((await PR.rencana_batal(conn, ctx["tenant_id"], po, body.reason))["blocks"])  # = /cancel/preview
 
                 await conn.execute(
                     """
@@ -1492,11 +1464,7 @@ async def close_purchase_order(request: Request, po_id: UUID):
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                if po["status"] in ("draft", "cancelled", "closed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa ditutup.",
-                    )
+                _tolak((await PR.rencana_tutup(conn, po))["blocks"])  # = /close/preview
                 await conn.execute(
                     """
                     UPDATE purchase_orders
@@ -1521,6 +1489,126 @@ async def close_purchase_order(request: Request, po_id: UUID):
     except Exception as e:
         logger.error(f"Error closing purchase order {po_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal menutup pesanan pembelian.")
+
+
+# =============================================================================
+# PRATINJAU (kontrak PO tahap 2, 22 Okt 2026; pola SO /calculate + /{id}/<aksi>/preview)
+# Penentu = services/po_rencana (SAMA dengan endpoint tulis). 200 walau ditolak; SEMUA blok; transaksi SELALU di-ROLLBACK;
+# `payload` = badan siap kirim ke endpoint tulisnya (FE mengirim apa adanya + X-Idempotency-Key).
+# =============================================================================
+
+
+def _f2(v):
+    return float(PD.r2(v)) if v is not None else None
+
+
+async def _pratinjau(request: Request, po_id: UUID, isi) -> dict:
+    """Kunci PO (_kunci_po, sama dengan tulis) -> isi(conn, ctx, po) -> data; ROLLBACK selalu. 404 bila PO tak ada di tenant ini."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            po = await _kunci_po(conn, ctx["tenant_id"], po_id)
+            if not po:
+                raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+            r = await isi(conn, ctx, po)
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    bloks = r.pop("blocks")
+    sesudah = r.get("status_sesudah")
+    return {"success": True, "data": {
+        "po_id": str(po["id"]), "po_number": po["po_number"], "status": po["status"], "position_text": PD.position_text(po["status"]),
+        "ok": not bloks, "blocks": PR.untuk_respons(bloks),
+        **({"status_sesudah": sesudah, "position_text_sesudah": PD.position_text(sesudah)} if sesudah else {}),
+        **r,
+    }}
+
+
+@router.post("/calculate")
+async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRequest):
+    """Pratinjau BUAT/UBAH form PO tanpa menyimpan: kalkulator YANG SAMA dengan create/PATCH (po_rencana.hitung -> po_hitung, Decimal 2dp
+    HALF_UP). Bentuk sejajar SO /calculate (per baris + header). vendor_id dicek milik tenant (blok, bukan galat). payload = badan create."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
+    h = PR.hitung([i.model_dump() for i in body.items], body.discount_percent, body.discount_amount, body.tax_rate)
+    return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), **PR.hitung_json(h),
+                                      "payload": body.model_dump(mode="json")}}
+
+
+@router.post("/{po_id}/edit/preview")
+async def preview_edit_purchase_order(request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest):
+    """Pratinjau UBAH (badan = PATCH): blok (status bukan Draf/Terkirim, vendor bukan milik tenant, baris sudah diterima/ditagih) +
+    perubahan {field, before, after} + angka sesudah (bila uang berubah). payload = badan PATCH (hanya medan yang dikirim)."""
+    async def isi(conn, ctx, po):
+        r = await PR.rencana_ubah(conn, ctx["tenant_id"], po, body)
+        t = r["header_sesudah"]
+        out = {"blocks": r["blocks"], "perubahan": r["perubahan"], "payload": body.model_dump(mode="json", exclude_unset=True)}
+        if t is not None:
+            out.update({"subtotal_sesudah": _f2(t["subtotal"]), "discount_amount_sesudah": _f2(t["discount_amount"]),
+                        "tax_amount_sesudah": _f2(t["tax_amount"]), "total_amount_sesudah": _f2(t["total_amount"])})
+        if r["baris_baru"] is not None:
+            out["items"] = PR.hitung_json({"baris": r["baris_baru"], "header": t})["items"]
+        return out
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/send/preview")
+async def preview_send_purchase_order(request: Request, po_id: UUID):
+    """Pratinjau KIRIM (Draf -> Terkirim). payload = {} (POST /send tanpa badan)."""
+    async def isi(conn, ctx, po):
+        return {**PR.rencana_kirim(po), "payload": {}}
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/receive/preview")
+async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[ReceivePreviewRequest] = None):
+    """Pratinjau TERIMA. Badan kosong = bawaan SEMUA sisa per baris pada tanggal bisnis hari ini. Per baris {po_item_id, description,
+    qty, sudah_diterima, sisa, akan_diterima}; nilai penerimaan ini + amount_received sesudah (turunan baris, 2dp HALF_UP per baris);
+    status sesudah; blok (status, tanggal di masa depan / sebelum tanggal PO, baris bukan milik PO, qty > sisa). payload = badan /receive."""
+    async def isi(conn, ctx, po):
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        items = [i.model_dump() for i in body.items] if body and body.items else None
+        r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari)
+        return {"blocks": r["blocks"], "status_sesudah": r["status_sesudah"], "receive_date": r["payload"]["receive_date"],
+                "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
+                           "akan_diterima": _f2(b["akan_diterima"])} for b in r["baris"]],
+                "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
+                "payload": r["payload"]}
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/close/preview")
+async def preview_close_purchase_order(request: Request, po_id: UUID):
+    """Pratinjau TUTUP: blok + akibat. sisa_ditagih_sesudah = 0 (PD.STATUS_TANPA_SISA_TAGIH; pola NetSuite PO Closed); catatan sisa barang
+    tak diterima / sudah diterima belum ditagih. payload = {}."""
+    async def isi(conn, ctx, po):
+        r = await PR.rencana_tutup(conn, po)
+        return {**r, "sisa_ditagih_sesudah": _f2(r["sisa_ditagih_sesudah"]), "payload": {}}
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/cancel/preview")
+async def preview_cancel_purchase_order(request: Request, po_id: UUID, body: Optional[CancelPreviewRequest] = None):
+    """Pratinjau BATAL (badan {reason} boleh kosong -> blok ALASAN_WAJIB). Blok: status Selesai/Dibatalkan, sudah diterima, sudah ditagih.
+    Catatan: uang muka pembelian bertaut tetap tercatat. payload = {reason}."""
+    alasan = ((body.reason if body else None) or "").strip() or None
+    async def isi(conn, ctx, po):
+        r = await PR.rencana_batal(conn, ctx["tenant_id"], po, alasan)
+        return {**r, "sisa_ditagih_sesudah": _f2(r["sisa_ditagih_sesudah"]), "reason": alasan, "payload": {"reason": alasan}}
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/delete/preview")
+async def preview_delete_purchase_order(request: Request, po_id: UUID):
+    """Pratinjau HAPUS (hanya Draf). payload = null (DELETE tanpa badan)."""
+    async def isi(conn, ctx, po):
+        return {**PR.rencana_hapus(po), "payload": None}
+    return await _pratinjau(request, po_id, isi)
 
 
 # =============================================================================

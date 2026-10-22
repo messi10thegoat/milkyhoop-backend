@@ -435,10 +435,17 @@ POST /api/proformas/{proforma_id}/issue
 POST /api/proformas/{proforma_id}/issue/preview
 POST /api/proformas/{proforma_id}/update/preview
 POST /api/purchase-orders
+POST /api/purchase-orders/calculate
 POST /api/purchase-orders/{po_id}/cancel
+POST /api/purchase-orders/{po_id}/cancel/preview
 POST /api/purchase-orders/{po_id}/close
+POST /api/purchase-orders/{po_id}/close/preview
+POST /api/purchase-orders/{po_id}/delete/preview
+POST /api/purchase-orders/{po_id}/edit/preview
 POST /api/purchase-orders/{po_id}/receive
+POST /api/purchase-orders/{po_id}/receive/preview
 POST /api/purchase-orders/{po_id}/send
+POST /api/purchase-orders/{po_id}/send/preview
 POST /api/purchase-orders/{po_id}/to-bill
 POST /api/quotes
 POST /api/quotes/{quote_id}/accept

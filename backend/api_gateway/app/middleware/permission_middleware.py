@@ -737,6 +737,14 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase-orders/[^/]+/receive$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/[^/]+/send$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/[^/]+/to-bill$", ["POST"], "purchase_order", "P"),
+    # kontrak PO tahap 2 (22 Okt 2026): pratinjau = izin rute TULISNYA (test_izin_rute_pratinjau); calculate = baca (pola SO /calculate)
+    (r"^/api/purchase-orders/calculate$", ["POST"], "purchase_order", "R"),
+    (r"^/api/purchase-orders/[^/]+/edit/preview$", ["POST"], "purchase_order", "U"),
+    (r"^/api/purchase-orders/[^/]+/send/preview$", ["POST"], "purchase_order", "P"),
+    (r"^/api/purchase-orders/[^/]+/receive/preview$", ["POST"], "purchase_order", "P"),
+    (r"^/api/purchase-orders/[^/]+/close/preview$", ["POST"], "purchase_order", "U"),
+    (r"^/api/purchase-orders/[^/]+/cancel/preview$", ["POST"], "purchase_order", "V"),
+    (r"^/api/purchase-orders/[^/]+/delete/preview$", ["POST"], "purchase_order", "D"),
     # recurring_bills
     (r"^/api/recurring-bills$", ["POST"], "purchase_invoice", "C"),
     (r"^/api/recurring-bills/[^/]+$", ["DELETE"], "purchase_invoice", "D"),

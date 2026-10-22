@@ -33,6 +33,9 @@ KHUSUS = {
     "POST /api/quotes/{quote_id}/edit/preview": "PATCH /api/quotes/{quote_id}",
     # U2b ubah draf proforma: pratinjau menjalankan penulis PATCH /proformas/{id} (proformas._tulis_ubah)
     "POST /api/proformas/{proforma_id}/update/preview": "PATCH /api/proformas/{proforma_id}",
+    # kontrak PO tahap 2: ubah = PATCH, hapus = DELETE (penentu bersama services/po_rencana)
+    "POST /api/purchase-orders/{po_id}/edit/preview": "PATCH /api/purchase-orders/{po_id}",
+    "POST /api/purchase-orders/{po_id}/delete/preview": "DELETE /api/purchase-orders/{po_id}",
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {

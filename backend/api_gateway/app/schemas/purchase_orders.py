@@ -139,6 +139,18 @@ class CancelPurchaseOrderRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+# Kontrak PO tahap 2 (22 Okt 2026): badan PRATINJAU boleh tak lengkap -- kekurangan jadi BLOK (200), bukan 422.
+class ReceivePreviewRequest(BaseModel):
+    """POST /{id}/receive/preview: kosong = SEMUA sisa per baris pada tanggal bisnis hari ini."""
+    receive_date: Optional[date] = None
+    items: Optional[List[ReceiveItemRequest]] = None
+
+
+class CancelPreviewRequest(BaseModel):
+    """POST /{id}/cancel/preview: alasan kosong -> blok ALASAN_WAJIB."""
+    reason: Optional[str] = Field(None, max_length=500)
+
+
 # =============================================================================
 # RESPONSE MODELS - Items
 # =============================================================================
