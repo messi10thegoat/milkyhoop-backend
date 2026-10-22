@@ -244,3 +244,17 @@ def test_skema_baru():
     assert VS.VendorDepositCreate.model_fields["simpan_dan_posting"].default is False
     assert "account_id" in VS.VendorDepositRefundCreate.model_fields
     assert VS.VoidDepositRequest(reason=None).reason is None
+
+
+def test_agen_void_mengirim_reason_dan_lolos(kon):
+    """Konsumen agen (direct_action_registry void_vendor_deposit) mengirim {id, reference, reason}: medan alasan == "reason" -> 200, bukan 422."""
+    from app.services.unified_agent.direct_action_registry import DIRECT_ACTIONS
+    cfg = DIRECT_ACTIONS["void_vendor_deposit"]
+    assert cfg.rest_endpoint == "/api/vendor-deposits/{id}/void"
+    f = {x.name: x for x in cfg.fields}
+    assert f["reason"].required is True
+    body = VS.VoidDepositRequest.model_validate({"id": str(DID), "reference": "VD-1", "reason": "salah input"})
+    assert body.reason == "salah input"
+    kon(Kon())
+    d = run(VD.preview_void_vendor_deposit(_Req(), DID, body))["data"]
+    assert d["can_proceed"], d["blocks"]
