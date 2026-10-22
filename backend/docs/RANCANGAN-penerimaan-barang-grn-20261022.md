@@ -1,6 +1,6 @@
 # RANCANGAN — Penerimaan Barang (GRN, PEMBELIAN-SERAGAM T3) — 22 Okt 2026, BACKEND2
 
-Status: **RANCANGAN, tanpa kode.** Jurnal, akun, dan migrasi baru butuh **putusan pemilik LANGSUNG** (bagian "Pertanyaan").
+Status: **RANCANGAN, tanpa kode. PUTUSAN PEMILIK P1–P6 sudah diberikan (bagian 6).**
 Acuan: NetSuite *Item Receipt* + akun *Accrued Purchases / GRNI* (Goods Received Not Invoiced); SAP MIGO (GR) → MIRO (IR) dengan
 akun GR/IR clearing. Kembaran internal: sisi Penjualan sudah memakai pola yang sama — Surat Jalan sebelum faktur
 (`services/sj_so.py`, V417): Dr **Barang Terkirim** (peran `GOODS_DELIVERED_NOT_INVOICED`, 1-10660) / Cr Persediaan.
@@ -73,3 +73,34 @@ akun GR/IR clearing. Kembaran internal: sisi Penjualan sudah memakai pola yang s
 ## 5. Gerbang
 Unit (penentu + jurnal seimbang + idempotensi + void), harness DB scratch (PO → GRN sebagian → GRN sisa → tagihan dari PO → void
 GRN ditolak bila sudah ditagih; stok/WAC/jurnal/GRNI cocok; kontrol merah), harness read-only (GRNI == penjaga), nyata kaos "TES E2E".
+
+## 6. PUTUSAN PEMILIK (LANGSUNG di sesi BACKEND2, 22 Okt 2026) — mengikat sebelum kode
+- **P1 YA**: peran `GOODS_RECEIVED_NOT_INVOICED` + akun **2-10150 "Barang Diterima Belum Ditagih"** (LIABILITY, BUKAN hutang vendor /
+  subledger AP) di SEMUA tenant lewat migrasi. Terima: Dr Persediaan / Cr 2-10150. Tagihan dari PO: Dr 2-10150 / Cr Hutang Usaha.
+- **P2 TANPA JURNAL** untuk baris non-stok/jasa: GRN = dokumen + qty; beban lahir saat tagihan (bawaan NetSuite non-inventory).
+  Akibat: grapgrap (seluruhnya non_inventory/service) nol jurnal GRN.
+- **P3 AKUN BARU "Selisih Harga Pembelian"** (beban; pola NetSuite Bill Price Variance) untuk selisih harga tagihan vs harga terima;
+  v1 TIDAK menyesuaikan Persediaan/HPP (tanpa revaluasi stok). Penyesuaian biaya rata-rata = tiket berikutnya.
+- **P4 DIBIARKAN**: penghitung qty diterima pada 3 PO lama kaos tanpa dokumen/jurnal ke belakang.
+- **P5 SETUJU**: tagihan tanpa PO / tanpa penerimaan tetap seperti sekarang (stok masuk saat tagihan diposting).
+- **P6 SETUJU**: flag `penerimaan_barang_v1`, kaos dulu (uji "TES E2E"), grapgrap sesudah nyata kaos lulus.
+
+## 7. Tambahan wajib (MASTER 22 Okt)
+- **(a) Penjaga GRNI** per tenant: saldo jurnal akun 2-10150 == Σ baris GRN tak-void ber-stok (qty diterima − qty tertagih dari
+  penerimaan itu) × harga satuan penerimaan. Fail-closed, dua sisi (sehat HIJAU + injeksi MERAH) sebelum dipercaya (Law 15).
+- **(b) Urutan expand-contract + pemilik berkas**:
+  1. V439 (BACKEND2): tabel GRN + source_type + peran/akun GRNI & Selisih Harga Pembelian per tenant (aditif).
+  2. Kode GRN (BACKEND2: purchase_orders.py, po_rencana.py, services/grn_*.py baru) di balik flag — tagihan BELUM berubah;
+     selama flag mati perilaku = sekarang.
+  3. Posting tagihan atas baris yang sudah diterima (BACKEND: bills_service.py / bills.py) memakai kontrak fungsi dari BACKEND2
+     `grn_tagih.rencana_posting_baris(conn, tenant, bill_items) -> [{bill_item_id, nilai_grni, selisih, perlu_inbound}]` — SATU penentu
+     nilai GRNI/selisih; BACKEND memanggilnya di jalur posting & void tagihan. Rilis bersama dalam satu window.
+  4. (sesudah live) `quantity_received` turunan Σ GRN; penulisan tangan di /receive dihapus.
+- **(c) Tagihan sebagian atas penerimaan sebagian**: per baris PO, qty tagih ≤ (Σ diterima − Σ tertagih) untuk baris ber-stok
+  (pola NetSuite "bill based on receipt"); nilai GRNI yang dibalik = qty tagih × harga satuan penerimaan **FIFO per GRN** (penerimaan
+  terlama ditagih lebih dulu); selisih (harga tagihan − harga terima) × qty → Selisih Harga Pembelian. Baris tagihan bisa menutup
+  beberapa GRN — rincian tautan di tabel `goods_receipt_bill_links` (gr_item_id, bill_item_id, qty, nilai).
+- **(d) Retur sebelum ditagih**: dokumen "Retur Penerimaan" (atau void sebagian baris GRN) = kebalikan penerimaan: stok keluar
+  (record_inventory_outbound pada biaya penerimaan itu, bukan WAC, agar GRNI kembali nol tepat), Dr 2-10150 / Cr Persediaan; qty
+  diterima turun. Retur SESUDAH ditagih tetap lewat Nota Debit (BACKEND, putusan 21–22 Okt). Ditolak bila qty retur > qty belum
+  tertagih dari GRN itu.
