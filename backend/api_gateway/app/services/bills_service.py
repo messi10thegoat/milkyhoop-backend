@@ -1413,7 +1413,7 @@ class BillsService:
     # RECORD PAYMENT
     # =========================================================================
     async def record_payment(
-        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID
+        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Record a payment for a bill.
@@ -1433,6 +1433,16 @@ class BillsService:
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)", tenant_id
                 )
+
+                # Law 14 (22 Okt 2026): X-Idempotency-Key (idem_buat.mulai_aksi BILL_PAY, kunci per tagihan) -- replay = respons asli,
+                # isi beda = 409; dicatat di transaksi yang sama. Tanpa kunci = perilaku lama (kunci = serial saja, bukan dedup; Law 13 != 14).
+                _kp = _sidik = None
+                if idem and idem.get("kunci"):
+                    from . import idem_buat
+                    _kp, _sidik, _lama = await idem_buat.mulai_aksi(conn, idem["ctx"], idem["kunci"], "BILL_PAY", bill_id, idem["isi"],
+                                                                    idem.get("response"))
+                    if _lama is not None:
+                        return _lama
 
                 # 1. Advisory lock — BEFORE any reads (Law 13)
                 await conn.execute(
@@ -1855,7 +1865,7 @@ class BillsService:
                     f"journal={journal_id}, bank_txn={bank_transaction_id}"
                 )
 
-                return {
+                _hasil = {
                     "success": True,
                     "message": "Payment recorded successfully",
                     "created_payment_id": str(payment_id),
@@ -1871,6 +1881,10 @@ class BillsService:
                         else None,
                     },
                 }
+                if _kp:
+                    from . import idem_buat
+                    return await idem_buat.simpan(conn, idem["ctx"], _kp, _sidik, "BILL_PAY", _hasil, payment_id)
+                return _hasil
 
     async def mark_paid(
         self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID

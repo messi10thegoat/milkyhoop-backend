@@ -75,3 +75,15 @@ def test_idempotensi_buat_bills_v2():
     src = inspect.getsource(BS.BillsService.create_bill_v2)
     assert src.index("idem_buat.mulai(") < src.index("TR.blok_buat(") < src.index("generate_purchase_bill_number")
     assert 'idem_buat.simpan(conn, idem["ctx"], _kp, _sidik, "BILL_CREATE"' in src
+
+
+def test_idempotensi_rute_buat_pembelian_lain():
+    from app.routers import vendor_credits as VCR
+    from app.utils.idempotency import SUMBER_BUAT
+    assert SUMBER_BUAT["VC_CREATE"] == ("vendor_credits", None, ())
+    vc = inspect.getsource(VCR.create_vendor_credit)
+    assert vc.index('idem_buat.mulai(conn, ctx, kunci, "VC_CREATE"') < vc.index("generate_vendor_credit_number")
+    assert 'idem_buat.simpan(conn, ctx, kp, sidik, "VC_CREATE"' in vc
+    rp = inspect.getsource(BS.BillsService.record_payment)
+    assert rp.index('idem_buat.mulai_aksi(conn, idem["ctx"], idem["kunci"], "BILL_PAY"') < rp.index("BILL_PAYMENT:")
+    assert "idem_buat.kunci_dari(request)" in inspect.getsource(BR.record_payment)

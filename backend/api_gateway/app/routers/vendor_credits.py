@@ -23,7 +23,7 @@ Endpoints:
 - POST   /vendor-credits/{id}/void    - Void vendor credit
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -516,7 +516,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
 
 
 @router.post("", response_model=VendorCreditResponse, status_code=201)
-async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest):
+async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest, response: Response = None):
     """
     Create a new vendor credit in draft status.
 
@@ -528,9 +528,14 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         pool = await get_pool()
+        from ..services import idem_buat
+        kunci = idem_buat.kunci_dari(request)  # Law 14 (22 Okt 2026): VC_CREATE, pola idem_buat
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai(conn, ctx, kunci, "VC_CREATE", body, "vendor_credits", "vendor_credit", response)
+                if lama is not None:
+                    return lama
                 if body.vendor_id and not await conn.fetchval(
                         "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", UUID(body.vendor_id), ctx["tenant_id"]):
                     raise HTTPException(status_code=400, detail="Vendor tidak ditemukan.")
@@ -640,7 +645,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
 
                 logger.info(f"Vendor credit created: {vc_id}, number={vc_number}")
 
-                return {
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VC_CREATE", {
                     "success": True,
                     "message": "Vendor credit created successfully",
                     "data": {
@@ -649,7 +654,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                         "total_amount": total_amount,
                         "status": "draft",
                     },
-                }
+                }, vc_id)
 
     except HTTPException:
         raise

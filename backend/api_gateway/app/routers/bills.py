@@ -1232,7 +1232,7 @@ async def delete_bill(request: Request, bill_id: UUID):
 @router.post(
     "/{bill_id}/payments", response_model=RecordPaymentResponse, status_code=201
 )
-async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentRequest):
+async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentRequest, response: Response = None):
     """
     Record a payment for a bill.
 
@@ -1248,11 +1248,15 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
 
         service = await get_bills_service()
 
+        # Law 14: X-Idempotency-Key (rute lama; inti bayar = POST /bill-payments yang sudah berkunci)
+        from ..services import idem_buat
+        kunci = idem_buat.kunci_dari(request)
         result = await service.record_payment(
             tenant_id=ctx["tenant_id"],
             bill_id=bill_id,
             request=body.model_dump(),
             user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "isi": body.model_dump(mode="json"), "response": response} if kunci else None,
         )
 
         if not result["success"]:

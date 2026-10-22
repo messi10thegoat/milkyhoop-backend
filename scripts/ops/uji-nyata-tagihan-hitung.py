@@ -168,6 +168,36 @@ async def main():
         b2 = S.CreateBillRequestV2(**{**dasar, "notes": tanda2, "items": [brg("TES I", 1, 12345)]})
         await BR.create_bill_v2(req_k(None), b2, Response()); await BR.create_bill_v2(req_k(None), b2, Response())
         cek(await jumlah(tanda2) == 2, "C KONTROL tanpa kunci x2 -> 2 tagihan (alat bisa membedakan)", str(await jumlah(tanda2)))
+        # D: Law 14 rute buat Pembelian lain -- POST /vendor-credits (VC_CREATE) dan rute lama POST /bills/{id}/payments (BILL_PAY)
+        from app.routers import vendor_credits as VCR
+        from app.schemas import vendor_credits as SV
+        VCR.get_pool = gp
+        tnd = f"TES E2E idem nd {uuid.uuid4()}"
+        bd = SV.CreateVendorCreditRequest(vendor_id=str(v["id"]), vendor_name=v["name"], vendor_credit_date=date(2026, 10, 22), reason="discount",
+                                          notes=tnd, items=[SV.VendorCreditItemCreate(description="TES ND", quantity=Decimal("1"), unit_price=1000)])
+        k = str(uuid.uuid4())
+        n1 = await VCR.create_vendor_credit(req_k(k), bd, Response()); rs = Response()
+        n2 = await VCR.create_vendor_credit(req_k(k), bd, rs)
+        nnd = await c.fetchval("SELECT count(*) FROM vendor_credits WHERE tenant_id = $1 AND notes = $2", T, tnd)
+        cek(n1["data"]["id"] == n2["data"]["id"] and nnd == 1 and rs.headers.get("X-Idempotent-Replay") == "true",
+            "D nota debit kunci sama x2 -> 1 ND", f"n={nnd}")
+        await VCR.create_vendor_credit(req_k(None), bd, Response())
+        cek(await c.fetchval("SELECT count(*) FROM vendor_credits WHERE tenant_id = $1 AND notes = $2", T, tnd) == 2, "D KONTROL ND tanpa kunci -> +1")
+        tb = await c.fetchrow("""SELECT b.id FROM bills b JOIN compute_ap_rincian($1) r ON r.bill_id = b.id
+                                 WHERE b.tenant_id = $1 AND r.outstanding >= 2000 ORDER BY b.created_at LIMIT 1""", T)
+        ba = await c.fetchval("SELECT id FROM bank_accounts WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC LIMIT 1", T)
+        if tb and ba:
+            sp = S.RecordPaymentRequest(amount=1000, payment_date=date(2026, 10, 22), payment_method="transfer", bank_account_id=ba)
+            nbp = lambda: c.fetchval("SELECT count(*) FROM bill_payment_allocations WHERE bill_id = $1", tb["id"])  # noqa: E731
+            sebelum = await nbp(); k = str(uuid.uuid4())
+            p1 = await BR.record_payment(req_k(k), tb["id"], sp, Response()); rs = Response()
+            p2 = await BR.record_payment(req_k(k), tb["id"], sp, rs)
+            cek(p1["data"]["id"] == p2["data"]["id"] and await nbp() == sebelum + 1 and rs.headers.get("X-Idempotent-Replay") == "true",
+                "D bayar rute lama kunci sama x2 -> 1 pembayaran", f"{sebelum} -> {await nbp()}")
+            await BR.record_payment(req_k(None), tb["id"], sp, Response())
+            cek(await nbp() == sebelum + 2, "D KONTROL bayar tanpa kunci -> +1")
+        else:
+            cek(False, "D bayar rute lama: tak ada tagihan kaos ber-sisa / rekening (alat tak bisa menguji)")
     finally:
         await tx.rollback(); await c.close()
     print("RINGKAS gagal=%d %s" % (len(gagal), gagal[:6])); sys.exit(1 if gagal else 0)

@@ -58,7 +58,8 @@ SUMBER_BUAT = {
     "CN_CREATE": ("credit_notes", None, ()),
     "PO_CREATE": ("purchase_orders", None, ()),  # P-U2: PO terhapus -> kunci basi, proses baru
     "VD_CREATE": ("vendor_deposits", None, ()),  # P-U3b: uang muka vendor draf terhapus -> kunci basi, proses baru
-    "BILL_CREATE": ("bills", None, ()),  # 22 Okt 2026 (Law 14): faktur pembelian draf terhapus -> kunci basi, proses baru
+    "BILL_CREATE": ("bills", None, ()),
+    "VC_CREATE": ("vendor_credits", None, ()),  # 22 Okt 2026 (Law 14): nota debit draf terhapus -> kunci basi, proses baru  # 22 Okt 2026 (Law 14): faktur pembelian draf terhapus -> kunci basi, proses baru
 }
 
 
