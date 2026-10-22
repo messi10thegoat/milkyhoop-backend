@@ -7,7 +7,10 @@ q() { docker exec -i "$P" psql -U postgres "$@"; }
 q -d postgres -qc "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB" >/dev/null 2>&1 || { echo "GAGAL buat DB salinan"; exit 2; }
 trap 'q -d postgres -qc "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1; rm -f "${E:-/nonexistent}"' EXIT
 docker exec "$P" sh -c "pg_dump -U postgres milkydb | psql -U postgres -d $DB -q -o /dev/null" 2>/dev/null
-q -d "$DB" -v ON_ERROR_STOP=1 -q -1 < "$AKAR/backend/migrations/V443__nota_debit_aplikasi_status_dan_pagar.sql" || { echo "GAGAL V443 di salinan"; exit 2; }
+# V443 sudah di produksi sejak 22 Okt 04:01Z -> salinan sudah memuatnya; terapkan hanya bila belum (pohon lama / DB lama)
+if [ "$(q -d "$DB" -At -c "SELECT count(*) FROM information_schema.columns WHERE table_name='vendor_credit_applications' AND column_name='status'")" = 0 ]; then
+  q -d "$DB" -v ON_ERROR_STOP=1 -q -1 < "$AKAR/backend/migrations/V443__nota_debit_aplikasi_status_dan_pagar.sql" || { echo "GAGAL V443 di salinan"; exit 2; }
+fi
 echo "salinan: $(q -d $DB -At -c "SELECT count(*) FROM bills")" tagihan
 E=$(mktemp /root/.ndu3a-env-XXXX); chmod 600 "$E"
 docker exec "$G" printenv DATABASE_URL | sed -E "s#/milkydb(\?|$)#/$DB\1#; s/^/DATABASE_URL=/" > "$E"
