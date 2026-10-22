@@ -38,9 +38,12 @@ def test_satu_penentu_dua_endpoint():
     assert "DA.laba_rugi(" in te and "LIKE '5-" not in te
 
 
-def test_basis_kas_jujur_dan_errors_widget():
+def test_basis_kas_qbo_dan_errors_widget():
+    # D1 putusan pemilik 22 Okt: basis kas = pola QBO (diakui saat dibayar, proporsional, tanpa PPN), bukan 0 palsu
     s = inspect.getsource(DB.get_dashboard_summary)
-    assert 'errors["basis"] = "belum_tersedia"' in s
+    assert 'DA.laba_rugi_kas if effective_basis == "cash" else DA.laba_rugi' in s
+    assert "receive_payment_allocations" in DA.SQL_PENDAPATAN_KAS and "customer_deposit_applications" in DA.SQL_PENDAPATAN_KAS
+    assert "NULLIF(si.total_amount, 0)" in DA.SQL_PENDAPATAN_KAS and "bill_payment_allocations" in DA.SQL_BEBAN_TAGIHAN_DIBAYAR
     a = inspect.getsource(DB.get_dashboard_all)
     assert 'errors[label] = "gagal_hitung"' in a and 'response["errors"] = errors' in a
 

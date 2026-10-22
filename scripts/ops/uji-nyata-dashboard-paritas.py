@@ -80,10 +80,23 @@ async def main():
                 nd = s["hutang"].get("nearest_days")
                 cek(nd is None or nd >= 0, f"{L} hutang.nearest_days belum lewat (D7)", str(nd))
                 cek(a.get("errors") == {}, f"{L} /all errors kosong (semua widget berhasil)", str(a.get("errors")))
-            ac = await DB.get_dashboard_all(r, start_date=None, end_date=None, basis="cash", cf_start_date=None, cf_end_date=None,
+            # D1 basis kas (putusan pemilik: pola QBO) -- hitung ulang INDEPENDEN per faktur di Python dari baris alokasi
+            m0 = hari.replace(day=1)
+            ac = await DB.get_dashboard_all(r, start_date=m0.isoformat(), end_date=hari.isoformat(), basis="cash", cf_start_date=None, cf_end_date=None,
                                             exp_start_date=None, exp_end_date=None, expense_limit=10, sales_start_date=None, sales_end_date=None)
-            cek(ac["errors"].get("basis") == "belum_tersedia" and ac["summary"].get("laba_rugi") is None,
-                f"{t} basis=cash -> errors.basis belum_tersedia, laba_rugi null (D1)", str(ac["errors"]))
+            rev_inv = {x["s"]: D(x["r"]) for x in await c.fetch(f"""SELECT je.source_id s, SUM(jl.credit-jl.debit) r FROM journal_entries je
+                JOIN journal_lines jl ON jl.journal_id=je.id JOIN chart_of_accounts coa ON coa.id=jl.account_id WHERE {EFF}
+                AND coa.account_type IN ('REVENUE','OTHER_INCOME') AND je.source_type IN ('INVOICE_REVENUE','INVOICE') GROUP BY 1""", t)}
+            tot_inv = {x["id"]: D(x["total_amount"]) for x in await c.fetch("SELECT id, total_amount FROM sales_invoices WHERE tenant_id = $1", t)}
+            al = await c.fetch("""SELECT a.invoice_id, a.amount_applied, rp.payment_date tgl FROM receive_payment_allocations a JOIN receive_payments rp
+                ON rp.id=a.payment_id AND rp.tenant_id=$1 AND rp.status='posted' WHERE a.status='active'
+                UNION ALL SELECT x.invoice_id, x.amount_applied, cd.deposit_date FROM customer_deposit_applications x JOIN customer_deposits cd
+                ON cd.id=x.deposit_id AND cd.tenant_id=$1 AND cd.status<>'void' AND cd.journal_id IS NOT NULL WHERE x.tenant_id=$1 AND x.status='active'""", t)
+            kas_rev = sum((Decimal(str(x["amount_applied"])) * rev_inv.get(x["invoice_id"], Decimal(0)) / tot_inv[x["invoice_id"]]
+                           for x in al if m0 <= x["tgl"] <= hari and tot_inv.get(x["invoice_id"])), Decimal(0))
+            lrc = ac["summary"]["laba_rugi"]
+            cek(lrc is not None and lrc["basis"] == "cash" and int(lrc["pendapatan"]) == int(kas_rev) and ac["errors"] == {},
+                f"{t} basis=cash (QBO) pendapatan bulan == hitung ulang per faktur (D1)", f"{lrc and lrc['pendapatan']} / {kas_rev:.2f}")
     finally:
         await pool.release(c); await pool.close()
     print("RINGKAS gagal=%d %s" % (len(gagal), gagal[:6])); sys.exit(1 if gagal else 0)

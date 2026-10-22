@@ -745,29 +745,27 @@ async def get_dashboard_summary(
             ed = end_date if isinstance(end_date, date) else end_date
 
             # T1-BE: akrual = DA.laba_rugi (jurnal EFEKTIF; pendapatan TERMASUK OTHER_INCOME -- D11; SATU fungsi dgn v2).
-            # Basis kas (D1): definisi lama selalu 0 (menyaring source_type yang tak pernah menyentuh pendapatan/beban) -> sampai putusan
-            # pemilik, laba_rugi = null + errors.basis = "belum_tersedia" (bukan 0 palsu).
+            # Basis kas (D1): definisi lama selalu 0 (menyaring source_type yang tak pernah menyentuh pendapatan/beban) -> DA.laba_rugi_kas.
             errors: dict = {}
             laba_rugi = None
             pendapatan = pengeluaran = 0
-            if effective_basis == "cash":
-                errors["basis"] = "belum_tersedia"
-            else:
-                _lr = await DA.laba_rugi(conn, tenant_id, sd, ed)
-                _lp = await DA.laba_rugi(conn, tenant_id, prev_start_date, prev_end_date)
-                pendapatan, pengeluaran, profit = int(_lr["pendapatan"]), int(_lr["beban"]), int(_lr["laba"])
-                prev_pendapatan, prev_profit = int(_lp["pendapatan"]), int(_lp["laba"])
-                laba_rugi = LabaRugiSummary(
-                    profit=profit,
-                    pendapatan=pendapatan,
-                    pengeluaran=pengeluaran,
-                    period=period_label,
-                    margin_persen=round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0,
-                    prev_profit=prev_profit,
-                    prev_pendapatan=prev_pendapatan,
-                    profit_change_pct=calc_change_pct(profit, prev_profit),
-                    basis=effective_basis,
-                )
+            # D1: basis kas = pola QBO (putusan pemilik LANGSUNG 22 Okt): diakui saat faktur/tagihan DIBAYAR, proporsional, tanpa PPN.
+            _fn = DA.laba_rugi_kas if effective_basis == "cash" else DA.laba_rugi
+            _lr = await _fn(conn, tenant_id, sd, ed)
+            _lp = await _fn(conn, tenant_id, prev_start_date, prev_end_date)
+            pendapatan, pengeluaran, profit = int(_lr["pendapatan"]), int(_lr["beban"]), int(_lr["laba"])  # tipe lama: int
+            prev_pendapatan, prev_profit = int(_lp["pendapatan"]), int(_lp["laba"])
+            laba_rugi = LabaRugiSummary(
+                profit=profit,
+                pendapatan=pendapatan,
+                pengeluaran=pengeluaran,
+                period=period_label,
+                margin_persen=round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0,
+                prev_profit=prev_profit,
+                prev_pendapatan=prev_pendapatan,
+                profit_change_pct=calc_change_pct(profit, prev_profit),
+                basis=effective_basis,
+            )
 
             # ============================
             # 2. PIUTANG (AR) - from ledger
