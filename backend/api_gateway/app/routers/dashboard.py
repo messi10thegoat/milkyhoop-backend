@@ -723,8 +723,7 @@ async def get_dashboard_summary(
                 )
             # ============================
             # 1. LABA RUGI (P&L Summary)
-            # Pure Ledger: uses get_revenue_by_basis / get_expenses_by_basis SQL functions
-            # Supports both accrual and cash basis
+            # Pure Ledger: DA.laba_rugi (akrual) / DA.laba_rugi_kas (basis kas, pola QBO) -- jurnal EFEKTIF
             # ============================
 
             # Resolve basis if not provided

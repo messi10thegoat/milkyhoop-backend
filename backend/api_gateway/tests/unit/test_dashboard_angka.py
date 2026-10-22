@@ -32,7 +32,8 @@ def test_satu_penentu_dua_endpoint():
     v2 = inspect.getsource(V2.kas_bank) + inspect.getsource(V2.laba_rugi_dan_beban) + inspect.getsource(V2.arus_kas)
     assert "DA.kas_per_akun(" in v2 and "DA.laba_rugi(" in v2 and "DA.arus_kas_harian(" in v2
     s = inspect.getsource(DB.get_dashboard_summary)
-    assert "DA.laba_rugi(" in s and "DA.kas_per_akun(" in s and "DA.saldo_kontrol(" in s and "get_revenue_by_basis" not in s.split("Pure Ledger")[-1]
+    assert '_fn = DA.laba_rugi_kas if effective_basis == "cash" else DA.laba_rugi' in s and "await _fn(conn, tenant_id, sd, ed)" in s
+    assert "DA.kas_per_akun(" in s and "DA.saldo_kontrol(" in s and "get_revenue_by_basis" not in s.split("Pure Ledger")[-1]
     assert "DA.arus_kas_harian(" in inspect.getsource(DB.get_cash_flow_trends)
     te = inspect.getsource(DB.get_top_expenses)
     assert "DA.laba_rugi(" in te and "LIKE '5-" not in te
