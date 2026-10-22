@@ -1365,11 +1365,17 @@ class BillsService:
                     # #30: bill_attachments CASCADE menghapus BARIS tapi objeknya
                     # tertinggal -> kumpulkan path di sini, hapus objek SESUDAH commit.
                     berkas = await lepas_berkas_milik(conn, "bills", bill_id)
+                    # G5 (22 Okt 2026, PEMBELIAN-SERAGAM; kait BACKEND2 services/po_daftar): PO tertaut dibaca SEBELUM hapus
+                    # (bill_items ikut terhapus CASCADE), lalu qty tertagih PO dipulihkan di transaksi yang SAMA.
+                    from . import po_daftar as _pd
+                    _po_ids = await _pd.po_terkait_bill(conn, tenant_id, bill_id)
                     await conn.execute(
                         "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
                         bill_id,
                         tenant_id,
                     )
+                    if _po_ids:
+                        await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
                 except asyncpg.ForeignKeyViolationError as fk_err:
                     return {
                         "success": False,
@@ -2233,6 +2239,12 @@ class BillsService:
                     bill_id,
                     tenant_id,
                 )
+
+                # G5 (22 Okt 2026): bill void -> qty tertagih PO tertaut dipulihkan (sinkron_tagih menghitung bill TIDAK void), transaksi SAMA
+                from . import po_daftar as _pd
+                _po_ids = await _pd.po_terkait_bill(conn, tenant_id, bill_id)
+                if _po_ids:
+                    await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
 
                 logger.info(f"Bill voided: {bill_id}, reason: {reason}")
 
