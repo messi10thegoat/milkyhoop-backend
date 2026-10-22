@@ -89,6 +89,7 @@ from ..utils.sorting import build_order_by_clause  # noqa: E402
 from ..utils.money import cents_to_decimal_string  # noqa: E402
 from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 
+from . import tagihan_aksi as TA  # noqa: E402  penentu aksi detail SATU (post/void/delete + pratinjau)
 from . import tagihan_rencana as TR  # noqa: E402  penentu hitung + blok SATU (create/update v2, /calculate, edit/preview)
 from . import tagihan_daftar as TD  # noqa: E402  PEMBELIAN-SERAGAM (1): uang+keadaan tagihan dari compute_ap_rincian (V440)
 
@@ -1325,54 +1326,10 @@ class BillsService:
                 if not bill:
                     return {"success": False, "message": "Bill not found"}
 
-                # Use authoritative derive_doc_status helper instead of
-                # brittle direct status_v2 check. Handles legacy `status`
-                # column ('void') and status_v2 desync gracefully.
-                doc_status = derive_doc_status(dict(bill))
-
-                if doc_status == "void":
-                    return {
-                        "success": False,
-                        "message": "Cannot delete voided bill",
-                    }
-                if doc_status != "draft":
-                    return {
-                        "success": False,
-                        "message": (
-                            f"Cannot delete bill with status '{doc_status}'. "
-                            "Only draft bills can be deleted. Use void instead."
-                        ),
-                    }
-
-                if (bill["amount_paid"] or 0) > 0:
-                    return {
-                        "success": False,
-                        "message": "Cannot delete bill with payments. Void the bill instead.",
-                    }
-
-                # Pre-flight: non-cascade FK dependencies. Drafts SHOULD
-                # not have any of these, but guard so DELETE returns a
-                # clear 400 instead of leaking a 500 to the frontend.
-                dep_checks = [
-                    ("bill_payment_allocations", "pembayaran tagihan"),
-                    ("vendor_deposit_applications", "aplikasi deposit vendor"),
-                    ("fixed_assets", "aset tetap"),
-                    ("asset_maintenance", "pemeliharaan aset"),
-                    ("production_subcontracts", "subkontrak produksi"),
-                ]
-                for table, label in dep_checks:
-                    exists = await conn.fetchval(
-                        f"SELECT 1 FROM {table} WHERE bill_id = $1 LIMIT 1",
-                        bill_id,
-                    )
-                    if exists:
-                        return {
-                            "success": False,
-                            "message": (
-                                f"Tidak dapat menghapus faktur draft: masih ada "
-                                f"referensi {label}. Lepas referensi terlebih dahulu."
-                            ),
-                        }
+                # Blok (penentu SATU dgn POST /bills/{id}/delete/preview; tagihan_aksi.blok_hapus, teks lama): pertama -> pesan.
+                _bloks = TA.blok_hapus(bill, await TA.ref_hapus(conn, bill_id))
+                if _bloks:
+                    return {"success": False, "message": _bloks[0]["message"]}
 
                 # Delete bill — bill_items + bill_attachments cascade.
                 # V230: `app.user_id` untuk trigger `trg_log_deletion`. Blok
@@ -2017,43 +1974,11 @@ class BillsService:
                 if not bill:
                     return {"success": False, "message": "Bill not found", "data": None}
 
-                if (
-                    bill["status"] in ("void",)
-                    or (bill.get("status_v2") or "") == "void"
-                ):
-                    return {
-                        "success": False,
-                        "message": "Bill is already voided",
-                        "data": None,
-                    }
-
-                # Check journal-derived payments (Law 16 — NOT amount_paid cache)
-                journal_paid = await conn.fetchval(
-                    """
-                    SELECT COALESCE(SUM(paid), 0) FROM (
-                        SELECT SUM(jl.debit) AS paid
-                        FROM bill_payment_allocations bpa
-                        JOIN bill_payments_v2 bpv2 ON bpv2.id = bpa.payment_id
-                        JOIN journal_entries je ON je.id = bpv2.journal_id
-                        JOIN journal_lines jl ON jl.journal_id = je.id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE bpa.bill_id = $1 AND bpv2.tenant_id = $2
-                          AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
-                          AND bpv2.journal_id IS NOT NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
-                          AND je.source_type NOT IN ('REVERSAL', 'INVOICE_REVERSAL')
-                    ) combined
-                    """,
-                    bill_id,
-                    tenant_id,
-                )
-
-                if journal_paid and journal_paid > 0:
-                    return {
-                        "success": False,
-                        "message": "Cannot void bill with payments. Refund the payments first.",
-                        "data": None,
-                    }
+                # Blok (penentu SATU dgn POST /bills/{id}/void/preview; tagihan_aksi.blok_void): sudah batal; pembayaran posted (sebut nomor +
+                # nominal, sejajar SI VOID_HAS_PAYMENTS); nota debit aktif diterapkan (putusan pemilik 22 Okt, sejajar VOID_HAS_CREDIT_NOTES).
+                _bloks = await TA.blok_void(conn, tenant_id, bill)
+                if _bloks:
+                    return {"success": False, "message": _bloks[0]["message"], "data": None}
 
                 reason = request.get("reason", "Voided")
                 reversal_journal_id = None
@@ -3477,76 +3402,12 @@ class BillsService:
         service -> COGS_SERVICE; lainnya (non_inventory / goods-non-track / manual) ->
         products.purchase_account_id override kalau ada, else COGS_SALES. Role unmapped -> 422
         (BUKAN fallback Persediaan). Residu -> sink default (Law 4). Return nomor baris berikut."""
-        from fastapi import HTTPException
-        from .inventory_helpers import resolve_inventory_accounts
-
-        rows = await conn.fetch(
-            "SELECT bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, "
-            "p.track_inventory, p.purchase_account_id "
-            "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id "
-            "WHERE bi.bill_id = $1 ORDER BY bi.line_number",
-            bill_id,
-        )
-        acct_totals: dict = {}
-        acct_is_inv: dict = {}
-        order: list = []
-
-        def _acc(aid, amt, is_inv):
-            if aid not in acct_totals:
-                acct_totals[aid] = Decimal("0")
-                acct_is_inv[aid] = is_inv
-                order.append(aid)
-            acct_totals[aid] += amt
-
-        for dr in rows:
-            net = Decimal(str(dr["net"] or 0))
-            pid = dr["product_id"]
-            is_goods = dr["item_type"] == "goods" and dr["track_inventory"]
-            if is_goods:
-                accts = await resolve_inventory_accounts(conn, tenant_id, pid)
-                _acc(accts["inventory_account_id"], net, True)
-                continue
-            ov = dr["purchase_account_id"] if pid is not None else None
-            if ov:
-                _acc(ov, net, False)
-                continue
-            role = (
-                AccountRole.COGS_SERVICE
-                if dr["item_type"] == "service"
-                else AccountRole.COGS_SALES
-            )
-            acct = await conn.fetchval(
-                "SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = $2",
-                tenant_id, role,
-            )
-            if not acct:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "ACCOUNT_DEFAULT_UNMAPPED",
-                        "message": "Akun default pembelian belum diatur. Atur di Pengaturan -> Akun Default.",
-                    },
-                )
-            _acc(acct, net, False)
-
-        summed = sum(acct_totals.values(), Decimal("0"))
-        residual = subtotal_dec - summed
-        if residual != Decimal("0"):
-            sink = (
-                default_inv_acct_id
-                if default_inv_acct_id in acct_totals
-                else (order[0] if order else default_inv_acct_id)
-            )
-            _acc(sink, residual, True)
-
+        # Perhitungan baris = tagihan_aksi.hitung_debit (SATU fungsi dgn pratinjau POST /bills/{id}/post/preview); di sini hanya MENULIS.
         ln = start_line
-        for aid in order:
-            amt = acct_totals[aid]
-            if amt == Decimal("0"):
-                continue
+        for aid, amt, _inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, default_inv_acct_id):
             memo = (
                 f"Pembelian - {vendor_name}"
-                if acct_is_inv.get(aid)
+                if _inv
                 else f"Pembelian jasa/beban - {vendor_name}"
             )
             await conn.execute(
@@ -3603,65 +3464,19 @@ class BillsService:
                 if not bill:
                     return {"success": False, "message": "Bill not found", "data": None}
 
-                if bill["status_v2"] != "draft":
-                    return {
-                        "success": False,
-                        "message": f"Cannot post bill with status '{bill['status_v2']}'. Only draft bills can be posted.",
-                        "data": None,
-                    }
+                # Blok (penentu SATU dgn POST /bills/{id}/post/preview; tagihan_aksi.blok_posting): pertama -> pesan.
+                _bloks, _akun = await TA.blok_posting(conn, tenant_id, bill)
+                if _bloks:
+                    return {"success": False, "message": _bloks[0]["message"], "data": None}
 
                 grand_total = Decimal(str(bill["grand_total"]))
                 bill_tax = Decimal(str(bill["tax_amount"] or 0))
                 subtotal = grand_total - bill_tax
 
-                # 3. Resolve accounts (Law 27 + Fase D2.3 role-based)
-                # Check if this bill is linked to a production subcontract → route to WIP
-                is_sc_bill = await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)",
-                    bill_id,
-                )
-                # Fase D3.3: subcontract -> WIP_SUBCONTRACT (was 1-10650);
-                # else -> INVENTORY_MERCHANDISE (was 1-10600).
-                debit_role = (
-                    AccountRole.WIP_SUBCONTRACT
-                    if is_sc_bill
-                    else AccountRole.INVENTORY_MERCHANDISE
-                )
-                debit_code = debit_role  # for downstream error messages
-                ap_account_id = await resolve_account_id_by_role(
-                    conn, tenant_id, AccountRole.AP_TRADE
-                )
-                inventory_account_id = await resolve_account_id_by_role(
-                    conn, tenant_id, debit_role
-                )
-                vat_input_account_id = None
-                if bill_tax > 0:
-                    vat_input_account_id = await resolve_account_id_by_role_if_pkp(
-                        conn, tenant_id, AccountRole.VAT_INPUT
-                    )
-                    if vat_input_account_id is None:
-                        # Non-PKP tenant with tax_amount > 0 -> reject loudly.
-                        return {
-                            "success": False,
-                            "message": PESAN_NON_PKP_PEMBELIAN,
-                            "data": None,
-                        }
-
-                if not ap_account_id:
-                    return {
-                        "success": False,
-                        "message": "Akun AP_TRADE tidak ter-resolve",
-                        "data": None,
-                    }
-                if not inventory_account_id:
-                    return {
-                        "success": False,
-                        "message": (
-                            f"Akun debit ({debit_code} / "
-                            "INVENTORY_MERCHANDISE) tidak ter-resolve"
-                        ),
-                        "data": None,
-                    }
+                # 3. Akun (Law 27; resolve SATU di tagihan_aksi.blok_posting)
+                ap_account_id = _akun["ap"]
+                inventory_account_id = _akun["debit"]
+                vat_input_account_id = _akun["vat"]
 
                 # 4. Generate journal number
                 journal_number = (

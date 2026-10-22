@@ -898,6 +898,68 @@ async def get_bill_history(request: Request, bill_id: UUID, limit: int = Query(2
     return {"success": True, "data": data}
 
 
+async def _pratinjau_aksi(request: Request, bill_id: UUID, isi):
+    """Kerangka pratinjau aksi tagihan (pola PO a1599359): transaksi READ ONLY, tanpa kunci, 200 walau diblok; 404 bila tak ada."""
+    from ..services import tagihan_daftar as TD
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+            b = await conn.fetchrow(
+                f"""SELECT b.id, b.invoice_number, {TD.sql_keadaan("$3::date")} AS keadaan, {TD.sql_dibayar()} AS dibayar
+                    FROM bills b {TD.join_rincian("$2")} WHERE b.id = $1 AND b.tenant_id = $2""", bill_id, ctx["tenant_id"], hari)
+            if not b:
+                raise HTTPException(status_code=404, detail="Faktur pembelian tidak ditemukan.")
+            out = await isi(conn, ctx)
+    out["blocks"] = out.get("blocks", [])
+    return {"success": True, "data": {"bill_id": str(b["id"]), "invoice_number": b["invoice_number"], "status": b["keadaan"],
+                                      "position_text": TD.posisi_tagihan(b["keadaan"], b["dibayar"]), "ok": not out["blocks"], **out}}
+
+
+@router.post("/{bill_id}/post/preview")
+async def preview_post_bill(request: Request, bill_id: UUID):
+    """Pratinjau POSTING draf (penentu SATU dgn post_bill: tagihan_aksi.blok_posting + hitung_debit). Isi: jurnal yang akan dibuat
+    (Dr per baris / PPN Masukan / Cr Utang), grand_total, status_sesudah. payload = null (POST /post tanpa badan)."""
+    from ..services import tagihan_aksi as TA
+
+    async def isi(conn, ctx):
+        r = await TA.rencana_posting(conn, ctx["tenant_id"], bill_id)
+        return {"blocks": r["blocks"], "status_sesudah": "posted", "position_text_sesudah": "Belum lunas",
+                "journal_lines": r["baris"], "grand_total": f"{r['grand_total']:.2f}", "tax_amount": f"{r['tax_amount']:.2f}", "payload": None}
+    return await _pratinjau_aksi(request, bill_id, isi)
+
+
+@router.post("/{bill_id}/void/preview")
+async def preview_void_bill(request: Request, bill_id: UUID, body: Optional[dict] = Body(None)):
+    """Pratinjau BATAL (penentu SATU dgn void_bill: tagihan_aksi.blok_void). Isi: jurnal pembalik (cermin jurnal tagihan), uang muka yang
+    akan DILEPAS otomatis (putusan pemilik 22 Okt), akibat (stok, PO). payload = {reason} badan POST /void."""
+    from ..services import tagihan_aksi as TA
+
+    async def isi(conn, ctx):
+        r = await TA.rencana_void(conn, ctx["tenant_id"], bill_id)
+        return {"blocks": r["blocks"], "status_sesudah": "void", "position_text_sesudah": "Batal", "journal_lines": r["baris"],
+                "deposits_released": [{"deposit_number": u["deposit_number"], "amount": f"{u['amount']:.2f}"} for u in r["uang_muka_dilepas"]],
+                "notes": r["akibat"], "payload": {"reason": (body or {}).get("reason") or ""}}
+    return await _pratinjau_aksi(request, bill_id, isi)
+
+
+@router.post("/{bill_id}/delete/preview")
+async def preview_delete_bill(request: Request, bill_id: UUID):
+    """Pratinjau HAPUS draf (penentu SATU dgn delete_bill: tagihan_aksi.blok_hapus + ref_hapus; teks lama). payload = null (DELETE tanpa badan)."""
+    from ..services import tagihan_aksi as TA
+
+    async def isi(conn, ctx):
+        b = await conn.fetchrow("SELECT id, amount_paid, status, status_v2, accounting_status, operational_status FROM bills WHERE id = $1 AND tenant_id = $2",
+                                bill_id, ctx["tenant_id"])
+        from ..services.po_daftar import po_terkait_bill
+        notes = ["Jumlah tertagih pesanan pembelian asal dipulihkan."] if await po_terkait_bill(conn, ctx["tenant_id"], bill_id) else []
+        return {"blocks": TA.blok_hapus(b, await TA.ref_hapus(conn, bill_id)), "status_sesudah": None, "position_text_sesudah": None,
+                "notes": notes, "payload": None}
+    return await _pratinjau_aksi(request, bill_id, isi)
+
+
 @router.get("/{bill_id}/journals")
 async def get_bill_journals(request: Request, bill_id: UUID):
     """
@@ -1318,8 +1380,10 @@ async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest):
     Void a bill.
 
     - Reason is required for audit trail
-    - Creates reversal journal entries if payments exist
-    - Voids the AP record in accounting kernel
+    - DIBLOK bila ada pembayaran posted (sebut nomor + nominal) atau nota debit aktif diterapkan -- penentu SATU dgn
+      POST /bills/{id}/void/preview (services/tagihan_aksi.blok_void). (Docstring lama "creates reversal journal entries if payments
+      exist" SALAH: pembayaran tak pernah dibalik diam-diam; diukur 22 Okt.)
+    - Jurnal tagihan dibalik (cermin), stok dikembalikan, qty tertagih PO dipulihkan
     """
     try:
         ctx = get_user_context(request)

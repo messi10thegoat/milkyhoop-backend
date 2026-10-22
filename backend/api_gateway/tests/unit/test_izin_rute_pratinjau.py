@@ -41,6 +41,7 @@ KHUSUS = {
     "POST /api/vendor-deposits/{deposit_id}/delete/preview": "DELETE /api/vendor-deposits/{deposit_id}",
     # Faktur Pembelian tahap 2: ubah draf = PATCH /bills/v2/{id} (penentu bersama services/tagihan_rencana.blok_ubah + hitung)
     "POST /api/bills/{bill_id}/edit/preview": "PATCH /api/bills/v2/{bill_id}",
+    "POST /api/bills/{bill_id}/delete/preview": "DELETE /api/bills/{bill_id}",
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {
