@@ -2371,7 +2371,8 @@ async def get_payment_documents(request: Request, payment_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             p = await conn.fetchrow(
-                f"""SELECT bp.id, bp.payment_number, bp.vendor_name, bp.vendor_id, bp.total_amount, COALESCE(bp.status, 'draft') AS status,
+                f"""SELECT bp.id, bp.payment_number, bp.vendor_name, bp.vendor_id, bp.total_amount, COALESCE(bp.discount_amount, 0) AS discount_amount,
+                           COALESCE(bp.status, 'draft') AS status,
                            {_pk.sql_bruto('bp')} AS bruto, {_pk.sql_dialokasi('bp')} AS dialokasi
                     FROM bill_payments_v2 bp WHERE bp.id = $1 AND bp.tenant_id = $2""", pid, tid)
             if not p:
@@ -2384,7 +2385,9 @@ async def get_payment_documents(request: Request, payment_id: str):
             i_bayar = next(i for i, g in enumerate(kel) if g["key"] == "bayar")
             return {
                 "anchor": {"kind": "payment_out", "id": str(p["id"]), "number": p["payment_number"], "vendor": p["vendor_name"] or "",
+                           # total = kas keluar; discount = potongan pelunasan; total + discount = paid + balance (bruto, rumus alokasi)
                            "position_text": _pk.posisi_bayar(p["status"], f), "total": f"{Decimal(str(p['total_amount'] or 0)):.2f}",
+                           "discount": f"{Decimal(str(p['discount_amount'] or 0)):.2f}",
                            "paid": f"{Decimal(str(f['dialokasikan'])):.2f}", "balance": f"{Decimal(str(f['belum_dialokasikan'])):.2f}",
                            "vendor_phone": (kontak["phone"] if kontak else None) or None,
                            "vendor_email": (kontak["email"] if kontak else None) or None},

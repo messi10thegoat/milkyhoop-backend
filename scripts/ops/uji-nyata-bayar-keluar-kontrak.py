@@ -100,7 +100,8 @@ async def main():
                 bu = await BP.get_payment_documents(req(t), x["id"])
                 an = bu["anchor"]
                 if (PK.documents_baris(bu["groups"]) != x["documents"] or an["position_text"] != x["position_text"]
-                        or D(an["paid"]) != D(x["dialokasikan"]) or D(an["balance"]) != D(x["belum_dialokasikan"])):
+                        or D(an["paid"]) != D(x["dialokasikan"]) or D(an["balance"]) != D(x["belum_dialokasikan"])
+                        or (x["status"] == "posted" and D(an["total"]) + D(an["discount"]) != D(an["paid"]) + D(an["balance"]))):
                     beda_e.append((x["payment_number"], an["position_text"], x["position_text"], an["paid"], an["balance"]))
                 for g in bu["groups"]:
                     if g["key"] != "faktur":
