@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
 
 from ..schemas.purchase_orders import (
     CreatePurchaseOrderRequest,
@@ -137,126 +138,142 @@ async def list_purchase_orders(
     ] = Query("all"),
     vendor_id: Optional[str] = Query(None),
     search: Optional[str] = Query(
-        None, description="Search by PO number or vendor name"
+        None, description="Cari no. PO, vendor, no. referensi, catatan (semua kata wajib cocok)"
     ),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    # 22 Okt 2026 (P-U2, aditif): page/per_page/offset di samping skip/limit (prioritas offset > page > skip; per_page = alias limit)
+    page: int = Query(1, ge=1),
+    per_page: Optional[int] = Query(None, ge=1, le=100),
+    offset: Optional[int] = Query(None, ge=0),
     sort_by: Literal["po_date", "po_number", "total_amount", "created_at"] = Query(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    aksi: Optional[Literal["perlu_dikirim", "telat_terima", "perlu_ditagih"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
-    """List purchase orders with filters and pagination."""
+    """Daftar Pesanan Pembelian. Aditif (P-U2): terima_*, position_text, aksi (pill PARTISI), amount_*/sisa_ditagih TURUNAN dari baris,
+    documents/doc_count, ?aksi=, ?with_totals=true (sum_total/sum_sisa atas SEMUA hasil filter), page/per_page/offset + has_more,
+    urutan deterministik (`, id`)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        _i = lambda v, d: v if isinstance(v, int) and not isinstance(v, bool) else d  # noqa: E731  (panggilan langsung = objek Query)
+        _limit = _i(per_page, None) or _i(limit, 20)
+        _offset = _i(offset, None)
+        _page, _skip = _i(page, 1), _i(skip, 0)
+        _offset = _offset if _offset is not None and _offset > 0 else ((_page - 1) * _limit if _page > 1 else _skip)
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            hari_ini = await PD.tanggal_hari_ini(conn, ctx["tenant_id"])
 
-            # Build query conditions
-            conditions = ["tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            param_idx = 2
+            # $1 = tenant, $2 = tanggal bisnis (predikat telat_terima)
+            conditions = ["po.tenant_id = $1", "$2::date IS NOT NULL"]  # $2 SELALU dirujuk (asyncpg menolak parameter tak terpakai)
+            params = [ctx["tenant_id"], hari_ini]
+            param_idx = 3
 
-            if status and status != "all":
-                conditions.append(f"status = ${param_idx}")
+            if isinstance(status, str) and status != "all":
+                conditions.append(f"po.status = ${param_idx}")
                 params.append(status)
                 param_idx += 1
 
-            if vendor_id:
-                conditions.append(f"vendor_id = ${param_idx}")
+            if isinstance(vendor_id, str) and vendor_id:
+                conditions.append(f"po.vendor_id = ${param_idx}")
                 params.append(UUID(vendor_id))
                 param_idx += 1
 
-            if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(po_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(po_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
-                # 26 Sep 2026: TANPA param_idx += 1 tambahan di sini — tiap cabang di atas sudah menaikkan (dulu ganda -> placeholder melompat -> 500 saat ?search)
+            cari, par_cari = PD.syarat_cari(search, param_idx)
+            if cari:
+                conditions.append(cari)
+                params.extend(par_cari)
+                param_idx += len(par_cari)
 
-            if date_from:
-                conditions.append(f"po_date >= ${param_idx}")
+            if isinstance(date_from, date):
+                conditions.append(f"po.po_date >= ${param_idx}")
                 params.append(date_from)
                 param_idx += 1
 
-            if date_to:
-                conditions.append(f"po_date <= ${param_idx}")
+            if isinstance(date_to, date):
+                conditions.append(f"po.po_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
 
-            where_clause = " AND ".join(conditions)
+            if isinstance(aksi, str) and aksi in PD.AKSI:  # panggilan langsung tanpa aksi = objek Query -> mati
+                conditions.append(PD.sql_aksi(aksi, "$2"))
 
-            # Sort
+            where_clause = " AND ".join(conditions)
+            dari = f"FROM purchase_orders po {PD.SQL_AGREGAT}"
+
             valid_sorts = {
-                "po_date": "po_date",
-                "po_number": "po_number",
-                "total_amount": "total_amount",
-                "created_at": "created_at",
+                "po_date": "po.po_date",
+                "po_number": "po.po_number",
+                "total_amount": "po.total_amount",
+                "created_at": "po.created_at",
             }
-            sort_field = valid_sorts.get(sort_by, "created_at")
+            sort_field = valid_sorts.get(sort_by if isinstance(sort_by, str) else "created_at", "po.created_at")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
-            # Count total
-            count_query = f"SELECT COUNT(*) FROM purchase_orders WHERE {where_clause}"
-            total = await conn.fetchval(count_query, *params)
+            total = await conn.fetchval(f"SELECT COUNT(*) {dari} WHERE {where_clause}", *params)
 
-            # Get items
-            query = f"""
-                SELECT id, po_number, vendor_id, vendor_name,
-                       po_date, expected_date, total_amount,
-                       amount_received, amount_billed, status, ref_no, created_at
-                FROM purchase_orders
+            rows = await conn.fetch(
+                f"""
+                SELECT po.id, po.po_number, po.vendor_id, po.vendor_name, po.po_date, po.expected_date, po.total_amount,
+                       po.status, po.ref_no, po.created_at
+                {dari}
                 WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
+                ORDER BY {sort_field} {sort_dir}, po.id
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([limit, skip])
+                """,
+                *params, _limit, _offset,
+            )
 
-            rows = await conn.fetch(query, *params)
+            ids = [row["id"] for row in rows]
+            fakta = await PD.fakta_po(conn, ctx["tenant_id"], ids, hari_ini)
+            kel = await PD.dokumen_po(conn, ctx["tenant_id"], ids)
 
-            items = [
-                {
+            items = []
+            for row in rows:
+                f = fakta[row["id"]]
+                dok = PD.documents_baris(kel.get(row["id"], []))
+                items.append({
                     "id": str(row["id"]),
                     "po_number": row["po_number"],
                     "vendor_id": str(row["vendor_id"]) if row["vendor_id"] else None,
                     "vendor_name": row["vendor_name"],
                     "po_date": row["po_date"].isoformat(),
-                    "expected_date": row["expected_date"].isoformat()
-                    if row["expected_date"]
-                    else None,
-                    "total_amount": row["total_amount"],
-                    "amount_received": row["amount_received"] or 0,
-                    "amount_billed": row["amount_billed"] or 0,
+                    "expected_date": row["expected_date"].isoformat() if row["expected_date"] else None,
+                    "total_amount": float(row["total_amount"]),
+                    "amount_received": float(f["amount_received"]),
+                    "amount_billed": float(f["amount_billed"]),
+                    "sisa_ditagih": float(f["sisa_ditagih"]),
                     "status": row["status"],
                     "ref_no": row["ref_no"],
                     "created_at": row["created_at"].isoformat(),
-                }
-                for row in rows
-            ]
+                    "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
+                    "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
+                    "position_text": f["position_text"], "aksi": f["aksi"],
+                    "documents": dok, "doc_count": len(dok),
+                })
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            hasil = {"items": items, "total": total, "has_more": (_offset + _limit) < total}
+            if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dengan COUNT (bukan halaman)
+                t = await conn.fetchrow(
+                    f"""SELECT COALESCE(SUM(po.total_amount) FILTER (WHERE po.status <> 'cancelled'), 0) AS sum_total,
+                               COALESCE(SUM(GREATEST(po.total_amount - ag.amount_billed, 0)) FILTER (WHERE po.status <> 'cancelled'), 0) AS sum_sisa
+                        {dari} WHERE {where_clause}""", *params)
+                hasil["sum_total"] = float(PD.r2(t["sum_total"]))
+                hasil["sum_sisa"] = float(PD.r2(t["sum_sisa"]))
+            return hasil
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing purchase orders: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list purchase orders")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar pesanan pembelian.")
 
 
 # =============================================================================
@@ -346,54 +363,64 @@ async def list_pending_purchase_orders(
 
 
 @router.get("/summary", response_model=PurchaseOrderSummaryResponse)
-async def get_purchase_orders_summary(request: Request):
-    """Get summary statistics for purchase orders."""
+async def get_purchase_orders_summary(request: Request, search: Optional[str] = Query(None)):
+    """Ringkasan Pesanan Pembelian. P-U2: jumlah uang TURUNAN dari baris PO (bukan kolom cache), ?search= (predikat daftar) membatasi SEMUA
+    hitungan/nilai, + <aksi>_count/<aksi>_value (predikat SAMA dgn ?aksi= daftar)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
             await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-            query = """
+            hari_ini = await PD.tanggal_hari_ini(conn, ctx["tenant_id"])
+            cari, par_cari = PD.syarat_cari(search, 3)
+            w = f" AND {cari}" if cari else ""
+            pill = ", ".join(
+                f"COUNT(*) FILTER (WHERE {PD.sql_aksi(k, '$2')}) AS {k}_count, "
+                f"COALESCE(SUM(po.total_amount) FILTER (WHERE {PD.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in PD.AKSI)
+            query = f"""
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
-                    COUNT(*) FILTER (WHERE status = 'sent') as sent_count,
-                    COUNT(*) FILTER (WHERE status IN ('partial_received', 'received')) as received_count,
-                    COUNT(*) FILTER (WHERE status IN ('partial_billed', 'billed')) as billed_count,
-                    COUNT(*) FILTER (WHERE status = 'closed') as closed_count,
-                    COALESCE(SUM(total_amount) FILTER (WHERE status != 'cancelled'), 0) as total_value,
-                    COALESCE(SUM(amount_received) FILTER (WHERE status != 'cancelled'), 0) as total_received,
-                    COALESCE(SUM(amount_billed) FILTER (WHERE status != 'cancelled'), 0) as total_billed,
-                    COALESCE(SUM(total_amount - COALESCE(amount_billed, 0))
-                        FILTER (WHERE status IN ('sent', 'partial_received', 'received', 'partial_billed')), 0) as pending_amount
-                FROM purchase_orders
-                WHERE tenant_id = $1
+                    COUNT(*) FILTER (WHERE po.status = 'draft') as draft_count,
+                    COUNT(*) FILTER (WHERE po.status = 'sent') as sent_count,
+                    COUNT(*) FILTER (WHERE po.status IN ('partial_received', 'received')) as received_count,
+                    COUNT(*) FILTER (WHERE po.status IN ('partial_billed', 'billed')) as billed_count,
+                    COUNT(*) FILTER (WHERE po.status = 'closed') as closed_count,
+                    COUNT(*) FILTER (WHERE po.status = 'cancelled') as cancelled_count,
+                    COALESCE(SUM(po.total_amount) FILTER (WHERE po.status <> 'cancelled'), 0) as total_value,
+                    COALESCE(SUM(ag.amount_received) FILTER (WHERE po.status <> 'cancelled'), 0) as total_received,
+                    COALESCE(SUM(ag.amount_billed) FILTER (WHERE po.status <> 'cancelled'), 0) as total_billed,
+                    COALESCE(SUM(GREATEST(po.total_amount - ag.amount_billed, 0))
+                        FILTER (WHERE po.status IN ('sent', 'partial_received', 'received', 'partial_billed')), 0) as pending_amount,
+                    {pill}
+                FROM purchase_orders po {PD.SQL_AGREGAT}
+                WHERE po.tenant_id = $1{w}
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], hari_ini, *par_cari)
 
-            return {
-                "success": True,
-                "data": {
-                    "total": row["total"] or 0,
-                    "draft_count": row["draft_count"] or 0,
-                    "sent_count": row["sent_count"] or 0,
-                    "received_count": row["received_count"] or 0,
-                    "billed_count": row["billed_count"] or 0,
-                    "closed_count": row["closed_count"] or 0,
-                    "total_value": int(row["total_value"] or 0),
-                    "total_received": int(row["total_received"] or 0),
-                    "total_billed": int(row["total_billed"] or 0),
-                    "pending_amount": int(row["pending_amount"] or 0),
-                },
+            data = {
+                "total": row["total"] or 0,
+                "draft_count": row["draft_count"] or 0,
+                "sent_count": row["sent_count"] or 0,
+                "received_count": row["received_count"] or 0,
+                "billed_count": row["billed_count"] or 0,
+                "closed_count": row["closed_count"] or 0,
+                "cancelled_count": row["cancelled_count"] or 0,
+                "total_value": float(PD.r2(row["total_value"])),
+                "total_received": float(PD.r2(row["total_received"])),
+                "total_billed": float(PD.r2(row["total_billed"])),
+                "pending_amount": float(PD.r2(row["pending_amount"])),
             }
+            for k in PD.AKSI:
+                data[f"{k}_count"] = row[f"{k}_count"] or 0
+                data[f"{k}_value"] = float(PD.r2(row[f"{k}_value"]))
+            return {"success": True, "data": data}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting purchase orders summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan pesanan pembelian.")
 
 
 # =============================================================================
@@ -422,7 +449,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
             )
 
             if not po:
-                raise HTTPException(status_code=404, detail="Purchase order not found")
+                raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
 
             # Get items
             items = await conn.fetch(
@@ -435,15 +462,22 @@ async def get_purchase_order(request: Request, po_id: UUID):
             )
 
             # Get linked bills
+            # P-U2: kolom `bills.bill_date` TIDAK ADA (kolomnya issue_date) -> detail PO dulu selalu 500; kunci JSON `bill_date` dipertahankan
             bills = await conn.fetch(
                 """
-                SELECT id, invoice_number, bill_date, grand_total, status_v2 as status
+                SELECT id, invoice_number, issue_date AS bill_date, grand_total, COALESCE(status_v2, status) as status
                 FROM bills
-                WHERE purchase_order_id = $1
-                ORDER BY bill_date
+                WHERE purchase_order_id = $1 AND tenant_id = $2
+                ORDER BY issue_date, invoice_number
             """,
                 po_id,
+                ctx["tenant_id"],
             )
+
+            # paritas detail == baris: fungsi SAMA dengan daftar (services/po_daftar)
+            hari_ini = await PD.tanggal_hari_ini(conn, ctx["tenant_id"])
+            f = (await PD.fakta_po(conn, ctx["tenant_id"], [po_id], hari_ini))[po_id]
+            dok = PD.documents_baris((await PD.dokumen_po(conn, ctx["tenant_id"], [po_id])).get(po_id, []))
 
             return {
                 "success": True,
@@ -452,14 +486,19 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "po_number": po["po_number"],
                     "vendor_id": str(po["vendor_id"]) if po["vendor_id"] else None,
                     "vendor_name": po["vendor_name"],
-                    "subtotal": po["subtotal"],
+                    "subtotal": float(po["subtotal"] or 0),
                     "discount_percent": float(po["discount_percent"] or 0),
-                    "discount_amount": po["discount_amount"] or 0,
+                    "discount_amount": float(po["discount_amount"] or 0),
                     "tax_rate": float(po["tax_rate"] or 0),
-                    "tax_amount": po["tax_amount"] or 0,
-                    "total_amount": po["total_amount"],
-                    "amount_received": po["amount_received"] or 0,
-                    "amount_billed": po["amount_billed"] or 0,
+                    "tax_amount": float(po["tax_amount"] or 0),
+                    "total_amount": float(po["total_amount"]),
+                    "amount_received": float(f["amount_received"]),
+                    "amount_billed": float(f["amount_billed"]),
+                    "sisa_ditagih": float(f["sisa_ditagih"]),
+                    "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
+                    "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
+                    "position_text": f["position_text"], "aksi": f["aksi"],
+                    "documents": dok, "doc_count": len(dok),
                     "status": po["status"],
                     "po_date": po["po_date"].isoformat(),
                     "expected_date": po["expected_date"].isoformat()
@@ -480,14 +519,14 @@ async def get_purchase_order(request: Request, po_id: UUID):
                             "quantity_received": float(item["quantity_received"] or 0),
                             "quantity_billed": float(item["quantity_billed"] or 0),
                             "unit": item["unit"],
-                            "unit_price": item["unit_price"],
+                            "unit_price": float(item["unit_price"] or 0),
                             "discount_percent": float(item["discount_percent"] or 0),
-                            "discount_amount": item["discount_amount"] or 0,
+                            "discount_amount": float(item["discount_amount"] or 0),
                             "tax_code": item["tax_code"],
                             "tax_rate": float(item["tax_rate"] or 0),
-                            "tax_amount": item["tax_amount"] or 0,
-                            "subtotal": item["subtotal"],
-                            "total": item["total"],
+                            "tax_amount": float(item["tax_amount"] or 0),
+                            "subtotal": float(item["subtotal"] or 0),
+                            "total": float(item["total"] or 0),
                             "line_number": item["line_number"],
                         }
                         for item in items
@@ -499,7 +538,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
                             "bill_date": bill["bill_date"].isoformat()
                             if bill["bill_date"]
                             else None,
-                            "grand_total": bill["grand_total"],
+                            "grand_total": float(bill["grand_total"] or 0),
                             "status": bill["status"],
                         }
                         for bill in bills
@@ -527,7 +566,39 @@ async def get_purchase_order(request: Request, po_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get purchase order")
+        raise HTTPException(status_code=500, detail="Gagal memuat pesanan pembelian.")
+
+
+@router.get("/{po_id}/documents")
+async def get_purchase_order_documents(request: Request, po_id: UUID):
+    """Bundel panel berjangkar PESANAN PEMBELIAN (P-U2): skema SAMA dgn bundel SO/faktur {anchor, default, groups[{key,label,docs[]}]};
+    pembentuk SATU tempat (services/po_daftar.dokumen_po) = sumber kolom documents[] daftar. paid/balance jangkar = null (PO bukan dokumen uang)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            po = await conn.fetchrow(
+                "SELECT id, po_number, vendor_name, vendor_id, total_amount, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2",
+                po_id, ctx["tenant_id"])
+            if not po:
+                raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+            kel = (await PD.dokumen_po(conn, ctx["tenant_id"], [po_id])).get(po_id, [])
+            kontak = await conn.fetchrow(
+                "SELECT phone, email FROM vendors WHERE id = $1 AND tenant_id = $2", po["vendor_id"], ctx["tenant_id"]) if po["vendor_id"] else None
+            return {
+                "anchor": {"kind": "purchase_order", "id": str(po["id"]), "number": po["po_number"], "vendor": po["vendor_name"] or "",
+                           "position_text": PD.position_text(po["status"]), "total": f"{PD.r2(po['total_amount']):.2f}", "paid": None, "balance": None,
+                           "vendor_phone": (kontak["phone"] if kontak else None) or None,
+                           "vendor_email": (kontak["email"] if kontak else None) or None},
+                "default": {"group": "po", "index": 0},
+                "groups": kel,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting purchase order documents {po_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat dokumen pesanan pembelian.")
 
 
 # =============================================================================

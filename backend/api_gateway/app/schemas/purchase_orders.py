@@ -176,12 +176,22 @@ class PurchaseOrderListItem(BaseModel):
     vendor_name: str
     po_date: str
     expected_date: Optional[str] = None
-    total_amount: int
-    amount_received: int = 0
-    amount_billed: int = 0
+    total_amount: float
+    amount_received: float = 0
+    amount_billed: float = 0
+    sisa_ditagih: float = 0
     status: str
     ref_no: Optional[str] = None
     created_at: str
+    # P-U2 (22 Okt 2026): keadaan/aksi/position_text/documents dihitung SERVER (services/po_daftar); aditif
+    terima_terbuka: bool = False
+    terima_hari: Optional[int] = None
+    terima_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
+    terima_teks: str = "—"
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    documents: List[Dict[str, str]] = []
+    doc_count: int = 0
 
 
 class PurchaseOrderDetail(BaseModel):
@@ -192,14 +202,24 @@ class PurchaseOrderDetail(BaseModel):
     vendor_name: str
 
     # Amounts
-    subtotal: int
+    subtotal: float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_rate: float = 0
-    tax_amount: int = 0
-    total_amount: int
-    amount_received: int = 0
-    amount_billed: int = 0
+    tax_amount: float = 0
+    total_amount: float
+    amount_received: float = 0
+    amount_billed: float = 0
+    sisa_ditagih: float = 0
+    # P-U2: paritas detail == baris (fungsi sama: services/po_daftar)
+    terima_terbuka: bool = False
+    terima_hari: Optional[int] = None
+    terima_keadaan: Literal["telat", "hari_ini", "akan", "selesai", "tanpa"] = "tanpa"
+    terima_teks: str = "—"
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    documents: List[Dict[str, str]] = []
+    doc_count: int = 0
 
     # Status & dates
     status: str
@@ -252,6 +272,8 @@ class PurchaseOrderListResponse(BaseModel):
     items: List[PurchaseOrderListItem]
     total: int
     has_more: bool = False
+    sum_total: Optional[float] = None   # opt-in ?with_totals=true: Σ total_amount hasil filter tanpa cancelled
+    sum_sisa: Optional[float] = None    # idem: Σ sisa_ditagih (total - ditagih) tanpa cancelled
 
 
 class PurchaseOrderSummaryResponse(BaseModel):
