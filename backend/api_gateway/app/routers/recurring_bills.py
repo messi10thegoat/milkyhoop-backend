@@ -510,130 +510,94 @@ async def resume_recurring_bill(request: Request, recurring_bill_id: UUID):
 async def generate_bill(
     request: Request, recurring_bill_id: UUID, data: GenerateBillRequest = None
 ):
-    """Generate bill from recurring template"""
+    """Buat tagihan dari templat berulang. P-U1/G3 (22 Okt 2026):
+    - dulu `post_immediately/auto_post` hanya menandai tagihan terposting TANPA jurnal hutang (posting kanonik belum dipanggil) -> hutang hantu yang
+      tak terlihat compute_ap_outstanding. Kini tagihan selalu lahir DRAF yang sah (status_v2='draft'), lalu bila diminta DIPOSTING lewat fungsi posting kanonik
+      BillsService.post_bill (jurnal Dr persediaan/biaya produk, Cr Hutang) -- atau tetap draf dengan alasan bila templat tak aman diposting otomatis.
+    - kunci templat (advisory + FOR UPDATE) sebelum baca; SATU tagihan per periode (kirim ulang / klik ganda = tagihan yang sama, penghitung tak naik).
+    Otomatis-posting hanya untuk templat yang SEMUA barisnya produk (item_id) tanpa akun biaya: bill_items tak punya kolom akun, jadi posting kanonik
+    akan mendebit akun persediaan/produk, bukan akun biaya templat -- baris akun biaya dibiarkan draf untuk dikoreksi/ diposting manual."""
     ctx = get_user_context(request)
+    if not ctx["user_id"]:
+        raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     pool = await get_pool()
     data = data or GenerateBillRequest()
-
+    tid = ctx["tenant_id"]
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rb = await conn.fetchrow(
-            "SELECT rb.*, v.name as vendor_name FROM recurring_bills rb JOIN vendors v ON rb.vendor_id = v.id WHERE rb.id = $1 AND rb.tenant_id = $2",
-            recurring_bill_id,
-            ctx["tenant_id"],
-        )
-        if not rb:
-            raise HTTPException(status_code=404, detail="Recurring bill not found")
-
-        if rb["status"] != "active":
-            raise HTTPException(status_code=400, detail="Recurring bill is not active")
-
-        bill_date = data.bill_date or rb["next_bill_date"]
-        due_date = bill_date + relativedelta(days=rb["due_days"])
-        should_post = (
-            data.post_immediately
-            if data.post_immediately is not None
-            else rb["auto_post"]
-        )
-
         async with conn.transaction():
-            # Generate bill number
-            bill_number = await conn.fetchval(
-                "SELECT generate_bill_number($1, 'BILL')", ctx["tenant_id"]
-            )
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"RECURRING_BILL:{tid}:{recurring_bill_id}")
+            rb = await conn.fetchrow(
+                """SELECT rb.*, v.name AS vendor_name FROM recurring_bills rb
+                   JOIN vendors v ON v.id = rb.vendor_id AND v.tenant_id = rb.tenant_id
+                   WHERE rb.id = $1 AND rb.tenant_id = $2 FOR UPDATE OF rb""", recurring_bill_id, tid)
+            if not rb:
+                raise HTTPException(status_code=404, detail="Templat tagihan berulang tidak ditemukan.")
+            if rb["status"] != "active":
+                raise HTTPException(status_code=400, detail="Templat tagihan berulang tidak aktif.")
 
-            # Create bill
+            bill_date = data.bill_date or rb["next_bill_date"]
+            due_date = bill_date + relativedelta(days=rb["due_days"])
+            should_post = data.post_immediately if data.post_immediately is not None else rb["auto_post"]
+            items = await conn.fetch(
+                "SELECT * FROM recurring_bill_items WHERE recurring_bill_id = $1 ORDER BY sort_order", recurring_bill_id)
+
+            ada = await conn.fetchrow(
+                """SELECT id, invoice_number, issue_date, due_date, grand_total, COALESCE(status_v2, status) AS st FROM bills
+                   WHERE tenant_id = $1 AND recurring_bill_id = $2 AND issue_date = $3 AND COALESCE(status_v2, status) <> 'void'
+                   ORDER BY created_at LIMIT 1""", tid, recurring_bill_id, bill_date)
+            if ada:  # satu tagihan per periode: kembalikan yang sudah ada, penghitung templat TIDAK naik
+                return GenerateBillResponse(
+                    bill_id=ada["id"], bill_number=ada["invoice_number"], bill_date=ada["issue_date"], due_date=ada["due_date"],
+                    total_amount=float(ada["grand_total"] or 0), status=ada["st"], next_bill_date=rb["next_bill_date"])
+
+            bill_number = await conn.fetchval("SELECT generate_purchase_bill_number($1)", tid)
             bill = await conn.fetchrow(
                 """
                 INSERT INTO bills (
                     tenant_id, invoice_number, vendor_id, vendor_name, issue_date, due_date,
                     subtotal, tax_amount, amount, grand_total,
-                    status, recurring_bill_id, is_recurring, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, true, $12)
-                RETURNING *
+                    status, status_v2, recurring_bill_id, is_recurring, created_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 'draft', 'draft', $10, true, $11)
+                RETURNING id
                 """,
-                ctx["tenant_id"],
-                bill_number,
-                rb["vendor_id"],
-                rb.get("vendor_name", ""),
-                bill_date,
-                due_date,
-                rb["subtotal"],
-                rb["tax_amount"],
-                rb["total_amount"],
-                "draft",
-                recurring_bill_id,
-                ctx.get("user_id"),
-            )
-
-            # Copy items
-            items = await conn.fetch(
-                "SELECT * FROM recurring_bill_items WHERE recurring_bill_id = $1 ORDER BY sort_order",
-                recurring_bill_id,
+                tid, bill_number, rb["vendor_id"], rb["vendor_name"], bill_date, due_date,
+                rb["subtotal"], rb["tax_amount"], rb["total_amount"], recurring_bill_id, ctx["user_id"],
             )
             for item in items:
                 await conn.execute(
                     """
                     INSERT INTO bill_items (
-                        bill_id, product_id, description, quantity, unit_price,
-                        subtotal, total, line_number
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        bill_id, product_id, description, product_name, quantity, unit_price,
+                        subtotal, tax_amount, total, line_number
+                    ) VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $6, $8)
                     """,
-                    bill["id"],
-                    item["item_id"],
-                    item["description"],
-                    item["quantity"],
-                    item["unit_price"],
-                    item["line_total"],
-                    item["line_total"],
-                    item["sort_order"],
+                    bill["id"], item["item_id"], item["description"], item["quantity"], item["unit_price"],
+                    item["line_total"], item["tax_amount"], item["sort_order"] + 1,
                 )
 
-            # Update recurring bill
-            next_date = calculate_next_date(
-                bill_date, rb["frequency"], rb["interval_count"]
-            )
-            new_status = rb["status"]
-            if rb["end_date"] and next_date > rb["end_date"]:
-                new_status = "completed"
-
+            next_date = calculate_next_date(bill_date, rb["frequency"], rb["interval_count"])
+            new_status = "completed" if rb["end_date"] and next_date > rb["end_date"] else rb["status"]
             await conn.execute(
                 """
-                UPDATE recurring_bills SET
-                    next_bill_date = $2,
-                    last_bill_date = $3,
-                    bills_generated = bills_generated + 1,
-                    status = $4,
-                    updated_at = NOW()
+                UPDATE recurring_bills SET next_bill_date = $2, last_bill_date = $3,
+                    bills_generated = bills_generated + 1, status = $4, updated_at = NOW()
                 WHERE id = $1
                 """,
-                recurring_bill_id,
-                next_date,
-                bill_date,
-                new_status,
+                recurring_bill_id, next_date, bill_date, new_status,
             )
 
-            # Post bill if needed (create AP journal)
-            bill_status = "draft"
-            if should_post:
-                # TODO: Call bill posting logic to create AP journal
-                bill_status = "posted"
-                await conn.execute(
-                    "UPDATE bills SET status = 'posted' WHERE id = $1", bill["id"]
-                )
-
-            return GenerateBillResponse(
-                bill_id=bill["id"],
-                bill_number=bill_number,
-                bill_date=bill_date,
-                due_date=due_date,
-                total_amount=rb["total_amount"],
-                status=bill_status,
-                next_bill_date=next_date,
-            )
+    # POSTING di luar transaksi pembuatan (BillsService.post_bill membuka transaksinya sendiri dan harus MELIHAT draf yang sudah commit).
+    status = "draft"
+    aman_posting = bool(items) and all(i["item_id"] for i in items) and not any(i["account_id"] for i in items)
+    if should_post and aman_posting:
+        from .bills import get_bills_service
+        hasil = await (await get_bills_service()).post_bill(tenant_id=tid, bill_id=bill["id"], user_id=ctx["user_id"])
+        if hasil.get("success"):
+            status = "posted"
+    return GenerateBillResponse(
+        bill_id=bill["id"], bill_number=bill_number, bill_date=bill_date, due_date=due_date,
+        total_amount=float(rb["total_amount"]), status=status, next_bill_date=next_date)
 
 
 @router.post("/process-due", dependencies=[Depends(fitur_belum_tersedia)], response_model=ProcessDueBillsResponse)

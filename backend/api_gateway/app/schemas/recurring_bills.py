@@ -187,7 +187,7 @@ class GenerateBillResponse(BaseModel):
     bill_number: str
     bill_date: date
     due_date: date
-    total_amount: int
+    total_amount: float
     status: str
     next_bill_date: date
 
