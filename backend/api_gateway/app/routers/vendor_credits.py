@@ -985,9 +985,16 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     conn, ctx["tenant_id"], AccountRole.COGS_PURCHASE_RETURN
                 )
 
+                # U3b: potongan/koreksi harga -> PURCHASE_DISCOUNT (5-10200), retur/rusak/lainnya -> COGS_PURCHASE_RETURN (ND.peran_kredit_nd)
+                potongan = vc["reason"] in ND.ALASAN_POTONGAN
+                if potongan:
+                    purchase_return_account_id = await resolve_account_id_by_role(
+                        conn, ctx["tenant_id"], ND.peran_kredit_nd(vc["reason"])
+                    )
+
                 if not ap_account_id or not purchase_return_account_id:
                     raise HTTPException(
-                        status_code=500, detail="Required accounts not found in CoA"
+                        status_code=500, detail="Akun hutang / retur / diskon pembelian belum dipetakan."
                     )
 
                 # Law 5: Period check
@@ -1076,7 +1083,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     line_number,
                     purchase_return_account_id,
                     subtotal,
-                    f"Retur Pembelian - {vc['credit_number']}",
+                    f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}",
                 )
                 line_number += 1
 
@@ -1125,7 +1132,8 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1",
                     vendor_credit_id,
                 )
-                for item in vc_items:
+                # U3b: potongan/koreksi harga TIDAK menggerakkan stok (barang tak kembali ke vendor; dulu semua alasan mengeluarkan stok)
+                for item in ([] if potongan else vc_items):
                     if not item["item_id"]:
                         continue
                     product = await conn.fetchrow(

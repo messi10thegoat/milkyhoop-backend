@@ -20,6 +20,14 @@ from . import teks_galat as tg
 from .tagihan_daftar import sisa_tagihan_jurnal  # satu sumber (compute_ap_rincian); dipakai di modul ini + router
 
 SUMBER_ND = ("VENDOR_CREDIT", "VENDOR_CREDIT_REFUND")
+# U3b (putusan pemilik LANGSUNG 22 Okt; simetris NK potongan -> 4-10200): potongan/koreksi harga -> PURCHASE_DISCOUNT (5-10200 Diskon
+# Pembelian), TANPA gerak stok; retur/rusak/lainnya tetap COGS_PURCHASE_RETURN (5-10300) + stok. == routers/credit_notes.ALASAN_POTONGAN.
+ALASAN_POTONGAN = frozenset({"discount", "pricing_error"})
+
+
+def peran_kredit_nd(reason) -> str:
+    """Peran akun kredit jurnal posting nota debit menurut alasan (Law 27: diresolusi per peran, bukan kode)."""
+    return "PURCHASE_DISCOUNT" if reason in ALASAN_POTONGAN else "COGS_PURCHASE_RETURN"
 
 
 def sql_sisa_nd(a: str = "vendor_credits") -> str:
