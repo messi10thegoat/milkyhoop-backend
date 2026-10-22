@@ -146,6 +146,14 @@ class ReceivePreviewRequest(BaseModel):
     items: Optional[List[ReceiveItemRequest]] = None
 
 
+class ToBillPreviewRequest(BaseModel):
+    """POST /{id}/to-bill/preview: kosong = semua sisa belum tertagih, tanggal tagihan = hari ini bisnis."""
+    bill_date: Optional[date] = None
+    due_date: Optional[date] = None
+    items: Optional[List[ToBillItemRequest]] = None
+    notes: Optional[str] = None
+
+
 class CancelPreviewRequest(BaseModel):
     """POST /{id}/cancel/preview: alasan kosong -> blok ALASAN_WAJIB."""
     reason: Optional[str] = Field(None, max_length=500)

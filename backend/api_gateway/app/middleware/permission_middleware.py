@@ -745,6 +745,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase-orders/[^/]+/close/preview$", ["POST"], "purchase_order", "U"),
     (r"^/api/purchase-orders/[^/]+/cancel/preview$", ["POST"], "purchase_order", "V"),
     (r"^/api/purchase-orders/[^/]+/delete/preview$", ["POST"], "purchase_order", "D"),
+    (r"^/api/purchase-orders/[^/]+/to-bill/preview$", ["POST"], "purchase_order", "P"),
     # recurring_bills
     (r"^/api/recurring-bills$", ["POST"], "purchase_invoice", "C"),
     (r"^/api/recurring-bills/[^/]+$", ["DELETE"], "purchase_invoice", "D"),

@@ -56,6 +56,7 @@ from ..schemas.purchase_orders import (
     CancelPurchaseOrderRequest,
     ReceivePreviewRequest,
     CancelPreviewRequest,
+    ToBillPreviewRequest,
     PurchaseOrderResponse,
     PurchaseOrderDetailResponse,
     PurchaseOrderListResponse,
@@ -1152,78 +1153,10 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         status_code=404, detail="Pesanan pembelian tidak ditemukan."
                     )
 
-                billable_statuses = (
-                    "sent",
-                    "partial_received",
-                    "received",
-                    "partial_billed",
-                )
-                if po["status"] not in billable_statuses:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibuatkan tagihan.",
-                    )
-
-                # Get items to bill
-                if body.items:
-                    # Specific items
-                    items_to_bill = []
-                    for bill_item in body.items:
-                        po_item = await conn.fetchrow(
-                            """
-                            SELECT * FROM purchase_order_items
-                            WHERE id = $1 AND po_id = $2
-                            FOR UPDATE
-                        """,
-                            UUID(bill_item.po_item_id),
-                            po_id,
-                        )
-
-                        if not po_item:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Baris pesanan {bill_item.po_item_id} tidak ditemukan.",
-                            )
-
-                        unbilled = Decimal(po_item["quantity"]) - Decimal(
-                            po_item["quantity_billed"] or 0
-                        )
-                        qty_to_bill = Decimal(str(bill_item.quantity_to_bill)) if bill_item.quantity_to_bill else unbilled
-
-                        if qty_to_bill > unbilled:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Jumlah ditagih ({qty_to_bill}) melebihi sisa belum tertagih ({unbilled}).",
-                            )
-
-                        items_to_bill.append(
-                            {"po_item": po_item, "quantity": qty_to_bill}
-                        )
-                else:
-                    # All unbilled items
-                    po_items = await conn.fetch(
-                        """
-                        SELECT * FROM purchase_order_items
-                        WHERE po_id = $1 AND quantity > COALESCE(quantity_billed, 0)
-                        ORDER BY line_number
-                        FOR UPDATE
-                    """,
-                        po_id,
-                    )
-
-                    items_to_bill = [
-                        {
-                            "po_item": item,
-                            "quantity": Decimal(item["quantity"])
-                            - Decimal(item["quantity_billed"] or 0),
-                        }
-                        for item in po_items
-                    ]
-
-                if not items_to_bill:
-                    raise HTTPException(
-                        status_code=400, detail="Tidak ada baris yang belum ditagih."
-                    )
+                # Penentu SAMA dengan /to-bill/preview (status, baris milik PO, qty <= sisa belum tertagih, rumus BillCalculator), di bawah lock
+                rt = await PR.rencana_tagih(conn, po, [i.model_dump() for i in body.items] if body.items else None, kunci=True)
+                _tolak(rt["blocks"])
+                _po_lines, bill_subtotal, bill_tax, bill_total = rt["lines"], rt["bill_subtotal"], rt["bill_tax"], rt["bill_total"]
 
                 # Generate bill number
                 bill_number = await conn.fetchval(
@@ -1233,78 +1166,6 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                 if not bill_number:
                     # Fallback if function doesn't exist
                     bill_number = f"BILL-{po['po_number']}"
-
-                # D: satu rumus dgn bill manual (create_bill_v2). BillCalculator
-                # per-baris HALF_UP + pajak per-item 2dp HALF_UP (simetris penjualan).
-                # Nol int() -> sen harga terjaga; PO == bill manual by construction.
-                from ..services.bills_service import BillCalculator
-
-                def _po_disc_pct(po_item, qty, unit_price):
-                    if po_item["discount_percent"] and po_item["discount_percent"] > 0:
-                        return Decimal(str(po_item["discount_percent"]))
-                    amt = po_item["discount_amount"] or 0
-                    gross = qty * unit_price
-                    if amt and gross and po_item["quantity"]:
-                        prorated = (
-                            Decimal(str(amt)) * qty / Decimal(str(po_item["quantity"]))
-                        )
-                        return prorated / gross * Decimal("100")
-                    return Decimal("0")
-
-                _po_lines = []
-                for item in items_to_bill:
-                    po_item = item["po_item"]
-                    qty = Decimal(str(item["quantity"]))
-                    unit_price = Decimal(str(po_item["unit_price"]))
-                    disc_pct = _po_disc_pct(po_item, qty, unit_price)
-                    ic = BillCalculator.calculate_item_total(qty, unit_price, disc_pct)
-                    tax_rate = Decimal(str(po_item["tax_rate"] or 0))
-                    # DPP = subtotal (cermin create_bill_v2), pajak 2dp HALF_UP
-                    item_tax = (
-                        float(
-                            (
-                                Decimal(str(ic["subtotal"])) * tax_rate / Decimal("100")
-                            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                        )
-                        if tax_rate > 0
-                        else 0
-                    )
-                    _po_lines.append(
-                        {
-                            "po_item": po_item,
-                            "qty": qty,
-                            "unit_price": unit_price,
-                            "disc_pct": disc_pct,
-                            "ic": ic,
-                            "tax_rate": float(po_item["tax_rate"] or 0),
-                            "tax": item_tax,
-                        }
-                    )
-
-                _calc = BillCalculator.calculate(
-                    items=[
-                        {
-                            "qty": l["qty"],
-                            "price": l["unit_price"],
-                            "discount_percent": l["disc_pct"],
-                        }
-                        for l in _po_lines
-                    ],
-                    invoice_discount_percent=Decimal("0"),
-                    invoice_discount_amount=0.0,
-                    cash_discount_percent=Decimal("0"),
-                    cash_discount_amount=0.0,
-                    tax_rate=0,
-                    # tarif header 0: pajak PO dijumlah per baris di bawah -> tanpa DPP-NL.
-                    dpp_factor=(1, 1),
-                )
-                bill_subtotal = _calc["subtotal"]
-                bill_tax = float(sum(Decimal(str(l["tax"])) for l in _po_lines))
-                bill_total = float(
-                    (
-                        Decimal(str(_calc["grand_total"])) + Decimal(str(bill_tax))
-                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                )
 
                 # Create Bill
                 bill_id = await conn.fetchval(
@@ -1503,15 +1364,16 @@ def _f2(v):
 
 
 async def _pratinjau(request: Request, po_id: UUID, isi) -> dict:
-    """Kunci PO (_kunci_po, sama dengan tulis) -> isi(conn, ctx, po) -> data; ROLLBACK selalu. 404 bila PO tak ada di tenant ini."""
+    """Transaksi READ ONLY tanpa kunci (pratinjau = baca; commit memvalidasi ulang di bawah lock) -> isi(conn, ctx, po) -> data; ROLLBACK
+    selalu. 404 bila PO tak ada di tenant ini."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        tr = conn.transaction()
+        tr = conn.transaction(readonly=True)
         await tr.start()
         try:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-            po = await _kunci_po(conn, ctx["tenant_id"], po_id)
+            po = await conn.fetchrow("SELECT * FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
             if not po:
                 raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
             r = await isi(conn, ctx, po)
@@ -1573,7 +1435,7 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
     async def isi(conn, ctx, po):
         hari = await tanggal_dokumen(conn, ctx["tenant_id"])
         items = [i.model_dump() for i in body.items] if body and body.items else None
-        r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari)
+        r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari, kunci=False)
         return {"blocks": r["blocks"], "status_sesudah": r["status_sesudah"], "receive_date": r["payload"]["receive_date"],
                 "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
                            "akan_diterima": _f2(b["akan_diterima"])} for b in r["baris"]],
@@ -1600,6 +1462,28 @@ async def preview_cancel_purchase_order(request: Request, po_id: UUID, body: Opt
     async def isi(conn, ctx, po):
         r = await PR.rencana_batal(conn, ctx["tenant_id"], po, alasan)
         return {**r, "sisa_ditagih_sesudah": _f2(r["sisa_ditagih_sesudah"]), "reason": alasan, "payload": {"reason": alasan}}
+    return await _pratinjau(request, po_id, isi)
+
+
+@router.post("/{po_id}/to-bill/preview")
+async def preview_convert_to_bill(request: Request, po_id: UUID, body: Optional[ToBillPreviewRequest] = None):
+    """Pratinjau TAGIH: baris yang akan jadi Bill DRAF (qty belum tertagih x harga; rumus = /to-bill = bill manual) + total + blok
+    (status, baris bukan milik PO, qty > sisa belum tertagih, tak ada sisa). Badan kosong = semua sisa, tanggal tagihan = hari ini bisnis.
+    Sesudah Bill dibuat, status/qty tertagih PO = turunan bill_items (PD.sinkron_tagih; pulih saat bill dihapus/void, hook G5). payload = badan /to-bill."""
+    async def isi(conn, ctx, po):
+        items = [i.model_dump() for i in body.items] if body and body.items else None
+        r = await PR.rencana_tagih(conn, po, items, kunci=False)
+        tgl = (body.bill_date if body and body.bill_date else await tanggal_dokumen(conn, ctx["tenant_id"]))
+        jatuh = body.due_date if body and body.due_date else tgl
+        return {"blocks": r["blocks"], "bill_date": tgl.isoformat(), "due_date": jatuh.isoformat(),
+                "items": [{"po_item_id": str(ln["po_item"]["id"]), "description": ln["po_item"]["description"], "unit": ln["po_item"]["unit"],
+                           "quantity": _f2(ln["qty"]), "unit_price": _f2(ln["unit_price"]), "discount_percent": float(ln["disc_pct"]),
+                           "discount_amount": _f2(ln["ic"]["discount_amount"]), "subtotal": _f2(ln["ic"]["subtotal"]),
+                           "tax_rate": ln["tax_rate"], "tax_amount": _f2(ln["tax"]), "total": _f2(ln["ic"]["total"])} for ln in r["lines"]],
+                "bill_subtotal": _f2(r["bill_subtotal"]), "bill_tax": _f2(r["bill_tax"]), "bill_total": _f2(r["bill_total"]),
+                "payload": {"bill_date": tgl.isoformat(), "due_date": jatuh.isoformat(),
+                            "items": [{"po_item_id": str(ln["po_item"]["id"]), "quantity_to_bill": str(ln["qty"])} for ln in r["lines"]],
+                            "notes": body.notes if body else None}}
     return await _pratinjau(request, po_id, isi)
 
 

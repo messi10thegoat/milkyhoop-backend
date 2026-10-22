@@ -447,6 +447,7 @@ POST /api/purchase-orders/{po_id}/receive/preview
 POST /api/purchase-orders/{po_id}/send
 POST /api/purchase-orders/{po_id}/send/preview
 POST /api/purchase-orders/{po_id}/to-bill
+POST /api/purchase-orders/{po_id}/to-bill/preview
 POST /api/quotes
 POST /api/quotes/{quote_id}/accept
 POST /api/quotes/{quote_id}/decline

@@ -5,8 +5,10 @@ SATU definisi aturan per aksi, dipakai DUA jalur:
     lama dipertahankan), tanpa blok -> tulis;
   * endpoint PRATINJAU (/calculate, /{id}/edit|send|receive|close|cancel|delete/preview): SEMUA blok {code, message}, 200, transaksi
     SELALU di-ROLLBACK (nol tulisan), `payload` siap kirim ke endpoint tulisnya.
-Uang = services/po_hitung (Decimal 2dp HALF_UP) -- kalkulator yang SAMA dengan create/patch. Semua pembacaan tenant eksplisit; penentu
-dipanggil SESUDAH _kunci_po (advisory + FOR UPDATE) di endpoint tulis maupun pratinjau.
+Uang = services/po_hitung (Decimal 2dp HALF_UP) -- kalkulator yang SAMA dengan create/patch. Semua pembacaan tenant eksplisit.
+KUNCI (koreksi MASTER 22 Okt; pola NetSuite: pratinjau = baca, commit = validasi ulang): endpoint TULIS memanggil penentu SESUDAH _kunci_po
+(advisory + FOR UPDATE) dengan kunci=True -> hasil final diputuskan di bawah lock; PRATINJAU memanggil dengan kunci=False di transaksi
+READ ONLY -> tak memegang row lock pada PO yang sedang dibuka orang lain.
 
 Blok: {"code", "message", "status"} -- `status` = kode HTTP endpoint tulis (dibuang dari respons pratinjau)."""
 from decimal import Decimal
@@ -174,7 +176,7 @@ def rencana_hapus(po) -> dict:
 
 
 # ---------------------------------------------------------------- terima
-async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini) -> dict:
+async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini, kunci: bool = True) -> dict:
     """items: [{po_item_id, quantity_received}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks, baris[], nilai_diterima (penerimaan ini),
     amount_received_sesudah, status_sesudah, payload}. Aturan & urutan = /receive."""
     bloks = []
@@ -188,7 +190,7 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
         bloks.append(blok("TANGGAL_TERIMA_SEBELUM_PO", "Tanggal terima tidak boleh sebelum tanggal pesanan."))
     semua = await conn.fetch(
         """SELECT id, description, quantity, quantity_received, quantity_billed, unit, total FROM purchase_order_items
-           WHERE po_id = $1 ORDER BY line_number FOR UPDATE""", po["id"])
+           WHERE po_id = $1 ORDER BY line_number""" + (" FOR UPDATE" if kunci else ""), po["id"])
     peta = {str(r["id"]): r for r in semua}
     if not items:
         items = [{"po_item_id": str(r["id"]), "quantity_received": _d(r["quantity"]) - _d(r["quantity_received"])}
@@ -217,3 +219,80 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
                "items": [{"po_item_id": k, "quantity_received": str(v)} for k, v in akan.items() if v > NOL]}
     return {"blocks": bloks, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
             "status_sesudah": "received" if lengkap else "partial_received", "payload": payload, "akan": akan, "semua": semua}
+
+
+# ---------------------------------------------------------------- tagih (to-bill)
+STATUS_BISA_DITAGIH = ("sent", "partial_received", "received", "partial_billed")
+
+
+def _po_disc_pct(po_item, qty, unit_price) -> Decimal:
+    """Persen diskon baris untuk BillCalculator: persen PO apa adanya, atau nominal diprorata qty ditagih."""
+    if po_item["discount_percent"] and po_item["discount_percent"] > 0:
+        return Decimal(str(po_item["discount_percent"]))
+    amt = po_item["discount_amount"] or 0
+    gross = qty * unit_price
+    if amt and gross and po_item["quantity"]:
+        prorated = Decimal(str(amt)) * qty / Decimal(str(po_item["quantity"]))
+        return prorated / gross * Decimal("100")
+    return Decimal("0")
+
+
+async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> dict:
+    """items: [{po_item_id, quantity_to_bill?}] atau None = semua sisa belum tertagih. Aturan & rumus = /to-bill (BillCalculator per baris
+    HALF_UP + pajak per baris 2dp HALF_UP; satu rumus dgn bill manual create_bill_v2). -> {blocks, lines, bill_subtotal, bill_tax, bill_total}."""
+    from decimal import ROUND_HALF_UP
+    from .bills_service import BillCalculator
+    bloks = []
+    if po["status"] not in STATUS_BISA_DITAGIH:
+        bloks.append(blok("PO_TAK_BISA_DITAGIH", f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibuatkan tagihan."))
+    kuncian = " FOR UPDATE" if kunci else ""
+    pilih = []
+    if items:
+        for it in items:
+            pid = str(it["po_item_id"])
+            try:
+                uid = UUID(pid)
+            except (ValueError, TypeError):
+                uid = None
+            po_item = await conn.fetchrow(
+                "SELECT * FROM purchase_order_items WHERE id = $1 AND po_id = $2" + kuncian, uid, po["id"]) if uid else None
+            if not po_item:
+                bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
+                continue
+            unbilled = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_billed"] or 0)
+            q = it.get("quantity_to_bill")
+            qty = Decimal(str(q)) if q else unbilled
+            if qty > unbilled:
+                bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH", f"Jumlah ditagih ({qty}) melebihi sisa belum tertagih ({unbilled})."))
+                continue
+            pilih.append({"po_item": po_item, "quantity": qty})
+    else:
+        rows = await conn.fetch(
+            "SELECT * FROM purchase_order_items WHERE po_id = $1 AND quantity > COALESCE(quantity_billed, 0) ORDER BY line_number" + kuncian,
+            po["id"])
+        pilih = [{"po_item": r, "quantity": Decimal(r["quantity"]) - Decimal(r["quantity_billed"] or 0)} for r in rows]
+    if not pilih and not any(b["code"] in ("BARIS_TIDAK_DITEMUKAN", "QTY_MELEBIHI_SISA_TAGIH") for b in bloks):
+        bloks.append(blok("TAK_ADA_SISA_TAGIH", "Tidak ada baris yang belum ditagih."))
+    lines = []
+    for item in pilih:
+        po_item = item["po_item"]
+        qty = Decimal(str(item["quantity"]))
+        unit_price = Decimal(str(po_item["unit_price"]))
+        disc_pct = _po_disc_pct(po_item, qty, unit_price)
+        ic = BillCalculator.calculate_item_total(qty, unit_price, disc_pct)
+        tax_rate = Decimal(str(po_item["tax_rate"] or 0))
+        item_tax = (float((Decimal(str(ic["subtotal"])) * tax_rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                    if tax_rate > 0 else 0)  # DPP = subtotal (cermin create_bill_v2)
+        lines.append({"po_item": po_item, "qty": qty, "unit_price": unit_price, "disc_pct": disc_pct, "ic": ic,
+                      "tax_rate": float(po_item["tax_rate"] or 0), "tax": item_tax})
+    if lines:
+        calc = BillCalculator.calculate(
+            items=[{"qty": ln["qty"], "price": ln["unit_price"], "discount_percent": ln["disc_pct"]} for ln in lines],
+            invoice_discount_percent=Decimal("0"), invoice_discount_amount=0.0, cash_discount_percent=Decimal("0"),
+            cash_discount_amount=0.0, tax_rate=0, dpp_factor=(1, 1))  # tarif header 0: pajak PO dijumlah per baris -> tanpa DPP-NL
+        bill_subtotal = calc["subtotal"]
+        bill_tax = float(sum(Decimal(str(ln["tax"])) for ln in lines))
+        bill_total = float((Decimal(str(calc["grand_total"])) + Decimal(str(bill_tax))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    else:
+        bill_subtotal = bill_tax = bill_total = 0.0
+    return {"blocks": bloks, "lines": lines, "bill_subtotal": bill_subtotal, "bill_tax": bill_tax, "bill_total": bill_total}

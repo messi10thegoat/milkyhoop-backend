@@ -21,7 +21,7 @@ HARI = date(2026, 10, 22)
 
 
 class _Tr:
-    def __init__(self, kon): self.kon = kon
+    def __init__(self, kon, readonly=False): self.kon = kon; kon.readonly.append(readonly)
     async def start(self): self.kon.mulai += 1
     async def rollback(self): self.kon.rollback += 1
     async def __aenter__(self): return self
@@ -42,18 +42,18 @@ class Kon:
             {"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("3"), "quantity_billed": D("0"), "unit": "m",
              "total": D("1000"), "subtotal": D("1000"), "discount_amount": D("0"), "tax_amount": D("0")}]
         self.vendor, self.deposit = vendor, list(deposit)
-        self.writes, self.mulai, self.rollback = [], 0, 0
+        self.writes, self.mulai, self.rollback, self.readonly, self.q = [], 0, 0, [], []
 
-    def transaction(self): return _Tr(self)
+    def transaction(self, readonly=False): return _Tr(self, readonly)
 
     async def execute(self, sql, *a):
-        q = " ".join(sql.split())
+        q = " ".join(sql.split()); self.q.append(q)
         if q.startswith(("INSERT", "UPDATE", "DELETE")):
             self.writes.append(q[:70])
         return "OK"
 
     async def fetchrow(self, sql, *a):
-        q = " ".join(sql.split())
+        q = " ".join(sql.split()); self.q.append(q)
         if "FROM vendors" in q: return {"id": VID, "name": "Vendor X"} if self.vendor else None
         if "FROM purchase_orders" in q: return self.po
         if "SUM(quantity_received)" in q and "AS diterima" in q:
@@ -67,7 +67,7 @@ class Kon:
         return None
 
     async def fetch(self, sql, *a):
-        q = " ".join(sql.split())
+        q = " ".join(sql.split()); self.q.append(q)
         if "FROM purchase_order_items" in q: return self.items
         if "FROM vendor_deposits" in q: return self.deposit
         return []
@@ -152,6 +152,8 @@ def test_paritas_tulis_menolak_iff_pratinjau_berblok(kon, aksi, status):
     k = kon(Kon(status=status, items=[dict(i) for i in items]))
     p = run(pratinjau())["data"]
     assert k.writes == [] and k.rollback == 1, "pratinjau wajib ROLLBACK tanpa tulisan"
+    assert k.readonly == [True], "pratinjau = transaksi READ ONLY"
+    assert not any("FOR UPDATE" in q or "pg_advisory" in q for q in k.q), "pratinjau tak mengunci"
     kon(Kon(status=status, items=[dict(i) for i in items]))
     if p["blocks"]:
         with pytest.raises(HTTPException) as e:
@@ -239,3 +241,66 @@ def test_pratinjau_404(kon):
     with pytest.raises(HTTPException) as e:
         run(PO.preview_send_purchase_order(_Req(), PID))
     assert e.value.status_code == 404 and k.rollback == 1
+
+
+# ---------------------------------------------------------------- read-only & tagih
+PRATINJAU_SEMUA = [
+    lambda: PO.preview_send_purchase_order(_Req(), PID), lambda: PO.preview_close_purchase_order(_Req(), PID),
+    lambda: PO.preview_cancel_purchase_order(_Req(), PID, None), lambda: PO.preview_delete_purchase_order(_Req(), PID),
+    lambda: PO.preview_receive_goods(_Req(), PID, None), lambda: PO.preview_convert_to_bill(_Req(), PID, None),
+    lambda: PO.preview_edit_purchase_order(_Req(), PID, PS.UpdatePurchaseOrderRequest(notes="x")),
+]
+
+
+@pytest.mark.parametrize("i", range(len(PRATINJAU_SEMUA)))
+def test_semua_pratinjau_read_only_tanpa_kunci(kon, i):
+    k = kon(Kon(status="partial_received", items=[_baris_tagih(quantity_received=D("3"), quantity_billed=D("0"))]))
+    run(PRATINJAU_SEMUA[i]())
+    assert k.readonly == [True] and k.rollback == 1 and k.writes == []
+    assert not any("FOR UPDATE" in q or "pg_advisory" in q for q in k.q), [q for q in k.q if "FOR UPDATE" in q]
+
+
+def _baris_tagih(**kw):
+    d = {"id": I1, "item_id": None, "item_code": None, "description": "Kain", "quantity": D("10"), "quantity_received": D("10"),
+         "quantity_billed": D("4"), "unit": "m", "unit_price": D("100.50"), "discount_percent": D("0"), "discount_amount": D("0"),
+         "tax_rate": D("11"), "total": D("1115.55"), "subtotal": D("1005"), "tax_amount": D("110.55")}
+    d.update(kw)
+    return d
+
+
+def test_tagih_bawaan_sisa_belum_tertagih_dan_angka(kon):
+    kon(Kon(status="partial_billed", items=[_baris_tagih()]))
+    d = run(PO.preview_convert_to_bill(_Req(), PID, None))["data"]
+    assert d["ok"] and d["bill_date"] == "2026-10-22" and d["due_date"] == "2026-10-22"
+    it = d["items"][0]
+    assert it["quantity"] == 6.0 and it["subtotal"] == 603.0 and it["tax_amount"] == 66.33
+    assert d["bill_subtotal"] == 603.0 and d["bill_tax"] == 66.33 and d["bill_total"] == 669.33
+    assert d["payload"]["items"] == [{"po_item_id": str(I1), "quantity_to_bill": "6"}]
+
+
+def test_tagih_semua_blok_dan_tulis_menolak_dengan_blok_pertama(kon):
+    k = Kon(status="closed", items=[_baris_tagih()])
+    kon(k)
+    body = PS.ToBillPreviewRequest(items=[PS.ToBillItemRequest(po_item_id=str(I1), quantity_to_bill="7"),
+                                          PS.ToBillItemRequest(po_item_id=str(I2))])
+    d = run(PO.preview_convert_to_bill(_Req(), PID, body))["data"]
+    assert [b["code"] for b in d["blocks"]] == ["PO_TAK_BISA_DITAGIH", "QTY_MELEBIHI_SISA_TAGIH", "BARIS_TIDAK_DITEMUKAN"]
+    kon(Kon(status="closed", items=[_baris_tagih()]))
+    with pytest.raises(HTTPException) as e:
+        run(PO.convert_to_bill(_Req(), PID, PS.ConvertToBillRequest(bill_date=HARI, items=body.items)))
+    assert e.value.detail == d["blocks"][0]["message"]
+
+
+def test_tagih_tak_ada_sisa(kon):
+    kon(Kon(status="received", items=[]))
+    d = run(PO.preview_convert_to_bill(_Req(), PID, None))["data"]
+    assert [b["code"] for b in d["blocks"]] == ["TAK_ADA_SISA_TAGIH"] and d["bill_total"] == 0.0
+
+
+def test_jalur_tulis_memakai_kunci_true():
+    import inspect
+    src = inspect.getsource(PO)
+    assert "PR.rencana_tagih(conn, po, [i.model_dump() for i in body.items] if body.items else None, kunci=True)" in src
+    assert "rencana_terima(conn, po, body.receive_date, [i.model_dump() for i in body.items], _hari_ini)" in src  # bawaan kunci=True
+    assert inspect.signature(PR.rencana_terima).parameters["kunci"].default is True
+    assert inspect.signature(PR.rencana_tagih).parameters["kunci"].default is True

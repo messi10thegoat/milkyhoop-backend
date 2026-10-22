@@ -14,7 +14,8 @@ os.environ.setdefault("OPENAI_API_KEY", "sk-boneka-unit-test-tanpa-jaringan")
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
-from app.routers import purchase_orders as PO  # noqa: E402
+from app.routers import purchase_orders as PO
+from app.services import po_rencana as PR  # noqa: E402
 from app.schemas import purchase_orders as PS  # noqa: E402
 from app.services import po_daftar as PD, po_hitung as PH  # noqa: E402
 
@@ -245,7 +246,9 @@ def test_update_tanpa_perubahan_uang_tidak_menghitung_ulang(monkeypatch):
 # ------------------------------------------------------------------ to-bill + sinkron_tagih
 def test_tobill_kunci_for_update_dan_tautan_baris_po():
     src = inspect.getsource(PO.convert_to_bill)
-    assert "_kunci_po(conn, ctx[\"tenant_id\"], po_id)" in src and src.count("FOR UPDATE") >= 2
+    # kontrak PO tahap 2: baca baris FOR UPDATE pindah ke penentu bersama (po_rencana.rencana_tagih, kunci=True di jalur tulis)
+    assert "_kunci_po(conn, ctx[\"tenant_id\"], po_id)" in src and "PR.rencana_tagih(conn, po," in src and "kunci=True" in src
+    assert inspect.getsource(PR.rencana_tagih).count('" FOR UPDATE" if kunci') == 1
     assert "purchase_order_item_id" in src and "PD.sinkron_tagih(conn" in src
     assert "UPDATE purchase_order_items\n                        SET quantity_billed" not in src         # tak ada lagi penambahan kumulatif ditulis tangan
     assert 'PO_TOBILL' in src and 'mulai_aksi' in src
