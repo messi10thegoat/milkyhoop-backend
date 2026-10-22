@@ -514,7 +514,7 @@ class BillsService:
                     f"""SELECT COALESCE(SUM(b.amount) FILTER (WHERE {TD.sql_keadaan_dok()} <> 'void'), 0) AS t,
                                COALESCE(SUM({TD.sql_hutang()}), 0) AS s
                         FROM bills b {TD.join_rincian()} WHERE {where_clause}""", *count_params)
-                jumlah = {"sum_total": f"{Decimal(str(_j['t'])):.2f}", "sum_sisa": f"{Decimal(str(_j['s'])):.2f}"}
+                jumlah = {"sum_total": float(_j["t"]), "sum_sisa": float(_j["s"])}  # float == sales_invoices/receive_payments
 
             # SELECT di bawah SELALU merujuk hari_ph (kolom status).
             params.append(hari_ini)

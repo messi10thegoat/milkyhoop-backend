@@ -229,8 +229,8 @@ class BillListResponse(BaseModel):
     items: List[BillListItem]
     total: int
     has_more: bool
-    sum_total: Optional[str] = None  # ?with_totals=true
-    sum_sisa: Optional[str] = None
+    sum_total: Optional[float] = None  # ?with_totals=true (float == sales_invoices)
+    sum_sisa: Optional[float] = None
 
 
 class BillDetailResponse(BaseModel):

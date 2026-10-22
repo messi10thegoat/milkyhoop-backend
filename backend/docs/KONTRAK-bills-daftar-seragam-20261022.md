@@ -19,8 +19,8 @@ Satu modul sumber: `services/tagihan_daftar.py` (aksi, jatuh tempo, posisi, cari
 
 ## 1. `GET /api/bills` (daftar)
 
-Param **tambahan**: `?aksi=<kunci B1>` (422 kunci asing; PARTISI: baris dengan `aksi == k`), `?with_totals=true` → `sum_total`, `sum_sisa` (string "1234.00")
-atas SEMUA hasil filter (tanpa `with_totals` = `null`). `?search=` kini satu predikat (`TD.syarat_cari`) dengan `/summary?search=`: tiap kata wajib cocok salah
+Param **tambahan**: `?aksi=<kunci B1>` (422 kunci asing; PARTISI: baris dengan `aksi == k`), `?with_totals=true` → `sum_total`, `sum_sisa`
+atas SEMUA hasil filter, angka (float, == sales_invoices; tanpa `with_totals` = `null`). `?search=` kini satu predikat (`TD.syarat_cari`) dengan `/summary?search=`: tiap kata wajib cocok salah
 satu dari nomor, `vendor_name`, `ref_no`, `notes`, nama/kode vendor master.
 
 Per item **tambahan** (`TD.fakta_baris`, fungsi SAMA dengan detail):
