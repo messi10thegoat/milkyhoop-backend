@@ -115,7 +115,13 @@ def _r(v) -> float:
 def hitung_json(req: dict, h: dict) -> dict:
     """Bentuk respons pratinjau (angka float 2dp, sejajar PO /calculate): kepala == nilai yang AKAN tersimpan, per baris."""
     hd = h["header"]
+    sub, tax, tot = _r(hd["subtotal"]), _r(h["akhir"]["tax_amount"]), _r(h["akhir"]["grand_total"])
+    disk = _r(Decimal(str(_r(hd["item_discount_total"]))) + Decimal(str(_r(hd["invoice_discount_total"]))) + Decimal(str(_r(hd["cash_discount_total"]))))
     return {
+        # Ringkasan pembaca bersama SO/PO (WORKSPACE 22 Okt): subtotal - discount_amount + tax_amount + adjustment == total_amount PERSIS.
+        # adjustment = 0 kecuali dpp_manual (total = DPP manual + pajak) atau selisih pembulatan sen diskon faktur % -> FE tampilkan baris terpisah.
+        "discount_amount": disk, "total_amount": tot,
+        "adjustment": _r(Decimal(str(tot)) - (Decimal(str(sub)) - Decimal(str(disk)) + Decimal(str(tax)))),
         "subtotal": _r(hd["subtotal"]), "item_discount_total": _r(hd["item_discount_total"]),
         "invoice_discount_total": _r(hd["invoice_discount_total"]), "cash_discount_total": _r(hd["cash_discount_total"]),
         "dpp": _r(hd["dpp"]), "tax_amount": _r(h["akhir"]["tax_amount"]), "grand_total": _r(h["akhir"]["grand_total"]),

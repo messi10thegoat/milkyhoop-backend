@@ -108,7 +108,10 @@ async def main():
             ok = bool(b) and d["ok"] and not beda_k
             ok = ok and len(its) == len(d["items"]) and all(D(x["ppn"]) == D(i["tax_amount"]) and D(x["dpp"]) == D(i["dpp"]) and D(x["total"]) == D(i["total"])
                                                            for x, i in zip(d["items"], its))
-            ok = ok and hasil["calculation"]["grand_total"] == d["grand_total"]
+            ok = ok and hasil["calculation"]["grand_total"] == d["grand_total"] == d["total_amount"]
+            inv = D(d["subtotal"]) - D(d["discount_amount"]) + D(d["tax_amount"]) + D(d["adjustment"]) == D(d["total_amount"])
+            cek(inv and ((D(d["adjustment"]) != 0) == ("dpp_manual" in badan)), f"B {nama}: ringkasan subtotal - discount + tax + adjustment == total",
+                f"{d['subtotal']} - {d['discount_amount']} + {d['tax_amount']} + {d['adjustment']} = {d['total_amount']}")
             cek(ok, f"B {nama}: /calculate == tersimpan create v2", f"calc {d['grand_total']}/{d['tax_amount']} simpan {b and b['grand_total']}/{b and b['tax_amount']}")
             if "per baris" in nama:
                 f = await resolve_dpp_factor(c, T, badan.get("tax_code_id"), badan.get("tax_rate", 0), "input")

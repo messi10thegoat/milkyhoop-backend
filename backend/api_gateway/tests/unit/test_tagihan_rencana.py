@@ -52,3 +52,15 @@ def test_badan_calculate_longgar_badan_simpan_ketat():
 def test_izin_rute():
     assert izin_untuk_jalur("/api/bills/calculate", "POST")[:2] == ("purchase_invoice", "R")
     assert izin_untuk_jalur("/api/bills/x/edit/preview", "POST")[:2] == ("purchase_invoice", "U")
+
+
+def test_ringkasan_pembaca_bersama():
+    h = {"header": {"subtotal": 100000, "item_discount_total": 5000, "invoice_discount_total": 9500, "cash_discount_total": 1000,
+                    "dpp": 84500, "tax_amount": 0, "grand_total": 84500},
+         "akhir": {"tax_amount": 9295, "grand_total": 93795}, "baris": [], "pajak_per_baris": True}
+    j = TR.hitung_json({"items": []}, h)
+    assert (j["discount_amount"], j["total_amount"], j["adjustment"]) == (15500.0, 93795.0, 0.0)
+    assert j["subtotal"] - j["discount_amount"] + j["tax_amount"] + j["adjustment"] == j["total_amount"]
+    h2 = {**h, "header": {**h["header"], "grand_total": 55500}, "akhir": {"tax_amount": 5500, "grand_total": 55500}}  # dpp_manual 50.000
+    j2 = TR.hitung_json({"items": []}, h2)
+    assert j2["adjustment"] == 55500 - (100000 - 15500 + 5500)
