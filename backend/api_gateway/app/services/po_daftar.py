@@ -16,6 +16,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from .so_posisi import BULAN
+from . import tagihan_daftar as TD  # dok tagihan: SATU pembentuk dgn bundel tagihan (bills-kontrak)
 
 NOL = Decimal("0")
 DUA = Decimal("0.01")
@@ -182,10 +183,15 @@ def dok_purchase_order(r) -> dict:
 
 
 def dok_bill(b) -> dict:
-    st = b["status_v2"] or b["status"]
-    return {"kind": "bill", "id": str(b["id"]), "number": b["invoice_number"], "date": _tgl(b["issue_date"]), "amount": _uang(b["grand_total"]),
-            "paper": "A4", "sent": _belum_kirim(), "batal": st == "void",
-            "status": "batal" if st == "void" else ("draf" if st == "draft" else "diposting")}
+    """Dokumen tagihan di bundel PO / uang muka vendor = TD.dok_tagihan (22 Okt 2026): status draf | batal | lunas | diposting + medan paid,
+    keadaan dari TD.sql_keadaan_dok() -- SAMA dengan bundel tagihan sendiri. Dulu tagihan LUNAS tampil "diposting" di sini. Baris wajib
+    membawa `keadaan` (kueri pemanggil memakai sql_dok_bill + TD.join_rincian)."""
+    return TD.dok_tagihan(b, b["keadaan"])
+
+
+def sql_dok_bill(a: str = "b") -> str:
+    """Kolom yang dibutuhkan dok_bill; pemanggil WAJIB menambah TD.join_rincian('$1', a)."""
+    return f"{a}.id, {a}.invoice_number, {a}.issue_date, {a}.amount, {TD.sql_keadaan_dok(a)} AS keadaan"
 
 
 def dok_vendor_deposit(d) -> dict:
@@ -206,8 +212,8 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
         tenant_id, ids)}
     bills: dict = {}
     for b in await conn.fetch(
-        """SELECT id, purchase_order_id, invoice_number, issue_date, grand_total, status_v2, status FROM bills
-           WHERE tenant_id = $1 AND purchase_order_id = ANY($2::uuid[]) ORDER BY issue_date, invoice_number""", tenant_id, ids):
+        f"""SELECT b.purchase_order_id, {sql_dok_bill()} FROM bills b {TD.join_rincian()}
+            WHERE b.tenant_id = $1 AND b.purchase_order_id = ANY($2::uuid[]) ORDER BY b.issue_date, b.invoice_number""", tenant_id, ids):
         bills.setdefault(b["purchase_order_id"], []).append(b)
     vds: dict = {}
     for d in await conn.fetch(

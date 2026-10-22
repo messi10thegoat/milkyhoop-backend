@@ -23,7 +23,7 @@ Detail `GET /vendor-deposits/{id}` DIPARKIR (409) karena dua fungsi DB RUSAK sej
 ## Belum (unit tulis berikut)
 Unapply (lepas penerapan) agar deposit berpenerapan bisa di-void; idempotensi create/post/apply/refund; nominal 2 desimal (`amount: int` di request); unpark by-vendor/available.
 
-## Sisi TULIS (P-U3b, RANCANGAN 22 Okt 2026 — belum dibangun; migrasi & aturan akun menunggu izin pemilik LANGSUNG)
+## Sisi TULIS (P-U3b) — LIVE 22 Okt 2026 (izin pemilik LANGSUNG: aturan jurnal lepas, V437, kode, V438)
 Acuan: QBO/Xero "unapply" prepayment, NetSuite Vendor Prepayment Application (unapply = reversal, bukan hapus). Kembaran pelanggan:
 `POST /customer-deposits/{id}/applications/{app_id}/reverse` (FIX_P1_DEPOSIT opsi B).
 
@@ -67,3 +67,17 @@ Acuan: QBO/Xero "unapply" prepayment, NetSuite Vendor Prepayment Application (un
 Unit: lepas (jurnal pembalik seimbang, source_id tagihan, idempoten), trigger NUMERIC (sen), void sesudah lepas boleh, apply/refund replay
 kunci sama = respons asli. Harness nyata: skema nyata + sintetis (CTE), kontrol merah (sabotase `reversed_by_id`). Nyata kaos "TES E2E":
 buat→post→apply→unapply→void → sisa jurnal == layar == DB, AP tagihan pulih.
+
+### Rilis (pemetaan sha -> uji yang BENAR-BENAR lulus; judul commit "wip ... belum diuji" di master ditulis SEBELUM uji, riwayat tak ditulis ulang)
+| langkah | sha / objek | waktu (UTC) | uji yang lulus |
+|---|---|---|---|
+| bacaan sebelum | /root/apum-sebelum.txt | 11:18:12 | AP/UM per tenant (grapgrap, kaos) |
+| V437 migrasi-saja | f7d290bd (merge_branch) + apply_mig | 11:28:50 | gerbang 5112 passed; kolom + constraint + fungsi NUMERIC/aktif/kembali posted terverifikasi |
+| kode P-U3b | 949ea413 (f846883d "wip", 29d38f1a "wip", 949ea413) | restart 11:36:27 | tes terfokus 197; harness scratch uji-nyata-um-tulis 24/24 (pemicu nyata) + kontrol merah 6 FAIL; gerbang 5134 passed; marker + healthz + 401 |
+| V438 DROP | apply_mig --require-marker | 11:40:45 | nol pemanggil (pg_proc/pg_views/pg_matviews/pg_trigger/pg_depend = 0; git grep hanya dok/harness); 5 fungsi = 0 |
+| bacaan sesudah | /root/apum-sesudah.txt | ~11:41 | IDENTIK dgn sebelum; harness read-only um-vendor-seragam, pembelian-p0, po-seragam, po-pratinjau, pdf-po gagal=0 |
+
+### Dokumen tagihan di bundel (22 Okt 2026, sesudah kontrak bills BACKEND 95d7b901)
+Bundel uang muka vendor (dan PO) memakai `po_daftar.dok_bill` = `tagihan_daftar.dok_tagihan` dengan keadaan `TD.sql_keadaan_dok()`:
+status draf | batal | lunas | diposting + `paid` — SAMA dengan bundel tagihan sendiri (dulu tagihan lunas tampil "diposting").
+Penjaga: harness `uji-nyata-dok-bill` (setiap tagihan nyata: dok bundel PO/UM == dok bundel tagihan).

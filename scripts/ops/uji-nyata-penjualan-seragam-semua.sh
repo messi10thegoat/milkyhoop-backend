@@ -90,6 +90,8 @@ py="$OPS/uji-nyata-um-vendor-seragam.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/um-vendor.out"; nilai "um-vendor-seragam" $? "$LOG/um-vendor.out"; else catat "um-vendor-seragam" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-recurring-generate.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/recurring.out"; nilai "recurring-generate" $? "$LOG/recurring.out"; else catat "recurring-generate" SKIP "harness belum ada"; fi
+py="$OPS/uji-nyata-dok-bill.py"
+if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/dok-bill.out"; nilai "dok-bill" $? "$LOG/dok-bill.out"; else catat "dok-bill" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-po-pratinjau.py"
 if [ -f "$py" ]; then jalan_py "$AKAR" "$py" baru > "$LOG/po-pratinjau.out"; nilai "po-pratinjau" $? "$LOG/po-pratinjau.out"; else catat "po-pratinjau" SKIP "harness belum ada"; fi
 py="$OPS/uji-nyata-pdf-po.py"

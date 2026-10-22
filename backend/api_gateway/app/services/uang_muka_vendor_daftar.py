@@ -131,8 +131,8 @@ async def kelompok_untuk(conn, tenant_id: str, ids: list) -> dict:
         tenant_id, po_ids)} if po_ids else {}
     fak: dict = {}
     for b in await conn.fetch(
-        """SELECT DISTINCT a.vendor_deposit_id, b.id, b.invoice_number, b.issue_date, b.grand_total, b.status_v2, b.status
-           FROM vendor_deposit_applications a JOIN bills b ON b.id = a.bill_id
+        f"""SELECT DISTINCT a.vendor_deposit_id, {PD.sql_dok_bill()}
+           FROM vendor_deposit_applications a JOIN bills b ON b.id = a.bill_id {PD.TD.join_rincian()}
            WHERE b.tenant_id = $1 AND a.vendor_deposit_id = ANY($2::uuid[]) AND a.status = 'active'  -- V437: penerapan dilepas bukan dokumen terkait
            ORDER BY b.issue_date, b.invoice_number""", tenant_id, ids):
         fak.setdefault(b["vendor_deposit_id"], []).append(b)
