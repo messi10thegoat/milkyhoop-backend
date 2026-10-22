@@ -1981,6 +1981,16 @@ class BillsService:
                     return {"success": False, "message": _bloks[0]["message"], "data": None}
 
                 reason = request.get("reason", "Voided")
+                # Putusan pemilik LANGSUNG 22 Okt (sejajar SI Unit 6): penerapan UM vendor AKTIF dilepas otomatis DI transaksi void ini lewat
+                # layanan BACKEND2 lepas_penerapan (jurnal pembalik, status reversed). Urutan kunci global: tagihan FOR UPDATE (di atas) ->
+                # VENDOR_DEPOSIT_SALDO menaik per deposit_id (um_aktif terurut). Galat lepas (mis. periode tertutup) -> void batal utuh.
+                _um_dilepas = []
+                for _u in await TA.um_aktif(conn, tenant_id, bill_id):
+                    from .uang_muka_vendor_lepas import lepas_penerapan
+                    _l = await lepas_penerapan(conn, {"tenant_id": tenant_id, "user_id": user_id}, _u["deposit_id"], _u["application_id"],
+                                               alasan=f"Faktur pembelian {bill['invoice_number']} dibatalkan: {reason}", sumber="api:bills.void")
+                    _um_dilepas.append({"deposit_number": _u["deposit_number"], "amount": f"{Decimal(str(_u['amount'])):.2f}",
+                                        "reversal_journal_number": (_l.get("data") or {}).get("reversal_journal_number")})
                 reversal_journal_id = None
                 today = await tanggal_dokumen(conn, tenant_id)  # t10-tanggal-bisnis
 
@@ -2215,6 +2225,7 @@ class BillsService:
                         "status": "void",
                         "voided_at": datetime.now().isoformat(),
                         "voided_reason": reason,
+                        "deposits_released": _um_dilepas,  # UM vendor dilepas otomatis (putusan pemilik 22 Okt)
                         "reversal_journal_id": str(reversal_journal_id)
                         if reversal_journal_id
                         else None,
