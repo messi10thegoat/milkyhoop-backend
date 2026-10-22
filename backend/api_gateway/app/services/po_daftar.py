@@ -165,6 +165,27 @@ SQL_BAYAR = """SELECT DISTINCT bp.id, bp.payment_number, bp.payment_date, bp.tot
                ORDER BY bp.payment_date, bp.payment_number"""
 
 
+def dok_purchase_order(r) -> dict:
+    batal = r["status"] == "cancelled"
+    return {"kind": "purchase_order", "id": str(r["id"]), "number": r["po_number"], "date": _tgl(r["po_date"]), "amount": _uang(r["total_amount"]),
+            "paper": "A4",
+            "sent": ({"state": "sent", "sent_at": r["sent_at"].isoformat(), "viewed_at": None} if r["sent_at"] else _belum_kirim()),
+            "batal": batal, "status": "batal" if batal else ("draf" if r["status"] == "draft" else "terbit")}
+
+
+def dok_bill(b) -> dict:
+    st = b["status_v2"] or b["status"]
+    return {"kind": "bill", "id": str(b["id"]), "number": b["invoice_number"], "date": _tgl(b["issue_date"]), "amount": _uang(b["grand_total"]),
+            "paper": "A4", "sent": _belum_kirim(), "batal": st == "void",
+            "status": "batal" if st == "void" else ("draf" if st == "draft" else "diposting")}
+
+
+def dok_vendor_deposit(d) -> dict:
+    st = d["status"]
+    return {"kind": "vendor_deposit", "id": str(d["id"]), "number": d["deposit_number"], "date": _tgl(d["deposit_date"]), "amount": _uang(d["amount"]),
+            "paper": "A5-landscape", "sent": _belum_kirim(), "batal": st == "void", "status": "batal" if st == "void" else ("draf" if st == "draft" else "dibayar")}
+
+
 async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
     """{po_id: [kelompok]} bundel PO: po (PO itu sendiri) · faktur (bill bertaut purchase_order_id; draf & void tetap tampil) ·
     uang_muka (vendor_deposits purchase_order_id; tak void) · bayar (Pembayaran Keluar posted atas bill-bill itu, via alokasi).
@@ -200,23 +221,11 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
         r = po.get(pid)
         if not r:
             continue
-        batal_po = r["status"] == "cancelled"
-        kel = [{"key": "po", "label": "Pesanan Pembelian", "docs": [{
-            "kind": "purchase_order", "id": str(r["id"]), "number": r["po_number"], "date": _tgl(r["po_date"]), "amount": _uang(r["total_amount"]),
-            "paper": "A4",
-            "sent": ({"state": "sent", "sent_at": r["sent_at"].isoformat(), "viewed_at": None} if r["sent_at"] else _belum_kirim()),
-            "batal": batal_po, "status": "batal" if batal_po else ("draf" if r["status"] == "draft" else "terbit")}]}]
+        kel = [{"key": "po", "label": "Pesanan Pembelian", "docs": [dok_purchase_order(r)]}]
         if bills.get(pid):
-            kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [{
-                "kind": "bill", "id": str(b["id"]), "number": b["invoice_number"], "date": _tgl(b["issue_date"]), "amount": _uang(b["grand_total"]),
-                "paper": "A4", "sent": _belum_kirim(), "batal": (b["status_v2"] or b["status"]) == "void",
-                "status": "batal" if (b["status_v2"] or b["status"]) == "void" else ("draf" if (b["status_v2"] or b["status"]) == "draft" else "diposting")}
-                for b in bills[pid]]})
+            kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [dok_bill(b) for b in bills[pid]]})
         if vds.get(pid):
-            kel.append({"key": "uang_muka", "label": "Uang Muka", "docs": [{
-                "kind": "vendor_deposit", "id": str(d["id"]), "number": d["deposit_number"], "date": _tgl(d["deposit_date"]), "amount": _uang(d["amount"]),
-                "paper": "A5-landscape", "sent": _belum_kirim(), "batal": False,
-                "status": "draf" if d["status"] == "draft" else "dibayar"} for d in vds[pid]]})
+            kel.append({"key": "uang_muka", "label": "Uang Muka", "docs": [dok_vendor_deposit(d) for d in vds[pid]]})
         if bayar.get(pid):
             kel.append({"key": "bayar", "label": "Pembayaran", "docs": bayar[pid]})
         hasil[pid] = kel
