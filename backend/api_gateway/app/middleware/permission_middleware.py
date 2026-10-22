@@ -471,6 +471,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/credit-notes/[^/]+", ["PATCH", "PUT"], "credit_note", "U"),
     (r"^/api/credit-notes/[^/]+", ["DELETE"], "credit_note", "D"),
     # Vendor Credits / Debit Notes
+    # U3a (22 Okt 2026): aksi nota debit = pola standar U5-E Nota Kredit (dulu SEMUA POST sub-rute jatuh ke 'C')
+    (r"^/api/vendor-credits/[^/]+/(post|receive-refund)$", ["POST"], "debit_note", "P"),
+    (r"^/api/vendor-credits/[^/]+/(void|unapply)$", ["POST"], "debit_note", "V"),
+    (r"^/api/vendor-credits/[^/]+/apply$", ["POST"], "debit_note", "A"),
     (r"^/api/vendor-credits", ["GET"], "debit_note", "R"),
     (r"^/api/vendor-credits", ["POST"], "debit_note", "C"),
     (r"^/api/vendor-credits/[^/]+", ["GET"], "debit_note", "R"),

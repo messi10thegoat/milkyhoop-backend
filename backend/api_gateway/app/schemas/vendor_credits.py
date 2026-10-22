@@ -103,6 +103,11 @@ class ApplyVendorCreditRequest(BaseModel):
     application_date: Optional[date] = Field(None, description="Application date, defaults to today")
 
 
+class UnapplyVendorCreditRequest(BaseModel):
+    """U3a: lepas penerapan nota debit dari tagihan (alasan wajib, riwayat append-only V443)."""
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
 class ReceiveRefundRequest(BaseModel):
     """Request body for recording cash received from vendor."""
     amount: int = Field(..., gt=0, description="Refund amount received in IDR")

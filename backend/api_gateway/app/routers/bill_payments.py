@@ -136,59 +136,12 @@ async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
 
 
 async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
-    """
-    Compute bill remaining balance from journal lines on AP account (Law 16).
-
-    For a bill:
-    - BILL posting creates a CREDIT on AP (2-10100) → increases liability
-    - BILL_PAYMENT / PAYMENT_BILL creates a DEBIT on AP → reduces liability
-    - VENDOR_CREDIT application creates a DEBIT on AP → reduces liability
-    - BILL_PAYMENT_VOID creates a CREDIT on AP → re-increases liability
-
-    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
-    """
-    bill_id_str = str(bill_id)
-    result = await conn.fetchval(
-        """
-        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN account_roles ar ON ar.account_id = jl.account_id
-                              AND ar.tenant_id = je.tenant_id
-        WHERE je.tenant_id = $1
-          AND je.status = 'POSTED'
-          AND ar.role_key = 'AP_TRADE'  -- Fase D2.3: role-based read filter
-          AND (
-              -- Bill posting journal (source_id = bill_id)
-              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
-              -- Bill payment journals (linked via bill_payment_allocations)
-              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              -- Bill payment void journals
-              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              -- Vendor credit application journals (linked via vendor_credit_applications)
-              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
-                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
-                  WHERE vca.bill_id = $2::uuid
-              ))
-              -- Vendor deposit application journals
-              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
-                  SELECT vda.journal_id FROM vendor_deposit_applications vda
-                  WHERE vda.bill_id = $2::uuid
-              ))
-          )
-    """,
-        tenant_id,
-        bill_id_str,
-    )
-    return int(result or 0)
+    """Sisa hutang tagihan dari JURNAL = compute_ap_rincian (V440/V441), SATU sumber dgn daftar/detail Faktur Pembelian + nota debit.
+    U3a (22 Okt 2026): dulu SQL sendiri tanpa pembagian proporsional V245 dan tanpa menyaring jurnal BILL yang DIBALIK -> kaos 8 tagihan
+    ber-jurnal-dibalik masih "bersisa" 525.000/1.120.000 dan bisa dibayar. 0 = tagihan tidak aktif."""
+    from ..services.tagihan_daftar import sisa_tagihan_jurnal
+    v = await sisa_tagihan_jurnal(conn, tenant_id, bill_id if isinstance(bill_id, UUID) else UUID(str(bill_id)))
+    return int(v) if v is not None else 0
 
 
 async def generate_payment_number(conn, tenant_id: str) -> str:
@@ -1933,34 +1886,9 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                     b.amount as total_amount,
                     b.due_date < $3::date as is_overdue,  -- tanggal bisnis (sapuan A)
                     GREATEST(0, $3::date - b.due_date) as overdue_days,
-                    COALESCE((
-                        SELECT SUM(jl.credit) - SUM(jl.debit)
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN account_roles ar ON ar.account_id = jl.account_id
-                                              AND ar.tenant_id = je.tenant_id
-                        WHERE je.tenant_id = $1
-                          AND je.status = 'POSTED'
-                          AND ar.role_key = 'AP_TRADE'  -- Fase D2.3: role-based read filter
-                          AND (
-                              (je.source_type = 'BILL' AND je.source_id = b.id)
-                              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
-                                  SELECT bp.id FROM bill_payments_v2 bp
-                                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                                  WHERE bpa.bill_id = b.id AND bp.tenant_id = $1
-                              ))
-                              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
-                                  SELECT bp.id FROM bill_payments_v2 bp
-                                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                                  WHERE bpa.bill_id = b.id AND bp.tenant_id = $1
-                              ))
-                              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
-                                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
-                                  WHERE vca.bill_id = b.id
-                              ))
-                          )
-                    ), 0) as journal_remaining
+                    COALESCE(apr.outstanding, 0) as journal_remaining
                 FROM bills b
+                LEFT JOIN compute_ap_rincian($1) apr ON apr.bill_id = b.id  -- U3a: satu sumber (V440/V441)
                 WHERE b.tenant_id = $1 AND b.vendor_id = $2::uuid
                   AND COALESCE(b.status_v2, 'draft') NOT IN ('draft', 'void')
                 ORDER BY b.due_date ASC, b.issue_date ASC""",

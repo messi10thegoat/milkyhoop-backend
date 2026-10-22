@@ -278,7 +278,7 @@ async def build_tax_invoice_from_sources(
                 "SELECT id, status, vendor_id, vendor_name, "
                 "credit_number, credit_date, "
                 "original_bill_id, original_bill_number, "
-                "subtotal, tax_rate, tax_amount, total_amount, tax_invoice_id "
+                "subtotal, tax_rate, tax_amount, total_amount "  # U3a: tax_invoice_id = kolom hantu; tautan = tax_invoice_sources (dicek di bawah)
                 "FROM vendor_credits WHERE id = $1 AND tenant_id = $2",
                 source_id,
                 tenant_id,
@@ -288,10 +288,6 @@ async def build_tax_invoice_from_sources(
             if vc["status"] == "draft":
                 raise HTTPException(
                     400, f"Vendor credit {vc['credit_number']} belum di-post"
-                )
-            if vc["tax_invoice_id"]:
-                raise HTTPException(
-                    400, f"Vendor credit {vc['credit_number']} sudah punya faktur pajak"
                 )
 
             existing = await conn.fetchval(
@@ -562,14 +558,7 @@ async def build_tax_invoice_from_sources(
                 source_id,
                 tenant_id,
             )
-    elif source_type == "vendor_credit":
-        for source_id in source_ids:
-            await conn.execute(
-                "UPDATE vendor_credits SET tax_invoice_id = $1 WHERE id = $2 AND tenant_id = $3",
-                tax_invoice_id,
-                source_id,
-                tenant_id,
-            )
+    # U3a (22 Okt 2026): nota debit TAK punya kolom tax_invoice_id (kolom hantu -> 500); tautannya = tax_invoice_sources (sudah ditulis).
 
     return tax_invoice_id
 
@@ -977,10 +966,9 @@ async def bulk_create_tax_invoices(request: Request, payload: TaxInvoiceBulkCrea
                 SELECT vc.id
                 FROM vendor_credits vc
                 WHERE vc.tenant_id = $1
-                  AND vc.status IN ('posted', 'approved')
+                  AND vc.status IN ('posted', 'partial', 'applied')  -- U3a: 'approved' tak diizinkan chk_vc_status
                   AND EXTRACT(MONTH FROM vc.credit_date) = $2
                   AND EXTRACT(YEAR FROM vc.credit_date) = $3
-                  AND vc.tax_invoice_id IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM tax_invoice_sources tis
                       JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id

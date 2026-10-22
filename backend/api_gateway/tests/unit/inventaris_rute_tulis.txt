@@ -558,6 +558,7 @@ POST /api/vendor-credits/{vendor_credit_id}/apply
 POST /api/vendor-credits/{vendor_credit_id}/create-tax-invoice
 POST /api/vendor-credits/{vendor_credit_id}/post
 POST /api/vendor-credits/{vendor_credit_id}/receive-refund
+POST /api/vendor-credits/{vendor_credit_id}/unapply
 POST /api/vendor-credits/{vendor_credit_id}/void
 POST /api/vendor-deposits
 POST /api/vendor-deposits/{deposit_id}/apply

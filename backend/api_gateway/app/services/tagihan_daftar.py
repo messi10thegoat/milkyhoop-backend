@@ -106,3 +106,12 @@ async def rincian_satu(conn, tenant_id: str, bill_id) -> Optional[dict]:
     r = await conn.fetchrow("SELECT bill_total, paid_amount, outstanding FROM compute_ap_rincian($1) WHERE bill_id = $2",
                             tenant_id, bill_id)
     return dict(r) if r else None
+
+
+async def sisa_tagihan_jurnal(conn, tenant_id: str, bill_id) -> Optional[Decimal]:
+    """Sisa hutang satu tagihan dari JURNAL (compute_ap_rincian). None = tagihan tidak aktif / tanpa kredit AP efektif (jurnal dibalik).
+    SATU sumber untuk pagar bayar (bill_payments), terapkan nota debit, dan daftar tagihan terbuka (U3a, 22 Okt 2026)."""
+    r = await conn.fetchrow("SELECT bill_total, outstanding FROM compute_ap_rincian($1) WHERE bill_id = $2", tenant_id, bill_id)
+    if not r or Decimal(str(r["bill_total"] or 0)) == 0:
+        return None
+    return Decimal(str(r["outstanding"]))

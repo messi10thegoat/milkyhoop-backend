@@ -17,7 +17,8 @@ APP = Path(__file__).resolve().parents[2] / "app"
 PENULIS = {
     "routers/bill_payments.py": ["create_bill_payment", "post_bill_payment", "void_bill_payment"],
     "routers/vendor_deposits.py": ["apply_vendor_deposit"],
-    "routers/vendor_credits.py": ["apply_vendor_credit"],
+    # U3a (22 Okt 2026): terapkan/lepas nota debit pindah ke services/nota_debit (router mendelegasikan; dicek test_nota_debit_u3a)
+    "services/nota_debit.py": ["terapkan_nota_debit", "lepas_nota_debit"],
     "services/bills_service.py": ["record_payment"],
 }
 KASUS = [(b, n) for b, ns in PENULIS.items() for n in ns]

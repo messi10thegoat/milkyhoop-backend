@@ -32,8 +32,10 @@ from datetime import date
 from decimal import Decimal
 
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
+from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendor_credits import (
+    UnapplyVendorCreditRequest,
     CreateVendorCreditRequest,
     UpdateVendorCreditRequest,
     ApplyVendorCreditRequest,
@@ -117,56 +119,10 @@ def get_user_context(request: Request) -> dict:
 
 
 async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
-    """
-    Compute bill remaining balance from journal lines on AP account (Law 16).
-
-    For a bill:
-    - BILL posting creates a CREDIT on AP (2-10100) -> increases liability
-    - BILL_PAYMENT / PAYMENT_BILL creates a DEBIT on AP -> reduces liability
-    - VENDOR_CREDIT application creates a DEBIT on AP -> reduces liability
-    - BILL_PAYMENT_VOID creates a CREDIT on AP -> re-increases liability
-
-    Outstanding = SUM(credit) - SUM(debit) on AP for all journals linked to this bill.
-    """
-    bill_id_str = str(bill_id)
-    result = await conn.fetchval(
-        """
-        SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0)
-        FROM journal_lines jl
-        JOIN journal_entries je ON je.id = jl.journal_id
-        JOIN account_roles ar ON ar.account_id = jl.account_id
-                              AND ar.tenant_id = je.tenant_id
-        WHERE je.tenant_id = $1
-          AND je.status = 'POSTED'
-          AND ar.role_key = 'AP_TRADE'  -- Fase D2.2: role-based read filter
-          AND (
-              (je.source_type = 'BILL' AND je.source_id = $2::uuid)
-              OR (je.source_type IN ('BILL_PAYMENT', 'PAYMENT_BILL') AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              OR (je.source_type = 'BILL_PAYMENT_VOID' AND je.source_id IN (
-                  SELECT bp.id FROM bill_payments_v2 bp
-                  JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id
-                  WHERE bpa.bill_id = $2::uuid AND bp.tenant_id = $1
-              ))
-              OR (je.source_type = 'VENDOR_CREDIT' AND je.source_id IN (
-                  SELECT vca.vendor_credit_id FROM vendor_credit_applications vca
-                  WHERE vca.bill_id = $2::uuid
-              ))
-              -- Vendor deposit application journals
-              OR (je.source_type = 'DEPOSIT_APPLICATION' AND je.id IN (
-                  SELECT vda.journal_id FROM vendor_deposit_applications vda
-                  WHERE vda.bill_id = $2::uuid
-              ))
-          )
-    """,
-        tenant_id,
-        bill_id_str,
-    )
-    return int(result or 0)
-
+    """Sisa hutang tagihan dari JURNAL -- compute_ap_rincian (V440/V441), SATU sumber dgn daftar/detail Faktur Pembelian.
+    U3a (22 Okt 2026): dulu SQL sendiri yang mengurangkan SELURUH debit AP nota debit ke tiap tagihan bertaut. 0 = tagihan tak aktif."""
+    v = await ND.sisa_tagihan_jurnal(conn, tenant_id, bill_id)
+    return int(v) if v is not None else 0
 
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
@@ -575,6 +531,10 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if body.vendor_id and not await conn.fetchval(
+                        "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", UUID(body.vendor_id), ctx["tenant_id"]):
+                    raise HTTPException(status_code=400, detail="Vendor tidak ditemukan.")
+
                 # Generate vendor credit number
                 vc_number = await conn.fetchval(
                     "SELECT generate_vendor_credit_number($1, 'VC')", ctx["tenant_id"]
@@ -609,10 +569,9 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                 # Get original bill number if provided
                 original_bill_number = None
                 if body.original_bill_id:
-                    bill = await conn.fetchrow(
-                        "SELECT invoice_number FROM bills WHERE id = $1",
-                        UUID(body.original_bill_id),
-                    )
+                    # U3a: tagihan WAJIB milik tenant ini & vendor yang sama (dulu tanpa filter tenant -> nomor tagihan tenant lain bocor)
+                    bill = await ND.tagihan_milik(conn, ctx["tenant_id"], body.original_bill_id,
+                                                  UUID(body.vendor_id) if body.vendor_id else None)
                     if bill:
                         original_bill_number = bill["invoice_number"]
 
@@ -835,6 +794,15 @@ async def update_vendor_credit(
 
                     del update_data["items"]
 
+                # U3a: medan skema `vendor_credit_date` -> kolom `credit_date` (dulu SET kolom hantu -> 500)
+                if "vendor_credit_date" in update_data:
+                    update_data["credit_date"] = update_data.pop("vendor_credit_date")
+                if update_data.get("original_bill_id"):
+                    _vid = update_data.get("vendor_id") or await conn.fetchval(
+                        "SELECT vendor_id FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vendor_credit_id, ctx["tenant_id"])
+                    _b = await ND.tagihan_milik(conn, ctx["tenant_id"], update_data["original_bill_id"], UUID(str(_vid)) if _vid else None)
+                    update_data["original_bill_number"] = _b["invoice_number"]
+
                 # Update other fields
                 if update_data:
                     excluded = {"items"}
@@ -966,6 +934,11 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 13 (U3a): kunci DULU, baru baca (dulu dibaca sebelum kunci -> dua posting serentak lolos cek status)
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"VENDOR_CREDIT:{vendor_credit_id}",
+                )
                 # Get vendor credit
                 vc = await conn.fetchrow(
                     """
@@ -978,8 +951,18 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
                 if not vc:
                     raise HTTPException(
-                        status_code=404, detail="Vendor credit not found"
+                        status_code=404, detail="Nota debit tidak ditemukan."
                     )
+
+                # U3a: nota debit tertaut tagihan saat dibuat -> atribusi langsung saat posting (V441 cabang 4); wajib muat sisa jurnal tagihan
+                if vc["status"] == "draft" and vc["original_bill_id"]:
+                    _sisa_t = await ND.sisa_tagihan_jurnal(conn, ctx["tenant_id"], vc["original_bill_id"])
+                    if _sisa_t is None:
+                        raise HTTPException(status_code=400, detail=f"Tagihan {vc['original_bill_number'] or ''} belum dibukukan atau sudah batal.")
+                    if Decimal(str(vc["total_amount"])) > _sisa_t:
+                        raise HTTPException(status_code=400, detail=(
+                            f"Melebihi sisa tagihan {_sisa_t:,.0f}: nota debit {Decimal(str(vc['total_amount'])):,.0f} atas "
+                            f"{vc['original_bill_number'] or 'tagihan'}.").replace(",", "."))
 
                 if vc["status"] != "draft":
                     raise HTTPException(
@@ -1259,171 +1242,57 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 async def apply_vendor_credit(
     request: Request, vendor_credit_id: UUID, body: ApplyVendorCreditRequest
 ):
-    """
-    Apply vendor credit to one or more bills.
-
-    Reduces the bill's outstanding balance.
-    Vendor credit must be in 'posted' or 'partial' status.
-    """
+    """Terapkan nota debit ke SATU tagihan, seluruh nilainya (U3a, putusan pemilik 22 Okt; kembar Nota Kredit, pola NetSuite apply credit).
+    TANPA jurnal: hutang sudah didebit saat posting; terapkan hanya mengatribusikan (V441 cabang 4 lewat original_bill_id, pagar V443)."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        if len(body.applications) != 1:
+            raise HTTPException(status_code=400, detail="Nota debit hanya bisa diterapkan ke satu tagihan.")
+        app = body.applications[0]
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"VENDOR_CREDIT_APPLY:{vendor_credit_id}",
-                )
-
-                # Get vendor credit
-                vc = await conn.fetchrow(
-                    """
-                    SELECT * FROM vendor_credits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    vendor_credit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not vc:
-                    raise HTTPException(
-                        status_code=404, detail="Vendor credit not found"
-                    )
-
-                if vc["status"] not in ("posted", "partial"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot apply vendor credit with status '{vc['status']}'",
-                    )
-
-                # Calculate remaining
-                remaining = (
-                    vc["total_amount"]
-                    - (vc["amount_applied"] or 0)
-                    - (vc["amount_received"] or 0)
-                )
-                total_to_apply = sum(app.amount for app in body.applications)
-
-                if total_to_apply > remaining:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Application amount ({total_to_apply}) exceeds remaining balance ({remaining})",
-                    )
-
-                application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                applications_created = []
-
-                for app in body.applications:
-                    # Validate bill
-                    bill = await conn.fetchrow(
-                        """
-                        SELECT id, vendor_id, amount, grand_total, status_v2 as status
-                        FROM bills
-                        WHERE id = $1 AND tenant_id = $2
-                    """,
-                        UUID(app.bill_id),
-                        ctx["tenant_id"],
-                    )
-
-                    if not bill:
-                        raise HTTPException(
-                            status_code=400, detail=f"Bill {app.bill_id} not found"
-                        )
-
-                    # Verify same vendor
-                    if vc["vendor_id"] and bill["vendor_id"] != vc["vendor_id"]:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Bill {app.bill_id} belongs to different vendor",
-                        )
-
-                    # Law 16: compute bill remaining from journal, not amount_paid
-                    bill_total = bill["grand_total"] or bill["amount"]
-                    bill_remaining = await get_bill_remaining_from_journal(
-                        conn, ctx["tenant_id"], app.bill_id
-                    )
-                    if app.amount > bill_remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Application amount exceeds bill remaining balance",
-                        )
-
-                    # Check for existing application
-                    existing = await conn.fetchval(
-                        """
-                        SELECT id FROM vendor_credit_applications
-                        WHERE vendor_credit_id = $1 AND bill_id = $2
-                    """,
-                        vendor_credit_id,
-                        UUID(app.bill_id),
-                    )
-
-                    if existing:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Vendor credit already applied to bill {app.bill_id}",
-                        )
-
-                    # Create application
-                    import uuid as uuid_module
-
-                    app_id = uuid_module.uuid4()
-
-                    await conn.execute(
-                        """
-                        INSERT INTO vendor_credit_applications (
-                            id, tenant_id, vendor_credit_id, bill_id,
-                            amount_applied, application_date, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                        app_id,
-                        ctx["tenant_id"],
-                        vendor_credit_id,
-                        UUID(app.bill_id),
-                        app.amount,
-                        application_date,
-                        ctx["user_id"],
-                    )
-
-                    # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
-                    # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
-                    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(app.bill_id))
-
-                    applications_created.append(
-                        {
-                            "application_id": str(app_id),
-                            "bill_id": app.bill_id,
-                            "amount": app.amount,
-                        }
-                    )
-
-                # Vendor credit status will be updated by trigger
-                logger.info(
-                    f"Vendor credit applied: {vendor_credit_id}, applications={len(applications_created)}"
-                )
-
+                tanggal = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+                hasil = await ND.terapkan_nota_debit(conn, ctx, vendor_credit_id, app.bill_id, app.amount, tanggal)
+                logger.info(f"Nota debit diterapkan: {vendor_credit_id} -> tagihan {hasil['bill_id']}")
                 return {
                     "success": True,
-                    "message": f"Vendor credit applied to {len(applications_created)} bill(s)",
-                    "data": {
-                        "id": str(vendor_credit_id),
-                        "applications": applications_created,
-                    },
+                    "message": f"Nota debit diterapkan ke tagihan {hasil['bill_number']}.",
+                    "data": {"id": str(vendor_credit_id), "applications": [hasil]},
                 }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error applying vendor credit {vendor_credit_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to apply vendor credit")
+        logger.error(f"Error applying vendor credit {vendor_credit_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menerapkan nota debit.")
+
+
+@router.post("/{vendor_credit_id}/unapply", response_model=VendorCreditResponse)
+async def unapply_vendor_credit(
+    request: Request, vendor_credit_id: UUID, body: UnapplyVendorCreditRequest
+):
+    """Lepas penerapan nota debit dari tagihan (U3a; kembar /credit-notes/{id}/unapply). TANPA jurnal; riwayat aplikasi append-only."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                hasil = await ND.lepas_nota_debit(conn, ctx, vendor_credit_id, body.reason)
+                return {"success": True, "message": "Penerapan nota debit dilepas.",
+                        "data": {"id": str(vendor_credit_id), **hasil}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unapplying vendor credit {vendor_credit_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal melepas penerapan nota debit.")
 
 
 # =============================================================================
@@ -1475,17 +1344,16 @@ async def receive_refund(
                         detail=f"Cannot receive refund for vendor credit with status '{vc['status']}'",
                     )
 
-                # Check remaining
-                remaining = (
-                    vc["total_amount"]
-                    - (vc["amount_applied"] or 0)
-                    - (vc["amount_received"] or 0)
-                )
+                # U3a: refund hanya untuk nota debit BEBAS (tak bertaut tagihan); sisa = JURNAL (ND.sisa_nd), bukan cache
+                if vc["original_bill_id"] is not None:
+                    raise HTTPException(status_code=400, detail=(
+                        f"Nota debit ini terkait tagihan {vc['original_bill_number'] or ''}; lepas penerapan dulu sebelum menerima pengembalian dana."))
+                remaining = await ND.sisa_nd(conn, ctx["tenant_id"], vendor_credit_id)
 
-                if body.amount > remaining:
+                if Decimal(str(body.amount)) > remaining:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Refund amount ({body.amount}) exceeds remaining balance ({remaining})",
+                        detail=f"Pengembalian dana {Decimal(str(body.amount)):,.0f} melebihi sisa nota debit {remaining:,.0f}.".replace(",", "."),
                     )
 
                 # Validate account — resolve from bank_account_id if provided
@@ -1497,7 +1365,7 @@ async def receive_refund(
                     )
                     if not bank_acc:
                         raise HTTPException(
-                            status_code=400, detail="Bank account not found"
+                            status_code=400, detail="Rekening bank tidak ditemukan."
                         )
                     resolved_account_id = bank_acc["coa_id"]
                 elif body.account_id:
@@ -1510,12 +1378,15 @@ async def receive_refund(
 
                 account = await conn.fetchrow(
                     """
-                    SELECT id, account_code as code, name FROM chart_of_accounts
+                    SELECT id, account_code as code, name, account_type, is_cash, is_bank_account FROM chart_of_accounts
                     WHERE id = $1 AND tenant_id = $2
                 """,
                     resolved_account_id,
                     ctx["tenant_id"],
                 )
+                # U3a: akun penerima WAJIB kas/bank (dulu akun apa pun diterima)
+                if account and not (account["account_type"] == "ASSET" and (account["is_cash"] or account["is_bank_account"] or body.bank_account_id)):
+                    raise HTTPException(status_code=400, detail="Akun penerima pengembalian dana harus akun kas atau bank.")
 
                 if not account:
                     raise HTTPException(
@@ -1586,7 +1457,7 @@ async def receive_refund(
                 """,
                     uuid_module.uuid4(),
                     journal_id,
-                    UUID(body.account_id),
+                    resolved_account_id,  # U3a: akun TERSELESAIKAN (dulu UUID(body.account_id) -> TypeError bila hanya bank_account_id)
                     body.amount,
                     f"Terima Refund - {vc['credit_number']}",
                 )
@@ -1626,13 +1497,28 @@ async def receive_refund(
                     body.amount,
                     body.refund_date,
                     body.payment_method,
-                    UUID(body.account_id),
+                    resolved_account_id,
                     UUID(body.bank_account_id) if body.bank_account_id else None,
                     body.reference,
                     body.notes,
                     journal_id,
                     ctx["user_id"],
                 )
+
+                # U3a (banksync Rule 1 / Law 31 gerbang 4): uang masuk rekening bank -> bank_transactions di transaksi yang SAMA
+                if body.bank_account_id:
+                    await conn.execute(
+                        """
+                        INSERT INTO bank_transactions (
+                            id, tenant_id, bank_account_id, transaction_date, transaction_type, amount, running_balance,
+                            reference_type, reference_id, reference_number, description, journal_id, status, origin_type,
+                            source_module, created_by, posted_by, posted_at
+                        ) VALUES ($1, $2, $3, $4, 'deposit', $5, 0, 'vendor_credit_refund', $6, $7, $8, $9, 'POSTED', 'SYSTEM',
+                                  'vendor_credit', $10, $10, NOW())
+                        """,
+                        uuid_module.uuid4(), ctx["tenant_id"], UUID(body.bank_account_id), body.refund_date, body.amount,
+                        refund_id, vc["credit_number"], f"Pengembalian dana nota debit {vc['credit_number']}", journal_id, ctx["user_id"],
+                    )
 
                 # Status will be updated by trigger
                 logger.info(
@@ -1723,17 +1609,14 @@ async def void_vendor_credit(
                     }
 
                 # Check for applications or refunds
-                if (vc["amount_applied"] or 0) > 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot void vendor credit with applications. Reverse applications first.",
-                    )
-
-                if (vc["amount_received"] or 0) > 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot void vendor credit with refunds. Reverse refunds first.",
-                    )
+                if await conn.fetchval(
+                        "SELECT 1 FROM vendor_credit_applications WHERE vendor_credit_id = $1 AND tenant_id = $2 AND status = 'active'",
+                        vendor_credit_id, ctx["tenant_id"]):
+                    raise HTTPException(status_code=400, detail="Lepas penerapan nota debit dari tagihan dulu sebelum membatalkannya.")
+                # Nota debit ber-refund tak bisa dibatalkan (pola NetSuite: hapus refund dulu; "batalkan refund" = tiket kedua modul)
+                if await conn.fetchval("SELECT 1 FROM vendor_credit_refunds WHERE vendor_credit_id = $1 AND tenant_id = $2",
+                                       vendor_credit_id, ctx["tenant_id"]):
+                    raise HTTPException(status_code=400, detail="Nota debit yang sudah menerima pengembalian dana tidak bisa dibatalkan.")
 
                 # Create reversal journal if original was posted
                 if vc["journal_id"]:
@@ -1823,6 +1706,9 @@ async def void_vendor_credit(
                         reversal_journal_id,
                     )
 
+                    # U3a (Law 31 gerbang 5): balik SEMUA lapisan posting -- jurnal HPP, kartu stok, baris pajak
+                    await ND.balik_hpp_stok_pajak(conn, ctx, vc, await tanggal_dokumen(conn, ctx["tenant_id"]))
+
                 # Update vendor credit status
                 await conn.execute(
                     """
@@ -1863,7 +1749,9 @@ async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str):
         tid = ctx["tenant_id"]
         await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
         vc = await conn.fetchrow(
-            "SELECT id, status, tax_invoice_id FROM vendor_credits "
+            "SELECT id, status, EXISTS (SELECT 1 FROM tax_invoice_sources tis JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id "
+            "WHERE tis.source_type = 'vendor_credit' AND tis.source_id = vendor_credits.id AND ti.tenant_id = $2 "
+            "AND ti.status NOT IN ('cancelled', 'replaced')) AS tax_invoice_id FROM vendor_credits "  # U3a: kolom hantu -> tautan nyata
             "WHERE id = $1 AND tenant_id = $2",
             vendor_credit_id,
             ctx["tenant_id"],
