@@ -2374,10 +2374,12 @@ async def get_payment_documents(request: Request, payment_id: str):
             i_bayar = next(i for i, g in enumerate(kel) if g["key"] == "bayar")
             return {
                 "anchor": {"kind": "payment_out", "id": str(p["id"]), "number": p["payment_number"], "vendor": p["vendor_name"] or "",
-                           # total = kas keluar; discount = potongan pelunasan; total + discount = paid + balance (bruto, rumus alokasi)
+                           # total = kas keluar; discount = potongan pelunasan; total + discount = paid + balance (bruto, rumus alokasi) -- HANYA posted.
+                           # Draf/batal: paid = balance = null (belum/tak lagi mengalokasikan; pola SAMA bundel UM vendor, temuan WORKSPACE 23 Okt).
                            "position_text": _pk.posisi_bayar(p["status"], f), "total": f"{Decimal(str(p['total_amount'] or 0)):.2f}",
                            "discount": f"{Decimal(str(p['discount_amount'] or 0)):.2f}",
-                           "paid": f"{Decimal(str(f['dialokasikan'])):.2f}", "balance": f"{Decimal(str(f['belum_dialokasikan'])):.2f}",
+                           "paid": f"{Decimal(str(f['dialokasikan'])):.2f}" if p["status"] == "posted" else None,
+                           "balance": f"{Decimal(str(f['belum_dialokasikan'])):.2f}" if p["status"] == "posted" else None,
                            "vendor_phone": (kontak["phone"] if kontak else None) or None,
                            "vendor_email": (kontak["email"] if kontak else None) or None},
                 "default": {"group": "bayar", "index": 0} if i_bayar is not None else None,

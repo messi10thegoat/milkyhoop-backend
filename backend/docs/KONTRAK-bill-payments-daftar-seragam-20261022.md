@@ -29,8 +29,9 @@ Per item **tambahan**: `position_text` (P3), `documents` `[{type}]` (urut bundel
 ## 4. `GET /api/bill-payments/{id}/documents` (bundel) — DIGANTI (P1)
 Skema SAMA `{anchor, default, groups[{key,label,docs[]}]}`.
 - `anchor`: `kind="payment_out"`, `number`, `vendor`, `position_text`, `total` (= total_amount = kas keluar), `discount` (= discount_amount, potongan
-  pelunasan), `paid` (= dialokasikan), `balance` (= belum dialokasikan), `vendor_phone`, `vendor_email`. Invarian: **total + discount = paid + balance**
-  (alokasi dihitung dari bruto = kas + potongan, rumus tulis unit (2)).
+  pelunasan), `paid` (= dialokasikan), `balance` (= belum dialokasikan), `vendor_phone`, `vendor_email`. Invarian (HANYA `posted`): **total + discount = paid + balance**
+  (alokasi dihitung dari bruto = kas + potongan, rumus tulis unit (2)). Draf/batal (`draft`/`voided`): `paid` = `balance` = **null** (pola SAMA
+  bundel UM vendor; 23 Okt, temuan WORKSPACE PAY-202609-0002). `allocated_amount` wrapper draf/batal = cache lama, BUKAN kebenaran (jangan dibaca).
 - groups: `po` (PO asal tagihan teralokasi) · `bayar` (pembayaran ITU sendiri; status `draf | batal | dibayar`) · `faktur` (tagihan teralokasi; dok = `TD.dok_tagihan`,
   status SAMA dengan bundel `/bills/{id}/documents`) · `nota_debit` (ND bertaut tagihan itu, bukan draf/void).
 - `default = {group:"bayar", index:0}`. Izin: `send_payment` R.
