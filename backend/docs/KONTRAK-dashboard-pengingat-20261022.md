@@ -80,3 +80,17 @@ Hanya pengingat dengan `count > 0` dikirim. `menunggu_dp` dan `perlu_minta_dp` =
 1. (pemilik, LANGSUNG) migrasi kolom `pengingat_segera_hari` + perubahan perilaku daftar "segera" (3 hari / akhir minggu → N=7 hari).
 2. (MASTER) `belum_diterapkan` UM vendor masuk v1?; `ar_due_today` per faktur (aksi WA per faktur) dipertahankan di `tasks` usang atau
    dilebur ke `segera_tempo`?
+
+## 7. PUTUSAN (22 Okt)
+- **Pemilik LANGSUNG (sesi BACKEND2)**: SATU definisi "segera jatuh tempo" = jatuh tempo dalam **N hari, bawaan 7**, bisa diatur per usaha;
+  kolom `accounting_settings.pengingat_segera_hari` (migrasi **V450**, blok BACKEND2 baru V450–V454 dari MASTER) `INT NOT NULL DEFAULT 7
+  CHECK (1..60)`. Pill/chip "segera" faktur, proforma, tagihan berubah 3 hari / akhir minggu → N hari.
+- **MASTER**: `vendor_deposits/belum_diterapkan` TIDAK di v1 (tiket). `ar_due_today` per faktur (aksi WA) tetap di `tasks` USANG; registri
+  tidak memuat "jatuh tempo hari ini" (tak ada ?aksi yang sama). `/bills/summary` {k}_count/_value = prasyarat paritas (BACKEND).
+- **FE (WORKSPACE/FRONTEND)**:
+  - `reminders`, `sum_in`, `sum_out` SELALU ada di respons (boleh kosong/"0.00") + `pengingat_versi: 1`.
+  - `list` SELALU `{modul, aksi}`, `modul` ∈ ENUM {sales_invoices, proformas, sales_orders, bills, purchase_orders}. FE yang tahu flag daftar
+    seragam per tenant -> FE menampilkan kartu TANPA tautan bila daftar modul itu tak aktif (angka & jumlah tetap).
+  - `count` int; `amount` string 2dp; `null` HANYA bila arah `non_uang`.
+  - Alias `jatuh_tempo_minggu_ini` (faktur chip + tagihan) dipertahankan sampai rilis FE T1 yang memakai `segera_tempo` TERVERIFIKASI.
+  - `sum_in` hanya arah masuk; `sum_out` hanya arah keluar (AP tak tercampur).
