@@ -396,6 +396,16 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-deposits/[^/]+/refund$", ["POST"], "vendor_deposit", "V"),
     (r"^/api/vendor-deposits/[^/]+/void$", ["POST"], "vendor_deposit", "V"),
     (r"^/api/vendor-deposits/[^/]+/applications/[^/]+/unapply$", ["POST"], "vendor_deposit", "V"),  # P-U3b lepas penerapan (setara void)
+    # CW penuh UM Pembelian (22 Okt 2026): pratinjau = izin rute TULISNYA; riwayat & calon faktur = baca
+    (r"^/api/vendor-deposits/preview$", ["POST"], "vendor_deposit", "C"),
+    (r"^/api/vendor-deposits/[^/]+/post/preview$", ["POST"], "vendor_deposit", "P"),
+    (r"^/api/vendor-deposits/[^/]+/apply/preview$", ["POST"], "vendor_deposit", "P"),
+    (r"^/api/vendor-deposits/[^/]+/applications/[^/]+/unapply/preview$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+/refund/preview$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+/void/preview$", ["POST"], "vendor_deposit", "V"),
+    (r"^/api/vendor-deposits/[^/]+/delete/preview$", ["POST"], "vendor_deposit", "D"),
+    (r"^/api/vendor-deposits/[^/]+/history$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+/applicable-bills$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+$", ["PATCH", "PUT"], "vendor_deposit", "U"),
     (r"^/api/vendor-deposits/[^/]+$", ["DELETE"], "vendor_deposit", "D"),

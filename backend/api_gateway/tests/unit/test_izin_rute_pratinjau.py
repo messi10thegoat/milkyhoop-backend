@@ -36,6 +36,9 @@ KHUSUS = {
     # kontrak PO tahap 2: ubah = PATCH, hapus = DELETE (penentu bersama services/po_rencana)
     "POST /api/purchase-orders/{po_id}/edit/preview": "PATCH /api/purchase-orders/{po_id}",
     "POST /api/purchase-orders/{po_id}/delete/preview": "DELETE /api/purchase-orders/{po_id}",
+    # CW penuh UM Pembelian: buat = POST koleksi, hapus = DELETE (penentu bersama services/uang_muka_vendor_rencana)
+    "POST /api/vendor-deposits/preview": "POST /api/vendor-deposits",
+    "POST /api/vendor-deposits/{deposit_id}/delete/preview": "DELETE /api/vendor-deposits/{deposit_id}",
     # Faktur Pembelian tahap 2: ubah draf = PATCH /bills/v2/{id} (penentu bersama services/tagihan_rencana.blok_ubah + hitung)
     "POST /api/bills/{bill_id}/edit/preview": "PATCH /api/bills/v2/{bill_id}",
 }

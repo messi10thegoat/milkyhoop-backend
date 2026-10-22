@@ -45,6 +45,8 @@ class VendorDepositBase(BaseModel):
 
 class VendorDepositCreate(VendorDepositBase):
     amount: Uang
+    # CW penuh (22 Okt 2026): "Simpan & posting" satu langkah (pola QBO/NetSuite Vendor Prepayment); bawaan = draf (perilaku lama)
+    simpan_dan_posting: bool = False
 
 
 class VendorDepositUpdate(BaseModel):
@@ -131,6 +133,8 @@ class VendorDepositRefundCreate(BaseModel):
     refund_date: date
     amount: Uang
     bank_account_id: Optional[UUID] = None
+    # CW penuh: rekening (bank_account_id) ATAU akun kas/bank CoA (account_id, ASSET is_cash) WAJIB -- kembar uang muka pelanggan
+    account_id: Optional[UUID] = None
     reference: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
 
@@ -234,6 +238,11 @@ class PostDepositResponse(BaseModel):
     status: VendorDepositStatus
     journal_id: UUID
     journal_number: str
+
+
+class VoidDepositRequest(BaseModel):
+    """Alasan batal WAJIB di /void (VOID_REASON_REQUIRED, kembar pelanggan); opsional di skema supaya kekosongan jadi BLOK pratinjau."""
+    reason: Optional[str] = Field(None, max_length=500)
 
 
 class VoidDepositResponse(BaseModel):

@@ -104,6 +104,9 @@ def peran(monkeypatch):
     monkeypatch.setattr(UMV, "akun_peran", akun)
     async def sisa_bill(conn, tid, bid): return 10_000_000
     monkeypatch.setattr(VD, "get_bill_remaining_from_journal", sisa_bill)
+    from app.services import uang_muka_vendor_rencana as R  # CW penuh: penentu /apply memakai R.sisa_tagihan (satu sumber)
+    async def sisa_r(conn, tid, bid): return Decimal("10000000")
+    monkeypatch.setattr(R, "sisa_tagihan", sisa_r)
     async def seg(*a, **k): return None
     monkeypatch.setattr(VD, "segarkan_cache_hutang_tagihan", seg)
 
