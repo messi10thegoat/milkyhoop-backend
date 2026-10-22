@@ -64,3 +64,14 @@ def test_ringkasan_pembaca_bersama():
     h2 = {**h, "header": {**h["header"], "grand_total": 55500}, "akhir": {"tax_amount": 5500, "grand_total": 55500}}  # dpp_manual 50.000
     j2 = TR.hitung_json({"items": []}, h2)
     assert j2["adjustment"] == 55500 - (100000 - 15500 + 5500)
+
+
+def test_idempotensi_buat_bills_v2():
+    from app.services import idem_buat
+    from app.utils.idempotency import SUMBER_BUAT
+    assert SUMBER_BUAT["BILL_CREATE"] == ("bills", None, ()) and idem_buat._TABEL["bills"] == "invoice_number"
+    r = inspect.getsource(BR.create_bill_v2)
+    assert "idem_buat.kunci_dari(request)" in r and "idem=" in r
+    src = inspect.getsource(BS.BillsService.create_bill_v2)
+    assert src.index("idem_buat.mulai(") < src.index("TR.blok_buat(") < src.index("generate_purchase_bill_number")
+    assert 'idem_buat.simpan(conn, idem["ctx"], _kp, _sidik, "BILL_CREATE"' in src

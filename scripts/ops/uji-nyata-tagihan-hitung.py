@@ -138,6 +138,36 @@ async def main():
         cek(not d["ok"] and [b["code"] for b in d["blocks"]] == ["ITEM_KOSONG", "JATUH_TEMPO_WAJIB"], "B blok item kosong + due_date kosong (200, bukan 422)", str(d["blocks"]))
         cr = await svc.create_bill_v2(T, {**kosong, "items": [brg("TES A", 1, 1000)]}, uid)
         cek(cr["message"] == "Tanggal jatuh tempo (due_date) wajib diisi", "B create tanpa due_date -> pesan blok yang sama", cr.get("message"))
+
+        # ---------------- C: Law 14 idempotensi POST /bills/v2 (X-Idempotency-Key, pola idem_buat BILL_CREATE)
+        from fastapi import HTTPException
+        from starlette.responses import Response
+        def req_k(k):
+            async def receive(): return {"type": "http.request", "body": b"", "more_body": False}
+            hd = [(b"x-idempotency-key", k.encode())] if k else []
+            r = Request({"type": "http", "method": "POST", "path": "/", "headers": hd, "query_string": b""}, receive)
+            r.state.user = {"tenant_id": T, "user_id": str(uid)}; return r
+        jumlah = lambda tanda: c.fetchval("SELECT count(*) FROM bills WHERE tenant_id = $1 AND notes = $2", T, tanda)  # noqa: E731
+        tanda = f"TES E2E idem {uuid.uuid4()}"
+        badan = S.CreateBillRequestV2(**{**dasar, "notes": tanda, "items": [brg("TES I", 1, 12345)]})
+        k = str(uuid.uuid4())
+        r1 = await BR.create_bill_v2(req_k(k), badan, Response())
+        rs2 = Response()
+        r2 = await BR.create_bill_v2(req_k(k), badan, rs2)
+        i1 = (r1 if isinstance(r1, dict) else r1.model_dump())["data"]["id"]
+        i2 = (r2 if isinstance(r2, dict) else r2.model_dump())["data"]["id"]
+        cek(i1 == i2 and await jumlah(tanda) == 1 and rs2.headers.get("X-Idempotent-Replay") == "true",
+            "C kunci sama x2 -> 1 tagihan, replay id sama", f"{i1} / {i2} n={await jumlah(tanda)} replay={rs2.headers.get('X-Idempotent-Replay')}")
+        try:
+            await BR.create_bill_v2(req_k(k), S.CreateBillRequestV2(**{**dasar, "notes": tanda, "items": [brg("TES I", 2, 12345)]}), Response())
+            st = None
+        except HTTPException as e:
+            st = (e.status_code, (e.detail or {}).get("code") if isinstance(e.detail, dict) else e.detail)
+        cek(st == (409, "IDEMPOTENCY_KEY_REUSED") and await jumlah(tanda) == 1, "C kunci sama + badan beda -> 409, nol tagihan baru", str(st))
+        tanda2 = f"TES E2E idem kontrol {uuid.uuid4()}"
+        b2 = S.CreateBillRequestV2(**{**dasar, "notes": tanda2, "items": [brg("TES I", 1, 12345)]})
+        await BR.create_bill_v2(req_k(None), b2, Response()); await BR.create_bill_v2(req_k(None), b2, Response())
+        cek(await jumlah(tanda2) == 2, "C KONTROL tanpa kunci x2 -> 2 tagihan (alat bisa membedakan)", str(await jumlah(tanda2)))
     finally:
         await tx.rollback(); await c.close()
     print("RINGKAS gagal=%d %s" % (len(gagal), gagal[:6])); sys.exit(1 if gagal else 0)

@@ -2631,7 +2631,7 @@ class BillsService:
     # =========================================================================
 
     async def create_bill_v2(
-        self, tenant_id: str, request: Dict[str, Any], user_id: UUID
+        self, tenant_id: str, request: Dict[str, Any], user_id: UUID, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Create a new pharmacy bill with extended fields (V2).
@@ -2649,6 +2649,16 @@ class BillsService:
         async with self.pool.acquire() as conn:
             await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
+                # Law 14 (22 Okt 2026, temuan WORKSPACE): X-Idempotency-Key pola idem_buat (BILL_CREATE) -- IDEM lock + replay SEBELUM
+                # blok/nomor/vendor; respons dicatat di transaksi YANG SAMA dengan tagihannya. Tanpa kunci = perilaku lama.
+                _kp = _sidik = None
+                if idem and idem.get("kunci"):
+                    from . import idem_buat
+                    _kp, _sidik, _lama = await idem_buat.mulai(conn, idem["ctx"], idem["kunci"], "BILL_CREATE", idem["body"], "bills", "bill",
+                                                               idem.get("response"))
+                    if _lama is not None:
+                        return _lama
+
                 # 0. Blok (penentu SATU dgn POST /bills/calculate; tagihan_rencana.blok_buat): pertama -> pesan lama, SEBELUM nomor/vendor
                 #    dibuat (dulu nomor & vendor otomatis tercipta lalu tetap ter-commit walau galat due_date/item).
                 _bloks = await TR.blok_buat(conn, tenant_id, request)
@@ -3415,7 +3425,7 @@ class BillsService:
                 now_iso = datetime.now().isoformat()
                 grand_total = calc["grand_total"]
 
-                return {
+                _hasil = {
                     "success": True,
                     "message": f"Bill created as {status}",
                     "data": {
@@ -3440,6 +3450,10 @@ class BillsService:
                         else "UNPOSTED",
                     },
                 }
+                if _kp:
+                    from . import idem_buat
+                    return await idem_buat.simpan(conn, idem["ctx"], _kp, _sidik, "BILL_CREATE", _hasil, bill_id)
+                return _hasil
 
     async def _emit_bill_debit_lines(
         self, conn, tenant_id, bill_id, journal_id,

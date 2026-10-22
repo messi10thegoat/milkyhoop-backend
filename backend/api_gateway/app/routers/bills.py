@@ -5,7 +5,7 @@ Endpoints for managing bills, payments, and attachments.
 Integrates with accounting kernel for AP and journal entries.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
+from fastapi import APIRouter, HTTPException, Request, Response, Query, UploadFile, File, Body
 from fastapi.responses import StreamingResponse
 from typing import Optional, Literal
 from uuid import UUID
@@ -1581,7 +1581,7 @@ async def delete_bill_attachment(
 
 
 @router.post("/v2", response_model=CreateBillResponseV2, status_code=201)
-async def create_bill_v2(request: Request, body: CreateBillRequestV2):
+async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: Response = None):
     """
     Create a new pharmacy bill with extended fields (V2).
 
@@ -1611,11 +1611,15 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2):
                 status_code=400, detail="Either vendor_name or vendor_id is required"
             )
 
+        # Law 14: X-Idempotency-Key (pola idem_buat; kunci satu per buka form). Format salah -> 400; kunci sama + badan beda -> 409.
+        from ..services import idem_buat
+        kunci = idem_buat.kunci_dari(request)
         service = await get_bills_service()
         result = await service.create_bill_v2(
             tenant_id=ctx["tenant_id"],
             request=body.model_dump(),
             user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "body": body, "response": response} if kunci else None,
         )
 
         if not result["success"]:
