@@ -386,6 +386,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-deposits$", ["POST"], "vendor_deposit", "C"),
     (r"^/api/vendor-deposits$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/summary$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+/documents$", ["GET"], "vendor_deposit", "R"),  # P-U3 bundel (eksplisit)
     (r"^/api/vendor-deposits/by-vendor/[^/]+$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/available/[^/]+$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+/post$", ["POST"], "vendor_deposit", "P"),

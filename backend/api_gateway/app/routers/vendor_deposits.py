@@ -37,6 +37,9 @@ from ..schemas.vendor_deposits import (
 )
 from ..services.role_resolver import AccountRole
 from ..services import uang_muka_vendor as UMV  # akun PERAN + sisa dari jurnal (P-U1, 22 Okt 2026)
+from ..services import po_daftar as PD  # pembentuk dokumen bersama (dok_*), r2, documents_baris
+from ..services import uang_muka_vendor_daftar as UMD  # P-U3: sisa/keadaan/aksi/position_text/documents SERVER (satu sumber)
+from typing import Literal
 from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
@@ -124,23 +127,39 @@ async def list_vendor_deposits(
     vendor_id: Optional[UUID] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    # 22 Okt 2026 (P-U3, aditif): ?search=, page/per_page/offset (prioritas offset > page > skip), sort, pill aksi, total atas SEMUA hasil filter
+    search: Optional[str] = Query(None, description="Cari no. uang muka, vendor, referensi, catatan, no. PO (semua kata wajib cocok)"),
+    page: int = Query(1, ge=1),
+    per_page: Optional[int] = Query(None, ge=1, le=100),
+    offset: Optional[int] = Query(None, ge=0),
+    sort_by: Literal["deposit_date", "deposit_number", "amount", "created_at"] = Query("deposit_date"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
+    aksi: Optional[Literal["belum_diterapkan"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
-    """List vendor deposits"""
+    """Daftar uang muka vendor. sisa/terpakai/dikembalikan TURUNAN jurnal; sisa_keadaan, status_text/position_text, aksi (pill), documents/doc_count
+    dihitung server; urutan deterministik (`, vd.id`); has_more."""
     ctx = get_user_context(request)
     pool = await get_pool()
+    _i = lambda v, d: v if isinstance(v, int) and not isinstance(v, bool) else d  # noqa: E731  (panggilan langsung = objek Query)
+    _limit = _i(per_page, None) or _i(limit, 50)
+    _offset = _i(offset, None)
+    _page, _skip = _i(page, 1), _i(skip, 0)
+    _offset = _offset if _offset is not None and _offset > 0 else ((_page - 1) * _limit if _page > 1 else _skip)
 
     async with pool.acquire() as conn:
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
+        akun = await UMD.akun_baca(conn, ctx["tenant_id"])
 
-        where_clauses = ["vd.tenant_id = $1"]
-        params = [ctx["tenant_id"]]
-        param_idx = 2
+        where_clauses = ["vd.tenant_id = $1", "$2::uuid IS NOT NULL"]
+        params = [ctx["tenant_id"], akun]
+        param_idx = 3
 
         if status:
             where_clauses.append(f"vd.status = ${param_idx}")
-            params.append(status.value)
+            params.append(status.value if hasattr(status, "value") else status)
             param_idx += 1
 
         if vendor_id:
@@ -158,36 +177,67 @@ async def list_vendor_deposits(
             params.append(end_date)
             param_idx += 1
 
-        where_sql = " AND ".join(where_clauses)
+        cari, par_cari = UMD.syarat_cari(search, param_idx)
+        if cari:
+            where_clauses.append(cari)
+            params.extend(par_cari)
+            param_idx += len(par_cari)
 
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM vendor_deposits vd WHERE {where_sql}", *params
-        )
+        if isinstance(aksi, str) and aksi in UMD.AKSI_VD:  # panggilan langsung tanpa aksi = objek Query -> mati
+            where_clauses.append(UMD.sql_aksi(aksi))
+
+        where_sql = " AND ".join(where_clauses)
+        dari = f"FROM vendor_deposits vd JOIN vendors v ON vd.vendor_id = v.id AND v.tenant_id = vd.tenant_id {UMD.sql_agregat('$2')}"
+        sort_field = {"deposit_date": "vd.deposit_date", "deposit_number": "vd.deposit_number", "amount": "vd.amount",
+                      "created_at": "vd.created_at"}.get(sort_by if isinstance(sort_by, str) else "deposit_date", "vd.deposit_date")
+        sort_dir = "ASC" if sort_order == "asc" else "DESC"
+
+        total = await conn.fetchval(f"SELECT COUNT(*) {dari} WHERE {where_sql}", *params)
 
         rows = await conn.fetch(
             f"""
             SELECT vd.*, v.name as vendor_name, v.code as vendor_code,
                    ba.account_name as bank_account_name, po.po_number as purchase_order_number
-            FROM vendor_deposits vd
-            JOIN vendors v ON vd.vendor_id = v.id
-            LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id
-            LEFT JOIN purchase_orders po ON vd.purchase_order_id = po.id
+            {dari}
+            LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id AND ba.tenant_id = vd.tenant_id
+            LEFT JOIN purchase_orders po ON vd.purchase_order_id = po.id AND po.tenant_id = vd.tenant_id
             WHERE {where_sql}
-            ORDER BY vd.deposit_date DESC
+            ORDER BY {sort_field} {sort_dir}, vd.id
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
             """,
             *params,
-            skip,
-            limit,
+            _offset,
+            _limit,
         )
 
-        items = [VendorDepositResponse(**dict(row)) for row in rows]
-        return VendorDepositListResponse(items=items, total=total)
+        ids = [row["id"] for row in rows]
+        fakta = await UMD.fakta_vd(conn, ctx["tenant_id"], akun, ids)
+        kel = await UMD.kelompok_untuk(conn, ctx["tenant_id"], ids)
+        items = []
+        for row in rows:
+            f = fakta[row["id"]]
+            dok = PD.documents_baris(kel.get(row["id"], []))
+            data = dict(row)
+            data.update({"sisa": None if f["sisa"] is None else float(f["sisa"]), "terpakai": float(f["terpakai"]),
+                         "dikembalikan": float(f["dikembalikan"]), "sisa_keadaan": f["sisa_keadaan"], "status_text": f["status_text"],
+                         "position_text": f["position_text"], "aksi": f["aksi"], "documents": dok, "doc_count": len(dok)})
+            items.append(VendorDepositResponse(**data))
+
+        hasil = {"items": items, "total": total, "has_more": (_offset + _limit) < total}
+        if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dengan COUNT
+            t = await conn.fetchrow(
+                f"""SELECT COALESCE(SUM(vd.amount) FILTER (WHERE vd.status <> 'void'), 0) AS sum_total,
+                           COALESCE(SUM(ag.sisa) FILTER (WHERE vd.status NOT IN ('draft', 'void')), 0) AS sum_sisa
+                    {dari} WHERE {where_sql}""", *params)
+            hasil["sum_total"] = float(PD.r2(t["sum_total"]))
+            hasil["sum_sisa"] = float(PD.r2(t["sum_sisa"]))
+        return VendorDepositListResponse(**hasil)
 
 
 @router.get("/summary", response_model=VendorDepositSummary)
-async def get_vendor_deposit_summary(request: Request):
-    """Get vendor deposit summary"""
+async def get_vendor_deposit_summary(request: Request, search: Optional[str] = Query(None)):
+    """Ringkasan uang muka vendor. P-U3: angka TURUNAN jurnal (bukan fungsi DB atas kolom cache BIGINT); ?search= (predikat daftar) membatasi
+    SEMUA hitungan/nilai; belum_diterapkan_count/value = predikat SAMA dgn ?aksi= daftar."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -195,15 +245,28 @@ async def get_vendor_deposit_summary(request: Request):
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
-
+        akun = await UMD.akun_baca(conn, ctx["tenant_id"])
+        cari, par_cari = UMD.syarat_cari(search, 3)
+        w = f" AND {cari}" if cari else ""
         row = await conn.fetchrow(
-            "SELECT * FROM get_vendor_deposit_summary($1)", ctx["tenant_id"]
-        )
+            f"""SELECT COUNT(*) FILTER (WHERE vd.status <> 'void') AS deposit_count,
+                       COUNT(*) FILTER (WHERE vd.status = 'draft') AS draft_count,
+                       COUNT(*) FILTER (WHERE vd.status = 'void') AS void_count,
+                       COALESCE(SUM(vd.amount) FILTER (WHERE vd.status <> 'void'), 0) AS total_deposits,
+                       COALESCE(SUM(ag.terpakai) FILTER (WHERE vd.status NOT IN ('draft', 'void')), 0) AS total_applied,
+                       COALESCE(SUM(ag.sisa) FILTER (WHERE vd.status NOT IN ('draft', 'void')), 0) AS total_remaining,
+                       COUNT(*) FILTER (WHERE {UMD.sql_aksi('belum_diterapkan')}) AS belum_n,
+                       COALESCE(SUM(ag.sisa) FILTER (WHERE {UMD.sql_aksi('belum_diterapkan')}), 0) AS belum_v
+                FROM vendor_deposits vd {UMD.sql_agregat('$2')}
+                WHERE vd.tenant_id = $1 AND $2::uuid IS NOT NULL{w}""", ctx["tenant_id"], akun, *par_cari)
+        return VendorDepositSummary(
+            total_deposits=float(PD.r2(row["total_deposits"])), total_applied=float(PD.r2(row["total_applied"])),
+            total_remaining=float(PD.r2(row["total_remaining"])), deposit_count=row["deposit_count"] or 0,
+            pending_count=row["belum_n"] or 0, draft_count=row["draft_count"] or 0, void_count=row["void_count"] or 0,
+            belum_diterapkan_count=row["belum_n"] or 0, belum_diterapkan_value=float(PD.r2(row["belum_v"])))
 
-        return VendorDepositSummary(**dict(row))
 
-
-@router.get("/{deposit_id}", dependencies=[Depends(fitur_belum_tersedia)], response_model=VendorDepositDetailResponse)
+@router.get("/{deposit_id}", response_model=VendorDepositDetailResponse)
 async def get_vendor_deposit(request: Request, deposit_id: UUID):
     """Get vendor deposit with applications and refunds"""
     ctx = get_user_context(request)
@@ -221,30 +284,63 @@ async def get_vendor_deposit(request: Request, deposit_id: UUID):
             FROM vendor_deposits vd
             JOIN vendors v ON vd.vendor_id = v.id
             LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id
-            LEFT JOIN purchase_orders po ON vd.purchase_order_id = po.id
+            LEFT JOIN purchase_orders po ON vd.purchase_order_id = po.id AND po.tenant_id = vd.tenant_id
             WHERE vd.id = $1 AND vd.tenant_id = $2
             """,
             deposit_id,
             ctx["tenant_id"],
         )
         if not vd:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
+            raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
 
-        applications = await conn.fetch(
-            "SELECT * FROM get_vendor_deposit_applications($1)", deposit_id
-        )
+        # P-U3: paritas detail == baris (fungsi SAMA: UMD.fakta_vd / UMD.kelompok_untuk)
+        _akun = await UMD.akun_baca(conn, ctx["tenant_id"])
+        _f = (await UMD.fakta_vd(conn, ctx["tenant_id"], _akun, [deposit_id]))[deposit_id]
+        _dok = PD.documents_baris((await UMD.kelompok_untuk(conn, ctx["tenant_id"], [deposit_id])).get(deposit_id, []))
 
-        refunds = await conn.fetch(
-            "SELECT * FROM get_vendor_deposit_refunds($1)", deposit_id
-        )
+        # P-U3: dua fungsi DB penerapan/pengembalian lama RUSAK sejak dibuat (kolom tak ada; tipe BIGINT != numeric) -- sebab detail diparkir.
+        # Diganti kueri langsung (UMD.SQL_APLIKASI / SQL_REFUND), tenant eksplisit.
+        applications = await conn.fetch(UMD.SQL_APLIKASI, deposit_id, ctx["tenant_id"])
+        refunds = await conn.fetch(UMD.SQL_REFUND, deposit_id, ctx["tenant_id"])
 
         return VendorDepositDetailResponse(
-            **dict(vd),
+            **{**dict(vd), "sisa": None if _f["sisa"] is None else float(_f["sisa"]), "terpakai": float(_f["terpakai"]),
+               "dikembalikan": float(_f["dikembalikan"]), "sisa_keadaan": _f["sisa_keadaan"], "status_text": _f["status_text"],
+               "position_text": _f["position_text"], "aksi": _f["aksi"], "documents": _dok, "doc_count": len(_dok)},
             applications=[
                 VendorDepositApplicationResponse(**dict(a)) for a in applications
             ],
             refunds=[VendorDepositRefundResponse(**dict(r)) for r in refunds],
         )
+
+
+@router.get("/{deposit_id}/documents")
+async def get_vendor_deposit_documents(request: Request, deposit_id: UUID):
+    """Bundel panel berjangkar UANG MUKA PEMBELIAN (P-U3): skema SAMA dgn bundel SO/faktur {anchor, default, groups[{key,label,docs[]}]};
+    pembentuk SATU tempat (services/uang_muka_vendor_daftar.kelompok_untuk) = sumber kolom documents[] daftar. Jangkar SELALU tampil sebagai dirinya
+    (draf=`draf`, void=`batal`). anchor: total = jumlah, paid = terpakai (jurnal), balance = sisa (jurnal)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        vd = await conn.fetchrow(
+            """SELECT vd.id, vd.deposit_number, vd.amount, vd.status, v.name AS vendor_name, v.phone, v.email
+               FROM vendor_deposits vd JOIN vendors v ON v.id = vd.vendor_id AND v.tenant_id = vd.tenant_id
+               WHERE vd.id = $1 AND vd.tenant_id = $2""", deposit_id, ctx["tenant_id"])
+        if not vd:
+            raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+        akun = await UMD.akun_baca(conn, ctx["tenant_id"])
+        f = (await UMD.fakta_vd(conn, ctx["tenant_id"], akun, [deposit_id]))[deposit_id]
+        kel = (await UMD.kelompok_untuk(conn, ctx["tenant_id"], [deposit_id])).get(deposit_id, [])
+        return {
+            "anchor": {"kind": "vendor_deposit", "id": str(vd["id"]), "number": vd["deposit_number"], "vendor": vd["vendor_name"] or "",
+                       "position_text": f["position_text"], "total": f"{PD.r2(vd['amount']):.2f}",
+                       "paid": None if vd["status"] in ("draft", "void") else f"{f['terpakai']:.2f}",
+                       "balance": None if f["sisa"] is None else f"{f['sisa']:.2f}",
+                       "vendor_phone": vd["phone"] or None, "vendor_email": vd["email"] or None},
+            "default": {"group": "um", "index": 0},
+            "groups": kel,
+        }
 
 
 @router.post("", response_model=VendorDepositResponse, status_code=201)
