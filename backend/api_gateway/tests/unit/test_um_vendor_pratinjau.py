@@ -230,7 +230,10 @@ def test_tulis_memakai_penentu_bersama():
                                                           "delete_vendor_deposit")}
     assert "R.rencana_buat(" in src["create_vendor_deposit"] and "_posting_inti(conn, ctx, row[\"id\"])" in src["create_vendor_deposit"]
     assert "R.rencana_posting(" in src["_posting_inti"] and "R.rencana_terapkan(" in src["apply_vendor_deposit"]
-    assert "R.rencana_lepas(" in src["unapply_vendor_deposit"] and "kunci=True" in src["unapply_vendor_deposit"]
+    from app.services import uang_muka_vendor_lepas as L
+    lep = inspect.getsource(L.lepas_penerapan)
+    assert "lepas_penerapan(conn, ctx, deposit_id, application_id)" in src["unapply_vendor_deposit"]
+    assert "R.rencana_lepas(" in lep and "kunci=True" in lep
     assert "R.rencana_kembali(" in src["refund_vendor_deposit"] and 'rk["akun_kas"]' in src["refund_vendor_deposit"]
     assert "R.rencana_batal(" in src["void_vendor_deposit"] and "VD_VOIDED" in src["void_vendor_deposit"]
     assert "R.rencana_hapus(" in src["delete_vendor_deposit"] and "status = 'draft'" in src["delete_vendor_deposit"]

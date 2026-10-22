@@ -107,8 +107,12 @@ def lingkungan(monkeypatch):
     async def segarkan(conn, tid, bid): seg.append(bid)
     async def catat(*a, **k): riw.append((a, k))
     async def hari(conn, tid): return date(2026, 10, 22)
-    monkeypatch.setattr(VD, "segarkan_cache_hutang_tagihan", segarkan)
-    monkeypatch.setattr(VD, "catat_riwayat", catat)
+    # 22 Okt: penulis lepas pindah ke services/uang_muka_vendor_lepas (SATU penulis; dipakai juga void faktur BACKEND)
+    from app.services import uang_muka_vendor_lepas as L
+    import app.utils.tanggal_tenant as TT
+    monkeypatch.setattr(L, "segarkan_cache_hutang_tagihan", segarkan)
+    monkeypatch.setattr(L, "catat_riwayat", catat)
+    monkeypatch.setattr(TT, "tanggal_dokumen", hari)
     monkeypatch.setattr(VD, "tanggal_dokumen", hari)
     return {"seg": seg, "riw": riw}
 
@@ -148,7 +152,9 @@ def test_lepas_kunci_saldo_sebelum_baca(monkeypatch, lingkungan):
     i_lock = next(i for i, (k, q) in enumerate(kon.log) if "VENDOR_DEPOSIT_SALDO" in str(kon.args[i][1]))
     i_baca = next(i for i, (k, q) in enumerate(kon.log) if "FROM vendor_deposits" in q)
     assert i_lock < i_baca and "FOR UPDATE" in kon.log[i_baca][1]
-    assert "FOR UPDATE OF a" in next(q for k, q in kon.log if "FROM vendor_deposit_applications a" in q)
+    # bacaan awal tanpa kunci hanya mencari tagihan (dikunci DULU, urutan global); bacaan berkunci sesudah SALDO
+    i_app = next(i for i, (k, q) in enumerate(kon.log) if "FROM vendor_deposit_applications a" in q and "FOR UPDATE OF a" in q)
+    assert i_lock < i_app
 
 
 def test_lepas_kedua_idempoten_tanpa_jurnal_baru(monkeypatch, lingkungan):
@@ -211,8 +217,17 @@ def test_void_hanya_ditahan_penerapan_aktif_atau_refund():
 
 
 def test_kunci_saldo_sama_di_semua_jalur_saldo():
-    for fn in (VD.apply_vendor_deposit, VD.refund_vendor_deposit, VD.void_vendor_deposit, VD.unapply_vendor_deposit):
+    from app.services import uang_muka_vendor_lepas as L
+    for fn in (VD.apply_vendor_deposit, VD.refund_vendor_deposit, VD.void_vendor_deposit, L.lepas_penerapan):
         assert "VENDOR_DEPOSIT_SALDO:{deposit_id}" in inspect.getsource(fn), fn.__name__
+    assert "lepas_penerapan(conn, ctx, deposit_id, application_id)" in inspect.getsource(VD.unapply_vendor_deposit)
+
+
+def test_urutan_kunci_global_tagihan_dulu():
+    """Tagihan (FOR UPDATE) SEBELUM kunci SALDO uang muka di /apply dan lepas_penerapan (sama dgn void faktur BACKEND) -> tanpa deadlock silang."""
+    from app.services import uang_muka_vendor_lepas as L
+    for src in (inspect.getsource(VD.apply_vendor_deposit), inspect.getsource(L.lepas_penerapan)):
+        assert src.index("FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE") < src.index("VENDOR_DEPOSIT_SALDO:")
 
 
 # ---------------------------------------------------------------- idempotensi (Law 14)
