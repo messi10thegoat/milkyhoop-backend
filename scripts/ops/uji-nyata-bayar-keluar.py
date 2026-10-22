@@ -9,7 +9,7 @@ grapgrap + kaos. argv: lama <out.json> | baru <out.json> | banding <lama.json> <
      (d) summary: total_count/total_paid/posted/draft == baris daftar non-voided; by_method Σ == total
      (e) urutan deterministik (dua panggilan identik; tiebreak q.id di ORDER BY, dicek di tes unit)
      (f) UKUR: pembayaran ber-alokasi ke tagihan void (status_v2 void) -> dicetak (tiket BILL-2609-0002)
-  banding   : setiap beda lama -> baru dicetak; ringkas jumlah.
+  banding   : setiap beda lama -> baru dicetak; ringkas jumlah; saldo hutang per vendor + get_outstanding_summary WAJIB identik.
 MERAH=1 : harapan satu baris dibalik -> wajib gagal."""
 import asyncio, inspect, json, os, sys
 from decimal import Decimal
@@ -90,6 +90,11 @@ async def main():
                                                                          "dialokasikan", "belum_dialokasikan", "alokasi_keadaan", "aksi")}}
             sm = J(await BP.get_bill_payments_summary(**kw(BP.get_bill_payments_summary, r)))["data"]
             out[f"{t}|summary"] = sm
+            # saldo hutang TETAP dari jurnal (MASTER 22 Okt): per vendor compute_ap_outstanding + ringkasan hutang layanan tagihan -> banding wajib 0 beda
+            out[f"{t}|ap_vendor"] = {str(v["vendor_id"]): str(v["s"]) for v in await c.fetch(
+                "SELECT vendor_id, SUM(outstanding) AS s FROM compute_ap_outstanding($1) GROUP BY vendor_id", t)}
+            from app.services import bills_service as BS
+            out[f"{t}|ap_ringkas"] = json.loads(json.dumps((await BS.BillsService(P()).get_outstanding_summary(t)), default=str))
             if mode != "baru":
                 continue
             wr = {str(w["id"]): w for w in await c.fetch(
@@ -155,9 +160,14 @@ def banding():
     for k in baru: per.setdefault(k.split("|")[0], [0, 0, 0])[1] += 1
     for k, _, _ in beda: per[k.split("|")[0]][2] += 1
     print("BANDING per tenant [hilang dari daftar, baru di daftar, berubah]:", json.dumps(per))
-    for k in hilang: print("  HILANG", k, json.dumps(a[k]["baris"] if "baris" in a[k] else a[k], default=str))
+    ap_beda = [k for k in a if (k.endswith("|ap_vendor") or k.endswith("|ap_ringkas")) and a[k] != b.get(k)]
+    print(("PASS" if not ap_beda else "FAIL") + f" saldo hutang per vendor (compute_ap_outstanding) + ringkasan hutang TIDAK berubah lama->baru | {ap_beda}")
+    if ap_beda: sys.exit(1)
+    for k in hilang: print("  HILANG", k, json.dumps(a[k].get("baris", a[k]) if isinstance(a[k], dict) else a[k], default=str))
     for k in baru: print("  BARU  ", k, json.dumps(b[k]["baris"] if "baris" in b[k] else b[k], default=str))
     for k, x, y in beda:
+        if k.endswith("|ap_vendor") or k.endswith("|ap_ringkas"):
+            continue
         if k.endswith("|summary"):
             print("  SUMMARY", k, "\n     lama", json.dumps(x, sort_keys=True), "\n     baru", json.dumps(y, sort_keys=True))
             continue
