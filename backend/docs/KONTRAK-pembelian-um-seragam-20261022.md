@@ -22,3 +22,48 @@ Detail `GET /vendor-deposits/{id}` DIPARKIR (409) karena dua fungsi DB RUSAK sej
 
 ## Belum (unit tulis berikut)
 Unapply (lepas penerapan) agar deposit berpenerapan bisa di-void; idempotensi create/post/apply/refund; nominal 2 desimal (`amount: int` di request); unpark by-vendor/available.
+
+## Sisi TULIS (P-U3b, RANCANGAN 22 Okt 2026 — belum dibangun; migrasi & aturan akun menunggu izin pemilik LANGSUNG)
+Acuan: QBO/Xero "unapply" prepayment, NetSuite Vendor Prepayment Application (unapply = reversal, bukan hapus). Kembaran pelanggan:
+`POST /customer-deposits/{id}/applications/{app_id}/reverse` (FIX_P1_DEPOSIT opsi B).
+
+### Pengukuran (baca-saja, 22 Okt)
+- `vendor_deposits` = 0 baris, `vendor_deposit_applications` = 0 baris di produksi → migrasi berisiko rendah, tak ada data dipulihkan.
+- Trigger `update_vendor_deposit_status` (applications + refunds): variabel **BIGINT** (sen terpotong, Law 9); menjumlah SEMUA penerapan
+  (penerapan yang sudah dilepas tetap terhitung); status tak pernah kembali ke `posted` (`ELSE status`).
+- `get_bill_remaining_from_journal` (vendor_deposits.py): tanpa saring `reversed_by_id`, dan `int()` memotong sen. Sesudah ada lepas,
+  jurnal asli tetap terhitung → sisa tagihan terlalu kecil. **Diganti `compute_ap_outstanding` per tagihan** (arap Rule 5: satu sumber;
+  bagian 6 sudah menyaring `reversed_by_id IS NULL`).
+- Penjaga `guard_arap_requires_obligation`: `DEPOSIT_APPLICATION` TIDAK di daftar putih → jurnal lepas (Cr Utang) WAJIB ber-`source_id` =
+  id tagihan (kewajiban yang nyata ada), sama dengan opsi B pelanggan. Sisa uang muka tetap benar: `SQL_AGREGAT` membuang jurnal asli
+  (`reversed_by_id`) DAN pembaliknya (`reversal_of_id`) → hanya jurnal VENDOR_DEPOSIT + penerapan hidup yang tersisa.
+- Void deposit ditolak bila "ada penerapan" (C5); penentunya harus mengabaikan penerapan berstatus `reversed`.
+
+### Migrasi (nomor BACKEND2: V437, V438) — keduanya butuh izin pemilik langsung
+- **V437 `vendor_deposit_applications_lepas`** (tambah saja, expand): kolom `status varchar NOT NULL DEFAULT 'active'` CHECK (`active`,`reversed`),
+  `reversed_by_id uuid` (FK journal_entries), `reversed_at timestamptz`; `CREATE OR REPLACE update_vendor_deposit_status`: NUMERIC,
+  hanya penerapan `status='active'`, status kembali `posted` bila terpakai+refund = 0 (dan bukan draft/void). ROLLBACK = fungsi lama + DROP kolom.
+- **V438 `drop_fungsi_um_vendor_rusak`** (contract): DROP kelima fungsi `get_vendor_deposit_applications(uuid)`, `get_vendor_deposit_refunds(uuid)`,
+  `get_vendor_deposits(uuid,varchar)`, `get_available_vendor_deposits(uuid)`, `get_vendor_deposit_summary(text)`. Diukur: 4 galat saat dipanggil
+  (kolom hantu `b.bill_number`; BIGINT ≠ numeric(18,2)), summary membaca kolom cache BIGINT (bukan jurnal). Nol pemanggil (grep kode +
+  `pg_proc.prosrc` + `pg_views`). ROLLBACK = definisi V054 apa adanya.
+
+### Endpoint
+- **`POST /vendor-deposits/{id}/applications/{app_id}/unapply`** (izin `vendor_deposit` U) — lepas SATU penerapan.
+  Kunci: `VENDOR_DEPOSIT_SALDO:{deposit}` (sama dgn apply/refund/void) → penerapan FOR UPDATE → tagihan FOR UPDATE. Law 5: periode tanggal
+  bisnis hari ini terbuka. Jurnal pembalik DRAFT→POSTED: `source_type='DEPOSIT_APPLICATION'`, `source_id`=tagihan, `reversal_of_id`=jurnal
+  asli, baris ditukar (Dr Uang Muka Pembelian / Cr Utang Usaha); jurnal asli tetap POSTED + `reversed_by_id` (Law 2/26). Penerapan →
+  `status='reversed'`, `reversed_by_id`, `reversed_at` (trigger menyegarkan cache deposit). `segarkan_cache_hutang_tagihan(tagihan)`.
+  Riwayat `VD_UNAPPLIED`. **Idempoten alami**: lepas kedua = 200 "sudah dilepas" + jurnal pembalik yang sama, nol jurnal baru.
+  404 bila penerapan bukan milik deposit/tenant; 409 `PERIODE_TERTUTUP`.
+- **Idempotensi (Law 14)** header `X-Idempotency-Key` (pola idem_buat): create `VD_CREATE` (SUMBER_BUAT vendor_deposits: deposit terhapus →
+  kunci basi), `VD_POST`, `VD_APPLY`, `VD_REFUND` via `mulai_aksi`/`simpan`. Lock tetap (anti-race) — lock ≠ dedup.
+- **Nominal 2 desimal**: request `amount` Decimal (>0, 2 desimal, ditolak 422 bila lebih), hitungan Decimal HALF_UP; respons float
+  (pola PO). `ApplyDepositResponse.deposit_remaining`/`bill_remaining` dari jurnal (`UMV.sisa_jurnal`, `compute_ap_outstanding`), bukan cache.
+- **Buka parkir** `GET /by-vendor/{vendor_id}` dan `GET /available/{vendor_id}`: kueri langsung + `fakta_vd` (sisa jurnal), tenant eksplisit;
+  `available` = predikat pill `belum_diterapkan` YANG SAMA (sql_aksi). Bentuk respons float.
+
+### Gerbang
+Unit: lepas (jurnal pembalik seimbang, source_id tagihan, idempoten), trigger NUMERIC (sen), void sesudah lepas boleh, apply/refund replay
+kunci sama = respons asli. Harness nyata: skema nyata + sintetis (CTE), kontrol merah (sabotase `reversed_by_id`). Nyata kaos "TES E2E":
+buat→post→apply→unapply→void → sisa jurnal == layar == DB, AP tagihan pulih.
