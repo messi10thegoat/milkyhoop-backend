@@ -44,6 +44,7 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
+from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
 from fastapi import Response
 
 from ..schemas.purchase_orders import (
@@ -641,6 +642,21 @@ async def get_purchase_order(request: Request, po_id: UUID):
         raise HTTPException(status_code=500, detail="Gagal memuat pesanan pembelian.")
 
 
+@router.get("/{po_id}/history")
+async def get_purchase_order_history(request: Request, po_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat Pesanan Pembelian, bentuk SAMA dengan GET /sales-orders/{id}/history (services/po_riwayat): siklus PO beraktor + audit
+    (diubah, barang diterima) + tagihan bertaut (izin baca purchase_invoice; tanpa izin -> `omitted`). Terbaru dulu."""
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.po_riwayat import riwayat_po
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_po(conn, ctx["tenant_id"], po_id, lambda m: boleh_baca(request, m), limit if isinstance(limit, int) else 200)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+    return {"success": True, "data": data}
+
+
 @router.get("/{po_id}/documents")
 async def get_purchase_order_documents(request: Request, po_id: UUID):
     """Bundel panel berjangkar PESANAN PEMBELIAN (P-U2): skema SAMA dgn bundel SO/faktur {anchor, default, groups[{key,label,docs[]}]};
@@ -831,6 +847,10 @@ async def update_purchase_order(
 
                 if ubah_uang:
                     await _hitung_ulang_total(conn, po_id)
+
+                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], "PO_UPDATED", ctx["user_id"],
+                                    f"Pesanan pembelian {po['po_number']} diubah", meta={"fields": sorted(body.model_dump(exclude_unset=True))},
+                                    source="api:purchase_orders")
 
                 logger.info(f"Purchase order updated: {po_id}")
 
@@ -1082,6 +1102,11 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     total_received,
                     new_status,
                 )
+
+                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], "PO_RECEIVED", ctx["user_id"],
+                                    f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {body.receive_date.isoformat()})",
+                                    meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
+                                    source="api:purchase_orders")
 
                 logger.info(
                     f"Goods received for PO: {po_id}, items={len(items_received)}"

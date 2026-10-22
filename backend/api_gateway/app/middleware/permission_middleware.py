@@ -1025,6 +1025,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/proformas/[^/]+/history$", ["GET"], "proforma", "R"),  # U2 CW 4 Okt 2026 (GET tak-terpetakan = tertutup)
     (r"^/api/purchase\-orders$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase-orders/[^/]+/documents$", ["GET"], "purchase_order", "R"),  # P-U2 bundel PO (eksplisit)
+    (r"^/api/purchase-orders/[^/]+/history$", ["GET"], "purchase_order", "R"),  # riwayat PO (bentuk sama dgn SO)
     (r"^/api/purchase\-orders/pending$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/summary$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/vendor/[^/]+$", ["GET"], "purchase_order", "R"),

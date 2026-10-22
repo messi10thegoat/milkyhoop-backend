@@ -52,6 +52,7 @@ ENTITAS_AUDIT = {
     "receive_payments": "receive_payment",
     "credit_notes": "credit_note",
     "stock_transfers": "stock_transfer", "stock_transfer": "stock_transfer",
+    "purchase_orders": "purchase_order", "purchase_order": "purchase_order",  # 22 Okt 2026: riwayat PO (services/po_riwayat)
 }
 
 # Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).
@@ -93,6 +94,8 @@ def label_medan(fields) -> str:
 
 
 RINGKAS_AUDIT = {
+    "PO_UPDATED": "Pesanan pembelian diubah",
+    "PO_RECEIVED": "Barang diterima",
     "SALES_ORDER_UPDATED": "Pesanan diubah",
     "SALES_ORDER_CANCELLED": "Pesanan dibatalkan",
     "SALES_ORDER_CLOSED": "Pesanan ditutup",
