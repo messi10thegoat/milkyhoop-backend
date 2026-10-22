@@ -42,6 +42,9 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
+from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
+from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
+from fastapi import Response
 
 from ..schemas.purchase_orders import (
     CreatePurchaseOrderRequest,
@@ -81,6 +84,75 @@ def get_user_context(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
+
+
+def _kunci_idem(request):
+    """X-Idempotency-Key (alias Idempotency-Key) atau None; tanpa header = perilaku lama. Objek uji tanpa .headers -> None."""
+    if getattr(request, "headers", None) is None:
+        return None
+    return idem_buat.kunci_dari(request)
+
+
+async def _kunci_po(conn, tenant_id: str, po_id, kolom: str = "*"):
+    """Law 13: kunci PO (advisory, per tenant+id) lalu baca FOR UPDATE; semua pemeriksaan status SESUDAHNYA di dalam lock. None bila tak ada."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PO:{tenant_id}:{po_id}")
+    return await conn.fetchrow(
+        f"SELECT {kolom} FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", po_id, tenant_id)  # nosec B608
+
+
+async def _vendor_tenant(conn, tenant_id: str, vendor_id):
+    """Law 24: vendor_id WAJIB milik tenant (422 bila bukan). None bila vendor_id kosong."""
+    if not vendor_id:
+        return None
+    try:
+        vid = UUID(str(vendor_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail={"code": "VENDOR_TIDAK_SAH", "message": "ID vendor tidak sah."})
+    v = await conn.fetchrow("SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tenant_id)
+    if not v:
+        raise HTTPException(status_code=422, detail={"code": "VENDOR_TIDAK_DITEMUKAN", "message": "Vendor tidak ditemukan di usaha ini."})
+    return v
+
+
+async def _simpan_baris(conn, po_id, baris: list):
+    for idx, item in enumerate(baris, 1):
+        await conn.execute(
+            """
+            INSERT INTO purchase_order_items (
+                po_id, item_id, item_code, description,
+                quantity, unit, unit_price,
+                discount_percent, discount_amount,
+                tax_code, tax_rate, tax_amount,
+                subtotal, total, line_number
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        """,
+            po_id,
+            UUID(item["item_id"]) if item.get("item_id") else None,
+            item.get("item_code"),
+            item["description"],
+            Decimal(str(item["quantity"])),
+            item.get("unit"),
+            item["unit_price"],
+            Decimal(str(item.get("discount_percent", 0))),
+            item["discount_amount"],
+            item.get("tax_code"),
+            Decimal(str(item.get("tax_rate", 0))),
+            item["tax_amount"],
+            item["subtotal"],
+            item["total"],
+            idx,
+        )
+
+
+async def _hitung_ulang_total(conn, po_id):
+    """Total header dari baris DB + diskon/pajak header (trigger DB penimpa total sudah di-DROP, V435). Dipanggil sesudah SETIAP tulis baris/header."""
+    po = await conn.fetchrow("SELECT discount_percent, discount_amount, tax_rate FROM purchase_orders WHERE id = $1", po_id)
+    baris = await conn.fetch("SELECT subtotal, discount_amount, tax_amount FROM purchase_order_items WHERE po_id = $1", po_id)
+    t = PH.hitung_header([dict(b) for b in baris], po["discount_percent"], po["discount_amount"], po["tax_rate"])
+    await conn.execute(
+        "UPDATE purchase_orders SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5, updated_at = NOW() WHERE id = $1",
+        po_id, t["subtotal"], t["discount_amount"], t["tax_amount"], t["total_amount"])
+    return t
 
 
 def calculate_item_totals(item: dict) -> dict:
@@ -353,7 +425,7 @@ async def list_pending_purchase_orders(
     except Exception as e:
         logger.error(f"Error listing pending purchase orders: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail="Failed to list pending purchase orders"
+            status_code=500, detail="Gagal memuat daftar pesanan pembelian yang menunggu."
         )
 
 
@@ -607,17 +679,18 @@ async def get_purchase_order_documents(request: Request, po_id: UUID):
 
 
 @router.post("", response_model=PurchaseOrderResponse, status_code=201)
-async def create_purchase_order(request: Request, body: CreatePurchaseOrderRequest):
+async def create_purchase_order(request: Request, body: CreatePurchaseOrderRequest, response: Response = None):
     """
-    Create a new purchase order in draft status.
+    Buat Pesanan Pembelian (draf). PO TIDAK membuat jurnal -- jurnal lahir saat Bill diposting.
 
-    NOTE: PO does NOT create journal entries.
-    Journal entries are created when Bill is created from PO.
+    P-U2 (22 Okt 2026): idempotensi X-Idempotency-Key (kunci sama + isi sama = respons asli; isi beda = 409), vendor_id wajib milik tenant,
+    uang Decimal 2dp HALF_UP (services/po_hitung), diskon & pajak header ikut tersimpan.
     """
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        kunci = _kunci_idem(request)
 
         pool = await get_pool()
 
@@ -625,38 +698,19 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Generate PO number
+                kp, sidik, lama = await idem_buat.mulai(conn, ctx, kunci, "PO_CREATE", body, "purchase_orders", "po", response)
+                if lama is not None:
+                    return lama
+
+                vendor = await _vendor_tenant(conn, ctx["tenant_id"], body.vendor_id)
+
                 po_number = await conn.fetchval(
                     "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
                 )
 
-                # Calculate items and totals
-                calculated_items = [
-                    calculate_item_totals(item.model_dump()) for item in body.items
-                ]
-                subtotal = sum(item["subtotal"] for item in calculated_items)
-                total_tax = sum(item["tax_amount"] for item in calculated_items)
+                baris = [PH.hitung_baris(item.model_dump()) for item in body.items]
+                tot = PH.hitung_header(baris, body.discount_percent, body.discount_amount, body.tax_rate)
 
-                # Apply overall discount
-                if body.discount_percent > 0:
-                    overall_discount = int(
-                        subtotal * Decimal(str(body.discount_percent)) / 100
-                    )
-                else:
-                    overall_discount = body.discount_amount
-
-                # Apply overall tax if specified
-                after_discount = subtotal - overall_discount
-                if body.tax_rate > 0:
-                    overall_tax = int(
-                        after_discount * Decimal(str(body.tax_rate)) / 100
-                    )
-                else:
-                    overall_tax = total_tax
-
-                total_amount = after_discount + overall_tax
-
-                # Insert PO
                 po_id = await conn.fetchval(
                     """
                     INSERT INTO purchase_orders (
@@ -671,14 +725,14 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                 """,
                     ctx["tenant_id"],
                     po_number,
-                    UUID(body.vendor_id) if body.vendor_id else None,
+                    vendor["id"] if vendor else None,
                     body.vendor_name,
-                    subtotal,
-                    body.discount_percent,
-                    overall_discount,
-                    body.tax_rate,
-                    overall_tax,
-                    total_amount,
+                    tot["subtotal"],
+                    Decimal(str(body.discount_percent)),
+                    tot["discount_amount"],
+                    Decimal(str(body.tax_rate)),
+                    tot["tax_amount"],
+                    tot["total_amount"],
                     body.po_date,
                     body.expected_date,
                     body.ship_to_address,
@@ -687,53 +741,28 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     ctx["user_id"],
                 )
 
-                # Insert items
-                for idx, item in enumerate(calculated_items, 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO purchase_order_items (
-                            po_id, item_id, item_code, description,
-                            quantity, unit, unit_price,
-                            discount_percent, discount_amount,
-                            tax_code, tax_rate, tax_amount,
-                            subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                    """,
-                        po_id,
-                        UUID(item["item_id"]) if item.get("item_id") else None,
-                        item.get("item_code"),
-                        item["description"],
-                        item["quantity"],
-                        item.get("unit"),
-                        item["unit_price"],
-                        item.get("discount_percent", 0),
-                        item.get("discount_amount", 0),
-                        item.get("tax_code"),
-                        item.get("tax_rate", 0),
-                        item.get("tax_amount", 0),
-                        item["subtotal"],
-                        item["total"],
-                        idx,
-                    )
+                await _simpan_baris(conn, po_id, baris)
+                t = await _hitung_ulang_total(conn, po_id)  # sumber angka tersimpan = baris DB (satu jalur dgn patch)
 
                 logger.info(f"Purchase order created: {po_id}, number={po_number}")
 
-                return {
+                resp = {
                     "success": True,
-                    "message": "Purchase order created successfully",
+                    "message": "Pesanan pembelian dibuat.",
                     "data": {
                         "id": str(po_id),
                         "po_number": po_number,
-                        "total_amount": total_amount,
+                        "total_amount": t["total_amount"],
                         "status": "draft",
                     },
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_CREATE", resp, po_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating purchase order: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create purchase order")
+        raise HTTPException(status_code=500, detail="Gagal membuat pesanan pembelian.")
 
 
 # =============================================================================
@@ -746,9 +775,8 @@ async def update_purchase_order(
     request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest
 ):
     """
-    Update a purchase order.
-
-    Only draft or sent POs can be updated.
+    Ubah pesanan pembelian (hanya Draf atau Terkirim). Kunci PO + baca ulang di dalam lock; total dihitung ulang dari baris + diskon/pajak
+    header sesudah SETIAP perubahan (baris ATAU diskon/pajak header).
     """
     try:
         ctx = get_user_context(request)
@@ -758,149 +786,57 @@ async def update_purchase_order(
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Check status
-                po = await conn.fetchrow(
-                    """
-                    SELECT id, status FROM purchase_orders
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    po_id,
-                    ctx["tenant_id"],
-                )
-
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
-                    raise HTTPException(
-                        status_code=404, detail="Purchase order not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
 
                 if po["status"] not in ("draft", "sent"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot update PO with status '{po['status']}'",
+                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa diubah. Hanya Draf atau Terkirim.",
                     )
 
-                # Build update data
                 update_data = body.model_dump(exclude_unset=True)
-
                 if not update_data:
-                    return {
-                        "success": True,
-                        "message": "No changes provided",
-                        "data": {"id": str(po_id)},
-                    }
+                    return {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(po_id)}}
 
-                # Handle items if provided
+                ubah_uang = False
+                if update_data.get("vendor_id"):
+                    await _vendor_tenant(conn, ctx["tenant_id"], update_data["vendor_id"])
+
                 if "items" in update_data and update_data["items"]:
-                    # Delete existing items
-                    await conn.execute(
-                        "DELETE FROM purchase_order_items WHERE po_id = $1", po_id
-                    )
+                    await conn.execute("DELETE FROM purchase_order_items WHERE po_id = $1", po_id)
+                    baris = [PH.hitung_baris(item.model_dump()) for item in body.items]
+                    await _simpan_baris(conn, po_id, baris)
+                    ubah_uang = True
+                update_data.pop("items", None)
 
-                    # Calculate and insert new items
-                    calculated_items = [
-                        calculate_item_totals(item.model_dump()) for item in body.items
-                    ]
-
-                    subtotal = sum(item["subtotal"] for item in calculated_items)
-                    total_tax = sum(item["tax_amount"] for item in calculated_items)
-
-                    # Recalculate totals
-                    discount_percent = update_data.get("discount_percent", 0)
-                    discount_amount = update_data.get("discount_amount", 0)
-                    tax_rate = update_data.get("tax_rate", 0)
-
-                    if discount_percent > 0:
-                        overall_discount = int(
-                            subtotal * Decimal(str(discount_percent)) / 100
-                        )
-                    else:
-                        overall_discount = discount_amount
-
-                    after_discount = subtotal - overall_discount
-
-                    if tax_rate > 0:
-                        overall_tax = int(after_discount * Decimal(str(tax_rate)) / 100)
-                    else:
-                        overall_tax = total_tax
-
-                    total_amount = after_discount + overall_tax
-
-                    # Update totals
-                    await conn.execute(
-                        """
-                        UPDATE purchase_orders
-                        SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5
-                        WHERE id = $1
-                    """,
-                        po_id,
-                        subtotal,
-                        overall_discount,
-                        overall_tax,
-                        total_amount,
-                    )
-
-                    # Insert new items
-                    for idx, item in enumerate(calculated_items, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO purchase_order_items (
-                                po_id, item_id, item_code, description,
-                                quantity, unit, unit_price,
-                                discount_percent, discount_amount,
-                                tax_code, tax_rate, tax_amount,
-                                subtotal, total, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                        """,
-                            po_id,
-                            UUID(item["item_id"]) if item.get("item_id") else None,
-                            item.get("item_code"),
-                            item["description"],
-                            item["quantity"],
-                            item.get("unit"),
-                            item["unit_price"],
-                            item.get("discount_percent", 0),
-                            item.get("discount_amount", 0),
-                            item.get("tax_code"),
-                            item.get("tax_rate", 0),
-                            item.get("tax_amount", 0),
-                            item["subtotal"],
-                            item["total"],
-                            idx,
-                        )
-
-                    del update_data["items"]
-
-                # Update other fields
                 if update_data:
-                    excluded = {"items"}
-                    updates = []
-                    params = []
-                    param_idx = 1
-
-                    for field, value in update_data.items():
-                        if field in excluded:
-                            continue
-                        updates.append(f"{field} = ${param_idx}")
-                        if field == "vendor_id" and value:
-                            params.append(UUID(value))
+                    updates, params = [], []
+                    for i, (field, value) in enumerate(update_data.items(), 1):
+                        updates.append(f"{field} = ${i}")
+                        if field == "vendor_id":
+                            params.append(UUID(value) if value else None)
+                        elif field in ("discount_percent", "discount_amount", "tax_rate"):
+                            ubah_uang = True
+                            params.append(Decimal(str(value if value is not None else 0)))
                         else:
                             params.append(value)
-                        param_idx += 1
+                    params.extend([po_id, ctx["tenant_id"]])
+                    await conn.execute(
+                        f"UPDATE purchase_orders SET {', '.join(updates)}, updated_at = NOW() "  # nosec B608 -- nama kolom dari skema, bukan masukan
+                        f"WHERE id = ${len(updates) + 1} AND tenant_id = ${len(updates) + 2}",
+                        *params,
+                    )
 
-                    if updates:
-                        params.extend([po_id, ctx["tenant_id"]])
-                        query = f"""
-                            UPDATE purchase_orders
-                            SET {', '.join(updates)}, updated_at = NOW()
-                            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                        """
-                        await conn.execute(query, *params)
+                if ubah_uang:
+                    await _hitung_ulang_total(conn, po_id)
 
                 logger.info(f"Purchase order updated: {po_id}")
 
                 return {
                     "success": True,
-                    "message": "Purchase order updated successfully",
+                    "message": "Pesanan pembelian diperbarui.",
                     "data": {"id": str(po_id)},
                 }
 
@@ -908,7 +844,7 @@ async def update_purchase_order(
         raise
     except Exception as e:
         logger.error(f"Error updating purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update purchase order")
+        raise HTTPException(status_code=500, detail="Gagal memperbarui pesanan pembelian.")
 
 
 # =============================================================================
@@ -918,60 +854,31 @@ async def update_purchase_order(
 
 @router.delete("/{po_id}", response_model=PurchaseOrderResponse)
 async def delete_purchase_order(request: Request, po_id: UUID):
-    """
-    Delete a draft purchase order.
-
-    Only draft POs can be deleted. Use cancel for sent POs.
-    """
+    """Hapus pesanan pembelian berstatus Draf. Yang sudah terkirim dibatalkan (cancel), bukan dihapus."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-            # Check status
-            po = await conn.fetchrow(
-                """
-                SELECT id, status, po_number FROM purchase_orders
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                po_id,
-                ctx["tenant_id"],
-            )
-
-            if not po:
-                raise HTTPException(status_code=404, detail="Purchase order not found")
-
-            if po["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Only draft POs can be deleted. Use cancel for sent POs.",
-                )
-
-            # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
-            # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
-            # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
-            # menghasilkan WARNING "SET LOCAL can only be used in transaction
-            # blocks" dan statement berikutnya membaca kosong. Karena itu SET
-            # dan DELETE dibungkus SATU transaksi. `set_config(...)` dipakai
-            # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
-            # sehingga tak ada interpolasi string ke dalam SQL.
+            # V230: trigger trg_log_deletion membaca app.user_id yang HANYA hidup di dalam transaksi -> SET dan DELETE satu transaksi.
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.user_id', $1, true)",
-                    str(ctx["user_id"] or ""),
-                )
-                # Delete (cascade will delete items)
-                await conn.execute(
-                    "DELETE FROM purchase_orders WHERE id = $1", po_id
-                )
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"] or ""))
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
+                if not po:
+                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+                if po["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Hanya pesanan pembelian berstatus Draf yang bisa dihapus. Yang sudah terkirim dibatalkan.",
+                    )
+                await conn.execute("DELETE FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
 
             logger.info(f"Purchase order deleted: {po_id}")
 
             return {
                 "success": True,
-                "message": "Purchase order deleted successfully",
+                "message": "Pesanan pembelian dihapus.",
                 "data": {"id": str(po_id), "po_number": po["po_number"]},
             }
 
@@ -979,7 +886,7 @@ async def delete_purchase_order(request: Request, po_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error deleting purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete purchase order")
+        raise HTTPException(status_code=500, detail="Gagal menghapus pesanan pembelian.")
 
 
 # =============================================================================
@@ -989,11 +896,7 @@ async def delete_purchase_order(request: Request, po_id: UUID):
 
 @router.post("/{po_id}/send", response_model=PurchaseOrderResponse)
 async def send_purchase_order(request: Request, po_id: UUID):
-    """
-    Mark purchase order as sent to vendor.
-
-    Changes status from 'draft' to 'sent'.
-    """
+    """Tandai pesanan pembelian terkirim ke vendor (Draf -> Terkirim). Kunci PO; status dibaca di dalam lock."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -1002,55 +905,39 @@ async def send_purchase_order(request: Request, po_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-            # Check status
-            po = await conn.fetchrow(
-                """
-                SELECT id, status, po_number FROM purchase_orders
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                po_id,
-                ctx["tenant_id"],
-            )
-
-            if not po:
-                raise HTTPException(status_code=404, detail="Purchase order not found")
-
-            if po["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot send PO with status '{po['status']}'",
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
+                if not po:
+                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+                if po["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dikirim. Hanya Draf.",
+                    )
+                await conn.execute(
+                    """
+                    UPDATE purchase_orders
+                    SET status = 'sent', sent_at = NOW(), sent_by = $2, updated_at = NOW()
+                    WHERE id = $1
+                """,
+                    po_id,
+                    ctx["user_id"],
                 )
-
-            # Update status
-            await conn.execute(
-                """
-                UPDATE purchase_orders
-                SET status = 'sent', sent_at = NOW(), sent_by = $2, updated_at = NOW()
-                WHERE id = $1
-            """,
-                po_id,
-                ctx["user_id"],
-            )
 
             logger.info(f"Purchase order sent: {po_id}")
 
             return {
                 "success": True,
-                "message": "Purchase order marked as sent",
-                "data": {
-                    "id": str(po_id),
-                    "po_number": po["po_number"],
-                    "status": "sent",
-                },
+                "message": "Pesanan pembelian ditandai terkirim.",
+                "data": {"id": str(po_id), "po_number": po["po_number"], "status": "sent"},
             }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error sending purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to send purchase order")
+        raise HTTPException(status_code=500, detail="Gagal mengirim pesanan pembelian.")
 
 
 # =============================================================================
@@ -1059,7 +946,7 @@ async def send_purchase_order(request: Request, po_id: UUID):
 
 
 @router.post("/{po_id}/receive", response_model=PurchaseOrderResponse)
-async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest):
+async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest, response: Response = None):
     """
     Record goods receipt for a purchase order.
 
@@ -1076,6 +963,12 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+
+                # Law 14 (P-U2): X-Idempotency-Key -> kirim ulang (retry/klik ganda) = respons asli, BUKAN penerimaan kedua
+                kp, sidik, lama = await idem_buat.mulai_aksi(
+                    conn, ctx, _kunci_idem(request), "PO_RECEIVE", po_id, lambda: body.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
 
                 # Law 13 / P-U1 G1: PO dikunci (FOR UPDATE) sebelum baca sisa -> dua penerimaan bersamaan tak bisa melebihi qty
                 po = await conn.fetchrow(
@@ -1162,26 +1055,15 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         }
                     )
 
-                # Calculate total received value and update PO
-                total_received = await conn.fetchval(
-                    """
-                    SELECT COALESCE(SUM(
-                        (quantity_received / quantity) * total
-                    ), 0)::BIGINT
-                    FROM purchase_order_items
-                    WHERE po_id = $1
-                """,
-                    po_id,
-                )
-
-                # Determine new status
+                # Nilai diterima = TURUNAN baris (qty_diterima x total / qty, 2dp HALF_UP per baris); dulu ::BIGINT memotong sen
                 all_items = await conn.fetch(
                     """
-                    SELECT quantity, quantity_received FROM purchase_order_items
+                    SELECT quantity, quantity_received, quantity_billed, total FROM purchase_order_items
                     WHERE po_id = $1
                 """,
                     po_id,
                 )
+                total_received = PD.jumlah_turunan([dict(i) for i in all_items])["amount_received"]
 
                 all_received = all(
                     Decimal(str(item["quantity_received"] or 0)) >= Decimal(str(item["quantity"]))
@@ -1205,9 +1087,9 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     f"Goods received for PO: {po_id}, items={len(items_received)}"
                 )
 
-                return {
+                resp = {
                     "success": True,
-                    "message": f"Goods received: {len(items_received)} items",
+                    "message": f"Barang diterima: {len(items_received)} baris.",
                     "data": {
                         "id": str(po_id),
                         "items_received": items_received,
@@ -1215,12 +1097,13 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         "status": new_status,
                     },
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_RECEIVE", resp, po_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error receiving goods for PO {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to receive goods")
+        raise HTTPException(status_code=500, detail="Gagal menerima barang.")
 
 
 # =============================================================================
@@ -1229,7 +1112,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 
 
 @router.post("/{po_id}/to-bill", response_model=PurchaseOrderResponse)
-async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequest):
+async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequest, response: Response = None):
     """
     Convert purchase order to a Bill.
 
@@ -1247,19 +1130,18 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
-                # Get PO
-                po = await conn.fetchrow(
-                    """
-                    SELECT * FROM purchase_orders
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    po_id,
-                    ctx["tenant_id"],
-                )
+                # Law 14 (P-U2): kirim ulang dengan X-Idempotency-Key sama = respons asli, BUKAN tagihan kedua
+                kp, sidik, lama = await idem_buat.mulai_aksi(
+                    conn, ctx, _kunci_idem(request), "PO_TOBILL", po_id, lambda: body.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
+
+                # Law 13 (P-U2): PO dikunci (advisory + FOR UPDATE) sebelum baca sisa tertagih -> dua konversi bersamaan tak bisa menagih ganda
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id)
 
                 if not po:
                     raise HTTPException(
-                        status_code=404, detail="Purchase order not found"
+                        status_code=404, detail="Pesanan pembelian tidak ditemukan."
                     )
 
                 billable_statuses = (
@@ -1271,7 +1153,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                 if po["status"] not in billable_statuses:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot create bill from PO with status '{po['status']}'",
+                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibuatkan tagihan.",
                     )
 
                 # Get items to bill
@@ -1283,6 +1165,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                             """
                             SELECT * FROM purchase_order_items
                             WHERE id = $1 AND po_id = $2
+                            FOR UPDATE
                         """,
                             UUID(bill_item.po_item_id),
                             po_id,
@@ -1291,18 +1174,18 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         if not po_item:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"PO item {bill_item.po_item_id} not found",
+                                detail=f"Baris pesanan {bill_item.po_item_id} tidak ditemukan.",
                             )
 
                         unbilled = Decimal(po_item["quantity"]) - Decimal(
                             po_item["quantity_billed"] or 0
                         )
-                        qty_to_bill = bill_item.quantity_to_bill or unbilled
+                        qty_to_bill = Decimal(str(bill_item.quantity_to_bill)) if bill_item.quantity_to_bill else unbilled
 
                         if qty_to_bill > unbilled:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"Bill quantity ({qty_to_bill}) exceeds unbilled ({unbilled})",
+                                detail=f"Jumlah ditagih ({qty_to_bill}) melebihi sisa belum tertagih ({unbilled}).",
                             )
 
                         items_to_bill.append(
@@ -1315,6 +1198,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         SELECT * FROM purchase_order_items
                         WHERE po_id = $1 AND quantity > COALESCE(quantity_billed, 0)
                         ORDER BY line_number
+                        FOR UPDATE
                     """,
                         po_id,
                     )
@@ -1330,7 +1214,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 
                 if not items_to_bill:
                     raise HTTPException(
-                        status_code=400, detail="No unbilled items to bill"
+                        status_code=400, detail="Tidak ada baris yang belum ditagih."
                     )
 
                 # Generate bill number
@@ -1436,7 +1320,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     bill_subtotal,
                     bill_tax,
                     po_id,
-                    body.notes or f"From PO {po['po_number']}",
+                    body.notes or f"Dari pesanan pembelian {po['po_number']}",
                     ctx["user_id"],
                 )
 
@@ -1452,8 +1336,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
                             tax_rate, tax_amount,
-                            subtotal, total, line_number
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            subtotal, total, line_number, purchase_order_item_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     """,
                         bill_id,
                         po_item["item_id"],
@@ -1469,64 +1353,19 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         ic["subtotal"],
                         ic["total"],
                         idx,
+                        po_item["id"],  # V436: tautan baris PO -> qty tertagih TURUNAN (PD.sinkron_tagih), pulih saat bill dihapus/void
                     )
 
-                    # Update PO item quantity_billed
-                    new_qty_billed = Decimal(str(po_item["quantity_billed"] or 0)) + l["qty"]
-                    await conn.execute(
-                        """
-                        UPDATE purchase_order_items
-                        SET quantity_billed = $2
-                        WHERE id = $1
-                    """,
-                        po_item["id"],
-                        new_qty_billed,
-                    )
-
-                # Update PO amount_billed and status
-                total_billed = await conn.fetchval(
-                    """
-                    SELECT COALESCE(SUM(
-                        (quantity_billed / quantity) * total
-                    ), 0)::BIGINT
-                    FROM purchase_order_items
-                    WHERE po_id = $1
-                """,
-                    po_id,
-                )
-
-                # Determine new status
-                all_items = await conn.fetch(
-                    """
-                    SELECT quantity, quantity_billed FROM purchase_order_items
-                    WHERE po_id = $1
-                """,
-                    po_id,
-                )
-
-                all_billed = all(
-                    Decimal(item["quantity_billed"] or 0) >= Decimal(item["quantity"])
-                    for item in all_items
-                )
-
-                new_status = "billed" if all_billed else "partial_billed"
-
-                await conn.execute(
-                    """
-                    UPDATE purchase_orders
-                    SET amount_billed = $2, status = $3, updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    po_id,
-                    total_billed,
-                    new_status,
-                )
+                # qty/jumlah tertagih + status PO TURUNAN dari bill_items bertaut (bill tak-void; draf ikut = pola NetSuite 'Partially Billed' sejak
+                # bill dibuat dari PO). Satu fungsi dgn pemulihan saat bill dihapus/void (dipanggil BACKEND dari bills.py).
+                hasil_tagih = await PD.sinkron_tagih(conn, ctx["tenant_id"], po_id)
+                new_status = hasil_tagih["status"]
 
                 logger.info(f"Bill created from PO: {po_id}, bill={bill_id}")
 
-                return {
+                resp = {
                     "success": True,
-                    "message": "Bill created from purchase order",
+                    "message": "Tagihan dibuat dari pesanan pembelian.",
                     "data": {
                         "id": str(po_id),
                         "bill_id": str(bill_id),
@@ -1535,12 +1374,13 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         "po_status": new_status,
                     },
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_TOBILL", resp, po_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error converting PO to bill {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to convert to bill")
+        raise HTTPException(status_code=500, detail="Gagal membuat tagihan dari pesanan pembelian.")
 
 
 # =============================================================================
@@ -1552,11 +1392,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 async def cancel_purchase_order(
     request: Request, po_id: UUID, body: CancelPurchaseOrderRequest
 ):
-    """
-    Cancel a purchase order.
-
-    Can only cancel if no goods received and no bills created.
-    """
+    """Batalkan pesanan pembelian. Hanya bila belum ada barang diterima dan belum ada tagihan (diukur dari BARIS, bukan kolom cache)."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -1565,57 +1401,41 @@ async def cancel_purchase_order(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
+                if not po:
+                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+                if po["status"] in ("cancelled", "closed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibatalkan.",
+                    )
+                q = await conn.fetchrow(
+                    "SELECT COALESCE(SUM(quantity_received), 0) AS diterima, COALESCE(SUM(quantity_billed), 0) AS ditagih "
+                    "FROM purchase_order_items WHERE po_id = $1", po_id)
+                if Decimal(str(q["diterima"])) > 0:
+                    raise HTTPException(status_code=400, detail="Pesanan pembelian yang barangnya sudah diterima tidak bisa dibatalkan.")
+                if Decimal(str(q["ditagih"])) > 0:
+                    raise HTTPException(status_code=400, detail="Pesanan pembelian yang sudah ditagih tidak bisa dibatalkan.")
 
-            # Get PO
-            po = await conn.fetchrow(
-                """
-                SELECT * FROM purchase_orders
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                po_id,
-                ctx["tenant_id"],
-            )
-
-            if not po:
-                raise HTTPException(status_code=404, detail="Purchase order not found")
-
-            if po["status"] in ("cancelled", "closed"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot cancel PO with status '{po['status']}'",
+                await conn.execute(
+                    """
+                    UPDATE purchase_orders
+                    SET status = 'cancelled', cancelled_at = NOW(),
+                        cancelled_by = $2, cancelled_reason = $3, updated_at = NOW()
+                    WHERE id = $1
+                """,
+                    po_id,
+                    ctx["user_id"],
+                    body.reason,
                 )
-
-            # Check for received goods
-            if (po["amount_received"] or 0) > 0:
-                raise HTTPException(
-                    status_code=400, detail="Cannot cancel PO with received goods"
-                )
-
-            # Check for bills
-            if (po["amount_billed"] or 0) > 0:
-                raise HTTPException(
-                    status_code=400, detail="Cannot cancel PO with bills"
-                )
-
-            # Update status
-            await conn.execute(
-                """
-                UPDATE purchase_orders
-                SET status = 'cancelled', cancelled_at = NOW(),
-                    cancelled_by = $2, cancelled_reason = $3, updated_at = NOW()
-                WHERE id = $1
-            """,
-                po_id,
-                ctx["user_id"],
-                body.reason,
-            )
 
             logger.info(f"Purchase order cancelled: {po_id}")
 
             return {
                 "success": True,
-                "message": "Purchase order cancelled",
+                "message": "Pesanan pembelian dibatalkan.",
                 "data": {"id": str(po_id), "status": "cancelled"},
             }
 
@@ -1623,7 +1443,7 @@ async def cancel_purchase_order(
         raise
     except Exception as e:
         logger.error(f"Error cancelling purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cancel purchase order")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan pesanan pembelian.")
 
 
 # =============================================================================
@@ -1633,11 +1453,7 @@ async def cancel_purchase_order(
 
 @router.post("/{po_id}/close", response_model=PurchaseOrderResponse)
 async def close_purchase_order(request: Request, po_id: UUID):
-    """
-    Close a completed purchase order.
-
-    Marks the PO as completed.
-    """
+    """Tutup pesanan pembelian (selesai manual, mis. sisa barang tak akan datang). Kunci PO; status dibaca di dalam lock."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -1646,44 +1462,32 @@ async def close_purchase_order(request: Request, po_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-            # Get PO
-            po = await conn.fetchrow(
-                """
-                SELECT * FROM purchase_orders
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                po_id,
-                ctx["tenant_id"],
-            )
-
-            if not po:
-                raise HTTPException(status_code=404, detail="Purchase order not found")
-
-            if po["status"] in ("draft", "cancelled", "closed"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot close PO with status '{po['status']}'",
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
+                if not po:
+                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+                if po["status"] in ("draft", "cancelled", "closed"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Pesanan pembelian berstatus '{po['status']}' tidak bisa ditutup.",
+                    )
+                await conn.execute(
+                    """
+                    UPDATE purchase_orders
+                    SET status = 'closed', closed_at = NOW(),
+                        closed_by = $2, updated_at = NOW()
+                    WHERE id = $1
+                """,
+                    po_id,
+                    ctx["user_id"],
                 )
-
-            # Update status
-            await conn.execute(
-                """
-                UPDATE purchase_orders
-                SET status = 'closed', closed_at = NOW(),
-                    closed_by = $2, updated_at = NOW()
-                WHERE id = $1
-            """,
-                po_id,
-                ctx["user_id"],
-            )
 
             logger.info(f"Purchase order closed: {po_id}")
 
             return {
                 "success": True,
-                "message": "Purchase order closed",
+                "message": "Pesanan pembelian ditutup.",
                 "data": {"id": str(po_id), "status": "closed"},
             }
 
@@ -1691,7 +1495,7 @@ async def close_purchase_order(request: Request, po_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error closing purchase order {po_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to close purchase order")
+        raise HTTPException(status_code=500, detail="Gagal menutup pesanan pembelian.")
 
 
 # =============================================================================
@@ -1768,4 +1572,4 @@ async def list_purchase_orders_by_vendor(
         raise
     except Exception as e:
         logger.error(f"Error listing POs for vendor {vendor_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list purchase orders")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar pesanan pembelian vendor.")

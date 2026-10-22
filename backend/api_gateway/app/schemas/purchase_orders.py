@@ -33,9 +33,9 @@ class PurchaseOrderItemCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
-    unit_price: int = Field(..., ge=0, description="Price per unit in IDR")
+    unit_price: Decimal = Field(..., ge=0, max_digits=18, decimal_places=2, description="Harga satuan (2 desimal; bulat tetap bulat)")
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: Decimal = Field(0, ge=0, max_digits=18, decimal_places=2)
     tax_code: Optional[str] = Field(None, max_length=20)
     tax_rate: float = Field(0, ge=0, le=100)
 
@@ -43,7 +43,7 @@ class PurchaseOrderItemCreate(BaseModel):
     @classmethod
     def validate_description(cls, v):
         if not v or not v.strip():
-            raise ValueError('Description is required')
+            raise ValueError('Keterangan wajib diisi.')
         return v.strip()
 
 
@@ -55,9 +55,9 @@ class PurchaseOrderItemUpdate(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = None
-    unit_price: int = Field(..., ge=0)
+    unit_price: Decimal = Field(..., ge=0, max_digits=18, decimal_places=2)
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: Decimal = Field(0, ge=0, max_digits=18, decimal_places=2)
     tax_code: Optional[str] = None
     tax_rate: float = Field(0, ge=0, le=100)
 
@@ -77,14 +77,14 @@ class CreatePurchaseOrderRequest(BaseModel):
     notes: Optional[str] = None
     items: List[PurchaseOrderItemCreate] = Field(..., min_length=1)
     discount_percent: float = Field(0, ge=0, le=100, description="Overall discount percent")
-    discount_amount: int = Field(0, ge=0, description="Overall discount amount")
+    discount_amount: Decimal = Field(0, ge=0, max_digits=18, decimal_places=2, description="Diskon header (nominal)")
     tax_rate: float = Field(0, ge=0, le=100, description="Overall tax rate")
 
     @field_validator('vendor_name')
     @classmethod
     def validate_vendor_name(cls, v):
         if not v or not v.strip():
-            raise ValueError('Vendor name is required')
+            raise ValueError('Nama vendor wajib diisi.')
         return v.strip()
 
 
@@ -99,7 +99,7 @@ class UpdatePurchaseOrderRequest(BaseModel):
     notes: Optional[str] = None
     items: Optional[List[PurchaseOrderItemUpdate]] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    discount_amount: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
 
 
@@ -123,7 +123,7 @@ class ReceiveGoodsRequest(BaseModel):
 class ToBillItemRequest(BaseModel):
     """Single item to include in bill."""
     po_item_id: str = Field(..., description="PO item UUID")
-    quantity_to_bill: Optional[float] = Field(None, gt=0, description="Quantity to bill, defaults to unbilled qty")
+    quantity_to_bill: Optional[Decimal] = Field(None, gt=0, description="Qty ditagih; kosong = seluruh sisa belum tertagih")
 
 
 class ConvertToBillRequest(BaseModel):

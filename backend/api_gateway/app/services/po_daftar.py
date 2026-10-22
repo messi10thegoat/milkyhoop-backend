@@ -226,3 +226,43 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
 def documents_baris(kelompok: list) -> list:
     """documents[{type}] baris daftar = dokumen bundel (urut kelompok); jenis dokumen = kind."""
     return [{"type": d["kind"]} for g in kelompok for d in g["docs"]]
+
+
+# qty tertagih per baris PO = Σ bill_items bertaut pada bill TIDAK void (draf ikut). Alias baris PO = i; $2 = tenant.
+SQL_QTY_TAGIH = """COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
+               WHERE bi.purchase_order_item_id = i.id AND b.tenant_id = $2 AND COALESCE(b.status_v2, b.status) <> 'void'), 0)"""
+
+
+# ---- Sinkron tagih (P-U2 sisi tulis): qty/jumlah/status tertagih TURUNAN dari bill_items bertaut --------------------------------------
+async def sinkron_tagih(conn, tenant_id: str, po_id) -> dict:
+    """Hitung ulang purchase_order_items.quantity_billed, purchase_orders.amount_billed (cache) dan status dari bill_items yang bertaut
+    (`bill_items.purchase_order_item_id`) pada bill TIDAK void (draf ikut = pola NetSuite: PO 'Partially Billed' sejak bill dibuat dari PO).
+    SATU fungsi untuk `/to-bill` DAN pemulihan saat bill dihapus/di-void (dipanggil BACKEND dari bills.py). Wajib di transaksi pemanggil,
+    SESUDAH PO dikunci (FOR UPDATE). Status hanya bergeser di keluarga terima/tagih (sent·partial_received·received·partial_billed·billed);
+    draft/closed/cancelled tak disentuh. -> {status, amount_billed}."""
+    po = await conn.fetchrow("SELECT id, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, tenant_id)
+    if not po:
+        return {}
+    await conn.execute(f"UPDATE purchase_order_items i SET quantity_billed = {SQL_QTY_TAGIH} WHERE i.po_id = $1", po_id, tenant_id)
+    baris = await conn.fetch(
+        "SELECT quantity, quantity_received, quantity_billed, total FROM purchase_order_items WHERE po_id = $1", po_id)
+    jml = jumlah_turunan([dict(b) for b in baris])
+    q_tagih = sum((_d(b["quantity_billed"]) for b in baris), NOL)
+    semua_tagih = bool(baris) and all(_d(b["quantity_billed"]) >= _d(b["quantity"]) for b in baris)
+    semua_terima = bool(baris) and all(_d(b["quantity_received"]) >= _d(b["quantity"]) for b in baris)
+    q_terima = sum((_d(b["quantity_received"]) for b in baris), NOL)
+    status = po["status"]
+    if status in ("sent", "partial_received", "received", "partial_billed", "billed"):
+        if semua_tagih:
+            status = "billed"
+        elif q_tagih > NOL:
+            status = "partial_billed"
+        elif semua_terima:
+            status = "received"
+        elif q_terima > NOL:
+            status = "partial_received"
+        else:
+            status = "sent"
+    await conn.execute("UPDATE purchase_orders SET amount_billed = $2, status = $3, updated_at = NOW() WHERE id = $1",
+                       po_id, jml["amount_billed"], status)
+    return {"status": status, "amount_billed": jml["amount_billed"]}

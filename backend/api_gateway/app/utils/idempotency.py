@@ -56,6 +56,7 @@ SUMBER_BUAT = {
     "SI_CREATE": ("sales_invoices", None, ()),
     "PROFORMA_CREATE": ("proformas", None, ()),
     "CN_CREATE": ("credit_notes", None, ()),
+    "PO_CREATE": ("purchase_orders", None, ()),  # P-U2: PO terhapus -> kunci basi, proses baru
 }
 
 
