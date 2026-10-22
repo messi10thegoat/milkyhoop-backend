@@ -67,6 +67,16 @@ class VendorDepositResponse(VendorDepositBase):
     vendor_code: Optional[str] = None
     bank_account_name: Optional[str] = None
     purchase_order_number: Optional[str] = None
+    # P-U3 (22 Okt 2026): turunan JURNAL, dihitung SERVER (services/uang_muka_vendor_daftar); aditif -- kolom cache lama tetap
+    sisa: Optional[float] = None
+    terpakai: float = 0
+    dikembalikan: float = 0
+    sisa_keadaan: Optional[str] = None
+    status_text: Optional[str] = None
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    documents: List[dict] = []
+    doc_count: int = 0
 
     class Config:
         from_attributes = True
@@ -193,11 +203,15 @@ class VendorDepositsForVendorResponse(BaseModel):
 # ============================================
 
 class VendorDepositSummary(BaseModel):
-    total_deposits: int
-    total_applied: int
-    total_remaining: int
+    total_deposits: float
+    total_applied: float      # Σ terpakai JURNAL (P-U3), bukan kolom cache
+    total_remaining: float    # Σ sisa JURNAL
     deposit_count: int
-    pending_count: int
+    pending_count: int        # == belum_diterapkan_count
+    draft_count: int = 0
+    void_count: int = 0
+    belum_diterapkan_count: int = 0
+    belum_diterapkan_value: float = 0
 
 
 # ============================================
@@ -223,6 +237,9 @@ class VoidDepositResponse(BaseModel):
 class VendorDepositListResponse(BaseModel):
     items: List[VendorDepositResponse]
     total: int
+    has_more: bool = False
+    sum_total: Optional[float] = None   # opt-in ?with_totals=true: Σ amount tanpa void atas SEMUA hasil filter
+    sum_sisa: Optional[float] = None    # idem: Σ sisa jurnal (terbit, bukan draf/void)
 
 
 # Forward reference update
