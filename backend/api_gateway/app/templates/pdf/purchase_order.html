@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title></head>
+{#
+  PDF Pesanan Pembelian (22 Okt 2026, tiket WORKSPACE "PDF PO"). Kerangka & gaya = PDF penawaran (penawaran.css), supaya
+  dokumen keluar usaha seragam. Acuan isi: NetSuite/QBO Purchase Order. Stempel DRAF untuk status draft (belum dikirim ke
+  vendor); stempel DIBATALKAN untuk status cancelled (pdf_service._tanda_batal: cancelled_at + alasan).
+  Konteks = services/po_cetak.muat_pdf_po.
+#}
+<body>
+{% include "_partials/tanda_draf.html" %}
+{% include "_partials/tanda_batal.html" %}
+<div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
+<div class="doc">
+
+<header>
+  <div><h1>Pesanan Pembelian</h1><div class="en">Purchase Order</div></div>
+  {% if company and company.logo_base64 %}<img class="logo" src="{{ company.logo_base64 }}" alt="">{% endif %}
+</header>
+
+<div class="meta">
+  <b>Nomor</b><span>{{ po.po_number or '-' }}</span>
+  <b>Tanggal</b><span>{{ po.po_date | date_id }}</span>
+  {% if po.expected_date %}<b>Tanggal kirim</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
+  {% if po.ref_no %}<b>Referensi</b><span>{{ po.ref_no }}</span>{% endif %}
+</div>
+
+<div class="parties">
+  <div>
+    <b>Kepada</b>
+    <div>{{ po.vendor_name or '-' }}</div>
+    {% if po.vendor_alamat %}<div class="mut pre">{{ po.vendor_alamat }}</div>{% endif %}
+    {% if po.vendor_telepon %}<div class="mut">{{ po.vendor_telepon }}</div>{% endif %}
+    {% if po.vendor_npwp %}<div class="mut">NPWP {{ po.vendor_npwp }}</div>{% endif %}
+  </div>
+  <div>
+    <b>Kirim ke</b>
+    <div>{{ company.name if company else '' }}</div>
+    {% if po.ship_to_address %}<div class="mut pre">{{ po.ship_to_address }}</div>
+    {% elif po.warehouse_name %}<div class="mut">{{ po.warehouse_name }}</div>
+    {% elif company and company.address %}<div class="mut">{{ company.address }}</div>{% endif %}
+    {% if company and company.phone %}<div class="mut">{{ company.phone }}</div>{% endif %}
+  </div>
+</div>
+
+<table>
+  <colgroup><col style="width:52%"><col style="width:14%"><col style="width:16%"><col style="width:18%"></colgroup>
+  <thead><tr><th>Deskripsi</th><th class="r">Qty</th><th class="r">Harga satuan</th><th class="r">Jumlah</th></tr></thead>
+  <tbody>
+  {% for item in po["items"] %}
+    <tr>
+      <td><div>{{ item.description or '-' }}</div>{% if item.discount_percent and item.discount_percent|float > 0 %}<div class="dt">Diskon {{ "%g" % (item.discount_percent|float) }}%</div>{% endif %}</td>
+      <td class="r">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+      <td class="r">Rp {{ item.unit_price | rupiah(po.has_cents) }}</td>
+      <td class="r">Rp {{ item.line_total | rupiah(po.has_cents) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="akhir">
+  <div class="sum">
+    <div><span>Subtotal</span><span>Rp {{ po.subtotal | rupiah(po.has_cents) }}</span></div>
+    {% if po.discount_amount and po.discount_amount|float > 0 %}
+    <div><span>Diskon{% if po.discount_percent and po.discount_percent|float > 0 %} {{ "%g" % (po.discount_percent|float) }}%{% endif %}</span><span>-Rp {{ po.discount_amount | rupiah(po.has_cents) }}</span></div>
+    {% endif %}
+    {% if po.tax_amount and po.tax_amount|float > 0 %}
+    <div><span>{{ po.label_pajak }}</span><span>Rp {{ po.tax_amount | rupiah(po.has_cents) }}</span></div>
+    {% endif %}
+    <div class="tot"><span>Total</span><span>Rp {{ po.total_amount | rupiah(po.has_cents) }}</span></div>
+  </div>
+
+  {% if po.notes %}<div class="blk"><b>Catatan</b><div class="mut pre">{{ po.notes }}</div></div>{% endif %}
+
+  <div class="sign">
+    <div>Pemesan,</div>
+    {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
+    <div class="sp"></div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

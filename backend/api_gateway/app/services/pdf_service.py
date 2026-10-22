@@ -574,6 +574,25 @@ class PDFService:
         )
         return Render(html_content, CSS_PENAWARAN, font=True)
 
+    def render_purchase_order(self, po_data, tenant_info) -> Render:
+        """PDF Pesanan Pembelian (22 Okt 2026): kerangka & gaya penawaran (CSS_PENAWARAN). Konteks = services/po_cetak.muat_pdf_po."""
+        template = self.jinja_env.get_template("purchase_order.html")
+        company = {
+            "name": tenant_info.get("name"),
+            "address": tenant_info.get("address"),
+            "phone": tenant_info.get("phone"),
+            "logo_base64": tenant_info.get("logo_data"),
+        }
+        html_content = template.render(
+            po=po_data,
+            company=company,
+            generated_at=datetime.now(),
+            draf=str(po_data.get("status") or "").lower() == "draft",
+            draf_keterangan="Belum dikirim ke vendor",
+            batal=self._tanda_batal(po_data),
+        )
+        return Render(html_content, CSS_PENAWARAN, font=True)
+
     # Judul dokumen per tujuan (1 Okt 2026, pemilik: proforma PELUNASAN tercetak "Tagihan Uang Muka").
     PROFORMA_JUDUL = {
         "DP": "Tagihan Uang Muka",

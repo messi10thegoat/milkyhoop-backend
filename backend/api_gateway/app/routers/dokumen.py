@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 JENIS = ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice", "credit_note")
+# Jenis yang bisa DICETAK (/html, /pdf) = JENIS (bisa juga dibagikan) + dokumen Pembelian (22 Okt 2026, tiket PDF PO).
+# Pembelian BELUM bisa dibagikan: document_shares.kind dijaga CHECK (V379) == JENIS; menambah kind = migrasi tersendiri.
+JENIS_CETAK = JENIS + ("purchase_order",)
 FONT_SAH = {f"Inter-{b}.ttf" for b in ("Regular", "Medium", "SemiBold", "Bold", "Italic")}
 VERSI_RENDER = "p3-1"  # naikkan bila mesin/aturan render berubah tanpa mengubah HTML
 NOL = Decimal("0")
@@ -99,6 +102,10 @@ async def _render(conn, ctx: dict, request: Request, jenis: str, did: str, cek_i
         from . import sales_invoices as SI
         m = await SI.muat_pdf_faktur(conn, ctx, uid, None)
         return ps.render_sales_invoice(m["invoice_data"], m["tpl"]), m["invoice_data"]["invoice_number"]
+    if jenis == "purchase_order":
+        from ..services.po_cetak import muat_pdf_po
+        m = await muat_pdf_po(conn, ctx, uid)
+        return ps.render_purchase_order(m["po_data"], m["tenant_info"]), m["po_data"]["po_number"]
     if jenis == "credit_note":
         from ..services.nota_kredit_dokumen import muat_pdf_nota_kredit
         m = await muat_pdf_nota_kredit(conn, ctx, uid)
@@ -177,7 +184,7 @@ async def pdf_kwitansi_pesanan(request: Request, so: str = Query(..., descriptio
 
 @router.get("/documents/{kind}/{doc_id}/html", response_class=HTMLResponse)
 async def html_dokumen(request: Request, kind: str, doc_id: str):
-    if kind not in JENIS:
+    if kind not in JENIS_CETAK:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     pool = await _pool()
@@ -189,7 +196,7 @@ async def html_dokumen(request: Request, kind: str, doc_id: str):
 
 @router.get("/documents/{kind}/{doc_id}/pdf")
 async def pdf_dokumen(request: Request, kind: str, doc_id: str):
-    if kind not in JENIS:
+    if kind not in JENIS_CETAK:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     pool = await _pool()
