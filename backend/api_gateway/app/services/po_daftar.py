@@ -22,6 +22,9 @@ DUA = Decimal("0.01")
 STATUS_TERIMA_TERBUKA = ("sent", "partial_received")
 STATUS_SUDAH_TERIMA = ("received", "partial_billed", "billed", "closed")
 STATUS_BISA_TAGIH = ("partial_received", "received", "partial_billed")
+# PO tanpa sisa ditagih (22 Okt 2026, temuan nyata kaos PO-2610-0001; pola NetSuite: baris PO yang DITUTUP tak bisa ditagih):
+# dibatalkan ATAU selesai -> sisa_ditagih = 0 di baris/detail (fakta_po) dan with_totals sum_sisa (sql_sisa_ditagih). SATU definisi.
+STATUS_TANPA_SISA_TAGIH = ("cancelled", "closed")
 AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih")  # urutan desak
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}
@@ -121,6 +124,12 @@ async def tanggal_hari_ini(conn, tenant_id: str) -> date:
     return await tanggal_dokumen(conn, tenant_id)
 
 
+def sql_sisa_ditagih(po: str = "po", ag: str = "ag") -> str:
+    """Ekspresi SQL sisa ditagih per PO -- padanan fakta_po (STATUS_TANPA_SISA_TAGIH -> 0)."""
+    daftar = ", ".join(f"'{s}'" for s in STATUS_TANPA_SISA_TAGIH)
+    return f"(CASE WHEN {po}.status IN ({daftar}) THEN 0 ELSE GREATEST({po}.total_amount - {ag}.amount_billed, 0) END)"
+
+
 async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
     """{po_id: {aksi, terima_*, position_text(status ikut), amount_received, amount_billed, sisa_ditagih}} untuk po_ids — fungsi
     YANG SAMA untuk baris daftar dan detail. Turunan dari baris PO (bukan kolom cache)."""
@@ -131,8 +140,7 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
         f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.amount_received, ag.amount_billed
             FROM purchase_orders po {SQL_AGREGAT}
             WHERE po.tenant_id = $1 AND po.id = ANY($2::uuid[])""", tenant_id, list(po_ids)):
-        aktif = r["status"] != "cancelled"
-        sisa = r2(r["total_amount"]) - r2(r["amount_billed"]) if aktif else NOL
+        sisa = NOL if r["status"] in STATUS_TANPA_SISA_TAGIH else r2(r["total_amount"]) - r2(r["amount_billed"])
         out[r["id"]] = {
             **terima_fakta(r["status"], r["expected_date"], r["sisa_terima"], hari_ini),
             "position_text": position_text(r["status"]),

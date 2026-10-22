@@ -336,7 +336,7 @@ async def list_purchase_orders(
             if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dengan COUNT (bukan halaman)
                 t = await conn.fetchrow(
                     f"""SELECT COALESCE(SUM(po.total_amount) FILTER (WHERE po.status <> 'cancelled'), 0) AS sum_total,
-                               COALESCE(SUM(GREATEST(po.total_amount - ag.amount_billed, 0)) FILTER (WHERE po.status <> 'cancelled'), 0) AS sum_sisa
+                               COALESCE(SUM({PD.sql_sisa_ditagih()}), 0) AS sum_sisa
                         {dari} WHERE {where_clause}""", *params)
                 hasil["sum_total"] = float(PD.r2(t["sum_total"]))
                 hasil["sum_sisa"] = float(PD.r2(t["sum_sisa"]))

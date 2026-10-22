@@ -78,6 +78,8 @@ async def sintetis(c):
     buat("cancelled", "cancelled", d(-3), [(10, 0, 0, "1000.00")])
     buat("dua baris: satu lunas satu belum diterima", "partial_received", d(2), [(3, 3, 3, "100.00"), (7, 0, 0, "233.34")])
     buat("pecahan HALF_UP", "partial_received", d(2), [(3, 1, 0, "100.00")])
+    buat("closed belum ditagih (ditutup manual)", "closed", d(-30), [(10, 10, 0, "1000.00")])
+    buat("closed ditagih sebagian", "closed", d(-30), [(10, 10, 4, "1000.00")])
     cte = "WITH " + ", ".join([
         vals("purchase_orders", [("id", "uuid"), ("tenant_id", "text"), ("status", "text"), ("expected_date", "date"), ("total_amount", "numeric")], po),
         vals("purchase_order_items", [("po_id", "uuid"), ("quantity", "numeric"), ("quantity_received", "numeric"), ("quantity_billed", "numeric"), ("total", "numeric")], it)]) + " "
@@ -107,6 +109,17 @@ async def sintetis(c):
             ok = False; rinci.append((nama[str(r["id"])], r["amount_received"], j["amount_received"]))
     cek("sintetis: amount_received/billed SQL == jumlah_turunan Python (HALF_UP per baris)", ok, rinci)
     cek("sintetis: ada skenario di tiap pill", all(any(a == k for a, _ in ref.values()) for k in PD.AKSI))
+    # sisa ditagih SQL (with_totals) == aturan fakta_po (closed/cancelled -> 0)
+    sql = cte + f"SELECT po.id, po.status, po.total_amount, ag.amount_billed, {PD.sql_sisa_ditagih()} AS sisa FROM purchase_orders po {PD.SQL_AGREGAT} WHERE po.tenant_id = $1"
+    ok = True; rinci = []
+    for r in await c.fetch(sql, T):
+        harap = Decimal(0) if r["status"] in PD.STATUS_TANPA_SISA_TAGIH else max(PD.r2(r["total_amount"]) - PD.r2(r["amount_billed"]), Decimal(0))
+        if PD.r2(r["sisa"]) != harap:
+            ok = False; rinci.append((nama[str(r["id"])], r["sisa"], harap))
+    cek("sintetis: sisa ditagih SQL == aturan Python (closed/cancelled = 0)", ok, rinci)
+    tutup = [i for i, n in nama.items() if n.startswith("closed belum")]
+    r = await c.fetchrow(cte + f"SELECT {PD.sql_sisa_ditagih()} AS sisa FROM purchase_orders po {PD.SQL_AGREGAT} WHERE po.id = $1::uuid", tutup[0])
+    cek("sintetis: PO closed belum ditagih -> sisa 0 (bukan total)", PD.r2(r["sisa"]) == 0, r["sisa"])
 
 
 async def nyata(c):
@@ -115,6 +128,9 @@ async def nyata(c):
         sm = (await PO.get_purchase_orders_summary(**kw(PO.get_purchase_orders_summary, r)))["data"]
         semua = await PO.list_purchase_orders(**kw(PO.list_purchase_orders, r, per_page=100, with_totals=True))
         cek(f"{t}: list total == summary.total ({semua['total']})", semua["total"] == sm["total"], (semua["total"], sm["total"]))
+        cek(f"{t}: sum_sisa == Σ sisa_ditagih baris", semua["total"] > 100 or Decimal(str(semua["sum_sisa"])) == sum((Decimal(str(i["sisa_ditagih"])) for i in semua["items"]), Decimal(0)),
+            (semua["sum_sisa"], [(i["po_number"], i["status"], i["sisa_ditagih"]) for i in semua["items"]][:5]))
+        cek(f"{t}: PO closed/cancelled sisa_ditagih 0", all(i["sisa_ditagih"] == 0 for i in semua["items"] if i["status"] in PD.STATUS_TANPA_SISA_TAGIH))
         cek(f"{t}: sum_total == Σ baris non-cancelled", Decimal(str(semua["sum_total"])) == sum((Decimal(str(i['total_amount'])) for i in semua["items"] if i["status"] != "cancelled"), Decimal(0)) or semua["total"] > 100)
         for k in PD.AKSI:
             lst = await PO.list_purchase_orders(**kw(PO.list_purchase_orders, r, per_page=100, aksi=k))
