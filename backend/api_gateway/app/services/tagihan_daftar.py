@@ -285,7 +285,7 @@ async def kelompok_tagihan(conn, tenant_id: str, bill_ids: list) -> dict:
     for r in await conn.fetch(
         """SELECT vda.bill_id, vd.id, vd.deposit_number, vd.deposit_date, vd.status, SUM(vda.amount) AS amount
            FROM vendor_deposit_applications vda JOIN vendor_deposits vd ON vd.id = vda.vendor_deposit_id AND vd.tenant_id = $1
-           WHERE vda.bill_id = ANY($2::uuid[]) AND vd.status <> 'void'
+           WHERE vda.bill_id = ANY($2::uuid[]) AND vd.status <> 'void' AND vda.status = 'active'  -- V437: dilepas = 'reversed' (BACKEND2)
            GROUP BY vda.bill_id, vd.id, vd.deposit_number, vd.deposit_date, vd.status ORDER BY vd.deposit_date, vd.deposit_number""",
             tenant_id, ids):
         um.setdefault(r["bill_id"], []).append(dok_vendor_deposit(r))
