@@ -87,6 +87,11 @@ def _build_where(tenant_id, account_filter, start_date, end_date):
             conditions.append(f"jl.account_id = ${idx}::uuid")
             params.append(val)
             idx += 1
+        elif key == "efektif":
+            # Jurnal EFEKTIF saja (is_effective_journal: bukan asli yang dibalik, bukan pembalik). Opt-in (dashboard,
+            # services/dashboard_angka); laporan tetap POSTED-saja (pasangan asli+pembalik neto 0 menurut Law 2).
+            if val:
+                conditions.append("is_effective_journal(je.id)")
         elif key == "is_header_false":
             conditions.append("coa.is_header = FALSE")
         elif key == "cash_only":

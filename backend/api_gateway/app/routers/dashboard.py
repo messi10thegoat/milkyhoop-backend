@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, date, timezone
 from ..services.db_pool import get_db_pool
 from ..services.role_resolution import require_active_membership
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import dashboard_angka as DA  # T1-BE 22 Okt: penentu angka SATU dgn /v2/summary (jurnal EFEKTIF)
+from decimal import Decimal
 from ..services.dashboard_izin import (
     JENIS_MODUL,
     boleh_baca,
@@ -135,6 +137,9 @@ class DashboardSummaryResponse(BaseModel):
     kpi: Optional[KPIMetrics] = None  # DSO/DPO metrics
     generated_at: str
     omitted: List[dict] = []
+    # T1-BE D1/D9: bagian yang TAK bisa dihitung jujur -> {bagian: kode}; mis. {"basis": "belum_tersedia"} (laba-rugi basis kas belum ada
+    # definisi putusan pemilik; dulu 0 palsu). Diangkat /all ke `errors` atas.
+    errors: dict = {}
 
 
 # ========================================
@@ -615,7 +620,10 @@ async def get_dashboard_all(
         )
 
         # Build combined response
+        # D9 (T1-BE): widget gagal TIDAK lagi diam: kunci tetap null (bentuk lama) + `errors[widget] = "gagal_hitung"` supaya FE bisa
+        # membedakan "kosong" dari "gagal" (sejajar `omitted` untuk izin).
         response = {}
+        errors: dict = {}
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
                 logger.error(
@@ -623,6 +631,7 @@ async def get_dashboard_all(
                     exc_info=result,
                 )
                 response[label] = None
+                errors[label] = "gagal_hitung"
             else:
                 # Pydantic models — convert to dict
                 response[label] = result.dict() if hasattr(result, "dict") else result
@@ -633,7 +642,11 @@ async def get_dashboard_all(
             for o in ringkas.pop("omitted", None) or []:
                 ringkas.pop(o["widget"].split(".", 1)[1], None)
                 omitted.append(o)
+        if isinstance(ringkas, dict):
+            for k, v in (ringkas.pop("errors", None) or {}).items():  # mis. basis kas belum tersedia (D1)
+                errors[k] = v
         response["omitted"] = omitted
+        response["errors"] = errors
         return response
 
     except HTTPException:
@@ -731,61 +744,30 @@ async def get_dashboard_summary(
             sd = start_date if isinstance(start_date, date) else start_date
             ed = end_date if isinstance(end_date, date) else end_date
 
-            # Revenue via basis-aware SQL function
-            revenue_rows = await conn.fetch(
-                "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
-                tenant_id,
-                sd,
-                ed,
-                effective_basis,
-            )
-            pendapatan = sum(int(r["total_amount"]) for r in revenue_rows)
-
-            # Expenses via basis-aware SQL function
-            expense_rows = await conn.fetch(
-                "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
-                tenant_id,
-                sd,
-                ed,
-                effective_basis,
-            )
-            pengeluaran = sum(int(r["total_amount"]) for r in expense_rows)
-            profit = pendapatan - pengeluaran
-            margin_persen = (
-                round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0
-            )
-
-            # Previous period P&L (same basis)
-            prev_revenue_rows = await conn.fetch(
-                "SELECT * FROM get_revenue_by_basis($1, $2, $3, $4)",
-                tenant_id,
-                prev_start_date,
-                prev_end_date,
-                effective_basis,
-            )
-            prev_pendapatan = sum(int(r["total_amount"]) for r in prev_revenue_rows)
-            prev_expense_rows = await conn.fetch(
-                "SELECT * FROM get_expenses_by_basis($1, $2, $3, $4)",
-                tenant_id,
-                prev_start_date,
-                prev_end_date,
-                effective_basis,
-            )
-            prev_pengeluaran = sum(int(r["total_amount"]) for r in prev_expense_rows)
-            prev_profit = prev_pendapatan - prev_pengeluaran
-            profit_change_pct = calc_change_pct(profit, prev_profit)
-
-            laba_rugi = LabaRugiSummary(
-                profit=profit,
-                pendapatan=pendapatan,
-                pengeluaran=pengeluaran,
-                period=period_label,
-                margin_persen=margin_persen,
-                prev_profit=prev_profit,
-                prev_pendapatan=prev_pendapatan,
-                profit_change_pct=profit_change_pct,
-                basis=effective_basis,
-            )
+            # T1-BE: akrual = DA.laba_rugi (jurnal EFEKTIF; pendapatan TERMASUK OTHER_INCOME -- D11; SATU fungsi dgn v2).
+            # Basis kas (D1): definisi lama selalu 0 (menyaring source_type yang tak pernah menyentuh pendapatan/beban) -> sampai putusan
+            # pemilik, laba_rugi = null + errors.basis = "belum_tersedia" (bukan 0 palsu).
+            errors: dict = {}
+            laba_rugi = None
+            pendapatan = pengeluaran = 0
+            if effective_basis == "cash":
+                errors["basis"] = "belum_tersedia"
+            else:
+                _lr = await DA.laba_rugi(conn, tenant_id, sd, ed)
+                _lp = await DA.laba_rugi(conn, tenant_id, prev_start_date, prev_end_date)
+                pendapatan, pengeluaran, profit = int(_lr["pendapatan"]), int(_lr["beban"]), int(_lr["laba"])
+                prev_pendapatan, prev_profit = int(_lp["pendapatan"]), int(_lp["laba"])
+                laba_rugi = LabaRugiSummary(
+                    profit=profit,
+                    pendapatan=pendapatan,
+                    pengeluaran=pengeluaran,
+                    period=period_label,
+                    margin_persen=round((profit / pendapatan * 100), 1) if pendapatan > 0 else 0.0,
+                    prev_profit=prev_profit,
+                    prev_pendapatan=prev_pendapatan,
+                    profit_change_pct=calc_change_pct(profit, prev_profit),
+                    basis=effective_basis,
+                )
 
             # ============================
             # 2. PIUTANG (AR) - from ledger
@@ -822,21 +804,10 @@ async def get_dashboard_summary(
             """
             oldest_ar = await conn.fetchrow(oldest_ar_query, tenant_id, hari_ini)
 
-            # Previous period AR balance - Pure Ledger (Law 1/16, ARAP Rule 5/6)
-            # Use account_type = 'RECEIVABLE' instead of hardcoded account_code
-            prev_ar_query = """
-                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS total_piutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE coa.account_type = 'RECEIVABLE'
-                  AND is_effective_journal(je.id)  -- Rule 8.1
-                  AND je.tenant_id = $1
-                  AND je.journal_date <= $2
-            """
-            prev_ar_row = await conn.fetchrow(prev_ar_query, tenant_id, prev_end_date)
-            ar_prev_total = int(prev_ar_row["total_piutang"]) if prev_ar_row else 0
-            ar_change_pct = calc_change_pct(ar_total, ar_prev_total)
+            # D12 (T1-BE): change_pct = SATU definisi -- saldo GL Piutang efektif kini vs akhir periode sebanding sebelumnya (pola QBO).
+            # Dulu kini = compute_ar_summary, sebelumnya = GL -> selisih definisi (V442) ikut jadi "perubahan".
+            ar_prev_total = int(await DA.saldo_kontrol(conn, tenant_id, "piutang", prev_end_date))
+            ar_change_pct = calc_change_pct(int(await DA.saldo_kontrol(conn, tenant_id, "piutang", hari_ini)), ar_prev_total)
 
             piutang = PiutangSummary(
                 total=ar_total,
@@ -878,29 +849,19 @@ async def get_dashboard_summary(
             """
             ap_aging = await conn.fetchrow(ap_aging_query, tenant_id, hari_ini)
 
-            # ARAP Rule 6: nearest supplier from compute_ap_outstanding()
+            # D7 (T1-BE): TERDEKAT = jatuh tempo paling dekat yang BELUM lewat dan masih bersisa (yang lewat = pengingat telat). Dulu tanpa
+            # filter -> tagihan TERTUA lewat tempo tampil sebagai "terdekat" (kaos: -22 hari).
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - $2::date as days_until_due
                 FROM compute_ap_outstanding($1)
-                ORDER BY due_date ASC LIMIT 1
+                WHERE outstanding > 0 AND due_date >= $2::date
+                ORDER BY due_date ASC, outstanding DESC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id, hari_ini)
 
-            # Previous period AP balance - Pure Ledger
-            # Law 1/16: Pure ledger previous period AP
-            prev_ap_query = """
-                SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) AS total_hutang
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE coa.account_type = 'PAYABLE'
-                  AND is_effective_journal(je.id)  -- Rule 8.1
-                  AND je.tenant_id = $1
-                  AND je.journal_date <= $2
-            """
-            prev_ap_row = await conn.fetchrow(prev_ap_query, tenant_id, prev_end_date)
-            ap_prev_total = int(prev_ap_row["total_hutang"]) if prev_ap_row else 0
-            ap_change_pct = calc_change_pct(ap_total, ap_prev_total)
+            # D12 (T1-BE): satu definisi (GL Hutang efektif kini vs akhir periode sebelumnya)
+            ap_prev_total = int(await DA.saldo_kontrol(conn, tenant_id, "hutang", prev_end_date))
+            ap_change_pct = calc_change_pct(int(await DA.saldo_kontrol(conn, tenant_id, "hutang", hari_ini)), ap_prev_total)
 
             hutang = HutangSummary(
                 total=ap_total,
@@ -922,30 +883,16 @@ async def get_dashboard_summary(
             # ============================
             # Get cash and bank account balances from CoA + balances
             # Fase G-10 Step 5.4: is_cash column (not prefix) + is_effective_journal
-            kas_bank_query = """
-                SELECT
-                    c.account_code,
-                    c.name,
-                    COALESCE(c.category, CASE WHEN c.account_code LIKE '1-101%' THEN 'kas' ELSE 'bank' END) as account_type,
-                    COALESCE(b.debit_balance - b.credit_balance, 0) as balance
-                FROM chart_of_accounts c
-                LEFT JOIN (
-                        SELECT
-                            jl.account_id,
-                            COALESCE(SUM(jl.debit), 0) as debit_balance,
-                            COALESCE(SUM(jl.credit), 0) as credit_balance
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        WHERE je.status = 'POSTED'
-                          AND je.tenant_id = $1
-                          AND is_effective_journal(je.id) = true
-                        GROUP BY jl.account_id
-                    ) b ON b.account_id = c.id
-                WHERE c.tenant_id = $1
-                  AND c.is_cash = true
-                ORDER BY c.account_code
-            """
-            kas_bank_rows = await conn.fetch(kas_bank_query, tenant_id)
+            # T1-BE: saldo per akun = DA.kas_per_akun (jurnal EFEKTIF s.d. hari ini; SATU fungsi dgn v2). Penggolongan kas/bank lama tetap.
+            _kas_total, _kas_rinci = await DA.kas_per_akun(conn, tenant_id, hari_ini)
+            _saldo_kode = {r["account_code"]: r["balance"] for r in _kas_rinci}
+            kas_bank_rows = [
+                {"account_code": m["account_code"], "name": m["name"], "account_type": m["account_type"],
+                 "balance": _saldo_kode.get(m["account_code"], 0)}
+                for m in await conn.fetch(
+                    """SELECT c.account_code, c.name,
+                              COALESCE(c.category, CASE WHEN c.account_code LIKE '1-101%' THEN 'kas' ELSE 'bank' END) AS account_type
+                       FROM chart_of_accounts c WHERE c.tenant_id = $1 AND c.is_cash = true ORDER BY c.account_code""", tenant_id)]
 
             accounts = []
             total_kas = 0
@@ -973,23 +920,9 @@ async def get_dashboard_summary(
             # Previous period Kas/Bank comparison
             # Pure Ledger: compute balance as of prev_end_date
             # Fase G-10 Step 5.4: is_cash + is_effective_journal
-            prev_kas_bank_query = """
-                SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as total_balance
-                FROM journal_lines jl
-                JOIN journal_entries je ON je.id = jl.journal_id
-                JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                  AND is_effective_journal(je.id) = true
-                  AND je.journal_date <= $2
-                  AND coa.is_cash = true
-            """
             kas_bank_total = total_kas + total_bank
-            prev_kb_row = await conn.fetchrow(
-                prev_kas_bank_query, tenant_id, prev_end_date
-            )
-            kas_bank_prev_total = (
-                int(prev_kb_row["total_balance"]) if prev_kb_row else 0
-            )
+            # D12: satu definisi (GL kas efektif s.d. akhir periode sebelumnya)
+            kas_bank_prev_total = int(await DA.saldo_kontrol(conn, tenant_id, "kas", prev_end_date))
             kas_bank_change_pct = calc_change_pct(kas_bank_total, kas_bank_prev_total)
 
             kas_bank = KasBankSummary(
@@ -1004,22 +937,11 @@ async def get_dashboard_summary(
             # ============================
             # 5. KPI METRICS (DSO/DPO)
             # ============================
-            # Use actual date range if available, otherwise derive from period
-            if start_date and end_date:
-                days_in_period = (end_date - start_date).days or 1
-            else:
-                days_in_period = get_days_in_period(period, hari_ini)
-
-            # DSO = AR / daily_revenue
-            daily_revenue = pendapatan / days_in_period if days_in_period > 0 else 0
-            dso = round(piutang.total / daily_revenue, 1) if daily_revenue > 0 else 0.0
+            # D8 (T1-BE): hari periode INKLUSIF; DSO = Piutang / (pendapatan/hari); DPO baku = Hutang / (HPP/hari) -- dulu beban TOTAL.
+            days_in_period = DA.hari_periode(start_date, end_date) if (start_date and end_date) else get_days_in_period(period, hari_ini)
+            dso = DA.dso(Decimal(piutang.total), Decimal(pendapatan), days_in_period) if laba_rugi else 0.0
             dso_status = calculate_dso_status(dso)
-
-            # DPO = AP / daily_purchases
-            daily_purchases = pengeluaran / days_in_period if days_in_period > 0 else 0
-            dpo = (
-                round(hutang.total / daily_purchases, 1) if daily_purchases > 0 else 0.0
-            )
+            dpo = DA.dpo(Decimal(hutang.total), await DA.hpp(conn, tenant_id, start_date, end_date), days_in_period)
             dpo_status = calculate_dpo_status(dpo)
 
             kpi = KPIMetrics(
@@ -1046,6 +968,7 @@ async def get_dashboard_summary(
 
             return DashboardSummaryResponse(
                 **bagian,
+                errors=errors,
                 # waktu sistem (bukan tanggal bisnis) — UTC eksplisit
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 omitted=omitted,
@@ -1407,44 +1330,14 @@ async def get_cash_flow_trends(
             range_days = (cf_end - cf_start).days
             use_monthly = range_days > 60
 
+            # T1-BE: arus kas = DA.arus_kas_harian (SATU fungsi dgn v2; jurnal EFEKTIF, transfer antar-kas murni dikecualikan)
+            _harian = await DA.arus_kas_harian(conn, tenant_id, cf_start, cf_end)
             if use_monthly:
-                # Monthly aggregation for fiscal year views
-                # Fase G-10 Step 5.3: is_cash column, is_effective_journal,
-                # exclude bank-transfer entries (all legs is_cash = net-zero stock)
-                query = """
-                    WITH non_transfer_entries AS (
-                        SELECT je.id, je.journal_date
-                        FROM journal_entries je
-                        WHERE je.tenant_id = $1
-                          AND je.journal_date >= $2 AND je.journal_date <= $3
-                          AND je.status = 'POSTED'
-                          AND is_effective_journal(je.id) = true
-                          AND EXISTS (
-                              SELECT 1 FROM journal_lines jl2
-                              JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
-                              WHERE jl2.journal_id = je.id
-                                AND COALESCE(c2.is_cash, false) = false
-                          )
-                    ),
-                    monthly_flows AS (
-                        SELECT
-                            DATE_TRUNC('month', e.journal_date)::date as flow_date,
-                            COALESCE(SUM(CASE
-                                WHEN jl.debit > 0 AND c.is_cash = true
-                                THEN jl.debit ELSE 0
-                            END), 0) as kas_masuk,
-                            COALESCE(SUM(CASE
-                                WHEN jl.credit > 0 AND c.is_cash = true
-                                THEN jl.credit ELSE 0
-                            END), 0) as kas_keluar
-                        FROM non_transfer_entries e
-                        JOIN journal_lines jl ON jl.journal_id = e.id
-                        JOIN chart_of_accounts c ON c.id = jl.account_id
-                        GROUP BY DATE_TRUNC('month', e.journal_date)
-                    )
-                    SELECT flow_date, kas_masuk, kas_keluar FROM monthly_flows ORDER BY flow_date
-                """
-                rows = await conn.fetch(query, tenant_id, cf_start, cf_end)
+                flow_by_month = {}
+                for _t, (_m, _k) in _harian.items():
+                    _b = date(_t.year, _t.month, 1)
+                    _a = flow_by_month.get(_b, {"kas_masuk": 0, "kas_keluar": 0})
+                    flow_by_month[_b] = {"kas_masuk": _a["kas_masuk"] + _m, "kas_keluar": _a["kas_keluar"] + _k}
 
                 trends = []
                 total_masuk = 0
@@ -1464,7 +1357,6 @@ async def get_cash_flow_trends(
                     "Des",
                 ]
 
-                flow_by_month = {row["flow_date"]: row for row in rows}
 
                 # Generate all months in range
                 current_month = date(cf_start.year, cf_start.month, 1)
@@ -1490,47 +1382,10 @@ async def get_cash_flow_trends(
                             current_month.year, current_month.month + 1, 1
                         )
             else:
-                # Daily aggregation (existing behavior)
-                # Fase G-10 Step 5.3: is_cash, is_effective_journal, exclude transfers
-                query = """
-                    WITH non_transfer_entries AS (
-                        SELECT je.id, je.journal_date
-                        FROM journal_entries je
-                        WHERE je.tenant_id = $1
-                          AND je.journal_date >= $2 AND je.journal_date <= $3
-                          AND je.status = 'POSTED'
-                          AND is_effective_journal(je.id) = true
-                          AND EXISTS (
-                              SELECT 1 FROM journal_lines jl2
-                              JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
-                              WHERE jl2.journal_id = je.id
-                                AND COALESCE(c2.is_cash, false) = false
-                          )
-                    ),
-                    daily_flows AS (
-                        SELECT
-                            DATE(e.journal_date) as flow_date,
-                            COALESCE(SUM(CASE
-                                WHEN jl.debit > 0 AND c.is_cash = true
-                                THEN jl.debit ELSE 0
-                            END), 0) as kas_masuk,
-                            COALESCE(SUM(CASE
-                                WHEN jl.credit > 0 AND c.is_cash = true
-                                THEN jl.credit ELSE 0
-                            END), 0) as kas_keluar
-                        FROM non_transfer_entries e
-                        JOIN journal_lines jl ON jl.journal_id = e.id
-                        JOIN chart_of_accounts c ON c.id = jl.account_id
-                        GROUP BY DATE(e.journal_date)
-                    )
-                    SELECT flow_date, kas_masuk, kas_keluar FROM daily_flows ORDER BY flow_date
-                """
-                rows = await conn.fetch(query, tenant_id, cf_start, cf_end)
-
                 trends = []
                 total_masuk = 0
                 total_keluar = 0
-                flow_by_date = {row["flow_date"]: row for row in rows}
+                flow_by_date = {_t: {"kas_masuk": _m, "kas_keluar": _k} for _t, (_m, _k) in _harian.items()}
 
                 current = cf_start
                 while current <= cf_end:
@@ -1653,46 +1508,15 @@ async def get_top_expenses(
                 if period != "month":
                     te_end = hari_ini
 
-            # Query expenses grouped by account category
-            # Expense accounts typically start with 5-xxx or 6-xxx
-            # FIX (Surprise #13, T2): net Dr-Cr per expense category (Dr-normal).
-            # SUM(jl.debit) one-sided missed offset Cr (e.g. expense reversal/credit).
-            # Add is_effective_journal() to exclude reversal sources.
-            query = """
-                SELECT
-                    COALESCE(c.category, c.name) as category,
-                    SUM(jl.debit) - SUM(jl.credit) as amount
-                FROM journal_entries je
-                JOIN journal_lines jl ON jl.journal_id = je.id
-                JOIN chart_of_accounts c ON c.id = jl.account_id
-                WHERE je.tenant_id = $1
-                  AND je.journal_date >= $2
-                  AND je.journal_date <= $3
-                  AND je.status = 'POSTED'
-                  AND is_effective_journal(je.id)
-                  AND (c.account_code LIKE '5-%%' OR c.account_code LIKE '6-%%')
-                GROUP BY COALESCE(c.category, c.name)
-                HAVING SUM(jl.debit) - SUM(jl.credit) > 0
-                ORDER BY amount DESC
-                LIMIT $4
-            """
-
-            rows = await conn.fetch(query, tenant_id, te_start, te_end, limit)
-
-            # Calculate total and percentages
-            total = sum(int(row["amount"]) for row in rows)
-
-            expenses = []
-            for row in rows:
-                amount = int(row["amount"])
-                percentage = round((amount / total * 100), 1) if total > 0 else 0
-
-                expenses.append(
-                    TopExpense(
-                        category=row["category"], amount=amount, percentage=percentage
-                    )
-                )
-
+            # D11 (T1-BE): beban per AKUN dari DA.laba_rugi (account_type COGS/EXPENSE/OTHER_EXPENSE, jurnal EFEKTIF) -- SATU fungsi dgn
+            # pengeluaran laba-rugi & v2 "Ke mana uang pergi". Dulu per kode '5-%'/'6-%' (Law 27: akun lewat peran/tipe, bukan kode).
+            # total = SEMUA beban periode (bukan hanya yang tampil); persen terhadap total itu.
+            _lr = await DA.laba_rugi(conn, tenant_id, te_start, te_end)
+            total = int(_lr["beban"])
+            rows = sorted((r for r in _lr["rinci_beban"] if r["balance"] > 0), key=lambda r: (-r["balance"], r["account_code"]))[:limit]
+            expenses = [TopExpense(category=r["account_name"], amount=int(r["balance"]),
+                                   percentage=round((int(r["balance"]) / total * 100), 1) if total > 0 else 0)
+                        for r in rows]
             return TopExpensesResponse(expenses=expenses, total=total)
 
     except HTTPException:

@@ -28,7 +28,8 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List, Optional
 
-from .report_engine.ledger import compute_balance, compute_balance_detail
+from .report_engine.ledger import compute_balance, compute_balance_detail  # noqa: F401 (dipakai pemanggil/tes lama)
+from . import dashboard_angka as DA  # T1-BE 22 Okt: penentu angka SATU dgn /api/dashboard/all (jurnal EFEKTIF)
 from . import faktur_cetak, so_kirim
 
 NOL = Decimal("0")
@@ -136,8 +137,8 @@ def _nama_hari(t: date, hari_ini: date) -> str:
 # ─────────────────────────── ringkasan (summary) ───────────────────────────
 
 async def kas_bank(conn, tenant_id: str, hari_ini: date) -> dict:
-    total = await compute_balance(conn, tenant_id, {"is_cash": True}, end_date=hari_ini)
-    rinci = await compute_balance_detail(conn, tenant_id, {"is_cash": True}, end_date=hari_ini)
+    # T1-BE: jurnal EFEKTIF (DA.kas_per_akun == kas /all); dulu POSTED-saja -> kaos +65.218 (void beban lama status VOID)
+    total, rinci = await DA.kas_per_akun(conn, tenant_id, hari_ini)
     meta = await conn.fetch(
         """SELECT DISTINCT ON (c.account_code) c.id, c.account_code, c.category, ba.account_type AS jenis_rek
            FROM chart_of_accounts c
@@ -214,16 +215,9 @@ async def hutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
 async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) -> tuple:
     """Rumus = report_engine.income_statement (akrual): laba_bersih = REV − COGS − EXP + OI − OE.
     revenue = pendapatan + pendapatan lain; expense = hpp + beban usaha + beban lain."""
-    async def b(tipe):
-        return await compute_balance(conn, tenant_id, {"account_type": tipe}, start_date=mulai, end_date=akhir)
-
-    pendapatan = -(await b("REVENUE")) - (await b("OTHER_INCOME"))
-    rinci = []
-    for tipe in TIPE_BEBAN:
-        rinci += await compute_balance_detail(conn, tenant_id, {"account_type": tipe},
-                                              start_date=mulai, end_date=akhir)
-    beban = sum((d(r["balance"]) for r in rinci), NOL)
-    laba = pendapatan - beban
+    # T1-BE: DA.laba_rugi (jurnal EFEKTIF; SATU fungsi dgn /all)
+    _lr = await DA.laba_rugi(conn, tenant_id, mulai, akhir)
+    pendapatan, rinci, beban, laba = _lr["pendapatan"], _lr["rinci_beban"], _lr["beban"], _lr["laba"]
     pnl = {"revenue": uang(pendapatan), "expense": uang(beban), "profit": uang(laba),
            "margin_pct": persen(laba, pendapatan) if pendapatan > NOL else 0.0}
 
@@ -278,7 +272,7 @@ SQL_BEBAN_KAS_28H = """
     FROM journal_lines jl
     JOIN journal_entries je ON je.id = jl.journal_id
     JOIN chart_of_accounts coa ON coa.id = jl.account_id
-    WHERE je.tenant_id = $1 AND je.status = 'POSTED'
+    WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)
       AND je.journal_date > $2::date - 28 AND je.journal_date <= $2::date
       AND coa.account_type = ANY($3::text[])
       AND EXISTS (SELECT 1 FROM journal_lines k JOIN chart_of_accounts kc ON kc.id = k.account_id
@@ -368,8 +362,9 @@ async def arus_kas(conn, tenant_id: str, periode: str, hari_ini: date, ar_rows, 
     unit, lalu = ember_masa_lalu(periode, hari_ini, data_pertama)
     per_hari = {}
     if lalu:
-        for r in await conn.fetch(SQL_KAS_PER_HARI, tenant_id, lalu[0][1], lalu[-1][2]):
-            per_hari[r["tgl"]] = (d(r["masuk"]), d(r["keluar"]))
+        # T1-BE: DA.arus_kas_harian (jurnal EFEKTIF, definisi /all); dulu neto per jurnal atas SEMUA POSTED -> transaksi batal
+        # (asli + pembalik) menggelembungkan masuk & keluar (grapgrap YTD +18,5 jt di dua sisi).
+        per_hari = await DA.arus_kas_harian(conn, tenant_id, lalu[0][1], lalu[-1][2])
     ember, total_in, total_out = [], NOL, NOL
     for label, a, b in lalu:
         masuk = sum((v[0] for t, v in per_hari.items() if a <= t <= b), NOL)

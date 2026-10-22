@@ -276,21 +276,15 @@ async def test_kas_bank_dipecah_dari_rekening_bukan_kategori(monkeypatch):
     meta = [{"id": UUID(int=i), "account_code": r["account_code"], "category": c, "jenis_rek": j}
             for i, (r, c, j) in enumerate(zip(rinci, ["bank", "bank", "kas", None], ["bank", "bank", "petty_cash", "petty_cash"]))]
 
-    async def cb(conn, t, f, start_date=None, end_date=None):
-        assert f == {"is_cash": True} and end_date == H and start_date is None
-        return Decimal("134954694")
-
     async def cbd(conn, t, f, start_date=None, end_date=None):
-        assert f == {"is_cash": True} and end_date == H
+        # T1-BE 22 Okt: jurnal EFEKTIF (services/dashboard_angka.kas_per_akun, SATU penentu dgn /all)
+        assert f == {"is_cash": True, "efektif": True} and end_date == H
         return rinci
 
-    monkeypatch.setattr(DV, "compute_balance", cb)
-    monkeypatch.setattr(DV, "compute_balance_detail", cbd)
+    monkeypatch.setattr(DV.DA, "compute_balance_detail", cbd)
     k = await DV.kas_bank(_Conn(meta), "t", H)
     assert (k["total"], k["cash_total"], k["bank_total"]) == ("134954694.00", "547500.00", "134407194.00")
-    monkeypatch.setattr(DV, "compute_balance", lambda *a, **k: _async(Decimal("1")))
-    with pytest.raises(RuntimeError):
-        await DV.kas_bank(_Conn(meta), "t", H)
+    # (Penjaga "rincian != total" kini tautologis: total = Σ rincian yang SAMA, DA.kas_per_akun; tak diuji lagi.)
 
 
 async def _async(v):
@@ -304,6 +298,7 @@ async def test_laba_rugi_rumus_laporan_dan_lainnya_menjumlah_total(monkeypatch):
     dipanggil = []
 
     async def cb(conn, t, f, start_date=None, end_date=None):
+        assert f.get("efektif") is True  # T1-BE: jurnal efektif
         dipanggil.append(f["account_type"])
         return saldo[f["account_type"]]
 
@@ -311,8 +306,8 @@ async def test_laba_rugi_rumus_laporan_dan_lainnya_menjumlah_total(monkeypatch):
         assert (start_date, end_date) == (date(2026, 9, 1), date(2026, 9, 30))
         return [{"account_code": k, "account_name": k, "balance": Decimal(v)} for k, v in beban[f["account_type"]]]
 
-    monkeypatch.setattr(DV, "compute_balance", cb)
-    monkeypatch.setattr(DV, "compute_balance_detail", cbd)
+    monkeypatch.setattr(DV.DA, "compute_balance", cb)
+    monkeypatch.setattr(DV.DA, "compute_balance_detail", cbd)
     pnl, ex = await DV.laba_rugi_dan_beban(_Conn([]), "t", date(2026, 9, 1), date(2026, 9, 30))
     total_beban = 300000 - 10000 + sum(10000 * i for i in range(1, 8)) + 5000
     assert pnl["revenue"] == "1050000.00"  # pendapatan lain IKUT (laba_bersih laporan)
@@ -367,7 +362,7 @@ async def test_ringkasan_valid_terhadap_kontrak(monkeypatch):
                 return [{"id": UUID(int=9), "account_code": "1-1", "category": None, "jenis_rek": "bank"}]
             if "FROM chart_of_accounts WHERE" in sql:
                 return [{"id": UUID(int=8), "account_code": "6-1"}]
-            if "WITH neto" in sql:
+            if "WITH non_transfer" in sql:  # T1-BE: DA.SQL_ARUS_KAS_HARIAN
                 return [{"tgl": date(2026, 9, 3), "masuk": Decimal("500"), "keluar": Decimal("0")}]
             raise AssertionError(sql[:60])
 
@@ -376,8 +371,8 @@ async def test_ringkasan_valid_terhadap_kontrak(monkeypatch):
                 return date(2025, 1, 1)
             return Decimal("280")
 
-    monkeypatch.setattr(DV, "compute_balance", cb)
-    monkeypatch.setattr(DV, "compute_balance_detail", cbd)
+    monkeypatch.setattr(DV.DA, "compute_balance", cb)
+    monkeypatch.setattr(DV.DA, "compute_balance_detail", cbd)
     for per in DV.PERIODE:
         badan = json.loads(json.dumps(await DV.ringkasan(C(), "t", per, H, "Asia/Jakarta", "2026-09-28T09:00:00+07:00")))
         s = _skema("dashboard-summary.schema.json")
