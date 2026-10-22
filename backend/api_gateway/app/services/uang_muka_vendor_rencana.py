@@ -119,7 +119,7 @@ def _uuid(v):
         return UUID(int=0)
 
 
-def _jurnal(source_type: str, deskripsi: str, tgl, baris: list) -> dict:
+def _rencana_jurnal(source_type: str, deskripsi: str, tgl, baris: list) -> dict:
     return {"journal_number": None, "source_type": source_type, "description": deskripsi,
             "journal_date": tgl.isoformat() if tgl else None, "lines": baris}
 
@@ -157,7 +157,7 @@ async def rencana_buat(conn, ctx, body) -> dict:
         await _periode(conn, tid, body.deposit_date, bloks)
         um = await _akun(conn, tid, AccountRole.AP_PREPAID, bloks)
         if um and coa_kas:
-            jurnal = [_jurnal("VENDOR_DEPOSIT", "Vendor Deposit - (nomor saat disimpan)", body.deposit_date,
+            jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", "Vendor Deposit - (nomor saat disimpan)", body.deposit_date,
                               [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])]
             bank = await _bank(conn, tid, ba, -jumlah, "withdrawal")
     after = {"exists": True, "status": status, "amount": _f(jumlah), "amount_applied": 0.0, "amount_refunded": 0.0,
@@ -175,7 +175,7 @@ async def rencana_posting(conn, ctx, vd, pratinjau: bool = False) -> dict:
     coa_kas, ba = await akun_kas(conn, tid, vd["bank_account_id"], None, bloks, wajib=False)
     await _periode(conn, tid, vd["deposit_date"], bloks)
     jumlah = _d(vd["amount"])
-    jurnal = [_jurnal("VENDOR_DEPOSIT", f"Vendor Deposit - {vd['deposit_number']}", vd["deposit_date"],
+    jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", f"Vendor Deposit - {vd['deposit_number']}", vd["deposit_date"],
                       [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])] if um and coa_kas else []
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
     return {"blocks": bloks, "before": sebelum, "after": sesudah(sebelum, status="posted", remaining=_f(jumlah)),
@@ -209,7 +209,7 @@ async def rencana_terapkan(conn, ctx, vd, body, hari_ini, pratinjau: bool = Fals
     um = await _akun(conn, tid, AccountRole.AP_PREPAID, bloks)
     await _periode(conn, tid, tgl, bloks)
     nomor_tagihan = bill["invoice_number"] if bill else "-"
-    jurnal = [_jurnal("DEPOSIT_APPLICATION", f"Apply Deposit {vd['deposit_number']} to Bill {nomor_tagihan}", tgl,
+    jurnal = [_rencana_jurnal("DEPOSIT_APPLICATION", f"Apply Deposit {vd['deposit_number']} to Bill {nomor_tagihan}", tgl,
                       [await _baris(conn, tid, ap, jumlah, 0), await _baris(conn, tid, um, 0, jumlah)])] if ap and um else []
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
     after = sesudah(sebelum, amount_applied=_f(_d(sebelum.get("amount_applied")) + jumlah),
@@ -245,7 +245,7 @@ async def rencana_lepas(conn, ctx, vd, application_id, hari_ini, kunci: bool = T
     baris_asli = await conn.fetch(
         "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", a["journal_id"]) if asli else []
     jumlah = _d(a["amount"])
-    jurnal = [_jurnal("DEPOSIT_APPLICATION", f"Lepas penerapan {vd['deposit_number']} dari tagihan {a['bill_number'] or ''}".strip(), hari_ini,
+    jurnal = [_rencana_jurnal("DEPOSIT_APPLICATION", f"Lepas penerapan {vd['deposit_number']} dari tagihan {a['bill_number'] or ''}".strip(), hari_ini,
                       [await _baris(conn, tid, b["account_id"], b["credit"], b["debit"]) for b in baris_asli])] if baris_asli and not bloks else []
     sisa_t = await sisa_tagihan(conn, tid, a["bill_id"]) if a["bill_id"] else NOL
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
@@ -272,7 +272,7 @@ async def rencana_kembali(conn, ctx, vd, body, pratinjau: bool = False) -> dict:
     um = await _akun(conn, tid, AccountRole.AP_PREPAID, bloks)
     coa_kas, ba = await akun_kas(conn, tid, body.bank_account_id, getattr(body, "account_id", None), bloks, wajib=True)
     await _periode(conn, tid, body.refund_date, bloks)
-    jurnal = [_jurnal("DEPOSIT_REFUND", f"Refund Deposit {vd['deposit_number']}", body.refund_date,
+    jurnal = [_rencana_jurnal("DEPOSIT_REFUND", f"Refund Deposit {vd['deposit_number']}", body.refund_date,
                       [await _baris(conn, tid, coa_kas, jumlah, 0), await _baris(conn, tid, um, 0, jumlah)])] if um and coa_kas else []
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
     after = sesudah(sebelum, amount_refunded=_f(_d(sebelum.get("amount_refunded")) + jumlah),
@@ -310,7 +310,7 @@ async def rencana_batal(conn, ctx, vd, alasan: Optional[str], hari_ini, pratinja
     jurnal, bank = [], []
     if vd["journal_id"] and vd["status"] not in ("void", "draft"):
         baris = await conn.fetch("SELECT account_id, debit, credit FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", vd["journal_id"])
-        jurnal = [_jurnal("VENDOR_DEPOSIT", f"Void {vd['deposit_number']}", hari_ini,
+        jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", f"Void {vd['deposit_number']}", hari_ini,
                           [await _baris(conn, tid, b["account_id"], b["credit"], b["debit"]) for b in baris])]
         bt = await conn.fetchrow("""SELECT ba.account_name, bt.amount FROM bank_transactions bt JOIN bank_accounts ba ON ba.id = bt.bank_account_id
                                     WHERE bt.journal_id = $1 AND bt.tenant_id = $2 ORDER BY bt.created_at LIMIT 1""", vd["journal_id"], tid)
