@@ -4,6 +4,8 @@ DB SALINAN PENUH milkydb (handler nyata), tenant kaos. Barang TERLACAK berstok d
   P2 koreksi harga (pricing_error) -> Cr 5-10200 juga
   P3 retur (return) barang sama -> Cr 5-10300 + kartu stok keluar (perilaku lama tetap)
   P4 potongan tertaut tagihan > sisa -> posting 400 (blok)
+  P5 PAGAR PKP (MASTER): tenant is_pkp=true (DI SALINAN) -> potongan 409 ND_POTONGAN_PPN_BELUM; retur tetap terposting
+  P6 PAGAR: potongan ber-PPN (tarif baris 11%) -> 409 (bukan jurnal salah)
 MERAH=1 -> harapan P1 dibalik."""
 import asyncio, os, sys, uuid
 from datetime import date
@@ -82,6 +84,27 @@ async def main():
         except HTTPException as x:
             e = x.status_code
         cek(e == 400, "P4 potongan tertaut > sisa tagihan -> 400", str(e))
+
+        async def posting_kode(v):
+            try:
+                await VC.post_vendor_credit(r, v); return None
+            except HTTPException as x:
+                return (x.status_code, (x.detail or {}).get("code") if isinstance(x.detail, dict) else x.detail)
+
+        await c.execute('UPDATE "Tenant" SET is_pkp = true WHERE id = $1', T)  # DB SALINAN saja
+        try:
+            vp = await nd("discount", 5000)
+            vr = await nd("return", 5000)
+            hp, hr = await posting_kode(vp), await posting_kode(vr)
+        finally:
+            await c.execute('UPDATE "Tenant" SET is_pkp = false WHERE id = $1', T)
+        cek(hp == (409, "ND_POTONGAN_PPN_BELUM") and hr is None, "P5 tenant PKP: potongan 409, retur tetap terposting", f"{hp} / {hr}")
+        body = S.CreateVendorCreditRequest(vendor_id=str(b["vendor_id"]), vendor_name=vname, vendor_credit_date=date(2026, 10, 22), reason="pricing_error",
+                                           notes="TES E2E U3b PPN", items=[S.VendorCreditItemCreate(description="TES PPN", quantity=Decimal("1"),
+                                                                                                     unit_price=10000, tax_rate=11)])
+        d = await VC.create_vendor_credit(r, body)
+        h6 = await posting_kode(uuid.UUID(d["data"]["id"]))
+        cek(h6 == (409, "ND_POTONGAN_PPN_BELUM"), "P6 potongan ber-PPN -> 409 (gagal keras, bukan jurnal salah)", str(h6))
     finally:
         await pool.release(c); await pool.close()
     print("RINGKAS gagal=%d %s" % (len(gagal), gagal[:6])); sys.exit(1 if gagal else 0)

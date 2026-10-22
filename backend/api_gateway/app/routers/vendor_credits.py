@@ -987,6 +987,8 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
                 # U3b: potongan/koreksi harga -> PURCHASE_DISCOUNT (5-10200), retur/rusak/lainnya -> COGS_PURCHASE_RETURN (ND.peran_kredit_nd)
                 potongan = vc["reason"] in ND.ALASAN_POTONGAN
+                # pagar: potongan ber-PPN / tenant PKP / tagihan ber-PPN -> 409 (pemecahan PKP bruto = tiket; gagal keras, bukan jurnal salah)
+                await ND.tolak_potongan_ber_ppn(conn, ctx["tenant_id"], vc["reason"], vc["tax_amount"], vc["original_bill_id"])
                 if potongan:
                     purchase_return_account_id = await resolve_account_id_by_role(
                         conn, ctx["tenant_id"], ND.peran_kredit_nd(vc["reason"])

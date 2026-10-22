@@ -25,6 +25,21 @@ SUMBER_ND = ("VENDOR_CREDIT", "VENDOR_CREDIT_REFUND")
 ALASAN_POTONGAN = frozenset({"discount", "pricing_error"})
 
 
+async def tolak_potongan_ber_ppn(conn, tenant_id: str, reason, tax_nd, bill_id=None) -> None:
+    """PAGAR (MASTER 22 Okt; Law 34 "gagal keras, bukan jurnal salah"): pemecahan PKP bruto nota debit potongan BELUM dibangun (tiket;
+    0 tagihan ber-PPN hari ini). Potongan/koreksi harga di tenant PKP, ber-PPN sendiri, atau atas tagihan ber-PPN -> 409, bukan jurnal salah."""
+    if reason not in ALASAN_POTONGAN:
+        return
+    pkp = await conn.fetchval('SELECT is_pkp FROM "Tenant" WHERE id = $1', tenant_id)
+    ppn_tagihan = Decimal("0")
+    if bill_id:
+        ppn_tagihan = Decimal(str(await conn.fetchval(
+            "SELECT COALESCE(tax_amount, 0) FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tenant_id) or 0))
+    if pkp is True or Decimal(str(tax_nd or 0)) > 0 or ppn_tagihan > 0:
+        raise HTTPException(status_code=409, detail={"code": "ND_POTONGAN_PPN_BELUM",
+                                                     "message": "Potongan atas tagihan ber-PPN belum didukung."})
+
+
 def peran_kredit_nd(reason) -> str:
     """Peran akun kredit jurnal posting nota debit menurut alasan (Law 27: diresolusi per peran, bukan kode)."""
     return "PURCHASE_DISCOUNT" if reason in ALASAN_POTONGAN else "COGS_PURCHASE_RETURN"
@@ -82,6 +97,7 @@ async def terapkan_nota_debit(conn, ctx: dict, vc_id, bill_id, jumlah, applicati
     if Decimal(str(jumlah)) != total:
         raise HTTPException(status_code=400, detail=f"Nota debit harus diterapkan seluruhnya ({tg.rp(total)}) ke satu tagihan.")
     bill = await tagihan_milik(conn, tid, bill_id, vc["vendor_id"], kunci=True)
+    await tolak_potongan_ber_ppn(conn, tid, vc["reason"], vc["tax_amount"], bill["id"])  # pagar PKP bruto (tiket)
     sisa = await sisa_tagihan_jurnal(conn, tid, bill["id"])
     if sisa is None:
         raise HTTPException(status_code=400, detail=f"Tagihan {bill['invoice_number']} belum dibukukan atau sudah batal.")
