@@ -31,3 +31,11 @@ def test_pemanggil_memakai_join_rincian_dan_sql_dok_bill():
         assert "sql_dok_bill()" in src and "join_rincian()" in src, fn.__name__
         assert "status_v2, b.status" not in src and "grand_total, status_v2" not in src
     assert "a.status = 'active'" in inspect.getsource(UMD.kelompok_untuk)  # penerapan dilepas bukan dokumen terkait (V437)
+
+
+def test_kunci_kelompok_uang_muka_seragam():
+    """WORKSPACE 22 Okt: satu kunci "uang_muka" untuk kelompok UM di bundel PO, tagihan, DAN uang muka vendor (dulu "um")."""
+    from app.routers import vendor_deposits as VD
+    assert "\"key\": \"uang_muka\"" in inspect.getsource(UMD.kelompok_untuk) and "\"key\": \"um\"" not in inspect.getsource(UMD.kelompok_untuk)
+    assert "\"group\": \"uang_muka\"" in inspect.getsource(VD.get_vendor_deposit_documents)
+    assert "\"key\": \"uang_muka\"" in inspect.getsource(PD.dokumen_po) and "\"key\": \"uang_muka\"" in inspect.getsource(TD.kelompok_tagihan)

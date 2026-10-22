@@ -7,7 +7,7 @@ Kembaran uang muka Penjualan (services/uang_muka_daftar); pola acuan: NetSuite V
   sisa_keadaan   = draf | utuh | sebagian | terpakai | dikembalikan | sebagian_dikembalikan | batal   (keadaan_vd; konsisten dgn sisa jurnal)
   status_text == position_text = Draf · Belum diterapkan · Diterapkan sebagian · Diterapkan penuh · Dikembalikan · Dikembalikan sebagian · Dibatalkan
   aksi (pill, PARTISI trivial: satu kunci) = belum_diterapkan : terbit (bukan draf/void) DAN sisa jurnal > 0  (baris, ?aksi=, summary: predikat SAMA)
-  documents/doc_count = bundel /vendor-deposits/{id}/documents tanpa rekap (kelompok_untuk): um (deposit itu sendiri) · po (PO bertaut) · faktur (tagihan yang dikenai penerapan)
+  documents/doc_count = bundel /vendor-deposits/{id}/documents tanpa rekap (kelompok_untuk): uang_muka (deposit itu sendiri) · po (PO bertaut) · faktur (tagihan yang dikenai penerapan)
 """
 from decimal import Decimal
 from typing import Optional
@@ -117,7 +117,7 @@ async def fakta_vd(conn, tenant_id: str, akun, ids: list) -> dict:
 
 
 async def kelompok_untuk(conn, tenant_id: str, ids: list) -> dict:
-    """{deposit_id: [kelompok]} bundel uang muka vendor: um (deposit ITU SENDIRI, void tampil sebagai dirinya -> batal) · po (PO bertaut) ·
+    """{deposit_id: [kelompok]} bundel uang muka vendor: uang_muka (deposit ITU SENDIRI, void tampil sebagai dirinya -> batal) · po (PO bertaut) ·
     faktur (tagihan yang dikenai penerapan, urut tanggal). Pembentuk dokumen = po_daftar.dok_* (SATU tempat)."""
     if not ids:
         return {}
@@ -141,7 +141,7 @@ async def kelompok_untuk(conn, tenant_id: str, ids: list) -> dict:
         r = vd.get(i)
         if not r:
             continue
-        kel = [{"key": "um", "label": "Uang Muka", "docs": [PD.dok_vendor_deposit(r)]}]
+        kel = [{"key": "uang_muka", "label": "Uang Muka", "docs": [PD.dok_vendor_deposit(r)]}]
         if r["purchase_order_id"] in po:
             kel.append({"key": "po", "label": "Pesanan Pembelian", "docs": [PD.dok_purchase_order(po[r["purchase_order_id"]])]})
         if fak.get(i):

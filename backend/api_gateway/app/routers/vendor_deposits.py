@@ -316,7 +316,7 @@ async def get_vendor_deposit_documents(request: Request, deposit_id: UUID):
                        "paid": None if vd["status"] in ("draft", "void") else f"{f['terpakai']:.2f}",
                        "balance": None if f["sisa"] is None else f"{f['sisa']:.2f}",
                        "vendor_phone": vd["phone"] or None, "vendor_email": vd["email"] or None},
-            "default": {"group": "um", "index": 0},
+            "default": {"group": "uang_muka", "index": 0},
             "groups": kel,
         }
 
