@@ -153,14 +153,15 @@ class PurchaseOrderItemResponse(BaseModel):
     quantity_received: float = 0
     quantity_billed: float = 0
     unit: Optional[str] = None
-    unit_price: int
+    # 22 Okt 2026 (temuan WORKSPACE): uang baris = float (dulu int -> PO ber-sen [unit_price 2dp sejak P-U2] membuat GET detail 500)
+    unit_price: float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: float = 0
     tax_code: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: int = 0
-    subtotal: int
-    total: int
+    tax_amount: float = 0
+    subtotal: float
+    total: float
     line_number: int = 1
 
 
