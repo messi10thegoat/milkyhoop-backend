@@ -94,3 +94,38 @@ async def ringkas_aksi(conn, tenant_id: str, hari_ini: date, ambang: int, id_car
         + ("" if id_cari is None else " AND si.id = ANY($4::uuid[])"),
         tenant_id, hari_ini, ambang, *([] if id_cari is None else [id_cari]))
     return {k: {"count": int(row[f"{k}_count"]), "amount": Decimal(str(row[f"{k}_value"]))} for k in AKSI}
+
+
+# ---- T2 (23 Okt 2026, KONTRAK-dashboard-T2 §5): kunci SARING umur_* -- BUKAN pill (partisi AKSI & nilai `aksi` baris tak berubah) ----
+# Umur dari jatuh tempo EFEKTIF via rumus TUNGGAL services/jatuh_tempo (kelas_umur / sql_umur, dipakai juga daftar tagihan & dashboard).
+# Anggota = faktur TERBIT bersisa > 0 (sama dengan payung jatuh_tempo + segera_tempo + belum_lunas).
+def umur_faktur(status: Optional[str], sisa, due_date: Optional[date], invoice_date: Optional[date], hari_ini: date) -> Optional[str]:
+    from .jatuh_tempo import kelas_umur
+    if status in (None, "draft", "void") or sisa is None or Decimal(str(sisa)) <= 0:
+        return None
+    return kelas_umur(jatuh_tempo_efektif(due_date, invoice_date), hari_ini)
+
+
+def sql_umur(kunci: str, p_hari: str, sisa_positif: str = SQL_SISA_POSITIF_SUBQUERY) -> str:
+    """Predikat SQL setara umur_faktur(...) == kunci (alias `si`)."""
+    from . import jatuh_tempo as JT
+    return f"(si.status NOT IN ('draft', 'void') AND {sisa_positif} AND {JT.sql_umur(kunci, SQL_JATUH_TEMPO_EFEKTIF, p_hari)})"
+
+
+def sql_umur_berparam(kunci: str, mulai: int, hari_ini: date) -> tuple:
+    return sql_umur(kunci, f"${mulai}"), [hari_ini]
+
+
+async def ringkas_umur(conn, tenant_id: str, hari_ini: date, id_cari=None) -> dict:
+    """{umur_*: {count, amount Decimal}} -- nilai = SISA compute_ar_outstanding; SATU kueri, pola ringkas_aksi."""
+    from .jatuh_tempo import UMUR_KUNCI
+    row = await conn.fetchrow(
+        "WITH ar_fn AS (SELECT invoice_id, outstanding FROM compute_ar_outstanding($1)) SELECT "
+        + ", ".join(
+            f"COUNT(*) FILTER (WHERE {sql_umur(k, '$2', SQL_SISA_POSITIF_JOIN)}) AS {k}_count, "
+            f"COALESCE(SUM(ar_fn.outstanding) FILTER (WHERE {sql_umur(k, '$2', SQL_SISA_POSITIF_JOIN)}), 0) AS {k}_value"
+            for k in UMUR_KUNCI)
+        + " FROM sales_invoices si LEFT JOIN ar_fn ON ar_fn.invoice_id = si.id WHERE si.tenant_id = $1"
+        + ("" if id_cari is None else " AND si.id = ANY($3::uuid[])"),
+        tenant_id, hari_ini, *([] if id_cari is None else [id_cari]))
+    return {k: {"count": int(row[f"{k}_count"]), "amount": Decimal(str(row[f"{k}_value"]))} for k in UMUR_KUNCI}

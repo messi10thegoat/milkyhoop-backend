@@ -15,7 +15,8 @@ Cache 60 dtk per (tenant, periode, hari bisnis) lewat services.cache (Redis, kun
 tulis finansial). Penyaringan izin & dismiss terjadi SESUDAH cache (per pengguna, tak ikut di-cache).
 """
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -49,8 +50,16 @@ async def _waktu_tenant(conn, tenant_id: str):
 
 
 @router.get("/v2/summary")
-async def ringkasan_v2(request: Request, period: str = Query("month", pattern="^(day|week|month|year)$")):
+async def ringkasan_v2(request: Request,
+                       period: str = Query("month", pattern="^(day|week|month|year|bulan_ini|bulan_lalu|kuartal_ini|tahun_ini|kustom)$"),
+                       from_: Optional[date] = Query(None, alias="from"), to: Optional[date] = Query(None)):
+    # T2 (KONTRAK-dashboard-T2 §2): kunci lama day|week|month|year tetap (makna lama); from/to hanya untuk kustom
     tenant_id, _ = _pengguna(request)
+    if period != "kustom":
+        from_, to = None, None
+    elif from_ is None or to is None or from_ > to or dv2.hari_periode_inklusif(from_, to) > dv2.MAKS_HARI_KUSTOM:
+        raise HTTPException(status_code=422, detail={"code": "PERIOD_INVALID",
+                                                     "message": "Periode kustom butuh tanggal dari <= sampai, paling lama 366 hari."})
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         zona, hari_ini, as_of = await _waktu_tenant(conn, tenant_id)
@@ -58,15 +67,22 @@ async def ringkasan_v2(request: Request, period: str = Query("month", pattern="^
     async def hitung():
         # koneksi sendiri: cached_fetch bisa memanggilnya di latar (refresh) sesudah permintaan selesai
         async with pool.acquire() as c:
-            return await dv2.ringkasan(c, tenant_id, period, hari_ini, zona.key, as_of)
+            return await dv2.ringkasan(c, tenant_id, period, hari_ini, zona.key, as_of, from_, to)
 
-    data = dict(await cached_fetch(f"dashboard:v2summary:{tenant_id}:{period}:{hari_ini.isoformat()}",
+    rentang = f":{from_.isoformat()}:{to.isoformat()}" if period == "kustom" else ""
+    data = dict(await cached_fetch(f"dashboard:v2summary:{tenant_id}:{period}{rentang}:{hari_ini.isoformat()}",
                                    hitung, ttl=CACHE_DETIK, stale_ttl=CACHE_DETIK))
     omitted = []
     for bagian, modul in dv2.BAGIAN_MODUL.items():
         if not await boleh_semua(request, modul):
             data[bagian] = None
             omitted.append({"widget": bagian, "modules": list(modul)})
+    if data.get("aging") is not None:
+        data["aging"] = dict(data["aging"])
+        for sisi, modul in dv2.BAGIAN_AGING.items():
+            if not await boleh_semua(request, modul):
+                data["aging"][sisi] = None
+                omitted.append({"widget": f"aging.{sisi}", "modules": list(modul)})
     data["omitted"] = omitted
     return data
 

@@ -5,7 +5,7 @@
   "required": ["as_of","period","period_label","tenant_tz","cash","receivables","payables","pnl","cashflow","expenses"],
   "properties": {
     "as_of": {"type":"string","format":"date-time"},
-    "period": {"enum":["day","week","month","year"]},
+    "period": {"enum":["day","week","month","year","bulan_ini","bulan_lalu","kuartal_ini","tahun_ini","kustom"]},
     "period_label": {"type":"string","examples":["Bulan ini"]},
     "tenant_tz": {"type":"string","examples":["Asia/Makassar"]},
     "cash": {"type":"object","required":["total","bank_total","cash_total","accounts"],

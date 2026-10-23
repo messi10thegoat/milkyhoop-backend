@@ -98,6 +98,201 @@ def rentang_periode(periode: str, hari_ini: date) -> tuple:
     raise ValueError(f"periode tak dikenal: {periode}")
 
 
+# ── T2 (23 Okt 2026, backend/docs/KONTRAK-dashboard-T2-20261023.md): periode baru, pembanding, tren 12 bulan, umur ──
+SUMMARY_VERSI = 2
+PERIODE_T2 = ("bulan_ini", "bulan_lalu", "kuartal_ini", "tahun_ini", "kustom")
+MAKS_HARI_KUSTOM = 366
+# arus kas (bagan masa lalu + perkiraan) tetap memakai satuan lama: periode baru dipetakan ke kunci lama terdekat
+PERIODE_ARUS = {"bulan_ini": "month", "bulan_lalu": "month", "kuartal_ini": "month", "tahun_ini": "year", "kustom": "month"}
+# satuan geser pembanding "periode sebelumnya": bulan (n) atau hari (n); kustom = DA.periode_sebelumnya (panjang sama)
+GESER_PERIODE = {"day": ("hari", 1), "week": ("hari", 7), "month": ("bulan", 1), "year": ("bulan", 12),
+                 "bulan_ini": ("bulan", 1), "bulan_lalu": ("bulan", 1), "kuartal_ini": ("bulan", 3), "tahun_ini": ("bulan", 12)}
+
+
+def _akhir_bulan(t: date) -> date:
+    return date(t.year, t.month, calendar.monthrange(t.year, t.month)[1])
+
+
+def geser_bulan(t: date, n: int, akhir_ke_akhir: bool = False) -> date:
+    """t digeser n bulan; hari dijepit ke akhir bulan tujuan (31 Mar -1 -> 28/29 Feb). akhir_ke_akhir: hari terakhir bulan -> hari
+    terakhir bulan tujuan (30 Sep +1 -> 31 Okt), supaya bulan PENUH dibanding bulan PENUH."""
+    m = t.year * 12 + (t.month - 1) + n
+    th, bl = divmod(m, 12)
+    bl += 1
+    akhir = calendar.monthrange(th, bl)[1]
+    if akhir_ke_akhir and t == _akhir_bulan(t):
+        return date(th, bl, akhir)
+    return date(th, bl, min(t.day, akhir))
+
+
+def _awal_fiskal(t: date, bulan_awal: int) -> date:
+    th = t.year if t.month >= bulan_awal else t.year - 1
+    return date(th, bulan_awal, 1)
+
+
+class PeriodeTakSah(ValueError):
+    pass
+
+
+def rentang_periode_t2(periode: str, hari_ini: date, bulan_fiskal: int = 1,
+                       dari: Optional[date] = None, sampai: Optional[date] = None) -> tuple:
+    """(mulai, akhir) periode PENUH. Kunci lama -> rentang_periode (makna lama, byte-identik). Kuartal/tahun = FISKAL
+    (accounting_settings.fiscal_year_start_month). kustom: dari <= sampai, <= MAKS_HARI_KUSTOM hari, selain itu PeriodeTakSah."""
+    if periode in PERIODE:
+        return rentang_periode(periode, hari_ini)
+    if periode == "bulan_ini":
+        return date(hari_ini.year, hari_ini.month, 1), _akhir_bulan(hari_ini)
+    if periode == "bulan_lalu":
+        a = geser_bulan(date(hari_ini.year, hari_ini.month, 1), -1)
+        return a, _akhir_bulan(a)
+    if periode in ("kuartal_ini", "tahun_ini"):
+        awal_fy = _awal_fiskal(hari_ini, bulan_fiskal)
+        if periode == "tahun_ini":
+            return awal_fy, geser_bulan(awal_fy, 12) - timedelta(days=1)
+        ke = ((hari_ini.year * 12 + hari_ini.month) - (awal_fy.year * 12 + awal_fy.month)) // 3
+        a = geser_bulan(awal_fy, 3 * ke)
+        return a, geser_bulan(a, 3) - timedelta(days=1)
+    if periode == "kustom":
+        if dari is None or sampai is None or dari > sampai or hari_periode_inklusif(dari, sampai) > MAKS_HARI_KUSTOM:
+            raise PeriodeTakSah("kustom butuh from <= to dan paling lama 366 hari")
+        return dari, sampai
+    raise PeriodeTakSah(f"periode tak dikenal: {periode}")
+
+
+def hari_periode_inklusif(mulai: date, akhir: date) -> int:
+    return (akhir - mulai).days + 1
+
+
+def label_rentang(a: date, b: date) -> str:
+    """'Oktober 2026' (bulan penuh), '1–23 Okt 2026', '28 Sep – 3 Okt 2026', '28 Des 2025 – 3 Jan 2026'."""
+    if a.day == 1 and b == _akhir_bulan(a) and a.month == b.month and a.year == b.year:
+        return f"{BULAN_PANJANG[a.month - 1]} {a.year}"
+    if a == b:
+        return f"{a.day} {BULAN[a.month - 1]} {a.year}"
+    if a.year == b.year and a.month == b.month:
+        return f"{a.day}–{b.day} {BULAN[a.month - 1]} {a.year}"
+    if a.year == b.year:
+        return f"{a.day} {BULAN[a.month - 1]} – {b.day} {BULAN[b.month - 1]} {a.year}"
+    return f"{a.day} {BULAN[a.month - 1]} {a.year} – {b.day} {BULAN[b.month - 1]} {b.year}"
+
+
+def label_periode_t2(periode: str, mulai: date, akhir: date, bulan_fiskal: int = 1) -> str:
+    if periode in PERIODE:
+        return LABEL_PERIODE[periode]
+    if periode == "kuartal_ini":
+        awal_fy = _awal_fiskal(mulai, bulan_fiskal)
+        ke = ((mulai.year * 12 + mulai.month) - (awal_fy.year * 12 + awal_fy.month)) // 3 + 1
+        return f"Kuartal {ke} {akhir.year}"
+    if periode == "tahun_ini":
+        return f"Tahun {mulai.year}" if mulai.month == 1 else f"Tahun buku {mulai.year}/{akhir.year}"
+    return label_rentang(mulai, akhir)
+
+
+def rentang_pembanding(periode: str, mulai: date, akhir: date, hari_ini: date) -> tuple:
+    """-> (range, prev_period, prev_year), masing-masing (mulai, akhir). Pola QBO 'period to date': range = [mulai, min(akhir, hari ini)];
+    prev_period = range digeser satu unit periode (bulan/kuartal/tahun: per bulan, hari dijepit, akhir-bulan -> akhir-bulan; hari/minggu:
+    per hari; kustom: panjang sama sebelumnya); prev_year = range digeser 12 bulan."""
+    r = (mulai, min(akhir, hari_ini))
+    if periode == "kustom":
+        pp = DA.periode_sebelumnya(*r)
+    else:
+        satuan, n = GESER_PERIODE[periode]
+        if satuan == "hari":
+            pp = (r[0] - timedelta(days=n), r[1] - timedelta(days=n))
+        else:
+            pp = (geser_bulan(r[0], -n), geser_bulan(r[1], -n, akhir_ke_akhir=True))
+    py = (geser_bulan(r[0], -12), geser_bulan(r[1], -12, akhir_ke_akhir=True))
+    return r, pp, py
+
+
+def delta_pct(kini: Decimal, banding: Decimal) -> Optional[float]:
+    if banding == NOL:
+        return None
+    return float(((kini - banding) * 100 / abs(banding)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def _objek_banding(kini: Decimal, banding: Optional[Decimal]) -> Optional[dict]:
+    if banding is None:
+        return None
+    return {"value": uang(banding), "delta": uang(kini - banding), "delta_pct": delta_pct(kini, banding)}
+
+
+async def _metrik_rentang(conn, tenant_id: str, a: date, b: date) -> dict:
+    lr = await DA.laba_rugi(conn, tenant_id, a, b)
+    return {"revenue": lr["pendapatan"], "expense": lr["beban"], "profit": lr["laba"],
+            "net_cash": await DA.arus_kas_neto(conn, tenant_id, a, b)}
+
+
+async def pembanding(conn, tenant_id: str, periode: str, mulai: date, akhir: date, hari_ini: date,
+                     pertama: Optional[date]) -> dict:
+    """Blok `comparison` (KONTRAK T2 §3). Pembanding yang berakhir sebelum jurnal efektif pertama -> null. needs_action HANYA net_cash."""
+    r, pp, py = rentang_pembanding(periode, mulai, akhir, hari_ini)
+    kini = await _metrik_rentang(conn, tenant_id, *r)
+    ada = lambda rr: pertama is not None and rr[1] >= pertama and rr[0] <= rr[1]
+    m_pp = await _metrik_rentang(conn, tenant_id, *pp) if ada(pp) else None
+    m_py = await _metrik_rentang(conn, tenant_id, *py) if ada(py) else None
+    metrik = {}
+    for k in ("revenue", "expense", "profit", "net_cash"):
+        metrik[k] = {"current": uang(kini[k]),
+                     "prev_period": _objek_banding(kini[k], m_pp[k] if m_pp else None),
+                     "prev_year": _objek_banding(kini[k], m_py[k] if m_py else None)}
+    metrik["net_cash"]["needs_action"] = kini["net_cash"] < NOL
+    rng = lambda rr: {"label": label_rentang(*rr), "start": rr[0].isoformat(), "end": rr[1].isoformat()}
+    return {"available": r[0] <= r[1] and (m_pp is not None or m_py is not None),
+            "range": rng(r), "prev_period": rng(pp), "prev_year": rng(py), "metrics": metrik}
+
+
+async def tren_12_bulan(conn, tenant_id: str, hari_ini: date, pertama: Optional[date]) -> dict:
+    """Blok `trend_12m` (KONTRAK T2 §4): 12 bulan kalender berakhir bulan hari ini, SATU kueri DA.laba_rugi_bulanan (== DA.laba_rugi per
+    bulan). Bulan yang berakhir sebelum jurnal efektif pertama -> null; bulan berjalan partial."""
+    awal_ini = date(hari_ini.year, hari_ini.month, 1)
+    awal = geser_bulan(awal_ini, -11)
+    data = await DA.laba_rugi_bulanan(conn, tenant_id, awal, _akhir_bulan(hari_ini))
+    titik = []
+    for i in range(12):
+        b = geser_bulan(awal, i)
+        x = data.get(b)
+        kosong = pertama is None or _akhir_bulan(b) < pertama
+        nilai = (lambda k: None if kosong else uang(x[k] if x else NOL))
+        titik.append({"month": f"{b.year}-{b.month:02d}", "label": BULAN[b.month - 1],
+                      "revenue": nilai("pendapatan"), "expense": nilai("beban"), "profit": nilai("laba"),
+                      "partial": b == awal_ini})
+    return {"basis": "accrual", "points": titik}
+
+
+def umur_blok(rows, hari_ini: date, modul: str, kolom_id: str, kolom_tgl: str, list_ada: bool) -> dict:
+    """Satu sisi `aging` (KONTRAK T2 §5) dari baris compute_ar/ap_outstanding yang SUDAH diambil. Bucket per dokumen sisa > 0 menurut
+    jatuh tempo EFEKTIF (due ?? tanggal dokumen = daftar seragam) lewat rumus TUNGGAL jatuh_tempo.kelas_umur. Baris tanpa dokumen
+    (kredit pelanggan / nota debit bebas) + dokumen bersisa <= 0 -> unapplied_credits. Σ bucket + unapplied_credits == total."""
+    from .jatuh_tempo import UMUR_KUNCI, UMUR_KE_BUCKET, kelas_umur
+    jumlah = {k: [0, NOL] for k in UMUR_KUNCI}
+    total, kredit = NOL, NOL
+    for r in rows:
+        sisa = d(r["outstanding"])
+        total += sisa
+        if r[kolom_id] is None or sisa <= NOL:
+            kredit += sisa
+            continue
+        k = kelas_umur(r["due_date"] or r.get(kolom_tgl), hari_ini)
+        if k is None:  # tanpa tanggal sama sekali: tak bisa diumurkan -> paling tua (pola laporan umur lama), tetap terhitung
+            k = "umur_90_plus"
+        jumlah[k][0] += 1
+        jumlah[k][1] += sisa
+    return {"total": uang(total), "unapplied_credits": uang(kredit),
+            "buckets": [{"key": UMUR_KE_BUCKET[k], "count": jumlah[k][0], "amount": uang(jumlah[k][1]),
+                         "list": {"modul": modul, "aksi": k} if list_ada else None} for k in UMUR_KUNCI]}
+
+
+# Faktur Pembelian: kunci umur_* tagihan_daftar (BACKEND) belum live -> list null (syarat MASTER T2 (6)); ubah ke True saat live.
+UMUR_TAGIHAN_LIVE = False
+
+
+def umur(ar_rows, ap_rows, hari_ini: date) -> dict:
+    return {"as_of": hari_ini.isoformat(),
+            "receivables": umur_blok(ar_rows, hari_ini, "sales_invoices", "invoice_id", "invoice_date", True),
+            "payables": umur_blok(ap_rows, hari_ini, "bills", "bill_id", "bill_date", UMUR_TAGIHAN_LIVE)}
+
+
 def normalisasi_wa(*kandidat) -> Optional[str]:
     """Nomor pertama yang terisi -> format 62xxxxxxxxx (tanpa +). Tak sah -> None."""
     for k in kandidat:
@@ -209,7 +404,22 @@ async def hutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
         "SELECT * FROM compute_ap_outstanding($1)", tenant_id)
     total = sum((d(r["outstanding"]) for r in rows), NOL)
     telat = sum((d(r["outstanding"]) for r in rows if _jatuh_tempo_lewat(r["due_date"], hari_ini)), NOL)
-    return {"total": uang(total), "overdue_total": uang(telat)}
+    # T2 §5.4 (aditif): disamakan dengan piutang() -- aturan lewat YANG SAMA (_jatuh_tempo_lewat), medan v1 tak berubah
+    n_telat, vendor, due7 = 0, set(), []
+    for r in rows:
+        sisa = d(r["outstanding"])
+        if sisa > NOL:
+            if _jatuh_tempo_lewat(r["due_date"], hari_ini):
+                n_telat += 1
+            vendor.add(str(r["vendor_id"]))
+            if r["due_date"] is None or r["due_date"] <= hari_ini + timedelta(days=7):
+                due7.append(r)
+    due7.sort(key=lambda r: (r["due_date"] or date.min, r["bill_number"] or ""))
+    return {"total": uang(total), "overdue_total": uang(telat),
+            "not_due": uang(total - telat), "overdue_count": n_telat, "vendor_count": len(vendor),
+            "due_7d": [{"bill_id": str(r["bill_id"]) if r["bill_id"] else None, "number": r["bill_number"],
+                        "vendor": r["vendor_name"], "due_date": r["due_date"].isoformat() if r["due_date"] else None,
+                        "balance": uang(r["outstanding"])} for r in due7[:50]]}
 
 
 async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) -> tuple:
@@ -402,15 +612,19 @@ async def arus_kas(conn, tenant_id: str, periode: str, hari_ini: date, ar_rows, 
     }
 
 
-async def ringkasan(conn, tenant_id: str, periode: str, hari_ini: date, tz_nama: str, as_of: str) -> dict:
+async def ringkasan(conn, tenant_id: str, periode: str, hari_ini: date, tz_nama: str, as_of: str,
+                    dari: Optional[date] = None, sampai: Optional[date] = None) -> dict:
+    """summary_versi 2 (T2): medan v1 byte-identik untuk kunci periode lama; blok aditif comparison / trend_12m / aging."""
     ar_rows = await conn.fetch("SELECT * FROM compute_ar_outstanding($1)", tenant_id)
     ap_rows = await conn.fetch("SELECT * FROM compute_ap_outstanding($1)", tenant_id)
-    mulai, akhir = rentang_periode(periode, hari_ini)
+    bulan_fiskal = await DA.bulan_awal_fiskal(conn, tenant_id)
+    mulai, akhir = rentang_periode_t2(periode, hari_ini, bulan_fiskal, dari, sampai)
     pnl, expenses = await laba_rugi_dan_beban(conn, tenant_id, mulai, akhir)
+    pertama = await DA.jurnal_efektif_pertama(conn, tenant_id)
     return {
         "as_of": as_of,
         "period": periode,
-        "period_label": LABEL_PERIODE[periode],
+        "period_label": label_periode_t2(periode, mulai, akhir, bulan_fiskal),
         "period_start": mulai.isoformat(),
         "period_end": akhir.isoformat(),
         "tenant_tz": tz_nama,
@@ -418,8 +632,12 @@ async def ringkasan(conn, tenant_id: str, periode: str, hari_ini: date, tz_nama:
         "receivables": await piutang(conn, tenant_id, hari_ini, ar_rows),
         "payables": await hutang(conn, tenant_id, hari_ini, ap_rows),
         "pnl": pnl,
-        "cashflow": await arus_kas(conn, tenant_id, periode, hari_ini, ar_rows, ap_rows),
+        "cashflow": await arus_kas(conn, tenant_id, PERIODE_ARUS.get(periode, periode), hari_ini, ar_rows, ap_rows),
         "expenses": expenses,
+        "summary_versi": SUMMARY_VERSI,
+        "comparison": await pembanding(conn, tenant_id, periode, mulai, akhir, hari_ini, pertama),
+        "trend_12m": await tren_12_bulan(conn, tenant_id, hari_ini, pertama),
+        "aging": umur(ar_rows, ap_rows, hari_ini),
     }
 
 
@@ -432,7 +650,11 @@ BAGIAN_MODUL = {
     "expenses": ("report",),
     # perkiraan memakai piutang + hutang -> ketiganya (sama dengan /cash-flow-projection lama)
     "cashflow": ("kas_bank", "sales_invoice", "purchase_invoice"),
+    # T2: pembanding memuat kas bersih -> laporan + kas; tren = laporan. aging per sisi -> BAGIAN_AGING (null per sisi).
+    "comparison": ("report", "kas_bank"),
+    "trend_12m": ("report",),
 }
+BAGIAN_AGING = {"receivables": ("sales_invoice",), "payables": ("purchase_invoice",)}
 
 
 # ─────────────────────────── tugas (tasks) ───────────────────────────

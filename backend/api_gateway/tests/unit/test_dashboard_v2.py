@@ -364,6 +364,8 @@ async def test_ringkasan_valid_terhadap_kontrak(monkeypatch):
                 return [{"id": UUID(int=8), "account_code": "6-1"}]
             if "WITH non_transfer" in sql:  # T1-BE: DA.SQL_ARUS_KAS_HARIAN
                 return [{"tgl": date(2026, 9, 3), "masuk": Decimal("500"), "keluar": Decimal("0")}]
+            if "date_trunc('month'" in sql:  # T2: DA.SQL_LABA_RUGI_BULANAN
+                return [{"bulan": date(2026, 9, 1), "pendapatan": Decimal("1000"), "beban": Decimal("250.5")}]
             raise AssertionError(sql[:60])
 
         async def fetchval(self, sql, *a):
@@ -378,6 +380,11 @@ async def test_ringkasan_valid_terhadap_kontrak(monkeypatch):
         s = _skema("dashboard-summary.schema.json")
         assert _cocok(badan, s, s) == [], per
         assert badan["cashflow"]["buckets"][-1]["is_projection"] is True
+        # T2 (aditif): blok baru ada, medan v1 tetap
+        assert badan["summary_versi"] == 2 and len(badan["trend_12m"]["points"]) == 12
+        assert badan["aging"]["receivables"]["total"] == badan["receivables"]["total"]
+        assert badan["aging"]["payables"]["total"] == badan["payables"]["total"]
+        assert badan["period_label"] == DV.LABEL_PERIODE[per]
 
 
 def test_validator_bisa_merah():

@@ -78,6 +78,48 @@ async def saldo_kontrol(conn, tid: str, jenis: str, per_tgl: date) -> Decimal:
     return s if jenis == "piutang" else -s
 
 
+# ---- T2 (23 Okt 2026, KONTRAK-dashboard-T2 §3–§4): pembanding + tren memakai filter laba_rugi/arus_kas_harian YANG SAMA -----------------
+SQL_LABA_RUGI_BULANAN = """
+    SELECT date_trunc('month', je.journal_date)::date AS bulan,
+           COALESCE(SUM(jl.credit - jl.debit) FILTER (WHERE coa.account_type = ANY($4::text[])), 0) AS pendapatan,
+           COALESCE(SUM(jl.debit - jl.credit) FILTER (WHERE coa.account_type = ANY($5::text[])), 0) AS beban
+    FROM journal_lines jl
+    JOIN journal_entries je ON je.id = jl.journal_id
+    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+    WHERE je.status = 'POSTED' AND je.tenant_id = $1 AND je.journal_date >= $2 AND je.journal_date <= $3
+      AND is_effective_journal(je.id) AND coa.account_type = ANY($6::text[])
+    GROUP BY 1
+"""
+
+
+async def laba_rugi_bulanan(conn, tid: str, mulai: date, akhir: date) -> dict:
+    """{awal_bulan: {pendapatan, beban, laba}} SATU kueri `GROUP BY bulan` dengan filter laba_rugi (jurnal EFEKTIF, tipe akun sama).
+    Setara laba_rugi(awal_bulan, akhir_bulan) per bulan (diuji + harness nyata T2). Bulan tanpa baris tak muncul (pemanggil = 0)."""
+    rows = await conn.fetch(SQL_LABA_RUGI_BULANAN, tid, mulai, akhir, list(TIPE_PENDAPATAN), list(TIPE_BEBAN),
+                            list(TIPE_PENDAPATAN + TIPE_BEBAN))
+    return {r["bulan"]: {"pendapatan": d(r["pendapatan"]), "beban": d(r["beban"]), "laba": d(r["pendapatan"]) - d(r["beban"])}
+            for r in rows}
+
+
+async def arus_kas_neto(conn, tid: str, mulai: date, akhir: date) -> Decimal:
+    """Kas bersih periode = Σ (masuk − keluar) arus_kas_harian (== arus kas D3; putusan MASTER T2 §7.4: tanpa rumus baru)."""
+    return sum((m - k for m, k in (await arus_kas_harian(conn, tid, mulai, akhir)).values()), NOL)
+
+
+async def jurnal_efektif_pertama(conn, tid: str) -> Optional[date]:
+    """Tanggal jurnal EFEKTIF pertama tenant -- pembanding/tren yang berakhir sebelum ini = null (bukan "0.00")."""
+    return await conn.fetchval(
+        "SELECT MIN(journal_date) FROM journal_entries je WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)",
+        tid)
+
+
+async def bulan_awal_fiskal(conn, tid: str) -> int:
+    """accounting_settings.fiscal_year_start_month (bawaan 1 = tahun kalender; tanpa baris -> 1). Kolom kembar "Tenant".fiscal_year_start
+    hanya ditulis onboarding dan TAK dibaca di sini (audit T2 U1)."""
+    n = await conn.fetchval("SELECT fiscal_year_start_month FROM accounting_settings WHERE tenant_id = $1", tid)
+    return int(n) if n and 1 <= int(n) <= 12 else 1
+
+
 def hari_periode(mulai: date, akhir: date) -> int:
     """Jumlah hari INKLUSIF (1–31 Okt = 31), dulu (akhir − mulai).days kurang 1."""
     return (akhir - mulai).days + 1

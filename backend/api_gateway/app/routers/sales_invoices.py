@@ -408,6 +408,7 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
             from ..services.pengingat import ambang_segera
             _ra = await _fa.ringkas_aksi(conn, ctx["tenant_id"], hari_ini, await ambang_segera(conn, ctx["tenant_id"]), id_cari)
             aksi_row = {f"{k}_{m}": (v["count"] if m == "count" else v["amount"]) for k, v in _ra.items() for m in ("count", "value")}
+            _ru = await _fa.ringkas_umur(conn, ctx["tenant_id"], hari_ini, id_cari)  # T2: kunci saring umur_* (bukan pill)
 
             return {
                 "success": True,
@@ -432,6 +433,8 @@ async def get_invoice_summary(request: Request, search: Optional[str] = Query(No
                     # USANG (alias segera_tempo, KONTRAK-dashboard-pengingat §7): dipertahankan sampai FE T1 terverifikasi
                     "jatuh_tempo_minggu_ini_count": int(aksi_row["segera_tempo_count"]),
                     "jatuh_tempo_minggu_ini_value": float(aksi_row["segera_tempo_value"]),
+                    # T2 (aditif): saring umur_* -- {k}_count == total ?aksi={k}; Σ == faktur_belum_lunas_*
+                    **{f"{k}_{m}": (v["count"] if m == "count" else float(v["amount"])) for k, v in _ru.items() for m in ("count", "value")},
                 },
             }
 
@@ -1140,7 +1143,8 @@ async def list_invoices(
     tugas: Optional[Literal["telat", "jatuh_tempo_hari_ini", "belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/faktur_aksi), nilai asing = 422
     aksi: Optional[Literal["perlu_diterbitkan", "belum_lunas", "segera_tempo", "jatuh_tempo",
-                           "jatuh_tempo_minggu_ini"]] = Query(None),
+                           "jatuh_tempo_minggu_ini", "umur_current", "umur_1_30", "umur_31_60", "umur_61_90",
+                           "umur_90_plus"]] = Query(None),  # T2: umur_* = kunci SARING (bukan pill), faktur_aksi.sql_umur
     # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter (opt-in; FE: muat pertama saja)
     with_totals: bool = Query(False),
 ):
@@ -1207,6 +1211,11 @@ async def list_invoices(
                 aksi = "segera_tempo"
             if aksi in _fa.AKSI:  # FastAPI memvalidasi Literal; panggilan langsung tanpa aksi = Query(None)
                 _pred, _par = _fa.sql_aksi_berparam(aksi, param_idx, hari_ini, _ambang)
+                conditions.append(_pred)
+                params.extend(_par)
+                param_idx += len(_par)
+            elif aksi and aksi.startswith("umur_"):  # T2 (KONTRAK-dashboard-T2 §5): rumus umur TUNGGAL services/jatuh_tempo
+                _pred, _par = _fa.sql_umur_berparam(aksi, param_idx, hari_ini)
                 conditions.append(_pred)
                 params.extend(_par)
                 param_idx += len(_par)
