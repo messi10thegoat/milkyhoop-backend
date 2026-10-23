@@ -414,7 +414,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                 FROM vendor_credit_applications a
                 LEFT JOIN bills b ON a.bill_id = b.id
                 WHERE a.vendor_credit_id = $1
-                ORDER BY a.application_date
+                ORDER BY a.application_date, a.created_at  -- 23 Okt: urutan deterministik (lepas lalu terapkan ulang di tanggal sama)
             """,
                 vendor_credit_id,
             )
@@ -491,6 +491,10 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                             "amount_applied": app["amount_applied"],
                             "application_date": app["application_date"].isoformat(),
                             "created_at": app["created_at"].isoformat(),
+                            # 23 Okt 2026 (aditif, temuan ANDROID): riwayat penerapan V443 append-only -- baris DILEPAS tetap tampil, ditandai
+                            "status": app["status"] or "active",
+                            "reversed_at": app["reversed_at"].isoformat() if app["reversed_at"] else None,
+                            "reversal_reason": app["reversal_reason"],
                         }
                         for app in applications
                     ],

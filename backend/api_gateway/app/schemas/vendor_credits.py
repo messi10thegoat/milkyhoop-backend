@@ -157,6 +157,10 @@ class VendorCreditApplicationResponse(BaseModel):
     amount_applied: int
     application_date: str
     created_at: str
+    # 23 Okt 2026 (aditif): status penerapan V443 -- 'active' | 'reversed' (dilepas); baris dilepas TIDAK dibuang
+    status: str = "active"
+    reversed_at: Optional[str] = None
+    reversal_reason: Optional[str] = None
 
 
 class VendorCreditRefundResponse(BaseModel):
