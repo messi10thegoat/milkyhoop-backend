@@ -111,9 +111,11 @@ def test_fakta_dp_perlu_minta(monkeypatch):
     rows += [_so(s["minta_nominal"], dp_amount=D("250")), _so(s["tanpa_term"], term=False),
              _so(s["draf_so"], status="draft")]
     hasil, minta = _jalan(monkeypatch, s, pf, rows, faktur={s["faktur"]: 1}, deposit={s["deposit"]}, tutup={s["habis"]})
+    # 23 Okt (MENUNGGU-PEMBAYARAN): PELUNASAN terbit belum dibayar tanpa faktur = menunggu_pembayaran (dulu tak masuk pill bayar mana pun)
     assert hasil == {s["minta"]: ("perlu_minta_dp", D("300.00")), s["minta_nominal"]: ("perlu_minta_dp", D("250")),
-                     s["draf_pf"]: ("perlu_minta_dp", D("300.00")), s["batal_pf"]: ("perlu_minta_dp", D("300.00"))}
-    assert "tb" not in minta                       # tanpa proforma DP terbit: terbayar tak dihitung
+                     s["draf_pf"]: ("perlu_minta_dp", D("300.00")), s["batal_pf"]: ("perlu_minta_dp", D("300.00")),
+                     s["pelunasan"]: ("menunggu_pembayaran", D("100"))}
+    assert minta["tb"] == {s["pelunasan"]}          # terbayar dihitung HANYA untuk SO ber-proforma terbit
 
 
 def test_fakta_dp_usaha_tanpa_dp_satu_kueri(monkeypatch):
@@ -122,7 +124,7 @@ def test_fakta_dp_usaha_tanpa_dp_satu_kueri(monkeypatch):
     monkeypatch.setattr(SP, "ringkasan_pesanan", jangan)
     monkeypatch.setattr(SP, "terbayar_proforma", jangan)
     so = uuid.uuid4()
-    c = _C([_pf(so, "PELUNASAN")], {})
+    c = _C([_pf(so, "PELUNASAN", status="draft")], {})  # 23 Okt: proforma terbit APA PUN kini calon -> draf saja = tanpa calon
     assert asyncio.run(SP.fakta_dp(c, T, [_so(so, term=False)])) == {}
     assert len(c.q) == 1
     assert asyncio.run(SP.fakta_dp(c, T, [])) == {}

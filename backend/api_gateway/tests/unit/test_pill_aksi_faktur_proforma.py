@@ -124,7 +124,7 @@ def test_param_aksi_daftar_sama_dengan_AKSI():
     # 23 Okt 2026 (T2): + kunci SARING umur_* (rumus tunggal services/jatuh_tempo; bukan pill, partisi FA.AKSI tak berubah)
     from app.services.jatuh_tempo import UMUR_KUNCI
     assert _literal_args(SI.list_invoices, "aksi") == FA.AKSI + (SI.AKSI_MINGGU_INI,) + UMUR_KUNCI
-    assert _literal_args(PR.list_proformas, "aksi") == PA.AKSI
+    assert _literal_args(PR.list_proformas, "aksi") == PA.AKSI + PA.SARING  # 23 Okt: + saring belum_dibayar (bukan pill)
 
 
 def test_skema_faktur_membawa_aksi_dan_ringkasan_delapan_medan():

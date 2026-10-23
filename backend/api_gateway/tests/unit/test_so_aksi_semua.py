@@ -20,8 +20,10 @@ def test_skema_baris_dan_detail_membawa_aksi_semua():
 def test_router_memakai_fungsi_so_aksi_yang_sama_untuk_baris_dan_detail():
     lst = inspect.getsource(SO.list_sales_orders)
     det = inspect.getsource(SO.get_sales_order_detail)
-    assert 'aksi_semua=list(_aksi_baris.get(row["id"], {}).get("aksi", []))' in lst
-    assert "so_aksi.fakta(conn" in det and "aksi_semua=_aksi_det" in det and "so_aksi.aksi_utama(_aksi_det)" in det
+    # 23 Okt (MENUNGGU-PEMBAYARAN): baris & detail lewat so_aksi.aksi_baris (transisi kunci lama) -- fungsi SAMA di keduanya
+    assert 'aksi_semua=so_aksi.aksi_baris(_aksi_baris.get(row["id"], {}).get("aksi", []))' in lst
+    assert ("so_aksi.fakta(conn" in det and "aksi_semua=so_aksi.aksi_baris(_aksi_det)" in det
+            and "so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_det))" in det)
 
 
 def test_aksi_utama_adalah_elemen_pertama():

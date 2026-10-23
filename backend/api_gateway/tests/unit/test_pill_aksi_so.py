@@ -215,7 +215,7 @@ async def test_fakta_subset_id_dan_kosong():
 def test_kunci_rute_skema_sama_dengan_AKSI():
     ann = typing.get_type_hints(SO.list_sales_orders)["aksi"]
     lit = next(x for x in typing.get_args(ann) if x is not type(None))
-    assert set(typing.get_args(lit)) == set(A.AKSI)
+    assert set(typing.get_args(lit)) == set(A.AKSI) | set(A.AKSI_USANG)  # 23 Okt: + alias usang menunggu_dp
     for k in A.AKSI:
         assert f"{k}_count" in SalesOrderSummary.model_fields and f"{k}_value" in SalesOrderSummary.model_fields
     assert "aksi" in SalesOrderListItem.model_fields
@@ -321,7 +321,10 @@ async def test_daftar_filter_aksi_dan_kolom_aksi_dari_fakta_yang_sama(monkeypatc
 def test_daftar_penjaga_aksi_tahan_objek_query():
     # pemanggil langsung (helper/tes lain) membawa default Query(None) -> bukan kunci AKSI -> tanpa filter (pelajaran quote)
     import inspect
-    assert "if aksi in so_aksi.AKSI:" in inspect.getsource(SO.list_sales_orders)
+    # 23 Okt (MENUNGGU-PEMBAYARAN): penjaga = so_aksi.kunci_sah (isinstance str + kanonik/alias)
+    assert "if so_aksi.kunci_sah(aksi):" in inspect.getsource(SO.list_sales_orders)
+    from fastapi import Query
+    assert not A.kunci_sah(Query(None))
 
 
 @pytest.mark.asyncio
