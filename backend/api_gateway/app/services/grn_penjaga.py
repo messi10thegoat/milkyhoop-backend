@@ -1,6 +1,6 @@
 """Penjaga GRNI (RANCANGAN-penerimaan-barang-grn §7a, Law 15): per tenant, saldo jurnal EFEKTIF akun peran
 GOODS_RECEIVED_NOT_INVOICED (2-10150, kredit-normal) == Σ baris GRN tak-void ber-stok: (qty - qty retur) x harga terima - Σ nilai GRNI
-tautan tagihan AKTIF. Fail-closed: peran tak terpetakan = galat, bukan "0". Dua sisi (sehat HIJAU + injeksi MERAH) diuji harness."""
+tautan tagihan AKTIF (jenis apa pun) - Σ nilai tagihan TERTUNDA bukan-legacy (aturan D). Fail-closed: peran tak terpetakan = galat, bukan "0". Dua sisi (sehat HIJAU + injeksi MERAH) diuji harness."""
 from decimal import Decimal
 
 NOL = Decimal("0")
@@ -26,7 +26,11 @@ async def periksa(conn, tenant_id: str) -> dict:
     akun = await resolve_account_id_by_role(conn, tenant_id, AccountRole.GOODS_RECEIVED_NOT_INVOICED)
     gl = Decimal(str(await conn.fetchval(SQL_SALDO_GL, tenant_id, akun)))
     dok = Decimal(str(await conn.fetchval(SQL_TERBUKA_DOK, tenant_id)))
-    return {"saldo_gl": gl, "terbuka_dokumen": dok, "selisih": gl - dok, "sehat": gl == dok}
+    # (D): tagihan yang lebih dulu = Dr GRNI sebesar B bagian yang belum diterima (saldo debit sah) -> dikurangkan. SATU sumber dgn penerimaan.
+    from .grn_rencana import tertunda
+    tagih_dulu = sum((t["nilai_terbuka"] for daftar in (await tertunda(conn, tenant_id)).values() for t in daftar if not t["legacy"]), NOL)
+    dok -= tagih_dulu
+    return {"saldo_gl": gl, "terbuka_dokumen": dok, "tagihan_tertunda": tagih_dulu, "selisih": gl - dok, "sehat": gl == dok}
 
 
 # ---- Penjaga #2 (MASTER 23 Okt, sesudah temuan harness e2e `merah`): sisi TAGIHAN. Penjaga #1 hanya membandingkan GL GRNI dengan dokumen GRN

@@ -6,7 +6,8 @@ Dipanggil BACKEND (bills_service / tagihan_rencana) di jalur PRATINJAU, POSTING,
     * bill_items: {id, quantity, unit, subtotal, discount_amount, purchase_order_item_id, nilai_neto, qty_dasar} (nilai_neto & qty_dasar
       dari pemanggil -- review BACKEND 23 Okt).
     * flag `penerimaan_barang_v1` MATI -> []  (posting tagihan PERSIS perilaku sekarang).
-    * hanya baris tagihan yang bertaut baris PO (bill_items.purchase_order_item_id) DAN punya penerimaan ber-stok terbuka.
+    * ATURAN (D) (putusan LANGSUNG pemilik 23 Okt, pola SAP GR/IR, kontrak disepakati BACKEND): SETIAP baris tagihan yang bertaut baris PO
+      BER-STOK (products goods + track_inventory) diproses, ADA atau TIDAK penerimaan terbuka; baris PO non-stok -> tak ada butir (lama).
     * FIFO per GRN (penerimaan terlama -- receipt_date, created_at, line_number -- ditagih dulu); qty terbuka baris GRN =
       quantity - quantity_returned - Σ tautan AKTIF. Satu baris tagihan boleh menutup beberapa GRN.
     * nilai_grni = Σ qty_tautan x harga satuan TERIMA (2dp per tautan) -> Dr 2-10150 (GRNI) di jurnal tagihan.
@@ -15,10 +16,13 @@ Dipanggil BACKEND (bills_service / tagihan_rencana) di jalur PRATINJAU, POSTING,
       satuan beda tanpa qty_dasar -> butir `blok` SATUAN_TAK_TERKONVERSI (pemanggil menolak posting).
       selisih = nilai_tagih_grn - nilai_grni -> Selisih Harga Pembelian 5-10400 (debit bila positif, kredit bila negatif; P3, tanpa
       revaluasi Persediaan/HPP).
-    * qty_inbound = qty_tagih - qty_grn: bagian yang BELUM diterima lewat GRN -> perilaku sekarang (record_inventory_inbound +
-      Dr Persediaan) untuk qty itu saja; perlu_inbound = qty_inbound > 0. Bagian ber-GRN TIDAK boleh inbound lagi (stok dobel).
+    * (D) tagihan atas baris PO ber-stok TAK PERNAH memasukkan stok: qty_inbound = 0, perlu_inbound = False (stok masuk HANYA lewat GRN).
+      Bagian BELUM diterima: qty_tertunda = qty - qty_grn, nilai_tertunda = nilai_neto - nilai_tagih_grn (B, tutup sen ke nilai_neto) ->
+      Dr GRNI saat tagihan (saldo debit sementara; selisih harga bagian ini dibukukan GRN yang datang kemudian, tautan 'tagih_dulu').
+      Dr GRNI tagihan = nilai_grni + nilai_tertunda; Dr/Cr PPV = selisih; Σ = nilai_neto.
     * Penentu read-only (tanpa kunci) -- pemanggil posting WAJIB sudah mengunci tagihan + PO (FOR UPDATE PO -- urutan sama dgn /receive).
-  tulis_tautan(conn, rencana)   -> menulis goods_receipt_bill_links (status active) di transaksi posting pemanggil.
+  tulis_tautan(conn, rencana)   -> menulis goods_receipt_bill_links (status active, kind 'terima_dulu', nilai_tagih = bagian B tautan,
+      variance = nilai_tagih - grni_amount) di transaksi posting pemanggil.
   balik_tautan(conn, bill_item_ids) -> menandai tautan 'reversed' di transaksi void pemanggil (qty terbuka GRN kembali).
 Jurnal tagihan tetap ditulis BACKEND: Σ baris == header (Law 4) -- penentu ini hanya memberi nilai."""
 from decimal import ROUND_HALF_UP, Decimal
@@ -73,10 +77,16 @@ def rencana_baris(bill_item, terbuka: list) -> dict:
     tautan = alokasi_fifo(qty, terbuka)
     qty_grn = sum((t["qty"] for t in tautan), NOL)
     nilai_grni = sum((t["nilai"] for t in tautan), NOL)
-    nilai_tagih_grn = r2(nilai_neto_tagih(bill_item) * qty_grn / qty) if qty > NOL else NOL
+    neto = nilai_neto_tagih(bill_item)
+    nilai_tagih_grn = (neto if qty_grn == qty else r2(neto * qty_grn / qty)) if qty > NOL else NOL
+    dibagi = NOL
+    for k, t in enumerate(tautan):  # bagian B per tautan: pro rata qty, tautan terakhir menutup nilai_tagih_grn persis
+        t["nilai_tagih"] = (nilai_tagih_grn - dibagi) if k == len(tautan) - 1 else r2(nilai_tagih_grn * t["qty"] / qty_grn)
+        dibagi += t["nilai_tagih"]
     return {"bill_item_id": bill_item["id"], "po_item_id": bill_item["purchase_order_item_id"], "qty_tagih": qty, "qty_grn": qty_grn,
-            "qty_inbound": qty - qty_grn, "nilai_grni": nilai_grni, "nilai_tagih_grn": nilai_tagih_grn,
-            "selisih": nilai_tagih_grn - nilai_grni, "perlu_inbound": qty - qty_grn > NOL, "tautan": tautan}
+            "qty_inbound": NOL, "perlu_inbound": False,  # (D) stok masuk HANYA lewat GRN
+            "qty_tertunda": qty - qty_grn, "nilai_tertunda": neto - nilai_tagih_grn,
+            "nilai_grni": nilai_grni, "nilai_tagih_grn": nilai_tagih_grn, "selisih": nilai_tagih_grn - nilai_grni, "tautan": tautan}
 
 
 SQL_TERBUKA = """
@@ -93,17 +103,31 @@ SQL_TERBUKA = """
 """
 
 
+SQL_BARIS_PO = """
+    SELECT poi.id, poi.unit AS satuan_po, p.item_type, p.track_inventory
+    FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id AND po.tenant_id = $1
+    LEFT JOIN products p ON p.id = poi.item_id AND p.tenant_id = $1
+    WHERE poi.id = ANY($2::uuid[])
+"""
+
+
 async def rencana_posting_baris(conn, tenant_id: str, bill_items: list) -> list:
     """bill_items: baris bill_items (dict/Record: id, quantity, subtotal, discount_amount, purchase_order_item_id). Lihat docstring modul."""
-    from .grn_rencana import aktif
+    from .grn_rencana import aktif, ber_stok
     if not await aktif(conn, tenant_id):
         return []
     bertaut = [b for b in bill_items if b.get("purchase_order_item_id")]
     if not bertaut:
         return []
-    per_po_item, satuan_po = {}, {}
+    ids = list({b["purchase_order_item_id"] for b in bertaut})
+    baris_po = {r["id"]: r for r in await conn.fetch(SQL_BARIS_PO, tenant_id, ids)}
+    satuan_po = {k: r["satuan_po"] for k, r in baris_po.items()}
+    bertaut = [b for b in bertaut if b["purchase_order_item_id"] in baris_po  # (D) hanya baris PO BER-STOK
+               and ber_stok(baris_po[b["purchase_order_item_id"]]["item_type"], baris_po[b["purchase_order_item_id"]]["track_inventory"])]
+    if not bertaut:
+        return []
+    per_po_item = {}
     for r in await conn.fetch(SQL_TERBUKA, tenant_id, list({b["purchase_order_item_id"] for b in bertaut})):
-        satuan_po[r["purchase_order_item_id"]] = r["satuan_po"]
         # penjaga (MASTER 23 Okt): qty/nilai terbuka TAK PERNAH negatif -- retur/void sesudah ditagih DITOLAK (lewat Nota Debit), dan
         # baris yang terbuka <= 0 tak ikut FIFO; sisa_nilai dijepit >= 0
         if _d(r["qty_terbuka"]) > NOL:
@@ -112,15 +136,14 @@ async def rencana_posting_baris(conn, tenant_id: str, bill_items: list) -> list:
                  "sisa_nilai": max(_d(r["sisa_nilai"]), NOL)})
     out = []
     for b in bertaut:  # dua baris tagihan atas baris PO yang sama: FIFO berlanjut (qty terbuka dikurangi alokasi baris sebelumnya)
-        terbuka = per_po_item.get(b["purchase_order_item_id"], [])
-        if not terbuka:
-            continue
+        terbuka = per_po_item.get(b["purchase_order_item_id"], [])  # (D) kosong pun diproses -> seluruhnya tertunda
         sp = satuan_po.get(b["purchase_order_item_id"])
         if b.get("qty_dasar") is None and b.get("unit") and sp and (b.get("unit") or "").strip().lower() != (sp or "").strip().lower():
             # satuan tagihan beda dgn satuan PO/GRN tanpa konversi dari pemanggil -> BLOK, bukan tebakan (review BACKEND)
             out.append({"bill_item_id": b["id"], "po_item_id": b["purchase_order_item_id"], "blok": {"code": "SATUAN_TAK_TERKONVERSI",
                         "message": f"Satuan tagihan ({b.get('unit')}) beda dengan satuan pesanan ({sp}); kirim qty dalam satuan pesanan."},
-                        "tautan": [], "qty_grn": NOL, "nilai_grni": NOL, "selisih": NOL, "qty_inbound": NOL, "perlu_inbound": False})
+                        "tautan": [], "qty_grn": NOL, "nilai_grni": NOL, "selisih": NOL, "qty_inbound": NOL, "perlu_inbound": False,
+                        "qty_tertunda": NOL, "nilai_tertunda": NOL, "nilai_tagih_grn": NOL})
             continue
         butir = rencana_baris(b, terbuka)
         terpakai = {t["gr_item_id"]: t for t in butir["tautan"]}
@@ -132,29 +155,34 @@ async def rencana_posting_baris(conn, tenant_id: str, bill_items: list) -> list:
 
 
 async def tulis_tautan(conn, rencana: list) -> int:
-    """Di transaksi posting pemanggil. -> jumlah tautan ditulis. variance dibagi per tautan: selisih baris dialokasikan ke tautan
-    terakhir supaya Σ variance tautan == selisih baris (tanpa sisa pembulatan)."""
+    """Di transaksi posting pemanggil. -> jumlah tautan ditulis (kind 'terima_dulu'). nilai_tagih per tautan dari rencana_baris (Σ ==
+    nilai_tagih_grn persis) -> variance = nilai_tagih - grni_amount, Σ variance == selisih baris tanpa sisa pembulatan."""
     n = 0
     for butir in rencana:
         if butir.get("blok"):
             raise ValueError(f"tulis_tautan: butir terblok {butir['blok']['code']} (pemanggil wajib menolak dulu)")
-        harga_tagih = (butir["nilai_tagih_grn"] / butir["qty_grn"]) if butir["qty_grn"] > NOL else NOL
-        dibagi = NOL
-        for k, t in enumerate(butir["tautan"]):
-            var = (butir["selisih"] - dibagi) if k == len(butir["tautan"]) - 1 else r2(t["qty"] * harga_tagih) - t["nilai"]
-            dibagi += var
+        for t in butir["tautan"]:
             await conn.execute(
-                """INSERT INTO goods_receipt_bill_links (goods_receipt_item_id, bill_item_id, quantity, grni_amount, variance_amount, status)
-                   VALUES ($1, $2, $3, $4, $5, 'active')""", t["gr_item_id"], butir["bill_item_id"], t["qty"], t["nilai"], var)
+                """INSERT INTO goods_receipt_bill_links (goods_receipt_item_id, bill_item_id, quantity, grni_amount, variance_amount, status,
+                                                         kind, nilai_tagih)
+                   VALUES ($1, $2, $3, $4, $5, 'active', 'terima_dulu', $6)""",
+                t["gr_item_id"], butir["bill_item_id"], t["qty"], t["nilai"], t["nilai_tagih"] - t["nilai"], t["nilai_tagih"])
             n += 1
     return n
 
 
 async def balik_tautan(conn, bill_item_ids: list) -> int:
-    """Di transaksi void tagihan pemanggil. -> jumlah tautan dibalik (status reversed; qty terbuka GRN kembali)."""
+    """Di transaksi void tagihan pemanggil. -> jumlah tautan 'terima_dulu' dibalik (status reversed; qty terbuka GRN kembali).
+    (D) tautan 'tagih_dulu'/'legacy' (penerimaan DATANG SESUDAH tagihan) = tagihan tak boleh dibatalkan (BACKEND: TAGIHAN_TERCOCOK_GRN 409,
+    void simetris) -> bila masih ada, GAGAL KERAS di sini juga (bukan dibalik diam-diam: stok/GRNI penerimaan akan yatim)."""
     if not bill_item_ids:
         return 0
+    if await conn.fetchval(
+            """SELECT count(*) FROM goods_receipt_bill_links WHERE bill_item_id = ANY($1::uuid[]) AND status = 'active'
+               AND kind IN ('tagih_dulu', 'legacy')""", list(bill_item_ids)):
+        raise ValueError("balik_tautan: tagihan bertaut penerimaan yang datang sesudahnya (tagih_dulu/legacy) -- pemanggil wajib menolak dulu")
     r = await conn.execute(
-        "UPDATE goods_receipt_bill_links SET status = 'reversed', reversed_at = NOW() WHERE bill_item_id = ANY($1::uuid[]) AND status = 'active'",
+        """UPDATE goods_receipt_bill_links SET status = 'reversed', reversed_at = NOW()
+           WHERE bill_item_id = ANY($1::uuid[]) AND status = 'active' AND kind = 'terima_dulu'""",
         list(bill_item_ids))
     return int(r.split()[-1]) if r else 0

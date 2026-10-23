@@ -52,11 +52,15 @@ def test_fifo_tautan_penghabis_memakai_sisa_nilai_persis():
     assert t2[0]["nilai"] == D("666.67") and t1[0]["nilai"] + t2[0]["nilai"] == D("1000.00")
 
 
-def test_rencana_baris_grni_selisih_dan_inbound_sisa():
+def test_rencana_baris_grni_selisih_dan_sisa_tertunda_tanpa_inbound():
     bi = {"id": "b1", "quantity": D("10"), "subtotal": D("11000"), "discount_amount": D("0"), "purchase_order_item_id": "p1"}
     r = T.rencana_baris(bi, [_t("g1", "6", "1000", "6000"), _t("g2", "2", "1000", "2000")])
     assert r["qty_grn"] == D("8") and r["nilai_grni"] == D("8000") and r["nilai_tagih_grn"] == D("8800.00")
-    assert r["selisih"] == D("800.00") and r["qty_inbound"] == D("2") and r["perlu_inbound"] is True
+    # (D, 23 Okt, makna BERUBAH sengaja): bagian belum diterima TIDAK inbound -> tertunda, Dr GRNI sebesar B-nya
+    assert r["selisih"] == D("800.00") and r["qty_inbound"] == D("0") and r["perlu_inbound"] is False
+    assert r["qty_tertunda"] == D("2") and r["nilai_tertunda"] == D("2200.00")
+    assert r["nilai_grni"] + r["nilai_tertunda"] + r["selisih"] == D("11000")  # Σ debit tagihan == nilai neto
+    assert [t["nilai_tagih"] for t in r["tautan"]] == [D("6600.00"), D("2200.00")]
     # nilai_neto pemanggil (diskon header ikut): 10 @ neto 10.000 -> bagian ber-GRN 8 = 8.000 -> selisih 0
     rn = T.rencana_baris({**bi, "nilai_neto": D("10000")}, [_t("g1", "6", "1000", "6000"), _t("g2", "2", "1000", "2000")])
     assert rn["nilai_tagih_grn"] == D("8000.00") and rn["selisih"] == D("0.00")
@@ -83,6 +87,8 @@ def test_kontrak_dua_baris_tagihan_satu_baris_po_fifo_berlanjut():
         async def fetchval(self, q, *a):
             return 1
         async def fetch(self, q, *a):
+            if "JOIN purchase_orders po" in q:
+                return [{"id": po, "satuan_po": None, "item_type": "goods", "track_inventory": True}]
             assert "status = 'posted'" in q and "i.ber_stok" in q
             return [{"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("5"), "sisa_nilai": D("500"),
                      "satuan_po": None},
@@ -105,6 +111,8 @@ def test_tulis_tautan_variance_sama_dengan_selisih_baris():
                             [_t("g1", "1", "300", "300"), _t("g2", "2", "310", "620")])
     asyncio.run(T.tulis_tautan(C(), [butir]))
     assert sum(a[4] for a in tulis) == butir["selisih"] and sum(a[3] for a in tulis) == butir["nilai_grni"]
+    assert sum(a[5] for a in tulis) == butir["nilai_tagih_grn"]  # nilai_tagih tautan (D) tutup sen
+    assert all(a[4] == a[5] - a[3] for a in tulis)
 
 
 def test_rute_receive_flag_mati_perilaku_lama_dan_penentu_sama():
@@ -144,6 +152,8 @@ def test_satuan_beda_tanpa_konversi_diblok_bukan_ditebak():
         async def fetchval(self, q, *a):
             return 1
         async def fetch(self, q, *a):
+            if "JOIN purchase_orders po" in q:
+                return [{"id": po, "satuan_po": "pcs", "item_type": "goods", "track_inventory": True}]
             return [{"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("12"),
                      "sisa_nilai": D("1200"), "satuan_po": "pcs"}]
     b = {"id": "b", "purchase_order_item_id": po, "quantity": D("1"), "unit": "lusin", "subtotal": D("1200"), "discount_amount": D("0")}
@@ -162,6 +172,8 @@ def test_terbuka_tak_pernah_negatif():
         async def fetchval(self, q, *a):
             return 1
         async def fetch(self, q, *a):
+            if "JOIN purchase_orders po" in q:
+                return [{"id": po, "satuan_po": None, "item_type": "goods", "track_inventory": True}]
             return [{"gr_item_id": "g0", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("-2"), "sisa_nilai": D("-200"),
                      "satuan_po": None},
                     {"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("3"), "sisa_nilai": D("-1"),
@@ -174,3 +186,97 @@ def test_terbuka_tak_pernah_negatif():
 def test_void_ditolak_bila_satu_baris_pun_sudah_ditagih():
     src = inspect.getsource(G.rencana_void)
     assert "l.status = 'active'" in src and "GRN_SUDAH_DITAGIH" in src and "Nota Debit" in src
+
+
+# ───────── aturan (D) sisi tagihan (kontrak BACKEND 23 Okt) ─────────
+
+class _CD:
+    """Palsu: flag nyala; baris PO dari peta; penerimaan terbuka dari daftar."""
+    def __init__(self, po_baris, terbuka=()):
+        self.po_baris, self.terbuka = po_baris, list(terbuka)
+    async def fetchval(self, q, *a):
+        return 1
+    async def fetch(self, q, *a):
+        return self.po_baris if "JOIN purchase_orders po" in q else self.terbuka
+
+
+def test_d_tanpa_penerimaan_seluruhnya_tertunda_tanpa_inbound():
+    po = uuid4()
+    out = asyncio.run(T.rencana_posting_baris(_CD([{"id": po, "satuan_po": None, "item_type": "goods", "track_inventory": True}]), "t",
+                                              [{"id": "b", "purchase_order_item_id": po, "quantity": D("3"), "subtotal": D("1000"),
+                                                "discount_amount": D("0"), "nilai_neto": D("999.99")}]))
+    assert len(out) == 1 and out[0]["tautan"] == [] and out[0]["perlu_inbound"] is False and out[0]["qty_inbound"] == D("0")
+    assert (out[0]["qty_tertunda"], out[0]["nilai_tertunda"], out[0]["nilai_grni"], out[0]["selisih"]) == (D("3"), D("999.99"), D("0"), D("0"))
+
+
+def test_d_baris_po_non_stok_tak_ada_butir():
+    po = uuid4()
+    out = asyncio.run(T.rencana_posting_baris(_CD([{"id": po, "satuan_po": None, "item_type": "non_inventory", "track_inventory": True}]),
+                                              "t", [{"id": "b", "purchase_order_item_id": po, "quantity": D("1"), "subtotal": D("1")}]))
+    assert out == []
+
+
+def test_d_nilai_tagih_tautan_tutup_sen_dan_sigma_neto():
+    bi = {"id": "b", "quantity": D("7"), "subtotal": D("1000"), "discount_amount": D("0"), "nilai_neto": D("1000"), "purchase_order_item_id": "p"}
+    r = T.rencana_baris(bi, [_t("g1", "1", "140", "140"), _t("g2", "2", "150", "300"), _t("g3", "1", "130", "130")])
+    assert r["qty_grn"] == D("4") and r["nilai_tagih_grn"] == D("571.43")
+    assert sum(t["nilai_tagih"] for t in r["tautan"]) == r["nilai_tagih_grn"]
+    assert r["nilai_tertunda"] == D("1000") - D("571.43")
+    assert r["nilai_grni"] + r["nilai_tertunda"] + r["selisih"] == D("1000")
+
+
+def test_d_balik_tautan_hanya_terima_dulu_dan_tolak_tagih_dulu():
+    src = inspect.getsource(T.balik_tautan)
+    assert "kind = 'terima_dulu'" in src and "kind IN ('tagih_dulu', 'legacy')" in src
+
+    class C:
+        async def fetchval(self, q, *a):
+            return 1
+    with pytest.raises(ValueError):
+        asyncio.run(T.balik_tautan(C(), ["b"]))
+
+
+# ───────── aturan (D) sisi penerimaan ─────────
+
+def test_d_tertunda_fifo_legacy_ganda_dan_nilai_terbuka(monkeypatch):
+    from app.services import tagihan_aksi as TA
+    po = uuid4()
+    rows = [  # urut FIFO dari SQL
+        {"bill_item_id": "a", "bill_id": "A", "purchase_order_item_id": po, "quantity": D("5"), "unit": "pcs", "satuan_po": "pcs",
+         "qty_tertaut": D("2"), "nilai_tertaut": D("200"), "legacy": False, "ganda": False},
+        {"bill_item_id": "b", "bill_id": "B", "purchase_order_item_id": po, "quantity": D("3"), "unit": None, "satuan_po": "pcs",
+         "qty_tertaut": D("3"), "nilai_tertaut": D("300"), "legacy": False, "ganda": False},          # habis -> tak ikut
+        {"bill_item_id": "c", "bill_id": "C", "purchase_order_item_id": po, "quantity": D("4"), "unit": "pcs", "satuan_po": "pcs",
+         "qty_tertaut": D("0"), "nilai_tertaut": D("0"), "legacy": True, "ganda": True},             # legacy ambigu -> blok
+        {"bill_item_id": "d", "bill_id": "D", "purchase_order_item_id": po, "quantity": D("1"), "unit": "lusin", "satuan_po": "pcs",
+         "qty_tertaut": D("0"), "nilai_tertaut": D("0"), "legacy": True, "ganda": False}]           # satuan beda -> blok
+
+    async def neto(conn, tid, ids):
+        assert set(ids) == {"A"}  # legacy & habis tak dibaca
+        return {"a": D("555.55")}
+    monkeypatch.setattr(TA, "neto_tagihan_terposting", neto)
+
+    class C:
+        async def fetch(self, q, *a):
+            assert "status_v2 NOT IN ('draft', 'void')" in q and "p.track_inventory" in q and "source_type = 'BILL'" in q
+            return rows
+    out = asyncio.run(G.tertunda(C(), "t", [po]))[str(po)]
+    assert [t["bill_item_id"] for t in out] == ["a", "c", "d"]
+    assert out[0]["qty_terbuka"] == D("3") and out[0]["nilai_terbuka"] == D("355.55") and "blok" not in out[0]
+    assert out[1]["legacy"] and out[1]["nilai_terbuka"] == D("0") and out[1]["blok"]["code"] == "TAGIHAN_LAMA_PRODUK_GANDA"
+    assert out[2]["blok"]["code"] == "SATUAN_TAK_TERKONVERSI"
+
+
+def test_d_void_simetris_dan_penulis_tautan():
+    rv = inspect.getsource(G.rencana_void)
+    assert "l.kind = 'terima_dulu'" in rv  # hanya penerimaan yang LEBIH DULU yang terkunci tagihan
+    vg = inspect.getsource(G.void_grn)
+    assert "kind IN ('tagih_dulu', 'legacy')" in vg and "status = 'reversed'" in vg
+    tg = inspect.getsource(G.tulis_grn)
+    assert '"tagih_dulu"' in tg and '"legacy"' in tg and 'p["qty_stok"]' in tg  # stok masuk HANYA qty bukan-legacy
+
+
+def test_d_penjaga_mengurangkan_tertunda():
+    from app.services import grn_penjaga as GP
+    src = inspect.getsource(GP.periksa)
+    assert "tertunda(" in src and 'not t["legacy"]' in src
