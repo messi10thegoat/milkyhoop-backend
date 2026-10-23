@@ -12,3 +12,4 @@ def test_v455_aditif_default_dan_check():
     assert "DEFAULT 'terima_dulu'" in s and "NOT NULL" in s
     assert "'terima_dulu', 'tagih_dulu', 'legacy'" in s and "RAISE EXCEPTION" in s
     assert "ROLLBACK V455 ditolak" in rb
+    assert "ADD COLUMN nilai_tagih numeric(18,2)" in s and "DROP COLUMN IF EXISTS nilai_tagih" in rb

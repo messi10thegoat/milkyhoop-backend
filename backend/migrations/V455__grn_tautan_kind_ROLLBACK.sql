@@ -7,3 +7,4 @@ BEGIN
 END $$;
 ALTER TABLE goods_receipt_bill_links DROP CONSTRAINT IF EXISTS chk_grbl_kind;
 ALTER TABLE goods_receipt_bill_links DROP COLUMN IF EXISTS kind;
+ALTER TABLE goods_receipt_bill_links DROP COLUMN IF EXISTS nilai_tagih;
