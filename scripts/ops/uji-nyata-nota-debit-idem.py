@@ -43,6 +43,8 @@ async def hitung(c, vid):
     return {"jurnal": await c.fetchval("SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND source_id = $2", T, vid),
             "refund": await c.fetchval("SELECT count(*) FROM vendor_credit_refunds WHERE vendor_credit_id = $1", vid),
             "aplikasi": await c.fetchval("SELECT count(*) FROM vendor_credit_applications WHERE vendor_credit_id = $1", vid),
+            "aplikasi_aktif": await c.fetchval("SELECT count(*) FROM vendor_credit_applications WHERE vendor_credit_id = $1 AND status = 'active'", vid),
+            "status": await c.fetchval("SELECT status FROM vendor_credits WHERE id = $1", vid),
             "bank": await c.fetchval("SELECT count(*) FROM bank_transactions WHERE tenant_id = $1 AND reference_number = (SELECT credit_number FROM vendor_credits WHERE id = $2)", T, vid)}
 
 
@@ -73,7 +75,10 @@ async def tulis():
             h0 = await hitung(c, vid)
             r1 = await fn(req(uid, f"k-{label}"), vid, *args)
             h1 = await hitung(c, vid)
-            r2 = await fn(req(uid, f"k-{label}"), vid, *args)
+            try:
+                r2 = await fn(req(uid, f"k-{label}"), vid, *args)
+            except HTTPException as e:  # tanpa replay: panggilan kedua diproses ulang lalu ditolak penjaga keadaan -> BUKAN replay
+                r2 = {"galat": e.status_code, "detail": str(e.detail)}
             h2 = await hitung(c, vid)
             j = lambda r: json.dumps(r if isinstance(r, dict) else r.model_dump(), sort_keys=True, default=str)  # noqa: E731
             cek(j(r1) == j(r2) and h1 == h2 and h1 != h0, f"({label}) kunci sama dua kali -> replay, tulisan sekali", f"{h0} -> {h1} -> {h2}")
