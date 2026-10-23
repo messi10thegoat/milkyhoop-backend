@@ -1,7 +1,9 @@
--- V454 (BACKEND2, disiapkan 23 Okt 2026; BELUM diizinkan) -- flag Penerimaan Barang (GRN) untuk kaos-biru-konveksi SAJA (putusan P6).
--- GERBANG (KONTRAK-grn-20261023 §0): JANGAN apply sebelum sisi tagihan BACKEND (feat/tagihan-grn: posting & void tagihan memanggil
--- grn_tagih -> Dr GRNI, tanpa inbound ganda) LIVE dan harness E2E (terima -> posting tagihan nyata -> void) LULUS; lalu izin LANGSUNG pemilik.
--- Efek buku SESUDAH flag: /receive barang ber-stok di kaos menulis jurnal Dr Persediaan / Cr 2-10150 + stok masuk saat terima. grapgrap TIDAK.
+-- V454 (BACKEND2, disiapkan 23 Okt 2026; terapan = izin LANGSUNG pemilik) -- flag Penerimaan Barang (GRN) untuk kaos-biru-konveksi SAJA (P6).
+-- GERBANG terpenuhi 23 Okt: aturan D (pemilik) LIVE 0012b264 = sisi penerimaan BACKEND2 + sisi tagihan BACKEND (feat/tagihan-grn,
+-- feat/grn-aturan-d-tagih) + penjaga #1/#2/#3; flag mati LAMA e5d8b712 == BARU (kaos + grapgrap-manado, terima + tagihan); harness
+-- e2e gabungan (terima dulu / tagih dulu / legacy / void simetris / NET 0) 53 PASS + kontrol merah merah/merah_fifo/merah_d MERAH.
+-- Efek buku SESUDAH flag (kaos saja; grapgrap TIDAK): barang ber-stok -> stok masuk HANYA saat terima (Dr Persediaan @ harga PO / Cr GRNI
+-- 2-10150); tagihan atas baris PO ber-stok -> Dr GRNI (tanpa stok); selisih harga -> 5-10400. Non-stok/jasa: dokumen saja.
 -- Rollback: V454_ROLLBACK. Jalankan -v ON_ERROR_STOP=1 -1 (apply_mig.sh). Dibaca per-request -> tanpa restart.
 INSERT INTO tenant_features (tenant_id, feature)
 SELECT 'kaos-biru-konveksi', f FROM (VALUES ('penerimaan_barang_v1')) v(f)

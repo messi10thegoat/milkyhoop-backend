@@ -1,11 +1,12 @@
 """UJI NYATA GRN syarat MASTER (1): flag penerimaan_barang_v1 MATI = /receive + /receive/preview BYTE-IDENTIK dengan master.
-ROLLBACK-ONLY di kaos (TES E2E). Mode `dump` dijalankan di pohon LAMA (master) dan BARU (cabang) -> `banding <lama> <baru>`.
+ROLLBACK-ONLY (TES E2E), tenant dari env TENANT (bawaan kaos; grapgrap-manado DENGAN izin langsung pemilik 23 Okt, rollback-only).
+Pasca aturan D (23 Okt): + konversi ke tagihan + posting tagihan (jurnal tagihan per akun, kartu stok BILL) -- jalur lama utuh saat flag mati. Mode `dump` dijalankan di pohon LAMA (master) dan BARU (cabang) -> `banding <lama> <baru>`.
 Sidik: respons pratinjau & terima (tanpa id), jumlah jurnal / baris stok / dokumen GRN yang lahir di transaksi, penghitung & status PO."""
 import asyncio, inspect, json, os, re, sys
 sys.path.insert(0, "/app/backend/api_gateway"); os.environ.setdefault("OPENAI_API_KEY", "boneka")
 from decimal import Decimal as D
 
-T = "kaos-biru-konveksi"
+T = os.environ.get("TENANT", "kaos-biru-konveksi")
 
 
 def bersih(x):
@@ -22,7 +23,8 @@ async def dump():
     from uuid import UUID
     from starlette.requests import Request
     from app.routers import purchase_orders as RPO
-    from app.schemas.purchase_orders import CreatePurchaseOrderRequest, ReceiveGoodsRequest, ReceivePreviewRequest
+    from app.schemas.purchase_orders import ConvertToBillRequest, CreatePurchaseOrderRequest, ReceiveGoodsRequest, ReceivePreviewRequest
+    from app.services import bills_service as BS
     from app.utils.tanggal_tenant import tanggal_dokumen
     c = await asyncpg.connect(os.environ["URL"])
     _ada = {r[0] for r in await c.fetch('SELECT id FROM "Tenant"')}  # pagar: tenant salah ketik = ukur tenant KOSONG (pelajaran 23 Okt)
@@ -41,6 +43,8 @@ async def dump():
                 return CM()
         async def gp(): return Pool()
         RPO.get_pool = gp
+        import app.services.db_pool as DBP
+        DBP.get_db_pool = gp
         uid = await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id = $1 AND created_by IS NOT NULL LIMIT 1", T)
 
         def req():
@@ -50,7 +54,8 @@ async def dump():
             return r
         await c.execute("UPDATE tenant_features SET enabled = false WHERE tenant_id = $1 AND feature = 'penerimaan_barang_v1'", T)
         hari = await tanggal_dokumen(c, T)
-        prod = await c.fetchrow("SELECT id, kode_produk FROM products WHERE tenant_id = $1 AND item_type = 'goods' AND track_inventory ORDER BY kode_produk LIMIT 1", T)
+        prod = await c.fetchrow("""SELECT id, kode_produk FROM products WHERE tenant_id = $1
+                                   ORDER BY (item_type = 'goods' AND COALESCE(track_inventory, false)) DESC, kode_produk LIMIT 1""", T)
         vendor = await c.fetchrow("SELECT id, name FROM vendors WHERE tenant_id = $1 ORDER BY name LIMIT 1", T)
         n0 = {k: await c.fetchval(q, T) for k, q in (
             ("jurnal", "SELECT count(*) FROM journal_entries WHERE tenant_id = $1"),
@@ -75,10 +80,24 @@ async def dump():
         out["lahir"] = {k: await c.fetchval(q, T) - n0[k] for k, q in (
             ("jurnal", "SELECT count(*) FROM journal_entries WHERE tenant_id = $1"),
             ("stok", "SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1"))}
+        await RPO.convert_to_bill(req(), po, ConvertToBillRequest(bill_date=hari, notes="TES E2E GRN FLAGMATI"))
+        bid = await c.fetchval("SELECT bi.bill_id FROM bill_items bi JOIN purchase_order_items p ON p.id = bi.purchase_order_item_id "
+                               "WHERE p.po_id = $1 LIMIT 1", po)
+        h = await BS.BillsService(Pool()).post_bill(T, bid, uid)
+        out["tagihan_posting"] = {"success": h.get("success"), "message": h.get("message")}
+        out["tagihan_jurnal"] = [[x["account_code"], str(x["debit"]), str(x["credit"])] for x in await c.fetch(
+            """SELECT c.account_code, jl.debit, jl.credit FROM journal_lines jl JOIN chart_of_accounts c ON c.id = jl.account_id
+               WHERE jl.journal_id = (SELECT journal_id FROM bills WHERE id = $1) ORDER BY 1, 2, 3""", bid)]
+        out["tagihan_kartu_stok"] = await c.fetchval(
+            "SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'BILL' AND source_id = $2", T, bid)
+        out["po_sesudah_tagih"] = bersih({k: str(v) for k, v in dict(await c.fetchrow(
+            "SELECT status, amount_received, amount_billed FROM purchase_orders WHERE id = $1", po)).items()})
         ada_grn = await c.fetchval("SELECT to_regclass('goods_receipts') IS NOT NULL")
         out["lahir"]["grn"] = await c.fetchval("SELECT count(*) FROM goods_receipts WHERE purchase_order_id = $1", po) if ada_grn else 0
     finally:
         await luar.rollback()
+        out["sisa_po_sesudah_rollback"] = await c.fetchval(
+            "SELECT count(*) FROM purchase_orders WHERE tenant_id = $1 AND ref_no = 'TES E2E GRN FLAGMATI'", T)
         await c.close()
     print("HASIL " + json.dumps(out, sort_keys=True, default=str))
 
