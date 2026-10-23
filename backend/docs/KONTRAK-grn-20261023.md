@@ -1,4 +1,4 @@
-# KONTRAK Penerimaan Barang (GRN) — kode di balik flag `penerimaan_barang_v1` (BACKEND2, 23 Okt 2026)
+# KONTRAK Penerimaan Barang (GRN) — flag `penerimaan_barang_v1` (BACKEND2, 23 Okt 2026). §6 ATURAN D + §7 SERAGAM = keadaan terkini
 
 Dasar: RANCANGAN-penerimaan-barang-grn-20261022.md (putusan pemilik P1–P6 §6, tambahan MASTER §7); migrasi V452 (TERAPAN 23 Okt 10:39Z).
 
@@ -38,3 +38,39 @@ peran tak terpetakan. Fungsi PEMERIKSA saja: TIDAK dipanggil di jalur tulis mana
 
 ## 5. Belum di rilis ini
 Retur penerimaan sebelum ditagih (§7d), dokumen PDF/bundel "Penerimaan" di PO, `quantity_received` turunan (langkah 4 §7b), sisi tagihan BACKEND.
+
+---
+
+## 6. ATURAN D — urutan terima/tagih BEBAS (putusan LANGSUNG pemilik 23 Okt, pola SAP GR/IR) — MENGGANTIKAN §2–§4 di atas bila bertentangan
+LIVE `0012b264` (15:19Z); flag kaos NYALA `4b813193` (V454, 16:01Z); tenant lain MATI.
+- **Terima dulu**: GRN Dr Persediaan R (qty × harga PO neto diskon baris, tanpa PPN) / Cr GRNI 2-10150. Tagihan sesudahnya (baris PO ber-stok):
+  Dr GRNI R (tautan `terima_dulu`, FIFO GRN terlama) + Dr/Cr Selisih Harga 5-10400 (B − R) / Cr Hutang. **Tagihan TIDAK PERNAH memasukkan stok.**
+- **Tagih dulu**: tagihan Dr GRNI B (neto tagihan, `tagihan_aksi.neto_tagihan_terposting`) tanpa stok = *tertunda*. GRN sesudahnya memasang diri
+  ke tertunda (FIFO jurnal tagihan; `grn_pasang.pasangkan`): stok masuk qty penuh @ R; jurnal Dr Persediaan R / Dr|Cr Selisih Σ(B−R) /
+  Cr GRNI (R bebas + Σ B); tautan `tagih_dulu` (grni_amount = R, nilai_tagih = B).
+- **Legacy**: tagihan lama (kartu stok BILL, sebelum flag) — GRN = baris `ber_stok=false` + tautan `legacy`, tanpa stok/jurnal. Tagihan lama
+  dengan produk sama > 1 baris = blok `TAGIHAN_LAMA_PRODUK_GANDA` (tak ditebak).
+- **PO yang sudah ditagih** (billed/partial_billed) tetap bisa DITERIMA hanya saat flag nyala (`po_rencana.STATUS_BISA_TERIMA_D`); status
+  tagih tak diturunkan (`po_daftar.sinkron_tagih`).
+- **Void simetris**: dokumen yang LEBIH DULU tak bisa dibatalkan selagi tercocok — GRN diblok tautan `terima_dulu` (`GRN_SUDAH_DITAGIH`);
+  tagihan diblok tautan `tagih_dulu`/`legacy` (`TAGIHAN_TERCOCOK_GRN`, BACKEND). GRN yang datang sesudah tagihan BOLEH dibatalkan → tautan
+  dibalik, tagihan kembali tertunda.
+- **Penjaga**: #1 GL GRNI == Σ GRN ber-stok − Σ grni_amount tautan aktif − Σ nilai_terbuka tertunda bukan-legacy; #2 ganda/tanpa_tautan;
+  #3 pemasangan terlewat (baris PO dengan GRN ber-stok terbuka DAN tagihan tertunda) — `grn_penjaga.periksa` / `periksa_tagihan`.
+- Bukti: e2e gabungan `scripts/ops/jalan-gerbang-grn-d.sh` (53 PASS; merah/merah_fifo/merah_d MERAH); flag mati LAMA == BARU
+  (`scripts/ops/jalan-grn-flagmati-lama-baru.sh`, kaos + grapgrap-manado).
+
+## 7. SERAGAM (FE GRN, ANDROID) — ADITIF, `services/grn_daftar.py` + `routers/goods_receipts.py`
+| Rute | Medan |
+|---|---|
+| `GET /api/goods-receipts?purchase_order_id=&status=&aksi=belum_ditagih&limit&offset` | baris + `billing_state` (`batal`/`belum_ditagih`/`sebagian_ditagih`/`sudah_ditagih`/null), `status_text`, `grni_open_amount` (2dp), `aksi`, `aksi_semua` |
+| `GET /api/goods-receipts/summary?purchase_order_id=` | `total`, `posted`, `void`, `belum_ditagih_count`, `belum_ditagih_value` (Σ grni_open; predikat SAMA ?aksi=) |
+| `GET /api/goods-receipts/{id}` | header (medan baris) + `items[]` + `bills[]` {bill_id, bill_number, bill_status, kind, goods_receipt_item_id, quantity, received_amount, billed_amount (null legacy), variance} |
+| `GET /api/goods-receipts/{id}/documents` | `{anchor{kind:"goods_receipt", position_text, total, paid:null, balance: grni_open (null bila batal)}, default{group:"grn"}, groups[po, grn, faktur]}` |
+| `GET /api/goods-receipts/{id}/history?limit=` | `{events[{at, jenis, ringkas, aktor, dokumen}], total, omitted}`; jenis GRN_DITERIMA / GRN_DIBATALKAN / GRN_DITAGIH / GRN_TAUTAN_DILEPAS |
+| `POST /api/goods-receipts/{id}/void/preview` | + `reversal_journal[].account_code/account_name`, `before`/`after` {status_text, grni_open_amount} |
+- `billing_state` dari qty baris yang DAPAT ditautkan (ber-stok atau legacy). GRN berisi barang non-stok/jasa saja → `null` + "Diterima"
+  (tagihan atas baris non-stok tak bertaut GRN).
+- `grni_open_amount` = rumus penjaga #1 per dokumen; Σ atas GRN posted == penjaga #1 terbuka_dokumen + tagihan_tertunda (harness p2).
+- Izin: GET `purchase_order` R (termasuk documents|history); batal `purchase_order` V. Flag FE = flag BE `penerimaan_barang_v1`.
+- Harness: `scripts/ops/jalan-gerbang-grn-seragam.sh` (kaos rollback; paritas p1/p2/p3; merah/merah_grni).
