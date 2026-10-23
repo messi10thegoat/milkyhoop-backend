@@ -15,7 +15,10 @@ from app.services import so_aksi
 from app.services import tagihan_daftar as TD
 
 HARI = date(2026, 10, 22)
-AKSI_MODUL = {"sales_invoices": FA.AKSI, "proformas": PA.AKSI, "sales_orders": so_aksi.AKSI, "bills": TD.AKSI_TAGIHAN, "purchase_orders": PD.AKSI}
+# kunci yang DITERIMA ?aksi= daftar modulnya (tautan pengingat harus menyaring). SO: + alias usang (menunggu_dp, transisi FE 23 Okt;
+# rute menerimanya lewat so_aksi.kunci_sah -- dicek test_menunggu_pembayaran.test_rute_so_menerima_kunci_baru_dan_alias)
+AKSI_MODUL = {"sales_invoices": FA.AKSI, "proformas": PA.AKSI, "sales_orders": so_aksi.AKSI + tuple(so_aksi.AKSI_USANG),
+              "bills": TD.AKSI_TAGIHAN, "purchase_orders": PD.AKSI}
 
 
 def test_registri_kunci_anggota_aksi_daftar_dan_bentuk():
