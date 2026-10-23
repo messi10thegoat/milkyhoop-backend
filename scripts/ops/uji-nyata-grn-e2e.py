@@ -1,5 +1,5 @@
 """UJI NYATA GRN UJUNG-KE-UJUNG (MASTER 23 Okt, gerbang V454): rantai PENUH lewat handler NYATA, ROLLBACK-ONLY di kaos (TES E2E).
-Mode: baru [merah|merah_fifo]
+Mode: baru [merah|merah_fifo|merah_d]
   PO barang ber-stok 10 @1.000 -> kirim -> GRN-1 6, GRN-2 4 (handler /receive, flag nyala HANYA di transaksi) -> harga PO dinaikkan 1.100 ->
   /to-bill SEBAGIAN 8 -> posting NYATA (bills_service.post_bill): tautan FIFO GRN-1 6 + GRN-2 2, Dr GRNI 8.000, Dr Selisih 800, tanpa kartu
   stok BILL -> bayar sebagian 4.000 (X-Idempotency-Key, replay = pembayaran sama) + bayar sisa (lunas) -> void pembayaran (dua-duanya) ->
@@ -7,7 +7,12 @@ Mode: baru [merah|merah_fifo]
   dasar, stok gudang = awal, qty diterima PO 0. Penjaga GRNI sehat di SETIAP langkah.
 Kontrol merah (WAJIB FAIL): merah = penentu GRN tagihan disabotase (tagihan kembali Dr Persediaan + inbound -> GRNI tak bersih, stok dobel);
 merah_fifo = GRN-2 dibuat seolah lebih dulu (tautan FIFO salah urut). Penjaga #2 (grn_penjaga.periksa_tagihan) WAJIB merah di `merah`.
-  (c) satuan tagihan beda tanpa konversi -> BLOK SATUAN_TAK_TERKONVERSI (produk multi-satuan dibuat di transaksi rollback)."""
+  (c) satuan tagihan beda tanpa konversi -> BLOK SATUAN_TAK_TERKONVERSI (produk multi-satuan dibuat di transaksi rollback).
+ATURAN (D) (pemilik 23 Okt): (e) TAGIH DULU: PO 10 @1.000 -> harga 1.100 -> tagihan 10 diposting TANPA GRN (Dr GRNI 11.000, tanpa stok,
+  tanpa tautan) -> GRN 6 (tautan tagih_dulu R 6.000 / B 6.600, selisih 600 di jurnal GRN, stok +6) -> GRN 4 (GRNI kembali garis dasar) ->
+  void tagihan DITOLAK (tercocok) -> void GRN-2, GRN-1 BOLEH (tautan reversed, tagihan kembali tertunda) -> void tagihan -> NET 0.
+  (f) LEGACY: flag MATI saat tagihan diposting (jalur lama: kartu stok BILL) -> flag nyala -> GRN 5 = baris ber_stok=false + tautan legacy,
+  stok TAK bertambah, tanpa jurnal -> void GRN -> void tagihan -> NET 0. merah_d = pemasangan disabotase (GRN tak memasang) -> (e) WAJIB FAIL."""
 import asyncio, os, sys
 from decimal import Decimal as D
 from uuid import UUID, uuid4
@@ -35,6 +40,8 @@ async def main():
     from app.services.role_resolver import AccountRole, resolve_account_id_by_role
     from app.utils.tanggal_tenant import tanggal_dokumen
     c = await asyncpg.connect(os.environ["URL"])
+    if not await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', T):  # pagar: tenant salah ketik = ukur tenant KOSONG (23 Okt)
+        sys.exit(f"TENANT TAK ADA di \"Tenant\": {T}")
 
     class Kon:  # transaksi READ ONLY pratinjau = savepoint biasa di transaksi luar
         def __getattr__(s, n): return getattr(c, n)
@@ -57,6 +64,10 @@ async def main():
     if MERAH == "merah":
         async def kosong(*a, **kw): return {"rencana": {}, "blocks": [], "akun": None}
         TA.rencana_grn = kosong
+    if MERAH == "merah_d":
+        from app.services import grn_pasang as GPS
+        asli = GPS.pasangkan
+        GPS.pasangkan = lambda q, h, t: asli(q, h, [])
     uid = await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id = $1 AND created_by IS NOT NULL LIMIT 1", T)
 
     def req(kunci=None):
@@ -176,6 +187,97 @@ async def main():
         cek("(b) NET 0: GRNI GL & dokumen = garis dasar, hutang = garis dasar, stok = awal, qty diterima PO 0",
             p["saldo_gl"] == p0["saldo_gl"] and p["terbuka_dokumen"] == p0["terbuka_dokumen"] and D(str(await ap())) == ap0
             and D(str(await stok())) == stok0 and qty == 0, (p0, p, await ap(), ap0, await stok(), stok0, qty))
+
+        # ───────── (e) ATURAN D: TAGIH DULU ─────────
+        async def po_baru(qty, ref):
+            r = await RPO.create_purchase_order(req(), CreatePurchaseOrderRequest(
+                vendor_id=str(vendor["id"]), vendor_name=vendor["name"], po_date=hari, ref_no="TES E2E GRN E2E", notes=f"TES E2E {ref}", items=[
+                    {"item_id": str(prod["id"]), "item_code": prod["kode_produk"], "description": "TES E2E barang", "quantity": D(qty),
+                     "unit_price": D("1000")}]))
+            r = r.model_dump() if hasattr(r, "model_dump") else r
+            p_ = UUID(str(r["data"]["id"]))
+            await RPO.send_purchase_order(req(), p_)
+            return p_, await c.fetchval("SELECT id FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number LIMIT 1", p_)
+
+        async def terima(p_, it_, q):
+            x = await RPO.receive_goods(req(), p_, ReceiveGoodsRequest(receive_date=hari, items=[{"po_item_id": str(it_), "quantity_received": D(q)}],
+                                                                      warehouse_id=gudang))
+            x = x.model_dump() if hasattr(x, "model_dump") else x
+            return UUID(x["data"]["goods_receipt_id"])
+
+        async def tautan_gr(gr):
+            return await c.fetch("""SELECT l.kind, l.quantity, l.grni_amount, l.nilai_tagih, l.variance_amount, l.status, i.ber_stok
+                                    FROM goods_receipt_bill_links l JOIN goods_receipt_items i ON i.id = l.goods_receipt_item_id
+                                    WHERE i.goods_receipt_id = $1 ORDER BY l.created_at""", gr)
+
+        gl0 = (await GP.periksa(c, T))["saldo_gl"]
+        pe, ie = await po_baru("10", "tagih dulu")
+        await c.execute("UPDATE purchase_order_items SET unit_price = 1100, subtotal = quantity * 1100, total = quantity * 1100 WHERE id = $1", ie)
+        await RPO.convert_to_bill(req(), pe, ConvertToBillRequest(bill_date=hari, notes="TES E2E tagih dulu"))
+        be = await c.fetchval("SELECT bill_id FROM bill_items WHERE purchase_order_item_id = $1", ie)
+        he = await svc.post_bill(T, be, uid)
+        tagih_e = D(str(await c.fetchval("SELECT amount FROM bills WHERE id = $1", be)))
+        pe1 = await sehat("(e) tagihan dulu")
+        n_stok_e = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'BILL' AND source_id = $2", T, be)
+        cek("(e) tagihan 10 tanpa GRN: terposting, Dr GRNI 11.000 (GL turun), tanpa kartu stok BILL, stok tetap, tertunda 11.000",
+            he.get("success") and n_stok_e == 0 and D(str(await stok())) == stok0 and pe1["saldo_gl"] == gl0 - 11000
+            and pe1.get("tagihan_tertunda") == 11000, (he.get("message"), n_stok_e, await stok(), pe1))
+        ge1 = await terima(pe, ie, "6")
+        t1 = await tautan_gr(ge1)
+        jl = await c.fetch("""SELECT c.account_code, jl.debit, jl.credit FROM journal_lines jl JOIN chart_of_accounts c ON c.id = jl.account_id
+                              WHERE jl.journal_id = (SELECT journal_id FROM goods_receipts WHERE id = $1) ORDER BY 1""", ge1)
+        cek("(e) GRN 6 memasang: tautan tagih_dulu 6 (R 6.000 / B 6.600 / selisih 600), stok +6",
+            [(x["kind"], D(x["quantity"]), D(x["grni_amount"]), D(x["nilai_tagih"]), D(x["variance_amount"])) for x in t1]
+            == [("tagih_dulu", D("6"), D("6000"), D("6600"), D("600"))] and D(str(await stok())) == stok0 + 6, ([dict(x) for x in t1], await stok()))
+        cek("(e) jurnal GRN: Dr Persediaan 6.000 + Dr Selisih 600 / Cr GRNI 6.600 (seimbang)",
+            sum(D(x["debit"]) for x in jl) == sum(D(x["credit"]) for x in jl) == 6600
+            and any(x["account_code"] == "2-10150" and D(x["credit"]) == 6600 for x in jl)
+            and any(x["account_code"] == "5-10400" and D(x["debit"]) == 600 for x in jl), [dict(x) for x in jl])
+        await sehat("(e) GRN 6")
+        ge2 = await terima(pe, ie, "4")
+        pe2 = await sehat("(e) GRN 4")
+        cek("(e) GRN 4: semua tercocok -> GRNI GL kembali garis dasar, tertunda 0, stok +10",
+            pe2["saldo_gl"] == gl0 and pe2.get("tagihan_tertunda") == 0 and D(str(await stok())) == stok0 + 10, (pe2, await stok()))
+        hv_e = await svc.void_bill(T, be, {"reason": "TES E2E tagih dulu"}, uid)
+        cek("(e) void tagihan yang LEBIH DULU selagi tercocok DITOLAK (TAGIHAN_TERCOCOK_GRN), tagihan tetap aktif",
+            not hv_e.get("success") and await c.fetchval("SELECT status_v2 FROM bills WHERE id = $1", be) not in ("void",), hv_e)
+        for x in (ge2, ge1):
+            await RGR.void_goods_receipt(req(), x, RGR.VoidGoodsReceiptRequest(reason="TES E2E tagih dulu"))
+        pe3 = await sehat("(e) void GRN")
+        st_e = {x["status"] for gr in (ge1, ge2) for x in await tautan_gr(gr)}
+        cek("(e) void GRN yang datang SESUDAH tagihan BOLEH: tautan reversed, tagihan kembali tertunda 11.000, stok awal",
+            st_e == {"reversed"} and pe3.get("tagihan_tertunda") == 11000 and D(str(await stok())) == stok0, (st_e, pe3, await stok()))
+        hv_e = await svc.void_bill(T, be, {"reason": "TES E2E tagih dulu"}, uid)
+        pe4 = await sehat("(e) void tagihan")
+        cek("(e) NET 0: void tagihan berhasil, GRNI GL garis dasar, tertunda 0, hutang garis dasar, stok awal",
+            hv_e.get("success") and pe4["saldo_gl"] == gl0 and pe4.get("tagihan_tertunda") == 0 and D(str(await ap())) == ap0
+            and D(str(await stok())) == stok0, (hv_e.get("message"), pe4, await ap(), ap0, tagih_e))
+
+        # ───────── (f) LEGACY: tagihan jalur lama (flag mati) lalu GRN ─────────
+        await c.execute("UPDATE tenant_features SET enabled = false WHERE tenant_id = $1 AND feature = $2", T, FLAG)
+        pl, il_ = await po_baru("5", "legacy")
+        await RPO.convert_to_bill(req(), pl, ConvertToBillRequest(bill_date=hari, notes="TES E2E legacy"))
+        bl = await c.fetchval("SELECT bill_id FROM bill_items WHERE purchase_order_item_id = $1", il_)
+        hl = await svc.post_bill(T, bl, uid)
+        await c.execute("UPDATE tenant_features SET enabled = true WHERE tenant_id = $1 AND feature = $2", T, FLAG)
+        n_stok_l = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'BILL' AND source_id = $2", T, bl)
+        cek("(f) tagihan jalur lama (flag mati): kartu stok BILL, stok +5", hl.get("success") and n_stok_l >= 1 and D(str(await stok())) == stok0 + 5,
+            (hl.get("message"), n_stok_l, await stok()))
+        gl_ = await terima(pl, il_, "5")
+        tl_ = await tautan_gr(gl_)
+        jl_ = await c.fetchval("SELECT journal_id FROM goods_receipts WHERE id = $1", gl_)
+        cek("(f) GRN 5 atas tagihan lama: tautan legacy 5 (baris ber_stok=false), TANPA jurnal, stok TETAP +5 (tak dobel)",
+            [(x["kind"], D(x["quantity"]), x["ber_stok"]) for x in tl_] == [("legacy", D("5"), False)] and jl_ is None
+            and D(str(await stok())) == stok0 + 5, ([dict(x) for x in tl_], jl_, await stok()))
+        await sehat("(f) GRN legacy")
+        hv_l = await svc.void_bill(T, bl, {"reason": "TES E2E legacy"}, uid)
+        cek("(f) void tagihan lama selagi tercocok GRN legacy DITOLAK", not hv_l.get("success"), hv_l)
+        await RGR.void_goods_receipt(req(), gl_, RGR.VoidGoodsReceiptRequest(reason="TES E2E legacy"))
+        hv_l = await svc.void_bill(T, bl, {"reason": "TES E2E legacy"}, uid)
+        pl4 = await sehat("(f) void legacy")
+        cek("(f) NET 0: void GRN lalu tagihan lama, stok awal, GRNI garis dasar, hutang garis dasar",
+            hv_l.get("success") and D(str(await stok())) == stok0 and pl4["saldo_gl"] == gl0 and D(str(await ap())) == ap0,
+            (hv_l.get("message"), await stok(), pl4, await ap(), ap0))
     finally:
         await luar.rollback()
         sisa = await c.fetchval("SELECT count(*) FROM purchase_orders WHERE tenant_id = $1 AND ref_no = 'TES E2E GRN E2E'", T)
