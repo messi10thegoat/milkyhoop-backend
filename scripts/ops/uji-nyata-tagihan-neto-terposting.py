@@ -1,4 +1,4 @@
-"""UJI NYATA neto_tagihan_terposting (23 Okt 2026, aturan D GRN): BACA SAJA (koneksi default_transaction_read_only=on) kaos + grapgrap,
+"""UJI NYATA neto_tagihan_terposting (23 Okt 2026, aturan D GRN): BACA SAJA (koneksi default_transaction_read_only=on) kaos + grapgrap-manado,
 SEMUA tagihan tenant dikirim. Bukti: (1) hanya baris tagihan terposting non-void yang muncul (status_v2 NULL = draf lama -> keluar, == SQL);
 (2) setiap baris tagihan terposting ada dan per tagihan Σ neto == grand_total - tax_amount TERSIMPAN (dasar post_bill); (3) dasar itu BEKU
 sesudah posting: trigger trg_law19_bekukan_nominal terpasang di bills; (4) kredit hutang (peran AP_TRADE) jurnal posting == grand_total
@@ -22,7 +22,9 @@ async def main():
     from app.services.role_resolver import AccountRole, resolve_account_id_by_role
     c = await asyncpg.connect(os.environ["DATABASE_URL"], server_settings={"default_transaction_read_only": "on"})
     cek(bool(await c.fetchval("SELECT 1 FROM pg_trigger WHERE tgname = 'trg_law19_bekukan_nominal' AND tgrelid = 'bills'::regclass AND NOT tgisinternal")), "trigger trg_law19_bekukan_nominal terpasang di bills (Law 19)")
-    for t in ("kaos-biru-konveksi", "grapgrap"):
+    for t in ("kaos-biru-konveksi", "grapgrap-manado"):
+        # 23 Okt: 'grapgrap' TAK ADA (id nyata grapgrap-manado) -> pengukuran kosong palsu. Tenant wajib ada.
+        cek(bool(await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', t)), f"tenant {t} ADA di \"Tenant\"")
         semua = await c.fetch("SELECT id, invoice_number, status_v2, grand_total, tax_amount, journal_id FROM bills WHERE tenant_id = $1", t)
         out = await TA.neto_tagihan_terposting(c, t, [b["id"] for b in semua])
         if os.environ.get("MERAH") == "1" and out:
