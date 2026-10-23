@@ -1,6 +1,9 @@
 """Penerimaan Barang (GRN) -- daftar, detail, batal (+ pratinjau). Dokumen lahir lewat POST /api/purchase-orders/{id}/receive saat flag
 `penerimaan_barang_v1` hidup (services/grn_rencana). Baca & batal tak bergantung flag (dokumen yang sudah ada tetap bisa dibatalkan).
-Izin: modul purchase_order (R baca, V batal) -- middleware/permission_middleware."""
+Izin: modul purchase_order (R baca, V batal) -- middleware/permission_middleware.
+SERAGAM (23 Okt 2026, ANDROID/MASTER, ADITIF): baris & detail + billing_state/status_text/grni_open_amount/aksi (services/grn_daftar, SATU
+sumber dgn ?aksi= & /summary); detail bills[] (tautan aktif + jenis); /documents (bundel po · grn · faktur, bentuk ND U3c); /history
+(bentuk riwayat ND/tagihan); pratinjau batal + kode/nama akun + sebelum/sesudah."""
 import logging
 from typing import Optional
 from uuid import UUID
@@ -8,6 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from ..services import grn_daftar as GD
 from ..services import grn_rencana as G
 from ..services import idem_buat
 from ..services.so_riwayat import catat_riwayat
@@ -40,6 +44,8 @@ def _bentuk(gr, items=None) -> dict:
            "reversal_journal_id": str(gr["reversal_journal_id"]) if gr.get("reversal_journal_id") else None,
            "amount": _uang(gr.get("amount")), "notes": gr.get("notes"),
            "voided_at": gr["voided_at"].isoformat() if gr.get("voided_at") else None, "voided_reason": gr.get("voided_reason")}
+    if "qty_dasar" in gr.keys():  # SERAGAM: medan turunan (SQL_HEADER membawa kolom GD.sql_kolom)
+        out.update(GD.medan(gr))
     if items is not None:
         out["items"] = [{"id": str(i["id"]), "po_item_id": str(i["purchase_order_item_id"]), "description": i.get("description"),
                          "unit": i.get("unit"), "quantity": str(i["quantity"]), "quantity_returned": str(i["quantity_returned"]),
@@ -50,7 +56,8 @@ def _bentuk(gr, items=None) -> dict:
 
 SQL_HEADER = """
     SELECT g.*, po.po_number, COALESCE(v.name, po.vendor_name) AS vendor_name, w.name AS warehouse_name,
-           (SELECT COALESCE(SUM(i.amount), 0) FROM goods_receipt_items i WHERE i.goods_receipt_id = g.id) AS amount
+           (SELECT COALESCE(SUM(i.amount), 0) FROM goods_receipt_items i WHERE i.goods_receipt_id = g.id) AS amount,
+           """ + GD.sql_kolom("g") + """
     FROM goods_receipts g
     JOIN purchase_orders po ON po.id = g.purchase_order_id AND po.tenant_id = g.tenant_id
     LEFT JOIN vendors v ON v.id = g.vendor_id
@@ -62,10 +69,12 @@ SQL_HEADER = """
 @router.get("")
 async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID] = Query(None),
                               status: Optional[str] = Query(None, pattern="^(posted|void)$"),
+                              aksi: Optional[str] = Query(None, pattern="^belum_ditagih$"),
                               limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     ctx = get_user_context(request)
     po_id = purchase_order_id if isinstance(purchase_order_id, UUID) else None
     st = status if isinstance(status, str) else None
+    ak = aksi if isinstance(aksi, str) else None  # pemanggilan langsung: default = objek Query
     pool = await get_pool()
     async with pool.acquire() as conn:
         syarat, par = "", [ctx["tenant_id"]]
@@ -75,9 +84,32 @@ async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID
         if st is not None:
             par.append(st)
             syarat += f" AND g.status = ${len(par)}"
+        if ak is not None:
+            syarat += f" AND {GD.sql_aksi(ak)}"  # predikat SAMA dengan /summary
         total = await conn.fetchval(f"SELECT count(*) FROM ({SQL_HEADER}{syarat}) x", *par)
         rows = await conn.fetch(f"{SQL_HEADER}{syarat} ORDER BY g.receipt_date DESC, g.created_at DESC LIMIT {int(limit)} OFFSET {int(offset)}", *par)
     return {"success": True, "data": {"items": [_bentuk(r) for r in rows], "total": int(total), "limit": limit, "offset": offset}}
+
+
+@router.get("/summary")
+async def goods_receipts_summary(request: Request, purchase_order_id: Optional[UUID] = Query(None)):
+    """Ringkasan + pill AKSI belum_ditagih (predikat SAMA dgn ?aksi=; nilai = Σ grni_open_amount). Uang string 2dp."""
+    ctx = get_user_context(request)
+    po_id = purchase_order_id if isinstance(purchase_order_id, UUID) else None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        par, syarat = [ctx["tenant_id"]], ""
+        if po_id is not None:
+            par.append(po_id)
+            syarat = f" AND g.purchase_order_id = ${len(par)}"
+        r = await conn.fetchrow(
+            f"""SELECT count(*) AS total, count(*) FILTER (WHERE g.status = 'posted') AS posted, count(*) FILTER (WHERE g.status = 'void') AS void,
+                       count(*) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}) AS n_aksi,
+                       COALESCE(SUM({GD.sql_grni_terbuka()}) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}), 0) AS v_aksi
+                FROM goods_receipts g WHERE g.tenant_id = $1{syarat}""", *par)
+    return {"success": True, "data": {"total": int(r["total"]), "posted": int(r["posted"]), "void": int(r["void"]),
+                                      f"{GD.AKSI_BELUM_DITAGIH}_count": int(r["n_aksi"]),
+                                      f"{GD.AKSI_BELUM_DITAGIH}_value": f"{G._d(r['v_aksi']):.2f}"}}
 
 
 @router.get("/{gr_id}")
@@ -94,7 +126,46 @@ async def get_goods_receipt(request: Request, gr_id: UUID):
                                 AND l.status = 'active'), 0) AS quantity_billed
                FROM goods_receipt_items i JOIN purchase_order_items poi ON poi.id = i.purchase_order_item_id
                WHERE i.goods_receipt_id = $1 ORDER BY i.line_number""", gr_id)
-    return {"success": True, "data": _bentuk(gr, items)}
+        tagihan = await GD.tagihan_terkait(conn, ctx["tenant_id"], gr_id)
+    return {"success": True, "data": {**_bentuk(gr, items), "bills": tagihan}}
+
+
+@router.get("/{gr_id}/documents")
+async def get_goods_receipt_documents(request: Request, gr_id: UUID):
+    """Bundel panel berjangkar GRN, skema SAMA dgn bundel ND/tagihan/PO {anchor, default, groups}. paid = null (GRN bukan dokumen
+    pembayaran); balance = grni_open_amount untuk GRN aktif (null bila batal)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tid = ctx["tenant_id"]
+        gr = await conn.fetchrow(SQL_HEADER + " AND g.id = $2", tid, gr_id)
+        if gr is None:
+            raise HTTPException(status_code=404, detail={"code": "GRN_TIDAK_DITEMUKAN", "message": "Penerimaan barang tidak ditemukan."})
+        kel = await GD.kelompok_grn(conn, tid, gr)
+        kontak = await conn.fetchrow("SELECT COALESCE(mobile_phone, phone) AS phone, email FROM vendors WHERE id = $1 AND tenant_id = $2",
+                                     gr["vendor_id"], tid) if gr["vendor_id"] else None
+    m = GD.medan(gr)
+    aktif = gr["status"] != "void"
+    return {"anchor": {"kind": "goods_receipt", "id": str(gr["id"]), "number": gr["receipt_number"], "vendor": gr["vendor_name"] or "",
+                       "position_text": m["status_text"], "total": f"{G._d(gr['amount']):.2f}", "paid": None,
+                       "balance": m["grni_open_amount"] if aktif else None,
+                       "vendor_phone": (kontak["phone"] if kontak else None) or None,
+                       "vendor_email": (kontak["email"] if kontak else None) or None},
+            "default": {"group": "grn", "index": 0},
+            "groups": kel}
+
+
+@router.get("/{gr_id}/history")
+async def get_goods_receipt_history(request: Request, gr_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat GRN (services/grn_daftar.riwayat_grn), bentuk SAMA dengan riwayat ND/tagihan/PO. Terbaru dulu."""
+    from ..services.dashboard_izin import boleh_baca
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await GD.riwayat_grn(conn, ctx["tenant_id"], gr_id, lambda m: boleh_baca(request, m), limit if isinstance(limit, int) else 200)
+    if data is None:
+        raise HTTPException(status_code=404, detail={"code": "GRN_TIDAK_DITEMUKAN", "message": "Penerimaan barang tidak ditemukan."})
+    return {"success": True, "data": data}
 
 
 @router.post("/{gr_id}/void/preview")
@@ -111,13 +182,22 @@ async def preview_void_goods_receipt(request: Request, gr_id: UUID, body: Option
             r = await G.rencana_void(conn, ctx["tenant_id"], gr_id, body.reason if body else None, hari, kunci=False)
             balik = []
             if r["gr"]["journal_id"] is not None and not r["ulang"]:
-                balik = [{"account_id": str(x["account_id"]), "debit": _uang(x["credit"]), "credit": _uang(x["debit"])} for x in await conn.fetch(
-                    "SELECT account_id, debit, credit FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", r["gr"]["journal_id"])]
+                balik = [{"account_id": str(x["account_id"]), "account_code": x["account_code"], "account_name": x["account_name"],
+                          "debit": _uang(x["credit"]), "credit": _uang(x["debit"])} for x in await conn.fetch(
+                    """SELECT jl.account_id, c.account_code, c.account_name, jl.debit, jl.credit FROM journal_lines jl
+                       LEFT JOIN chart_of_accounts c ON c.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""",
+                    r["gr"]["journal_id"])]
+            hd = await conn.fetchrow(SQL_HEADER + " AND g.id = $2", ctx["tenant_id"], gr_id)
+            sebelum = GD.medan(hd)
         finally:
             await tr.rollback()
     return {"success": True, "data": {"goods_receipt_id": str(gr_id), "ok": not r["blocks"], "already_void": r["ulang"],
                                       "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
-                                      "reversal_journal": balik, "payload": {"reason": body.reason if body else None}}}
+                                      "reversal_journal": balik,
+                                      # SERAGAM: keadaan sebelum/sesudah untuk kartu Tinjau (sesudah = batal; GRNI terbuka dokumen ini 0)
+                                      "before": {"status_text": sebelum["status_text"], "grni_open_amount": sebelum["grni_open_amount"]},
+                                      "after": {"status_text": GD.TEKS_TAGIH["batal"], "grni_open_amount": "0.00"},
+                                      "payload": {"reason": body.reason if body else None}}}
 
 
 @router.post("/{gr_id}/void")
