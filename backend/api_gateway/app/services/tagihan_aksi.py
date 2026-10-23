@@ -51,6 +51,21 @@ def neto_baris(rows, subtotal_dec: Decimal) -> dict:
     return out
 
 
+async def neto_tagihan_terposting(conn, tid: str, bill_ids) -> dict:
+    """{bill_item_id: Decimal} nilai NETO (B) baris tagihan yang SUDAH diposting -- hasil YANG SAMA dengan saat posting: neto_baris atas
+    baris urut line_number dengan subtotal_dec = grand_total - tax_amount TERSIMPAN (== post_bill / rencana_posting; header beku Law 19
+    sesudah posting). Untuk sisi PENERIMAAN aturan D GRN (BACKEND2, pasangan 'tagih_dulu'). Baca saja, TANPA kunci (pemanggil memegang
+    kunci PO). Tagihan draf / void / bukan milik tenant -> dilewati (tak ada di hasil)."""
+    out = {}
+    for b in await conn.fetch(
+            """SELECT id, grand_total, tax_amount FROM bills
+               WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND status_v2 NOT IN ('draft', 'void')""", tid, list(bill_ids)):
+        rows = await conn.fetch(
+            "SELECT bi.id, COALESCE(bi.total, 0) AS net FROM bill_items bi WHERE bi.bill_id = $1 ORDER BY bi.line_number", b["id"])
+        out.update(neto_baris(rows, Decimal(str(b["grand_total"] or 0)) - Decimal(str(b["tax_amount"] or 0))))
+    return out
+
+
 async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: bool = False) -> dict:
     """-> {rencana: {bill_item_id: butir}, blocks: [...], akun: {grni, ppv}|None}. Tulis (kunci=True): PO terkait dikunci FOR UPDATE SESUDAH
     tagihan (urutan bill -> PO; jalur GRN tak pernah mengunci bill, BACKEND2 23 Okt). Blok: butir.blok (SATUAN_TAK_TERKONVERSI) ·
