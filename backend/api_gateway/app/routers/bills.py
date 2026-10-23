@@ -1324,7 +1324,7 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
         )
 
         if not result["success"]:
-            raise HTTPException(status_code=400, detail=result["message"])
+            raise HTTPException(status_code=result.get("status_code", 400), detail=result["message"])  # U2a: tagihan draf 422
 
         return result
 
@@ -1387,7 +1387,7 @@ async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest)
         )
 
         if not result["success"]:
-            raise HTTPException(status_code=400, detail=result["message"])
+            raise HTTPException(status_code=result.get("status_code", 400), detail=result["message"])  # U2a: tagihan draf 422
 
         return result
 

@@ -280,6 +280,99 @@ async def create_bill_payment_journal(
     return journal_id, journal_number
 
 
+async def efek_posting_bayar(conn, ctx: dict, *, payment_id, payment_number: str, payment_date, vendor_id, vendor_name: str,
+                             bank_account_id, total_amount, pph_tax_code_id, pph_amount, journal_id) -> None:
+    """Efek posting Pembayaran Keluar di luar jurnal: rekaman PPh dipotong (withholding_tax_records, Fase 2.3) + cermin bank
+    (bank_transactions, BankSync R1). SATU penulis untuk POST /bill-payments (buat-posted) DAN POST /bill-payments/{id}/post (draf ->
+    posted); dulu posting draf tak menulis keduanya (U2a, putusan pemilik LANGSUNG 23 Okt 2026). Isi == blok lama buat-posted."""
+    # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
+    if pph_amount > 0 and pph_tax_code_id:
+        pph_tc = await conn.fetchrow(
+            "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
+            BKR._uuid(pph_tax_code_id),
+        )
+        vendor_npwp = None  # vendors table has no npwp column yet
+        pph_rate = (
+            Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
+        )
+        pph_dpp = (
+            (
+                Decimal(str(pph_amount)) / pph_rate * 100
+            ).quantize(Decimal("1"))
+            if pph_rate > 0
+            else Decimal("0")
+        )
+        tax_period = (
+            payment_date.strftime("%Y%m")
+            if hasattr(payment_date, "strftime")
+            else str(payment_date)[:7].replace("-", "")
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO withholding_tax_records (
+                id, tenant_id, direction, tax_code_id,
+                document_type, document_id, payment_id, journal_id,
+                vendor_id, npwp, tax_period,
+                base_amount, tax_amount, status
+            ) VALUES (
+                $1, $2, 'cut', $3,
+                'BILL_PAYMENT', $4, $5, $6,
+                $7, $8, $9,
+                $10, $11, 'recorded'
+            )
+            """,
+            uuid_module.uuid4(),
+            ctx["tenant_id"],
+            BKR._uuid(pph_tax_code_id),
+            payment_id,
+            payment_id,
+            journal_id,
+            BKR._uuid(vendor_id) if vendor_id else None,
+            vendor_npwp,
+            tax_period,
+            pph_dpp,
+            pph_amount,
+        )
+
+    # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
+    if bank_account_id:
+        _cb = await BKR.cermin_bank(conn, ctx["tenant_id"], bank_account_id, total_amount, pph_amount)  # SATU sumber dgn pratinjau
+        if _cb:
+            bt_amount, bt_type = _cb["amount"], _cb["transaction_type"]
+
+            await conn.execute(
+                """
+                INSERT INTO bank_transactions (
+                    id, tenant_id, bank_account_id, transaction_date,
+                    transaction_type, amount, running_balance,
+                    reference_type, reference_id, reference_number,
+                    description, payee_payer, journal_id,
+                    status, origin_type, source_module,
+                    created_by, posted_by, posted_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, 0,
+                    'bill_payment', $7::uuid, $8,
+                    $9, $10, $11,
+                    'POSTED', 'MANUAL', 'bill_payment',
+                    $12, $12, NOW()
+                )
+                """,
+                uuid_module.uuid4(),
+                ctx["tenant_id"],
+                _cb["bank_account_id"],
+                payment_date,
+                bt_type,
+                bt_amount,
+                payment_id,
+                payment_number,
+                f"Payment to {vendor_name}",
+                vendor_name,
+                journal_id,
+                ctx["user_id"],
+            )
+
+
 # === Journal Preview (read-only, for DirectAction confirmation card) ===
 
 
@@ -1086,93 +1179,13 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         for alloc in payload.allocations:
                             await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(str(alloc.bill_id)))
 
-                        # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
-                        if (payload.pph_amount or 0) > 0 and payload.pph_tax_code_id:
-                            pph_tc = await conn.fetchrow(
-                                "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
-                                UUID(payload.pph_tax_code_id),
-                            )
-                            vendor_npwp = None  # vendors table has no npwp column yet
-                            pph_rate = (
-                                Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
-                            )
-                            pph_dpp = (
-                                (
-                                    Decimal(str(payload.pph_amount)) / pph_rate * 100
-                                ).quantize(Decimal("1"))
-                                if pph_rate > 0
-                                else Decimal("0")
-                            )
-                            tax_period = (
-                                payload.payment_date.strftime("%Y%m")
-                                if hasattr(payload.payment_date, "strftime")
-                                else str(payload.payment_date)[:7].replace("-", "")
-                            )
-
-                            await conn.execute(
-                                """
-                                INSERT INTO withholding_tax_records (
-                                    id, tenant_id, direction, tax_code_id,
-                                    document_type, document_id, payment_id, journal_id,
-                                    vendor_id, npwp, tax_period,
-                                    base_amount, tax_amount, status
-                                ) VALUES (
-                                    $1, $2, 'cut', $3,
-                                    'BILL_PAYMENT', $4, $5, $6,
-                                    $7, $8, $9,
-                                    $10, $11, 'recorded'
-                                )
-                                """,
-                                uuid_module.uuid4(),
-                                ctx["tenant_id"],
-                                UUID(payload.pph_tax_code_id),
-                                payment_id,
-                                payment_id,
-                                journal_id,
-                                UUID(payload.vendor_id) if payload.vendor_id else None,
-                                vendor_npwp,
-                                tax_period,
-                                pph_dpp,
-                                payload.pph_amount,
-                            )
-
-                        # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
-                        if payload.bank_account_id:
-                            _cb = await BKR.cermin_bank(conn, ctx["tenant_id"], payload.bank_account_id, payload.total_amount,
-                                                        payload.pph_amount or 0)  # SATU sumber dgn pratinjau
-                            if _cb:
-                                bt_amount, bt_type = _cb["amount"], _cb["transaction_type"]
-
-                                await conn.execute(
-                                    """
-                                    INSERT INTO bank_transactions (
-                                        id, tenant_id, bank_account_id, transaction_date,
-                                        transaction_type, amount, running_balance,
-                                        reference_type, reference_id, reference_number,
-                                        description, payee_payer, journal_id,
-                                        status, origin_type, source_module,
-                                        created_by, posted_by, posted_at
-                                    ) VALUES (
-                                        $1, $2, $3, $4, $5, $6, 0,
-                                        'bill_payment', $7::uuid, $8,
-                                        $9, $10, $11,
-                                        'POSTED', 'MANUAL', 'bill_payment',
-                                        $12, $12, NOW()
-                                    )
-                                    """,
-                                    uuid_module.uuid4(),
-                                    ctx["tenant_id"],
-                                    _cb["bank_account_id"],
-                                    payload.payment_date,
-                                    bt_type,
-                                    bt_amount,
-                                    payment_id,
-                                    payment_number,
-                                    f"Payment to {vendor_name}",
-                                    vendor_name,
-                                    journal_id,
-                                    ctx["user_id"],
-                                )
+                        # Rekaman PPh + cermin bank = efek_posting_bayar (SATU penulis untuk buat-posted DAN posting draf, U2a 23 Okt 2026)
+                        await efek_posting_bayar(
+                            conn, ctx, payment_id=payment_id, payment_number=payment_number, payment_date=payload.payment_date,
+                            vendor_id=payload.vendor_id, vendor_name=vendor_name, bank_account_id=payload.bank_account_id,
+                            total_amount=payload.total_amount, pph_tax_code_id=payload.pph_tax_code_id,
+                            pph_amount=payload.pph_amount or 0, journal_id=journal_id,
+                        )
 
                     # dict, BUKAN BillPaymentResponse: execute_idempotent
                     # menyimpan hasil sebagai JSON untuk di-replay.
@@ -1293,6 +1306,16 @@ async def post_bill_payment(request: Request, payment_id: str):
                         ctx["tenant_id"],
                     )
 
+                # U2a (putusan pemilik LANGSUNG 23 Okt 2026): sisa tagihan dicek ULANG di bawah kunci, sumber == buat-posted
+                # (BKR.sisa_tagihan = compute_ap_rincian). Dulu draf yang dibuat saat sisa cukup bisa diposting sesudah tagihan
+                # dilunasi pembayaran lain -> lebih bayar diam-diam. Alokasi ke tagihan yang sama dijumlah dulu.
+                _per_tagihan: dict = {}
+                for alloc in allocations:
+                    _per_tagihan[alloc["bill_id"]] = _per_tagihan.get(alloc["bill_id"], 0) + alloc["amount_applied"]
+                for _bid, _jml in _per_tagihan.items():
+                    if _jml > await BKR.sisa_tagihan(conn, ctx["tenant_id"], _bid):
+                        raise HTTPException(status_code=400, detail="Amount exceeds remaining")
+
                 # Get full payment details for journal creation
                 full_payment = await conn.fetchrow(
                     """SELECT * FROM bill_payments_v2 WHERE id = $1::uuid""",
@@ -1337,6 +1360,15 @@ async def post_bill_payment(request: Request, payment_id: str):
                 # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
                 for alloc in allocations:
                     await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
+
+                # U2a: rekaman PPh + cermin bank seperti buat-posted (dulu posting draf tak menulis keduanya)
+                await efek_posting_bayar(
+                    conn, ctx, payment_id=full_payment["id"], payment_number=payment["payment_number"],
+                    payment_date=payment["payment_date"], vendor_id=full_payment["vendor_id"], vendor_name=full_payment["vendor_name"],
+                    bank_account_id=full_payment["bank_account_id"], total_amount=full_payment["total_amount"],
+                    pph_tax_code_id=full_payment.get("pph_tax_code_id"), pph_amount=full_payment.get("pph_amount") or 0,
+                    journal_id=journal_id,
+                )
 
                 return BillPaymentResponse(
                     success=True,

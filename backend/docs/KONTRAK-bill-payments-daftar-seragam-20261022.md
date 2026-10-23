@@ -63,3 +63,13 @@ Pola NetSuite/QBO "tinjau sebelum bayar" (kembar `/vendor-deposits/preview`). Ba
 - Pratinjau semua blok 200 (`can_proceed=false`); `/bills/{id}/payments/preview` tagihan tak ada -> 404.
 - **U1 TIDAK mengubah perilaku tulis.** Dua jalur tetap berbeda (nomor BP-/PAY-, sisa SQL lama + cadangan cache vs V440, tagihan draf,
   reference_type cermin bank, posting draf tanpa cermin bank/PPh) — tiket U2a/U2b, putusan pemilik.
+
+## 8. U2a — posting draf = efek buat-posted; tagihan draf tak bisa dibayar (23 Okt 2026, putusan pemilik LANGSUNG)
+- `POST /bill-payments/{id}/post` (draf → posted) kini menulis **rekaman PPh** (`withholding_tax_records`) dan **cermin bank**
+  (`bank_transactions`, reference_type `bill_payment`) lewat penulis YANG SAMA dengan buat-posted (`efek_posting_bayar`), dan **mengecek
+  ulang sisa tagihan di bawah kunci** (`BKR.sisa_tagihan`, Σ alokasi per tagihan) → `400 "Amount exceeds remaining"` (pesan == buat).
+  Dulu: posting draf tanpa cermin bank / PPh dan tanpa cek sisa (0 baris terdampak saat diukur).
+- `POST /bills/{id}/payments` (+ `mark-paid` yang memanggilnya) atas tagihan **DRAF** → `422` "Tagihan masih draf. Posting tagihan dulu
+  sebelum dibayar." (blok `TAGIHAN_DRAF`; pratinjau `/bills/{id}/payments/preview` melaporkannya). Draf = `status_v2 = 'draft'` atau
+  (`status_v2` NULL dan `status = 'draft'`), sama dengan `tagihan_daftar`. Pola Xero/QBO: draf belum di buku.
+- Tetap tiket U2b (nanti): nomor BP-/PAY-, reference_type `bill`, sisa SQL lama + cadangan cache di record_payment.

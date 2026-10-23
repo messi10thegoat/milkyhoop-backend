@@ -336,8 +336,8 @@ def baris_tagihan_lama(ap_account_id, bank_coa_id, pph_coa_id, payment_amount, p
 
 async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pratinjau: bool = False) -> dict:
     """Aturan record_payment, URUTAN + PESAN == kode lama (tulis: blok pertama -> {"success": False, "message"} oleh pemanggil):
-    tagihan ada (FOR UPDATE saat tulis) · bukan void · sisa = SQL lama + cadangan cache bila tanpa jurnal (U2a: tagihan draf -- TIDAK
-    diubah di U1) · nominal > 0 · nominal ≤ sisa · rekening aktif & bukan akun induk / akun CoA lama / salah satu wajib.
+    tagihan ada (FOR UPDATE saat tulis) · bukan void · bukan DRAF (U2a 23 Okt: 422 TAGIHAN_DRAF) · sisa = SQL lama + cadangan cache
+    bila tanpa jurnal (U2b) · nominal > 0 · nominal ≤ sisa · rekening aktif & bukan akun induk / akun CoA lama / salah satu wajib.
     -> {blocks, bill, remaining, payment_amount, payment_date, pph_*, bank_account, bank_coa_id, ap_account_id, pph_coa_id, ...}."""
     bloks = []
 
@@ -356,6 +356,12 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
         return out
     if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
         blok("TAGIHAN_DIBATALKAN", "Cannot pay voided bill")
+        if not pratinjau:
+            return out
+    if bill["status_v2"] == "draft" or (bill["status_v2"] is None and bill["status"] == "draft"):
+        # U2a (putusan pemilik LANGSUNG 23 Okt 2026; pola Xero/QBO): tagihan draf belum di buku -> tak bisa dibayar (dulu sisa jatuh ke
+        # cache amount − amount_paid dan pembayaran tercatat atas hutang yang belum ada). 422 = permintaan sah, keadaan dokumen menolak.
+        bloks.append({"code": "TAGIHAN_DRAF", "message": "Tagihan masih draf. Posting tagihan dulu sebelum dibayar.", "status": 422})
         if not pratinjau:
             return out
 
