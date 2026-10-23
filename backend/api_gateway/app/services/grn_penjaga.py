@@ -61,8 +61,32 @@ SQL_TANPA_TAUTAN = """
 """
 
 
+# ---- Penjaga #3 (MASTER 23 Okt, sesudah kontrol merah `merah_d`): PEMASANGAN TERLEWAT. Aturan D: dokumen yang datang KEMUDIAN selalu memasang
+# diri ke yang lebih dulu (tagihan -> GRN terbuka FIFO; GRN -> tagihan tertunda FIFO), jadi pada satu baris PO TAK MUNGKIN sekaligus ada
+# (i) baris GRN ber-stok tak-void yang qty-nya belum habis tertaut DAN (ii) baris tagihan tertunda bukan-legacy (qty_terbuka > 0).
+# Keduanya ada = salah satu jalur melewati pemasangan. Penjaga #1 tetap HIJAU dalam kasus itu (GL == dokumen: GRN & tagihan sama-sama dihitung),
+# karena itu invarian terpisah. Sumber tertunda = grn_rencana.tertunda (SATU sumber dgn penerimaan & penjaga #1).
+SQL_GRN_TERBUKA_PER_BARIS_PO = """
+    SELECT DISTINCT i.purchase_order_item_id FROM goods_receipt_items i JOIN goods_receipts g ON g.id = i.goods_receipt_id
+    WHERE g.tenant_id = $1 AND g.status = 'posted' AND i.ber_stok
+      AND i.quantity - i.quantity_returned - COALESCE((SELECT SUM(l.quantity) FROM goods_receipt_bill_links l
+                                                       WHERE l.goods_receipt_item_id = i.id AND l.status = 'active'), 0) > 0
+"""
+
+
+async def pemasangan_terlewat(conn, tenant_id: str) -> int:
+    """Jumlah baris PO yang sekaligus punya GRN ber-stok terbuka DAN tagihan tertunda bukan-legacy (harus 0)."""
+    from .grn_rencana import tertunda
+    grn = {str(r["purchase_order_item_id"]) for r in await conn.fetch(SQL_GRN_TERBUKA_PER_BARIS_PO, tenant_id)}
+    if not grn:
+        return 0
+    tagih = {k for k, daftar in (await tertunda(conn, tenant_id)).items() if any(not t["legacy"] for t in daftar)}
+    return len(grn & tagih)
+
+
 async def periksa_tagihan(conn, tenant_id: str) -> dict:
-    """-> {ganda, tanpa_tautan, sehat}. sehat = keduanya 0. Pemeriksa saja (tak dipanggil jalur tulis)."""
+    """-> {ganda, tanpa_tautan, terlewat, sehat}. sehat = ketiganya 0. Pemeriksa saja (tak dipanggil jalur tulis)."""
     ganda = int(await conn.fetchval(SQL_GANDA, tenant_id))
     tanpa = int(await conn.fetchval(SQL_TANPA_TAUTAN, tenant_id))
-    return {"ganda": ganda, "tanpa_tautan": tanpa, "sehat": ganda == 0 and tanpa == 0}
+    terlewat = await pemasangan_terlewat(conn, tenant_id)
+    return {"ganda": ganda, "tanpa_tautan": tanpa, "terlewat": terlewat, "sehat": ganda == 0 and tanpa == 0 and terlewat == 0}

@@ -12,7 +12,7 @@ ATURAN (D) (pemilik 23 Okt): (e) TAGIH DULU: PO 10 @1.000 -> harga 1.100 -> tagi
   tanpa tautan) -> GRN 6 (tautan tagih_dulu R 6.000 / B 6.600, selisih 600 di jurnal GRN, stok +6) -> GRN 4 (GRNI kembali garis dasar) ->
   void tagihan DITOLAK (tercocok) -> void GRN-2, GRN-1 BOLEH (tautan reversed, tagihan kembali tertunda) -> void tagihan -> NET 0.
   (f) LEGACY: flag MATI saat tagihan diposting (jalur lama: kartu stok BILL) -> flag nyala -> GRN 5 = baris ber_stok=false + tautan legacy,
-  stok TAK bertambah, tanpa jurnal -> void GRN -> void tagihan -> NET 0. merah_d = pemasangan disabotase (GRN tak memasang) -> (e) WAJIB FAIL."""
+  stok TAK bertambah, tanpa jurnal -> void GRN -> void tagihan -> NET 0. merah_d = pemasangan disabotase (GRN tak memasang) -> (e) WAJIB FAIL + penjaga #3 (terlewat) WAJIB merah."""
 import asyncio, os, sys
 from decimal import Decimal as D
 from uuid import UUID, uuid4
@@ -96,7 +96,8 @@ async def main():
             p = await GP.periksa(c, T)
             cek(f"{langkah}: penjaga GRNI sehat ({p['saldo_gl']} == {p['terbuka_dokumen']})", p["sehat"], p)
             p2 = await GP.periksa_tagihan(c, T)
-            cek(f"{langkah}: penjaga #2 tagihan sehat (ganda {p2['ganda']}, tanpa_tautan {p2['tanpa_tautan']})", p2["sehat"], p2)
+            cek(f"{langkah}: penjaga #2/#3 tagihan sehat (ganda {p2['ganda']}, tanpa_tautan {p2['tanpa_tautan']}, terlewat {p2['terlewat']})",
+                p2["sehat"], p2)
             return p
 
         r = await RPO.create_purchase_order(req(), CreatePurchaseOrderRequest(

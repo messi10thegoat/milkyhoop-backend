@@ -280,3 +280,25 @@ def test_d_penjaga_mengurangkan_tertunda():
     from app.services import grn_penjaga as GP
     src = inspect.getsource(GP.periksa)
     assert "tertunda(" in src and 'not t["legacy"]' in src
+
+
+def test_d_penjaga3_pemasangan_terlewat(monkeypatch):
+    from app.services import grn_penjaga as GP
+    po1, po2 = uuid4(), uuid4()
+
+    async def tt(conn, tid, ids=None):
+        return {str(po1): [{"legacy": False, "qty_terbuka": D("4")}], str(po2): [{"legacy": True, "qty_terbuka": D("5")}]}
+    monkeypatch.setattr(G, "tertunda", tt)
+
+    class C:
+        def __init__(self, grn): self.grn = grn
+        async def fetch(self, q, *a):
+            assert "i.ber_stok" in q and "l.status = 'active'" in q
+            return [{"purchase_order_item_id": x} for x in self.grn]
+        async def fetchval(self, q, *a):
+            return 0
+    assert asyncio.run(GP.pemasangan_terlewat(C([po1]), "t")) == 1      # GRN terbuka + tagihan tertunda di baris PO SAMA = terlewat
+    assert asyncio.run(GP.pemasangan_terlewat(C([po2]), "t")) == 0      # legacy bukan tertunda GRNI
+    assert asyncio.run(GP.pemasangan_terlewat(C([]), "t")) == 0
+    r = asyncio.run(GP.periksa_tagihan(C([po1]), "t"))
+    assert r["terlewat"] == 1 and r["sehat"] is False
