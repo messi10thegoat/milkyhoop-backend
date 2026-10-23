@@ -2715,16 +2715,15 @@ async def convert_to_invoice(
     request: Request, response: Response, order_id: str, body: ConvertToInvoiceRequest = None
 ):
     """Convert sales order to invoice. {post:true} = buat + terbitkan (+ uang muka SO) dalam SATU transaksi.
-    idempotency_key (body; header X-Idempotency-Key cadangan): kunci sama + isi sama = respons asli diulang
+    idempotency_key (header X-Idempotency-Key; badan = cadangan, AS-G12): kunci sama + isi sama = respons asli diulang
     (X-Idempotent-Replay: true); kunci sama + isi beda = 409 IDEMPOTENCY_KEY_REUSED."""
     try:
         ctx = get_user_context(request)
         _so_uuid_faktur(order_id)  # C6: id jalur tak sah -> 404 SEBELUM DB
-        try:
-            _kunci_klien = (body.idempotency_key.strip() if body is not None and body.idempotency_key
-                            and body.idempotency_key.strip() else None) or kunci_idempotensi_klien(request)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # AS-G12 (23 Okt 2026): SATU pembaca bersama -- header X-Idempotency-Key dulu, idempotency_key badan cadangan,
+        # keduanya beda -> 422 IDEMPOTENCY_KEY_MISMATCH (dulu badan dulu, header cadangan, tanpa pemeriksaan beda).
+        from ..services.idem_buat import kunci_dari as _kunci_dari
+        _kunci_klien = _kunci_dari(request, body.idempotency_key if body is not None else None)
         pool = await get_pool()
         if body is not None and body.post:
             from . import sales_invoices as _si

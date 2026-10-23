@@ -91,6 +91,7 @@ def pasang(monkeypatch):
 class Req:
     def __init__(self, body):
         self._b = body
+        self.headers = {}  # AS-G12: pembaca kunci bersama membaca header (tiruan dulu tanpa header)
         self.state = SimpleNamespace(user={"tenant_id": T, "user_id": "22222222-2222-2222-2222-222222222222"})
 
     async def json(self):

@@ -6988,7 +6988,10 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         # t10b-3b: default = tanggal bisnis tenant, diisi di dalam conn di bawah
         fulfillment_date_str = body.get("fulfillment_date")
         recognize_revenue = body.get("recognize_revenue", True)
-        client_idempotency_key = body.get("idempotency_key")
+        # AS-G12 (23 Okt 2026): dulu HANYA badan (header diabaikan -> agen/Asisten yang mengirim header tak terlindung).
+        # Kini SATU pembaca bersama: header dulu, badan cadangan, beda -> 422 IDEMPOTENCY_KEY_MISMATCH.
+        from ..services.idem_buat import kunci_dari as _kunci_dari
+        client_idempotency_key = _kunci_dari(request, body.get("idempotency_key"))
         notes = body.get("notes")
         req_items = body.get("items", [])
 

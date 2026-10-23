@@ -9,16 +9,27 @@ from uuid import UUID
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
+from ..utils.idempotency import KUNCI_KLIEN_MAKS, ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 
 _TABEL = {"bills": "invoice_number", "vendor_credits": "credit_number", "vendor_deposits": "deposit_number", "purchase_orders": "po_number", "credit_notes": "credit_note_number", "quotes": "quote_number", "stock_transfers": "transfer_number", "invoice_fulfillments": "fulfillment_number"}
 
 
-def kunci_dari(request):
+def kunci_dari(request, kunci_body=None):
+    """SATU pembaca kunci idempotensi klien untuk SEMUA tulis (AS-G12, 23 Okt 2026): header X-Idempotency-Key (alias Idempotency-Key)
+    LEBIH DULU; `kunci_body` (medan idempotency_key badan, bentuk lama) = cadangan. Keduanya ada & beda -> 422
+    IDEMPOTENCY_KEY_MISMATCH (kontrak lama uang muka; jangan menebak). Kosong/spasi = None; > KUNCI_KLIEN_MAKS = 400."""
     try:
-        return kunci_idempotensi_klien(request)
+        h = kunci_idempotensi_klien(request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    b = kunci_body.strip() if isinstance(kunci_body, str) and kunci_body.strip() else None
+    if b is not None and len(b) > KUNCI_KLIEN_MAKS:
+        raise HTTPException(status_code=400, detail=f"Idempotency-Key maksimal {KUNCI_KLIEN_MAKS} karakter")
+    if h and b and h != b:
+        raise HTTPException(status_code=422, detail={
+            "code": "IDEMPOTENCY_KEY_MISMATCH",
+            "message": "idempotency_key di badan dan header X-Idempotency-Key berbeda; kirim salah satu saja."})
+    return h or b
 
 
 async def mulai(conn, ctx: dict, kunci_klien, prefix: str, body, tabel: str, nama: str, response=None):

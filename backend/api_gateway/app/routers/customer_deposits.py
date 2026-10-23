@@ -45,7 +45,6 @@ Endpoints:
 - DELETE /customer-deposits/{id}/attachments/{aid}  - Lepas lampiran
 """
 
-from ..utils.idempotency import kunci_idempotensi_klien
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from fastapi import Response as _Response
 from pydantic import BaseModel
@@ -1053,16 +1052,10 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
         # terlindung pada jalur uang MASUK. Keduanya ada & beda -> 422 (jangan menebak mana yang dimaksud).
         # Sesudah ini SATU kunci di body.idempotency_key -> mekanisme lama (kunci tenant, kolom, indeks unik V179,
         # 409 bila maksud beda) berlaku apa adanya.
-        try:
-            _kunci_header = kunci_idempotensi_klien(request)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        _kunci_body = body.idempotency_key.strip() if body.idempotency_key and body.idempotency_key.strip() else None
-        if _kunci_body and _kunci_header and _kunci_body != _kunci_header:
-            raise HTTPException(status_code=422, detail={
-                "code": "IDEMPOTENCY_KEY_MISMATCH",
-                "message": "idempotency_key di badan dan header X-Idempotency-Key berbeda; kirim salah satu saja."})
-        body.idempotency_key = _kunci_body or _kunci_header
+        # AS-G12 (23 Okt 2026): aturan di atas kini SATU pembaca bersama (services/idem_buat.kunci_dari) -- header dulu, badan
+        # cadangan, beda -> 422 IDEMPOTENCY_KEY_MISMATCH (kontrak SAMA).
+        from ..services.idem_buat import kunci_dari as _kunci_dari
+        body.idempotency_key = _kunci_dari(request, body.idempotency_key)
 
         # 2 Okt 2026 (putusan pemilik): uang muka WAJIB lewat SO (pola NetSuite customer deposit) -- penawaran saja
         # tak boleh menampung DP. Diukur: DP ber-quote_id tanpa SO yang hidup = 0 (kaos 7 semuanya void).

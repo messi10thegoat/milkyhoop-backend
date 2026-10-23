@@ -111,7 +111,9 @@ async def _dua_konfirmasi(monkeypatch, pool):
 async def test_konfirmasi_ganda_tepat_satu_pembayaran(monkeypatch):
     post = await _dua_konfirmasi(monkeypatch, PoolKlaim())
     assert len(post) == 1, post
-    assert not any("X-Idempotency-Key" in h for _, _, h in post)  # agen memang tanpa kunci: pagarnya klaim, bukan header
+    # pagar UTAMA tetap klaim atomik (kontrol di bawah: tanpa klaim -> 2 POST). AS-G12 (23 Okt 2026): agen kini JUGA mengirim
+    # X-Idempotency-Key = agen:{pending_action_id} -> lapis kedua (mis. ulang HTTP dalam satu eksekusi = replay, bukan bayar ganda).
+    assert all(h.get("X-Idempotency-Key", "").startswith("agen:") for _, _, h in post), post
 
 
 @pytest.mark.asyncio
