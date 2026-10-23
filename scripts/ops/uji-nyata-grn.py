@@ -76,6 +76,8 @@ async def jalan(c):
                     "ON CONFLICT (tenant_id, feature) DO UPDATE SET enabled = true", T, G.FLAG)
     prod = await c.fetchrow("SELECT id, kode_produk, nama_produk FROM products WHERE tenant_id = $1 AND item_type = 'goods' AND track_inventory "
                             "ORDER BY kode_produk LIMIT 1", T)
+    nonstok = await c.fetchrow("SELECT id, kode_produk, nama_produk FROM products WHERE tenant_id = $1 AND item_type = 'non_inventory' "
+                               "ORDER BY kode_produk LIMIT 1", T)
     vendor = await c.fetchrow("SELECT id, name FROM vendors WHERE tenant_id = $1 ORDER BY name LIMIT 1", T)
     gudang = await c.fetchrow("SELECT id FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1", T)
     akun_grni = await resolve_account_id_by_role(c, T, AccountRole.GOODS_RECEIVED_NOT_INVOICED)
@@ -89,26 +91,30 @@ async def jalan(c):
     body = CreatePurchaseOrderRequest(vendor_id=str(vendor["id"]), vendor_name=vendor["name"], po_date=hari, ref_no="TES E2E GRN",
                                       notes="TES E2E GRN harness (rollback)", items=[
         {"item_id": str(prod["id"]), "item_code": prod["kode_produk"], "description": "TES E2E barang", "quantity": D("10"), "unit_price": D("1000")},
-        {"description": "TES E2E jasa angkut", "quantity": D("1"), "unit_price": D("500")}])
+        {"description": "TES E2E jasa angkut", "quantity": D("1"), "unit_price": D("500")},
+        {"item_id": str(nonstok["id"]), "item_code": nonstok["kode_produk"], "description": "TES E2E barang non-stok", "quantity": D("2"),
+         "unit_price": D("250")}])
     r = await RPO.create_purchase_order(req(), body)
     r = r.model_dump() if hasattr(r, "model_dump") else r
     po_id = r["data"]["id"]
     await c.execute("UPDATE purchase_orders SET po_number = 'TES E2E GRN ' || po_number WHERE id = $1", UUID(str(po_id)))
     await RPO.send_purchase_order(req(), UUID(str(po_id)))
     items = await c.fetch("SELECT id, description FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number", UUID(str(po_id)))
-    brg, jasa = str(items[0]["id"]), str(items[1]["id"])
+    brg, jasa, nonst = str(items[0]["id"]), str(items[1]["id"]), str(items[2]["id"])
     POID = UUID(str(po_id))
 
     p0 = await GP.periksa(c, T)  # garis dasar sebelum GRN harness
     # pratinjau == tulis
     from app.schemas.purchase_orders import ReceivePreviewRequest
     pv = await RPO.preview_receive_goods(req(), POID, ReceivePreviewRequest(receive_date=hari, items=[
-        {"po_item_id": brg, "quantity_received": D("6")}, {"po_item_id": jasa, "quantity_received": D("1")}], warehouse_id=gudang["id"]))
+        {"po_item_id": brg, "quantity_received": D("6")}, {"po_item_id": jasa, "quantity_received": D("1")},
+        {"po_item_id": nonst, "quantity_received": D("2")}], warehouse_id=gudang["id"]))
     pg = pv["data"]["goods_receipt"]
     cek("pratinjau: GRNI 6000 + jasa tanpa jurnal (P2)", pg["grni_amount"] == "6000.00"
-        and [i["stocked"] for i in pg["items"]] == [True, False], pg)
+        and [i["stocked"] for i in pg["items"]] == [True, False, False], pg)
     r1 = await RPO.receive_goods(req(), POID, ReceiveGoodsRequest(receive_date=hari, items=[
-        {"po_item_id": brg, "quantity_received": D("6")}, {"po_item_id": jasa, "quantity_received": D("1")}], warehouse_id=gudang["id"]))
+        {"po_item_id": brg, "quantity_received": D("6")}, {"po_item_id": jasa, "quantity_received": D("1")},
+        {"po_item_id": nonst, "quantity_received": D("2")}], warehouse_id=gudang["id"]))
     r1 = r1.model_dump() if hasattr(r1, "model_dump") else r1
     g1 = UUID(r1["data"]["goods_receipt_id"])
     jl = await c.fetch("SELECT account_id, debit, credit FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
@@ -117,6 +123,10 @@ async def jalan(c):
         [(str(x["account_id"]), str(x["debit"]), str(x["credit"])) for x in jl]
         == [(j["account_id"], j["debit"], j["credit"]) for j in pg["journal"]], (jl, pg["journal"]))
     cek("GRN-1: stok gudang +6", D(str(await stok())) == stok0 + 6, await stok())
+    n_led = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2", T, g1)
+    n_gri = await c.fetchval("SELECT count(*) FROM goods_receipt_items WHERE goods_receipt_id = $1", g1)
+    cek("GRN-1: jasa + barang non_inventory TANPA inbound & tanpa jurnal (P2; kasus grapgrap): 3 baris dokumen, 1 baris stok",
+        (n_gri, n_led, len(jl)) == (3, 1, 2), (n_gri, n_led, len(jl)))
     p1 = await GP.periksa(c, T)
     cek(f"GRN-1: penjaga GRNI sehat ({p1['saldo_gl']} == {p1['terbuka_dokumen']})", p1["sehat"], p1)
     r2 = await RPO.receive_goods(req(), POID, ReceiveGoodsRequest(receive_date=hari, items=[{"po_item_id": brg, "quantity_received": D("4")}],
