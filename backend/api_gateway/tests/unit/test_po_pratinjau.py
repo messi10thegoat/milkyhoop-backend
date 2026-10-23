@@ -209,8 +209,16 @@ def test_terima_po_sudah_ditagih_hanya_aturan_d(kon, status):
     class KonD(Kon):
         async def fetchval(self, sql, *a):
             return 1 if "tenant_features" in sql else None
+    from app.services import grn_rencana as G
+
+    async def grn_kosong(*a, **kw):  # sisi GRN diuji di test_grn; di sini hanya penentu status PO
+        return {"blocks": [], "baris": [], "gudang": None, "jurnal": [], "nilai_grni": D("0")}
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(G, "rencana_grn", grn_kosong)
     kon(KonD(status=status, items=baris))
     d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
+    mp.undo()
     assert "PO_TAK_BISA_DITERIMA" not in [b["code"] for b in d["blocks"]] and d["status_sesudah"] == status
     import inspect
     src = inspect.getsource(PO.receive_goods)

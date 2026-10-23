@@ -220,6 +220,8 @@ async def main():
         await RPO.convert_to_bill(req(), pe, ConvertToBillRequest(bill_date=hari, notes="TES E2E tagih dulu"))
         be = await c.fetchval("SELECT bill_id FROM bill_items WHERE purchase_order_item_id = $1", ie)
         he = await svc.post_bill(T, be, uid)
+        # harga TERIMA tetap harga PO awal (1.000): harga dinaikkan HANYA untuk tagihan, dikembalikan sebelum penerimaan -> R 1.000 vs B 1.100
+        await c.execute("UPDATE purchase_order_items SET unit_price = 1000, subtotal = quantity * 1000, total = quantity * 1000 WHERE id = $1", ie)
         tagih_e = D(str(await c.fetchval("SELECT amount FROM bills WHERE id = $1", be)))
         pe1 = await sehat("(e) tagihan dulu")
         n_stok_e = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'BILL' AND source_id = $2", T, be)

@@ -17,7 +17,6 @@ for m in "" merah merah_fifo merah_d; do
   grep -vE "^PASS " $L/e2e-${m:-baru}.log | tail -40   # FAIL + Traceback UTUH (tanpa saring) + SELESAI/rc
   echo "PASS: $(grep -c "^PASS " $L/e2e-${m:-baru}.log)"
 done
-echo "=== harness tagihan-grn (BACKEND, D)"; jalan $W/scripts/ops/uji-nyata-tagihan-grn.py | grep -E "^(FAIL|SELESAI)|^rc=|Traceback" | tail -8
 echo "=== harness GRN lama (baru)"; jalan $W/scripts/ops/uji-nyata-grn.py baru > $L/grn-lama.log 2>&1; grep -vE "^PASS " $L/grn-lama.log | tail -20
 rm -f $E
 echo "sisa PO TES E2E GRN: $(docker exec -i milkyhoop-dev-postgres-1 psql -U postgres -d milkydb -At -c "SELECT count(*) FROM purchase_orders WHERE po_number LIKE 'TES E2E GRN%' OR ref_no LIKE 'TES E2E GRN%'") flag: $(docker exec -i milkyhoop-dev-postgres-1 psql -U postgres -d milkydb -At -c "SELECT count(*) FROM tenant_features WHERE feature = 'penerimaan_barang_v1'")"
