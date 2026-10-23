@@ -23,7 +23,10 @@ PENGINGAT = (
     ("sales_invoices", "segera_tempo", "Faktur segera jatuh tempo", "masuk", "week", "sales_invoice"),
     ("proformas", "lewat_tempo", "Proforma lewat jatuh tempo", "masuk", "now", "proforma"),
     ("proformas", "segera_tempo", "Proforma segera jatuh tempo", "masuk", "week", "proforma"),
-    ("sales_orders", "menunggu_pembayaran", "Menunggu bayar", "masuk", "any", "sales_order"),  # 23 Okt: dulu menunggu_dp "DP ditunggu"
+    # 23 Okt (MENUNGGU-PEMBAYARAN): anggota = menunggu_pembayaran (proforma terbit belum lunas apa pun jenisnya); KUNCI tetap alias usang
+    # `menunggu_dp` selama transisi FE (list.aksi -> ?tugas= DaftarWorkspace hanya kenal kunci lama; WORKSPACE 23 Okt). Ganti ke
+    # menunggu_pembayaran BERSAMA nilai aksi baris saat FE pindah terverifikasi (so_aksi.AKSI_BARIS_USANG), lalu alias dicabut.
+    ("sales_orders", "menunggu_dp", "Menunggu bayar", "masuk", "any", "sales_order"),
     ("sales_orders", "perlu_minta_dp", "DP perlu diminta", "masuk", "any", "sales_order"),
     ("sales_orders", "telat_kirim", "Pesanan telat dikirim", "non_uang", "now", "sales_order"),
     ("sales_orders", "perlu_dikirim", "Pesanan perlu dikirim", "non_uang", "week", "sales_order"),

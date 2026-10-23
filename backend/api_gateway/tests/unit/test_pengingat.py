@@ -25,7 +25,7 @@ def test_registri_kunci_anggota_aksi_daftar_dan_bentuk():
     assert len({(m, k) for m, k, *_ in P.PENGINGAT}) == len(P.PENGINGAT)
     assert not any(m == "vendor_deposits" for m, *_ in P.PENGINGAT)  # putusan MASTER: UM vendor bukan v1
     dp = [k for m, k, *_ in P.PENGINGAT if m == "sales_orders"]
-    assert "menunggu_pembayaran" in dp and "perlu_minta_dp" in dp  # DUA pengingat, tak digabung
+    assert "menunggu_dp" in dp and "perlu_minta_dp" in dp  # menunggu_dp = alias menunggu_pembayaran (transisi FE)  # DUA pengingat, tak digabung
 
 
 class _K:

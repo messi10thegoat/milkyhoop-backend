@@ -48,8 +48,11 @@ faktur terbit, faktur yang menagih → pill faktur]. Nilai = Σ sisa kanonik (no
   bayar".
 
 ## 5. Dashboard pengingat (KONTRAK-dashboard-pengingat §10 baru)
-- Registri: ("sales_orders", "menunggu_dp", "DP ditunggu") → ("sales_orders", "menunggu_pembayaran", "Menunggu bayar").
-  `key` pengingat memuat kunci → status "selesai"/dismiss untuk kunci lama TERSETEL ULANG sekali (diterima MASTER (c)).
+- Registri SELAMA TRANSISI: ("sales_orders", "menunggu_dp", "Menunggu bayar") -- label baru, KUNCI tetap alias usang karena
+  `list.aksi` dipakai FE sebagai ?tugas= DaftarWorkspace yang hanya kenal kunci lama (WORKSPACE 23 Okt: kunci asing diabaikan ->
+  daftar terbuka TANPA saring). Anggota/nilai = menunggu_pembayaran (ringkasan alias). Kunci registri berganti ke
+  menunggu_pembayaran BERSAMA nilai aksi baris saat FE pindah terverifikasi; saat itu `key` pengingat berubah -> dismiss kunci lama
+  TERSETEL ULANG sekali (diterima MASTER (c)). Rilis ini: key tak berubah (dismiss tetap).
 - `sum_in_ditagih` NAIK (proforma PELUNASAN belum dibayar = sudah ditagih): kaos +1.318.000, grapgrap +2.880.000
   (terukur). `sum_in_dp_belum_ditagih` (perlu_minta_dp) tak berubah. Hitung ganda faktur+proforma: 0 hari ini; aturan
   (MASTER (b)): PELUNASAN dilewati bila faktur terbit (sudah di definisi); DP + faktur pada SO yang sama diukur harness

@@ -69,10 +69,13 @@ def test_schema_summary_memuat_kunci_baru_dan_alias():
     assert {"menunggu_pembayaran_count", "menunggu_pembayaran_value", "menunggu_dp_count", "menunggu_dp_value"} <= set(f)
 
 
-def test_pengingat_registri_menunggu_pembayaran():
+def test_pengingat_registri_kunci_alias_selama_transisi():
+    """list.aksi pengingat -> ?tugas= DaftarWorkspace (hanya kenal kunci lama sampai FE pindah; WORKSPACE 23 Okt): kunci registri =
+    alias usang menunggu_dp (== nilai aksi baris), label baru. Anggota/nilai = menunggu_pembayaran lewat ringkasan alias."""
     kunci = {(m, k): lbl for m, k, lbl, *_ in P.PENGINGAT}
-    assert kunci[("sales_orders", "menunggu_pembayaran")] == "Menunggu bayar"
-    assert ("sales_orders", "menunggu_dp") not in kunci
+    assert kunci[("sales_orders", "menunggu_dp")] == "Menunggu bayar"
+    assert ("sales_orders", "menunggu_pembayaran") not in kunci
+    assert A.AKSI_BARIS_USANG["menunggu_pembayaran"] == "menunggu_dp"  # kunci pengingat == kunci baris (berganti BERSAMA)
     assert P.KUNCI_BELUM_DITAGIH == (("sales_orders", "perlu_minta_dp"),)  # menunggu_pembayaran = sudah ditagih
 
 

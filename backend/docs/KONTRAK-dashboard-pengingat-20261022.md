@@ -107,8 +107,9 @@ Hanya pengingat dengan `count > 0` dikirim. `menunggu_dp` dan `perlu_minta_dp` =
 - Harness nyata: count == summary == ?aksi; `sum_out` == Σ summary keluar; kontrol merah `merah_tagihan` (count +1) WAJIB FAIL.
 
 ## 10. Tambahan 23 Okt — SO menunggu_pembayaran menggantikan menunggu_dp (KONTRAK-menunggu-bayar-20261023)
-- Registri: (sales_orders, menunggu_pembayaran, "Menunggu bayar", masuk, any, sales_order) menggantikan (menunggu_dp, "DP ditunggu").
+- Registri: (sales_orders, menunggu_dp, "Menunggu bayar", masuk, any, sales_order) -- label baru; kunci TETAP alias usang menunggu_dp
+  selama transisi FE (list.aksi = ?tugas= daftar), berganti ke menunggu_pembayaran bersama aksi baris sesudah FE pindah.
   Anggota = SO dengan proforma terbit belum lunas APA PUN jenisnya (DP/termin/pelunasan penuh); nilai = Σ sisa proforma.
-- `key` pengingat memuat kunci -> status dismiss/selesai milik kunci lama TERSETEL ULANG sekali saat rilis (diterima MASTER).
+- `key` pengingat memuat kunci -> status dismiss/selesai TERSETEL ULANG sekali saat kunci berganti (nanti, bukan rilis ini).
 - `sum_in_ditagih` naik (pelunasan belum dibayar = sudah ditagih): terukur kaos +1.318.000, grapgrap +2.880.000.
   `sum_in_dp_belum_ditagih` (perlu_minta_dp) tak berubah.
