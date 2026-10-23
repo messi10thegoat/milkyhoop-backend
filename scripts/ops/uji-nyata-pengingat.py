@@ -17,6 +17,7 @@ from app.utils.tanggal_tenant import tanggal_dokumen
 
 gagal = []
 MERAH = len(sys.argv) > 1 and sys.argv[1] == "merah"
+MERAH_TAGIHAN = len(sys.argv) > 1 and sys.argv[1] == "merah_tagihan"  # kontrol merah bills segera_tempo: count +1 -> WAJIB FAIL
 MERAH_DP = len(sys.argv) > 1 and sys.argv[1] == "merah_dp"  # kontrol merah sum_in pecah: KUNCI_BELUM_DITAGIH dikosongkan -> WAJIB FAIL
 
 
@@ -87,6 +88,13 @@ async def main():
         P.PENGHITUNG = {**P.PENGHITUNG, "sales_invoices": faktur3}
     if MERAH_DP:
         P.KUNCI_BELUM_DITAGIH = ()
+    if MERAH_TAGIHAN:
+        tagihan_asli = P.PENGHITUNG["bills"]
+        async def tagihan_rusak(conn, tid, hari_ini, ambang):
+            o = await tagihan_asli(conn, tid, hari_ini, ambang)
+            s = o.get("segera_tempo") or {"count": 0, "amount": Decimal("0")}
+            return {**o, "segera_tempo": {"count": s["count"] + 1, "amount": s["amount"]}}
+        P.PENGHITUNG = {**P.PENGHITUNG, "bills": tagihan_rusak}
     for t in ("kaos-biru-konveksi", "grapgrap-manado"):
         uid = str(await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id=$1 AND created_by IS NOT NULL LIMIT 1", t))
         r = req(t, uid)
@@ -116,6 +124,8 @@ async def main():
         cek(f"{t} sum_in_dp_belum_ditagih == summary SO perlu_minta_dp ({dp})", Decimal(rk["sum_in_dp_belum_ditagih"]) == dp, (rk["sum_in_dp_belum_ditagih"], dp))
         cek(f"{t} sum_in_ditagih == Σ summary masuk lain ({tg})", Decimal(rk["sum_in_ditagih"]) == tg, (rk["sum_in_ditagih"], tg))
         cek(f"{t} sum_in == ditagih + dp_belum_ditagih", Decimal(rk["sum_in"]) == Decimal(rk["sum_in_ditagih"]) + Decimal(rk["sum_in_dp_belum_ditagih"]), rk)
+        ko = sum((nilai(m, k) for m, k, _l, arah, *_ in P.PENGINGAT if arah == "keluar"), Decimal("0"))
+        cek(f"{t} sum_out == Σ summary keluar (bills lewat + segera) ({ko})", Decimal(rk["sum_out"]) == ko, (rk["sum_out"], ko))
         print(f"INFO {t} sum_in={rk['sum_in']} ditagih={rk['sum_in_ditagih']} dp_belum_ditagih={rk['sum_in_dp_belum_ditagih']} sum_out={rk['sum_out']}")
         a = total_daftar(await RSI.list_invoices(**kw(RSI.list_invoices, r, aksi="jatuh_tempo_minggu_ini")))
         b = total_daftar(await RSI.list_invoices(**kw(RSI.list_invoices, r, aksi="segera_tempo")))

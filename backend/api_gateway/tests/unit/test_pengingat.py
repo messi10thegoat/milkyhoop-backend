@@ -103,3 +103,20 @@ def test_sum_in_pecah_ditagih_dan_dp_belum_ditagih_invarian():
     assert r["sum_out"] == "1805006.00" and r["pengingat_versi"] == 1
     assert P.KUNCI_BELUM_DITAGIH == (("sales_orders", "perlu_minta_dp"),)
     assert set(P.KUNCI_BELUM_DITAGIH) <= {(m, k) for m, k, _l, arah, *_ in P.PENGINGAT if arah == "masuk"}
+
+
+def test_tagihan_segera_tempo_memakai_ambang_tenant_dan_predikat_daftar(monkeypatch):
+    """bills segera_tempo: ambang N dari ambang_segera diteruskan ke TD.sql_aksi_berparam (predikat ?aksi= daftar tagihan yang SAMA)."""
+    panggil = []
+    asli = TD.sql_aksi_berparam
+    def rekam(aksi, mulai, hari_ini, ambang=None):
+        panggil.append((aksi, ambang))
+        return asli(aksi, mulai, hari_ini, ambang)
+    monkeypatch.setattr(TD, "sql_aksi_berparam", rekam)
+    class Conn:
+        async def fetchrow(self, sql, *par):
+            return {"n": 2, "v": Decimal("300.5")}
+    out = asyncio.run(P._tagihan(Conn(), "t", HARI, 9))
+    assert ("segera_tempo", 9) in panggil and set(out) == {"lewat_jatuh_tempo", "segera_tempo"}
+    assert out["segera_tempo"] == {"count": 2, "amount": Decimal("300.5")}
+    assert ("bills", "segera_tempo") in {(m, k) for m, k, *_ in P.PENGINGAT}

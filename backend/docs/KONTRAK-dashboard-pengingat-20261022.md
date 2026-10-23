@@ -100,3 +100,8 @@ Hanya pengingat dengan `count > 0` dikirim. `menunggu_dp` dan `perlu_minta_dp` =
 - `sum_in_dp_belum_ditagih` = Σ amount `sales_orders/perlu_minta_dp` (DP yang belum diminta = tugas, bukan uang).
 - Invarian: `sum_in == sum_in_ditagih + sum_in_dp_belum_ditagih` (string 2dp). Medan lama tak berubah. Harness nyata: dp == summary SO
   `perlu_minta_dp_value`, ditagih == Σ summary `{k}_value` masuk lain; kontrol merah `merah_dp`.
+
+## 9. Tambahan 23 Okt — bills `segera_tempo` aktif di registri (setelah BILLS-SEGERA 1e19a14f)
+- Registri: (bills, segera_tempo, "Tagihan segera jatuh tempo", keluar, week, purchase_invoice); `_tagihan` meneruskan ambang N ke
+  `TD.sql_aksi_berparam` (predikat ?aksi= daftar yang sama). `sum_out` = lewat_jatuh_tempo + segera_tempo (partisi: eff < hari ini vs ≥ hari ini).
+- Harness nyata: count == summary == ?aksi; `sum_out` == Σ summary keluar; kontrol merah `merah_tagihan` (count +1) WAJIB FAIL.

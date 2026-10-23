@@ -28,6 +28,7 @@ PENGINGAT = (
     ("sales_orders", "telat_kirim", "Pesanan telat dikirim", "non_uang", "now", "sales_order"),
     ("sales_orders", "perlu_dikirim", "Pesanan perlu dikirim", "non_uang", "week", "sales_order"),
     ("bills", "lewat_jatuh_tempo", "Tagihan lewat jatuh tempo", "keluar", "now", "purchase_invoice"),
+    ("bills", "segera_tempo", "Tagihan segera jatuh tempo", "keluar", "week", "purchase_invoice"),
     ("purchase_orders", "telat_terima", "Barang pesanan pembelian telat diterima", "non_uang", "now", "purchase_order"),
 )
 
@@ -66,8 +67,8 @@ async def _so(conn, tid: str, hari_ini: date, ambang: int) -> dict:
 async def _tagihan(conn, tid: str, hari_ini: date, ambang: int) -> dict:
     from . import tagihan_daftar as TD
     out = {}
-    for k in ("lewat_jatuh_tempo",):
-        pred, par = TD.sql_aksi_berparam(k, 2, hari_ini)
+    for k in ("lewat_jatuh_tempo", "segera_tempo"):
+        pred, par = TD.sql_aksi_berparam(k, 2, hari_ini, ambang)  # segera_tempo = N hari tenant (sama dengan ?aksi= daftar tagihan)
         r = await conn.fetchrow(
             f"""SELECT COUNT(*) AS n, COALESCE(SUM({TD.sql_hutang('b')}), 0) AS v
                 FROM bills b {TD.join_rincian()} WHERE b.tenant_id = $1 AND {pred}""", tid, *par)
