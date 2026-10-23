@@ -127,7 +127,9 @@ def test_penulis_memakai_penentu_yang_sama():
     buat = bp[bp.index("async def create_bill_payment(request"):bp.index("async def delete_bill_payment")]
     assert "_r = await BKR.rencana_bayar(conn, ctx, payload)" in buat
     assert buat.index("BKR.rencana_bayar(") < buat.index("generate_payment_number(")  # nomor lahir SESUDAH semua cek
-    assert 'for _al in _r["alokasi"]' in buat and "BKR.cermin_bank(" in buat
+    assert 'for _al in _r["alokasi"]' in buat and "await efek_posting_bayar(" in buat  # U2a: cermin bank lewat penulis efek bersama
+    efek = bp[bp.index("async def efek_posting_bayar("):bp.index("# === Journal Preview")]
+    assert "BKR.cermin_bank(" in efek
     bs = (APP / "services/bills_service.py").read_text()
     rp = bs[bs.index("    async def record_payment("):bs.index("    async def mark_paid(")]
     assert "await BKR.rencana_bayar_tagihan(conn, tenant_id, bill_id, request)" in rp
