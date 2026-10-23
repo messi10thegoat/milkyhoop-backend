@@ -24,6 +24,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, Response
+from pydantic import BaseModel
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -34,6 +35,7 @@ from decimal import Decimal
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
+from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendor_credits import (
     UnapplyVendorCreditRequest,
@@ -1032,62 +1034,10 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                         status_code=404, detail="Nota debit tidak ditemukan."
                     )
 
-                # U3a: nota debit tertaut tagihan saat dibuat -> atribusi langsung saat posting (V441 cabang 4); wajib muat sisa jurnal tagihan
-                if vc["status"] == "draft" and vc["original_bill_id"]:
-                    _sisa_t = await ND.sisa_tagihan_jurnal(conn, ctx["tenant_id"], vc["original_bill_id"])
-                    if _sisa_t is None:
-                        raise HTTPException(status_code=400, detail=f"Tagihan {vc['original_bill_number'] or ''} belum dibukukan atau sudah batal.")
-                    if Decimal(str(vc["total_amount"])) > _sisa_t:
-                        raise HTTPException(status_code=400, detail=(
-                            f"Melebihi sisa tagihan {_sisa_t:,.0f}: nota debit {Decimal(str(vc['total_amount'])):,.0f} atas "
-                            f"{vc['original_bill_number'] or 'tagihan'}.").replace(",", "."))
-
-                if vc["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot post vendor credit with status '{vc['status']}'",
-                    )
-
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"VENDOR_CREDIT:{vendor_credit_id}",
-                )
-
-                # Law 27 + Fase D2.2: Resolve account IDs via role resolver
-                # (precondition gate already validated mapping exists for all tenants).
-                ap_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.AP_TRADE
-                )
-                purchase_return_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.COGS_PURCHASE_RETURN
-                )
-
-                # U3b: potongan/koreksi harga -> PURCHASE_DISCOUNT (5-10200), retur/rusak/lainnya -> COGS_PURCHASE_RETURN (ND.peran_kredit_nd)
-                potongan = vc["reason"] in ND.ALASAN_POTONGAN
-                # pagar: potongan ber-PPN / tenant PKP / tagihan ber-PPN -> 409 (pemecahan PKP bruto = tiket; gagal keras, bukan jurnal salah)
-                await ND.tolak_potongan_ber_ppn(conn, ctx["tenant_id"], vc["reason"], vc["tax_amount"], vc["original_bill_id"])
-                if potongan:
-                    purchase_return_account_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], ND.peran_kredit_nd(vc["reason"])
-                    )
-
-                if not ap_account_id or not purchase_return_account_id:
-                    raise HTTPException(
-                        status_code=500, detail="Akun hutang / retur / diskon pembelian belum dipetakan."
-                    )
-
-                # Law 5: Period check
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    vc["credit_date"],
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
-                    )
+                # U3d: PENENTU SATU dgn POST /{id}/post/preview (NDR.rencana_posting; urutan + pesan == kode lama): kaitan tagihan draf
+                # (dibukukan? <= sisa) · status draf · akun peran · pagar potongan PPN (409) · akun dipetakan · periode
+                _r = await NDR.rencana_posting(conn, ctx, vc)
+                ap_account_id, purchase_return_account_id, potongan = _r["ap"], _r["akun_kredit"], _r["potongan"]
 
                 # Generate journal number
                 import uuid as uuid_module
@@ -1128,77 +1078,26 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     ctx["user_id"],
                 )
 
-                # Journal lines (Law 25: pass Decimal directly)
-                line_number = 1
-
-                # Dr. Accounts Payable
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    ap_account_id,
-                    total_amount,
-                    f"Pengurangan Hutang - {vc['credit_number']}",
-                )
-                line_number += 1
-
-                # Cr. COGS Purchase Return (subtotal) — contra-COGS reversal.
-                # Physical Persediaan layer decrement happens separately via
-                # record_inventory_outbound() below. Crediting Persediaan here
-                # too would double-count (latent pre-D2.2 bug, fixed by this
-                # role swap from INVENTORY_MERCHANDISE -> COGS_PURCHASE_RETURN).
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    purchase_return_account_id,
-                    subtotal,
-                    f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}",
-                )
-                line_number += 1
-
-                # Cr. VAT Input reversal (PKP-conditional) — Fase D2.2.
-                # PPN Masukan is asset; vendor credit reduces it via credit side.
-                # Non-PKP tenants skip VAT line entirely. PKP tenant with
-                # tax_amount > 0 but VAT_INPUT unresolvable -> 422 (Law 4
-                # consistency, no silent skip).
+                # Baris = NDR.baris_posting_nd (SATU sumber dgn pratinjau; Law 25: Decimal langsung): Dr Hutang · Cr Retur/Diskon · Cr PPN Masukan
                 tax_jl_id = None
-                if tax_amount > 0:
-                    tax_account_id = await resolve_account_id_by_role_if_pkp(
-                        conn, ctx["tenant_id"], AccountRole.VAT_INPUT
-                    )
-                    if tax_account_id is None:
-                        # Tenant is non-PKP. Submitting a vendor credit with
-                        # tax_amount > 0 against a non-PKP tenant is invalid
-                        # (no PPN Masukan original to reverse). Reject loudly.
-                        raise HTTPException(
-                            status_code=422,
-                            detail=PESAN_NON_PKP_PEMBELIAN,
-                        )
-
-                    tax_jl_id = uuid_module.uuid4()
+                for line_number, (_akun, _d, _k, _memo, _peran) in enumerate(
+                        await NDR.baris_posting_nd(conn, ctx["tenant_id"], vc, ap_account_id, purchase_return_account_id, potongan), 1):
+                    _jl = uuid_module.uuid4()
+                    if _peran == "pajak":
+                        tax_jl_id = _jl
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
-                        tax_jl_id,
+                        _jl,
                         journal_id,
                         line_number,
-                        tax_account_id,
-                        tax_amount,
-                        f"PPN Retur - {vc['credit_number']}",
+                        _akun,
+                        _d,
+                        _k,
+                        _memo,
                     )
 
                 # Law 20: Post after all lines
@@ -1411,93 +1310,15 @@ async def receive_refund(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Get vendor credit
-                vc = await conn.fetchrow(
-                    """
-                    SELECT * FROM vendor_credits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    vendor_credit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not vc:
-                    raise HTTPException(
-                        status_code=404, detail="Vendor credit not found"
-                    )
-
-                if vc["status"] not in ("posted", "partial"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Cannot receive refund for vendor credit with status '{vc['status']}'",
-                    )
-
-                # U3a: refund hanya untuk nota debit BEBAS (tak bertaut tagihan); sisa = JURNAL (ND.sisa_nd), bukan cache
-                if vc["original_bill_id"] is not None:
-                    raise HTTPException(status_code=400, detail=(
-                        f"Nota debit ini terkait tagihan {vc['original_bill_number'] or ''}; lepas penerapan dulu sebelum menerima pengembalian dana."))
-                remaining = await ND.sisa_nd(conn, ctx["tenant_id"], vendor_credit_id)
-
-                if Decimal(str(body.amount)) > remaining:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Pengembalian dana {Decimal(str(body.amount)):,.0f} melebihi sisa nota debit {remaining:,.0f}.".replace(",", "."),
-                    )
-
-                # Validate account — resolve from bank_account_id if provided
-                if body.bank_account_id:
-                    bank_acc = await conn.fetchrow(
-                        "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                        UUID(body.bank_account_id),
-                        ctx["tenant_id"],
-                    )
-                    if not bank_acc:
-                        raise HTTPException(
-                            status_code=400, detail="Rekening bank tidak ditemukan."
-                        )
-                    resolved_account_id = bank_acc["coa_id"]
-                elif body.account_id:
-                    resolved_account_id = UUID(body.account_id)
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Either account_id or bank_account_id is required",
-                    )
-
-                account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code as code, name, account_type, is_cash, is_bank_account FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    resolved_account_id,
-                    ctx["tenant_id"],
-                )
-                # U3a: akun penerima WAJIB kas/bank (dulu akun apa pun diterima)
-                if account and not (account["account_type"] == "ASSET" and (account["is_cash"] or account["is_bank_account"] or body.bank_account_id)):
-                    raise HTTPException(status_code=400, detail="Akun penerima pengembalian dana harus akun kas atau bank.")
-
-                if not account:
-                    raise HTTPException(
-                        status_code=400, detail="Payment account not found"
-                    )
+                # U3d: PENENTU SATU dgn POST /{id}/refund/preview (NDR.rencana_kembali; urutan + pesan == kode lama)
+                _r = await NDR.rencana_kembali(conn, ctx, vendor_credit_id, body)
+                vc, resolved_account_id = _r["vc"], _r["akun_id"]
 
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"VENDOR_CREDIT_REFUND:{vendor_credit_id}",
                 )
-
-                # Law 5: Period check
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    body.refund_date,
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
-                    )
 
                 import uuid as uuid_module
 
@@ -1536,33 +1357,22 @@ async def receive_refund(
                     ctx["user_id"],
                 )
 
-                # Dr. Cash/Bank (Law 25: no float())
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    resolved_account_id,  # U3a: akun TERSELESAIKAN (dulu UUID(body.account_id) -> TypeError bila hanya bank_account_id)
-                    body.amount,
-                    f"Terima Refund - {vc['credit_number']}",
-                )
-
-                # Cr. AP (Law 25: no float())
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        id, journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    ap_account_id,
-                    body.amount,
-                    f"Hutang Refund - {vc['credit_number']}",
-                )
+                # Baris = NDR.baris_refund_nd (SATU sumber dgn pratinjau; Law 25: no float()): Dr Kas-Bank / Cr Hutang
+                for _n, (_akun, _d, _k, _memo) in enumerate(NDR.baris_refund_nd(resolved_account_id, ap_account_id, body.amount, vc["credit_number"]), 1):
+                    await conn.execute(
+                        """
+                        INSERT INTO journal_lines (
+                            id, journal_id, line_number, account_id, debit, credit, memo
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                        uuid_module.uuid4(),
+                        journal_id,
+                        _n,
+                        _akun,
+                        _d,
+                        _k,
+                        _memo,
+                    )
 
                 # Law 20: Post after all lines
                 await conn.execute(
@@ -1665,27 +1475,10 @@ async def void_vendor_credit(
                     f"VENDOR_CREDIT_VOID:{vendor_credit_id}",
                 )
 
-                # Get vendor credit
-                vc = await conn.fetchrow(
-                    """
-                    SELECT * FROM vendor_credits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    vendor_credit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not vc:
-                    raise HTTPException(
-                        status_code=404, detail="Vendor credit not found"
-                    )
-
-                if vc["status"] == "void":
-                    raise HTTPException(
-                        status_code=400, detail="Vendor credit already voided"
-                    )
-
-                if vc["status"] == "draft":
+                # U3d: PENENTU SATU dgn POST /{id}/void/preview (NDR.rencana_batal; urutan + pesan == kode lama)
+                _r = await NDR.rencana_batal(conn, ctx, vendor_credit_id, body.reason)
+                vc = _r["vc"]
+                if _r["hapus"]:
                     # Just delete draft
                     await conn.execute(
                         "DELETE FROM vendor_credits WHERE id = $1", vendor_credit_id
@@ -1696,34 +1489,13 @@ async def void_vendor_credit(
                         "data": {"id": str(vendor_credit_id)},
                     }
 
-                # Check for applications or refunds
-                if await conn.fetchval(
-                        "SELECT 1 FROM vendor_credit_applications WHERE vendor_credit_id = $1 AND tenant_id = $2 AND status = 'active'",
-                        vendor_credit_id, ctx["tenant_id"]):
-                    raise HTTPException(status_code=400, detail="Lepas penerapan nota debit dari tagihan dulu sebelum membatalkannya.")
-                # Nota debit ber-refund tak bisa dibatalkan (pola NetSuite: hapus refund dulu; "batalkan refund" = tiket kedua modul)
-                if await conn.fetchval("SELECT 1 FROM vendor_credit_refunds WHERE vendor_credit_id = $1 AND tenant_id = $2",
-                                       vendor_credit_id, ctx["tenant_id"]):
-                    raise HTTPException(status_code=400, detail="Nota debit yang sudah menerima pengembalian dana tidak bisa dibatalkan.")
-
                 # Create reversal journal if original was posted
                 if vc["journal_id"]:
                     import uuid as uuid_module
 
                     reversal_journal_id = uuid_module.uuid4()
 
-                    # Law 5: Period check on CURRENT_DATE
-                    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                    period_row = await conn.fetchrow(
-                        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                        ctx["tenant_id"],
-                        hari_ini,
-                    )
-                    if period_row and period_row["status"] != "OPEN":
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Periode akuntansi sudah {period_row['status']}",
-                        )
+                    hari_ini = _r["hari_ini"]  # t10-tanggal-bisnis; periode (Law 5) sudah dicek di NDR.rencana_batal
 
                     # Get original journal lines
                     original_lines = await conn.fetch(
@@ -1825,6 +1597,127 @@ async def void_vendor_credit(
             f"Error voiding vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to void vendor credit")
+
+
+# =============================================================================
+# PRATINJAU AKSI (U3d, 23 Okt 2026): penentu = services/nota_debit_rencana (SAMA dgn tulis). READ ONLY tanpa kunci/sequence (BUKAN pola
+# tulis-lalu-rollback pratinjau NK). Bentuk == pratinjau UM vendor: {vendor_credit_id, action, can_proceed, blocks[], before, after,
+# journals[] (journal_number null), bank_transactions[], bills[], stock[], payload, preview:true}. 200 walau diblok; 404 bila tak ada.
+# =============================================================================
+
+
+class _PratinjauAlasan(BaseModel):
+    reason: Optional[str] = None
+
+
+async def _keadaan_nd(conn, tid: str, vc_id) -> dict:
+    """before/after: medan U3c (NDD) + sisa jurnal; exists false bila tak ada."""
+    v = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vc_id, tid)
+    if not v:
+        return {"exists": False}
+    m = (await NDD.medan_banyak(conn, tid, [v])).get(v["id"], {})
+    return {"exists": True, "status": v["status"], "sisa_keadaan": m.get("sisa_keadaan"), "status_text": m.get("status_text"),
+            "remaining": float(await ND.sisa_nd(conn, tid, vc_id)), "terpakai": m.get("terpakai"), "dikembalikan": m.get("dikembalikan"),
+            "original_bill_id": m.get("original_bill_id"), "original_bill_number": m.get("original_bill_number")}
+
+
+def _sesudah(sebelum: dict, **ubah) -> dict:
+    return {**sebelum, **ubah} if sebelum.get("exists") else sebelum
+
+
+async def _pratinjau_nd(request: Request, vendor_credit_id: UUID, aksi: str, isi, payload) -> dict:
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            sebelum = await _keadaan_nd(conn, ctx["tenant_id"], vendor_credit_id)
+            if not sebelum["exists"]:
+                raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
+            r, sesudah = await isi(conn, ctx, sebelum)
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    bl = r["blocks"]
+    return {"success": True, "data": {
+        "vendor_credit_id": str(vendor_credit_id), "action": aksi, "can_proceed": not bl.daftar, "blocks": bl.respons(),
+        "before": sebelum, "after": sesudah, "journals": r.get("journals", []), "bank_transactions": r.get("bank_transactions", []),
+        "bills": r.get("bills", []), "stock": r.get("stock", []), "payload": payload, "preview": True}}
+
+
+@router.post("/{vendor_credit_id}/post/preview")
+async def preview_post_vendor_credit(request: Request, vendor_credit_id: UUID):
+    """Pratinjau POSTING: jurnal VENDOR_CREDIT (baris_posting_nd == tulis) + HPP & stok retur barang dilacak (fungsi baca record_inventory_outbound)."""
+    async def isi(conn, ctx, sebelum):
+        vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vendor_credit_id, ctx["tenant_id"])
+        r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True)
+        bertaut = vc["original_bill_id"] is not None
+        return r, _sesudah(sebelum, status="posted", sisa_keadaan="terpakai" if bertaut else "utuh",
+                           remaining=0.0 if bertaut else float(vc["total_amount"]), terpakai=float(vc["total_amount"]) if bertaut else 0.0)
+    return await _pratinjau_nd(request, vendor_credit_id, "post", isi, {})
+
+
+@router.post("/{vendor_credit_id}/apply/preview")
+async def preview_apply_vendor_credit(request: Request, vendor_credit_id: UUID, body: ApplyVendorCreditRequest):
+    """Pratinjau TERAPKAN ke satu tagihan (tanpa jurnal): sisa tagihan sebelum -> sesudah."""
+    async def isi(conn, ctx, sebelum):
+        if len(body.applications) != 1:
+            bl = NDR.Blok(True)
+            bl.galat("SATU_TAGIHAN", 400, "Nota debit hanya bisa diterapkan ke satu tagihan.")
+            return {"blocks": bl}, sebelum
+        a = body.applications[0]
+        r = await NDR.rencana_terapkan(conn, ctx["tenant_id"], vendor_credit_id, a.bill_id, a.amount, pratinjau=True)
+        b = r.get("bill")
+        return r, _sesudah(sebelum, sisa_keadaan="terpakai", remaining=0.0, terpakai=float(r.get("total") or 0),
+                           original_bill_id=str(b["id"]) if b else None, original_bill_number=b["invoice_number"] if b else None)
+    return await _pratinjau_nd(request, vendor_credit_id, "apply", isi, body.model_dump(mode="json"))
+
+
+@router.post("/{vendor_credit_id}/unapply/preview")
+async def preview_unapply_vendor_credit(request: Request, vendor_credit_id: UUID, body: Optional[_PratinjauAlasan] = None):
+    """Pratinjau LEPAS penerapan (tanpa jurnal): sisa tagihan sebelum -> sesudah."""
+    alasan = body.reason if body else None
+    async def isi(conn, ctx, sebelum):
+        r = await NDR.rencana_lepas(conn, ctx["tenant_id"], vendor_credit_id, alasan, pratinjau=True)
+        app = r.get("app")
+        jml = float(app["amount_applied"]) if app else 0.0
+        return r, _sesudah(sebelum, sisa_keadaan="utuh", remaining=jml, terpakai=0.0, original_bill_id=None, original_bill_number=None)
+    return await _pratinjau_nd(request, vendor_credit_id, "unapply", isi, {"reason": alasan})
+
+
+async def _pratinjau_refund(request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest):
+    async def isi(conn, ctx, sebelum):
+        r = await NDR.rencana_kembali(conn, ctx, vendor_credit_id, body, pratinjau=True)
+        sisa = (r.get("sisa") or Decimal("0")) - Decimal(str(body.amount))
+        return r, _sesudah(sebelum, remaining=float(max(sisa, Decimal("0"))),
+                           dikembalikan=float(Decimal(str(sebelum.get("dikembalikan") or 0)) + Decimal(str(body.amount))),
+                           sisa_keadaan="dikembalikan" if sisa <= 0 else "sebagian_dikembalikan")
+    return await _pratinjau_nd(request, vendor_credit_id, "refund", isi, body.model_dump(mode="json"))
+
+
+@router.post("/{vendor_credit_id}/refund/preview")
+async def preview_refund_vendor_credit(request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest):
+    """Pratinjau TERIMA PENGEMBALIAN DANA: jurnal Dr Kas-Bank / Cr Hutang (baris_refund_nd == tulis) + cermin bank."""
+    return await _pratinjau_refund(request, vendor_credit_id, body)
+
+
+@router.post("/{vendor_credit_id}/receive-refund/preview")
+async def preview_receive_refund_vendor_credit(request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest):
+    """Alias pratinjau dgn nama rute tulis (/receive-refund)."""
+    return await _pratinjau_refund(request, vendor_credit_id, body)
+
+
+@router.post("/{vendor_credit_id}/void/preview")
+async def preview_void_vendor_credit(request: Request, vendor_credit_id: UUID, body: Optional[_PratinjauAlasan] = None):
+    """Pratinjau BATAL: cermin jurnal posting + cermin tiap jurnal HPP. Draf = akan DIHAPUS (after.exists false)."""
+    alasan = body.reason if body else None
+    async def isi(conn, ctx, sebelum):
+        r = await NDR.rencana_batal(conn, ctx, vendor_credit_id, alasan, pratinjau=True)
+        if r.get("hapus"):
+            return r, {"exists": False}
+        return r, _sesudah(sebelum, status="void", sisa_keadaan="batal", remaining=0.0)
+    return await _pratinjau_nd(request, vendor_credit_id, "void", isi, {"reason": alasan})
 
 
 @router.post("/{vendor_credit_id}/create-tax-invoice")

@@ -82,27 +82,10 @@ async def terapkan_nota_debit(conn, ctx: dict, vc_id, bill_id, jumlah, applicati
     from .pihak_helpers import segarkan_cache_hutang_tagihan
     tid = ctx["tenant_id"]
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT_APPLY:{vc_id}")
-    vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE", vc_id, tid)
-    if not vc:
-        raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
-    # urutan = kembar NK (tolak_nk_bertaut DULU): sesudah diterapkan status jadi 'applied' -> cek status lebih dulu salah memberi 400
-    if vc["original_bill_id"] is not None:
-        raise HTTPException(status_code=409, detail={"code": "ND_SUDAH_BERTAUT",
-                                                     "message": f"Nota debit ini sudah terkait ke tagihan {vc['original_bill_number'] or ''}".strip() + "."})
-    if vc["status"] not in ("posted", "partial") or vc["journal_id"] is None:
-        raise HTTPException(status_code=400, detail="Hanya nota debit yang sudah dibukukan yang bisa diterapkan ke tagihan.")
-    if (vc["amount_received"] or 0) > 0:
-        raise HTTPException(status_code=400, detail="Nota debit yang dananya sudah dikembalikan vendor tidak bisa diterapkan ke tagihan.")
-    total = Decimal(str(vc["total_amount"]))
-    if Decimal(str(jumlah)) != total:
-        raise HTTPException(status_code=400, detail=f"Nota debit harus diterapkan seluruhnya ({tg.rp(total)}) ke satu tagihan.")
-    bill = await tagihan_milik(conn, tid, bill_id, vc["vendor_id"], kunci=True)
-    await tolak_potongan_ber_ppn(conn, tid, vc["reason"], vc["tax_amount"], bill["id"])  # pagar PKP bruto (tiket)
-    sisa = await sisa_tagihan_jurnal(conn, tid, bill["id"])
-    if sisa is None:
-        raise HTTPException(status_code=400, detail=f"Tagihan {bill['invoice_number']} belum dibukukan atau sudah batal.")
-    if total > sisa:
-        raise HTTPException(status_code=400, detail=f"Melebihi sisa tagihan {tg.rp(sisa)}: nota debit {tg.rp(total)} atas {bill['invoice_number']}.")
+    # U3d: PENENTU SATU dgn POST /{id}/apply/preview (nota_debit_rencana.rencana_terapkan; urutan + pesan == kode lama)
+    from .nota_debit_rencana import rencana_terapkan
+    _r = await rencana_terapkan(conn, tid, vc_id, bill_id, jumlah)
+    vc, bill, total = _r["vc"], _r["bill"], _r["total"]
     app_id = uuid_module.uuid4()
     await conn.execute(
         """INSERT INTO vendor_credit_applications (id, tenant_id, vendor_credit_id, bill_id, bill_number, amount_applied, application_date,
@@ -127,14 +110,10 @@ async def lepas_nota_debit(conn, ctx: dict, vc_id, alasan: Optional[str]) -> dic
     if not (alasan or "").strip():
         raise HTTPException(status_code=422, detail="Alasan melepas penerapan wajib diisi.")
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT_APPLY:{vc_id}")
-    vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE", vc_id, tid)
-    if not vc:
-        raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
-    app = await conn.fetchrow(
-        """SELECT * FROM vendor_credit_applications WHERE vendor_credit_id = $1 AND tenant_id = $2 AND status = 'active'
-           ORDER BY created_at DESC LIMIT 1 FOR UPDATE""", vc_id, tid)
-    if not app:
-        raise HTTPException(status_code=400, detail="Nota debit ini tidak sedang diterapkan ke tagihan.")
+    # U3d: PENENTU SATU dgn POST /{id}/unapply/preview (nota_debit_rencana.rencana_lepas; urutan + pesan == kode lama)
+    from .nota_debit_rencana import rencana_lepas
+    _r = await rencana_lepas(conn, tid, vc_id, alasan)
+    app = _r["app"]
     await conn.execute(
         """UPDATE vendor_credit_applications SET status = 'reversed', reversed_at = now(), reversed_by = $1, reversal_reason = $2
            WHERE id = $3""", ctx["user_id"], alasan.strip(), app["id"])
