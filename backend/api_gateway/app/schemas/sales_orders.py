@@ -512,8 +512,11 @@ class SalesOrderSummary(BaseModel):
     perlu_ditagih_count: int = 0
     perlu_ditagih_value: float = 0
     # AKSI-SO-2 (14 Okt 2026): menunggu_dp (Posisi Menunggu DP) + siap_diserahkan (fase tersedia, eksklusif dari perlu_dikirim)
+    # MENUNGGU-PEMBAYARAN (23 Okt 2026): Σ sisa proforma terbit belum lunas apa pun jenisnya; menunggu_dp_* = ALIAS USANG (nilai sama)
+    menunggu_pembayaran_count: int = 0
+    menunggu_pembayaran_value: float = 0
     menunggu_dp_count: int = 0
-    menunggu_dp_value: float = 0  # PERLU-MINTA-DP: Σ sisa proforma DP belum terbayar (bukan total SO)
+    menunggu_dp_value: float = 0  # USANG: == menunggu_pembayaran_* sampai FE pindah
     perlu_minta_dp_count: int = 0
     perlu_minta_dp_value: float = 0  # Σ DP syarat SO (dp_amount, atau dp_percent x total)
     siap_diserahkan_count: int = 0

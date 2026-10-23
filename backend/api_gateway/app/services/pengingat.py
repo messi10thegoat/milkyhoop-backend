@@ -23,7 +23,7 @@ PENGINGAT = (
     ("sales_invoices", "segera_tempo", "Faktur segera jatuh tempo", "masuk", "week", "sales_invoice"),
     ("proformas", "lewat_tempo", "Proforma lewat jatuh tempo", "masuk", "now", "proforma"),
     ("proformas", "segera_tempo", "Proforma segera jatuh tempo", "masuk", "week", "proforma"),
-    ("sales_orders", "menunggu_dp", "DP ditunggu", "masuk", "any", "sales_order"),
+    ("sales_orders", "menunggu_pembayaran", "Menunggu bayar", "masuk", "any", "sales_order"),  # 23 Okt: dulu menunggu_dp "DP ditunggu"
     ("sales_orders", "perlu_minta_dp", "DP perlu diminta", "masuk", "any", "sales_order"),
     ("sales_orders", "telat_kirim", "Pesanan telat dikirim", "non_uang", "now", "sales_order"),
     ("sales_orders", "perlu_dikirim", "Pesanan perlu dikirim", "non_uang", "week", "sales_order"),

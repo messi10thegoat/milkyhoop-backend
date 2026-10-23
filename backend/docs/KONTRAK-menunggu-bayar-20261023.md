@@ -1,6 +1,6 @@
 # KONTRAK "Menunggu bayar" SO + "Belum dibayar" Proforma (BACKEND2, 23 Okt 2026)
 
-Status: USULAN untuk MASTER (ukur kanonik selesai; belum ada kode). Asal: pemilik (tangkapan grapgrap), MASTER 23 Okt.
+Status: DITERIMA MASTER 23 Okt dengan putusan: kunci SO = `menunggu_pembayaran` (satu kunci = satu makna di seluruh sistem); label pill partisi Proforma `menunggu_bayar` → "Belum jatuh tempo" (FE); kolom Status proforma "Menunggu bayar" tetap. Asal: pemilik (tangkapan grapgrap), MASTER 23 Okt.
 Pola: Odoo prepayment 1–100% / NetSuite Customer Deposit / Zoho Retainer Invoice "Unpaid" — satu daftar "menunggu
 pembayaran sebelum pemenuhan", bukan filter khusus DP. Iron Law 1/16 (terbayar = terbayar_proforma kanonik), Law 34.
 
@@ -28,9 +28,9 @@ dibayar). Maka:
   salah baca. Usul: SO tetap `menunggu_bayar` (modul berbeda, tautan selalu {modul, aksi}); KONTRAK + docstring
   mencatat beda maknanya. Alternatif bila MASTER menolak: SO `menunggu_pembayaran`. → PUTUSAN MASTER.
 
-## 3. Definisi SO `menunggu_bayar` (menggantikan `menunggu_dp` sebagai pill)
+## 3. Definisi SO `menunggu_pembayaran` (label FE "Menunggu bayar") (menggantikan `menunggu_dp` sebagai pill)
 
-menunggu_bayar(SO) = SO berjalan (bukan draft/cancelled/completed) ∧ sisa SO > 0 ∧ ∃ proforma p milik SO dengan
+menunggu_pembayaran(SO) = SO berjalan (bukan draft/cancelled/completed) ∧ sisa SO > 0 ∧ ∃ proforma p milik SO dengan
 `belum_dibayar(p)` ∧ ¬(p.purpose = PELUNASAN ∧ SO punya faktur terbit) [aturan tagihan_pertama yang sudah ada: begitu
 faktur terbit, faktur yang menagih → pill faktur]. Nilai = Σ sisa kanonik (nominal − terbayar) proforma yang memenuhi.
 - `perlu_minta_dp` TETAP (syarat: tanpa proforma terbit apa pun) → saling lepas dengan menunggu_bayar.
@@ -43,12 +43,12 @@ faktur terbit, faktur yang menagih → pill faktur]. Nilai = Σ sisa kanonik (no
 - `?aksi=menunggu_dp` diterima = `menunggu_bayar`; `/summary` mengirim `menunggu_bayar_*` DAN `menunggu_dp_*` (= nilai
   menunggu_bayar) selama transisi; nilai `aksi`/`aksi_semua` baris tetap `menunggu_dp` sampai FE pindah (pola
   segera_tempo/jatuh_tempo_minggu_ini). Cabut alias sesudah FE pindah TERVERIFIKASI + nol pemanggil terbukti.
-- `KUNCI_DP` → `KUNCI_BAYAR = (perlu_minta_dp, menunggu_bayar)`; kartu dashboard "DP belum diterima"
-  (?tugas=dp_belum_diterima, nama kunci tugas tetap) = menunggu_bayar ∪ perlu_minta_dp; label kartu FE → "Menunggu
+- `KUNCI_DP` → `KUNCI_BAYAR = (perlu_minta_dp, menunggu_pembayaran)`; kartu dashboard (?tugas=dp_belum_diterima, nama kunci tugas
+  tetap) = menunggu_pembayaran ∪ perlu_minta_dp, judul server "N pesanan menunggu bayar"; label kartu FE → "Menunggu
   bayar".
 
 ## 5. Dashboard pengingat (KONTRAK-dashboard-pengingat §10 baru)
-- Registri: ("sales_orders", "menunggu_dp", "DP ditunggu") → ("sales_orders", "menunggu_bayar", "Menunggu bayar").
+- Registri: ("sales_orders", "menunggu_dp", "DP ditunggu") → ("sales_orders", "menunggu_pembayaran", "Menunggu bayar").
   `key` pengingat memuat kunci → status "selesai"/dismiss untuk kunci lama TERSETEL ULANG sekali (diterima MASTER (c)).
 - `sum_in_ditagih` NAIK (proforma PELUNASAN belum dibayar = sudah ditagih): kaos +1.318.000, grapgrap +2.880.000
   (terukur). `sum_in_dp_belum_ditagih` (perlu_minta_dp) tak berubah. Hitung ganda faktur+proforma: 0 hari ini; aturan
@@ -56,8 +56,9 @@ faktur terbit, faktur yang menagih → pill faktur]. Nilai = Σ sisa kanonik (no
   (bila ada → sisa proforma yang sudah tercakup faktur keluar).
 
 ## 6. FE (WORKSPACE, sesudah kontrak final)
-CW recipes/salesOrder.ts:122 `{label:'Menunggu DP', kunci:'menunggu_dp'}` → `{label:'Menunggu bayar', kunci:'menunggu_bayar'}`
-(+ aksiSo.test.ts); pill/saring Proforma "Belum dibayar" `?aksi=belum_dibayar`; label kartu dashboard.
+CW recipes/salesOrder.ts:122 `{label:'Menunggu DP', kunci:'menunggu_dp'}` → `{label:'Menunggu bayar', kunci:'menunggu_pembayaran'}`
+(+ aksiSo.test.ts); saring Proforma "Belum dibayar" `?aksi=belum_dibayar` (+ summary belum_dibayar_count/_value); label pill partisi Proforma
+`menunggu_bayar` → "Belum jatuh tempo" (recipes/proforma.ts:59 + peta warna :68 + kata cocok :24/:42 + tes).
 
 ## 7. Berkas & pemilik
 so_posisi / so_aksi (BACKEND2), pengingat (BACKEND2), proforma_aksi + routers/proformas (BACKEND2);

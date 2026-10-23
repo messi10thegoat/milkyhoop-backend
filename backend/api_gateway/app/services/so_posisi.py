@@ -19,6 +19,7 @@ from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
 from .so_fase_lokasi import STATUS_TERTUTUP as _FASE_TUTUP, teks_fase
 from .so_kirim import _AKTIF, belum_dikirim, terkirim_per_baris
 
+from .proforma_aksi import proforma_lunas  # SATU rumus lunas dgn pill Proforma (belum_dibayar)
 NOL = Decimal("0")
 SELESAI_KIRIM = ("completed", "cancelled")  # putusan pemilik #8: Kirim "—"
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
@@ -41,6 +42,17 @@ def menunggu_dp(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool)
         return False
     p = tagihan_pertama(belum_bayar, ada_faktur)
     return p is not None and p["purpose"] == "DP"
+
+
+def menunggu_pembayaran(status: str, sisa: Decimal, belum_dibayar: list, ada_faktur: bool) -> bool:
+    """MENUNGGU-PEMBAYARAN (23 Okt 2026, pemilik + MASTER; KONTRAK-menunggu-bayar): SO berjalan bersisa yang punya proforma TERBIT
+    belum lunas APA PUN jenisnya (DP / termin / pelunasan penuh) -- satu daftar "menunggu pembayaran sebelum pemenuhan" (pola Odoo
+    prepayment / NetSuite Customer Deposit / Zoho Retainer Unpaid). belum_dibayar: [{"purpose"}] proforma issued yang belum lunas
+    (proforma_aksi.proforma_lunas, SAMA dengan pill Proforma). PELUNASAN dilewati bila faktur terbit (aturan tagihan_pertama:
+    fakturlah yang menagih -> pill faktur). `menunggu_dp` di atas tetap = TEKS kolom Posisi ("Menunggu DP")."""
+    if status in SO_TAK_BERJALAN or sisa <= NOL:
+        return False
+    return any(not (p["purpose"] == "PELUNASAN" and ada_faktur) for p in belum_dibayar)
 
 
 def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa_faktur: Decimal,
@@ -192,8 +204,9 @@ def perlu_minta_dp(status: str, punya_term: bool, ada_proforma_terbit: bool, ada
 
 async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
     """rows: SO berjalan (id, status, total_amount, dp_percent, dp_amount). -> {so_id: (kunci, nilai)} dengan kunci
-    'menunggu_dp' (nilai = sisa proforma DP terbit yang belum terbayar, terbayar_proforma kanonik) atau 'perlu_minta_dp'
-    (nilai = dp_wajib syarat SO). Keduanya saling lepas. Fakta menunggu_dp SAMA dengan fakta_daftar (Posisi).
+    'menunggu_pembayaran' (nilai = Σ sisa proforma terbit belum lunas APA PUN jenisnya, terbayar_proforma kanonik; PELUNASAN
+    dilewati bila faktur terbit) atau 'perlu_minta_dp' (nilai = dp_wajib syarat SO). Keduanya saling lepas (perlu_minta_dp
+    mensyaratkan TANPA proforma terbit).
     Usaha tanpa syarat DP dan tanpa proforma DP = satu kueri proforma saja."""
     ids = [r["id"] for r in rows]
     if not ids:
@@ -203,7 +216,8 @@ async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
     for p in pfs:
         per_so.setdefault(p["sales_order_id"], []).append(p)
     terbit = {p["sales_order_id"] for p in pfs if p["status"] not in PROFORMA_BELUM_TERBIT}
-    tunggu = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued" and p["purpose"] == "DP"})
+    # MENUNGGU-PEMBAYARAN (23 Okt): SO dengan proforma terbit APA PUN jenisnya (dulu hanya DP)
+    tunggu = sorted({p["sales_order_id"] for p in pfs if p["status"] == "issued"})
     # pengecualian proforma terbit/uang muka/faktur HANYA di perlu_minta_dp (satu tempat; kontrol merah 14 Okt)
     minta = sorted(r["id"] for r in rows if r["status"] not in SO_TAK_BERJALAN
                    and punya_term_dp(r.get("dp_percent"), r.get("dp_amount")))
@@ -220,9 +234,12 @@ async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
         r = st[sid]
         sisa = Decimal(str(r["total_amount"] or 0)) - rg[sid]["tertutup"]
         ada_faktur = faktur.get(sid, 0) > 0
-        if sid in per_so and menunggu_dp(r["status"], sisa, belum_bayar_so(per_so[sid], terbayar), ada_faktur):
-            out[sid] = ("menunggu_dp", sum((max(Decimal(str(p["amount"])) - terbayar.get(p["id"], {}).get("paid", NOL), NOL)
-                                            for p in per_so[sid] if p["status"] == "issued" and p["purpose"] == "DP"), NOL))
+        ikut = [p for p in per_so.get(sid, []) if p["status"] == "issued"
+                and not proforma_lunas(p["amount"], terbayar.get(p["id"], {}).get("paid", NOL))
+                and not (p["purpose"] == "PELUNASAN" and ada_faktur)]
+        if ikut and menunggu_pembayaran(r["status"], sisa, ikut, ada_faktur):
+            out[sid] = ("menunggu_pembayaran", sum((max(Decimal(str(p["amount"])) - terbayar.get(p["id"], {}).get("paid", NOL), NOL)
+                                                    for p in ikut), NOL))
         elif sid in minta and perlu_minta_dp(r["status"], True, sid in terbit, sid in hidup, ada_faktur, sisa):
             out[sid] = ("perlu_minta_dp", dp_wajib(r["total_amount"], r.get("dp_percent"), r.get("dp_amount")))
     return out

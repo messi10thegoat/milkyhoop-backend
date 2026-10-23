@@ -16,6 +16,11 @@ from typing import Optional
 
 AMBANG_SEGERA_TEMPO = 7  # bawaan == pengingat.AMBANG_BAWAAN; nilai tenant = pengingat.ambang_segera
 AKSI = ("perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo")
+# 23 Okt 2026 (KONTRAK-menunggu-bayar §2): kunci SARING (BUKAN pill; partisi AKSI tetap) "Belum dibayar" = SEMUA proforma terbit
+# belum lunas pada SO tak batal = gabungan tiga kunci terbit (pola Zoho Retainer "Unpaid"; "lewat tempo" = subset). CATATAN: pill
+# partisi `menunggu_bayar` di atas = belum jatuh tempo (label FE "Belum jatuh tempo"), BUKAN semua yang belum dibayar.
+BELUM_DIBAYAR = ("menunggu_bayar", "segera_tempo", "lewat_tempo")
+SARING = ("belum_dibayar",)
 TOLERANSI_LUNAS = Decimal("0.005")
 
 

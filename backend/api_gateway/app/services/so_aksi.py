@@ -5,8 +5,10 @@ Kunci (pola NetSuite Pending Approval / Pending Fulfillment / Pending Billing), 
                        (DEFINISI-TAGIH 14 Okt: telat | perlu_dikirim | siap_diserahkan = PARTISI bersih SO bersisa kirim)
   perlu_minta_dp     = (PERLU-MINTA-DP) berjalan, bersyarat DP, BELUM ditagih: tanpa proforma terbit apa pun, tanpa uang muka
                        hidup, tanpa faktur terbit, sisa > 0 (so_posisi.perlu_minta_dp; pola SAP down payment request)
-  menunggu_dp        = (AKSI-SO-2) berjalan, fakta Posisi "Menunggu DP" tanpa fase lokasi -- SATU fungsi murni
-                       so_posisi.menunggu_dp (dipanggil juga posisi()); pola NetSuite Pending Deposit
+  menunggu_pembayaran = (MENUNGGU-PEMBAYARAN 23 Okt, menggantikan menunggu_dp) berjalan, sisa > 0, ada proforma TERBIT belum
+                       lunas APA PUN jenisnya (DP/termin/pelunasan penuh; PELUNASAN dilewati bila faktur terbit) --
+                       so_posisi.menunggu_pembayaran; pola Odoo prepayment / NetSuite Customer Deposit. `menunggu_dp` = ALIAS
+                       USANG (?aksi=, summary, nilai aksi baris) sampai FE pindah (KONTRAK-menunggu-bayar §4)
   perlu_dikonfirmasi = draft
   perlu_dikirim      = berjalan, ada baris PERLU DIKIRIM (COALESCE(perlu_kirim, track_inventory, false) -- ekspresi
                        sama dengan so_kirim.ringkasan_menunggu_kirim / V318) yang qty-nya belum habis dikirim SJ aktif,
@@ -26,10 +28,10 @@ Terkirim = so_kirim.terkirim_per_baris (SJ aktif; quantity_shipped MATI). Difakt
 (sj_so.PRED_FAKTUR_TERBIT -- satu predikat dengan SQL_FAKTUR_TERBIT_PER_BARIS); kolom quantity_invoiced TIDAK dipakai
 (menyimpang dari faktur, tiket). DP/proforma tak memengaruhi qty ditagih (bukan baris faktur).
 Filter ?aksi=, kolom aksi per baris, dan /summary <kunci>_count/_value memanggil `fakta` yang SAMA; kartu dashboard
-"DP belum diterima" (?tugas=dp_belum_diterima) = dp_belum_diterima() = menunggu_dp U perlu_minta_dp dari fakta yang SAMA.
+"DP belum diterima" (?tugas=dp_belum_diterima) = dp_belum_diterima() = menunggu_pembayaran U perlu_minta_dp dari fakta yang SAMA.
 Kartu dashboard "N pesanan harus dikirim" (?tugas=harus_kirim) = dashboard_v2.pilih_harus_kirim atas fakta yang SAMA:
 telat_kirim | perlu_dikirim | siap_diserahkan dengan tanggal kirim <= akhir minggu ATAU kosong (DASBOR-SATU-SUMBER 15 Okt).
-_value = Σ total_amount SO, KECUALI kunci DP: menunggu_dp = sisa proforma DP belum terbayar, perlu_minta_dp = DP syarat SO.
+_value = Σ total_amount SO, KECUALI kunci bayar: menunggu_pembayaran = Σ sisa proforma terbit belum lunas, perlu_minta_dp = DP syarat SO.
 """
 from datetime import date
 from decimal import Decimal
@@ -40,9 +42,14 @@ from .sj_so import PRED_FAKTUR_TERBIT
 from .so_agregat import AKTIF_TIDAK
 
 NOL = Decimal("0")
-AKSI = ("telat_kirim", "perlu_minta_dp", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim", "siap_diserahkan",
+AKSI = ("telat_kirim", "perlu_minta_dp", "menunggu_pembayaran", "perlu_dikonfirmasi", "perlu_dikirim", "siap_diserahkan",
         "perlu_ditagih")
-KUNCI_DP = ("perlu_minta_dp", "menunggu_dp")  # saling lepas; kartu dashboard "DP belum diterima" = gabungannya
+KUNCI_BAYAR = ("perlu_minta_dp", "menunggu_pembayaran")  # saling lepas; kartu dashboard "Menunggu bayar" = gabungannya
+# TRANSISI (23 Okt 2026, aditif): `menunggu_dp` = ALIAS USANG menunggu_pembayaran -- diterima di ?aksi=, dikirim di /summary
+# ({k}_count/_value == menunggu_pembayaran) dan TETAP nilai aksi/aksi_semua baris (FE CW memetakan label dari kunci lama) sampai
+# rilis FE yang memakai menunggu_pembayaran TERVERIFIKASI + nol pemanggil terbukti; lalu dicabut.
+AKSI_USANG = {"menunggu_dp": "menunggu_pembayaran"}        # masukan ?aksi= / kunci summary lama -> kunci kanonik
+AKSI_BARIS_USANG = {"menunggu_pembayaran": "menunggu_dp"}  # nilai aksi baris selama transisi FE
 FASE_SIAP = "tersedia"  # = so_agregat.PREDIKAT_TERSEDIA (fase_lokasi = 'tersedia')
 STATUS_DRAF = "draft"
 FLAG_TAGIH_SEBELUM_KIRIM = "tagih_sebelum_kirim"  # tenant_features; MATI = NetSuite (tagih sesudah serah)
@@ -70,7 +77,7 @@ def _d(v) -> Decimal:
 
 def aksi_so(status: str, expected_ship_date: Optional[date], hari_ini: date, baris: Iterable[dict],
             dp: Optional[str] = None, fase_lokasi: Optional[str] = None, tagih_sebelum_kirim: bool = False) -> list:
-    """Murni. baris: {quantity, perlu, stok, terkirim, difaktur}; dp = kunci KUNCI_DP dari so_posisi.fakta_dp (atau None).
+    """Murni. baris: {quantity, perlu, stok, terkirim, difaktur}; dp = kunci KUNCI_BAYAR dari so_posisi.fakta_dp (atau None).
     -> kunci AKSI yang berlaku, urut AKSI."""
     if status == STATUS_DRAF:
         return ["perlu_dikonfirmasi"]
@@ -86,7 +93,7 @@ def aksi_so(status: str, expected_ship_date: Optional[date], hari_ini: date, bar
             sisa_tagih = True
     telat = sisa_kirim and expected_ship_date is not None and expected_ship_date < hari_ini
     out = ["telat_kirim"] if telat else []
-    if dp in KUNCI_DP:
+    if dp in KUNCI_BAYAR:
         out.append(dp)
     if sisa_kirim and not telat:
         out.append("siap_diserahkan" if fase_lokasi == FASE_SIAP else "perlu_dikirim")
@@ -138,7 +145,18 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
 
 
 def id_aksi(f: dict, aksi: str) -> list:
+    aksi = AKSI_USANG.get(aksi, aksi)
     return [i for i, v in f.items() if aksi in v["aksi"]]
+
+
+def kunci_sah(aksi) -> bool:
+    """?aksi= dikenal (kanonik atau alias usang). Periksa TIPE: panggilan langsung tanpa argumen membawa objek Query."""
+    return isinstance(aksi, str) and (aksi in AKSI or aksi in AKSI_USANG)
+
+
+def aksi_baris(daftar: list) -> list:
+    """Nilai aksi/aksi_semua BARIS selama transisi FE: kunci kanonik baru -> kunci lama (AKSI_BARIS_USANG)."""
+    return [AKSI_BARIS_USANG.get(k, k) for k in daftar]
 
 
 def ringkasan(f: dict) -> dict:
@@ -149,17 +167,19 @@ def ringkasan(f: dict) -> dict:
         isi = [v.get("nilai", {}).get(k, v["total"]) for v in f.values() if k in v["aksi"]]
         out[f"{k}_count"] = len(isi)
         out[f"{k}_value"] = float(sum(isi, NOL))
+    for lama, baru in AKSI_USANG.items():  # USANG: alias (KONTRAK-menunggu-bayar §4)
+        out[f"{lama}_count"], out[f"{lama}_value"] = out[f"{baru}_count"], out[f"{baru}_value"]
     return out
 
 
 async def dp_belum_diterima(conn, tenant_id: str, hari_ini: date) -> list:
-    """Kartu dashboard "DP belum diterima" + ?tugas=dp_belum_diterima (PERLU-MINTA-DP, 14 Okt 2026): menunggu_dp U
+    """Kartu dashboard "Menunggu bayar" + ?tugas=dp_belum_diterima (PERLU-MINTA-DP 14 Okt, MENUNGGU-PEMBAYARAN 23 Okt): menunggu_pembayaran U
     perlu_minta_dp dari `fakta` yang SAMA dengan pill/summary. -> [{id, order_number, dp_wajib, kunci}], dp_wajib = nilai
     kunci itu (sama dengan summary _value)."""
     f = await fakta(conn, tenant_id, hari_ini)
     out = []
     for i, v in f.items():
-        k = next((x for x in KUNCI_DP if x in v["aksi"]), None)
+        k = next((x for x in KUNCI_BAYAR if x in v["aksi"]), None)
         if k:
             out.append({"id": i, "order_number": v["nomor"], "dp_wajib": v["nilai"][k], "kunci": k})
     return sorted(out, key=lambda r: r["order_number"] or "")

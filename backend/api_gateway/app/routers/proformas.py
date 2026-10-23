@@ -381,7 +381,7 @@ async def list_proformas(
     # 5 Okt 2026: SATU pemilih dengan kartu "Terbit belum lunas" (kelas_bayar_terbit), aditif terhadap filter lain
     tugas: Optional[Literal["terbit_belum_lunas"]] = Query(None),
     # 14 Okt 2026: pill AKSI -- keanggotaan ditentukan SERVER (services/proforma_aksi, tanggal bisnis), nilai asing = 422
-    aksi: Optional[Literal["perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo"]] = Query(None),
+    aksi: Optional[Literal["perlu_diterbitkan", "menunggu_bayar", "segera_tempo", "lewat_tempo", "belum_dibayar"]] = Query(None),
     # 21 Okt 2026 (PENJUALAN-SERAGAM): sum_total/sum_sisa atas SEMUA hasil filter, opt-in (FE: muat pertama saja)
     with_totals: bool = Query(False),
 ):
@@ -414,6 +414,11 @@ async def list_proformas(
                 extras.append(f"p.id = ANY(${idx}::uuid[])")
                 params.append([pid for pid, (k, _) in
                                (await aksi_semua_proforma(conn, ctx["tenant_id"], hari_ini, ambang=_ambang)).items() if k == aksi])
+                idx += 1
+            elif isinstance(aksi, str) and aksi in _pa.SARING:  # 23 Okt: belum_dibayar = gabungan kunci terbit (bukan pill)
+                extras.append(f"p.id = ANY(${idx}::uuid[])")
+                params.append([pid for pid, (k, _) in
+                               (await aksi_semua_proforma(conn, ctx["tenant_id"], hari_ini, ambang=_ambang)).items() if k in _pa.BELUM_DIBAYAR])
                 idx += 1
             if customer_id:
                 extras.append(f"p.customer_id = ${idx}::uuid")
@@ -587,6 +592,9 @@ async def get_proforma_summary(request: Request, search: Optional[str] = Query(N
         # 14 Okt 2026: pill AKSI (aksi_semua_proforma == ?aksi= daftar); nilai: draf nominal, terbit SISA
         **{f"{k}_count": sum(1 for a, _ in aksi_map.values() if a == k) for k in _pa.AKSI},
         **{f"{k}_value": float(sum((v for a, v in aksi_map.values() if a == k), Decimal("0"))) for k in _pa.AKSI},
+        # 23 Okt 2026: saring "Belum dibayar" (bukan pill) = Σ kunci terbit; == ?aksi=belum_dibayar daftar
+        "belum_dibayar_count": sum(1 for a, _ in aksi_map.values() if a in _pa.BELUM_DIBAYAR),
+        "belum_dibayar_value": float(sum((v for a, v in aksi_map.values() if a in _pa.BELUM_DIBAYAR), Decimal("0"))),
     }}
 
 

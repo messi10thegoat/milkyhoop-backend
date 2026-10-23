@@ -922,7 +922,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
         tugas.append({
             "key": f"so_dp_pending:{len(so)}:{uang(total)}:{_sidik(*sorted(nomor))}",
             "type": "so_dp_pending", "lane": "any",
-            "title_html": f"<b>{len(so)} DP</b> belum diterima",
+            "title_html": f"<b>{len(so)} pesanan</b> menunggu bayar",  # 23 Okt: menunggu_pembayaran U perlu_minta_dp (dulu "N DP belum diterima")
             "subtitle": ", ".join(nomor[:3]) + (f" +{len(nomor) - 3} lainnya" if len(nomor) > 3 else ""),
             "amount": uang(total),
             "refs": [{"kind": "sales_order", "id": str(r["id"]), "number": r["order_number"]} for r in so],
@@ -982,8 +982,8 @@ async def so_harus_kirim(conn, tenant_id: str, hari_ini: date) -> list:
 
 
 async def so_dp_belum(conn, tenant_id: str, hari_ini: date) -> list:
-    """Kartu "DP belum diterima" (PERLU-MINTA-DP, 14 Okt 2026, putusan MASTER): SATU sumber = so_aksi (pill
-    menunggu_dp U perlu_minta_dp). Kueri sendiri (SO confirmed bersyarat DP tanpa uang muka) DICABUT: ia memasukkan SO
+    """Kartu "Menunggu bayar" (PERLU-MINTA-DP 14 Okt, MENUNGGU-PEMBAYARAN 23 Okt, putusan MASTER): SATU sumber = so_aksi (pill
+    menunggu_pembayaran U perlu_minta_dp). Kueri sendiri (SO confirmed bersyarat DP tanpa uang muka) DICABUT: ia memasukkan SO
     yang sudah ditagih PELUNASAN dan melewatkan proforma DP tanpa syarat (kaos 16 vs pill 1). -> [{id, order_number, dp_wajib}]."""
     from . import so_aksi
     return await so_aksi.dp_belum_diterima(conn, tenant_id, hari_ini)

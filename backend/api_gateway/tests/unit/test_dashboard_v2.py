@@ -119,7 +119,7 @@ def test_so_harus_kirim_dan_dp_belum_dan_rekon():
     assert kirim["subtitle"] == "SO-1, SO-0, SO-2 · 1 lewat tanggal kirim"
     assert kirim["actions"][0]["kind"] == "prepare_shipment"
     dpk, = _per_jenis(t, "so_dp_pending")
-    assert dpk["lane"] == "any" and dpk["amount"] == "250000.00" and dpk["title_html"] == "<b>1 DP</b> belum diterima"
+    assert dpk["lane"] == "any" and dpk["amount"] == "250000.00" and dpk["title_html"] == "<b>1 pesanan</b> menunggu bayar"
     rek, = _per_jenis(t, "bank_recon")
     assert rek["lane"] == "any" and rek["key"] == f"bank_recon:{UUID(int=4)}:2026-08"
     assert rek["title_html"] == "<b>Rekonsiliasi bank</b> Agustus 2026"
@@ -574,7 +574,7 @@ def test_pilih_harus_kirim_pasangan_filter_fakta():
         5: _f(["perlu_dikirim"], batas + timedelta(days=1)),  # sesudah minggu ini -> TIDAK
         6: _f(["siap_diserahkan"], batas + timedelta(days=9)),
         7: _f(["perlu_ditagih"], H),                          # bukan kunci kirim -> TIDAK
-        8: _f(["menunggu_dp"], None),
+        8: _f(["menunggu_pembayaran"], None),
         9: _f([], None),                                      # selesai/arsip -> TIDAK
         10: _f(["perlu_dikonfirmasi"], H),                    # draft -> TIDAK
     }

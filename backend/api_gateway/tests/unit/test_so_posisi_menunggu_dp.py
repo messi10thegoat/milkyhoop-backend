@@ -96,7 +96,9 @@ def test_fakta_dp_menunggu(monkeypatch):
     bayar = {pf[1]["id"]: {"paid": D("100")}, pf[5]["id"]: {"paid": D("10")}}
     rows = [_so(i, term=False) for i in s.values()]
     hasil, minta = _jalan(monkeypatch, s, pf, rows, dibayar=bayar, tutup={s["habis"]})
-    assert hasil == {s["dp"]: ("menunggu_dp", D("100")), s["sebagian"]: ("menunggu_dp", D("140"))}
+    # MENUNGGU-PEMBAYARAN (23 Okt): proforma terbit belum lunas APA PUN jenisnya; SO termin (TERMIN + DP belum dibayar) kini ikut, nilai Σ
+    assert hasil == {s["dp"]: ("menunggu_pembayaran", D("100")), s["termin"]: ("menunggu_pembayaran", D("200")),
+                     s["sebagian"]: ("menunggu_pembayaran", D("140"))}
     assert minta["tb"] == {s["dp"], s["lunasdp"], s["termin"], s["habis"], s["sebagian"]}
 
 

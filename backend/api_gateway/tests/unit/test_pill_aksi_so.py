@@ -95,7 +95,7 @@ def test_lebih_kirim_atau_lebih_faktur_tak_negatif_menjadi_aksi():
 
 
 def test_aksi_utama_urutan_mendesak():
-    assert A.AKSI == ("telat_kirim", "perlu_minta_dp", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim",
+    assert A.AKSI == ("telat_kirim", "perlu_minta_dp", "menunggu_pembayaran", "perlu_dikonfirmasi", "perlu_dikirim",
                       "siap_diserahkan", "perlu_ditagih")  # AKSI-SO-2 + PERLU-MINTA-DP (MASTER 14 Okt)
     assert A.aksi_utama(["perlu_dikirim", "perlu_ditagih"]) == "perlu_dikirim"
     assert A.aksi_utama([]) is None
@@ -186,8 +186,9 @@ async def test_fakta_seluruh_tenant_dan_arsip_tak_dikueri_barisnya():
     r = A.ringkasan(f)
     assert r == {"telat_kirim_count": 1, "telat_kirim_value": 1000.0, "perlu_dikonfirmasi_count": 1,
                  "perlu_dikonfirmasi_value": 100.0, "perlu_dikirim_count": 0, "perlu_dikirim_value": 0.0,
-                 "perlu_ditagih_count": 1, "perlu_ditagih_value": 250.5, "menunggu_dp_count": 0,
-                 "menunggu_dp_value": 0.0, "siap_diserahkan_count": 0, "siap_diserahkan_value": 0.0,
+                 "perlu_ditagih_count": 1, "perlu_ditagih_value": 250.5, "menunggu_pembayaran_count": 0,
+                 "menunggu_pembayaran_value": 0.0, "menunggu_dp_count": 0, "menunggu_dp_value": 0.0,
+                 "siap_diserahkan_count": 0, "siap_diserahkan_value": 0.0,
                  "perlu_minta_dp_count": 0, "perlu_minta_dp_value": 0.0}
 
 
@@ -374,19 +375,19 @@ async def test_summary_pill_dari_ringkasan_fakta(monkeypatch):
 
 def test_menunggu_dp_urutan_kedua_dan_bertumpuk():
     # grapgrap SO-2609-0009: telat + menunggu DP -> kolom aksi telat_kirim, tapi tetap ANGGOTA menunggu_dp (pill penuh)
-    a = A.aksi_so("confirmed", date(2026, 10, 1), HARI, [_b(4, True, False)], dp="menunggu_dp")
-    assert a == ["telat_kirim", "menunggu_dp"]
+    a = A.aksi_so("confirmed", date(2026, 10, 1), HARI, [_b(4, True, False)], dp="menunggu_pembayaran")
+    assert a == ["telat_kirim", "menunggu_pembayaran"]
     assert A.aksi_utama(a) == "telat_kirim"
-    assert A.aksi_utama(A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], dp="menunggu_dp")) == "menunggu_dp"
+    assert A.aksi_utama(A.aksi_so("confirmed", None, HARI, [_b(4, True, False)], dp="menunggu_pembayaran")) == "menunggu_pembayaran"
 
 
 def test_menunggu_dp_tanpa_baris_bersisa_tetap_muncul():
-    assert A.aksi_so("invoiced", None, HARI, [], dp="menunggu_dp") == ["menunggu_dp"]
+    assert A.aksi_so("invoiced", None, HARI, [], dp="menunggu_pembayaran") == ["menunggu_pembayaran"]
 
 
 @pytest.mark.parametrize("st", ["draft", "cancelled", "completed"])
 def test_menunggu_dp_bukan_untuk_draf_dan_arsip(st):
-    assert "menunggu_dp" not in A.aksi_so(st, None, HARI, [_b(1, True, False)], dp="menunggu_dp")
+    assert "menunggu_pembayaran" not in A.aksi_so(st, None, HARI, [_b(1, True, False)], dp="menunggu_pembayaran")
 
 
 def test_siap_diserahkan_eksklusif_dari_perlu_dikirim():
@@ -417,20 +418,21 @@ async def test_fakta_menunggu_dp_dan_siap_lewat_so_posisi(monkeypatch):
 
     async def dp(conn, t, rows):
         terima["rows"] = {r["id"] for r in rows}
-        return {s["tagih"]: ("menunggu_dp", D("40")), s["batal"]: ("menunggu_dp", D("1"))}  # batal diabaikan (arsip)
+        return {s["tagih"]: ("menunggu_pembayaran", D("40")), s["batal"]: ("menunggu_pembayaran", D("1"))}  # batal diabaikan (arsip)
     monkeypatch.setattr(A.so_posisi, "fakta_dp", dp)
     f = await A.fakta(c, TENANT, HARI)
     assert terima["rows"] == {s["telat"], s["tagih"], s["beres"]}     # hanya SO berjalan
-    assert f[s["tagih"]]["aksi"] == ["menunggu_dp", "perlu_ditagih"]
+    assert f[s["tagih"]]["aksi"] == ["menunggu_pembayaran", "perlu_ditagih"]
     assert f[s["telat"]]["aksi"] == ["telat_kirim"]          # siap tapi telat -> telat saja
     assert f[s["batal"]]["aksi"] == []
     r = A.ringkasan(f)
-    assert (r["menunggu_dp_count"], r["menunggu_dp_value"]) == (1, 40.0)   # nilai DP, bukan total SO 250.5
+    assert (r["menunggu_pembayaran_count"], r["menunggu_pembayaran_value"]) == (1, 40.0)   # sisa proforma, bukan total SO 250.5
+    assert (r["menunggu_dp_count"], r["menunggu_dp_value"]) == (1, 40.0)   # alias usang == kanonik
     assert (r["siap_diserahkan_count"], r["perlu_dikirim_count"]) == (0, 0)
 
 
 def test_rute_meneruskan_kunci_baru(monkeypatch):
-    for k in ("menunggu_dp", "siap_diserahkan"):
+    for k in ("menunggu_pembayaran", "menunggu_dp", "siap_diserahkan"):
         async def gp():
             raise RuntimeError("sampai-db")
         monkeypatch.setattr(SO, "get_pool", gp)
@@ -455,14 +457,14 @@ async def test_dp_belum_diterima_gabungan_dan_nilai_sama_dengan_summary(monkeypa
         r["order_number"] = {s["telat"]: "SO-2", s["tagih"]: "SO-1"}.get(r["id"], "SO-X")
 
     async def dp(conn, t, rows):
-        return {s["tagih"]: ("menunggu_dp", D("40")), s["telat"]: ("perlu_minta_dp", D("300"))}
+        return {s["tagih"]: ("menunggu_pembayaran", D("40")), s["telat"]: ("perlu_minta_dp", D("300"))}
     monkeypatch.setattr(A.so_posisi, "fakta_dp", dp)
     rows = await A.dp_belum_diterima(c, TENANT, HARI)
     assert [(r["order_number"], r["kunci"], r["dp_wajib"]) for r in rows] == [
-        ("SO-1", "menunggu_dp", D("40")), ("SO-2", "perlu_minta_dp", D("300"))]
+        ("SO-1", "menunggu_pembayaran", D("40")), ("SO-2", "perlu_minta_dp", D("300"))]
     r = A.ringkasan(await A.fakta(c, TENANT, HARI))
     assert (r["perlu_minta_dp_count"], r["perlu_minta_dp_value"]) == (1, 300.0)
-    assert r["menunggu_dp_value"] + r["perlu_minta_dp_value"] == float(sum(x["dp_wajib"] for x in rows))
+    assert r["menunggu_pembayaran_value"] + r["perlu_minta_dp_value"] == float(sum(x["dp_wajib"] for x in rows))
 
 
 def test_kartu_dashboard_tanpa_kueri_sendiri():

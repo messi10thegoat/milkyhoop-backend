@@ -25,7 +25,7 @@ def test_registri_kunci_anggota_aksi_daftar_dan_bentuk():
     assert len({(m, k) for m, k, *_ in P.PENGINGAT}) == len(P.PENGINGAT)
     assert not any(m == "vendor_deposits" for m, *_ in P.PENGINGAT)  # putusan MASTER: UM vendor bukan v1
     dp = [k for m, k, *_ in P.PENGINGAT if m == "sales_orders"]
-    assert "menunggu_dp" in dp and "perlu_minta_dp" in dp  # DUA pengingat, tak digabung
+    assert "menunggu_pembayaran" in dp and "perlu_minta_dp" in dp  # DUA pengingat, tak digabung
 
 
 class _K:
@@ -93,12 +93,12 @@ def test_rangkum_tugas_memuat_reminders_dan_dismiss():
 def test_sum_in_pecah_ditagih_dan_dp_belum_ditagih_invarian():
     """MASTER 23 Okt (pola QBO/Xero): DP yang belum diminta bukan piutang. sum_in == ditagih + dp_belum_ditagih; versi tetap 1 (aditif)."""
     ps = [{"key": "f", "modul": "sales_invoices", "kunci_aksi": "jatuh_tempo", "arah": "masuk", "amount": "5511000.00", "izin": "x"},
-          {"key": "m", "modul": "sales_orders", "kunci_aksi": "menunggu_dp", "arah": "masuk", "amount": "150000.00", "izin": "x"},
+          {"key": "m", "modul": "sales_orders", "kunci_aksi": "menunggu_pembayaran", "arah": "masuk", "amount": "150000.00", "izin": "x"},
           {"key": "p", "modul": "sales_orders", "kunci_aksi": "perlu_minta_dp", "arah": "masuk", "amount": "60752000.00", "izin": "x"},
           {"key": "b", "modul": "bills", "kunci_aksi": "lewat_jatuh_tempo", "arah": "keluar", "amount": "1805006.00", "izin": "y"}]
     r = P.rangkum(ps)
     assert r["sum_in_dp_belum_ditagih"] == "60752000.00"
-    assert r["sum_in_ditagih"] == "5661000.00"  # menunggu_dp = DP SUDAH diminta (proforma/tagihan) -> ikut ditagih
+    assert r["sum_in_ditagih"] == "5661000.00"  # menunggu_pembayaran = proforma SUDAH terbit -> ikut ditagih
     assert r["sum_in"] == "66413000.00" == f"{Decimal(r['sum_in_ditagih']) + Decimal(r['sum_in_dp_belum_ditagih']):.2f}"
     assert r["sum_out"] == "1805006.00" and r["pengingat_versi"] == 1
     assert P.KUNCI_BELUM_DITAGIH == (("sales_orders", "perlu_minta_dp"),)

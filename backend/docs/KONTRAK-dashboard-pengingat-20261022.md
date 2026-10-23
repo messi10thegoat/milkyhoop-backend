@@ -105,3 +105,10 @@ Hanya pengingat dengan `count > 0` dikirim. `menunggu_dp` dan `perlu_minta_dp` =
 - Registri: (bills, segera_tempo, "Tagihan segera jatuh tempo", keluar, week, purchase_invoice); `_tagihan` meneruskan ambang N ke
   `TD.sql_aksi_berparam` (predikat ?aksi= daftar yang sama). `sum_out` = lewat_jatuh_tempo + segera_tempo (partisi: eff < hari ini vs ≥ hari ini).
 - Harness nyata: count == summary == ?aksi; `sum_out` == Σ summary keluar; kontrol merah `merah_tagihan` (count +1) WAJIB FAIL.
+
+## 10. Tambahan 23 Okt — SO menunggu_pembayaran menggantikan menunggu_dp (KONTRAK-menunggu-bayar-20261023)
+- Registri: (sales_orders, menunggu_pembayaran, "Menunggu bayar", masuk, any, sales_order) menggantikan (menunggu_dp, "DP ditunggu").
+  Anggota = SO dengan proforma terbit belum lunas APA PUN jenisnya (DP/termin/pelunasan penuh); nilai = Σ sisa proforma.
+- `key` pengingat memuat kunci -> status dismiss/selesai milik kunci lama TERSETEL ULANG sekali saat rilis (diterima MASTER).
+- `sum_in_ditagih` naik (pelunasan belum dibayar = sudah ditagih): terukur kaos +1.318.000, grapgrap +2.880.000.
+  `sum_in_dp_belum_ditagih` (perlu_minta_dp) tak berubah.

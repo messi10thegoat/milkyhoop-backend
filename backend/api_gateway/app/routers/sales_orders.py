@@ -156,7 +156,7 @@ async def list_sales_orders(
     sort_by: Optional[Literal["outstanding"]] = Query(None),
     sort_dir: Literal["asc", "desc"] = Query("desc"),
     # 14 Okt 2026 (AKSI-SO): pill aksi, aditif; kunci asing -> 422. Satu sumber dengan summary <kunci>_count
-    aksi: Optional[Literal["telat_kirim", "perlu_minta_dp", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim",
+    aksi: Optional[Literal["telat_kirim", "perlu_minta_dp", "menunggu_pembayaran", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim",
                            "siap_diserahkan", "perlu_ditagih"]] = Query(None),
     # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter. Opt-in: Sisa = turunan jurnal per SO
     # (ringkasan_pesanan) atas seluruh hasil -> biaya; pemanggil lama tak membayarnya. FE: kirim pada muat pertama saja.
@@ -184,7 +184,7 @@ async def list_sales_orders(
                 params.append(await id_tugas(conn, ctx["tenant_id"], tugas, hari_ini))
                 param_idx += 1
 
-            if aksi in so_aksi.AKSI:
+            if so_aksi.kunci_sah(aksi):  # 23 Okt: + alias usang menunggu_dp -> menunggu_pembayaran (so_aksi.AKSI_USANG)
                 conditions.append(f"id = ANY(${param_idx}::uuid[])")
                 params.append(so_aksi.id_aksi(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini), aksi))
                 param_idx += 1
@@ -272,8 +272,8 @@ async def list_sales_orders(
                     invoiced_qty=float(row["invoiced_qty"] or 0),
                     **penanda[str(row["id"])],
                     **posisi[str(row["id"])],
-                    aksi=so_aksi.aksi_utama(_aksi_baris.get(row["id"], {}).get("aksi", [])),
-                    aksi_semua=list(_aksi_baris.get(row["id"], {}).get("aksi", [])),
+                    aksi=so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_baris.get(row["id"], {}).get("aksi", []))),
+                    aksi_semua=so_aksi.aksi_baris(_aksi_baris.get(row["id"], {}).get("aksi", [])),  # transisi: kunci lama
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
@@ -601,7 +601,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                 data=SalesOrderDetail(
                     position_text=_pos["position_text"], ship_text=_pos["ship_text"],
                     kirim_hari=_pos["kirim_hari"], kirim_terbuka=_pos["kirim_terbuka"], kirim_keadaan=_pos["kirim_keadaan"],
-                    aksi=so_aksi.aksi_utama(_aksi_det), aksi_semua=_aksi_det,
+                    aksi=so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_det)), aksi_semua=so_aksi.aksi_baris(_aksi_det),
                     order_code=order.get("order_code"),
                     order_title=order.get("order_title"),
                     order_code_source=order.get("order_code_source"),
