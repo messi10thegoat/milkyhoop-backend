@@ -429,3 +429,47 @@ async def resolve_account_id_by_role_if_pkp(
             return None
 
     return await resolve_account_id_by_role(conn, tenant_id, role_key)
+
+
+# V444 (23 Okt 2026): peran yang DISEMAI seed_default_account_roles untuk SETIAP tenant (baris VALUES fungsi sesudah V444). SATU daftar
+# untuk tes test_peran_semai_lengkap (setiap AccountRole.X yang dirujuk kode harus tercakup -> tenant baru tak lahir tanpa peran yang
+# dipakai jalur posting) dan peringatan startup laporkan_peran_tak_terpetakan. Peran baru = tambah baris semai (migrasi) + di sini.
+PERAN_SEMAI: Final[frozenset[str]] = frozenset(
+    {
+        "CASH_GENERAL", "BANK_OPERATIONAL", "AR_TRADE", "AR_OTHER", "INVENTORY_MERCHANDISE", "GOODS_DELIVERED_NOT_INVOICED",
+        "AP_TRADE", "GOODS_RECEIVED_NOT_INVOICED", "PURCHASE_PRICE_VARIANCE", "CUSTOMER_DEPOSIT_LIABILITY", "REVENUE_DEFERRED",
+        "EQUITY_OPENING_BALANCE", "REVENUE_SALES_GOODS", "REVENUE_SALES_RETURN", "COGS_SALES", "COGS_PURCHASE_RETURN", "CASH_PETTY",
+        "BANK_FEE", "VAT_OUTPUT", "VAT_INPUT", "WHT_PPH_PAYABLE", "WHT_PPH_PREPAID", "AP_PREPAID", "PURCHASE_DISCOUNT",
+        "REVENUE_SALES_DISCOUNT", "REVENUE_SHIPPING", "WIP_GENERIC", "COGS_VARIANCE_PRODUCTION", "WIP_SUBCONTRACT",
+        "INVENTORY_ADJUSTMENT_EXPENSE", "SALARY_EXPENSE", "SALARY_PAYABLE", "PPH21_PAYABLE", "BPJS_EE_PAYABLE", "BPJS_ER_PAYABLE",
+        "BPJS_ER_EXPENSE", "PPH21_ER_EXPENSE", "MFG_LABOR_APPLIED", "MFG_OVERHEAD_APPLIED", "MFG_DIRECT_LABOR", "MFG_ACTUAL_OVERHEAD",
+        "COGS_SERVICE",
+        # V444
+        "EMPLOYEE_ADVANCE", "BANK_ADJUSTMENT_GAIN", "BANK_ADJUSTMENT_LOSS", "REVENUE_SALES_SERVICE",
+    }
+)
+
+
+async def laporkan_peran_tak_terpetakan(pool) -> list:
+    """Peringatan startup (V444): tenant x peran semai yang TAK terpetakan -> logger.warning per tenant (tidak memblok). SATU kueri baca.
+    Dipanggil sebagai tugas latar dari lifespan (tak memperlambat restart). -> [(tenant_id, [peran...])]."""
+    import time
+
+    t0 = time.monotonic()
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+            """SELECT t.id AS tenant_id, array_agg(p.r ORDER BY p.r) AS peran
+               FROM "Tenant" t CROSS JOIN unnest($1::text[]) AS p(r)
+               WHERE NOT EXISTS (SELECT 1 FROM account_roles a WHERE a.tenant_id = t.id AND a.role_key = p.r)
+               GROUP BY t.id ORDER BY t.id""",
+                sorted(PERAN_SEMAI),
+            )
+    except Exception as e:  # noqa: BLE001 -- tugas latar startup: jangan pernah menjatuhkan apa pun
+        _log.warning("cek peran akun startup gagal (non-fatal): %s", e)
+        return []
+    ms = (time.monotonic() - t0) * 1000
+    for r in rows:
+        _log.warning("peran akun TAK terpetakan untuk tenant %s: %s (posting yang memakainya akan 422)", r["tenant_id"], ",".join(r["peran"]))
+    _log.info("cek peran akun startup: %d tenant bercelah, %.0f ms", len(rows), ms)
+    return [(r["tenant_id"], list(r["peran"])) for r in rows]

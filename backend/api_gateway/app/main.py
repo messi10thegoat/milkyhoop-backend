@@ -259,6 +259,14 @@ async def prisma_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as _idem_err:
         print(f"Idempotency cleanup poller failed to start (non-fatal): {_idem_err}")
 
+    # V444 (23 Okt 2026): peringatan peran akun tak terpetakan per tenant -- tugas LATAR (restart tak menunggu), satu kueri baca.
+    try:
+        from .services.role_resolver import laporkan_peran_tak_terpetakan as _cek_peran
+
+        asyncio.create_task(_cek_peran(_pool_idem))
+    except Exception as _peran_err:
+        print(f"Cek peran akun startup gagal dijadwalkan (non-fatal): {_peran_err}")
+
     # Realtime hub — LISTEN pg_notify utk pembaruan-instan (Tahap 1)
     try:
         from .services.realtime import hub as _rt_hub
