@@ -11,6 +11,7 @@ docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P sh -c "pg_dump -U postgres -d milkydb --schema-only --no-owner --no-acl | psql -q -U postgres -d $S" >/dev/null 2>&1
 echo "tabel tautan ada: $(Q -c "SELECT count(*) FROM information_schema.tables WHERE table_name = 'goods_receipt_bill_links'")"
 Q -1 < $M/V455__grn_tautan_kind.sql >/dev/null 2>/tmp/v455e && echo "PASS V455 terapan" || { echo "FAIL V455: $(tail -2 /tmp/v455e)"; exit 1; }
+echo "nilai_tagih: $(Q -c "SELECT data_type||' nullable='||is_nullable FROM information_schema.columns WHERE table_name='goods_receipt_bill_links' AND column_name='nilai_tagih'")"
 echo "kolom: $(Q -c "SELECT data_type||' notnull='||(is_nullable='NO')||' default='||column_default FROM information_schema.columns WHERE table_name='goods_receipt_bill_links' AND column_name='kind'")"
 # baris uji minimal (FK dilewati di sesi ini; scratch saja)
 ISI="SET session_replication_role = replica; INSERT INTO goods_receipt_bill_links (goods_receipt_item_id, bill_item_id, quantity, grni_amount) VALUES (gen_random_uuid(), gen_random_uuid(), 1, 1) RETURNING kind"
