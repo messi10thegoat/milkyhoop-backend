@@ -18,7 +18,8 @@ from app.utils.tanggal_tenant import tanggal_dokumen
 gagal = []
 MERAH = len(sys.argv) > 1 and sys.argv[1] == "merah"
 MERAH_TAGIHAN = len(sys.argv) > 1 and sys.argv[1] == "merah_tagihan"  # kontrol merah bills segera_tempo: count +1 -> WAJIB FAIL
-MERAH_DP = len(sys.argv) > 1 and sys.argv[1] == "merah_dp"  # kontrol merah sum_in pecah: KUNCI_BELUM_DITAGIH dikosongkan -> WAJIB FAIL
+MERAH_DP = len(sys.argv) > 1 and sys.argv[1] == "merah_dp"
+MERAH_ALIAS = len(sys.argv) > 1 and sys.argv[1] == "merah_alias"  # kontrol merah: alias menunggu_dp dicabut -> pengingat 0 WAJIB FAIL  # kontrol merah sum_in pecah: KUNCI_BELUM_DITAGIH dikosongkan -> WAJIB FAIL
 
 
 def cek(nama, ok, rinci=""):
@@ -88,6 +89,9 @@ async def main():
         P.PENGHITUNG = {**P.PENGHITUNG, "sales_invoices": faktur3}
     if MERAH_DP:
         P.KUNCI_BELUM_DITAGIH = ()
+    if MERAH_ALIAS:
+        from app.services import so_aksi as _SA
+        _SA.AKSI_USANG = {}
     if MERAH_TAGIHAN:
         tagihan_asli = P.PENGHITUNG["bills"]
         async def tagihan_rusak(conn, tid, hari_ini, ambang):
@@ -116,6 +120,12 @@ async def main():
                 print(f"INFO {t} {modul}/{kunci}: summary belum memuat {kunci}_count (prasyarat BACKEND)")
             n = total_daftar(await l_fn(**kw(l_fn, r, aksi=kunci)))
             cek(f"{t} {modul}/{kunci}: count == baris daftar ?aksi ({n})", p["count"] == n, (p["count"], n))
+        # MENUNGGU-PEMBAYARAN (23 Okt): kunci registri alias menunggu_dp == anggota fakta menunggu_pembayaran (bukan 0 diam-diam)
+        from app.services import so_aksi as _SA2
+        _f = await _SA2.fakta(c, t, hari)
+        _n = sum(1 for v in _f.values() if "menunggu_pembayaran" in v["aksi"])
+        _p = (semua.get(("sales_orders", "menunggu_dp")) or {"count": 0})["count"]
+        cek(f"{t} pengingat menunggu_dp (alias) == anggota fakta menunggu_pembayaran ({_n})", _p == _n, (_p, _n))
         # sum_in dipecah (MASTER 23 Okt): dp_belum_ditagih == summary SO perlu_minta_dp_value; ditagih == Σ summary {k}_value masuk lain
         rk = P.rangkum(list(semua.values()))
         nilai = lambda m, k: Decimal(str(ringkas[m].get(f"{k}_value") or 0)).quantize(Decimal("0.01"))
