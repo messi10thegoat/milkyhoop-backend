@@ -31,8 +31,68 @@ async def periode_tertutup(conn, tid: str, tanggal) -> Optional[str]:
     return r["status"] if r and r["status"] != "OPEN" else None
 
 
+# ---------------------------------------------------------------- GRN 3-way match (flag penerimaan_barang_v1; kontrak grn_tagih BACKEND2,
+# KONTRAK-grn-20261023 §3; putusan pemilik P1-P6 22 Okt). Flag MATI -> rencana kosong -> posting/pratinjau BYTE-IDENTIK dgn hari ini.
+def neto_baris(rows, subtotal_dec: Decimal) -> dict:
+    """{bill_item_id: nilai neto SEMUA diskon tanpa PPN} = bi.total - bagian diskon KEPALA (invoice + tunai) proporsional nilai baris (2dp
+    HALF_UP, baris terakhir bernilai menyerap sisa) -> Σ == subtotal_dec (dasar jurnal). SATU sumber nilai_neto untuk grn_tagih (review BACKEND)."""
+    from decimal import ROUND_HALF_UP
+    net = [(r["id"], Decimal(str(r["net"] or 0))) for r in rows]
+    jumlah = sum((n for _, n in net), NOL)
+    kepala = jumlah - subtotal_dec
+    if jumlah == NOL or kepala == NOL:
+        return {i: n for i, n in net}
+    out, terbagi = {}, NOL
+    terakhir = max((k for k, (_, n) in enumerate(net) if n != NOL), default=len(net) - 1)
+    for k, (i, n) in enumerate(net):
+        bagian = (kepala - terbagi) if k == terakhir else (kepala * n / jumlah).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        terbagi += bagian if k != terakhir else NOL
+        out[i] = n - bagian
+    return out
+
+
+async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: bool = False) -> dict:
+    """-> {rencana: {bill_item_id: butir}, blocks: [...], akun: {grni, ppv}|None}. Tulis (kunci=True): PO terkait dikunci FOR UPDATE SESUDAH
+    tagihan (urutan bill -> PO; jalur GRN tak pernah mengunci bill, BACKEND2 23 Okt). Blok: butir.blok (SATUAN_TAK_TERKONVERSI) ·
+    GRN_MELEBIHI_TERIMA (baris stok ber-GRN terbuka ditagih > diterima - tertagih, 7c ketat) · BONUS_GRN_BELUM (qty bonus atas baris ber-GRN)."""
+    rows = await conn.fetch(
+        """SELECT bi.id, bi.quantity, bi.unit, bi.subtotal, bi.discount_amount, COALESCE(bi.total, 0) AS net, bi.purchase_order_item_id,
+                  COALESCE(bi.bonus_qty, 0) AS bonus, poi.unit AS po_unit, poi.po_id
+           FROM bill_items bi LEFT JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
+           WHERE bi.bill_id = $1 ORDER BY bi.line_number""", bill_id)
+    kosong = {"rencana": {}, "blocks": [], "akun": None}
+    if not any(r["purchase_order_item_id"] for r in rows):
+        return kosong
+    if kunci:
+        for po in sorted({r["po_id"] for r in rows if r["po_id"]}, key=str):
+            await conn.fetchrow("SELECT id FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", po, tid)
+    from . import grn_tagih as GT
+    neto = neto_baris(rows, subtotal_dec)
+    sama = lambda r: not r["unit"] or not r["po_unit"] or r["unit"].strip().lower() == r["po_unit"].strip().lower()  # noqa: E731
+    items = [{"id": r["id"], "quantity": r["quantity"], "unit": r["unit"], "subtotal": r["subtotal"], "discount_amount": r["discount_amount"],
+              "purchase_order_item_id": r["purchase_order_item_id"], "nilai_neto": neto[r["id"]],
+              "qty_dasar": r["quantity"] if sama(r) else None} for r in rows]
+    rencana = await GT.rencana_posting_baris(conn, tid, items)
+    if not rencana:
+        return kosong
+    bonus = {r["id"]: Decimal(str(r["bonus"])) for r in rows}
+    bloks = []
+    for b in rencana:
+        if b.get("blok"):
+            bloks.append(blok(b["blok"]["code"], b["blok"]["message"]))
+        elif b["qty_inbound"] > NOL:
+            bloks.append(blok("GRN_MELEBIHI_TERIMA", "Jumlah ditagih melebihi barang yang sudah diterima dan belum ditagih. "
+                                                     "Catat penerimaan barangnya dulu atau kurangi jumlah tagihan."))
+        elif bonus.get(b["bill_item_id"], NOL) > NOL:
+            bloks.append(blok("BONUS_GRN_BELUM", "Qty bonus pada baris yang sudah diterima lewat penerimaan barang belum didukung."))
+    from .role_resolver import AccountRole, resolve_account_id_by_role
+    akun = {"grni": await resolve_account_id_by_role(conn, tid, AccountRole.GOODS_RECEIVED_NOT_INVOICED),
+            "ppv": await resolve_account_id_by_role(conn, tid, AccountRole.PURCHASE_PRICE_VARIANCE)}
+    return {"rencana": {b["bill_item_id"]: b for b in rencana}, "blocks": bloks, "akun": akun}
+
+
 # ---------------------------------------------------------------- POSTING
-async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id) -> list:
+async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None) -> list:
     """Baris debit tagihan PER-BARIS (diangkat APA ADANYA dari BillsService._emit_bill_debit_lines; SATU fungsi untuk posting & pratinjau):
     goods+track -> Persediaan; service -> COGS_SERVICE; lainnya -> products.purchase_account_id bila ada, else COGS_SALES. Peran tak
     terpetakan -> HTTPException 422 ACCOUNT_DEFAULT_UNMAPPED. Residu -> sink default (Law 4). -> [(account_id, jumlah, is_inv)] urut, tanpa nol."""
@@ -40,8 +100,10 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
     from .inventory_helpers import resolve_inventory_accounts
     from .role_resolver import AccountRole
     rows = await conn.fetch(
-        "SELECT bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
+        "SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
         "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id WHERE bi.bill_id = $1 ORDER BY bi.line_number", bill_id)
+    # GRN (rencana_grn): baris ber-GRN -> Dr GRNI nilai terima + selisih harga ke PPV (debit +, kredit -), BUKAN Persediaan; grn None = lama.
+    rencana_grn_, akun_grn = (grn or {}).get("rencana") or {}, (grn or {}).get("akun") or {}
     tot, is_inv, urut = {}, {}, []
 
     def _acc(aid, amt, inv):
@@ -54,6 +116,11 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
     for dr in rows:
         net = Decimal(str(dr["net"] or 0))
         pid = dr["product_id"]
+        if dr["id"] in rencana_grn_:
+            b = rencana_grn_[dr["id"]]
+            _acc(akun_grn["grni"], b["nilai_grni"], True)
+            _acc(akun_grn["ppv"], b["selisih"], False)
+            continue
         if dr["item_type"] == "goods" and dr["track_inventory"]:
             _acc((await resolve_inventory_accounts(conn, tid, pid))["inventory_account_id"], net, True)
             continue
@@ -69,8 +136,21 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
         _acc(acct, net, False)
     residu = subtotal_dec - sum(tot.values(), NOL)
     if residu != NOL:
-        _acc(default_inv_acct_id if default_inv_acct_id in tot else (urut[0] if urut else default_inv_acct_id), residu, True)
+        if rencana_grn_ and default_inv_acct_id not in tot:
+            _acc(akun_grn["ppv"], residu, False)  # GRN: sisa sen diskon kepala ke selisih harga, BUKAN ke GRNI (saldo GRNI tetap tepat)
+        else:
+            _acc(default_inv_acct_id if default_inv_acct_id in tot else (urut[0] if urut else default_inv_acct_id), residu, True)
     return [(aid, tot[aid], is_inv.get(aid)) for aid in urut if tot[aid] != NOL]
+
+
+def memo_debit(aid, inv, vendor_name: str, grn: Optional[dict]) -> str:
+    """Memo baris debit (SATU sumber posting & pratinjau). GRN: akun GRNI / selisih harga bermemo sendiri."""
+    akun = (grn or {}).get("akun") or {}
+    if grn and grn.get("rencana") and aid == akun.get("grni"):
+        return f"Barang diterima belum ditagih - {vendor_name}"
+    if grn and grn.get("rencana") and aid == akun.get("ppv"):
+        return f"Selisih harga pembelian - {vendor_name}"
+    return f"Pembelian - {vendor_name}" if inv else f"Pembelian jasa/beban - {vendor_name}"
 
 
 async def blok_posting(conn, tid: str, bill) -> tuple:
@@ -110,12 +190,14 @@ async def rencana_posting(conn, tid: str, bill_id) -> Optional[dict]:
     bloks, akun = await blok_posting(conn, tid, b)
     total = Decimal(str(b["grand_total"] or 0))
     pajak = Decimal(str(b["tax_amount"] or 0))
+    grn = await rencana_grn(conn, tid, b["id"], total - pajak)  # GRN: penentu SAMA dgn post_bill (tanpa kunci); flag mati -> kosong
+    bloks += grn["blocks"]
     baris = []
     if akun["debit"]:
         try:
-            for aid, amt, inv in await hitung_debit(conn, tid, b["id"], total - pajak, akun["debit"]):
-                baris.append({"account_id": aid, "debit": amt, "credit": NOL,
-                              "memo": f"Pembelian - {b['vendor_name']}" if inv else f"Pembelian jasa/beban - {b['vendor_name']}"})
+            for aid, amt, inv in await hitung_debit(conn, tid, b["id"], total - pajak, akun["debit"], grn if grn["rencana"] else None):
+                baris.append({"account_id": aid, "debit": amt if amt > NOL else NOL, "credit": -amt if amt < NOL else NOL,
+                              "memo": memo_debit(aid, inv, b["vendor_name"], grn)})
         except HTTPException as e:
             d = e.detail if isinstance(e.detail, dict) else {"code": "AKUN_DEBIT_HILANG", "message": str(e.detail)}
             bloks.append(blok(d.get("code", "ACCOUNT_DEFAULT_UNMAPPED"), d.get("message", "")))

@@ -2024,6 +2024,12 @@ class BillsService:
                     tenant_id,
                 )
 
+                # GRN: tautan tagihan -> 'reversed' di transaksi void yang SAMA (qty/nilai terbuka GRN kembali; jurnal pembalik di atas
+                # sudah mencerminkan Dr GRNI/PPV). Tanpa tautan aktif (flag mati / bukan dari PO) = no-op.
+                if await conn.fetchval("SELECT to_regclass('goods_receipt_bill_links') IS NOT NULL"):
+                    from . import grn_tagih as _gt
+                    await _gt.balik_tautan(conn, [r["id"] for r in await conn.fetch("SELECT id FROM bill_items WHERE bill_id = $1", bill_id)])
+
                 # G5 (22 Okt 2026): bill void -> qty tertagih PO tertaut dipulihkan (sinkron_tagih menghitung bill TIDAK void), transaksi SAMA
                 from . import po_daftar as _pd
                 _po_ids = await _pd.po_terkait_bill(conn, tenant_id, bill_id)
@@ -3224,7 +3230,7 @@ class BillsService:
 
     async def _emit_bill_debit_lines(
         self, conn, tenant_id, bill_id, journal_id,
-        subtotal_dec, default_inv_acct_id, vendor_name, start_line,
+        subtotal_dec, default_inv_acct_id, vendor_name, start_line, grn=None,
     ):
         """Baris debit bill PER-BARIS by track_inventory. goods+track -> Persediaan;
         service -> COGS_SERVICE; lainnya (non_inventory / goods-non-track / manual) ->
@@ -3232,19 +3238,25 @@ class BillsService:
         (BUKAN fallback Persediaan). Residu -> sink default (Law 4). Return nomor baris berikut."""
         # Perhitungan baris = tagihan_aksi.hitung_debit (SATU fungsi dgn pratinjau POST /bills/{id}/post/preview); di sini hanya MENULIS.
         ln = start_line
-        for aid, amt, _inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, default_inv_acct_id):
-            memo = (
-                f"Pembelian - {vendor_name}"
-                if _inv
-                else f"Pembelian jasa/beban - {vendor_name}"
-            )
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                VALUES ($1, $2, $3, $4, $5, 0, $6)
-                """,
-                uuid_module.uuid4(), journal_id, ln, aid, amt, memo,
-            )
+        # GRN (grn = TA.rencana_grn, flag penerimaan_barang_v1): Dr GRNI + selisih harga (PPV kredit bila negatif); grn None = perilaku lama.
+        for aid, amt, _inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, default_inv_acct_id, grn):
+            memo = TA.memo_debit(aid, _inv, vendor_name, grn)
+            if amt < 0:  # hanya terjadi pada selisih harga GRN (harga tagih < harga terima)
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, 0, $5, $6)
+                    """,
+                    uuid_module.uuid4(), journal_id, ln, aid, -amt, memo,
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                    VALUES ($1, $2, $3, $4, $5, 0, $6)
+                    """,
+                    uuid_module.uuid4(), journal_id, ln, aid, amt, memo,
+                )
             ln += 1
         return ln
 
@@ -3301,6 +3313,12 @@ class BillsService:
                 bill_tax = Decimal(str(bill["tax_amount"] or 0))
                 subtotal = grand_total - bill_tax
 
+                # GRN 3-way match (penentu SAMA dgn pratinjau; PO dikunci SESUDAH tagihan): blok pertama -> pesan; flag mati -> kosong.
+                _grn = await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True)
+                if _grn["blocks"]:
+                    return {"success": False, "message": _grn["blocks"][0]["message"], "data": None}
+                _grn = _grn if _grn["rencana"] else None
+
                 # 3. Akun (Law 27; resolve SATU di tagihan_aksi.blok_posting)
                 ap_account_id = _akun["ap"]
                 inventory_account_id = _akun["debit"]
@@ -3313,6 +3331,12 @@ class BillsService:
                     )
                     or f"PJ-{bill['issue_date'].strftime('%y%m')}-AUTO"
                 )
+
+                # GRN: selisih harga NEGATIF = baris KREDIT -> total header = grand_total + |PPV kredit| (Law 4: header == Σ baris)
+                _total_header = grand_total
+                if _grn:
+                    _total_header += -sum((a for _, a, _ in await TA.hitung_debit(
+                        conn, tenant_id, bill_id, Decimal(str(subtotal)), _akun["debit"], _grn) if a < 0), Decimal("0"))
 
                 # 5. Create journal DRAFT (Law 20)
                 journal_id = uuid_module.uuid4()
@@ -3333,7 +3357,7 @@ class BillsService:
                     f"Bill dari {bill['vendor_name']} - {bill['invoice_number']}",
                     bill_id,
                     str(trace_id),
-                    grand_total,
+                    _total_header,
                     user_id,
                 )
 
@@ -3344,7 +3368,7 @@ class BillsService:
                 line_number = await self._emit_bill_debit_lines(
                     conn, tenant_id, bill_id, journal_id,
                     Decimal(str(subtotal)), inventory_account_id,
-                    bill["vendor_name"], line_number,
+                    bill["vendor_name"], line_number, _grn,
                 )
 
                 # Dr. PPN Masukan (if tax > 0)
@@ -3490,7 +3514,7 @@ class BillsService:
                 # 10. Inventory ledger updates (for tracked goods)
                 bill_items = await conn.fetch(
                     """
-                    SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
+                    SELECT bi.id, bi.product_id, bi.quantity, bi.unit_price, bi.description,
                            bi.batch_no, bi.exp_date,
                            p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                            p.track_batches
@@ -3512,6 +3536,9 @@ class BillsService:
                         "track_inventory", True
                     ):
                         continue
+                    if _grn and item["id"] in _grn["rencana"]:
+                        continue  # GRN: barang SUDAH masuk stok saat diterima (P1) -- jangan inbound dua kali
+
 
                     product_id = item["product_id"]
                     transaction_quantity_3 = Decimal(str(item["quantity"]))
@@ -3630,6 +3657,11 @@ class BillsService:
                     logger.info(
                         f"Inventory updated for product {product_id}: +{quantity} @ {unit_cost}"
                     )
+
+                # GRN: tautan baris tagihan <-> baris penerimaan (aktif) di transaksi yang SAMA (grn_tagih.tulis_tautan; saldo GRNI turun)
+                if _grn:
+                    from . import grn_tagih as _gt
+                    await _gt.tulis_tautan(conn, list(_grn["rencana"].values()))
 
                 logger.info(f"Bill posted: {bill_id}")
 
