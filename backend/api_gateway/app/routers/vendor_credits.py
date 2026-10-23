@@ -414,7 +414,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                 FROM vendor_credit_applications a
                 LEFT JOIN bills b ON a.bill_id = b.id
                 WHERE a.vendor_credit_id = $1
-                ORDER BY a.application_date, a.created_at  -- 23 Okt: urutan deterministik (lepas lalu terapkan ulang di tanggal sama)
+                ORDER BY a.application_date, a.created_at, (a.reversed_at IS NULL), a.id  -- 23 Okt: deterministik; seri -> yang dilepas dulu, aktif terakhir
             """,
                 vendor_credit_id,
             )

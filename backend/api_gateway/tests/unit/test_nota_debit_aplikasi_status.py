@@ -17,5 +17,5 @@ def test_detail_mengisi_status_tanpa_membuang_baris_dilepas():
     i = SRC.index('"applications": [')
     blok = SRC[i:SRC.index('"refunds": [', i)]
     assert '"status": app["status"] or "active"' in blok and '"reversal_reason": app["reversal_reason"]' in blok
-    q = SRC[SRC.index("FROM vendor_credit_applications a"):SRC.index("ORDER BY a.application_date, a.created_at")]
+    q = SRC[SRC.index("FROM vendor_credit_applications a"):SRC.index("ORDER BY a.application_date, a.created_at, (a.reversed_at IS NULL), a.id")]
     assert "status" not in q  # tak disaring: baris 'reversed' ikut
