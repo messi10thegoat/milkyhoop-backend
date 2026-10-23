@@ -132,7 +132,8 @@ async def tulis():
         lebih = RecordPaymentRequest(amount=999999, payment_date=TGL, payment_method="transfer", bank_account_id=REKENING)
         pv3 = (await BR.preview_record_payment(req(uid), bill["id"], lebih))["data"]
         async with pool_ro.acquire() as r0: c1 = await jepret(r0, ("seq_bayar", "seq_jurnal", "idem", "jurnal", "bank", "bayar"))
-        cek(c0 == c1, "(c) pratinjau tak menyentuh pencacah nomor / jurnal / bank / pembayaran (koneksi lain, sebelum == sesudah)", f"{c0} / {c1}")
+        cek(c0 == c1, "(c) pratinjau tak menyentuh pencacah nomor / jurnal / bank / pembayaran (koneksi lain, sebelum == sesudah)",
+            f"seq_bayar+seq_jurnal BP sama; jurnal {c0['jurnal']} bank {c0['bank']} bayar {c0['bayar']} idem {c0['idem']}" if c0 == c1 else f"{c0} / {c1}")
         cek(pv["can_proceed"] and pv["journals"][0]["journal_number"] is None and pv["after"]["payment_number"] is None,
             "(c) pratinjau tanpa nomor (journal_number & payment_number null)")
         cek(not pv3["can_proceed"] and [b["code"] for b in pv3["blocks"]] == ["MELEBIHI_SISA_TAGIHAN"], "(b3) pratinjau nominal > sisa -> blok MELEBIHI_SISA_TAGIHAN",
@@ -147,9 +148,13 @@ async def tulis():
             b = await asyncpg.connect(os.environ["DATABASE_URL"])
             await b.execute("INSERT INTO idempotency_keys (key, tenant_id, expires_at) VALUES ($1, $2, NOW() + interval '1 hour')", KUNCI_BOCOR, T)
             await b.close()
-        r = await BR.record_payment(req(uid), bill["id"], badan)
-        pid = r["data"]["id"]
-        hasil["record_payment"] = await rekam_pembayaran(c, pid)
+        # tiap tulis di savepoint SENDIRI yang di-rollback sebelum langkah berikut -> tiap tulis melihat keadaan YANG SAMA dengan pratinjau
+        sp0 = c.transaction(); await sp0.start()
+        try:
+            r = await BR.record_payment(req(uid), bill["id"], badan)
+            hasil["record_payment"] = await rekam_pembayaran(c, r["data"]["id"])
+        finally:
+            await sp0.rollback()
         if baru:
             rp = hasil["record_payment"]
             nomor = rp["pembayaran"]["payment_number"]
@@ -176,8 +181,12 @@ async def tulis():
             finally:
                 await sp.rollback()
             # (b2) POST /bill-payments
-            r2 = await BP.create_bill_payment(req(uid), bp_badan)
-            w2 = await rekam_pembayaran(c, r2["data"]["id"])
+            sp2 = c.transaction(); await sp2.start()
+            try:
+                r2 = await BP.create_bill_payment(req(uid), bp_badan)
+                w2 = await rekam_pembayaran(c, r2["data"]["id"])
+            finally:
+                await sp2.rollback()
             n2 = w2["pembayaran"]["payment_number"]
             ok2, a2, b2 = rencana_vs_tulis(pv2["journals"][0]["lines"], w2["baris"], n2)
             cek(ok2 and pv2["can_proceed"], "(b2) /bill-payments: baris rencana pratinjau == baris tertulis (Dr Hutang, Dr Uang muka vendor, Cr Bank, Cr Potongan)",
