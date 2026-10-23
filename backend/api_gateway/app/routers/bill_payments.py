@@ -1547,16 +1547,22 @@ async def void_bill_payment(
                     )
 
                 # C7: Bank mirror reversal (BankSync Rule 3)
-                if payment.get("bank_account_id"):
+                # GP3a (23 Okt 2026): cermin dicari lewat JURNAL pembayaran + tenant (pola semua jalur void lain). Dulu
+                # reference_type 'bill_payment' + id pembayaran -> cermin pembayaran lama record_payment (BP-, ditulis
+                # reference_type 'bill' + id TAGIHAN) tak pernah ketemu: void BP- membalik jurnal tetapi cermin bank TERTINGGAL
+                # (diukur 23 Okt: grapgrap 18/18, kaos 6/6 BP- terdampak bila di-void; 0 pernah di-void). Maks 1 cermin per jurnal.
+                if payment.get("bank_account_id") and payment["journal_id"]:
                     original_btxn = await conn.fetchrow(
                         """
                         SELECT id, bank_account_id, amount, transaction_type
                         FROM bank_transactions
-                        WHERE reference_type = 'bill_payment' AND reference_id = $1::uuid
+                        WHERE journal_id = $1 AND tenant_id = $2
                           AND status != 'VOIDED'
+                        ORDER BY created_at
                         LIMIT 1
                         """,
-                        payment_id,
+                        payment["journal_id"],
+                        ctx["tenant_id"],
                     )
                     if original_btxn:
                         mirror_type = (
