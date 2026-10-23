@@ -275,6 +275,15 @@ async def test_batal_giro_jurnal_pembalik_bertanggal_bisnis(jam, monkeypatch, in
 def test_void_memeriksa_periode_tanggal_pembalik(berkas, nama):
     """Putusan MASTER: void memeriksa periode tanggal JURNAL PEMBALIK (hari ini), bukan hanya tgl dokumen."""
     f = _fungsi(berkas, nama)
+    if nama == "void_bill_payment":
+        # AS-GP3 (24 Okt 2026): cek pindah ke penentu bersama BKR.rencana_batal_bayar (dipakai /void DAN /void/preview); penulis
+        # WAJIB memanggilnya, dan penentu WAJIB memeriksa periode hari_ini (tanggal jurnal pembalik) lewat periode_terbuka.
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rencana_batal_bayar" for n in ast.walk(f))
+        p = ast.parse((APP / "services/bayar_keluar_rencana.py").read_text())
+        f = next(n for n in ast.walk(p) if isinstance(n, ast.AsyncFunctionDef) and n.name == "rencana_batal_bayar")
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "periode_terbuka"
+                   and any(isinstance(a, ast.Name) and a.id == "hari_ini" for a in n.args) for n in ast.walk(f)), "penentu tak memeriksa hari_ini"
+        return
     ada = False
     for n in ast.walk(f):
         if isinstance(n, ast.Call) and any(isinstance(a, ast.Name) and a.id == "hari_ini" for a in n.args):

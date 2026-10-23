@@ -456,3 +456,209 @@ async def pratinjau_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict) 
             "before": {"exists": False},
             "after": {"exists": True, "status": "posted", "payment_number": None,
                       "total_amount": _f(r.get("payment_amount")), "pph_amount": _f(r.get("pph_amount"))} if bill else None}
+
+
+# ------------------------------------------------------------------ AKSI pada pembayaran yang ada (AS-GP3, 24 Okt 2026)
+# void / posting draf / hapus draf: penentu dipanggil penulis SESUDAH kunci advisory (kunci=True -> FOR UPDATE), pratinjau di transaksi
+# READ ONLY tanpa kunci. Blok = galat lama PERSIS (status + detail); pratinjau mengumpulkan (status dokumen yang salah = berhenti, sisa
+# aturan tak bermakna). Rencana jurnal TANPA nomor; tak menyentuh sequence.
+async def _blok_rekon(bl: Blok, conn, tid: str, payment_id) -> None:
+    """== jaga_rekonsiliasi.tolak_void_bila_terekonsiliasi (409 BANK_TX_RECONCILED/MATCHED); detail dict -> kode aslinya."""
+    from .jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+    try:
+        await tolak_void_bila_terekonsiliasi(conn, tid, payment_id)
+    except HTTPException as e:
+        if not bl.pratinjau:
+            raise
+        d = e.detail if isinstance(e.detail, dict) else {"code": "REKONSILIASI", "message": str(e.detail)}
+        bl.daftar.append({"code": d.get("code"), "message": d.get("message"), "status": e.status_code})
+
+
+async def _alokasi_dan_sisa(conn, tid: str, payment_id) -> list:
+    rows = await conn.fetch(
+        """SELECT a.bill_id, a.amount_applied, b.invoice_number FROM bill_payment_allocations a
+           LEFT JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $2 WHERE a.payment_id = $1::uuid""", _uuid(payment_id), tid)
+    return [{"bill_id": r["bill_id"], "bill_number": r["invoice_number"], "amount_applied": r["amount_applied"]} for r in rows]
+
+
+async def rencana_batal_bayar(conn, tid: str, payment_id, pratinjau: bool = False) -> dict:
+    """Aturan POST /bill-payments/{id}/void, URUTAN == penulis lama (sesudah advisory BILL_PAYMENT_VOID): rekon bank (409) · ada (404) ·
+    sudah voided = ULANG (tulis: respons sukses lama; pratinjau: blok SUDAH_DIBATALKAN) · draf (400) · bukan posted (400) · periode
+    tanggal bayar (403) · periode HARI INI = tanggal jurnal pembalik (403) · baris jurnal asli ada (500).
+    -> {blocks, ulang, payment, hari_ini, jurnal_asli, baris_asli, cermin_asli, alokasi, n_pph}"""
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    bl = Blok(pratinjau)
+    h = {"blocks": bl.daftar, "ulang": False, "payment": None}
+    await _blok_rekon(bl, conn, tid, payment_id)
+    p = await conn.fetchrow(
+        """SELECT bp.*, ba.coa_id AS bank_coa_id FROM bill_payments_v2 bp LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+           WHERE bp.id = $1::uuid AND bp.tenant_id = $2""" + ("" if pratinjau else " FOR UPDATE OF bp"), _uuid(payment_id), tid)
+    if not p:
+        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        return h
+    h["payment"] = p
+    if p["status"] == "voided":
+        h["ulang"] = True
+        if pratinjau:
+            bl.galat("SUDAH_DIBATALKAN", 400, "Payment already voided")
+        return h
+    if p["status"] == "draft":
+        bl.galat("STATUS_DRAF", 400, "Cannot void draft payment. Delete it instead.")
+        return h
+    if p["status"] != "posted":
+        bl.galat("STATUS_TIDAK_SAH", 400, "Only posted payments can be voided")
+        return h
+    await periode_terbuka(conn, tid, p["payment_date"], bl)
+    hari_ini = await tanggal_dokumen(conn, tid)
+    await periode_terbuka(conn, tid, hari_ini, bl)
+    h["hari_ini"] = hari_ini
+    h["jurnal_asli"], h["baris_asli"], h["cermin_asli"] = None, [], None
+    if p["journal_id"]:
+        h["jurnal_asli"] = await conn.fetchrow("SELECT id, journal_number, total_debit FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+                                               p["journal_id"], tid)
+        h["baris_asli"] = await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", p["journal_id"])
+        if not h["baris_asli"]:
+            bl.galat("BARIS_JURNAL_HILANG", 500, "Original journal lines not found")
+        if p["bank_account_id"]:
+            # GP3a: cermin dicari lewat JURNAL pembayaran + tenant (kedua jenis: BP- 'bill' dan PAY- 'bill_payment'); maks 1 per jurnal
+            h["cermin_asli"] = await conn.fetchrow(
+                """SELECT bt.id, bt.bank_account_id, bt.amount, bt.transaction_type, ba.account_name FROM bank_transactions bt
+                   LEFT JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+                   WHERE bt.journal_id = $1 AND bt.tenant_id = $2 AND bt.status != 'VOIDED' ORDER BY bt.created_at LIMIT 1""",
+                p["journal_id"], tid)
+    h["alokasi"] = await _alokasi_dan_sisa(conn, tid, payment_id)
+    h["n_pph"] = await conn.fetchval("""SELECT count(*) FROM withholding_tax_records
+                                        WHERE payment_id = $1::uuid AND tenant_id = $2 AND status != 'void'""", _uuid(payment_id), tid)
+    return h
+
+
+async def rencana_posting_draf_bayar(conn, tid: str, payment_id, pratinjau: bool = False) -> dict:
+    """Aturan POST /bill-payments/{id}/post, URUTAN == penulis lama (sesudah advisory BILL_PAYMENT:{id}): ada (404) · draf (400) ·
+    periode tanggal bayar (403) · FOR UPDATE tiap tagihan (tulis saja) · Σ alokasi per tagihan ≤ sisa jurnal (400, U2a).
+    -> {blocks, payment, alokasi[{bill_id, bill_number, amount_applied}], sisa{bill_id: sisa}}"""
+    bl = Blok(pratinjau)
+    h = {"blocks": bl.daftar, "payment": None, "alokasi": [], "sisa": {}}
+    p = await conn.fetchrow("SELECT * FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2", _uuid(payment_id), tid)
+    if not p:
+        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        return h
+    h["payment"] = p
+    if p["status"] != "draft":
+        bl.galat("STATUS_BUKAN_DRAF", 400, "Only draft payments can be posted")
+        return h
+    await periode_terbuka(conn, tid, p["payment_date"], bl)
+    h["alokasi"] = await _alokasi_dan_sisa(conn, tid, payment_id)
+    if not pratinjau:
+        for a in h["alokasi"]:  # Law 13: kunci baris tagihan (berpagar tenant) sebelum sisa dibaca
+            await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", a["bill_id"], tid)
+    per_tagihan: dict = {}
+    for a in h["alokasi"]:
+        per_tagihan[a["bill_id"]] = per_tagihan.get(a["bill_id"], 0) + a["amount_applied"]
+    for bid, jml in per_tagihan.items():
+        h["sisa"][bid] = await sisa_tagihan(conn, tid, bid)
+        if jml > h["sisa"][bid]:
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Amount exceeds remaining")
+    return h
+
+
+async def rencana_hapus_draf_bayar(conn, tid: str, payment_id, pratinjau: bool = False) -> dict:
+    """Aturan DELETE /bill-payments/{id}: ada (404) · draf (400). Tulis: FOR UPDATE (sesudah advisory BILL_PAYMENT:{id} yang SAMA dengan
+    posting -> hapus dan posting draf yang sama terserialkan). -> {blocks, payment, alokasi}"""
+    bl = Blok(pratinjau)
+    h = {"blocks": bl.daftar, "payment": None, "alokasi": []}
+    p = await conn.fetchrow("SELECT id, payment_number, status, total_amount FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2"
+                            + ("" if pratinjau else " FOR UPDATE"), _uuid(payment_id), tid)
+    if not p:
+        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        return h
+    h["payment"] = p
+    if p["status"] != "draft":
+        bl.galat("STATUS_BUKAN_DRAF", 400, "Only draft payments can be deleted")
+        return h
+    h["alokasi"] = await _alokasi_dan_sisa(conn, tid, payment_id)
+    return h
+
+
+def _sebelum(p) -> dict:
+    return {"exists": True, "status": p["status"], "payment_number": p["payment_number"], "total_amount": _f(p["total_amount"])}
+
+
+def _respons(payment_id, aksi: str, r: dict, **isi) -> dict:
+    return {"payment_id": str(payment_id), "action": aksi, "can_proceed": not r["blocks"],
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+            "before": _sebelum(r["payment"]) if r.get("payment") else {"exists": False},
+            "journals": [], "bank_transactions": [], "bills": [], "preview": True, **isi}
+
+
+async def pratinjau_batal_bayar(conn, tid: str, payment_id, void_reason: str = "") -> dict:
+    r = await rencana_batal_bayar(conn, tid, payment_id, pratinjau=True)
+    out = _respons(payment_id, "void", r, payload={"void_reason": void_reason})
+    p = r["payment"]
+    if not p or r["ulang"] or p["status"] != "posted":
+        out["after"] = None
+        return out
+    out["after"] = {**_sebelum(p), "status": "voided"}
+    if r["baris_asli"]:
+        baris = [(b["account_id"], b["credit"], b["debit"], f"Reversal - {b['memo'] or ''}") for b in r["baris_asli"]]  # tukar D/K
+        bl = Blok(True)
+        bl.daftar = r["blocks"]
+        j = await _rencana_jurnal(conn, tid, bl, f"Void {p['payment_number']} - {p['vendor_name']} - {void_reason}",
+                                  r["hari_ini"], baris, r["jurnal_asli"]["total_debit"])
+        j["source_type"], j["reversal_of"] = "BILL_PAYMENT", r["jurnal_asli"]["journal_number"]
+        out["journals"] = [j]
+    c = r["cermin_asli"]
+    if c:
+        out["bank_transactions"] = [{"bank_account": c["account_name"], "amount": _f(-c["amount"]),
+                                     "transaction_type": "deposit" if c["transaction_type"] == "withdrawal" else "withdrawal"}]
+    for a in r["alokasi"]:
+        s = await sisa_tagihan(conn, tid, a["bill_id"])
+        out["bills"].append({"bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "remaining_before": _f(s),
+                             "amount_applied": _f(-a["amount_applied"]), "remaining_after": _f(s + a["amount_applied"])})
+    out["pph_records_voided"] = r["n_pph"]
+    out["can_proceed"] = not r["blocks"]
+    out["blocks"] = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]]
+    return out
+
+
+async def pratinjau_posting_draf_bayar(conn, tid: str, payment_id) -> dict:
+    r = await rencana_posting_draf_bayar(conn, tid, payment_id, pratinjau=True)
+    out = _respons(payment_id, "post", r, payload={})
+    p = r["payment"]
+    if not p or p["status"] != "draft":
+        out["after"] = None
+        return out
+    out["after"] = {**_sebelum(p), "status": "posted"}
+    bl = Blok(True)
+    bl.daftar = r["blocks"]
+    try:
+        baris, total_debit = await baris_jurnal_bayar(
+            conn, tid, payment_number=p["payment_number"], vendor_name=p["vendor_name"], bank_account_id=p["bank_account_id"],
+            total_amount=p["total_amount"], allocated_amount=p["allocated_amount"] or 0, discount_amount=p["discount_amount"] or 0,
+            discount_account_id=p["discount_account_id"], bank_fee_amount=p["bank_fee_amount"] or 0,
+            bank_fee_account_id=p["bank_fee_account_id"], source_type=p.get("source_type") or "cash",
+            source_deposit_id=p.get("source_deposit_id"), unapplied_amount=p["unapplied_amount"] or 0,
+            pph_tax_code_id=str(p["pph_tax_code_id"]) if p.get("pph_tax_code_id") else None, pph_amount=p.get("pph_amount") or 0)
+        out["journals"] = [await _rencana_jurnal(conn, tid, bl, f"Pembayaran ke {p['vendor_name']} - {p['payment_number']}",
+                                                 p["payment_date"], baris, total_debit)]
+    except HTTPException as e:
+        bl.galat("AKUN_JURNAL", e.status_code, e.detail)
+    if p["bank_account_id"]:
+        cb = await bl.coba("REKENING_TIDAK_SAH", cermin_bank(conn, tid, p["bank_account_id"], p["total_amount"], p.get("pph_amount") or 0))
+        if cb:
+            out["bank_transactions"] = [{"bank_account": cb["bank_account"], "amount": _f(cb["amount"]), "transaction_type": cb["transaction_type"]}]
+    for a in r["alokasi"]:
+        s = r["sisa"].get(a["bill_id"], 0)
+        out["bills"].append({"bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "remaining_before": _f(s),
+                             "amount_applied": _f(a["amount_applied"]), "remaining_after": _f(s - a["amount_applied"])})
+    out["can_proceed"] = not r["blocks"]
+    out["blocks"] = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]]
+    return out
+
+
+async def pratinjau_hapus_draf_bayar(conn, tid: str, payment_id) -> dict:
+    r = await rencana_hapus_draf_bayar(conn, tid, payment_id, pratinjau=True)
+    out = _respons(payment_id, "delete", r, payload={})
+    out["after"] = {"exists": False} if r["payment"] and not r["blocks"] else None
+    out["bills"] = [{"bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "amount_applied": _f(a["amount_applied"])}
+                    for a in r["alokasi"]]
+    return out

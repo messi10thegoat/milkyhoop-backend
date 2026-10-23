@@ -5,18 +5,21 @@ import inspect
 import re
 
 from app.routers import bill_payments as BP
+from app.services import bayar_keluar_rencana as BKR
 
 
 def _sql_cermin():
-    src = inspect.getsource(BP.void_bill_payment)
-    i = src.index("# C7: Bank mirror reversal")
-    return " ".join(src[i:src.index("mirror_type =", i)].split())
+    # AS-GP3 (24 Okt 2026): pencarian cermin pindah ke penentu bersama BKR.rencana_batal_bayar; penulis memakai r["cermin_asli"]
+    src = inspect.getsource(BKR.rencana_batal_bayar)
+    i = src.index('h["cermin_asli"] = await conn.fetchrow(')
+    return " ".join(src[i:src.index("return h", i)].split())
 
 
 def test_cermin_dicari_lewat_jurnal_dan_tenant():
     s = _sql_cermin()
-    assert "WHERE journal_id = $1 AND tenant_id = $2" in s and 'payment["journal_id"], ctx["tenant_id"]' in s
+    assert "WHERE bt.journal_id = $1 AND bt.tenant_id = $2" in s and 'p["journal_id"], tid)' in s
     assert "reference_type = 'bill_payment'" not in s
+    assert 'original_btxn = r["cermin_asli"]' in inspect.getsource(BP.void_bill_payment)
 
 
 def test_kontrol_merah_pola_lama_tertangkap():

@@ -3,6 +3,7 @@ Keadaan: bank_transactions.is_reconciled (sesi selesai) / matched_statement_line
 (ditulis routers/bank_reconciliation.py). Lapis kode = 409 terbaca di 8 void utama; lapis DB V320 = semua jalur."""
 import ast
 import os
+import re
 import uuid
 
 import pytest
@@ -107,6 +108,27 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef)
                   and n.name == "_rencana_void_pembayaran")
         kunci = "_TANPA_KUNCI_DI_PENENTU_"  # kunci dipegang pemanggil; lewati cek lock-di-dalam di bawah
+    if berkas == "bill_payments":
+        # AS-GP3 (24 Okt 2026): sama dengan U3b -- pemeriksaan di penentu bersama services/bayar_keluar_rencana.rencana_batal_bayar
+        # (lewat _blok_rekon, dipakai /void DAN /void/preview). Syarat Law 13: rute void mengambil lock SEBELUM memanggil penentu;
+        # di penentu, cek rekon = langkah PERTAMA (sebelum baca/kunci pembayaran) dan penentu tak menulis apa pun.
+        kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rencana_batal_bayar"]
+        assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
+        ssrc = open(os.path.join(APP, "services", "bayar_keluar_rencana.py")).read()
+        sp = ast.parse(ssrc)
+        pen = next(n for n in ast.walk(sp) if isinstance(n, ast.AsyncFunctionDef) and n.name == "rencana_batal_bayar")
+        blok = next(n for n in ast.walk(sp) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_blok_rekon")
+        rek = [n for n in ast.walk(blok) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "tolak_void_bila_terekonsiliasi"]
+        assert len(rek) == 1 and [ast.get_source_segment(ssrc, a) for a in rek[0].args] == ["conn", "tid", "payment_id"]
+        langkah = [n for n in pen.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+        i_rek = next(i for i, n in enumerate(langkah) if "_blok_rekon(" in ast.get_source_segment(ssrc, n))
+        i_baca = next(i for i, n in enumerate(langkah) if "FROM bill_payments_v2" in ast.get_source_segment(ssrc, n))
+        assert i_rek < i_baca, "rekon SEBELUM baca/kunci pembayaran (urutan lama)"
+        tulis_pen = re.compile(r"\b(UPDATE\s+\w+\s+SET|INSERT\s+INTO|DELETE\s+FROM)\b", re.I)  # FOR UPDATE (kunci) boleh
+        assert not any(isinstance(n, ast.Constant) and isinstance(n.value, str) and tulis_pen.search(n.value)
+                       for n in ast.walk(pen) if n is not pen.body[0].value), "penentu tak boleh menulis"
+        return
     panggil = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
                and getattr(n.func, "id", "") == "tolak_void_bila_terekonsiliasi"]
     assert len(panggil) == 1, berkas

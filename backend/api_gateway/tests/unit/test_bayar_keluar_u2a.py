@@ -29,11 +29,14 @@ def test_satu_penulis_efek_posting():
 
 
 def test_posting_draf_cek_ulang_sisa_di_bawah_kunci():
+    # AS-GP3 (24 Okt 2026): cek pindah ke penentu bersama BKR.rencana_posting_draf_bayar (dipanggil penulis sesudah advisory)
     posting = _fungsi(BP, "async def post_bill_payment(", "async def void_bill_payment(")
-    i_kunci = posting.index("FOR UPDATE")
-    i_cek = posting.index("await BKR.sisa_tagihan(conn, ctx[\"tenant_id\"], _bid)")
-    assert i_kunci < i_cek < posting.index("create_bill_payment_journal(")
-    assert 'raise HTTPException(status_code=400, detail="Amount exceeds remaining")' in posting  # pesan == buat-posted
+    assert posting.index("pg_advisory_xact_lock") < posting.index("await BKR.rencana_posting_draf_bayar(") < posting.index("create_bill_payment_journal(")
+    s = inspect.getsource(BKR.rencana_posting_draf_bayar)
+    i_kunci = s.index("FOR UPDATE")
+    i_cek = s.index("await sisa_tagihan(conn, tid, bid)")
+    assert i_kunci < i_cek
+    assert 'bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Amount exceeds remaining")' in s  # pesan == buat-posted
 
 
 class _K:

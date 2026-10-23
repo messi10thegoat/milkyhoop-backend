@@ -4,11 +4,12 @@ Bill Payments Router - Pembayaran Keluar (Payment Out)
 Endpoints for managing vendor payments for purchase invoices (bills).
 """
 
-from fastapi import APIRouter, Body, HTTPException, Request, Query
+from fastapi import APIRouter, Body, HTTPException, Request, Query, Response
+from ..services import idem_buat  # AS-GP3: idempotensi aksi void/posting/hapus (kunci klien saja)
 from typing import Optional, Literal
 from uuid import UUID
 from ..services import teks_galat as tg
-from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi  # noqa: F401 (AS-GP3: dipanggil lewat BKR.rencana_batal_bayar)
 from ..services.rp_periode import batas_periode, argumen_kueri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -473,6 +474,38 @@ async def preview_create_bill_payment(request: Request, payload: CreateBillPayme
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
         "bills": r["bills"], "payload": payload.model_dump(mode="json"), "preview": True}}
+
+
+# === PRATINJAU AKSI (AS-GP3, 24 Okt 2026): void / posting draf / hapus draf. READ ONLY tanpa kunci; penentu == penulis
+# (BKR.rencana_batal_bayar / rencana_posting_draf_bayar / rencana_hapus_draf_bayar). Izin = huruf penulis (V/P/D).
+async def _pratinjau_aksi(request: Request, fn, *a):
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            data = await fn(conn, ctx["tenant_id"], *a)
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    return {"success": True, "data": data}
+
+
+@router.post("/{payment_id}/void/preview")
+async def preview_void_bill_payment(request: Request, payment_id: str, payload: Optional[VoidBillPaymentRequest] = None):
+    return await _pratinjau_aksi(request, BKR.pratinjau_batal_bayar, validate_uuid(payment_id, "payment_id"),
+                                 payload.void_reason if payload else "")
+
+
+@router.post("/{payment_id}/post/preview")
+async def preview_post_bill_payment(request: Request, payment_id: str):
+    return await _pratinjau_aksi(request, BKR.pratinjau_posting_draf_bayar, validate_uuid(payment_id, "payment_id"))
+
+
+@router.post("/{payment_id}/delete/preview")
+async def preview_delete_bill_payment(request: Request, payment_id: str):
+    return await _pratinjau_aksi(request, BKR.pratinjau_hapus_draf_bayar, validate_uuid(payment_id, "payment_id"))
 
 
 @router.get("", response_model=BillPaymentListResponse)
@@ -1216,7 +1249,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
 
 @router.delete("/{payment_id}", response_model=BillPaymentResponse)
-async def delete_bill_payment(request: Request, payment_id: str):
+async def delete_bill_payment(request: Request, payment_id: str, response: Response = None):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1224,19 +1257,14 @@ async def delete_bill_payment(request: Request, payment_id: str):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-                payment = await conn.fetchrow(
-                    "SELECT id, payment_number, status FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                    payment_id,
-                    ctx["tenant_id"],
-                )
-
-                if not payment:
-                    raise HTTPException(status_code=404, detail="Payment not found")
-                if payment["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Only draft payments can be deleted"
-                    )
+                # AS-GP3 (24 Okt 2026): Law 14 kunci klien saja (tanpa kunci = perilaku lama); hapus ulang = respons asli, bukan 404
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BP_DELETE", payment_id, {}, response)
+                if lama is not None:
+                    return lama
+                # Law 13: kunci SAMA dengan posting draf -> hapus & posting draf yang sama terserialkan (dulu tanpa kunci)
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BILL_PAYMENT:{payment_id}")
+                r = await BKR.rencana_hapus_draf_bayar(conn, ctx["tenant_id"], payment_id)
+                payment = r["payment"]
 
                 await conn.execute(
                     "DELETE FROM bill_payment_allocations WHERE payment_id = $1::uuid",
@@ -1246,11 +1274,12 @@ async def delete_bill_payment(request: Request, payment_id: str):
                     "DELETE FROM bill_payments_v2 WHERE id = $1::uuid", payment_id
                 )
 
-                return BillPaymentResponse(
+                resp = BillPaymentResponse(
                     success=True,
                     message=f"Payment {payment['payment_number']} deleted",
                     data={"id": payment_id},
                 )
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_DELETE", resp, payment_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -1259,7 +1288,7 @@ async def delete_bill_payment(request: Request, payment_id: str):
 
 
 @router.post("/{payment_id}/post", response_model=BillPaymentResponse)
-async def post_bill_payment(request: Request, payment_id: str):
+async def post_bill_payment(request: Request, payment_id: str, response: Response = None):
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1269,58 +1298,24 @@ async def post_bill_payment(request: Request, payment_id: str):
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # AS-GP3 (24 Okt 2026): Law 14 kunci klien saja; posting ulang dgn kunci sama = respons asli (bukan 400)
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BP_POST", payment_id, {}, response)
+                if lama is not None:
+                    return lama
+
                 # Law 13: Advisory lock on bill payment posting
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BILL_PAYMENT:{payment_id}",
                 )
 
-                payment = await conn.fetchrow(
-                    "SELECT id, payment_number, payment_date, status FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2",
-                    payment_id,
-                    ctx["tenant_id"],
-                )
+                # Penentu BERSAMA dgn POST /{id}/post/preview (AS-GP3): ada · draf · periode · FOR UPDATE tagihan · Σ alokasi ≤ sisa
+                # (U2a, putusan pemilik 23 Okt: sumber == buat-posted, BKR.sisa_tagihan = compute_ap_rincian).
+                r = await BKR.rencana_posting_draf_bayar(conn, ctx["tenant_id"], payment_id)
+                payment = r["payment"]
+                allocations = r["alokasi"]
 
-                if not payment:
-                    raise HTTPException(status_code=404, detail="Payment not found")
-                if payment["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Only draft payments can be posted"
-                    )
-
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], payment["payment_date"]
-                )
-
-                allocations = await conn.fetch(
-                    "SELECT bill_id, amount_applied FROM bill_payment_allocations WHERE payment_id = $1::uuid",
-                    payment_id,
-                )
-
-                for alloc in allocations:
-                    # Law 13: Lock bill row before update to prevent concurrent modification
-                    # (tenant_id: jangan pernah mengunci baris tenant lain)
-                    await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                        alloc["bill_id"],
-                        ctx["tenant_id"],
-                    )
-
-                # U2a (putusan pemilik LANGSUNG 23 Okt 2026): sisa tagihan dicek ULANG di bawah kunci, sumber == buat-posted
-                # (BKR.sisa_tagihan = compute_ap_rincian). Dulu draf yang dibuat saat sisa cukup bisa diposting sesudah tagihan
-                # dilunasi pembayaran lain -> lebih bayar diam-diam. Alokasi ke tagihan yang sama dijumlah dulu.
-                _per_tagihan: dict = {}
-                for alloc in allocations:
-                    _per_tagihan[alloc["bill_id"]] = _per_tagihan.get(alloc["bill_id"], 0) + alloc["amount_applied"]
-                for _bid, _jml in _per_tagihan.items():
-                    if _jml > await BKR.sisa_tagihan(conn, ctx["tenant_id"], _bid):
-                        raise HTTPException(status_code=400, detail="Amount exceeds remaining")
-
-                # Get full payment details for journal creation
-                full_payment = await conn.fetchrow(
-                    """SELECT * FROM bill_payments_v2 WHERE id = $1::uuid""",
-                    payment_id,
-                )
+                full_payment = payment  # SELECT * berpagar tenant di penentu
 
                 # Create journal entry
                 journal_id, journal_number = await create_bill_payment_journal(
@@ -1370,7 +1365,7 @@ async def post_bill_payment(request: Request, payment_id: str):
                     journal_id=journal_id,
                 )
 
-                return BillPaymentResponse(
+                resp = BillPaymentResponse(
                     success=True,
                     message=f"Payment {payment['payment_number']} posted",
                     data={
@@ -1380,6 +1375,7 @@ async def post_bill_payment(request: Request, payment_id: str):
                         "journal_number": journal_number,
                     },
                 )
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_POST", resp, payment_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -1389,7 +1385,7 @@ async def post_bill_payment(request: Request, payment_id: str):
 
 @router.post("/{payment_id}/void", response_model=BillPaymentResponse)
 async def void_bill_payment(
-    request: Request, payment_id: str, payload: VoidBillPaymentRequest
+    request: Request, payment_id: str, payload: VoidBillPaymentRequest, response: Response = None
 ):
     """
     Void a posted bill payment.
@@ -1413,77 +1409,36 @@ async def void_bill_payment(
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
 
+                # AS-GP3 (24 Okt 2026): Law 14 kunci klien saja; kunci sama + alasan beda -> 409
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BP_VOID", payment_id,
+                                                             lambda: payload.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
+
                 # Law 13: Advisory lock on bill payment void
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BILL_PAYMENT_VOID:{payment_id}",
                 )
-                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], payment_id)  # rekon bank: 409 sebelum tulisan
-
-                # Get payment with FOR UPDATE to prevent TOCTOU
-                payment = await conn.fetchrow(
-                    """
-                    SELECT bp.*, ba.coa_id as bank_coa_id
-                    FROM bill_payments_v2 bp
-                    LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
-                    WHERE bp.id = $1::uuid AND bp.tenant_id = $2
-                    FOR UPDATE OF bp
-                    """,
-                    payment_id,
-                    ctx["tenant_id"],
-                )
-
-                if not payment:
-                    raise HTTPException(status_code=404, detail="Payment not found")
-
-                # C4: Idempotency guard AFTER lock
-                if payment["status"] == "voided":
-                    return BillPaymentResponse(
+                # Penentu BERSAMA dgn POST /{id}/void/preview (AS-GP3), URUTAN lama: rekon bank 409 · ada (FOR UPDATE, TOCTOU) ·
+                # sudah voided = ulang (C4) · draf · posted · periode tanggal bayar + HARI INI (C8) · baris jurnal asli ada.
+                r = await BKR.rencana_batal_bayar(conn, ctx["tenant_id"], payment_id)
+                payment = r["payment"]
+                if r["ulang"]:
+                    resp = BillPaymentResponse(
                         success=True,
                         message="Payment already voided",
                         data={"id": payment_id, "status": "voided"},
                     )
-
-                if payment["status"] == "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot void draft payment. Delete it instead.",
-                    )
-
-                if payment["status"] != "posted":
-                    raise HTTPException(
-                        status_code=400, detail="Only posted payments can be voided"
-                    )
-
-                # C8: Period check
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], payment["payment_date"]
-                )
-                # Jurnal pembalik bertanggal HARI INI (tanggal bisnis): periodenya juga harus terbuka
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
+                    return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_VOID", resp, payment_id)
+                hari_ini = r["hari_ini"]  # t10-tanggal-bisnis
 
                 # C6: Create reversal journal by iterating ALL original lines
                 void_journal_id = uuid_module.uuid4()
 
                 if payment["journal_id"]:
-                    # Get original journal
-                    original_journal = await conn.fetchrow(
-                        "SELECT id, total_debit FROM journal_entries WHERE id = $1",
-                        payment["journal_id"],
-                    )
-
-                    # Get ALL original journal lines
-                    original_lines = await conn.fetch(
-                        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
-                        payment["journal_id"],
-                    )
-
-                    if not original_lines:
-                        raise HTTPException(
-                            status_code=500,
-                            detail="Original journal lines not found",
-                        )
+                    original_journal = r["jurnal_asli"]
+                    original_lines = r["baris_asli"]  # penentu: kosong -> 500 "Original journal lines not found"
 
                     # Generate void journal number
                     void_journal_number = await conn.fetchval(
@@ -1552,18 +1507,7 @@ async def void_bill_payment(
                 # reference_type 'bill' + id TAGIHAN) tak pernah ketemu: void BP- membalik jurnal tetapi cermin bank TERTINGGAL
                 # (diukur 23 Okt: grapgrap 18/18, kaos 6/6 BP- terdampak bila di-void; 0 pernah di-void). Maks 1 cermin per jurnal.
                 if payment.get("bank_account_id") and payment["journal_id"]:
-                    original_btxn = await conn.fetchrow(
-                        """
-                        SELECT id, bank_account_id, amount, transaction_type
-                        FROM bank_transactions
-                        WHERE journal_id = $1 AND tenant_id = $2
-                          AND status != 'VOIDED'
-                        ORDER BY created_at
-                        LIMIT 1
-                        """,
-                        payment["journal_id"],
-                        ctx["tenant_id"],
-                    )
+                    original_btxn = r["cermin_asli"]  # penentu (lewat journal_id + tenant)
                     if original_btxn:
                         mirror_type = (
                             "deposit"
@@ -1644,19 +1588,20 @@ async def void_bill_payment(
                     payment_id,
                 )
 
-            logger.info(
-                f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
-            )
+                logger.info(
+                    f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
+                )
 
-            return BillPaymentResponse(
-                success=True,
-                message=f"Payment {payment['payment_number']} voided",
-                data={
-                    "id": payment_id,
-                    "status": "voided",
-                    "void_journal_id": str(void_journal_id),
-                },
-            )
+                resp = BillPaymentResponse(
+                    success=True,
+                    message=f"Payment {payment['payment_number']} voided",
+                    data={
+                        "id": payment_id,
+                        "status": "voided",
+                        "void_journal_id": str(void_journal_id),
+                    },
+                )
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_VOID", resp, payment_id)
     except HTTPException:
         raise
     except Exception as e:

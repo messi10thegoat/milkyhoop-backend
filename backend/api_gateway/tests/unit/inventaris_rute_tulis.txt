@@ -233,8 +233,11 @@ POST /api/bank-transfers/{transfer_id}/void
 POST /api/bill-payments
 POST /api/bill-payments/preview
 POST /api/bill-payments/preview-journal
+POST /api/bill-payments/{payment_id}/delete/preview
 POST /api/bill-payments/{payment_id}/post
+POST /api/bill-payments/{payment_id}/post/preview
 POST /api/bill-payments/{payment_id}/void
+POST /api/bill-payments/{payment_id}/void/preview
 POST /api/bills
 POST /api/bills/calculate
 POST /api/bills/preview-journal
