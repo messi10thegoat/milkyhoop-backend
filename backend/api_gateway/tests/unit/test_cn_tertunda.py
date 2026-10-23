@@ -127,12 +127,14 @@ async def test_periksa_saja_tak_menulis():
 
 def test_router_menyambung_post_dan_void():
     src = open(__import__("app.routers.credit_notes", fromlist=["x"]).__file__).read()
-    assert "cn_tertunda.hitung_untuk_nk(" in src and "cn_tertunda.catat_porsi(" in src
-    # penjagaan sebelum + pemulihan sesudah pembalik (inti void) + penjagaan di penentu pratinjau void (U5-D) = 3
-    assert src.count("cn_tertunda.pulihkan_saat_void(") == 3
+    nkr = __import__("inspect").getsource(__import__("app.services.nota_kredit_rencana", fromlist=["x"]))
+    # NK-RENCANA-B (23 Okt): porsi + penjagaan void = penentu bersama (services/nota_kredit_rencana), dipanggil inti SESUDAH kunci
+    assert "R.cn_tertunda.hitung_untuk_nk(conn, tid, cn, subtotal, kunci=not pratinjau)" in nkr and "cn_tertunda.catat_porsi(" in src
+    assert nkr.count("cn_tertunda.pulihkan_saat_void(") == 1 and "periksa_saja=True, kunci=not pratinjau" in nkr   # penjagaan
     inti = src[src.index("async def void_nota_kredit_core"):src.index('@router.post("/{credit_note_id}/void"')]
-    assert inti.count("cn_tertunda.pulihkan_saat_void(") == 2        # urutan di INTI void tak berubah
-    assert "AccountRole.REVENUE_DEFERRED" in src                      # Law 27: akun Dimuka lewat peran
+    assert inti.count("cn_tertunda.pulihkan_saat_void(") == 1         # pemulihan sesudah jurnal pembalik
+    assert inti.index("NKR.rencana_batal_nk(") < inti.index("cn_tertunda.pulihkan_saat_void(")
+    assert "AccountRole.REVENUE_DEFERRED" in nkr                      # Law 27: akun Dimuka lewat peran
 
 
 @pytest.mark.asyncio

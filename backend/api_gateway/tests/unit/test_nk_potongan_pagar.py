@@ -58,8 +58,10 @@ def test_akun_per_alasan(reason, akun):
 
 
 def test_posting_memakai_penentu_akun():
-    src = inspect.getsource(CN.posting_nota_kredit)
-    assert 'kode_akun_nk(cn["reason"])' in src and "SALES_RETURN_ACCOUNT_CODE\n" not in src
+    from app.services import nota_kredit_rencana as NKR
+    src = inspect.getsource(NKR.rencana_posting_nk)  # NK-RENCANA-B: akun dipecahkan penentu, dipakai penulis
+    assert 'R.kode_akun_nk(cn["reason"])' in src and "SALES_RETURN_ACCOUNT_CODE\n" not in src
+    assert 'sales_return_account_id = _r["akun"]["ar"], _r["akun"]["retur"]' in inspect.getsource(CN.posting_nota_kredit)
 
 
 class _K:
@@ -90,8 +92,9 @@ def test_blok_potongan_melebihi_sisa(reason, total, sisa, blok):
 def test_blok_dipasang_di_semua_jalur():
     from app.services import nota_kredit_rencana as NKR
     src = inspect.getsource(CN)
-    # rencana buat (pratinjau), posting, pratinjau posting; terapkan (inti + pratinjau) = SATU penentu NKR (NK-RENCANA-A 23 Okt)
-    assert src.count("await pastikan_potongan_muat_sisa(") == 3
-    for fn in (CN.posting_nota_kredit, CN._rencana_nota_kredit, CN._rencana_nk, NKR.rencana_terapkan_nk):
+    # rencana buat (pratinjau) di router; posting + terapkan (inti + pratinjau) = penentu NKR (NK-RENCANA-A/B 23 Okt)
+    assert src.count("await pastikan_potongan_muat_sisa(") == 1
+    for fn in (CN._rencana_nota_kredit, NKR.rencana_posting_nk, NKR.rencana_terapkan_nk):
         assert "pastikan_potongan_muat_sisa(" in inspect.getsource(fn), fn.__name__
     assert "NKR.rencana_terapkan_nk(" in inspect.getsource(CN.apply_nota_kredit_core)
+    assert "NKR.rencana_posting_nk(" in inspect.getsource(CN.posting_nota_kredit)

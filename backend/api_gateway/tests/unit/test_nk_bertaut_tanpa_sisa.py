@@ -97,7 +97,7 @@ def test_semua_pembaca_sisa_memakai_rumus_yang_sama():
     from app.services import nota_kredit_rencana as NKR
     SRC_NKR = inspect.getsource(NKR)
     assert SRC.count("sisa_kredit_nk(") >= 4   # definisi + daftar, detail, keadaan
-    assert SRC_NKR.count("R.sisa_kredit_nk(") == 2   # refund (inti+pratinjau = penentu yang sama) + keadaan sesudah pratinjau
+    assert SRC_NKR.count("R.sisa_kredit_nk(") == 3   # refund (penentu) + keadaan sesudah pratinjau A + keadaan sesudah pratinjau terbit (B)
     assert 'sisa = cn["total_amount"] - (cn["amount_applied"] or 0)' not in SRC
     assert SRC_NKR.count("tolak_nk_bertaut(conn, tid, cn)") == 2              # penentu apply + refund memblok
     assert '- (row["amount_refunded"] or 0)' not in SRC and '- (cn["amount_refunded"] or 0)' not in SRC

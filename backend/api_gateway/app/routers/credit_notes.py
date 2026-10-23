@@ -925,7 +925,7 @@ async def periksa_tautan_baris_faktur(conn, tenant_id: str, faktur_id, items: li
         raise HTTPException(status_code=400, detail="Baris faktur yang dirujuk bukan milik faktur asal nota kredit ini.")
 
 
-async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, kecuali_cn=None) -> None:
+async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, kecuali_cn=None, kunci: bool = True) -> None:
     """Putusan pemilik 30 Sep 2026 (dikonfirmasi langsung di sesi BACKEND): baris NK yang BERTAUT ke baris faktur
     tak boleh melebihi yang masih bisa dinotakan = qty faktur - SIGMA qty NK tak-void lain yang bertaut ke baris itu
     (draf ikut dihitung; NK ini sendiri dikecualikan). NK lama tanpa tautan tak dihitung per baris; penjaga tingkat
@@ -937,7 +937,8 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
             per[str(k).lower()] = per.get(str(k).lower(), Decimal("0")) + Decimal(str(i.get("quantity") or 0))
     if not per or not faktur_id:
         return
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CN_FAKTUR:{tenant_id}:{faktur_id}")
+    if kunci:  # kunci=False: pratinjau READ ONLY (NK-RENCANA-B) -- pemeriksaan SAMA tanpa kunci CN_FAKTUR
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CN_FAKTUR:{tenant_id}:{faktur_id}")
     rows = await conn.fetch(
         """SELECT sii.id, sii.description, sii.quantity,
                   COALESCE((SELECT SUM(cni.quantity) FROM credit_note_items cni
@@ -1842,65 +1843,11 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
         f"CREDIT_NOTE:{credit_note_id}",
     )
 
-    # Get credit note
-    cn = await conn.fetchrow(
-        """
-        SELECT * FROM credit_notes
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        credit_note_id,
-        ctx["tenant_id"],
-    )
-
-    if not cn:
-        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
-
-    if cn["status"] != "draft":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.tak_bisa_status("cn", status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "diterbitkan"),
-        )
-
-    # Unit B: kaitan faktur dari draf diperiksa ulang saat posting (draf lama belum tervalidasi).
-    faktur_asal = None
-    if cn["original_invoice_id"]:
-        faktur_asal = await faktur_tenant_untuk_pelanggan(
-            conn, ctx["tenant_id"], cn["original_invoice_id"], cn["customer_id"]
-        )
-        await pastikan_cn_muat_faktur(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"], kecuali_cn=credit_note_id)
-        await pastikan_potongan_muat_sisa(conn, ctx["tenant_id"], faktur_asal, cn["total_amount"], cn["reason"])
-        await periksa_bisa_dinotakan(
-            conn, ctx["tenant_id"], faktur_asal["id"],
-            [dict(r) for r in await conn.fetch(
-                "SELECT quantity, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", credit_note_id)],
-            kecuali_cn=credit_note_id)
-
-    # Law 5: Period lock check
-    period_row = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-        ctx["tenant_id"],
-        cn["credit_note_date"],
-    )
-    if period_row and period_row["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.periode_tertutup(None, period_row["status"]),
-        )
-
-    # Get account IDs
-    # Law 27: Resolve account IDs dynamically
-    ar_account_id = await resolve_account_id(
-        conn, ctx["tenant_id"], AR_ACCOUNT_CODE
-    )
-    # 21 Okt 2026 (putusan pemilik): akun sisi Dr per alasan -- potongan harga -> 4-10200 Diskon, selainnya 4-10300 Retur
-    sales_return_account_id = await resolve_account_id(
-        conn, ctx["tenant_id"], kode_akun_nk(cn["reason"])
-    )
-
-    if not ar_account_id or not sales_return_account_id:
-        raise HTTPException(
-            status_code=500, detail="Akun yang diperlukan belum ada di bagan akun."
-        )
+    # NK-RENCANA-B (23 Okt 2026): SEMUA pemeriksaan = penentu bersama pratinjau (services/nota_kredit_rencana.rencana_posting_nk), dipanggil
+    # sesudah kunci; blok pertama = galat lama. Akun, porsi Dimuka, pecahan piutang/KRD DIAMBIL dari rencana (angka sama, satu sumber).
+    _r = await NKR.rencana_posting_nk(conn, ctx, credit_note_id)
+    cn, faktur_asal = _r["cn"], _r["faktur_asal"]
+    ar_account_id, sales_return_account_id = _r["akun"]["ar"], _r["akun"]["retur"]
 
     # Generate journal number
     import uuid as uuid_module
@@ -1927,19 +1874,9 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     # V312 (26 Sep 2026): porsi NK atas kewajiban yang BELUM dipenuhi (pendapatan masih di Dimuka) ->
     # Dr Dimuka + allocated_amount turun; sisanya Dr Retur. Dulu seluruhnya Dr Retur -> Dimuka terdampar
     # bila barang tak pernah dikirim (Check 16 buta). Lihat services/cn_tertunda.py.
-    porsi_tertunda, baris_faktur_nk = await cn_tertunda.hitung_untuk_nk(
-        conn, ctx["tenant_id"], cn, subtotal
-    )
-    u_tertunda = sum(porsi_tertunda.values(), Decimal("0"))
-    dimuka_account_id = None
-    if u_tertunda > 0:
-        dimuka_account_id = await resolve_account_id_by_role(
-            conn, ctx["tenant_id"], AccountRole.REVENUE_DEFERRED
-        )
-        if not dimuka_account_id:
-            raise HTTPException(
-                status_code=500, detail="Akun Pendapatan Diterima Dimuka (REVENUE_DEFERRED) tak ditemukan"
-            )
+    porsi_tertunda, baris_faktur_nk = _r["porsi"], _r["baris_faktur"]
+    u_tertunda = _r["u"]
+    dimuka_account_id = _r["akun"]["dimuka"]
 
     # Create journal entry
     await conn.execute(
@@ -2003,15 +1940,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     # Tenant non-PKP tidak boleh post PPN > 0 (fail-loud 422).
     tax_jl_id = None
     if tax_amount > 0:
-        tax_account_id = await resolve_account_id_by_role_if_pkp(
-            conn, ctx["tenant_id"], "VAT_OUTPUT"
-        )
-
-        if tax_account_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Tenant non-PKP tidak dapat post PPN > 0 pada credit note",
-            )
+        tax_account_id = _r["akun"]["pajak"]  # non-PKP -> blok CN_PPN_NON_PKP 422 di penentu
 
         if tax_account_id:
             tax_jl_id = uuid_module.uuid4()
@@ -2034,13 +1963,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     # BANYAK sebesar sisa tagihannya (compute_ar_outstanding, sebelum NK ini); KELEBIHAN = saldo kredit pelanggan
     # (Cr Uang Muka Pelanggan + baris customer_deposits, pola kelebihan bayar penerimaan), bukan piutang negatif.
     # NK tanpa faktur asal: seluruhnya ke piutang (perilaku lama).
-    porsi_ar, kelebihan = total_amount, Decimal("0")
-    if faktur_asal:
-        _sisa_ar = Decimal(str(await conn.fetchval(
-            "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2",
-            ctx["tenant_id"], faktur_asal["id"]) or 0))
-        porsi_ar = min(Decimal(str(total_amount)), max(_sisa_ar, Decimal("0")))
-        kelebihan = Decimal(str(total_amount)) - porsi_ar
+    porsi_ar, kelebihan = _r["porsi_ar"], _r["kelebihan"]
     if porsi_ar > 0:
         await conn.execute(
             """
@@ -2058,7 +1981,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
         line_number += 1
     created_deposit_id = None
     if kelebihan > 0:
-        _dep_acc = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+        _dep_acc = _r["akun"]["krd"]
         await conn.execute(
             """
             INSERT INTO journal_lines (
@@ -2954,25 +2877,12 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
         f"CREDIT_NOTE_VOID:{credit_note_id}",
     )
 
-    # Get credit note
-    cn = await conn.fetchrow(
-        """
-        SELECT * FROM credit_notes
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        credit_note_id,
-        ctx["tenant_id"],
-    )
+    # NK-RENCANA-B (23 Okt 2026): pemeriksaan = penentu bersama pratinjau (services/nota_kredit_rencana.rencana_batal_nk), sesudah kunci;
+    # blok pertama = galat lama (ada · sudah batal · diterapkan · dikembalikan · saldo KRD dipakai · periode · porsi Dimuka bisa dipulihkan).
+    _r = await NKR.rencana_batal_nk(conn, ctx, credit_note_id, reason)
+    cn = _r["cn"]
 
-    if not cn:
-        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
-
-    if cn["status"] == "void":
-        raise HTTPException(
-            status_code=400, detail="Nota kredit ini sudah dibatalkan."
-        )
-
-    if cn["status"] == "draft":
+    if _r["hapus"]:
         # Just delete draft
         await conn.execute(
             "DELETE FROM credit_notes WHERE id = $1", credit_note_id
@@ -2983,51 +2893,8 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
             "data": {"id": str(credit_note_id)},
         }
 
-    # Check for applications or refunds
-    if (cn["amount_applied"] or 0) > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Nota kredit sudah diterapkan ke faktur. Lepas penerapannya dulu.",
-        )
-
-    if (cn["amount_refunded"] or 0) > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Dana nota kredit ini sudah dikembalikan ke pelanggan, jadi tidak bisa dibatalkan.",
-        )
-
-    # 30 Sep 2026: NK yang kelebihannya jadi saldo kredit pelanggan -> saldo itu ikut dibatalkan; bila
-    # sudah dipakai (diterapkan/dikembalikan) -> tolak, jurnal pembalik akan membuat kewajiban negatif.
-    dep_nk = None
-    if cn["created_deposit_id"]:
-        from .customer_deposits import compute_deposit_remaining
-        dep_nk = await conn.fetchrow(
-            "SELECT id, deposit_number, amount, status FROM customer_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-            cn["created_deposit_id"], ctx["tenant_id"])
-        if dep_nk and dep_nk["status"] != "void":
-            _sisa_dep = await compute_deposit_remaining(conn, ctx["tenant_id"], dep_nk["id"])
-            if _sisa_dep < Decimal(str(dep_nk["amount"])):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(f"Saldo kredit {dep_nk['deposit_number']} dari nota kredit ini sudah dipakai "
-                            "(diterapkan ke faktur atau dikembalikan). Lepaskan pemakaiannya dulu."),
-                )
-
-        # Law 5: Period lock check (tanggal jurnal pembalik = hari ini, tanggal bisnis)
-    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-    period_row = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-        ctx["tenant_id"],
-        hari_ini,
-    )
-    if period_row and period_row["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.periode_tertutup(None, period_row["status"]),
-        )
-
-    # V312: porsi tertunda NK ini bisa dikembalikan? (409 bila barang terkirim sesudah NK)
-    await cn_tertunda.pulihkan_saat_void(conn, ctx["tenant_id"], cn, periksa_saja=True)
+    dep_nk = _r["dep"]  # FOR UPDATE di penentu (tulis)
+    hari_ini = _r["hari_ini"]  # t10-tanggal-bisnis
 
     # Create reversal journal if original was posted
     if cn["journal_id"]:
@@ -3324,26 +3191,8 @@ class PratinjauVoidNk(BaseModel):
     reason: Optional[str] = None  # opsional DI PRATINJAU supaya "alasan wajib" tampil sebagai blok
 
 
-class _BatalkanPratinjauNk(Exception):
-    def __init__(self, data):
-        self.data = data
-
-
 _STATUS_NK = {"draft": "draf", "posted": "terbit", "partial": "terpakai sebagian", "applied": "terpakai penuh",
               "void": "dibatalkan"}
-
-
-def _blok_nk(code: str, status: int, detail) -> dict:
-    pesan = detail if isinstance(detail, str) else (detail.get("message") if isinstance(detail, dict) else str(detail))
-    if isinstance(detail, dict) and detail.get("code"):
-        code = detail["code"]
-    return {"code": code, "status": status, "message": pesan}
-
-
-async def _periode_tutup_nk(conn, tid: str, tanggal):
-    r = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, tanggal)
-    return r["status"] if r and r["status"] != "OPEN" else None
 
 
 async def _sisa_faktur_nk(conn, tid: str, invoice_id):
@@ -3380,118 +3229,18 @@ async def _keadaan_nk(conn, tid: str, cn_id) -> dict:
     return ke
 
 
-async def _rencana_nk(conn, ctx: dict, cn_id, aksi: str, reason) -> list:
-    """Blok yang terbaca tanpa menulis; urutan & kode = pemeriksaan inti. 404 bila NK tak ada di tenant ini."""
-    tid = ctx["tenant_id"]
-    blok = []
-    cn = await conn.fetchrow("SELECT * FROM credit_notes WHERE id = $1 AND tenant_id = $2", cn_id, tid)
-    if not cn:
-        raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
-    st = _STATUS_NK.get(cn["status"], cn["status"])
-    if aksi == "post":
-        if cn["status"] != "draft":
-            blok.append(_blok_nk("CN_NOT_DRAFT", 400, f"Nota kredit berstatus {st} tidak bisa diterbitkan."))
-            return blok
-        if cn["original_invoice_id"]:
-            try:
-                faktur_asal = await faktur_tenant_untuk_pelanggan(conn, tid, cn["original_invoice_id"], cn["customer_id"])
-                await pastikan_cn_muat_faktur(conn, tid, faktur_asal, cn["total_amount"], kecuali_cn=cn_id)
-                await pastikan_potongan_muat_sisa(conn, tid, faktur_asal, cn["total_amount"], cn["reason"])
-                await periksa_bisa_dinotakan(
-                    conn, tid, faktur_asal["id"],
-                    [dict(r) for r in await conn.fetch(
-                        "SELECT quantity, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", cn_id)],
-                    kecuali_cn=cn_id)
-            except HTTPException as e:
-                blok.append(_blok_nk("CN_FAKTUR_ASAL", e.status_code, e.detail))
-        tutup = await _periode_tutup_nk(conn, tid, cn["credit_note_date"])
-        if tutup:
-            blok.append(_blok_nk("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
-        return blok
-    # void
-    if not (reason or "").strip():
-        blok.append(_blok_nk("VOID_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi."))
-    if cn["status"] == "void":
-        blok.append(_blok_nk("CN_ALREADY_VOID", 400, "Nota kredit sudah dibatalkan."))
-    elif cn["status"] != "draft":  # draf = akan DIHAPUS (tanpa jurnal): tak ada blok lain
-        if (cn["amount_applied"] or 0) > 0:
-            blok.append(_blok_nk("CN_HAS_APPLICATIONS", 400, "Nota kredit sudah diterapkan ke faktur. Lepas penerapannya dulu."))
-        if (cn["amount_refunded"] or 0) > 0:
-            blok.append(_blok_nk("CN_HAS_REFUNDS", 400, "Nota kredit sudah dikembalikan (sebagian) ke pelanggan. Batalkan pengembaliannya dulu."))
-        if cn["created_deposit_id"]:
-            from .customer_deposits import compute_deposit_remaining
-            dep = await conn.fetchrow(
-                "SELECT id, deposit_number, amount, status FROM customer_deposits WHERE id = $1 AND tenant_id = $2",
-                cn["created_deposit_id"], tid)
-            if dep and dep["status"] != "void" and await compute_deposit_remaining(conn, tid, dep["id"]) < Decimal(str(dep["amount"])):
-                blok.append(_blok_nk("CN_CREDIT_USED", 400, (
-                    f"Saldo kredit {dep['deposit_number']} dari nota kredit ini sudah dipakai (diterapkan ke faktur atau "
-                    "dikembalikan). Lepaskan pemakaiannya dulu.")))
-        tutup = await _periode_tutup_nk(conn, tid, await tanggal_dokumen(conn, tid))
-        if tutup:
-            blok.append(_blok_nk("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
-        try:
-            await cn_tertunda.pulihkan_saat_void(conn, tid, cn, periksa_saja=True)
-        except HTTPException as e:
-            blok.append(_blok_nk("CN_DEFERRED_RESTORE", e.status_code, e.detail))
-    return blok
-
-
-async def _jurnal_tx_ini_nk(conn, tid: str, cn_id) -> list:
-    """Jurnal yang dibuat TRANSAKSI INI untuk NK ini (created_at = now() = awal transaksi; source_id = NK)."""
-    hasil = []
-    for j in await conn.fetch(
-            """SELECT id, journal_number, source_type, description, journal_date FROM journal_entries
-               WHERE tenant_id = $1 AND source_id = $2 AND created_at = now() ORDER BY journal_number""", tid, cn_id):
-        baris = [{"account_code": b["account_code"], "account_name": b["name"], "debit": float(b["debit"] or 0),
-                  "credit": float(b["credit"] or 0)} for b in await conn.fetch(
-            """SELECT coa.account_code, coa.name, jl.debit, jl.credit FROM journal_lines jl
-               JOIN chart_of_accounts coa ON coa.id = jl.account_id AND coa.tenant_id = $2
-               WHERE jl.journal_id = $1 ORDER BY jl.line_number""", j["id"], tid)]
-        hasil.append({"journal_number": j["journal_number"], "source_type": j["source_type"],
-                      "description": j["description"], "journal_date": j["journal_date"].isoformat(), "lines": baris})
-    return hasil
-
-
 async def _pratinjau_nk(ctx: dict, cn_id, aksi: str, reason) -> dict:
-    tid = ctx["tenant_id"]
+    """aksi in (post, void) -- NK-RENCANA-B: penentu bersama (services/nota_kredit_rencana) di transaksi READ ONLY, tanpa kunci, tanpa
+    penomoran, nol tulis (dulu: inti penulis di savepoint lalu rollback)."""
     pool = await get_pool()
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                blok = await _rencana_nk(conn, ctx, cn_id, aksi, reason)
-                sebelum = await _keadaan_nk(conn, tid, cn_id)
-                fid = sebelum.get("original_invoice_id")
-                f0 = await _sisa_faktur_nk(conn, tid, fid)
-                jadi = False
-                if not blok:
-                    try:
-                        async with conn.transaction():  # savepoint: galat inti tak merusak transaksi pratinjau
-                            if aksi == "post":
-                                await posting_nota_kredit(conn, ctx, cn_id)
-                            else:
-                                await void_nota_kredit_core(conn, ctx, cn_id, reason)
-                            jadi = True
-                    except HTTPException as e:
-                        blok.append(_blok_nk(f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
-                jurnal = await _jurnal_tx_ini_nk(conn, tid, cn_id) if jadi else []
-                sesudah = await _keadaan_nk(conn, tid, cn_id) if jadi else sebelum
-                f1 = (await _sisa_faktur_nk(conn, tid, fid)) if jadi else f0
-                for k in (sebelum, sesudah):
-                    k.pop("original_invoice_id", None)
-                raise _BatalkanPratinjauNk({
-                    "credit_note_id": str(cn_id), "action": aksi, "can_proceed": not blok,
-                    "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
-                    "before": sebelum, "after": sesudah, "journals": jurnal,
-                    "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
-                    "payload": ({"reason": reason} if aksi == "void" else {}), "preview": True})
-    except _BatalkanPratinjauNk as b:
-        return b.data
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            return await NKR.pratinjau_post_void_nk(conn, ctx, cn_id, aksi, reason)
 
 
 @router.post("/{credit_note_id}/post/preview")
 async def preview_post_credit_note(request: Request, credit_note_id: UUID):
-    """Pratinjau terbit: penentu + posting_nota_kredit YANG SAMA lalu rollback (jurnal, sisa faktur sebelum -> sesudah)."""
+    """Pratinjau terbit: penentu bersama, READ ONLY (jurnal tanpa nomor, sisa faktur sebelum -> sesudah)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
         raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
@@ -3501,7 +3250,7 @@ async def preview_post_credit_note(request: Request, credit_note_id: UUID):
 
 @router.post("/{credit_note_id}/void/preview")
 async def preview_void_credit_note(request: Request, credit_note_id: UUID, body: Optional[PratinjauVoidNk] = None):
-    """Pratinjau batal: penentu + void_nota_kredit_core YANG SAMA lalu rollback. Draf = akan DIHAPUS (after.exists false)."""
+    """Pratinjau batal: penentu bersama, READ ONLY. Draf = akan DIHAPUS (after.exists false)."""
     ctx = get_user_context(request)
     if not ctx["user_id"]:
         raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")

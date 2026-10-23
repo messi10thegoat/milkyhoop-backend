@@ -167,7 +167,12 @@ def test_penjaga_dipanggil_di_buat_ubah_posting_dan_pratinjau():
     import ast
     src = open(CN.__file__, encoding="utf-8").read()
     t = ast.parse(src)
-    for nama in ("buat_nota_kredit", "update_credit_note", "posting_nota_kredit", "_rencana_nota_kredit"):
+    for nama in ("buat_nota_kredit", "update_credit_note", "_rencana_nota_kredit"):
         fn = next(n for n in ast.walk(t) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
         assert any(isinstance(c, ast.Call) and getattr(c.func, "id", None) == "periksa_bisa_dinotakan"
                    for c in ast.walk(fn)), nama
+    # NK-RENCANA-B (23 Okt): posting (inti + pratinjau) memanggil penentu bersama yang memanggil penjaga ini
+    import inspect
+    from app.services import nota_kredit_rencana as NKR
+    assert "R.periksa_bisa_dinotakan(" in inspect.getsource(NKR.rencana_posting_nk)
+    assert "NKR.rencana_posting_nk(conn, ctx, credit_note_id)" in inspect.getsource(CN.posting_nota_kredit)

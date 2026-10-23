@@ -1,10 +1,9 @@
-"""U5-D (4 Okt 2026): pratinjau post/void Nota Kredit + inti void yang diekstrak + idempotensi CN_POST/CN_VOID.
+"""U5-D (4 Okt 2026) + NK-RENCANA-B (23 Okt 2026): pratinjau post/void Nota Kredit + inti void + idempotensi CN_POST/CN_VOID.
 
-Penjaga: (1) handler void memanggil INTI yang sama dengan pratinjau, inti memuat semua langkah lama (kunci, jurnal balik,
-companion COGS, ledger persediaan, saldo kredit, V312) -- paritas token-per-token dengan handler lama diukur di luar suite
-(skrip paritas, 6921 = 6921); (2) penentu mengumpulkan SEMUA blok (bukan berhenti di pertama); (3) pratinjau SELALU rollback
-(transaksi keluar dengan galat), tak menjalankan inti bila ada blok, galat inti ikut sebagai blok terakhir; (4) pratinjau
-izinnya = izin tulisnya; (5) idempotensi memakai pola aksi (kunci {PREFIX}:{user}:{dok}:{kunci}, 409 bila isi beda)."""
+Penjaga: (1) inti post/void memanggil PENENTU BERSAMA (services/nota_kredit_rencana) sesudah kunci lama; pratinjau = penentu yang sama di
+transaksi READ ONLY (dulu: inti penulis di savepoint lalu rollback); inti void memuat semua langkah lama; (2) penentu mengumpulkan SEMUA
+blok (pratinjau) / melempar blok pertama persis (tulis); (3) pratinjau nol tulis/kunci (koneksi tiruan menolak execute), jurnal rencana
+tanpa nomor; (4) pratinjau izinnya = izin tulisnya; (5) idempotensi memakai pola aksi (kunci {PREFIX}:{user}:{dok}:{kunci})."""
 import asyncio
 import inspect
 import uuid
@@ -15,6 +14,7 @@ from fastapi import HTTPException
 
 from app.middleware import permission_middleware as PM
 from app.routers import credit_notes as C
+from app.services import nota_kredit_rencana as NKR
 
 
 def _j(c):
@@ -23,22 +23,29 @@ def _j(c):
 
 # ── struktur ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def test_handler_void_dan_pratinjau_memakai_inti_yang_sama():
+def test_handler_void_dan_pratinjau_memakai_penentu_yang_sama():
     h = inspect.getsource(C.void_credit_note)
-    p = inspect.getsource(C._pratinjau_nk)
-    assert "void_nota_kredit_core" in h and "void_nota_kredit_core" in p
-    assert "posting_nota_kredit" in inspect.getsource(C.post_credit_note) and "posting_nota_kredit" in p
+    p = " ".join(inspect.getsource(C._pratinjau_nk).split())
+    assert "void_nota_kredit_core" in h and "posting_nota_kredit" in inspect.getsource(C.post_credit_note)
+    assert "conn.transaction(readonly=True)" in p and "NKR.pratinjau_post_void_nk(conn, ctx, cn_id, aksi, reason)" in p
+    assert "posting_nota_kredit" not in p and "void_nota_kredit_core" not in p
+    assert "NKR.rencana_batal_nk(conn, ctx, credit_note_id, reason)" in inspect.getsource(C.void_nota_kredit_core)
+    assert "NKR.rencana_posting_nk(conn, ctx, credit_note_id)" in inspect.getsource(C.posting_nota_kredit)
     # handler tak lagi memuat isi void (tak ada jurnal/SQL inline): hanya idempotensi + pemanggilan inti
     assert "journal_entries" not in h and "journal_lines" not in h and "CREDIT_NOTE_VOID:" not in h
 
 
 def test_inti_void_memuat_semua_langkah_lama():
     inti = inspect.getsource(C.void_nota_kredit_core)
-    for penanda in ("CREDIT_NOTE_VOID:", "pg_advisory_xact_lock", "Draf nota kredit dihapus", "amount_applied",
-                    "amount_refunded", "created_deposit_id", "fiscal_periods", "pulihkan_saat_void", "get_next_journal_number",
+    for penanda in ("CREDIT_NOTE_VOID:", "pg_advisory_xact_lock", "Draf nota kredit dihapus", "NKR.rencana_batal_nk(",
+                    "pulihkan_saat_void", "get_next_journal_number",
                     "reversal_of_id", "UPDATE journal_entries SET status = 'POSTED'", "reversed_by_id", "CREDIT_NOTE_COGS",
                     "record_inventory_reversal", "segarkan_cache_piutang_faktur", "voided_reason = $3", "'void'"):
         assert penanda in inti, penanda
+    assert inti.index("CREDIT_NOTE_VOID:") < inti.index("NKR.rencana_batal_nk(") < inti.index("get_next_journal_number")
+    pen = inspect.getsource(NKR.rencana_batal_nk)
+    for penanda in ("amount_applied", "amount_refunded", "created_deposit_id", "fiscal_periods", "pulihkan_saat_void"):
+        assert penanda in pen, penanda
     kode_inti = inti.split('"""', 2)[2]  # tanpa docstring
     assert "body" not in kode_inti  # alasan datang sebagai parameter `reason`, bukan body request
 
@@ -73,29 +80,15 @@ def test_rute_pratinjau_terdaftar():
     assert ("/{credit_note_id}/void/preview", ("POST",)) in rute
 
 
-# ── tiruan koneksi ──────────────────────────────────────────────────────────────────────────────────────────────
-
-class _Tx:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def __aenter__(self):
-        self.conn.tx_masuk += 1
-        return self
-
-    async def __aexit__(self, et, ev, tb):
-        self.conn.tx_keluar.append(et)
-        return False
-
+# ── tiruan koneksi (NK-RENCANA-B: penentu bersama, pratinjau READ ONLY -- execute = galat) ──────────────────────────
 
 class _Conn:
-    def __init__(self, cn, apps=(), deposit=None, ar=None):
+    def __init__(self, cn, deposit=None, ar=0):
         self.cn, self.deposit, self.ar = cn, deposit, ar
-        self.tx_masuk, self.tx_keluar, self.sql = 0, [], []
-        self.periode = None
+        self.sql, self.periode = [], None
 
-    def transaction(self):
-        return _Tx(self)
+    async def execute(self, sql, *a):
+        raise AssertionError(f"pratinjau/penentu menulis atau mengunci: {sql}")
 
     async def fetchrow(self, sql, *a):
         self.sql.append(sql)
@@ -105,8 +98,6 @@ class _Conn:
             return {"status": self.periode} if self.periode else None
         if "FROM customer_deposits" in sql:
             return self.deposit
-        if "compute_ar_outstanding" in sql:
-            return {"outstanding": self.ar} if self.ar is not None else None
         return None
 
     async def fetch(self, sql, *a):
@@ -115,16 +106,20 @@ class _Conn:
 
     async def fetchval(self, sql, *a):
         self.sql.append(sql)
-        return "posted"
+        if "compute_ar_outstanding" in sql:
+            return self.ar
+        return None
 
 
 def _cn(**u):
-    d = {"id": uuid.uuid4(), "credit_note_number": "CN-1", "status": "posted", "total_amount": 100, "amount_applied": 0,
-         "reason": "return",  # 21 Okt: baris NK nyata selalu beralasan (penentu akun/blok potongan membacanya)
-         "amount_refunded": 0, "original_invoice_id": None, "created_deposit_id": None, "customer_id": uuid.uuid4(),
-         "credit_note_date": date(2026, 10, 4)}
+    d = {"id": uuid.uuid4(), "credit_note_number": "CN-1", "status": "posted", "total_amount": 100, "tax_amount": 0, "amount_applied": 0,
+         "reason": "return", "amount_refunded": 0, "original_invoice_id": None, "original_invoice_number": None, "created_deposit_id": None,
+         "customer_id": uuid.uuid4(), "customer_name": "X", "journal_id": None, "credit_note_date": date(2026, 10, 4)}
     d.update(u)
     return d
+
+
+AKUN = uuid.uuid4()
 
 
 @pytest.fixture(autouse=True)
@@ -134,28 +129,32 @@ def _patch(monkeypatch):
 
     async def aman(*a, **k):
         return None
+
+    async def akun(conn, tid, kode):
+        return AKUN
     monkeypatch.setattr(C, "tanggal_dokumen", hari)
     monkeypatch.setattr(C.cn_tertunda, "pulihkan_saat_void", aman)
+    monkeypatch.setattr(C, "resolve_account_id", akun)
 
 
 CTX = {"tenant_id": "t1", "user_id": uuid.uuid4()}
 
 
-def kode(blok):
-    return [b["code"] for b in blok]
+def kode(r):
+    return [b["code"] for b in r["blocks"].respons()]
 
 
-# ── penentu: kumpulkan SEMUA blok ─────────────────────────────────────────────────────────────────────────────────
+# ── penentu: kumpulkan SEMUA blok (pratinjau), nol tulis/kunci ───────────────────────────────────────────────────────
 
 def test_post_status_bukan_draf_diblok():
     cn = _cn(status="posted")
-    b = _j(C._rencana_nk(_Conn(cn), CTX, cn["id"], "post", None))
-    assert kode(b) == ["CN_NOT_DRAFT"] and "terbit" in b[0]["message"]
+    r = _j(NKR.rencana_posting_nk(_Conn(cn), CTX, cn["id"], pratinjau=True))
+    assert kode(r) == ["CN_NOT_DRAFT"] and "diterbitkan" in r["blocks"].respons()[0]["message"]
 
 
 def test_post_draf_periode_tutup_dan_faktur_asal_keduanya_tampil(monkeypatch):
     cn = _cn(status="draft", original_invoice_id=uuid.uuid4())
-    c = _Conn(cn)
+    c = _Conn(cn, ar=1000)  # sisa faktur >= NK -> tanpa kelebihan KRD (peran Uang Muka tak diperlukan)
     c.periode = "CLOSED"
 
     async def faktur(conn, tid, fid, pel):
@@ -165,8 +164,15 @@ def test_post_draf_periode_tutup_dan_faktur_asal_keduanya_tampil(monkeypatch):
         raise HTTPException(status_code=400, detail={"code": "CN_EXCEEDS_INVOICE", "message": "Melebihi sisa faktur."})
     monkeypatch.setattr(C, "faktur_tenant_untuk_pelanggan", faktur)
     monkeypatch.setattr(C, "pastikan_cn_muat_faktur", muat)
-    b = _j(C._rencana_nk(c, CTX, cn["id"], "post", None))
-    assert kode(b) == ["CN_EXCEEDS_INVOICE", "PERIOD_CLOSED"]  # dua blok sekaligus, kode dari detail galat dipertahankan
+    r = _j(NKR.rencana_posting_nk(c, CTX, cn["id"], pratinjau=True))
+    assert kode(r) == ["CN_EXCEEDS_INVOICE", "PERIOD_CLOSED"]  # dua blok sekaligus, kode dari detail galat dipertahankan
+
+
+def test_post_tulis_blok_pertama_dilempar_persis():
+    cn = _cn(status="posted")
+    with pytest.raises(HTTPException) as e:
+        _j(NKR.rencana_posting_nk(_Conn(cn), CTX, cn["id"]))
+    assert e.value.status_code == 400 and "diterbitkan" in e.value.detail
 
 
 def test_void_semua_blok_sekaligus(monkeypatch):
@@ -179,110 +185,54 @@ def test_void_semua_blok_sekaligus(monkeypatch):
     async def sisa(conn, tid, did):
         return 30  # < amount 100 -> sudah terpakai
     monkeypatch.setattr(CD, "compute_deposit_remaining", sisa)
-    b = _j(C._rencana_nk(c, CTX, cn["id"], "void", None))
-    assert kode(b) == ["VOID_REASON_REQUIRED", "CN_HAS_APPLICATIONS", "CN_HAS_REFUNDS", "CN_CREDIT_USED", "PERIOD_CLOSED"]
-    assert [x["status"] for x in b][0] == 422
+    r = _j(NKR.rencana_batal_nk(c, CTX, cn["id"], None, pratinjau=True))
+    assert kode(r) == ["VOID_REASON_REQUIRED", "CN_HAS_APPLICATIONS", "CN_HAS_REFUNDS", "CN_CREDIT_USED", "PERIOD_CLOSED"]
+    assert r["blocks"].daftar[0]["status"] == 422
+    assert not any("FOR UPDATE" in q for q in c.sql)  # pratinjau: saldo KRD dibaca TANPA kunci
 
 
 def test_void_draf_tanpa_alasan_hanya_blok_alasan_dan_draf_valid():
     cn = _cn(status="draft")
-    assert kode(_j(C._rencana_nk(_Conn(cn), CTX, cn["id"], "void", None))) == ["VOID_REASON_REQUIRED"]
-    assert _j(C._rencana_nk(_Conn(cn), CTX, cn["id"], "void", "salah input")) == []
+    assert kode(_j(NKR.rencana_batal_nk(_Conn(cn), CTX, cn["id"], None, pratinjau=True))) == ["VOID_REASON_REQUIRED"]
+    r = _j(NKR.rencana_batal_nk(_Conn(cn), CTX, cn["id"], "salah input", pratinjau=True))
+    assert kode(r) == [] and r["hapus"] is True
 
 
 def test_void_sudah_void_dan_nk_tak_ada():
     cn = _cn(status="void")
-    assert kode(_j(C._rencana_nk(_Conn(cn), CTX, cn["id"], "void", "x"))) == ["CN_ALREADY_VOID"]
+    assert kode(_j(NKR.rencana_batal_nk(_Conn(cn), CTX, cn["id"], "x", pratinjau=True))) == ["CN_ALREADY_VOID"]
     with pytest.raises(HTTPException) as e:
-        _j(C._rencana_nk(_Conn(cn), {"tenant_id": "t2", "user_id": None}, cn["id"], "void", "x"))
+        _j(NKR.rencana_batal_nk(_Conn(cn), {"tenant_id": "t2", "user_id": None}, cn["id"], "x", pratinjau=True))
     assert e.value.status_code == 404
 
 
-# ── pratinjau: selalu rollback ───────────────────────────────────────────────────────────────────────────────────
+# ── pratinjau: READ ONLY, jurnal rencana tanpa nomor ─────────────────────────────────────────────────────────────────
 
-class _Pool:
-    def __init__(self, conn):
-        self.conn = conn
-
-    def acquire(self):
-        conn = self.conn
-
-        class _A:
-            async def __aenter__(s):
-                return conn
-
-            async def __aexit__(s, *a):
-                return False
-        return _A()
+def test_pratinjau_terbit_jurnal_rencana_tanpa_nomor_dan_keadaan_sesudah():
+    cn = _cn(status="draft", reason="other")
+    out = _j(NKR.pratinjau_post_void_nk(_Conn(cn), CTX, cn["id"], "post", None))
+    assert out["can_proceed"] is True and out["blocks"] == [] and out["preview"] is True
+    j = out["journals"][0]
+    assert j["journal_number"] is None and j["source_type"] == "CREDIT_NOTE"
+    assert [(ln["debit"], ln["credit"]) for ln in j["lines"]] == [(100.0, 0.0), (0.0, 100.0)]  # Dr Retur / Cr Piutang (NK bebas)
+    assert out["after"]["status"] == "posted" and out["after"]["remaining"] == 100.0 and out["invoice"] is None
 
 
-def _jalankan(monkeypatch, cn, aksi, reason=None, inti_galat=None, ar=(50.0, 0.0)):
-    c = _Conn(cn)
-    panggilan = []
-    urut = iter(ar)
-
-    async def pool():
-        return _Pool(c)
-
-    async def inti(conn, ctx, cid, *a):
-        panggilan.append("inti")
-        if inti_galat:
-            raise inti_galat
-
-    async def jurnal(conn, tid, cid):
-        return [{"journal_number": "J1", "source_type": "CREDIT_NOTE", "lines": []}]
-
-    async def sisa(conn, tid, fid):
-        return next(urut)
-    async def faktur_ok(conn, tid, fid, pel):
-        return {"id": fid}
-
-    async def nop(*a, **k):
-        return None
-    monkeypatch.setattr(C, "faktur_tenant_untuk_pelanggan", faktur_ok)
-    monkeypatch.setattr(C, "pastikan_cn_muat_faktur", nop)
-    monkeypatch.setattr(C, "periksa_bisa_dinotakan", nop)
-    monkeypatch.setattr(C, "get_pool", pool)
-    monkeypatch.setattr(C, "posting_nota_kredit", inti)
-    monkeypatch.setattr(C, "void_nota_kredit_core", inti)
-    monkeypatch.setattr(C, "_jurnal_tx_ini_nk", jurnal)
-    monkeypatch.setattr(C, "_sisa_faktur_nk", sisa)
-    out = _j(C._pratinjau_nk(CTX, cn["id"], aksi, reason))
-    return c, panggilan, out
-
-
-def test_pratinjau_sukses_menjalankan_inti_lalu_selalu_rollback(monkeypatch):
-    cn = _cn(status="draft", original_invoice_id=uuid.uuid4())
-    c, p, out = _jalankan(monkeypatch, cn, "post")
-    assert p == ["inti"] and out["can_proceed"] is True and out["blocks"] == [] and out["preview"] is True
-    assert out["journals"][0]["journal_number"] == "J1"
-    assert out["invoice"]["remaining_before"] == 50.0 and out["invoice"]["remaining_after"] == 0.0
-    # transaksi luar KELUAR DENGAN GALAT (rollback), savepoint dalam keluar bersih
-    assert c.tx_keluar[-1] is C._BatalkanPratinjauNk and c.tx_keluar[0] is None
-
-
-def test_pratinjau_dengan_blok_tak_menjalankan_inti_dan_tanpa_jurnal(monkeypatch):
+def test_pratinjau_dengan_blok_tanpa_jurnal_dan_after_sama():
     cn = _cn(status="posted")
-    c, p, out = _jalankan(monkeypatch, cn, "post")
-    assert p == [] and out["can_proceed"] is False and out["blocks"][0]["code"] == "CN_NOT_DRAFT" and out["journals"] == []
-    assert out["before"] == out["after"] and c.tx_keluar[-1] is C._BatalkanPratinjauNk
+    out = _j(NKR.pratinjau_post_void_nk(_Conn(cn), CTX, cn["id"], "post", None))
+    assert out["can_proceed"] is False and out["blocks"][0]["code"] == "CN_NOT_DRAFT" and out["journals"] == []
+    assert out["before"] == out["after"]
 
 
-def test_pratinjau_galat_inti_jadi_blok_terakhir(monkeypatch):
+def test_pratinjau_void_draf_membawa_alasan_dan_akan_dihapus():
     cn = _cn(status="draft")
-    c, p, out = _jalankan(monkeypatch, cn, "post", inti_galat=HTTPException(status_code=500, detail="Akun tak ada"))
-    assert p == ["inti"] and out["can_proceed"] is False and out["blocks"][-1] == {"code": "POST_REJECTED", "message": "Akun tak ada"}
-    assert out["journals"] == [] and c.tx_keluar[-1] is C._BatalkanPratinjauNk
+    out = _j(NKR.pratinjau_post_void_nk(_Conn(cn), CTX, cn["id"], "void", "salah input"))
+    assert out["payload"] == {"reason": "salah input"} and out["action"] == "void" and out["after"] == {"exists": False}
 
 
-def test_pratinjau_void_draf_membawa_alasan_di_payload(monkeypatch):
+def test_kontrol_merah_penentu_dan_pratinjau_bisa_gagal():
+    # tanpa alasan, void WAJIB terblok (kalau penentu rusak, ujian ini merah)
     cn = _cn(status="draft")
-    _, p, out = _jalankan(monkeypatch, cn, "void", reason="salah input")
-    assert out["payload"] == {"reason": "salah input"} and out["action"] == "void" and p == ["inti"]
-
-
-def test_kontrol_merah_penentu_dan_pratinjau_bisa_gagal(monkeypatch):
-    # tanpa alasan, void WAJIB terblok -> inti tak jalan (kalau penentu rusak, ujian ini merah)
-    cn = _cn(status="draft")
-    _, p, out = _jalankan(monkeypatch, cn, "void", reason="  ")
-    assert p == [] and out["blocks"][0]["code"] == "VOID_REASON_REQUIRED"
+    out = _j(NKR.pratinjau_post_void_nk(_Conn(cn), CTX, cn["id"], "void", "  "))
+    assert out["can_proceed"] is False and out["blocks"][0]["code"] == "VOID_REASON_REQUIRED"

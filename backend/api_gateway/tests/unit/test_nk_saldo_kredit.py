@@ -63,10 +63,14 @@ def _fn(mod, nama):
 
 def test_posting_membelah_piutang_dan_saldo_kredit():
     s = " ".join(ast.get_source_segment(_src(CN), _fn(CN, "posting_nota_kredit")).split())
-    assert "porsi_ar = min(Decimal(str(total_amount)), max(_sisa_ar, Decimal(\"0\")))" in s
-    assert "AccountRole.CUSTOMER_DEPOSIT_LIABILITY" in s and "INSERT INTO customer_deposits" in s
+    import inspect
+    from app.services import nota_kredit_rencana as NKR
+    r = " ".join(inspect.getsource(NKR.rencana_posting_nk).split())  # NK-RENCANA-B: pecahan dihitung penentu, dipakai penulis
+    assert "porsi_ar = min(Decimal(str(total)), max(sisa_ar, Decimal(\"0\")))" in r
+    assert "AccountRole.CUSTOMER_DEPOSIT_LIABILITY" in r and "INSERT INTO customer_deposits" in s
+    assert 'porsi_ar, kelebihan = _r["porsi_ar"], _r["kelebihan"]' in s and '_dep_acc = _r["akun"]["krd"]' in s
     assert "UPDATE credit_notes SET created_deposit_id" in s
-    assert "kecuali_cn=credit_note_id" in s
+    assert "kecuali_cn=cn_id" in r
 
 
 def test_sisa_uang_muka_mengenal_jurnal_nk():
@@ -77,11 +81,12 @@ def test_sisa_uang_muka_mengenal_jurnal_nk():
 
 
 def test_void_nk_menjaga_saldo_kredit():
-    fn = _fn(CN, "void_nota_kredit_core")  # isi void dipindah ke inti (U5-D); handler = idempotensi + inti
-    jaga = [n for n in ast.walk(fn) if isinstance(n, ast.If)
-            and ast.unparse(n.test) == "_sisa_dep < Decimal(str(dep_nk['amount']))"
-            and any(isinstance(b, ast.Raise) for b in n.body)]
-    assert len(jaga) == 1, "void NK wajib MENOLAK (raise) bila saldo kredit sudah dipakai (sisa < nominal)"
+    fn = _fn(CN, "void_nota_kredit_core")  # isi void dipindah ke inti (U5-D); pemeriksaan = penentu NKR (NK-RENCANA-B 23 Okt)
+    import inspect
+    from app.services import nota_kredit_rencana as NKR
+    r = " ".join(inspect.getsource(NKR.rencana_batal_nk).split())
+    assert "compute_deposit_remaining(conn, tid, dep[\"id\"]) < Decimal(str(dep[\"amount\"]))" in r and "sudah dipakai" in r
+    assert 'bl.galat("CN_CREDIT_USED", 400,' in r
     s = " ".join(ast.get_source_segment(_src(CN), fn).split())
-    assert "compute_deposit_remaining" in s and "sudah dipakai" in s
+    assert "NKR.rencana_batal_nk(conn, ctx, credit_note_id, reason)" in s
     assert "UPDATE customer_deposits SET status = 'void'" in s

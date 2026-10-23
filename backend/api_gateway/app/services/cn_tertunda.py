@@ -82,16 +82,18 @@ async def kunci_faktur(conn, tenant_id: str, invoice_id):
                        tenant_id, f"INVOICE_FULFILL:{str(invoice_id)}")
 
 
-async def hitung_untuk_nk(conn, tenant_id: str, cn, subtotal_nk) -> tuple:
-    """-> (porsi {invoice_item_id: U}, baris_faktur {id: row}) untuk NK ber-faktur-asal; ({}, {}) bila tidak."""
+async def hitung_untuk_nk(conn, tenant_id: str, cn, subtotal_nk, kunci: bool = True) -> tuple:
+    """-> (porsi {invoice_item_id: U}, baris_faktur {id: row}) untuk NK ber-faktur-asal; ({}, {}) bila tidak.
+    kunci=False (NK-RENCANA-B, pratinjau READ ONLY): tanpa kunci_faktur dan tanpa FOR UPDATE -- angka SAMA."""
     if not cn["original_invoice_id"] or cn["reason"] in ALASAN_BARANG_KEMBALI:
         return {}, {}
-    await kunci_faktur(conn, tenant_id, cn["original_invoice_id"])
+    if kunci:
+        await kunci_faktur(conn, tenant_id, cn["original_invoice_id"])
     baris = await conn.fetch(
         """SELECT sii.id, sii.item_id, sii.allocated_amount, sii.recognized_amount
            FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id
            WHERE sii.invoice_id = $1 AND si.tenant_id = $2
-           ORDER BY sii.line_number, sii.id FOR UPDATE OF sii""",
+           ORDER BY sii.line_number, sii.id""" + (" FOR UPDATE OF sii" if kunci else ""),
         cn["original_invoice_id"], tenant_id)
     item_nk = await conn.fetch(
         "SELECT item_id, subtotal FROM credit_note_items WHERE credit_note_id = $1 ORDER BY line_number, id", cn["id"])
@@ -116,7 +118,7 @@ async def catat_porsi(conn, tenant_id: str, cn, journal_id, porsi: dict, baris: 
             _q(baris[item_id]["recognized_amount"] or 0), journal_id)
 
 
-async def pulihkan_saat_void(conn, tenant_id: str, cn, reversal_journal_id=None, periksa_saja=False):
+async def pulihkan_saat_void(conn, tenant_id: str, cn, reversal_journal_id=None, periksa_saja=False, kunci: bool = True):
     """Void NK: allocated += porsi. DITOLAK 409 bila pengakuan baris bertambah sesudah NK (barang terkirim sesudah
     NK -> porsi yang dikembalikan tak punya pengiriman tersisa = Dimuka terdampar lagi; buat faktur/nota debit baru).
     periksa_saja=True: hanya penjagaan (dipanggil SEBELUM jurnal pembalik ditulis)."""
@@ -134,7 +136,8 @@ async def pulihkan_saat_void(conn, tenant_id: str, cn, reversal_journal_id=None,
         cn["id"], tenant_id)
     if not porsi:
         return NOL
-    await kunci_faktur(conn, tenant_id, porsi[0]["invoice_id"])
+    if kunci:  # kunci=False hanya untuk pratinjau READ ONLY (periksa_saja); penulis selalu mengunci
+        await kunci_faktur(conn, tenant_id, porsi[0]["invoice_id"])
     bergeser = [p for p in porsi if _q(p["recognized_now"]) > _q(p["recognized_at_cn"]) or p["terkirim_sesudah"]]
     if bergeser:
         raise HTTPException(status_code=409, detail={
