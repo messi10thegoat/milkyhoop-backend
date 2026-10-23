@@ -15,6 +15,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
+from .jatuh_tempo import UMUR_KUNCI, kelas_umur, sql_umur
+
 KEADAAN = ("void", "draft", "paid", "overdue", "partial", "unpaid")
 URUT_KEADAAN = {"overdue": 1, "unpaid": 2, "partial": 3, "paid": 4, "draft": 5, "void": 6}  # == urutan kolom status lama
 
@@ -133,6 +135,10 @@ AKSI_TAGIHAN = ("lewat_jatuh_tempo", "segera_tempo", "perlu_diposting")
 AKSI_USANG = {"jatuh_tempo_minggu_ini": "segera_tempo"}       # masukan ?aksi= / kunci summary lama -> kunci kanonik
 AKSI_BARIS_USANG = {"segera_tempo": "jatuh_tempo_minggu_ini"}  # nilai `aksi` baris selama transisi FE
 TERBUKA = ("unpaid", "partial", "overdue")
+# SARING umur (KONTRAK-dashboard-T2 §5, 23 Okt 2026): umur_current|umur_1_30|umur_31_60|umur_61_90|umur_90_plus = TERBUKA ∧ umur jatuh tempo
+# efektif (jatuh_tempo.kelas_umur / sql_umur -- SATU rumus dgn faktur & dashboard aging). Kunci SARING ?aksi= + /summary {k}_count/_value
+# (nilai = sisa jurnal), BUKAN pill: partisi AKSI_TAGIHAN dan nilai `aksi` baris tak berubah. Σ umur_* == tagihan_terbuka.
+SARING_UMUR = UMUR_KUNCI
 POSISI_TAGIHAN = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")  # == kata posisi_faktur Penjualan
 
 
@@ -153,6 +159,8 @@ def sql_jt_efektif(a: str = "b") -> str:
 def sql_aksi(aksi: str, p_hari: str, p_ambang: str, a: str = "b") -> str:
     """Predikat SQL setara `aksi_tagihan(...) == aksi` (butuh join_rincian). p_hari/p_ambang = placeholder (hari ini, N hari segera)."""
     eff = sql_jt_efektif(a)
+    if aksi in SARING_UMUR:
+        return f"({sql_terbuka(a)} AND {sql_umur(aksi, eff, p_hari)})"
     return {
         "perlu_diposting": _sql_draft(a),
         "lewat_jatuh_tempo": f"({sql_terbuka(a)} AND {eff} < {p_hari}::date)",
@@ -166,7 +174,8 @@ def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date, ambang: Optional[in
     aksi = AKSI_USANG.get(aksi, aksi)
     if aksi == "segera_tempo" and ambang is None:
         raise ValueError("segera_tempo butuh ambang (pengingat.ambang_segera)")
-    pakai = {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,), "segera_tempo": (hari_ini, ambang)}[aksi]
+    pakai = (hari_ini,) if aksi in SARING_UMUR else {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,),
+                                                     "segera_tempo": (hari_ini, ambang)}[aksi]
     return sql_aksi(aksi, f"${mulai}", f"${mulai + 1}"), list(pakai)
 
 
@@ -189,6 +198,13 @@ def aksi_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[da
     if eff <= hari_ini + timedelta(days=ambang):
         return "segera_tempo"
     return None
+
+
+def umur_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[date], hari_ini: date) -> Optional[str]:
+    """Kembaran Python sql_aksi(umur_*): kunci umur tagihan TERBUKA (sisa jurnal > 0) dari jatuh tempo efektif, atau None."""
+    if keadaan not in TERBUKA:
+        return None
+    return kelas_umur(due_date if due_date is not None else issue_date, hari_ini)
 
 
 def posisi_tagihan(keadaan: str, dibayar) -> str:

@@ -115,7 +115,7 @@ def test_daftar_dan_summary_memakai_satu_sumber():
     for f in (BS.BillsService.get_bill, BS.BillsService.get_bill_v2):
         assert "TD.fakta_baris(" in inspect.getsource(f) and "TD.kelompok_tagihan(" in inspect.getsource(f)
     lit = typing.get_args(inspect.signature(BR.list_bills).parameters["aksi"].annotation)
-    assert set(typing.get_args(lit[0])) == set(TD.AKSI_TAGIHAN) | set(TD.AKSI_USANG)
+    assert set(typing.get_args(lit[0])) == set(TD.AKSI_TAGIHAN) | set(TD.AKSI_USANG) | set(TD.SARING_UMUR)
 
 
 def test_tanpa_tanggal_server_utc():

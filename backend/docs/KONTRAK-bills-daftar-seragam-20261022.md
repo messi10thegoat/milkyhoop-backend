@@ -71,3 +71,12 @@ Tanpa izin → modul tercantum di `omitted`. 404 bila tagihan tak ada di tenant.
 - Pengingat dashboard (BACKEND2 `services/pengingat`): `TD.sql_aksi_berparam("segera_tempo", …, ambang)` WAJIB menerima ambang (tanpa = ValueError);
   Σ sisa == `/bills/summary` segera_tempo_value (uji nyata (i)).
 - Uji nyata (i) + tanggal PEMBEDA (jatuh tempo terbuka tertua − 5 hari) + kontrol merah `MERAH_AMBANG=1` (ambang diabaikan -> WAJIB gagal).
+
+## 8. SARING umur `umur_*` — BARU (23 Okt 2026, KONTRAK-dashboard-T2 §5)
+- Kunci: `umur_current | umur_1_30 | umur_31_60 | umur_61_90 | umur_90_plus` = tagihan TERBUKA (sisa jurnal > 0, `sql_terbuka`) menurut umur
+  jatuh tempo EFEKTIF (due ?? issue_date): telat = hari ini − jatuh tempo efektif; ≤ 0 current · 1–30 · 31–60 · 61–90 · > 90.
+- Rumus umur = `services/jatuh_tempo.kelas_umur` / `sql_umur` — SATU sumber dengan Faktur Penjualan dan widget aging dashboard
+  (`UMUR_KE_BUCKET` → `current/d1_30/d31_60/d61_90/d90_plus`). Python `tagihan_daftar.umur_tagihan` == SQL `sql_aksi(umur_*)`.
+- **SARING, bukan pill**: diterima `GET /bills?aksi=umur_*`; `/bills/summary` menambah `{k}_count/_value` (nilai = sisa jurnal).
+  Partisi pill (`lewat_jatuh_tempo > segera_tempo`, `perlu_diposting`) dan nilai `aksi`/`aksi_semua` baris TIDAK berubah.
+- Invarian: Σ `umur_*_count/_value` == `tagihan_terbuka_count/_value`; `umur_1_30 + … + umur_90_plus` == `lewat_jatuh_tempo`.

@@ -440,7 +440,7 @@ class BillsService:
 
             # Pill aksi (partisi; predikat == TD.aksi_tagihan per baris)
             ambang = await ambang_segera(conn, tenant_id)  # SATU definisi "segera" (N hari tenant, V450, bawaan 7)
-            if aksi in TD.AKSI_TAGIHAN or aksi in TD.AKSI_USANG:
+            if aksi in TD.AKSI_TAGIHAN or aksi in TD.AKSI_USANG or aksi in TD.SARING_UMUR:  # + saring umur_* (T2 §5, bukan pill)
                 _c, _p = TD.sql_aksi_berparam(aksi, param_idx, hari_ini, ambang)
                 conditions.append(_c)
                 params.extend(_p)
@@ -2160,7 +2160,7 @@ class BillsService:
                 "SELECT " + ", ".join(
                     f"COUNT(*) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}) AS {k}_count, "
                     f"COALESCE(SUM({_nilai}) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}), 0) AS {k}_value"
-                    for k in TD.AKSI_TAGIHAN)
+                    for k in TD.AKSI_TAGIHAN + TD.SARING_UMUR)  # + saring umur_* (T2 §5; nilai = sisa jurnal, draf tak pernah cocok)
                 + f", COUNT(*) FILTER (WHERE {TD.sql_terbuka()}) AS terbuka_count,"
                   f" COALESCE(SUM(apr.outstanding) FILTER (WHERE {TD.sql_terbuka()}), 0) AS terbuka_value"
                 + f" FROM bills b {TD.join_rincian()} WHERE b.tenant_id = $1"
@@ -2187,7 +2187,7 @@ class BillsService:
                     "overdue_count": overdue_row["overdue_count"],
                     "total_overdue": int(overdue_row["total_overdue"]),
                     **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
-                       for k in TD.AKSI_TAGIHAN for m in ("count", "value")},
+                       for k in TD.AKSI_TAGIHAN + TD.SARING_UMUR for m in ("count", "value")},
                     # USANG (alias segera_tempo, KONTRAK-dashboard-pengingat §7): dipertahankan sampai FE T1 terverifikasi
                     "jatuh_tempo_minggu_ini_count": int(aksi_row["segera_tempo_count"]),
                     "jatuh_tempo_minggu_ini_value": float(aksi_row["segera_tempo_value"]),
