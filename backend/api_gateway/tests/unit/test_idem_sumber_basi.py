@@ -163,7 +163,9 @@ def test_peta_sumber_hanya_source_type_buat_dan_tabel_literal():
 def test_tiga_jalur_default_meneruskan_kunci_default():
     import inspect
     from app.routers import receive_payments as RP, bill_payments as BP, sales_invoices as SI
-    assert 'kunci_default=not request.headers.get("X-Idempotency-Key")' in inspect.getsource(RP)
+    # RCV-KUNCI-KLIEN (23 Okt 2026, putusan pemilik): penerimaan kini kunci KLIEN saja -> tak ada kunci default server
+    rp = inspect.getsource(RP.create_receive_payment)
+    assert "kunci_default=False" in rp and "build_idempotency_default" not in rp and "kunci_default=not" not in rp
     # bill_payments: kunci HANYA klien (putusan pemilik 22 Okt 2026) -> tanpa header = tanpa dedup, tak ada kunci default
     src = inspect.getsource(BP.create_bill_payment)
     assert "kunci_idempotensi_klien(request)" in src and "build_idempotency_default" not in src and "kunci_default=False" in src
