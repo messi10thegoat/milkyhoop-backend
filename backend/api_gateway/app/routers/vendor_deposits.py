@@ -1110,6 +1110,10 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
                     deposit_id=deposit_id,
                     deposit_number=vd["deposit_number"],
                     status=VendorDepositStatus.void,
+                    # 23 Okt: pembalik yang SUDAH ada (jurnal asli reversed_by_id), sama dgn balasan void pertama
+                    reversal_journal_id=(await conn.fetchval(
+                        "SELECT reversed_by_id FROM journal_entries WHERE id = $1 AND tenant_id = $2", vd["journal_id"], ctx["tenant_id"])
+                        if vd["journal_id"] else None),
                 )
 
             # Penentu SAMA dengan /void/preview (draf, alasan WAJIB, rekonsiliasi, penerapan aktif/refund, periode)
@@ -1256,6 +1260,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
                 status=VendorDepositStatus.void,
+                reversal_journal_id=reversal_id,  # 23 Okt: dulu tak diisi (null) padahal jurnal pembalik ditulis
             )
 
 

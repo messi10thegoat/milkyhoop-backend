@@ -81,8 +81,13 @@ async def keadaan(conn, tid: str, deposit_id) -> dict:
 
 
 def sesudah(sebelum: dict, **ubah) -> dict:
+    """after = before + perubahan; position_text DIHITUNG ULANG dari angka sesudah (penentu sama dgn daftar/detail, UMD.keadaan_vd) --
+    dulu disalin dari before -> pratinjau batal tetap "Belum diterapkan" (temuan uji nyata WORKSPACE 23 Okt)."""
     out = dict(sebelum)
     out.update(ubah)
+    if out.get("exists"):
+        out["position_text"] = UMD.position_text(UMD.keadaan_vd(out.get("status"), out.get("amount"), out.get("amount_applied"),
+                                                                out.get("amount_refunded"), out.get("remaining")))
     return out
 
 
