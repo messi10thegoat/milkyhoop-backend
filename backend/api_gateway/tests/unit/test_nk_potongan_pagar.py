@@ -88,8 +88,10 @@ def test_blok_potongan_melebihi_sisa(reason, total, sisa, blok):
 
 
 def test_blok_dipasang_di_semua_jalur():
+    from app.services import nota_kredit_rencana as NKR
     src = inspect.getsource(CN)
-    # rencana buat (pratinjau), posting, terapkan inti, pratinjau posting, pratinjau terapkan
-    assert src.count("await pastikan_potongan_muat_sisa(") == 5
-    for fn in (CN.posting_nota_kredit, CN.apply_nota_kredit_core, CN._rencana_nota_kredit, CN._rencana_nk, CN._rencana_nk_aksi):
+    # rencana buat (pratinjau), posting, pratinjau posting; terapkan (inti + pratinjau) = SATU penentu NKR (NK-RENCANA-A 23 Okt)
+    assert src.count("await pastikan_potongan_muat_sisa(") == 3
+    for fn in (CN.posting_nota_kredit, CN._rencana_nota_kredit, CN._rencana_nk, NKR.rencana_terapkan_nk):
         assert "pastikan_potongan_muat_sisa(" in inspect.getsource(fn), fn.__name__
+    assert "NKR.rencana_terapkan_nk(" in inspect.getsource(CN.apply_nota_kredit_core)

@@ -5,7 +5,7 @@ aksi CN_APPLY/CN_UNAPPLY/CN_REFUND, dan PRATINJAU memanggil inti YANG SAMA; (2) 
 account_id/bank_account_id -> jelas (keduanya cocok / salah satu / tak ada = 422 / keduanya beda = 422); jurnal mengkredit
 akun TERPECAHKAN (dulu hanya bank_account_id -> UUID(None) -> 500); (3) refund ke akun bank-linked membuat cermin
 bank_transactions (withdrawal, negatif, bulat) di transaksi yang sama, akun non-bank tanpa cermin; (4) penentu pratinjau
-mengumpulkan SEMUA blok; (5) izin pratinjau = izin tulisnya (A/V/P) -- dijaga test_u5e_izin_nk."""
+mengumpulkan SEMUA blok (NK-RENCANA-A 23 Okt: penentu services/nota_kredit_rencana, pratinjau READ ONLY); (5) izin pratinjau = izin tulisnya (A/V/P) -- dijaga test_u5e_izin_nk."""
 import asyncio
 import inspect
 import re
@@ -17,6 +17,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers import credit_notes as C
+from app.services import nota_kredit_rencana as NKR
 from app.schemas.credit_notes import ApplyCreditNoteItem, ApplyCreditNoteRequest, RefundCreditNoteRequest
 
 T = "t1"
@@ -147,10 +148,10 @@ def refund_env(monkeypatch):
 
 
 def _kredit_jurnal(k):
-    """account_id baris jurnal yang di-KREDIT (baris INSERT journal_lines dgn debit 0)."""
+    """account_id baris jurnal yang di-KREDIT (baris INSERT journal_lines dgn debit 0; argumen id, jurnal, no, akun, D, K, memo)."""
     for s, a in k.exec:
-        if "INSERT INTO journal_lines" in s and "0, $4" in s:
-            return a[2]
+        if "INSERT INTO journal_lines" in s and a[4] == 0:
+            return a[3]
     raise AssertionError("baris kredit jurnal tak ditemukan")
 
 
@@ -226,15 +227,19 @@ def test_rute_membungkus_inti_dengan_idempotensi_aksi(rute, kode, inti):
     assert "INSERT" not in src  # rute tak lagi menulis sendiri: SATU penulis = inti
 
 
-def test_inti_memegang_kunci_dan_pratinjau_memanggil_inti_yang_sama():
-    for inti, kunci in ((C.apply_nota_kredit_core, "CREDIT_NOTE_APPLY"), (C.unapply_nota_kredit_core, "CREDIT_NOTE_APPLY"),
-                        (C.refund_nota_kredit_core, "CREDIT_NOTE_REFUND")):
-        assert f'f"{kunci}:{{credit_note_id}}"' in " ".join(inspect.getsource(inti).split())
+def test_inti_memegang_kunci_dan_pratinjau_memakai_penentu_yang_sama():
+    """NK-RENCANA-A (23 Okt): inti = kunci -> penentu (kunci lama tetap); pratinjau = penentu YANG SAMA di transaksi READ ONLY
+    (dulu: inti penulis di savepoint lalu rollback)."""
+    for inti, kunci, penentu in ((C.apply_nota_kredit_core, "CREDIT_NOTE_APPLY", "rencana_terapkan_nk"),
+                                 (C.unapply_nota_kredit_core, "CREDIT_NOTE_APPLY", "rencana_lepas_nk"),
+                                 (C.refund_nota_kredit_core, "CREDIT_NOTE_REFUND", "rencana_refund_nk")):
+        src = " ".join(inspect.getsource(inti).split())
+        assert f'f"{kunci}:{{credit_note_id}}"' in src and f"NKR.{penentu}(conn, " in src
+        assert src.index(f'f"{kunci}:') < src.index(f"NKR.{penentu}(") < (src.index("INSERT") if "INSERT" in src else len(src))
     pr = " ".join(inspect.getsource(C._pratinjau_nk_aksi).split())
-    for inti in ("apply_nota_kredit_core(conn, ctx, cn_id, body)", "unapply_nota_kredit_core(conn, ctx, cn_id, body)",
-                 "refund_nota_kredit_core(conn, ctx, cn_id, body)"):
-        assert inti in pr
-    assert "raise _BatalkanPratinjauNk" in pr and "async with conn.transaction():" in pr  # savepoint + rollback
+    assert "conn.transaction(readonly=True)" in pr and "NKR.pratinjau_aksi_nk(conn, ctx, cn_id, aksi, body)" in pr
+    for inti in ("apply_nota_kredit_core", "unapply_nota_kredit_core", "refund_nota_kredit_core", "_BatalkanPratinjauNk"):
+        assert inti not in pr
 
 
 def test_replay_idempotensi_tak_memanggil_inti(monkeypatch):
@@ -285,23 +290,23 @@ def test_replay_idempotensi_tak_memanggil_inti(monkeypatch):
 def test_penentu_apply_mengumpulkan_semua_blok(monkeypatch):
     async def faktur(conn, tid, inv, cust):
         raise HTTPException(status_code=404, detail="Faktur tidak ditemukan")
-    monkeypatch.setattr(C, "faktur_tenant_untuk_pelanggan", faktur)
+    monkeypatch.setattr(NKR, "faktur_tenant_untuk_pelanggan", faktur)
     k = _Konn(cn=_cn(status="draft", journal_id=None, original_invoice_id=uuid.uuid4(), amount_refunded=5))
     body = ApplyCreditNoteRequest(applications=[ApplyCreditNoteItem(invoice_id=str(uuid.uuid4()), amount=Decimal("1"))])
-    kode = [b["code"] for b in _jalan(C._rencana_nk_aksi(k, CTX, CN, "apply", body))]
+    kode = [b["code"] for b in _jalan(NKR.rencana_terapkan_nk(k, T, CN, body, pratinjau=True))["blocks"].respons()]
     assert kode == ["CN_SUDAH_TERKAIT", "CN_BELUM_TERBIT", "CN_SUDAH_DIKEMBALIKAN", "CN_APPLY_PENUH", "CN_FAKTUR"]
 
 
 def test_penentu_unapply_tanpa_alasan_dan_belum_diterapkan():
-    kode = [b["code"] for b in _jalan(C._rencana_nk_aksi(_Konn(), CTX, CN, "unapply", ""))]
+    kode = [b["code"] for b in _jalan(NKR.rencana_lepas_nk(_Konn(), T, CN, "", pratinjau=True))["blocks"].respons()]
     assert kode == ["CN_ALASAN_WAJIB", "CN_BELUM_DITERAPKAN"]
 
 
 def test_penentu_refund_semua_blok_dan_akun_wajib():
     k = _Konn(cn=_cn(status="draft"))
-    assert [b["code"] for b in _jalan(C._rencana_nk_aksi(k, CTX, CN, "refund", _body()))] == ["CN_TAK_BISA_REFUND"]
+    assert [b["code"] for b in _jalan(NKR.rencana_refund_nk(k, T, CN, _body(), pratinjau=True))["blocks"].respons()] == ["CN_TAK_BISA_REFUND"]
     k2 = _Konn(periode="CLOSED")
-    kode = [b["code"] for b in _jalan(C._rencana_nk_aksi(k2, CTX, CN, "refund", _body(amount=Decimal("999999"))))]
+    kode = [b["code"] for b in _jalan(NKR.rencana_refund_nk(k2, T, CN, _body(amount=Decimal("999999")), pratinjau=True))["blocks"].respons()]
     assert kode == ["CN_REFUND_MELEBIHI_SISA", "CN_REFUND_AKUN_WAJIB", "PERIOD_CLOSED"]
 
 
@@ -312,7 +317,7 @@ def test_penentu_nk_tak_ada_404():
         return None
     k.fetchrow = kosong
     with pytest.raises(HTTPException) as e:
-        _jalan(C._rencana_nk_aksi(k, CTX, CN, "refund", _body(account_id=str(COA))))
+        _jalan(NKR.rencana_refund_nk(k, T, CN, _body(account_id=str(COA)), pratinjau=True))
     assert e.value.status_code == 404
 
 

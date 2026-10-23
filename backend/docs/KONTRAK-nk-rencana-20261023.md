@@ -111,3 +111,18 @@ Masing-masing: harness, rilis, izin pemilik sendiri-sendiri.
 ## 7. Pertanyaan ke MASTER
 1. Setuju dipecah menjadi dua unit (A dulu)?
 2. `journal_number: null` di pratinjau: setuju (preseden U3d)? Atau tanya FE dulu?
+
+## 8. Tahap A — hasil (23 Okt 2026, cabang feat/nk-rencana-a)
+- `services/nota_kredit_rencana.py`: `rencana_terapkan_nk` / `rencana_lepas_nk` / `rencana_refund_nk` (+ `baris_refund_nk`,
+  `status_nk_sesudah` == trigger `update_credit_note_status` termasuk pembulatan BIGINT, `kredit_piutang_nk` == cabang 2
+  compute_ar_outstanding) dan `pratinjau_aksi_nk`. Inti apply/unapply/refund memanggil penentu SESUDAH kunci lama; blok pertama = galat lama.
+- Pratinjau: `conn.transaction(readonly=True)`; `_rencana_nk_aksi` + savepoint inti DIHAPUS.
+- Beda yang disengaja: `journals[].journal_number = null` (FE resepAksiNk.tsx:34 jatuh ke "Jurnal"); baris jurnal pratinjau membawa `memo`;
+  refund yang TERBLOK di status/bertaut tidak lagi menampilkan `bank` (dulu akun tetap dipecahkan) -> `bank: null` (FE: null diizinkan).
+- Harness `scripts/ops/uji-nyata-nk-rencana-a.{py,sh}` (kaos, rollback): R refund rekening, K refund account_id (cermin reverse-lookup CoA),
+  A terapkan, U lepas, B1–B5 blok. HIJAU 60 PASS rc 0: penulis lama == baru (jurnal, cermin bank, aplikasi, refund, kolom NK, audit),
+  pratinjau lama (tulis+rollback) == baru (penentu) kecuali nomor jurnal, pratinjau == keadaan nyata sesudah tulis, nol tulis + nol kunci
+  advisory baru + pencacah tetap selama pratinjau, NET 0. MERAH (after.remaining dimutasi) rc 1; MERAH_BOCOR rc 1, bersih SISA 0.
+- BACA koneksi read-only: kaos 23 NK × 3 aksi = 69 pratinjau, 0 galat; grapgrap 0 NK (diukur) -> tak ada yang dipratinjau.
+- Tes unit: test_nk_rencana_a (pemindai jalur pratinjau + kontrol merah pemindai, rumus status/BIGINT, pratinjau refund dengan koneksi
+  tiruan yang menolak tulis); u10 / bertaut / potongan_pagar / u11 disesuaikan ke penentu. Terfokus 1025 passed.

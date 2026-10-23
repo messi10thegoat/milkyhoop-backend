@@ -79,19 +79,27 @@ def test_nk_bebas_lolos_pagar():
 
 
 def test_refund_dan_apply_memakai_pagar_sebelum_menghitung_sisa():
+    # NK-RENCANA-A (23 Okt): pemeriksaan pindah ke penentu bersama (services/nota_kredit_rencana); inti memanggilnya sebelum menulis
+    import inspect
+    from app.services import nota_kredit_rencana as NKR
+    rr = inspect.getsource(NKR.rencana_refund_nk)
+    assert rr.index("tolak_nk_bertaut(conn, tid, cn)") < rr.index("sisa = R.sisa_kredit_nk(")
     r = _fungsi("refund_nota_kredit_core")
-    assert r.index("tolak_nk_bertaut(") < r.index("remaining = sisa_kredit_nk(") < r.index("INSERT INTO journal_entries")
+    assert r.index("NKR.rencana_refund_nk(") < r.index("INSERT INTO journal_entries")
+    assert "R.tolak_nk_bertaut(conn, tid, cn)" in inspect.getsource(NKR.rencana_terapkan_nk)
     a = _fungsi("apply_nota_kredit_core")
-    assert "await tolak_nk_bertaut(conn, ctx[\"tenant_id\"], cn)" in a
-    assert a.index("tolak_nk_bertaut(") < a.index("INSERT INTO")
+    assert a.index("NKR.rencana_terapkan_nk(") < a.index("INSERT INTO")
 
 
 def test_semua_pembaca_sisa_memakai_rumus_yang_sama():
     # daftar, detail, keadaan pratinjau, refund -> sisa_kredit_nk; tak ada lagi rumus lama total - applied - refunded
-    assert SRC.count("sisa_kredit_nk(") >= 6   # definisi + daftar, detail, keadaan, refund inti, refund pratinjau
+    import inspect
+    from app.services import nota_kredit_rencana as NKR
+    SRC_NKR = inspect.getsource(NKR)
+    assert SRC.count("sisa_kredit_nk(") >= 4   # definisi + daftar, detail, keadaan
+    assert SRC_NKR.count("R.sisa_kredit_nk(") == 2   # refund (inti+pratinjau = penentu yang sama) + keadaan sesudah pratinjau
     assert 'sisa = cn["total_amount"] - (cn["amount_applied"] or 0)' not in SRC
-    rp = _fungsi("_rencana_nk_aksi")
-    assert rp.count("await tolak_nk_bertaut(conn, tid, cn)") == 2              # pratinjau apply + refund memblok
+    assert SRC_NKR.count("tolak_nk_bertaut(conn, tid, cn)") == 2              # penentu apply + refund memblok
     assert '- (row["amount_refunded"] or 0)' not in SRC and '- (cn["amount_refunded"] or 0)' not in SRC
     assert "AND cn.original_invoice_id IS NULL), 0) as available_balance" in SRC   # ringkasan: NK bebas saja
 
