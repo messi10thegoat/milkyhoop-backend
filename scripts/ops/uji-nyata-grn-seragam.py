@@ -57,6 +57,9 @@ async def main():
         asli_g = GD.sql_grni_terbuka
         GD.sql_grni_terbuka = lambda g="g": f"({asli_g(g)} + 1)"
         RGR.SQL_HEADER = RGR.SQL_HEADER.replace(asli_g("g"), f"({asli_g('g')} + 1)")
+    import app.services.dashboard_izin as DI  # PolicyEngine tak hidup di kontainer sekali-pakai -> peran OWNER = semua modul boleh dibaca
+    async def boleh(request, modul): return True
+    DI.boleh_baca = boleh
     svc = BS.BillsService(P())
     uid = await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id = $1 AND created_by IS NOT NULL LIMIT 1", T)
 
