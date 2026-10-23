@@ -52,6 +52,13 @@ def gabung_aksi(aksi_serah: Optional[str], perlu_difaktur: bool) -> Optional[str
     return aksi_serah or ("perlu_difaktur" if perlu_difaktur else None)
 
 
+def aksi_semua(aksi_serah: Optional[str], perlu_difaktur_mentah: bool) -> list:
+    """Pure (23 Okt 2026, aditif; putusan MASTER opsi A): SEMUA kunci aksi yang berlaku, urut AKSI (perlu_resi > belum_dicatat >
+    perlu_difaktur), dari predikat MENTAH -- perlu_difaktur TANPA pengecualian partisi. `aksi` baris/pill TETAP partisi = aksi_semua[0]
+    (gabung_aksi); ?aksi= dan summary TIDAK berubah. Gunanya meta "Belum ditagih" di detail walau pill-nya serah."""
+    return ([aksi_serah] if aksi_serah else []) + (["perlu_difaktur"] if perlu_difaktur_mentah else [])
+
+
 async def tagih_sesudah_kirim(conn, tid: str) -> bool:
     """True = tenant memakai tagih-sesudah-kirim (flag tagih_sebelum_kirim TIDAK menyala; bawaan)."""
     return not await conn.fetchval(

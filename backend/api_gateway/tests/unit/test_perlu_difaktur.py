@@ -69,3 +69,24 @@ def test_partisi_dengan_pill_serah_bila_serah_aktif():
     src = inspect.getsource(DL)
     assert "_pg.sql_aksi(k, 'f', _serah_on)" in src and '_pg.sql_aksi(aksi, "f", _serah_aktif)' in src
     assert 'perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], _serah_aktif)' in src
+
+
+def test_aksi_semua_urutan_dan_kepala_sama_aksi():
+    """23 Okt (opsi A, aditif): aksi_semua = semua kunci mentah urut AKSI; kepala == gabung_aksi (aksi pill partisi tak berubah)."""
+    kasus = [("perlu_resi", True), ("belum_dicatat", True), (None, True), ("perlu_resi", False), (None, False)]
+    for serah, mentah in kasus:
+        semua = PG.aksi_semua(serah, mentah)
+        assert semua == [k for k in PG.AKSI if k == serah or (k == "perlu_difaktur" and mentah)]
+        assert (semua[0] if semua else None) == PG.gabung_aksi(serah, mentah)
+    assert PG.aksi_semua("perlu_resi", True) == ["perlu_resi", "perlu_difaktur"]  # SJ butuh resi DAN belum ditagih: dua-duanya
+
+
+def test_aksi_semua_baris_dan_detail_mentah_tanpa_partisi():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[2] / "app/routers/deliveries.py").read_text()
+    assert 'i["aksi_semua"] = _pg.aksi_semua(i["aksi"], r["id"] in _pdm)' in src                                   # baris
+    assert '_pdm = await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], False) if _serah_aktif else _pd' in src  # id HALAMAN saja, mentah
+    assert 'detail["aksi_semua"] = _pg.aksi_semua(detail["aksi"], row["id"] in await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [row["id"]], False))' in src
+    # aksi_semua dihitung SEBELUM gabung_aksi (memakai aksi serah mentah), ?aksi=/summary tetap sql_aksi partisi
+    assert src.index('i["aksi_semua"]') < src.index('i["aksi"] = _pg.gabung_aksi')
+    assert src.count("_pg.sql_aksi(aksi, \"f\", _serah_aktif)") == 1

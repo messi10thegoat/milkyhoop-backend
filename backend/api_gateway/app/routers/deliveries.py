@@ -296,8 +296,11 @@ async def list_deliveries(
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [r["id"] for r in rows]) if _serah_aktif else {}
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": r["id"], "invoice_id": r["invoice_id"], "sales_order_id": r["sales_order_id"]} for r in rows])
         _pd = await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], _serah_aktif)
+        # aksi_semua (23 Okt, aditif): perlu_difaktur MENTAH (tanpa partisi serah); pill/aksi tetap partisi
+        _pdm = await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [r["id"] for r in rows], False) if _serah_aktif else _pd
         for i, r in zip(items, rows):
             i.update(_pg.serah_fakta(_serah_aktif, r["status"], *_fs.get(r["id"], (None, None, 0))))
+            i["aksi_semua"] = _pg.aksi_semua(i["aksi"], r["id"] in _pdm)
             i["aksi"] = _pg.gabung_aksi(i["aksi"], r["id"] in _pd)
             i["position_text"] = _pg.position_text(r["status"], i["serah_teks"])
             i["documents"] = _pg.documents_baris(_kel.get(r["id"], []))
@@ -506,6 +509,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         from ..services import pengiriman_daftar as _pg  # 20 Okt 2026: keadaan serah + aksi (aditif; fungsi SAMA dgn daftar)
         _fs = await _pg.fakta_serah(_c, ctx["tenant_id"], [row["id"]]) if _aktif else {}
         detail.update(_pg.serah_fakta(_aktif, row["status"], *_fs.get(row["id"], (None, None, 0))))
+        detail["aksi_semua"] = _pg.aksi_semua(detail["aksi"], row["id"] in await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [row["id"]], False))
         detail["aksi"] = _pg.gabung_aksi(detail["aksi"], row["id"] in await _pg.perlu_difaktur_ids(_c, ctx["tenant_id"], [row["id"]], _aktif))
         detail["position_text"] = _pg.position_text(row["status"], detail["serah_teks"])
         # paritas detail == baris daftar (21 Okt 2026): documents[]/doc_count dari kelompok_untuk (fungsi SAMA dgn daftar)
