@@ -997,7 +997,7 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID):
 
 
 @router.post("/{vendor_credit_id}/post", response_model=VendorCreditResponse)
-async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
+async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response: Response = None):
     """
     Post vendor credit to accounting.
 
@@ -1018,6 +1018,13 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14 (23 Okt 2026, putusan pemilik LANGSUNG; kembar NK CN_*): X-Idempotency-Key klien saja -- kirim ulang = respons
+                # pertama (SATU tulisan), isi beda = 409; tanpa kunci = perilaku lama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_POST", vendor_credit_id,
+                                                       {}, response)
+                if _lama is not None:
+                    return _lama
                 # Law 13 (U3a): kunci DULU, baru baca (dulu dibaca sebelum kunci -> dua posting serentak lolos cek status)
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -1204,7 +1211,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                     f"Vendor credit posted: {vendor_credit_id}, journal={journal_id}"
                 )
 
-                return {
+                return await _ib.simpan(conn, ctx, _kp, _sd, "VC_POST", {
                     "success": True,
                     "message": "Vendor credit posted to accounting",
                     "data": {
@@ -1213,7 +1220,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
                         "journal_number": journal_number,
                         "status": "posted",
                     },
-                }
+                }, vendor_credit_id)
 
     except HTTPException:
         raise
@@ -1231,7 +1238,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID):
 
 @router.post("/{vendor_credit_id}/apply", response_model=VendorCreditResponse)
 async def apply_vendor_credit(
-    request: Request, vendor_credit_id: UUID, body: ApplyVendorCreditRequest
+    request: Request, vendor_credit_id: UUID, body: ApplyVendorCreditRequest, response: Response = None
 ):
     """Terapkan nota debit ke SATU tagihan, seluruh nilainya (U3a, putusan pemilik 22 Okt; kembar Nota Kredit, pola NetSuite apply credit).
     TANPA jurnal: hutang sudah didebit saat posting; terapkan hanya mengatribusikan (V441 cabang 4 lewat original_bill_id, pagar V443)."""
@@ -1248,14 +1255,21 @@ async def apply_vendor_credit(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14 (23 Okt 2026, putusan pemilik LANGSUNG; kembar NK CN_*): X-Idempotency-Key klien saja -- kirim ulang = respons
+                # pertama (SATU tulisan), isi beda = 409; tanpa kunci = perilaku lama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_APPLY", vendor_credit_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
                 tanggal = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
                 hasil = await ND.terapkan_nota_debit(conn, ctx, vendor_credit_id, app.bill_id, app.amount, tanggal)
                 logger.info(f"Nota debit diterapkan: {vendor_credit_id} -> tagihan {hasil['bill_id']}")
-                return {
+                return await _ib.simpan(conn, ctx, _kp, _sd, "VC_APPLY", {
                     "success": True,
                     "message": f"Nota debit diterapkan ke tagihan {hasil['bill_number']}.",
                     "data": {"id": str(vendor_credit_id), "applications": [hasil]},
-                }
+                }, vendor_credit_id)
 
     except HTTPException:
         raise
@@ -1266,7 +1280,7 @@ async def apply_vendor_credit(
 
 @router.post("/{vendor_credit_id}/unapply", response_model=VendorCreditResponse)
 async def unapply_vendor_credit(
-    request: Request, vendor_credit_id: UUID, body: UnapplyVendorCreditRequest
+    request: Request, vendor_credit_id: UUID, body: UnapplyVendorCreditRequest, response: Response = None
 ):
     """Lepas penerapan nota debit dari tagihan (U3a; kembar /credit-notes/{id}/unapply). TANPA jurnal; riwayat aplikasi append-only."""
     try:
@@ -1276,9 +1290,16 @@ async def unapply_vendor_credit(
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14 (23 Okt 2026, putusan pemilik LANGSUNG; kembar NK CN_*): X-Idempotency-Key klien saja -- kirim ulang = respons
+                # pertama (SATU tulisan), isi beda = 409; tanpa kunci = perilaku lama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_UNAPPLY", vendor_credit_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
                 hasil = await ND.lepas_nota_debit(conn, ctx, vendor_credit_id, body.reason)
-                return {"success": True, "message": "Penerapan nota debit dilepas.",
-                        "data": {"id": str(vendor_credit_id), **hasil}}
+                return await _ib.simpan(conn, ctx, _kp, _sd, "VC_UNAPPLY", {"success": True, "message": "Penerapan nota debit dilepas.",
+                                        "data": {"id": str(vendor_credit_id), **hasil}}, vendor_credit_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -1293,7 +1314,7 @@ async def unapply_vendor_credit(
 
 @router.post("/{vendor_credit_id}/receive-refund", response_model=VendorCreditResponse)
 async def receive_refund(
-    request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest
+    request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest, response: Response = None
 ):
     """
     Record cash refund received from vendor.
@@ -1314,6 +1335,13 @@ async def receive_refund(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14 (23 Okt 2026, putusan pemilik LANGSUNG; kembar NK CN_*): X-Idempotency-Key klien saja -- kirim ulang = respons
+                # pertama (SATU tulisan), isi beda = 409; tanpa kunci = perilaku lama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_REFUND", vendor_credit_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
                 # U3d: PENENTU SATU dgn POST /{id}/refund/preview (NDR.rencana_kembali; urutan + pesan == kode lama)
                 _r = await NDR.rencana_kembali(conn, ctx, vendor_credit_id, body)
                 vc, resolved_account_id = _r["vc"], _r["akun_id"]
@@ -1427,7 +1455,7 @@ async def receive_refund(
                     f"Vendor credit refund received: {vendor_credit_id}, amount={body.amount}"
                 )
 
-                return {
+                return await _ib.simpan(conn, ctx, _kp, _sd, "VC_REFUND", {
                     "success": True,
                     "message": "Refund received successfully",
                     "data": {
@@ -1436,7 +1464,7 @@ async def receive_refund(
                         "journal_id": str(journal_id),
                         "amount": body.amount,
                     },
-                }
+                }, vendor_credit_id)
 
     except HTTPException:
         raise
@@ -1455,7 +1483,7 @@ async def receive_refund(
 
 @router.post("/{vendor_credit_id}/void", response_model=VendorCreditResponse)
 async def void_vendor_credit(
-    request: Request, vendor_credit_id: UUID, body: VoidVendorCreditRequest
+    request: Request, vendor_credit_id: UUID, body: VoidVendorCreditRequest, response: Response = None
 ):
     """
     Void a vendor credit.
@@ -1473,6 +1501,13 @@ async def void_vendor_credit(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14 (23 Okt 2026, putusan pemilik LANGSUNG; kembar NK CN_*): X-Idempotency-Key klien saja -- kirim ulang = respons
+                # pertama (SATU tulisan), isi beda = 409; tanpa kunci = perilaku lama.
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_VOID", vendor_credit_id,
+                                                       lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -1487,11 +1522,11 @@ async def void_vendor_credit(
                     await conn.execute(
                         "DELETE FROM vendor_credits WHERE id = $1", vendor_credit_id
                     )
-                    return {
+                    return await _ib.simpan(conn, ctx, _kp, _sd, "VC_VOID", {
                         "success": True,
                         "message": "Draft vendor credit deleted",
                         "data": {"id": str(vendor_credit_id)},
-                    }
+                    }, vendor_credit_id)
 
                 # Create reversal journal if original was posted
                 if vc["journal_id"]:
@@ -1588,11 +1623,11 @@ async def void_vendor_credit(
 
                 logger.info(f"Vendor credit voided: {vendor_credit_id}")
 
-                return {
+                return await _ib.simpan(conn, ctx, _kp, _sd, "VC_VOID", {
                     "success": True,
                     "message": "Vendor credit voided successfully",
                     "data": {"id": str(vendor_credit_id), "status": "void"},
-                }
+                }, vendor_credit_id)
 
     except HTTPException:
         raise
