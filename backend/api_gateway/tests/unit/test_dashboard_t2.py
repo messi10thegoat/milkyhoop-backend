@@ -123,9 +123,9 @@ def test_delta_pct_dan_null():
 
 
 def _palsukan_metrik(monkeypatch, per_rentang):
-    async def metrik(conn, t, a, b):
-        return per_rentang[(a, b)]
-    monkeypatch.setattr(DV, "_metrik_rentang", metrik)
+    async def metrik(conn, t, rentang):
+        return [per_rentang[rr] for rr in rentang]
+    monkeypatch.setattr(DV, "_metrik_rentang_banyak", metrik)
 
 
 def test_pembanding_null_sebelum_jurnal_pertama_dan_needs_action_hanya_kas(monkeypatch):
@@ -253,3 +253,31 @@ def test_rute_menerima_kunci_baru_dan_lama():
     import re
     pola = re.search(r'pattern="\^\(([^)]*)\)\$"', inspect.getsource(RV.ringkasan_v2)).group(1).split("|")
     assert set(pola) == set(DV.PERIODE + DV.PERIODE_T2)
+
+
+def test_laba_rugi_rentang_satu_kueri_filter_per_rentang():
+    """Pembanding: SEMUA rentang dalam satu kueri; filter = laba_rugi (POSTED, efektif, tenant) + rentang per kolom."""
+    tangkap = {}
+
+    class C:
+        async def fetchrow(self, sql, *par):
+            tangkap["sql"], tangkap["par"] = sql, par
+            return [Decimal("100"), Decimal("40"), Decimal("7"), Decimal("1")]
+    r = [(date(2026, 10, 1), date(2026, 10, 23)), (date(2026, 9, 1), date(2026, 9, 23))]
+    out = asyncio.run(DA.laba_rugi_rentang(C(), "t", r))
+    assert out == [{"pendapatan": Decimal("100"), "beban": Decimal("40"), "laba": Decimal("60")},
+                   {"pendapatan": Decimal("7"), "beban": Decimal("1"), "laba": Decimal("6")}]
+    sql = tangkap["sql"]
+    assert "is_effective_journal(je.id)" in sql and "je.status = 'POSTED'" in sql and sql.count("BETWEEN") == 4
+    assert tangkap["par"][-2:] == (date(2026, 9, 1), date(2026, 10, 23))
+
+
+def test_arus_kas_neto_rentang_satu_arus_kas_harian(monkeypatch):
+    panggil = []
+
+    async def harian(conn, t, a, b):
+        panggil.append((a, b))
+        return {date(2026, 9, 5): (Decimal("10"), Decimal("3")), date(2026, 10, 2): (Decimal("1"), Decimal("5"))}
+    monkeypatch.setattr(DA, "arus_kas_harian", harian)
+    out = asyncio.run(DA.arus_kas_neto_rentang(None, "t", [(date(2026, 10, 1), date(2026, 10, 23)), (date(2026, 9, 1), date(2026, 9, 23))]))
+    assert out == [Decimal("-4"), Decimal("7")] and panggil == [(date(2026, 9, 1), date(2026, 10, 23))]

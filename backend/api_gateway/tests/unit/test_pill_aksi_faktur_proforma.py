@@ -121,7 +121,9 @@ def _literal_args(fn, nama):
 
 def test_param_aksi_daftar_sama_dengan_AKSI():
     # 16 Okt 2026 (listpage P3): + satu kunci TAMBAHAN tak-eksklusif (SI.AKSI_MINGGU_INI); kunci FA.AKSI tetap berurutan sama
-    assert _literal_args(SI.list_invoices, "aksi") == FA.AKSI + (SI.AKSI_MINGGU_INI,)
+    # 23 Okt 2026 (T2): + kunci SARING umur_* (rumus tunggal services/jatuh_tempo; bukan pill, partisi FA.AKSI tak berubah)
+    from app.services.jatuh_tempo import UMUR_KUNCI
+    assert _literal_args(SI.list_invoices, "aksi") == FA.AKSI + (SI.AKSI_MINGGU_INI,) + UMUR_KUNCI
     assert _literal_args(PR.list_proformas, "aksi") == PA.AKSI
 
 

@@ -368,8 +368,12 @@ async def test_ringkasan_valid_terhadap_kontrak(monkeypatch):
                 return [{"bulan": date(2026, 9, 1), "pendapatan": Decimal("1000"), "beban": Decimal("250.5")}]
             raise AssertionError(sql[:60])
 
+        async def fetchrow(self, sql, *a):  # T2: DA.laba_rugi_rentang (pendapatan, beban per rentang)
+            assert "is_effective_journal" in sql
+            return [Decimal("1000"), Decimal("250.5")] * 3
+
         async def fetchval(self, sql, *a):
-            if "MIN(journal_date)" in sql:
+            if "MIN(journal_date)" in sql or "ORDER BY journal_date LIMIT 1" in sql:  # T2: jurnal efektif pertama
                 return date(2025, 1, 1)
             return Decimal("280")
 

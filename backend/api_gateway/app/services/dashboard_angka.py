@@ -101,6 +101,40 @@ async def laba_rugi_bulanan(conn, tid: str, mulai: date, akhir: date) -> dict:
             for r in rows}
 
 
+async def laba_rugi_rentang(conn, tid: str, rentang: list) -> list:
+    """[{pendapatan, beban, laba}] untuk BEBERAPA rentang [(mulai, akhir)] dalam SATU kueri (FILTER per rentang) dengan filter laba_rugi
+    (jurnal EFEKTIF, tipe akun sama) -- setara laba_rugi(mulai, akhir) per rentang (diuji + harness nyata T2). Untuk pembanding T2:
+    3 rentang x 5 compute_balance = 15 kueri -> 1 (syarat latensi MASTER)."""
+    if not rentang:
+        return []
+    par, kolom, i = [tid, list(TIPE_PENDAPATAN), list(TIPE_BEBAN)], [], 4
+    for a, b in rentang:
+        kolom.append(f"COALESCE(SUM(jl.credit - jl.debit) FILTER (WHERE coa.account_type = ANY($2::text[]) AND je.journal_date BETWEEN ${i} AND ${i + 1}), 0)")
+        kolom.append(f"COALESCE(SUM(jl.debit - jl.credit) FILTER (WHERE coa.account_type = ANY($3::text[]) AND je.journal_date BETWEEN ${i} AND ${i + 1}), 0)")
+        par += [a, b]
+        i += 2
+    lo, hi = min(a for a, _ in rentang), max(b for _, b in rentang)
+    row = await conn.fetchrow(
+        f"""SELECT {", ".join(kolom)}
+            FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id JOIN chart_of_accounts coa ON coa.id = jl.account_id
+            WHERE je.status = 'POSTED' AND je.tenant_id = $1 AND je.journal_date >= ${i} AND je.journal_date <= ${i + 1}
+              AND is_effective_journal(je.id) AND (coa.account_type = ANY($2::text[]) OR coa.account_type = ANY($3::text[]))""",
+        *par, lo, hi)
+    out = []
+    for n in range(len(rentang)):
+        p, bb = d(row[2 * n]), d(row[2 * n + 1])
+        out.append({"pendapatan": p, "beban": bb, "laba": p - bb})
+    return out
+
+
+async def arus_kas_neto_rentang(conn, tid: str, rentang: list) -> list:
+    """[kas bersih] per rentang dari SATU arus_kas_harian atas gabungan rentang (definisi arus kas D3 yang sama)."""
+    if not rentang:
+        return []
+    harian = await arus_kas_harian(conn, tid, min(a for a, _ in rentang), max(b for _, b in rentang))
+    return [sum((m - k for t, (m, k) in harian.items() if a <= t <= b), NOL) for a, b in rentang]
+
+
 async def arus_kas_neto(conn, tid: str, mulai: date, akhir: date) -> Decimal:
     """Kas bersih periode = Σ (masuk − keluar) arus_kas_harian (== arus kas D3; putusan MASTER T2 §7.4: tanpa rumus baru)."""
     return sum((m - k for m, k in (await arus_kas_harian(conn, tid, mulai, akhir)).values()), NOL)
@@ -109,7 +143,9 @@ async def arus_kas_neto(conn, tid: str, mulai: date, akhir: date) -> Decimal:
 async def jurnal_efektif_pertama(conn, tid: str) -> Optional[date]:
     """Tanggal jurnal EFEKTIF pertama tenant -- pembanding/tren yang berakhir sebelum ini = null (bukan "0.00")."""
     return await conn.fetchval(
-        "SELECT MIN(journal_date) FROM journal_entries je WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)",
+        # urut tanggal + LIMIT 1: berhenti di jurnal efektif pertama (is_effective_journal per baris mahal bila memindai semua)
+        "SELECT journal_date FROM journal_entries je WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)"
+        " ORDER BY journal_date LIMIT 1",
         tid)
 
 

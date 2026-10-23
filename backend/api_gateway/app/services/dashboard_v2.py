@@ -217,20 +217,23 @@ def _objek_banding(kini: Decimal, banding: Optional[Decimal]) -> Optional[dict]:
     return {"value": uang(banding), "delta": uang(kini - banding), "delta_pct": delta_pct(kini, banding)}
 
 
-async def _metrik_rentang(conn, tenant_id: str, a: date, b: date) -> dict:
-    lr = await DA.laba_rugi(conn, tenant_id, a, b)
-    return {"revenue": lr["pendapatan"], "expense": lr["beban"], "profit": lr["laba"],
-            "net_cash": await DA.arus_kas_neto(conn, tenant_id, a, b)}
+async def _metrik_rentang_banyak(conn, tenant_id: str, rentang: list) -> list:
+    """Semua rentang pembanding dalam 2 kueri (DA.laba_rugi_rentang + DA.arus_kas_neto_rentang), setara DA.laba_rugi + DA.arus_kas_neto per rentang."""
+    lr = await DA.laba_rugi_rentang(conn, tenant_id, rentang)
+    kas = await DA.arus_kas_neto_rentang(conn, tenant_id, rentang)
+    return [{"revenue": x["pendapatan"], "expense": x["beban"], "profit": x["laba"], "net_cash": k} for x, k in zip(lr, kas)]
 
 
 async def pembanding(conn, tenant_id: str, periode: str, mulai: date, akhir: date, hari_ini: date,
                      pertama: Optional[date]) -> dict:
     """Blok `comparison` (KONTRAK T2 §3). Pembanding yang berakhir sebelum jurnal efektif pertama -> null. needs_action HANYA net_cash."""
     r, pp, py = rentang_pembanding(periode, mulai, akhir, hari_ini)
-    kini = await _metrik_rentang(conn, tenant_id, *r)
     ada = lambda rr: pertama is not None and rr[1] >= pertama and rr[0] <= rr[1]
-    m_pp = await _metrik_rentang(conn, tenant_id, *pp) if ada(pp) else None
-    m_py = await _metrik_rentang(conn, tenant_id, *py) if ada(py) else None
+    perlu = [r] + [rr for rr in (pp, py) if ada(rr)]
+    hasil = dict(zip(perlu, await _metrik_rentang_banyak(conn, tenant_id, perlu)))
+    kini = hasil[r]
+    m_pp = hasil[pp] if ada(pp) else None
+    m_py = hasil[py] if ada(py) else None
     metrik = {}
     for k in ("revenue", "expense", "profit", "net_cash"):
         metrik[k] = {"current": uang(kini[k]),
