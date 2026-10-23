@@ -28,7 +28,7 @@ BARU). Tidak ada dokumen, jurnal, atau stok baru. Router `/api/goods-receipts` h
 `rencana_posting_baris(conn, tenant_id, bill_items)` -> per baris tagihan bertaut baris PO dengan GRN ber-stok terbuka: FIFO per GRN,
 `nilai_grni` (Dr 2-10150), `selisih` (Dr/Cr 5-10400 PURCHASE_PRICE_VARIANCE), `qty_inbound` (bagian yang belum diterima = perilaku lama),
 `tautan`. Tautan penghabis baris GRN memakai sisa nilai persis (GRNI kembali 0 tepat). `tulis_tautan` (posting) / `balik_tautan` (void).
-Flag mati -> []. Usul BACKEND (disetujui): tolak posting bila baris ber-stok ber-GRN punya `qty_inbound > 0` (3-way match ketat §7c).
+Review BACKEND 23 Okt (WAJIB, putusan MASTER): pemanggil mengirim `nilai_neto` per baris (neto SEMUA diskon termasuk header invoice/tunai, tanpa PPN, dari tagihan_rencana.hitung = fungsi jurnal) dan `qty_dasar` (satuan PO/GRN); satuan beda tanpa qty_dasar -> butir `blok` SATUAN_TAK_TERKONVERSI. Retur/void GRN SESUDAH ditagih DITOLAK (lewat Nota Debit, pola NetSuite/QBO); qty/nilai terbuka tak pernah negatif (dijepit + tes). Flag mati -> []. Usul BACKEND (disetujui): tolak posting bila baris ber-stok ber-GRN punya `qty_inbound > 0` (3-way match ketat §7c).
 Urutan kunci: tagihan -> PO (jalur GRN tak pernah mengunci tagihan; tak ada siklus).
 
 ## 4. Penjaga GRNI (`services/grn_penjaga.periksa`)

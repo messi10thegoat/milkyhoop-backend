@@ -57,6 +57,12 @@ def test_rencana_baris_grni_selisih_dan_inbound_sisa():
     r = T.rencana_baris(bi, [_t("g1", "6", "1000", "6000"), _t("g2", "2", "1000", "2000")])
     assert r["qty_grn"] == D("8") and r["nilai_grni"] == D("8000") and r["nilai_tagih_grn"] == D("8800.00")
     assert r["selisih"] == D("800.00") and r["qty_inbound"] == D("2") and r["perlu_inbound"] is True
+    # nilai_neto pemanggil (diskon header ikut): 10 @ neto 10.000 -> bagian ber-GRN 8 = 8.000 -> selisih 0
+    rn = T.rencana_baris({**bi, "nilai_neto": D("10000")}, [_t("g1", "6", "1000", "6000"), _t("g2", "2", "1000", "2000")])
+    assert rn["nilai_tagih_grn"] == D("8000.00") and rn["selisih"] == D("0.00")
+    # qty_dasar pemanggil (1 lusin = 12): FIFO memakai qty dasar
+    rq = T.rencana_baris({**bi, "quantity": D("1"), "qty_dasar": D("12"), "nilai_neto": D("12000")}, [_t("g1", "20", "1000", "20000")])
+    assert rq["qty_grn"] == D("12") and rq["nilai_grni"] == D("12000") and rq["selisih"] == D("0.00")
     r2 = T.rencana_baris({**bi, "quantity": D("5"), "subtotal": D("4500")}, [_t("g1", "6", "1000", "6000")])
     assert r2["selisih"] == D("-500.00") and r2["perlu_inbound"] is False  # harga tagihan < harga terima -> kredit selisih
 
@@ -127,3 +133,42 @@ def test_void_memakai_pembalik_bukan_ubah_status_jurnal():
     src = inspect.getsource(G.void_grn)
     assert "reversal_of=gr[\"journal_id\"]" in src and "reversed_by_id" in src and "record_inventory_reversal" in src
     assert "status = 'VOID'" not in src  # Law 2: jurnal asli tetap POSTED
+
+
+def test_satuan_beda_tanpa_konversi_diblok_bukan_ditebak():
+    po = uuid4()
+
+    class C:
+        async def fetchval(self, q, *a):
+            return 1
+        async def fetch(self, q, *a):
+            return [{"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("12"),
+                     "sisa_nilai": D("1200"), "satuan_po": "pcs"}]
+    b = {"id": "b", "purchase_order_item_id": po, "quantity": D("1"), "unit": "lusin", "subtotal": D("1200"), "discount_amount": D("0")}
+    out = asyncio.run(T.rencana_posting_baris(C(), "t", [b]))
+    assert out[0]["blok"]["code"] == "SATUAN_TAK_TERKONVERSI" and out[0]["tautan"] == []
+    with pytest.raises(ValueError):
+        asyncio.run(T.tulis_tautan(None, out))
+    ok = asyncio.run(T.rencana_posting_baris(C(), "t", [{**b, "qty_dasar": D("12")}]))
+    assert "blok" not in ok[0] and ok[0]["qty_grn"] == D("12")
+
+
+def test_terbuka_tak_pernah_negatif():
+    po = uuid4()
+
+    class C:
+        async def fetchval(self, q, *a):
+            return 1
+        async def fetch(self, q, *a):
+            return [{"gr_item_id": "g0", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("-2"), "sisa_nilai": D("-200"),
+                     "satuan_po": None},
+                    {"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("3"), "sisa_nilai": D("-1"),
+                     "satuan_po": None}]
+    out = asyncio.run(T.rencana_posting_baris(C(), "t", [{"id": "b", "purchase_order_item_id": po, "quantity": D("3"), "subtotal": D("300"),
+                                                          "discount_amount": D("0")}]))
+    assert [t["gr_item_id"] for t in out[0]["tautan"]] == ["g1"] and out[0]["nilai_grni"] >= 0  # g0 (negatif) tak ikut; nilai dijepit
+
+
+def test_void_ditolak_bila_satu_baris_pun_sudah_ditagih():
+    src = inspect.getsource(G.rencana_void)
+    assert "l.status = 'active'" in src and "GRN_SUDAH_DITAGIH" in src and "Nota Debit" in src
