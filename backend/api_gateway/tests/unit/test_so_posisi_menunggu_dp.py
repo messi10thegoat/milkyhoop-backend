@@ -150,3 +150,25 @@ def test_dp_wajib():
     assert SP.dp_wajib(D("1000"), D("30"), D("90")) == D("90")
     assert SP.dp_wajib(D("333.33"), D("50"), D("0")) == D("166.67")   # half-up = ROUND SQL kartu lama
     assert SP.punya_term_dp(None, D("0")) is False and SP.punya_term_dp(D("0"), D("5")) is True
+
+
+@pytest.mark.parametrize("n", [1, 7])
+def test_fakta_dp_proforma_terbit_tanpa_n_plus_1(monkeypatch, n):
+    """MENUNGGU-PEMBAYARAN (MASTER 23 Okt): usaha tanpa syarat DP yang MENERBITKAN proforma pelunasan membayar biaya tetap,
+    BUKAN per SO: kueri koneksi = 2 (proforma + faktur) dan terbayar/ringkasan masing-masing SATU panggilan berkelompok."""
+    panggil = {"rg": 0, "tb": 0}
+
+    async def rg(conn, t, ids):
+        panggil["rg"] += 1
+        return {i: {"tertutup": D("0")} for i in ids}
+
+    async def tb(conn, t, ids):
+        panggil["tb"] += 1
+        return {}
+    monkeypatch.setattr(SP, "ringkasan_pesanan", rg)
+    monkeypatch.setattr(SP, "terbayar_proforma", tb)
+    sos = [uuid.uuid4() for _ in range(n)]
+    c = _C([_pf(i, "PELUNASAN") for i in sos], {})
+    hasil = asyncio.run(SP.fakta_dp(c, T, [_so(i, term=False) for i in sos]))
+    assert hasil == {i: ("menunggu_pembayaran", D("100")) for i in sos}
+    assert len(c.q) == 2 and panggil == {"rg": 1, "tb": 1}
