@@ -33,6 +33,7 @@ from decimal import Decimal
 
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
+from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.vendor_credits import (
     UnapplyVendorCreditRequest,
@@ -177,6 +178,9 @@ async def list_vendor_credits(
         "credit_date", "credit_number", "total_amount", "created_at"
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    # U3c (23 Okt 2026, kembar S2-NK): pill AKSI (predikat SAMA dengan /summary) + total atas SEMUA hasil filter (opt-in)
+    aksi: Optional[Literal["belum_terpakai"]] = Query(None),
+    with_totals: bool = Query(False),
 ):
     """List vendor credits with filters and pagination."""
     try:
@@ -199,12 +203,14 @@ async def list_vendor_credits(
                 params.append(UUID(vendor_id))
                 param_idx += 1
 
-            if search:
-                conditions.append(
-                    f"(credit_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx})"
-                )
-                params.append(f"%{search}%")
-                param_idx += 1
+            if isinstance(search, str) and search.strip():  # U3c: per kata (nomor, vendor, ref, tagihan asal) == /summary?search=
+                _c, _p = NDD.syarat_cari(search, param_idx)
+                conditions.append(_c)
+                params.extend(_p)
+                param_idx += len(_p)
+
+            if aksi:
+                conditions.append(NDD.sql_aksi(aksi))
 
             if date_from:
                 conditions.append(f"credit_date >= ${param_idx}")
@@ -231,12 +237,19 @@ async def list_vendor_credits(
             # Count total
             count_query = f"SELECT COUNT(*) FROM vendor_credits WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True` (== NK)
+                t = await conn.fetchrow(
+                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                               COALESCE(SUM({ND.sql_sisa_nd()}), 0) AS sum_sisa
+                        FROM vendor_credits WHERE {where_clause}""", *params)
+                jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}
 
             # Get items
             query = f"""
                 SELECT id, credit_number, vendor_id, vendor_name,
                        credit_date, total_amount, amount_applied, amount_received,
-                       status, reason, ref_no, created_at
+                       status, reason, ref_no, created_at, original_bill_id, original_bill_number
                 FROM vendor_credits
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -256,13 +269,7 @@ async def list_vendor_credits(
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_received"] or 0,
-                    "remaining_amount": 0
-                    if row["status"] == "void"
-                    else (
-                        row["total_amount"]
-                        - (row["amount_applied"] or 0)
-                        - (row["amount_received"] or 0)
-                    ),
+                    "remaining_amount": NDD.sisa_lama(row["status"], row["total_amount"], row["amount_applied"], row["amount_received"]),
                     "status": row["status"],
                     "reason": row["reason"],
                     "ref_no": row["ref_no"],
@@ -270,8 +277,12 @@ async def list_vendor_credits(
                 }
                 for row in rows
             ]
+            # U3c: server menghitung, FE memformat -- SATU fungsi baris == detail (NDD.medan_baris), kueri ber-batch per halaman
+            _medan = await NDD.medan_banyak(conn, ctx["tenant_id"], rows)
+            for it, row in zip(items, rows):
+                it.update(_medan.get(row["id"], {}))
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
@@ -286,7 +297,7 @@ async def list_vendor_credits(
 
 
 @router.get("/summary", response_model=VendorCreditSummaryResponse)
-async def get_vendor_credits_summary(request: Request):
+async def get_vendor_credits_summary(request: Request, search: Optional[str] = Query(None)):
     """Get summary statistics for vendor credits."""
     try:
         ctx = get_user_context(request)
@@ -319,9 +330,20 @@ async def get_vendor_credits_summary(request: Request):
                         FILTER (WHERE vc.status IN ('posted', 'partial')), 0) as available_balance
                 FROM vendor_credits vc
                 LEFT JOIN vc_journal vcj ON vcj.id = vc.id
-                WHERE vc.tenant_id = $1 AND vc.status != 'void'
+                WHERE vc.tenant_id = $1 AND vc.status != 'void' AND __CARI__
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            # U3c ?search= (predikat SAMA dgn daftar): batasi ke id hasil cari
+            _cari_sql, _cari_p = NDD.syarat_cari(search if isinstance(search, str) else "", 2)
+            query = query.replace("__CARI__", NDD.syarat_cari(search if isinstance(search, str) else "", 2, a="vc")[0])
+            row = await conn.fetchrow(query, ctx["tenant_id"], *_cari_p)
+            # U3c pill AKSI belum_terpakai (predikat SAMA dgn ?aksi=) + total_applied = Σ terpakai turunan JURNAL (kembar NK, SATU definisi
+            # dengan medan baris `terpakai`)
+            aksi_row = await conn.fetchrow(
+                f"""SELECT COUNT(*) AS n, COALESCE(SUM({ND.sql_sisa_nd()}), 0) AS v FROM vendor_credits
+                    WHERE vendor_credits.tenant_id = $1 AND {NDD.sql_aksi(NDD.AKSI_BELUM_TERPAKAI)} AND {_cari_sql}""", ctx["tenant_id"], *_cari_p)
+            _ids = [r["id"] for r in await conn.fetch(
+                f"SELECT id FROM vendor_credits WHERE tenant_id = $1 AND status != 'void' AND {_cari_sql}", ctx["tenant_id"], *_cari_p)]
+            _total_terpakai = sum((v["terpakai"] for v in (await NDD.rincian_nd_many(conn, ctx["tenant_id"], _ids)).values()), Decimal("0"))
 
             return {
                 "success": True,
@@ -332,9 +354,11 @@ async def get_vendor_credits_summary(request: Request):
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
                     "total_value": int(row["total_value"] or 0),
-                    "total_applied": int(row["total_applied"] or 0),
+                    "total_applied": int(_total_terpakai),  # U3c: Σ terpakai turunan jurnal (== Σ medan baris; kembar NK)
                     "total_refunded": int(row["total_refunded"] or 0),
                     "available_balance": int(row["available_balance"] or 0),
+                    f"{NDD.AKSI_BELUM_TERPAKAI}_count": aksi_row["n"] or 0,
+                    f"{NDD.AKSI_BELUM_TERPAKAI}_value": float(aksi_row["v"] or 0),
                 },
             }
 
@@ -404,15 +428,8 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
             )
 
             # Build response
-            remaining = (
-                0
-                if vc["status"] == "void"
-                else (
-                    vc["total_amount"]
-                    - (vc["amount_applied"] or 0)
-                    - (vc["amount_received"] or 0)
-                )
-            )
+            remaining = NDD.sisa_lama(vc["status"], vc["total_amount"], vc["amount_applied"], vc["amount_received"])
+            _medan = (await NDD.medan_banyak(conn, ctx["tenant_id"], [vc])).get(vc["id"], {})  # U3c: == baris daftar
 
             return {
                 "success": True,
@@ -498,6 +515,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "created_at": vc["created_at"].isoformat(),
                     "updated_at": vc["updated_at"].isoformat(),
                     "created_by": str(vc["created_by"]) if vc["created_by"] else None,
+                    **_medan,
                 },
             }
 
@@ -508,6 +526,61 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
             f"Error getting vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to get vendor credit")
+
+
+@router.get("/{vendor_credit_id}/documents")
+async def get_vendor_credit_documents(request: Request, vendor_credit_id: UUID):
+    """Bundel panel berjangkar NOTA DEBIT (U3c 23 Okt 2026): skema SAMA dgn bundel tagihan/PO {anchor, default, groups}; pembentuk SATU
+    tempat (NDD.kelompok_nd = sumber documents[] baris). Jangkar paid/balance = null untuk bukan-posted (pola bundel bayar keluar);
+    posted: paid = terpakai + dikembalikan, balance = sisa jurnal."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tid = ctx["tenant_id"]
+            v = await conn.fetchrow(
+                f"""SELECT vendor_credits.*, {ND.sql_sisa_nd()} AS sisa FROM vendor_credits
+                    WHERE vendor_credits.tenant_id = $1 AND vendor_credits.id = $2""", tid, vendor_credit_id)
+            if not v:
+                raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
+            kel = (await NDD.kelompok_nd(conn, tid, [{"id": vendor_credit_id}])).get(vendor_credit_id, [])
+            r = (await NDD.rincian_nd_many(conn, tid, [vendor_credit_id])).get(str(vendor_credit_id), {})
+            kontak = await conn.fetchrow(
+                "SELECT COALESCE(mobile_phone, phone) AS phone, email FROM vendors WHERE id = $1 AND tenant_id = $2",
+                v["vendor_id"], tid) if v["vendor_id"] else None
+            sd = NDD.status_detail_nd(v["status"], v["amount_applied"], v["amount_received"])
+            terbit = v["status"] not in ("draft", "void")
+            return {
+                "anchor": {"kind": "debit_note", "id": str(v["id"]), "number": v["credit_number"], "vendor": v["vendor_name"] or "",
+                           "position_text": NDD.status_text_nd(v["status"], sd, v["original_bill_id"]),
+                           "total": f"{Decimal(str(v['total_amount'] or 0)):.2f}",
+                           "paid": f"{(r.get('terpakai', Decimal(0)) + r.get('dikembalikan', Decimal(0))):.2f}" if terbit else None,
+                           "balance": f"{Decimal(str(v['sisa'] or 0)):.2f}" if terbit else None,
+                           "vendor_phone": (kontak["phone"] if kontak else None) or None,
+                           "vendor_email": (kontak["email"] if kontak else None) or None},
+                "default": {"group": "nota_debit", "index": 0},
+                "groups": kel,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting vendor credit documents {vendor_credit_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat dokumen nota debit.")
+
+
+@router.get("/{vendor_credit_id}/history")
+async def get_vendor_credit_history(request: Request, vendor_credit_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Riwayat NOTA DEBIT (U3c), bentuk SAMA dengan riwayat tagihan/PO/SO (services/nota_debit_riwayat). Terbaru dulu."""
+    from ..services.dashboard_izin import boleh_baca
+    from ..services.nota_debit_riwayat import riwayat_nota_debit
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_nota_debit(conn, ctx["tenant_id"], vendor_credit_id, lambda m: boleh_baca(request, m),
+                                        limit if isinstance(limit, int) else 200)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
+    return {"success": True, "data": data}
 
 
 # =============================================================================

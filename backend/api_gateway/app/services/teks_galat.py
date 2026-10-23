@@ -64,10 +64,13 @@ _STATUS = {
            "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan"},
     "dp": {"draft": "Draf", "posted": "Diterima", "partial": "Sebagian terpakai", "applied": "Terpakai",
            "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan", "void": "Batal"},
+    # Nota debit (U3c 23 Okt 2026): kata SAMA dengan nota kredit (kembar Penjualan<->Pembelian)
+    "vc": {"draft": "Draf", "posted": "Terbit", "partial": "Sebagian terpakai", "applied": "Terpakai", "void": "Batal",
+           "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan"},
 }
 
 _DOKUMEN = {"so": "Pesanan", "si": "Faktur", "quote": "Penawaran", "proforma": "Proforma",
-            "rp": "Penerimaan", "dp": "Uang muka", "cn": "Nota kredit"}
+            "rp": "Penerimaan", "dp": "Uang muka", "cn": "Nota kredit", "vc": "Nota debit"}
 
 _PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
 

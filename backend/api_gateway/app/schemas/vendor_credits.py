@@ -189,6 +189,19 @@ class VendorCreditListItem(BaseModel):
     reason: str
     ref_no: Optional[str] = None
     created_at: str
+    original_bill_id: Optional[str] = None
+    original_bill_number: Optional[str] = None
+    # U3c (23 Okt 2026, kembar Nota Kredit seragam): server menghitung, FE memformat -- NDD.medan_baris (baris == detail)
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    sisa_keadaan: Optional[str] = None
+    status_text: Optional[str] = None
+    terpakai: float = 0
+    dikembalikan: float = 0
+    purchase_order_id: Optional[str] = None
+    purchase_order_number: Optional[str] = None
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 class VendorCreditDetail(BaseModel):
@@ -236,6 +249,17 @@ class VendorCreditDetail(BaseModel):
     created_at: str
     updated_at: str
     created_by: Optional[str] = None
+    # U3c (23 Okt 2026, kembar Nota Kredit seragam): server menghitung, FE memformat -- NDD.medan_baris (baris == detail)
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    sisa_keadaan: Optional[str] = None
+    status_text: Optional[str] = None
+    terpakai: float = 0
+    dikembalikan: float = 0
+    purchase_order_id: Optional[str] = None
+    purchase_order_number: Optional[str] = None
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 # =============================================================================
@@ -260,6 +284,8 @@ class VendorCreditListResponse(BaseModel):
     items: List[VendorCreditListItem]
     total: int
     has_more: bool
+    sum_total: Optional[float] = None  # U3c ?with_totals=true
+    sum_sisa: Optional[float] = None
 
 
 class VendorCreditSummaryResponse(BaseModel):

@@ -56,6 +56,7 @@ ENTITAS_AUDIT = {
     "bills": "bill", "bill": "bill",  # 22 Okt 2026: riwayat faktur pembelian (services/tagihan_riwayat)
     "bill_payments": "payment_out", "bill_payments_v2": "payment_out", "payment_out": "payment_out",  # riwayat pembayaran keluar
     "vendor_deposits": "vendor_deposit", "vendor_deposit": "vendor_deposit",  # 22 Okt 2026: riwayat uang muka pembelian (um_vendor_riwayat)
+    "vendor_credits": "debit_note", "vendor_credit": "debit_note",  # 23 Okt 2026: riwayat nota debit (nota_debit_riwayat, U3c)
 }
 
 # Aktor kejadian yang ditulis fungsi DB (bukan pengguna): tampil "Sistem", beda dari null (= tak diketahui).
