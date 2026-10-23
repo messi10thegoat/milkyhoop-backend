@@ -22,7 +22,8 @@ if [ "${MERAH_BOCOR:-0}" = 1 ]; then  # bersihkan baris kontrol merah (satu-satu
   docker run --rm --network milkyhoop_dev_network --env-file "$E" --entrypoint python "$IMG" -c \
     "import asyncio,asyncpg,os
 async def m():
-    c=await asyncpg.connect(os.environ['DATABASE_URL']); print('BERSIH', await c.execute(\"DELETE FROM idempotency_keys WHERE key='TES-E2E-PAYPREVIEW-BOCOR' AND tenant_id='kaos-biru-konveksi'\")); await c.close()
-asyncio.run(m())"
+    c=await asyncpg.connect(os.environ['DATABASE_URL']); print('BERSIH', await c.execute(\"DELETE FROM idempotency_keys WHERE key='TES-E2E-PAYPREVIEW-BOCOR' AND tenant_id='kaos-biru-konveksi'\"))
+    n=await c.fetchval(\"SELECT count(*) FROM idempotency_keys WHERE key='TES-E2E-PAYPREVIEW-BOCOR'\"); print('SISA_BARIS_BOCOR', n); await c.close(); raise SystemExit(0 if n == 0 else 9)
+asyncio.run(m())" || { echo "BERSIH GAGAL"; rc=9; }
 fi
 echo "rc=$rc"; exit $rc
