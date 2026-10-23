@@ -98,3 +98,13 @@ def test_rute_proforma_saring_belum_dibayar():
     assert "belum_dibayar" in lit
     src = inspect.getsource(PR.list_proformas)
     assert "isinstance(aksi, str) and aksi in _pa.SARING" in src
+
+
+def test_pengingat_so_menghitung_kunci_alias(monkeypatch):
+    """Penghitung SO pengingat WAJIB memuat alias: tanpa itu kunci registri menunggu_dp selalu 0 (pengingat hilang diam-diam)."""
+    import asyncio
+    async def fakta(conn, t, h):
+        return {1: {"aksi": ["menunggu_pembayaran"], "total": D("9"), "nilai": {"menunggu_pembayaran": D("3")}}}
+    monkeypatch.setattr(A, "fakta", fakta)
+    out = asyncio.run(P._so(None, "t", date(2026, 10, 23), 7))
+    assert out["menunggu_dp"] == {"count": 1, "amount": D("3")} == out["menunggu_pembayaran"]

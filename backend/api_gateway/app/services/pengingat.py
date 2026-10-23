@@ -64,7 +64,8 @@ async def _proforma(conn, tid: str, hari_ini: date, ambang: int) -> dict:
 async def _so(conn, tid: str, hari_ini: date, ambang: int) -> dict:
     from . import so_aksi
     r = so_aksi.ringkasan(await so_aksi.fakta(conn, tid, hari_ini))
-    return {k: {"count": r[f"{k}_count"], "amount": Decimal(str(r[f"{k}_value"]))} for k in so_aksi.AKSI}
+    # + alias usang (menunggu_dp == menunggu_pembayaran) -- kunci registri selama transisi FE
+    return {k: {"count": r[f"{k}_count"], "amount": Decimal(str(r[f"{k}_value"]))} for k in so_aksi.AKSI + tuple(so_aksi.AKSI_USANG)}
 
 
 async def _tagihan(conn, tid: str, hari_ini: date, ambang: int) -> dict:
