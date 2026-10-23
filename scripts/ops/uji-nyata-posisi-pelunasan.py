@@ -22,6 +22,10 @@ def cek(nama, ok, rinci=""):
 
 async def main():
     c = await asyncpg.connect(os.environ["URL"]); await c.execute("SET default_transaction_read_only = on")
+    _ada = {r[0] for r in await c.fetch('SELECT id FROM "Tenant"')}  # pagar: tenant salah ketik = ukur tenant KOSONG (pelajaran 23 Okt)
+    _hilang = set(("kaos-biru-konveksi", "grapgrap-manado")) - _ada
+    if _hilang:
+        sys.exit(f"TENANT TAK ADA di \"Tenant\": {{sorted(_hilang)}} -- alat ukur menolak (hasil = tenant kosong)")
     class Pool:
         def acquire(s):
             class CM:

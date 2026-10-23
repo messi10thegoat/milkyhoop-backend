@@ -25,6 +25,10 @@ async def dump():
     from app.schemas.purchase_orders import CreatePurchaseOrderRequest, ReceiveGoodsRequest, ReceivePreviewRequest
     from app.utils.tanggal_tenant import tanggal_dokumen
     c = await asyncpg.connect(os.environ["URL"])
+    _ada = {r[0] for r in await c.fetch('SELECT id FROM "Tenant"')}  # pagar: tenant salah ketik = ukur tenant KOSONG (pelajaran 23 Okt)
+    _hilang = set((T,)) - _ada
+    if _hilang:
+        sys.exit(f"TENANT TAK ADA di \"Tenant\": {{sorted(_hilang)}} -- alat ukur menolak (hasil = tenant kosong)")
     luar = c.transaction()
     await luar.start()
     out = {}

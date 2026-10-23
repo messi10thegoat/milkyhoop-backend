@@ -412,9 +412,11 @@ async def hutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
     for r in rows:
         sisa = d(r["outstanding"])
         if sisa > NOL:
+            vendor.add(str(r["vendor_id"]))
+            if r["bill_id"] is None:  # V457: saldo awal vendor tanpa tagihan -> ikut total/vendor, bukan hitungan/daftar tagihan
+                continue
             if _jatuh_tempo_lewat(r["due_date"], hari_ini):
                 n_telat += 1
-            vendor.add(str(r["vendor_id"]))
             if r["due_date"] is None or r["due_date"] <= hari_ini + timedelta(days=7):
                 due7.append(r)
     due7.sort(key=lambda r: (r["due_date"] or date.min, r["bill_number"] or ""))
@@ -866,7 +868,7 @@ def susun_tugas(*, hari_ini: date, ar_rows, ap_rows, so_kirim_rows, so_dp_rows, 
         })
 
     # ap_due — tagihan ≤ 7 hari (now bila hari ini/telat)
-    for b in sorted((r for r in ap_rows if d(r["outstanding"]) > NOL
+    for b in sorted((r for r in ap_rows if d(r["outstanding"]) > NOL and r["bill_id"] is not None  # V457: tugas bayar = tagihan
                      and (r["due_date"] is None or r["due_date"] <= hari_ini + timedelta(days=7))),
                     key=lambda r: (r["due_date"] or date.min, r["bill_number"] or "")):
         due = b["due_date"]

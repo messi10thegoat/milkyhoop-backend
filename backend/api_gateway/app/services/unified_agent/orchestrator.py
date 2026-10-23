@@ -7748,7 +7748,7 @@ class UnifiedAgent:
                            due_date, outstanding,
                            (tanggal_bisnis($1) - due_date) AS days_overdue
                     FROM compute_ap_outstanding($1)
-                    WHERE outstanding > 0 AND due_date IS NOT NULL
+                    WHERE outstanding > 0 AND bill_id IS NOT NULL AND due_date IS NOT NULL  -- V457: lewat tempo = tagihan
                       AND due_date < tanggal_bisnis($1)
                     ORDER BY due_date ASC, outstanding DESC
                     """,

@@ -600,7 +600,7 @@ class DocumentMatcher:
                     SELECT bill_id, bill_number, vendor_name,
                            bill_total, outstanding, due_date
                     FROM compute_ap_outstanding($1)
-                    WHERE outstanding > 0 AND vendor_name ILIKE $2
+                    WHERE outstanding > 0 AND bill_id IS NOT NULL AND vendor_name ILIKE $2  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                     ORDER BY due_date NULLS LAST, bill_number
                     LIMIT 10
                     """,
@@ -715,7 +715,7 @@ class DocumentMatcher:
                         SELECT bill_id, bill_number, vendor_name,
                                bill_total, outstanding, due_date
                         FROM compute_ap_outstanding($1)
-                        WHERE outstanding > 0
+                        WHERE outstanding > 0 AND bill_id IS NOT NULL  -- V457: kandidat = tagihan
                           AND outstanding >= $2 AND outstanding <= $3
                         ORDER BY outstanding DESC
                         LIMIT 10
@@ -730,7 +730,7 @@ class DocumentMatcher:
                         SELECT bill_id, bill_number, vendor_name,
                                bill_total, outstanding, due_date
                         FROM compute_ap_outstanding($1)
-                        WHERE outstanding > 0
+                        WHERE outstanding > 0 AND bill_id IS NOT NULL  -- V457: kandidat = tagihan
                           AND vendor_name ILIKE $2
                         ORDER BY outstanding DESC
                         LIMIT 5
@@ -798,7 +798,7 @@ class DocumentMatcher:
                     SELECT bill_id, bill_number, vendor_name,
                            bill_total, outstanding, due_date
                     FROM compute_ap_outstanding($1)
-                    WHERE outstanding > 0 AND bill_number ILIKE $2
+                    WHERE outstanding > 0 AND bill_id IS NOT NULL AND bill_number ILIKE $2  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                     ORDER BY outstanding DESC
                     LIMIT 5
                     """,

@@ -19,6 +19,19 @@ SELISIH="SELECT t.id,
     WHERE je.tenant_id = t.id AND je.status = 'POSTED' AND is_effective_journal(je.id) AND c.account_type = 'PAYABLE') - (SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding(t.id))
   FROM \"Tenant\" t ORDER BY 1"
 BARIS="SELECT t.id, 'AR', x.* FROM \"Tenant\" t, compute_ar_outstanding(t.id) x UNION ALL SELECT t.id, 'AP', y.vendor_id::text, y.vendor_name, y.bill_id, y.bill_number, y.bill_date, y.due_date, y.bill_status, y.bill_total, y.paid_amount, y.outstanding FROM \"Tenant\" t, compute_ap_outstanding(t.id) y ORDER BY 1, 2, 3, 5, 6"
+# PENELEPON (permintaan MASTER): predikat penelepon SESUDAH saringan V457 -- pemilih/daftar tagihan (open-bills, pencocok bot, kartu
+# tugas bayar, mendatang/terdekat dashboard) = outstanding > 0 AND bill_id IS NOT NULL; saldo vendor/total hutang = SEMUA baris.
+# "bocor" = apa yang AKAN tampil di pemilih TANPA saringan (baris vendor positif). paid_count = NOT IN tahan NULL.
+PENELEPON="SELECT t, (SELECT COALESCE(SUM(outstanding),0) FROM compute_ap_outstanding(t)) AS saldo_semua,
+  (SELECT count(*)||'/'||COALESCE(SUM(outstanding),0) FROM compute_ap_outstanding(t) WHERE outstanding > 0 AND bill_id IS NOT NULL) AS pemilih,
+  (SELECT count(*) FROM compute_ap_outstanding(t) WHERE outstanding > 0 AND bill_id IS NULL) AS bocor_tanpa_saring,
+  (SELECT count(*) FROM compute_ap_outstanding(t) WHERE outstanding > 0 AND bill_id IS NOT NULL AND due_date < tanggal_bisnis(t)) AS lewat_tempo,
+  (SELECT count(*) FROM bills b WHERE b.tenant_id = t AND b.status_v2 NOT IN ('draft','void')
+     AND b.id NOT IN (SELECT bill_id FROM compute_ap_outstanding(t) WHERE bill_id IS NOT NULL)) AS lunas
+  FROM unnest(ARRAY['kaos-biru-konveksi','grapgrap-manado']) t ORDER BY 1"
+Q -c 'SELECT 1' >/dev/null
+for t in kaos-biru-konveksi grapgrap-manado; do [ "$(Q -c "SELECT count(*) FROM \"Tenant\" WHERE id = '$t'")" = 1 ] || { echo "FAIL tenant $t tak ada di Tenant"; exit 1; }; done
+echo "--- PENELEPON SEBELUM (tenant|saldo|pemilih n/Σ|bocor|lewat_tempo|lunas)"; Q -c "$PENELEPON" | tee $D/pen_sebelum.txt
 echo "--- SEBELUM (tenant|ΔAR|ΔAP) [kontrol merah alat ukur: kaos WAJIB != 0]"; Q -c "$SELISIH"
 Q -c "$BARIS" > $D/baris_sebelum.txt
 for f in compute_ar_outstanding compute_ap_outstanding; do Q -c "SELECT pg_get_functiondef('$f(text)'::regprocedure)" > $D/def_$f.sql; done
@@ -33,6 +46,19 @@ awk -F'|' '$2+0 != 0 || $3+0 != 0 {bad=1} END {print (bad ? "FAIL GL != sub sesu
 Q -c "$BARIS" > $D/baris_sesudah.txt
 echo "--- baris berubah (WAJIB hanya baris sintetis kaos):"; diff $D/baris_sebelum.txt $D/baris_sesudah.txt | grep -E "^[<>]" | sed 's/^/    /'
 echo "baris tenant selain kaos berubah: $(diff <(grep -v '^kaos-biru-konveksi' $D/baris_sebelum.txt) <(grep -v '^kaos-biru-konveksi' $D/baris_sesudah.txt) | grep -c '^[<>]')"
+echo "--- PENELEPON SESUDAH [pemilih/lewat_tempo/lunas WAJIB identik; saldo kaos bergeser = Δ GL; grapgrap identik]"; Q -c "$PENELEPON" | tee $D/pen_sesudah.txt
+awk -F'|' 'NR==FNR {p[$1]=$3"|"$5"|"$6; s[$1]=$2; next} {print (p[$1]==$3"|"$5"|"$6 ? "PASS" : "FAIL") " pemilih/lewat/lunas tak berubah " $1; if ($1 != "kaos-biru-konveksi") print (s[$1]==$2 ? "PASS" : "FAIL") " saldo identik " $1}' $D/pen_sebelum.txt $D/pen_sesudah.txt
+# Kasus POSITIF (kaos/grapgrap hari ini hanya baris vendor NEGATIF): saldo awal vendor KREDIT 5.000 disuntik di SCRATCH saja
+V=$(Q -c "SELECT id FROM vendors WHERE tenant_id = 'kaos-biru-konveksi' ORDER BY created_at LIMIT 1")
+A=$(Q -c "SELECT id FROM chart_of_accounts WHERE tenant_id = 'kaos-biru-konveksi' AND account_type = 'PAYABLE' ORDER BY account_code LIMIT 1")
+L=$(Q -c "SELECT id FROM chart_of_accounts WHERE tenant_id = 'kaos-biru-konveksi' AND account_type = 'EQUITY' ORDER BY account_code LIMIT 1")
+Q -c "SET session_replication_role = replica; WITH j AS (INSERT INTO journal_entries (id, tenant_id, journal_number, journal_date, description, source_type, source_id, status)
+  VALUES (gen_random_uuid(), 'kaos-biru-konveksi', 'OB-SCRATCH-V457', CURRENT_DATE, 'scratch: saldo awal vendor positif', 'VENDOR_OPENING_BALANCE', '$V', 'POSTED') RETURNING id)
+  INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit) SELECT id, 1, '$A'::uuid, 0, 5000 FROM j UNION ALL SELECT id, 2, '$L'::uuid, 5000, 0 FROM j" >/dev/null && echo "suntik OB +5000 kaos (scratch)" || { echo "FAIL suntik"; exit 1; }
+echo "--- PENELEPON SESUDAH SUNTIK [kaos: saldo +5000, bocor 0->1, pemilih/lewat/lunas TETAP]"; Q -c "$PENELEPON" | tee $D/pen_suntik.txt
+awk -F'|' 'NR==FNR {p[$1]=$3"|"$5"|"$6; s[$1]=$2; b[$1]=$4; next} $1=="kaos-biru-konveksi" {print (p[$1]==$3"|"$5"|"$6 ? "PASS" : "FAIL") " pemilih tetap walau baris vendor positif"; print ($2-s[$1]==5000 ? "PASS" : "FAIL") " saldo vendor ikut +5000"; print ($4==b[$1]+1 ? "PASS" : "FAIL") " kontrol merah: tanpa saringan baris OB BOCOR ke pemilih (" b[$1] "->" $4 ")"}' $D/pen_sesudah.txt $D/pen_suntik.txt
+echo "--- SELISIH sesudah suntik (WAJIB 0: jurnal OB efektif == baris OB)"; Q -c "$SELISIH" | grep kaos
+Q -c "SET session_replication_role = replica; DELETE FROM journal_lines WHERE journal_id IN (SELECT id FROM journal_entries WHERE journal_number = 'OB-SCRATCH-V457'); DELETE FROM journal_entries WHERE journal_number = 'OB-SCRATCH-V457'" >/dev/null
 Q -1 < $M/V457__ap_saldo_awal_dan_bayar_yatim_ROLLBACK.sql >/dev/null 2>$D/e && Q -1 < $M/V456__ar_refund_nota_kredit_ROLLBACK.sql >/dev/null 2>>$D/e \
   && echo "PASS ROLLBACK" || echo "FAIL ROLLBACK $(tail -2 $D/e)"
 for f in compute_ar_outstanding compute_ap_outstanding; do

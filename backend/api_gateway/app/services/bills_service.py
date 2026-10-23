@@ -2153,7 +2153,7 @@ class BillsService:
                 SELECT COUNT(*) AS overdue_count,
                        COALESCE(SUM(outstanding), 0) AS total_overdue
                 FROM compute_ap_outstanding($1)
-                WHERE due_date < $2::date AND outstanding > 0
+                WHERE due_date < $2::date AND outstanding > 0 AND bill_id IS NOT NULL  -- V457: tagihan saja
                 """ + ("" if id_cari is None else " AND bill_id = ANY($3::uuid[])"),
                 tenant_id,
                 today,
@@ -2260,37 +2260,37 @@ class BillsService:
                 )
                 SELECT
                     -- Total outstanding
-                    COUNT(*) as total_count,
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL) as total_count  -- V457: tagihan saja,
                     COALESCE(SUM(outstanding), 0) as total_outstanding,
                     COUNT(DISTINCT (SELECT vendor_id FROM bills WHERE id = ap.bill_id)) as vendor_count,
 
                     -- Paid: bills that exist in bills table but NOT in ap (outstanding=0, filtered out by function)
                     (SELECT COUNT(*) FROM bills WHERE tenant_id = $1
                      AND status_v2 NOT IN ('draft', 'void')
-                     AND id NOT IN (SELECT bill_id FROM ap)) as paid_count,
+                     AND id NOT IN (SELECT bill_id FROM ap WHERE bill_id IS NOT NULL)) as paid_count,  -- NOT IN + NULL = selalu 0 (baris vendor)
 
                     -- Partial: paid_amount > 0 AND outstanding > 0, not overdue
-                    COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL AND paid_amount > 0 AND outstanding > 0
                         AND (due_date >= $2::date OR due_date IS NULL)) as partial_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE paid_amount > 0 AND outstanding > 0
+                    COALESCE(SUM(outstanding) FILTER (WHERE bill_id IS NOT NULL AND paid_amount > 0 AND outstanding > 0
                         AND (due_date >= $2::date OR due_date IS NULL)), 0) as partial_amount,
 
                     -- Unpaid: paid_amount = 0, not overdue
-                    COUNT(*) FILTER (WHERE paid_amount = 0
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL AND paid_amount = 0
                         AND (due_date >= $2::date OR due_date IS NULL)) as unpaid_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE paid_amount = 0
+                    COALESCE(SUM(outstanding) FILTER (WHERE bill_id IS NOT NULL AND paid_amount = 0
                         AND (due_date >= $2::date OR due_date IS NULL)), 0) as unpaid_amount,
 
                     -- Overdue: due_date < today AND outstanding > 0
-                    COUNT(*) FILTER (WHERE due_date < $2::date) as overdue_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE due_date < $2::date), 0) as overdue_amount,
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL AND due_date < $2::date) as overdue_count,
+                    COALESCE(SUM(outstanding) FILTER (WHERE bill_id IS NOT NULL AND due_date < $2::date), 0) as overdue_amount,
 
                     -- Urgency
-                    COALESCE(MAX($2::date - due_date) FILTER (WHERE due_date < $2::date), 0) as overdue_oldest_days,
-                    COALESCE(MAX(outstanding) FILTER (WHERE due_date < $2::date), 0) as overdue_largest,
-                    COUNT(*) FILTER (WHERE due_date >= $2::date
+                    COALESCE(MAX($2::date - due_date) FILTER (WHERE bill_id IS NOT NULL AND due_date < $2::date), 0) as overdue_oldest_days,
+                    COALESCE(MAX(outstanding) FILTER (WHERE bill_id IS NOT NULL AND due_date < $2::date), 0) as overdue_largest,
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL AND due_date >= $2::date
                         AND due_date <= $2::date + INTERVAL '7 days') as due_within_7_days_count,
-                    COALESCE(SUM(outstanding) FILTER (WHERE due_date >= $2::date
+                    COALESCE(SUM(outstanding) FILTER (WHERE bill_id IS NOT NULL AND due_date >= $2::date
                         AND due_date <= $2::date + INTERVAL '7 days'), 0) as due_within_7_days_amount
                 FROM ap
             """

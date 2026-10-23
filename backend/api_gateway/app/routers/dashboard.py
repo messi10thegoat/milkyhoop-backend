@@ -407,7 +407,7 @@ async def _get_upcoming_due(request: Request):
                     (due_date - $2::date) AS days_until_due,
                     outstanding
                 FROM compute_ap_outstanding($1)
-                WHERE outstanding > 0
+                WHERE outstanding > 0 AND bill_id IS NOT NULL  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                   AND due_date >= $2::date
                   AND due_date <= $2::date + 14
             )
@@ -851,7 +851,7 @@ async def get_dashboard_summary(
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - $2::date as days_until_due
                 FROM compute_ap_outstanding($1)
-                WHERE outstanding > 0 AND due_date >= $2::date
+                WHERE outstanding > 0 AND bill_id IS NOT NULL AND due_date >= $2::date  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                 ORDER BY due_date ASC, outstanding DESC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id, hari_ini)
@@ -1630,7 +1630,7 @@ async def get_overdue_bills(request: Request):
                     $2::date - due_date as days_overdue,
                     outstanding
                 FROM compute_ap_outstanding($1)
-                WHERE due_date < $2::date
+                WHERE due_date < $2::date AND bill_id IS NOT NULL  -- V457: daftar tagihan lewat tempo
                 ORDER BY ($2::date - due_date) DESC, outstanding DESC
             """
 

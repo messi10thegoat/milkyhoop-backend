@@ -405,7 +405,7 @@ async def list_vendors(
                     SELECT 1 FROM compute_ap_outstanding(v.tenant_id) ap_fn
                     WHERE ap_fn.vendor_id = v.id
                       AND ap_fn.due_date < ${param_idx}::date
-                      AND ap_fn.outstanding > 0
+                      AND ap_fn.outstanding > 0 AND ap_fn.bill_id IS NOT NULL  -- V457: lewat tempo = tagihan
                 )"""
                 )
                 params.append(hari_ini)
@@ -774,10 +774,11 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
             balance_query = """
                 SELECT
                     COALESCE(SUM(outstanding), 0) as total_balance,
-                    COUNT(*) FILTER (WHERE paid_amount = 0 AND outstanding > 0) as unpaid_count,
-                    COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0) as partial_count,
-                    COUNT(*) FILTER (WHERE due_date < $3::date AND outstanding > 0) as overdue_count,
-                    COALESCE(SUM(CASE WHEN due_date < $3::date AND outstanding > 0 THEN outstanding ELSE 0 END), 0) as overdue_amount,
+                    -- V457: hitungan per TAGIHAN (bill_id ada); total_balance tetap SEMUA baris (= saldo vendor = GL)
+                    COUNT(*) FILTER (WHERE paid_amount = 0 AND outstanding > 0 AND bill_id IS NOT NULL) as unpaid_count,
+                    COUNT(*) FILTER (WHERE paid_amount > 0 AND outstanding > 0 AND bill_id IS NOT NULL) as partial_count,
+                    COUNT(*) FILTER (WHERE due_date < $3::date AND outstanding > 0 AND bill_id IS NOT NULL) as overdue_count,
+                    COALESCE(SUM(CASE WHEN due_date < $3::date AND outstanding > 0 AND bill_id IS NOT NULL THEN outstanding ELSE 0 END), 0) as overdue_amount,
                     COALESCE(SUM(bill_total), 0) as total_billed,
                     COALESCE(SUM(paid_amount), 0) as total_paid
                 FROM compute_vendor_ap($1, $2)
@@ -1441,7 +1442,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                        outstanding as remaining_amount,
                        CASE WHEN due_date < $3::date THEN true ELSE false END as is_overdue
                 FROM compute_vendor_ap($1, $2::uuid)
-                WHERE outstanding > 0
+                WHERE outstanding > 0 AND bill_id IS NOT NULL  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                 ORDER BY due_date ASC
             """,
                 ctx["tenant_id"],
