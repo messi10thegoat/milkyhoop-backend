@@ -104,3 +104,16 @@ def test_rute_dan_skema():
 
 def test_audit_entitas_nota_debit():
     assert SR.ENTITAS_AUDIT["vendor_credits"] == "debit_note"
+
+
+def test_kelompok_nd_menerima_id_str_dan_uuid():
+    import asyncio
+    vid = uuid4()
+
+    class K:
+        async def fetch(self, sql, *a):
+            assert all(type(x).__name__ == "UUID" for x in a[1])
+            return [{"id": vid, "credit_number": "VC-1", "credit_date": None, "total_amount": 1, "status": "draft", "original_bill_id": None}]
+    for kunci in (vid, str(vid)):
+        h = asyncio.run(NDD.kelompok_nd(K(), "t", [{"id": kunci}]))
+        assert [g["key"] for g in h[kunci]] == ["nota_debit"]

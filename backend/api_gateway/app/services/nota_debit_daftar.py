@@ -124,18 +124,20 @@ def dok_nota_debit(v) -> dict:
 async def kelompok_nd(conn, tid: str, nota: list) -> dict:
     """{vendor_credit_id: [kelompok]} bundel NOTA DEBIT (kamus FE pembelian): po · faktur (dari tagihan asal; dokumen SAMA dengan bundel
     tagihan = tagihan_daftar.kelompok_tagihan) · nota_debit (ITU SENDIRI, apa pun statusnya, TERAKHIR). Dipakai bundel DAN documents[] baris."""
+    from uuid import UUID
     from .tagihan_daftar import kelompok_tagihan
     ids = [n["id"] for n in nota]
     if not ids:
         return {}
+    kanon = {i: (i if isinstance(i, UUID) else UUID(str(i))) for i in ids}  # kunci hasil = id masukan apa adanya (str/UUID)
     rows = {r["id"]: r for r in await conn.fetch(
         """SELECT id, credit_number, credit_date, total_amount, status, original_bill_id FROM vendor_credits
-           WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tid, ids)}
+           WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tid, list(kanon.values()))}
     bill_ids = sorted({r["original_bill_id"] for r in rows.values() if r["original_bill_id"]})
     kt = await kelompok_tagihan(conn, tid, bill_ids) if bill_ids else {}
     hasil = {}
     for vid in ids:
-        r, kel = rows.get(vid), []
+        r, kel = rows.get(kanon[vid]), []
         if r and r["original_bill_id"]:
             kel += [g for g in kt.get(r["original_bill_id"], []) if g["key"] in ("po", "faktur")]
         if r:
