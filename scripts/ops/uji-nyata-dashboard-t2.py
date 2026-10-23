@@ -204,6 +204,19 @@ async def main(mode, merah):
                 bk[bucket]["count"] == n == sm[f"{kunci}_count"]
                 and D(bk[bucket]["amount"]) == D(sm[f"{kunci}_value"]).quantize(Decimal("0.01")),
                 (bk[bucket], n, sm[f"{kunci}_count"], sm[f"{kunci}_value"]))
+        # hutang (UMUR_TAGIHAN_LIVE): count/amount bucket == daftar /bills?aksi=umur_* == summary tagihan umur_*_count/_value
+        from app.routers import bills as RB
+        if hasattr(RB, "get_pool"):
+            RB.get_pool = gp
+        sb = data(await RB.get_bills_summary(**kw(RB.get_bills_summary, r)))
+        bp = {x["key"]: x for x in ag["payables"]["buckets"]}
+        for kunci, bucket in JT.UMUR_KE_BUCKET.items():
+            n = total_daftar(await RB.list_bills(**kw(RB.list_bills, r, aksi=kunci)))
+            cek(f"{t} hutang {bucket}: count ({bp[bucket]['count']}) == daftar tagihan ?aksi={kunci} ({n}) == summary ({sb.get(f'{kunci}_count')})",
+                bp[bucket]["count"] == n == sb.get(f"{kunci}_count")
+                and D(bp[bucket]["amount"]) == D(sb.get(f"{kunci}_value")).quantize(Decimal("0.01"))
+                and bp[bucket]["list"] == {"modul": "bills", "aksi": kunci},
+                (bp[bucket], n, sb.get(f"{kunci}_count"), sb.get(f"{kunci}_value")))
         print(f"INFO {t} aging AR {[(x['key'], x['count'], x['amount']) for x in ag['receivables']['buckets']]} kredit {ag['receivables']['unapplied_credits']}")
         print(f"INFO {t} aging AP {[(x['key'], x['count'], x['amount']) for x in ag['payables']['buckets']]} kredit {ag['payables']['unapplied_credits']}")
     await c.close()

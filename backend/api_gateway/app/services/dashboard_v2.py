@@ -286,8 +286,8 @@ def umur_blok(rows, hari_ini: date, modul: str, kolom_id: str, kolom_tgl: str, l
                          "list": {"modul": modul, "aksi": k} if list_ada else None} for k in UMUR_KUNCI]}
 
 
-# Faktur Pembelian: kunci umur_* tagihan_daftar (BACKEND) belum live -> list null (syarat MASTER T2 (6)); ubah ke True saat live.
-UMUR_TAGIHAN_LIVE = False
+# Faktur Pembelian: kunci umur_* tagihan_daftar (BACKEND UMUR-TAGIHAN) LIVE 0cc3ba5c 23 Okt -> list {modul: bills, aksi: umur_*}
+UMUR_TAGIHAN_LIVE = True
 
 
 def umur(ar_rows, ap_rows, hari_ini: date) -> dict:

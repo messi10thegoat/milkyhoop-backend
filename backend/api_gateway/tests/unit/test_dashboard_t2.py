@@ -2,6 +2,7 @@
 umur piutang/hutang + kunci saring umur_* faktur. Syarat MASTER: batas bulan (31 Okt vs 30 Sep, Mar vs Feb), kabisat, null != "0.00",
 needs_action hanya kas bersih, Σ bucket + kredit == total."""
 import asyncio
+import inspect
 import os
 from datetime import date
 from decimal import Decimal
@@ -197,10 +198,16 @@ def test_umur_bucket_sigma_kredit_dan_batas():
     assert b["d1_30"]["list"] == {"modul": "sales_invoices", "aksi": "umur_1_30"}
 
 
-def test_umur_tagihan_list_null_sampai_live():
+def test_umur_tagihan_list_ke_daftar_tagihan():
+    """UMUR-TAGIHAN BACKEND live (0cc3ba5c): bucket hutang bertaut ?aksi=umur_* daftar Faktur Pembelian (kunci rute bills)."""
+    import typing
+    from app.routers import bills as RB
     out = DV.umur([], [_r(1, "5", date(2026, 10, 1), "bill_id", "bill_date")], date(2026, 10, 23))
-    assert all(x["list"] is None for x in out["payables"]["buckets"]) and out["payables"]["total"] == "5.00"
-    assert all(x["list"] is not None for x in out["receivables"]["buckets"]) and out["receivables"]["total"] == "0.00"
+    assert [x["list"] for x in out["payables"]["buckets"]] == [{"modul": "bills", "aksi": k} for k in JT.UMUR_KUNCI]
+    assert out["payables"]["total"] == "5.00" and out["receivables"]["total"] == "0.00"
+    ann = inspect.signature(RB.list_bills).parameters["aksi"].annotation
+    lit = typing.get_args([a for a in typing.get_args(ann) if a is not type(None)][0])
+    assert set(JT.UMUR_KUNCI) <= set(lit)  # kunci yang ditautkan memang diterima rute daftar tagihan
 
 
 def test_umur_faktur_python_memakai_rumus_tunggal():
