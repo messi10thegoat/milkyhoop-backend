@@ -22,7 +22,7 @@ SEN = Decimal("0.01")
 FLAG = "penerimaan_barang_v1"
 SUMBER = "GOODS_RECEIPT"
 SUMBER_BALIK = "GOODS_RECEIPT_REVERSAL"
-PREFIX_DOK, PREFIX_JURNAL, PREFIX_BALIK = "GRN", "GRN", "GRN-REV"
+# Nomor: dokumen GRN-YYMM-NNNN; jurnal GRJ-... / pembalik GRJ-REV-... (awalan LITERAL di pemanggil -- penjaga test_nomor_jurnal_satu_ruang)
 
 
 def _d(v) -> Decimal:
@@ -140,7 +140,7 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
     from .sj_so import _jurnal
     tid, uid = ctx["tenant_id"], ctx.get("user_id")
     gid = uuid4()
-    nomor = await conn.fetchval("SELECT get_next_journal_number($1, $2, $3)", tid, PREFIX_DOK, receive_date)
+    nomor = await conn.fetchval("SELECT get_next_journal_number($1, 'GRN', $2)", tid, receive_date)
     gudang_id = rencana["gudang"]["id"] if rencana.get("gudang") else None
     await conn.execute(
         """INSERT INTO goods_receipts (id, tenant_id, receipt_number, purchase_order_id, vendor_id, receipt_date, warehouse_id, status,
@@ -148,7 +148,7 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
         gid, tid, nomor, po["id"], po.get("vendor_id"), receive_date, gudang_id, notes, uid)
     jid = None
     if rencana["jurnal"]:
-        jid, _ = await _jurnal(conn, tid, uid, prefix=PREFIX_JURNAL, tanggal=receive_date, source_type=SUMBER, source_id=gid,
+        jid, _ = await _jurnal(conn, tid, uid, prefix="GRJ", tanggal=receive_date, source_type=SUMBER, source_id=gid,
                                deskripsi=f"Penerimaan barang {nomor} ({po['po_number']})",
                                baris=[(j["account_id"], r2(j["debit"]), r2(j["credit"]), j["memo"]) for j in rencana["jurnal"]])
         await conn.execute("UPDATE goods_receipts SET journal_id = $2 WHERE id = $1 AND tenant_id = $3", gid, jid, tid)
@@ -216,7 +216,7 @@ async def void_grn(conn, ctx: dict, gr_id, alasan: str, hari_ini) -> dict:
     gr, rid = r["gr"], None
     if gr["journal_id"] is not None:
         asli = await conn.fetch("SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", gr["journal_id"])
-        rid, _ = await _jurnal(conn, tid, uid, prefix=PREFIX_BALIK, tanggal=hari_ini, source_type=SUMBER_BALIK, source_id=gr_id,
+        rid, _ = await _jurnal(conn, tid, uid, prefix="GRJ-REV", tanggal=hari_ini, source_type=SUMBER_BALIK, source_id=gr_id,
                                deskripsi=f"Pembatalan penerimaan barang {gr['receipt_number']}",
                                baris=[(x["account_id"], x["credit"], x["debit"], f"Pembalik: {x['memo'] or ''}") for x in asli],
                                reversal_of=gr["journal_id"], alasan=alasan)

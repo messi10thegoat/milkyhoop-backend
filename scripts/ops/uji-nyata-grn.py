@@ -141,8 +141,9 @@ async def jalan(c):
 
     # tagihan TES E2E (simulasi jalur BACKEND): 8 @1.100 atas baris barang
     bid, biid = uuid4(), uuid4()
-    await c.execute("""INSERT INTO bills (id, tenant_id, invoice_number, vendor_id, vendor_name, issue_date, due_date, amount, status, status_v2)
-                       VALUES ($1, $2, 'TES E2E GRN BILL', $3, $4, $5, $5, 8800, 'posted', 'posted')""", bid, T, vendor["id"], vendor["name"], hari)
+    await c.execute("""INSERT INTO bills (id, tenant_id, invoice_number, vendor_id, vendor_name, issue_date, due_date, amount, status, status_v2,
+                       created_by) VALUES ($1, $2, 'TES E2E GRN BILL', $3, $4, $5, $5, 8800, 'posted', 'posted', $6)""",
+                    bid, T, vendor["id"], vendor["name"], hari, uid)
     await c.execute("""INSERT INTO bill_items (id, bill_id, description, quantity, unit_price, subtotal, discount_amount, total, line_number,
                        purchase_order_item_id, product_id) VALUES ($1, $2, 'TES E2E barang', 8, 1100, 8800, 0, 8800, 1, $3, $4)""",
                     biid, bid, UUID(brg), prod["id"])

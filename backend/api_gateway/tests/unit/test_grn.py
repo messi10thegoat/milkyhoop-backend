@@ -84,8 +84,10 @@ def test_kontrak_dua_baris_tagihan_satu_baris_po_fifo_berlanjut():
             return 1
         async def fetch(self, q, *a):
             assert "status = 'posted'" in q and "i.ber_stok" in q
-            return [{"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("5"), "sisa_nilai": D("500")},
-                    {"gr_item_id": "g2", "purchase_order_item_id": po, "unit_cost": D("120"), "qty_terbuka": D("5"), "sisa_nilai": D("600")}]
+            return [{"gr_item_id": "g1", "purchase_order_item_id": po, "unit_cost": D("100"), "qty_terbuka": D("5"), "sisa_nilai": D("500"),
+                     "satuan_po": None},
+                    {"gr_item_id": "g2", "purchase_order_item_id": po, "unit_cost": D("120"), "qty_terbuka": D("5"), "sisa_nilai": D("600"),
+                     "satuan_po": None}]
     b1 = {"id": "b1", "purchase_order_item_id": po, "quantity": D("4"), "subtotal": D("400"), "discount_amount": D("0")}
     b2 = {"id": "b2", "purchase_order_item_id": po, "quantity": D("4"), "subtotal": D("480"), "discount_amount": D("0")}
     out = asyncio.run(T.rencana_posting_baris(C(), "t", [b1, b2]))
