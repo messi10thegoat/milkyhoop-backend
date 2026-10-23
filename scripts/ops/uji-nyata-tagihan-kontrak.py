@@ -8,7 +8,11 @@ pada beberapa "hari ini" (tanggal bisnis asli + tanggal suntik) supaya ketiga ku
   (f) ?search=: id daftar == id summary (tagihan_terbuka_count dalam pencarian == baris terbuka hasil cari)
   (g) konsistensi: status overdue <=> jatuh_tempo_keadaan telat; Lunas/Batal/Draf <=> paid/void/draft
   (h) riwayat: tiap tagihan ada TAGIHAN_DIBUAT; id asing -> None (404)
-MERAH=1 : Python aksi_tagihan disabotase (lewat_jatuh_tempo -> None) -> (a) WAJIB gagal."""
+  (i) segera_tempo (23 Okt): alias ?aksi=jatuh_tempo_minggu_ini == ?aksi=segera_tempo; summary jatuh_tempo_minggu_ini_* == segera_tempo_*;
+      Σ sisa segera_tempo == agregat predikat pengingat (TD.sql_aksi_berparam + TD.sql_hutang, == pengingat._tagihan); ambang tenant
+      DIPAKAI (ambang_segera disuntik 3 -> SQL == Python dgn 3, himpunan ⊆ N asli)
+MERAH=1 : Python aksi_tagihan disabotase (lewat_jatuh_tempo -> None) -> (a) WAJIB gagal.
+MERAH_AMBANG=1 : ambang tenant DIABAIKAN (SQL & Python memakai 7 tetap) -> (i) suntik N=3 WAJIB gagal pada tanggal pembeda."""
 import asyncio, os, sys, uuid
 from datetime import date, timedelta
 from decimal import Decimal
@@ -53,13 +57,22 @@ async def main():
     async def gp(): return P()
     BR.get_pool = gp
     svc = BS.BillsService(P())
+    kan = lambda x: TD.AKSI_USANG.get(x["aksi"], x["aksi"])  # noqa: E731 -- aksi baris (nama lama selama transisi) -> kunci kanonik
+    if os.environ.get("MERAH_AMBANG") == "1":
+        _sb, _at, _jf = TD.sql_aksi_berparam, TD.aksi_tagihan, TD.jatuh_tempo_fakta
+        TD.sql_aksi_berparam = lambda aksi, mulai, h, ambang=None: _sb(aksi, mulai, h, None if ambang is None else 7)
+        TD.aksi_tagihan = lambda k, d, i, h, ambang: _at(k, d, i, h, 7)
+        TD.jatuh_tempo_fakta = lambda k, d, h, ambang: _jf(k, d, h, 7)
     if MERAH:
         _a = TD.aksi_tagihan
         TD.aksi_tagihan = lambda *a, **k: (None if _a(*a, **k) == "lewat_jatuh_tempo" else _a(*a, **k))
     try:
         for t in TEN:
             h0 = await asli(c, t)
-            for H in (h0, date(2026, 9, 15), date(2026, 10, 1)):
+            # tanggal PEMBEDA: jatuh tempo efektif tagihan terbuka tertua - 5 hari -> di dalam N=7, di luar N=3 (uji (i) bermakna)
+            d5 = await c.fetchval(f"""SELECT MIN({TD.sql_jt_efektif('b')}) - 5 FROM bills b {TD.join_rincian()}
+                                      WHERE b.tenant_id = $1 AND {TD.sql_terbuka()}""", t)
+            for H in (h0, date(2026, 9, 15), date(2026, 10, 1)) + ((d5,) if d5 else ()):
                 async def palsu(conn, tid, _H=H): return _H
                 BS.tanggal_dokumen = palsu
                 L = f"{t}@{H}"
@@ -73,19 +86,44 @@ async def main():
                 rows, _ = await semua()
                 ak = {}
                 for x in rows:
-                    ak.setdefault(x["aksi"], set()).add(x["id"])
+                    ak.setdefault(kan(x), set()).add(x["id"])
                 cek(set(ak) <= set(TD.AKSI_TAGIHAN) | {None}, f"{L} (a) partisi: kunci sah", str(sorted(map(str, ak))))
                 sm = (await svc.get_summary(t, "current_year"))["data"]
                 for k in TD.AKSI_TAGIHAN:
                     ids = {x["id"] for x in (await semua(aksi=k))[0]}
                     harap = ak.get(k, set())
                     cek(ids == harap, f"{L} (a) ?aksi={k} SQL == Python", f"sql {len(ids)} py {len(harap)}")
-                    nilai = sum((D(x["amount"]) if k == "perlu_diposting" else D(x["outstanding_amount"])) for x in rows if x["aksi"] == k)
+                    nilai = sum((D(x["amount"]) if k == "perlu_diposting" else D(x["outstanding_amount"])) for x in rows if kan(x) == k)
                     cek(sm[f"{k}_count"] == len(harap) and abs(D(sm[f"{k}_value"]) - nilai) < Decimal("0.01"),
                         f"{L} (b) summary {k}", f"{sm[f'{k}_count']}/{sm[f'{k}_value']} vs {len(harap)}/{nilai}")
                     _, rk = await semua(aksi=k, with_totals=True)
-                    sisa_k = sum((D(x["outstanding_amount"]) for x in rows if x["aksi"] == k and x["outstanding_amount"] is not None), Decimal(0))
+                    sisa_k = sum((D(x["outstanding_amount"]) for x in rows if kan(x) == k and x["outstanding_amount"] is not None), Decimal(0))
                     cek(D(rk["sum_sisa"]) == sisa_k, f"{L} (e) with_totals ?aksi={k} sum_sisa", f"{rk['sum_sisa']} vs {sisa_k}")
+                # (i) segera_tempo: alias, summary alias, predikat pengingat (AP agregat), ambang tenant dipakai
+                n_asli = await BS.ambang_segera(c, t)
+                ids_seg = ak.get("segera_tempo", set())
+                ids_alias = {x["id"] for x in (await semua(aksi="jatuh_tempo_minggu_ini"))[0]}
+                cek(ids_alias == ids_seg and sm["jatuh_tempo_minggu_ini_count"] == sm["segera_tempo_count"]
+                    and sm["jatuh_tempo_minggu_ini_value"] == sm["segera_tempo_value"], f"{L} (i) alias jatuh_tempo_minggu_ini == segera_tempo (N={n_asli})",
+                    f"alias {len(ids_alias)} seg {len(ids_seg)} sm {sm['jatuh_tempo_minggu_ini_count']}/{sm['segera_tempo_count']}")
+                _pr, _pa = TD.sql_aksi_berparam("segera_tempo", 2, H, n_asli)
+                pg = await c.fetchrow(f"""SELECT COUNT(*) AS n, COALESCE(SUM({TD.sql_hutang('b')}), 0) AS v
+                    FROM bills b {TD.join_rincian()} WHERE b.tenant_id = $1 AND {_pr}""", t, *_pa)
+                cek(pg["n"] == sm["segera_tempo_count"] and abs(D(pg["v"]) - D(sm["segera_tempo_value"])) < Decimal("0.01"),
+                    f"{L} (i) summary segera_tempo == agregat predikat pengingat", f"{pg['n']}/{pg['v']} vs {sm['segera_tempo_count']}/{sm['segera_tempo_value']}")
+                _amb = BS.ambang_segera
+                async def tiga(conn, tid): return 3
+                BS.ambang_segera = tiga
+                try:
+                    r3, _ = await semua()
+                    py3 = {x["id"] for x in r3 if kan(x) == "segera_tempo"}
+                    sql3 = {x["id"] for x in (await semua(aksi="segera_tempo"))[0]}
+                    harap3 = {x["id"] for x in rows if x["status"] in TD.TERBUKA and (x["due_date"] or x["issue_date"])
+                              and H <= date.fromisoformat(str(x["due_date"] or x["issue_date"])[:10]) <= H + timedelta(days=3)}
+                finally:
+                    BS.ambang_segera = _amb
+                cek(py3 == sql3 == harap3 and (py3 <= ids_seg or n_asli < 3), f"{L} (i) ambang tenant dipakai (suntik N=3)",
+                    f"py {len(py3)} sql {len(sql3)} harap {len(harap3)} asli {len(ids_seg)}")
                 terbuka = [x for x in rows if x["status"] in TD.TERBUKA]
                 ap = D(await c.fetchval("SELECT COALESCE(SUM(outstanding),0) FROM compute_ap_outstanding($1) WHERE bill_id IS NOT NULL AND outstanding > 0", t))
                 v_baris = sum((D(x["outstanding_amount"]) for x in terbuka), Decimal(0))
@@ -124,7 +162,7 @@ async def main():
                     hr, _ = await semua(search=kata)
                     sc = (await svc.get_summary(t, "current_year", search=kata))["data"]
                     cek(sc["tagihan_terbuka_count"] == sum(1 for x in hr if x["status"] in TD.TERBUKA)
-                        and all(sc[f"{k}_count"] == sum(1 for x in hr if x["aksi"] == k) for k in TD.AKSI_TAGIHAN) and 0 < len(hr) <= len(rows),
+                        and all(sc[f"{k}_count"] == sum(1 for x in hr if kan(x) == k) for k in TD.AKSI_TAGIHAN) and 0 < len(hr) <= len(rows),
                         f"{L} (f) ?search={kata} daftar == summary", f"daftar {len(hr)} terbuka {sc['tagihan_terbuka_count']}")
                 print(f"  {L}: {len(rows)} tagihan, aksi " + ", ".join(f"{k}={len(ak.get(k, ()))}" for k in TD.AKSI_TAGIHAN), flush=True)
     finally:

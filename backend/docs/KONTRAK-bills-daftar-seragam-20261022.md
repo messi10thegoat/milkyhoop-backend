@@ -9,8 +9,8 @@ Satu modul sumber: `services/tagihan_daftar.py` (aksi, jatuh tempo, posisi, cari
 
 | # | Putusan | Acuan |
 |---|---|---|
-| B1 | Pill aksi = **partisi** 3 kunci: `lewat_jatuh_tempo` · `jatuh_tempo_minggu_ini` · `perlu_diposting`. Tagihan terbuka yang jatuh tempo SESUDAH minggu ini = bukan pill (keadaan normal, derau; tampil lewat `jatuh_tempo_*`). Payung semua tagihan terbuka ada di summary (`tagihan_terbuka_*`) | NetSuite Bills: Overdue / Due this week / Pending Approval; alasan sama dgn `menunggu_barang` PO K1 |
-| B2 | `jatuh_tempo_minggu_ini` = hari ini s.d. akhir minggu (Minggu; `dashboard_v2.akhir_minggu`) — definisi SAMA dengan chip Penjualan | Penjualan P3 |
+| B1 | Pill aksi = **partisi** 3 kunci: `lewat_jatuh_tempo` · `segera_tempo` (23 Okt; dulu `jatuh_tempo_minggu_ini`, kini ALIAS USANG — §7) · `perlu_diposting`. Tagihan terbuka yang jatuh tempo SESUDAH N hari = bukan pill (keadaan normal, derau; tampil lewat `jatuh_tempo_*`). Payung semua tagihan terbuka ada di summary (`tagihan_terbuka_*`) | NetSuite Bills: Overdue / Due this week / Pending Approval; alasan sama dgn `menunggu_barang` PO K1 |
+| B2 | `segera_tempo` = terbuka ∧ hari ini ≤ jatuh tempo efektif ≤ hari ini + **N**, N = `pengingat.ambang_segera` (tenant, `accounting_settings.pengingat_segera_hari` V450, bawaan 7) — SATU definisi dgn faktur/proforma/pengingat dashboard (putusan pemilik 22 Okt, KONTRAK-dashboard-pengingat §7). Dulu: s.d. akhir minggu | Xero/QBO "due soon" N hari |
 | B3 | Jatuh tempo efektif untuk aksi = `due_date`, kosong → `issue_date` (due on receipt) | faktur_aksi Penjualan |
 | B4 | Kata posisi = Penjualan: Draf · Batal · Lunas · Sebagian · Belum lunas. Telat BUKAN posisi | NetSuite Status vs Days Overdue |
 | B5 | `sum_total` = Σ `amount` **tanpa batal** (PO juga tanpa cancelled); `sum_sisa` = Σ `outstanding_amount` (draf/batal tak menyumbang) | QBO/Xero total list tak menghitung voided |
@@ -27,7 +27,7 @@ Per item **tambahan** (`TD.fakta_baris`, fungsi SAMA dengan detail):
 - `aksi` (kunci B1 atau null) · `aksi_semua` (`[aksi]` atau `[]`; partisi → paling banyak satu).
   - `perlu_diposting` = draf.
   - `lewat_jatuh_tempo` = terbuka (aktif, ber-kredit AP, sisa jurnal > 0) ∧ jatuh tempo efektif < hari ini.
-  - `jatuh_tempo_minggu_ini` = terbuka ∧ hari ini ≤ jatuh tempo efektif ≤ akhir minggu.
+  - `jatuh_tempo_minggu_ini` (USANG, bool) = terbuka ∧ hari ini ≤ jatuh tempo ≤ hari ini + N (== aksi segera_tempo).
 - `position_text` (B4) · `outstanding_amount` (string; draf/batal = null; lunas = "0.00").
 - `jatuh_tempo_terbuka` · `jatuh_tempo_hari` (due − hari ini; null bila tak terbuka) · `jatuh_tempo_keadaan` ∈ `telat | hari_ini | akan | selesai | tanpa` ·
   `jatuh_tempo_teks` (`"Hari ini"` / `"Besok"` / `"24 Okt"` / `"12 Okt, lewat tempo"` / `"—"`; selesai = tanggal) · `jatuh_tempo_minggu_ini` (bool).
@@ -61,3 +61,13 @@ Tanpa izin → modul tercantum di `omitted`. 404 bila tagihan tak ada di tenant.
 - Tes unit `tests/unit/test_tagihan_kontrak_seragam.py` (aksi/posisi/jatuh tempo/cari/dok/izin rute/satu sumber).
 - Uji nyata BACA-SAJA `scripts/ops/uji-nyata-tagihan-kontrak.sh` (grapgrap + kaos, 3 "hari ini"): pasangan SQL `?aksi=` == Python per baris; summary == baris;
   payung == AP jurnal; detail v1 == v2 == baris; bundel == baris; with_totals; search daftar == summary; riwayat. Kontrol merah `MERAH=1` (Python disabotase → gagal).
+
+## 7. TRANSISI `segera_tempo` (23 Okt 2026, aditif; BACKEND)
+- `?aksi=segera_tempo` (kanonik) DAN `?aksi=jatuh_tempo_minggu_ini` (alias USANG) -> predikat & parameter IDENTIK (`TD.AKSI_USANG`).
+- `/bills/summary`: kunci BARU `segera_tempo_count` (int) / `segera_tempo_value` (float, Σ sisa jurnal); `jatuh_tempo_minggu_ini_count/_value`
+  TETAP ada = nilai segera_tempo (alias). Kunci lain TIDAK berubah (diuji lama-vs-baru pada data nyata: `scripts/ops/uji-nyata-tagihan-summary-lama-baru.sh`).
+- Baris/detail: `aksi`/`aksi_semua` TETAP mengirim nama lama `jatuh_tempo_minggu_ini` untuk tagihan segera (`TD.AKSI_BARIS_USANG`; FE r304
+  memetakan label kaki dari kunci lama). Sesudah rilis FE yang memakai `segera_tempo` TERVERIFIKASI: baris -> `segera_tempo`, alias dicabut.
+- Pengingat dashboard (BACKEND2 `services/pengingat`): `TD.sql_aksi_berparam("segera_tempo", …, ambang)` WAJIB menerima ambang (tanpa = ValueError);
+  Σ sisa == `/bills/summary` segera_tempo_value (uji nyata (i)).
+- Uji nyata (i) + tanggal PEMBEDA (jatuh tempo terbuka tertua − 5 hari) + kontrol merah `MERAH_AMBANG=1` (ambang diabaikan -> WAJIB gagal).

@@ -575,7 +575,8 @@ async def list_bills(
     amount_min: Optional[float] = Query(None, description="Minimum amount filter"),
     amount_max: Optional[float] = Query(None, description="Maximum amount filter"),
     # Kontrak seragam (22 Okt 2026): pill AKSI = partisi services/tagihan_daftar.AKSI_TAGIHAN (nilai asing = 422)
-    aksi: Optional[Literal["lewat_jatuh_tempo", "jatuh_tempo_minggu_ini", "perlu_diposting"]] = Query(None),
+    # 23 Okt 2026: segera_tempo (N hari tenant) kanonik; jatuh_tempo_minggu_ini = alias USANG (TD.AKSI_USANG) selama transisi FE
+    aksi: Optional[Literal["lewat_jatuh_tempo", "segera_tempo", "perlu_diposting", "jatuh_tempo_minggu_ini"]] = Query(None),
     # sum_total (tanpa batal) / sum_sisa (Σ outstanding_amount) atas SEMUA hasil filter (opt-in)
     with_totals: bool = Query(False),
 ):

@@ -11,7 +11,7 @@
   dibayar  = paid_amount rincian (0 bila tak ada baris rincian).
 Kembaran Python `keadaan_tagihan` / `sisa_tagihan` diuji berpasangan + harness nyata (uji-nyata-tagihan-rincian).
 """
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -121,10 +121,17 @@ async def sisa_tagihan_jurnal(conn, tenant_id: str, bill_id) -> Optional[Decimal
 # Server menghitung, FE hanya memformat. Kunci aksi = PARTISI (saling eksklusif; pola NetSuite Bills: Overdue / Due this week / Pending Approval):
 #   perlu_diposting        = keadaan draft
 #   lewat_jatuh_tempo      = TERBUKA (aktif, ber-kredit AP, sisa jurnal > 0) ∧ jatuh tempo efektif < hari ini
-#   jatuh_tempo_minggu_ini = TERBUKA ∧ hari ini <= jatuh tempo efektif <= akhir minggu (dashboard_v2.akhir_minggu, == chip Penjualan)
-#   (terbuka di luar minggu ini / lunas / batal = bukan aksi). Jatuh tempo efektif = due_date, kosong -> issue_date (== faktur_aksi).
+#   segera_tempo           = TERBUKA ∧ hari ini <= jatuh tempo efektif <= hari ini + N  (N = pengingat.ambang_segera tenant, V450,
+#                            bawaan 7; SATU definisi "segera jatuh tempo" dgn faktur/proforma/pengingat dashboard -- putusan pemilik 22 Okt,
+#                            KONTRAK-dashboard-pengingat §7; dulu `jatuh_tempo_minggu_ini` = s.d. akhir minggu)
+#   (terbuka di luar N hari / lunas / batal = bukan aksi). Jatuh tempo efektif = due_date, kosong -> issue_date (== faktur_aksi).
 # "Hari ini" = tanggal BISNIS tenant. Python `aksi_tagihan` dan SQL `sql_aksi` WAJIB setara (uji berpasangan + harness nyata).
-AKSI_TAGIHAN = ("lewat_jatuh_tempo", "jatuh_tempo_minggu_ini", "perlu_diposting")
+# TRANSISI (23 Okt 2026, aditif): `jatuh_tempo_minggu_ini` = ALIAS USANG `segera_tempo` -- diterima di ?aksi=, dikirim di /summary
+# ({k}_count/_value == segera_tempo) dan TETAP nilai `aksi`/`aksi_semua` baris (FE r304 memetakan label dari kunci lama) sampai rilis
+# FE yang memakai `segera_tempo` TERVERIFIKASI; lalu alias dicabut dan baris memakai `segera_tempo`.
+AKSI_TAGIHAN = ("lewat_jatuh_tempo", "segera_tempo", "perlu_diposting")
+AKSI_USANG = {"jatuh_tempo_minggu_ini": "segera_tempo"}       # masukan ?aksi= / kunci summary lama -> kunci kanonik
+AKSI_BARIS_USANG = {"segera_tempo": "jatuh_tempo_minggu_ini"}  # nilai `aksi` baris selama transisi FE
 TERBUKA = ("unpaid", "partial", "overdue")
 POSISI_TAGIHAN = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")  # == kata posisi_faktur Penjualan
 
@@ -143,21 +150,23 @@ def sql_jt_efektif(a: str = "b") -> str:
     return f"COALESCE({a}.due_date, {a}.issue_date)"
 
 
-def sql_aksi(aksi: str, p_hari: str, p_akhir: str, a: str = "b") -> str:
-    """Predikat SQL setara `aksi_tagihan(...) == aksi` (butuh join_rincian). p_hari/p_akhir = placeholder tanggal (hari ini, akhir minggu)."""
+def sql_aksi(aksi: str, p_hari: str, p_ambang: str, a: str = "b") -> str:
+    """Predikat SQL setara `aksi_tagihan(...) == aksi` (butuh join_rincian). p_hari/p_ambang = placeholder (hari ini, N hari segera)."""
     eff = sql_jt_efektif(a)
     return {
         "perlu_diposting": _sql_draft(a),
         "lewat_jatuh_tempo": f"({sql_terbuka(a)} AND {eff} < {p_hari}::date)",
-        "jatuh_tempo_minggu_ini": f"({sql_terbuka(a)} AND {eff} >= {p_hari}::date AND {eff} <= {p_akhir}::date)",
-    }[aksi]
+        "segera_tempo": f"({sql_terbuka(a)} AND {eff} >= {p_hari}::date AND {eff} <= {p_hari}::date + {p_ambang}::int)",
+    }[AKSI_USANG.get(aksi, aksi)]
 
 
-def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date) -> tuple:
-    """(predikat, parameter) mulai $mulai -- hanya parameter yang dirujuk (asyncpg menolak $N tak terpakai)."""
-    from .dashboard_v2 import akhir_minggu
-    pakai = {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,),
-             "jatuh_tempo_minggu_ini": (hari_ini, akhir_minggu(hari_ini))}[aksi]
+def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date, ambang: Optional[int] = None) -> tuple:
+    """(predikat, parameter) mulai $mulai -- hanya parameter yang dirujuk (asyncpg menolak $N tak terpakai).
+    `segera_tempo` (atau alias usang) WAJIB menerima ambang N tenant (pengingat.ambang_segera) -- tanpa itu = galat, bukan tebakan."""
+    aksi = AKSI_USANG.get(aksi, aksi)
+    if aksi == "segera_tempo" and ambang is None:
+        raise ValueError("segera_tempo butuh ambang (pengingat.ambang_segera)")
+    pakai = {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,), "segera_tempo": (hari_ini, ambang)}[aksi]
     return sql_aksi(aksi, f"${mulai}", f"${mulai + 1}"), list(pakai)
 
 
@@ -166,9 +175,8 @@ def sql_hutang(a: str = "b") -> str:
     return f"(CASE WHEN {_sql_void(a)} OR {_sql_draft(a)} OR {_sql_tanpa_kredit()} THEN NULL ELSE apr.outstanding END)"
 
 
-def aksi_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[date], hari_ini: date) -> Optional[str]:
-    """Kunci aksi satu tagihan (atau None). keadaan = keadaan_tagihan / kolom status daftar."""
-    from .dashboard_v2 import akhir_minggu
+def aksi_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[date], hari_ini: date, ambang: int) -> Optional[str]:
+    """Kunci aksi KANONIK satu tagihan (atau None). keadaan = keadaan_tagihan / kolom status daftar; ambang = pengingat.ambang_segera."""
     if keadaan == "draft":
         return "perlu_diposting"
     if keadaan not in TERBUKA:
@@ -178,8 +186,8 @@ def aksi_tagihan(keadaan: str, due_date: Optional[date], issue_date: Optional[da
         return None
     if eff < hari_ini:
         return "lewat_jatuh_tempo"
-    if eff <= akhir_minggu(hari_ini):
-        return "jatuh_tempo_minggu_ini"
+    if eff <= hari_ini + timedelta(days=ambang):
+        return "segera_tempo"
     return None
 
 
@@ -195,10 +203,9 @@ def posisi_tagihan(keadaan: str, dibayar) -> str:
     return "Sebagian" if _d(dibayar) > 0 else "Belum lunas"
 
 
-def jatuh_tempo_fakta(keadaan: str, due_date: Optional[date], hari_ini: date) -> dict:
+def jatuh_tempo_fakta(keadaan: str, due_date: Optional[date], hari_ini: date, ambang: int) -> dict:
     """jatuh_tempo_terbuka/_hari/_keadaan/_teks/_minggu_ini (bentuk == proforma_daftar.jatuh_tempo_fakta, kata == faktur Penjualan).
     terbuka = keadaan TERBUKA ∧ bertanggal; keadaan: telat | hari_ini | akan | selesai (lunas bertanggal; tanggal redup) | tanpa."""
-    from .dashboard_v2 import akhir_minggu
     tgl = f"{due_date.day} {_bulan()[due_date.month - 1]}" if due_date is not None else None
     terbuka = keadaan in TERBUKA and due_date is not None
     hari = (due_date - hari_ini).days if terbuka else None
@@ -210,16 +217,19 @@ def jatuh_tempo_fakta(keadaan: str, due_date: Optional[date], hari_ini: date) ->
     else:
         kd, teks = "tanpa", "—"
     return {"jatuh_tempo_terbuka": terbuka, "jatuh_tempo_hari": hari, "jatuh_tempo_keadaan": kd, "jatuh_tempo_teks": teks,
-            "jatuh_tempo_minggu_ini": terbuka and hari_ini <= due_date <= akhir_minggu(hari_ini)}
+            # USANG: alias segera_tempo (N hari tenant), == aksi baris segera_tempo
+            "jatuh_tempo_minggu_ini": terbuka and hari_ini <= due_date <= hari_ini + timedelta(days=ambang)}
 
 
-def fakta_baris(keadaan: str, dibayar, hutang, due_date: Optional[date], issue_date: Optional[date], hari_ini: date) -> dict:
-    """SEMUA medan turunan kontrak untuk satu tagihan -- SATU fungsi untuk baris daftar DAN detail v1/v2 (paritas)."""
-    ak = aksi_tagihan(keadaan, due_date, issue_date, hari_ini)
+def fakta_baris(keadaan: str, dibayar, hutang, due_date: Optional[date], issue_date: Optional[date], hari_ini: date, ambang: int) -> dict:
+    """SEMUA medan turunan kontrak untuk satu tagihan -- SATU fungsi untuk baris daftar DAN detail v1/v2 (paritas).
+    `aksi` baris = kunci kanonik, kecuali segera_tempo -> alias usang selama transisi FE (AKSI_BARIS_USANG)."""
+    ak = aksi_tagihan(keadaan, due_date, issue_date, hari_ini, ambang)
+    ak = AKSI_BARIS_USANG.get(ak, ak)
     return {"aksi": ak, "aksi_semua": [ak] if ak else [],
             "position_text": posisi_tagihan(keadaan, dibayar),
             "outstanding_amount": None if hutang is None else f"{_d(hutang):.2f}",
-            **jatuh_tempo_fakta(keadaan, due_date, hari_ini)}
+            **jatuh_tempo_fakta(keadaan, due_date, hari_ini, ambang)}
 
 
 def syarat_cari(search: str, mulai: int, a: str = "b") -> tuple:
