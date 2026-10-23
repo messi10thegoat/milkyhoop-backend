@@ -14,7 +14,7 @@ LAMA (tulis-lalu-rollback) juga direkam -> BANDING: pratinjau lama == baru (kecu
 Rekaman tulis per langkah (tanpa uuid/cap waktu/nomor) -> /out/<NAMA>.json; BANDING lama == baru + NET 0 (sebelum == sesudah, proses terpisah).
 MERAH=1 : after.remaining pratinjau R dimutasi -> WAJIB gagal.  MERAH_BOCOR=1 : 1 baris idempotency_keys lewat koneksi terpisah yang COMMIT
 -> net 0 WAJIB gagal (.sh membersihkan + sisa 0).
-MODE=BACA TENANT=<t> : pratinjau SEMUA NK tenant lewat koneksi default_transaction_read_only=on (tulis apa pun = galat) -- grapgrap BACA-SAJA."""
+MODE=BACA TENANT=<t> : pratinjau SEMUA NK tenant lewat koneksi default_transaction_read_only=on (tulis apa pun = galat) -- grapgrap-manado BACA-SAJA (tenant wajib ada di "Tenant")."""
 import asyncio, json, os, sys
 from datetime import date
 from decimal import Decimal
@@ -267,6 +267,10 @@ async def baca():
     from app.services import nota_kredit_rencana as NKR
     from app.schemas.credit_notes import ApplyCreditNoteRequest, ApplyCreditNoteItem, RefundCreditNoteRequest
     c = await asyncpg.connect(os.environ["DATABASE_URL"], server_settings={"default_transaction_read_only": "on"})
+    # 23 Okt: tenant 'grapgrap' TAK ADA (id nyata grapgrap-manado) -> BACA lama mengukur tenant kosong ("0 NK"). Tenant wajib ada.
+    if not await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', T):
+        cek(False, f"tenant {T} ADA di \"Tenant\"", "tenant tak ada -> pengukuran kosong palsu"); await c.close()
+        print(f"RINGKAS gagal={len(gagal)} {gagal[:6]}"); sys.exit(1)
     ctx = {"tenant_id": T, "user_id": uuid.uuid4()}
     rek = await c.fetchval("SELECT id FROM bank_accounts WHERE tenant_id = $1 AND is_active = true ORDER BY created_at LIMIT 1", T)
     nks = await c.fetch("SELECT id, customer_id, status FROM credit_notes WHERE tenant_id = $1", T)

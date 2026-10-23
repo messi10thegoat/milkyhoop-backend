@@ -20,7 +20,7 @@ jalan "$AKAR" JEPRET sesudah || rc=1
 jalan "$AKAR" BANDING x || rc=1
 if [ "${MERAH:-0}" != 1 ] && [ "${MERAH_BOCOR:-0}" != 1 ]; then
   TENANT=kaos-biru-konveksi jalan "$AKAR" BACA kaos || rc=1
-  TENANT=grapgrap jalan "$AKAR" BACA grapgrap || rc=1
+  TENANT=grapgrap-manado jalan "$AKAR" BACA grapgrap || rc=1
 fi
 if [ "${MERAH_BOCOR:-0}" = 1 ]; then  # bersihkan baris kontrol merah (satu-satunya tulisan ber-commit, kunci khusus)
   docker run --rm --network milkyhoop_dev_network --env-file "$E" --entrypoint python "$IMG" -c \
