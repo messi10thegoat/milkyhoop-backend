@@ -63,9 +63,7 @@ from ..schemas.receive_payments import (
 from ..utils.metode_pembayaran import label_metode, label_metode_layar, metode_klien_sah, tentukan_metode
 from ..utils.idempotency import (  # Law 14
     _norm_amount,
-    build_idempotency_default,
     execute_idempotent,
-    get_idempotency_key,
     hash_payload,
     KunciIdempotensiDipakai,
 )
@@ -1581,26 +1579,13 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")  # nosec B608
 
-                # Law 13: Advisory lock
-                # ── Law 14: kunci idempotency (server-default deterministik) ──
-                # Header X-Idempotency-Key MENIMPA default bila klien mengirim.
-                # Nominal WAJIB lewat _norm_amount (di build_idempotency_default):
-                # f"{x}" bergantung tipe -> int/float/Decimal menghasilkan string
-                # berbeda untuk jumlah sama -> dedup gagal DIAM-DIAM.
-                idem_key = get_idempotency_key(
-                    request,
-                    build_idempotency_default(
-                        "RCV",
-                        [
-                            body.customer_id,
-                            body.payment_date,
-                            body.bank_account_id,
-                            _norm_amount(body.total_amount),
-                            _norm_amount(getattr(body, "discount_amount", None)),
-                        ],
-                        [(a.invoice_id, a.amount_applied) for a in body.allocations],
-                    ),
-                )
+                # ── Law 14: kunci idempotency KIRIMAN KLIEN SAJA (RCV-KUNCI-KLIEN 23 Okt 2026, putusan pemilik LANGSUNG; pola
+                # /bill-payments U2a). Dulu tanpa header dipakai kunci DEFAULT SERVER (pelanggan+tanggal+rekening+nominal+alokasi,
+                # 24 jam) -> dua penerimaan SAH yang identik pada hari yang sama tergabung diam-diam (yang kedua di-replay). Kini:
+                # tanpa header = penerimaan BARU; dengan header = replay (isi sama) / 409 IDEMPOTENCY_KEY_REUSED (isi beda).
+                # Ketuk-ganda dicegah KLIEN: form klasik = satu kunci per buka-form (utils/kunciBayar.ts), CW = kunci per tinjau,
+                # agen = kunci per pending_action_id (unified_chat).
+                kunci_klien = request.headers.get("X-Idempotency-Key")
 
                 # ── DUA lock, sengaja. LOCK cegah RACE; IDEMPOTENCY cegah DUPLIKAT. ──
                 # (1) DOMAIN lock per-customer — LAPIS KEDUA, bukan penjaga utama.
@@ -1613,15 +1598,18 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 #     Tetap JANGAN diganti idem_key — alokasi berbeda punya kunci
                 #     berbeda, jadi idem_key tak pernah menjadi pengganti yang sah
                 #     untuk lock domain (LOCK cegah RACE, IDEMPOTENCY cegah DUPLIKAT).
-                # (2) IDEM lock per-kunci: men-serialkan request IDENTIK supaya
-                #     keduanya tak sama-sama MISS SELECT di execute_idempotent.
-                #     INI yang benar-benar diperlukan oleh mekanisme idempotency.
+                # (2) IDEM lock per-kunci (HANYA bila ada kunci klien): men-serialkan request
+                #     IDENTIK supaya keduanya tak sama-sama MISS SELECT di execute_idempotent.
                 # URUTAN TETAP: domain dulu, baru idem — sama di bill_payments,
                 # supaya tak ada deadlock silang.
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"RECEIVE_PAYMENT_CREATE:{ctx['tenant_id']}:{body.customer_id}",
                 )
+                if not kunci_klien:
+                    hasil = await buat_penerimaan(conn, ctx, body)
+                    return {**hasil, "was_cached": False}
+                idem_key = kunci_klien
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"IDEM:{ctx['tenant_id']}:{idem_key}",
@@ -1635,12 +1623,12 @@ async def create_receive_payment(request: Request, body: CreateReceivePaymentReq
                 # C2 (26 Sep 2026): kunci KIRIMAN KLIEN mengikat ISI permintaan -> kunci sama
                 # + isi beda = 409 IDEMPOTENCY_KEY_REUSED (seperti uang muka). Kunci default
                 # server sudah memuat nominal+alokasi -> tanpa sidik (perilaku lama).
-                sidik = _sidik_penerimaan(body) if request.headers.get("X-Idempotency-Key") else None
+                sidik = _sidik_penerimaan(body)
                 try:
                     _res = await execute_idempotent(
                         conn, ctx["tenant_id"], idem_key, "RECEIVE_PAYMENT", _op,
                         payload_hash=sidik,
-                        kunci_default=not request.headers.get("X-Idempotency-Key"),
+                        kunci_default=False,
                     )
                 except KunciIdempotensiDipakai as e:
                     lama = (e.respons or {}).get("data") or {}

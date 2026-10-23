@@ -169,10 +169,29 @@ def test_kunci_klien_isi_beda_409(klien):
     assert t["sidik"] == RP._sidik_penerimaan(CreateReceivePaymentRequest(**BADAN))
 
 
-def test_tanpa_header_tanpa_sidik(klien):
+def test_tanpa_header_penerimaan_baru_tanpa_idempotensi(klien, monkeypatch):
+    """RCV-KUNCI-KLIEN (23 Okt 2026, putusan pemilik): tanpa X-Idempotency-Key = penerimaan BARU -- execute_idempotent TAK
+    dipanggil (dulu: kunci default server pelanggan+tanggal+nominal+alokasi, 24 jam -> dua penerimaan sah identik tergabung)."""
     k, t = klien
+    dibuat = []
+
+    async def buat(conn, ctx, body):
+        dibuat.append(body.customer_id)
+        return dict(ASLI)
+    monkeypatch.setattr(RP, "buat_penerimaan", buat)
     k.post("/api/receive-payments", json=BADAN)
-    # status tak dinilai: respons tiruan tak memenuhi response_model (alat). Yang dinilai:
-    # handler SAMPAI ke execute_idempotent dan TIDAK mengirim sidik.
-    assert "sidik" in t and t["sidik"] is None
-    assert t["kunci_default"] is True  # tanpa header = kunci default-isi (voided boleh dicatat ulang)
+    k.post("/api/receive-payments", json=BADAN)
+    assert dibuat == ["c1", "c1"]          # dua kiriman identik tanpa kunci = DUA penerimaan
+    assert "sidik" not in t                # execute_idempotent tak tersentuh
+
+
+def test_kunci_klien_selalu_dengan_sidik(klien):
+    k, t = klien
+    k.post("/api/receive-payments", json=BADAN, headers={"X-Idempotency-Key": "form-2"})
+    assert t["sidik"] == RP._sidik_penerimaan(CreateReceivePaymentRequest(**BADAN)) and t["kunci_default"] is False
+
+
+def test_tak_ada_lagi_kunci_default_server():
+    import inspect
+    src = inspect.getsource(RP.create_receive_payment) if hasattr(RP, "create_receive_payment") else open(RP.__file__).read()
+    assert "build_idempotency_default(" not in src and '"RCV",' not in src

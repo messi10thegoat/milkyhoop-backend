@@ -7171,6 +7171,11 @@ async def _confirm_direct_action(
                     "Authorization": auth_header,
                     "Content-Type": "application/json",
                     "X-Tenant-ID": tenant_id,
+                    # RCV-KUNCI-KLIEN / AS-G12 (23 Okt 2026, putusan pemilik): kunci idempotensi = pending_action_id (stabil per
+                    # konfirmasi) -> konfirmasi ganda di chat = SATU dokumen (replay), dua aksi tertunda berbeda = dua dokumen.
+                    # Rute tanpa dukungan kunci mengabaikan header ini. Tanpa pending_action_id -> TANPA kunci (jangan "agen:None"
+                    # yang sama untuk semua aksi).
+                    **({"X-Idempotency-Key": f"agen:{pending_action_id}"} if pending_action_id else {}),
                 },
             )
 
@@ -7197,6 +7202,8 @@ async def _confirm_direct_action(
                                     "Authorization": auth_header,
                                     "Content-Type": "application/json",
                                     "X-Tenant-ID": tenant_id,
+                                    # langkah posting = aksi LAIN dari buat -> kunci sendiri (ruang kunci per aksi)
+                                    **({"X-Idempotency-Key": f"agen:{pending_action_id}:post"} if pending_action_id else {}),
                                 },
                             )
                         if _post_resp.status_code in (200, 201):
