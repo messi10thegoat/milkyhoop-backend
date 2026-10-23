@@ -851,7 +851,7 @@ async def get_dashboard_summary(
             nearest_ap_query = """
                 SELECT vendor_name as supplier_name, due_date - $2::date as days_until_due
                 FROM compute_ap_outstanding($1)
-                WHERE outstanding > 0 AND bill_id IS NOT NULL AND due_date >= $2::date  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
+                WHERE outstanding > 0 AND due_date >= $2::date AND bill_id IS NOT NULL  -- V457: baris vendor tanpa tagihan (saldo awal / pembayaran yatim / nota debit bebas) bukan tagihan
                 ORDER BY due_date ASC, outstanding DESC LIMIT 1
             """
             nearest_ap = await conn.fetchrow(nearest_ap_query, tenant_id, hari_ini)
