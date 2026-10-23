@@ -66,10 +66,36 @@ async def neto_tagihan_terposting(conn, tid: str, bill_ids) -> dict:
     return out
 
 
+async def _blok_qty_po(conn, tid: str, bill_id, items: list) -> list:
+    """PO_QTY_TERLAMPAUI (aturan D, toleransi 0 -- putusan MASTER/BACKEND2 23 Okt): per baris PO ber-stok, Σ qty dasar baris tagihan LAIN yang
+    terposting non-void + qty dasar tagihan ini <= qty pesanan. Qty tertagih DITURUNKAN dari bill_items (bukan cache poi.quantity_billed).
+    Baris tanpa qty_dasar (satuan beda) sudah diblok SATUAN_TAK_TERKONVERSI oleh grn_tagih."""
+    ini = {}
+    for i in items:
+        if i.get("qty_dasar") is not None:
+            ini[i["purchase_order_item_id"]] = ini.get(i["purchase_order_item_id"], NOL) + Decimal(str(i["qty_dasar"]))
+    if not ini:
+        return []
+    out = []
+    for r in await conn.fetch(
+            """SELECT poi.id, poi.quantity, poi.unit, po.po_number,
+                      COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
+                                WHERE bi.purchase_order_item_id = poi.id AND b.id <> $2
+                                  AND b.status_v2 IS NOT NULL AND b.status_v2 NOT IN ('draft', 'void')), 0) AS tertagih
+               FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id AND po.tenant_id = $1
+               WHERE poi.id = ANY($3::uuid[]) ORDER BY po.po_number, poi.id""", tid, bill_id, list(ini)):
+        dipesan, tertagih = Decimal(str(r["quantity"] or 0)), Decimal(str(r["tertagih"] or 0))
+        if tertagih + ini[r["id"]] > dipesan:
+            from .teks_galat import qty as _q
+            out.append(blok("PO_QTY_TERLAMPAUI", f"Jumlah ditagih melebihi pesanan {r['po_number']}: dipesan {_q(dipesan)}, sudah ditagih "
+                                                 f"{_q(tertagih)}, tagihan ini {_q(ini[r['id']])}. Kurangi jumlah tagihan."))
+    return out
+
+
 async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: bool = False) -> dict:
     """-> {rencana: {bill_item_id: butir}, blocks: [...], akun: {grni, ppv}|None}. Tulis (kunci=True): PO terkait dikunci FOR UPDATE SESUDAH
     tagihan (urutan bill -> PO; jalur GRN tak pernah mengunci bill, BACKEND2 23 Okt). Blok: butir.blok (SATUAN_TAK_TERKONVERSI) ·
-    GRN_MELEBIHI_TERIMA (baris stok ber-GRN terbuka ditagih > diterima - tertagih, 7c ketat) · BONUS_GRN_BELUM (qty bonus atas baris ber-GRN)."""
+    GRN_KONTRAK_INBOUND (penentu melanggar aturan D) · BONUS_GRN_BELUM (qty bonus atas baris PO ber-stok) · PO_QTY_TERLAMPAUI."""
     rows = await conn.fetch(
         """SELECT bi.id, bi.quantity, bi.unit, bi.subtotal, bi.discount_amount, COALESCE(bi.total, 0) AS net, bi.purchase_order_item_id,
                   COALESCE(bi.bonus_qty, 0) AS bonus, poi.unit AS po_unit, poi.po_id
@@ -92,14 +118,17 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
         return kosong
     bonus = {r["id"]: Decimal(str(r["bonus"])) for r in rows}
     bloks = []
+    # ATURAN D (putusan pemilik 23 Okt, SAP GR/IR): baris PO BER-STOK selalu lewat GRNI; bagian BELUM diterima = Dr GRNI nilai_tertunda
+    # (tautan 'tagih_dulu' dipasang penerimaan yang datang kemudian). Blok 'melebihi terima' aturan 7c DICABUT; gantinya PO_QTY_TERLAMPAUI.
     for b in rencana:
         if b.get("blok"):
             bloks.append(blok(b["blok"]["code"], b["blok"]["message"]))
-        elif b["qty_inbound"] > NOL:
-            bloks.append(blok("GRN_MELEBIHI_TERIMA", "Jumlah ditagih melebihi barang yang sudah diterima dan belum ditagih. "
-                                                     "Catat penerimaan barangnya dulu atau kurangi jumlah tagihan."))
+        elif b.get("perlu_inbound") or b.get("qty_inbound", NOL) > NOL:
+            # kontrak D: tagihan atas baris PO ber-stok TAK PERNAH memasukkan stok -- bila grn_tagih melanggar, tolak (bukan stok ganda)
+            bloks.append(blok("GRN_KONTRAK_INBOUND", "Penentu penerimaan meminta stok masuk dari tagihan (melanggar aturan D); hubungi dukungan."))
         elif bonus.get(b["bill_item_id"], NOL) > NOL:
-            bloks.append(blok("BONUS_GRN_BELUM", "Qty bonus pada baris yang sudah diterima lewat penerimaan barang belum didukung."))
+            bloks.append(blok("BONUS_GRN_BELUM", "Qty bonus pada baris pesanan ber-stok belum didukung; catat bonus lewat penerimaan barang."))
+    bloks += await _blok_qty_po(conn, tid, bill_id, [i for i in items if i["id"] in {b["bill_item_id"] for b in rencana}])
     from .role_resolver import AccountRole, resolve_account_id_by_role
     akun = {"grni": await resolve_account_id_by_role(conn, tid, AccountRole.GOODS_RECEIVED_NOT_INVOICED),
             "ppv": await resolve_account_id_by_role(conn, tid, AccountRole.PURCHASE_PRICE_VARIANCE)}
@@ -133,7 +162,7 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
         pid = dr["product_id"]
         if dr["id"] in rencana_grn_:
             b = rencana_grn_[dr["id"]]
-            _acc(akun_grn["grni"], b["nilai_grni"], True)
+            _acc(akun_grn["grni"], b["nilai_grni"] + b.get("nilai_tertunda", NOL), True)  # D: bagian belum diterima juga ke GRNI
             _acc(akun_grn["ppv"], b["selisih"], False)
             continue
         if dr["item_type"] == "goods" and dr["track_inventory"]:
@@ -266,6 +295,17 @@ async def blok_void(conn, tid: str, bill) -> list:
     if bill["status"] == "void" or (bill.get("status_v2") or "") == "void":
         return [blok("SUDAH_BATAL", "Bill is already voided")]
     bloks = []
+    # ATURAN D: penerimaan yang DATANG SESUDAH tagihan (tautan aktif 'tagih_dulu' / 'legacy') -> tagihan tak boleh dibatalkan (void yang
+    # LEBIH AKHIR dulu: batalkan penerimaannya). WAJIB sebelum grn_tagih.balik_tautan (yang gagal-keras bila tautan itu masih ada).
+    gr = await conn.fetch(
+        """SELECT DISTINCT g.receipt_number FROM goods_receipt_bill_links l
+           JOIN bill_items bi ON bi.id = l.bill_item_id AND bi.bill_id = $1
+           JOIN goods_receipt_items gi ON gi.id = l.goods_receipt_item_id
+           JOIN goods_receipts g ON g.id = gi.goods_receipt_id AND g.tenant_id = $2
+           WHERE l.status = 'active' AND l.kind IN ('tagih_dulu', 'legacy') ORDER BY g.receipt_number""", bill["id"], tid)
+    if gr:
+        bloks.append(blok("TAGIHAN_TERCOCOK_GRN", f"Faktur pembelian {bill['invoice_number']} sudah dicocokkan dengan penerimaan barang "
+                                                  + ", ".join(r["receipt_number"] for r in gr) + ". Batalkan penerimaannya dulu, lalu batalkan fakturnya."))
     bayar = await conn.fetch(
         """SELECT bp.payment_number, SUM(bpa.amount_applied) AS jumlah
            FROM bill_payment_allocations bpa JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id AND bp.tenant_id = $2
