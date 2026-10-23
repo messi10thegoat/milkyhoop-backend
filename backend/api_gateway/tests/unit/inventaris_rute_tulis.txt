@@ -575,7 +575,6 @@ POST /api/vendor-credits/{vendor_credit_id}/post
 POST /api/vendor-credits/{vendor_credit_id}/post/preview
 POST /api/vendor-credits/{vendor_credit_id}/receive-refund
 POST /api/vendor-credits/{vendor_credit_id}/receive-refund/preview
-POST /api/vendor-credits/{vendor_credit_id}/refund/preview
 POST /api/vendor-credits/{vendor_credit_id}/unapply
 POST /api/vendor-credits/{vendor_credit_id}/unapply/preview
 POST /api/vendor-credits/{vendor_credit_id}/void

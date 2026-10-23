@@ -179,7 +179,7 @@ async def tulis():
         # R refund sebagian ND bebas
         vr = await buat(3000); await VR.post_vendor_credit(req(uid), vr)
         rb = ReceiveRefundRequest(amount=1000, refund_date=TGL, payment_method="transfer", bank_account_id=REKENING, reference="TES E2E U3d")
-        pv = await langkah("R", vr, getattr(VR, "preview_refund_vendor_credit", None), (vr, rb), VR.receive_refund, (vr, rb))
+        pv = await langkah("R", vr, getattr(VR, "preview_receive_refund_vendor_credit", None), (vr, rb), VR.receive_refund, (vr, rb))
         if pv is not None:
             bt = await c.fetch("SELECT amount, transaction_type FROM bank_transactions WHERE tenant_id = $1 AND reference_type = 'vendor_credit_refund' "
                                "AND reference_number = (SELECT credit_number FROM vendor_credits WHERE id = $2)", T, vr)

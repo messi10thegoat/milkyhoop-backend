@@ -37,8 +37,12 @@ def test_router_mendelegasikan_ke_inti():
 
 
 def test_terapkan_cek_tautan_sebelum_status_dan_aplikasi_sebelum_kaitan():
+    # U3d (23 Okt): cek pindah ke penentu SATU nota_debit_rencana.rencana_terapkan (dipanggil penulis sebelum tulis apa pun)
+    from app.services import nota_debit_rencana as NDR
+    cek = inspect.getsource(NDR.rencana_terapkan)
+    assert cek.index('vc["original_bill_id"] is not None') < cek.index('vc["status"] not in')
     src = inspect.getsource(ND.terapkan_nota_debit)
-    assert src.index('vc["original_bill_id"] is not None') < src.index('vc["status"] not in')
+    assert src.index("rencana_terapkan(") < src.index("INSERT INTO vendor_credit_applications")
     assert src.index("INSERT INTO vendor_credit_applications") < src.index("UPDATE vendor_credits SET original_bill_id")
     assert "segarkan_cache_hutang_tagihan(" in src
 
@@ -53,18 +57,24 @@ def test_sisa_nd_predikat_sama_dengan_v441():
 
 
 def test_refund_hanya_bebas_sisa_jurnal_akun_terselesaikan_dan_bank_txn():
+    # U3d: cek bebas/sisa jurnal/akun pindah ke nota_debit_rencana.rencana_kembali; baris jurnal = baris_refund_nd (akun TERSELESAIKAN)
+    from app.services import nota_debit_rencana as NDR
+    cek = inspect.getsource(NDR.rencana_kembali)
+    assert 'vc["original_bill_id"] is not None' in cek and "ND.sisa_nd(" in cek
     src = inspect.getsource(VC.receive_refund)
-    assert 'vc["original_bill_id"] is not None' in src
-    assert "ND.sisa_nd(" in src
+    assert "NDR.rencana_kembali(" in src and 'vc, resolved_account_id = _r["vc"], _r["akun_id"]' in src
+    assert "NDR.baris_refund_nd(resolved_account_id, ap_account_id" in src
     assert "UUID(body.account_id),\n                    body.amount" not in src
-    assert "resolved_account_id,  # U3a" in src
     assert "INSERT INTO bank_transactions" in src and "'vendor_credit_refund'" in src
 
 
 def test_void_cek_aplikasi_aktif_dan_refund():
+    # U3d: cek pindah ke nota_debit_rencana.rencana_batal (dipanggil penulis void)
+    from app.services import nota_debit_rencana as NDR
+    cek = inspect.getsource(NDR.rencana_batal)
+    assert "status = 'active'" in cek and "FROM vendor_credit_refunds" in cek
     src = inspect.getsource(VC.void_vendor_credit)
-    assert "status = 'active'" in src and "FROM vendor_credit_refunds" in src
-    assert "and False" not in src
+    assert "NDR.rencana_batal(" in src and "and False" not in src
 
 
 def test_kolom_hantu_dibuang():

@@ -19,16 +19,22 @@ def test_alasan_potongan_simetris_nk():
 
 
 def test_posting_potongan_tanpa_stok_dan_akun_per_peran():
+    # U3d: penentuan potongan + akun per peran pindah ke nota_debit_rencana.rencana_posting (dipakai penulis posting)
+    from app.services import nota_debit_rencana as NDR
+    cek = inspect.getsource(NDR.rencana_posting)
+    assert 'potongan = vc["reason"] in ND.ALASAN_POTONGAN' in cek
+    assert "ND.peran_kredit_nd(vc[\"reason\"])" in cek
     src = inspect.getsource(VC.post_vendor_credit)
-    assert 'potongan = vc["reason"] in ND.ALASAN_POTONGAN' in src
-    assert "ND.peran_kredit_nd(vc[\"reason\"])" in src
-    assert "for item in ([] if potongan else vc_items):" in src
+    assert '_r["potongan"]' in src and "for item in ([] if potongan else vc_items):" in src
 
 
 def test_pagar_ppn_dipanggil_di_posting_dan_terapkan():
-    assert "ND.tolak_potongan_ber_ppn(" in inspect.getsource(VC.post_vendor_credit)
+    from app.services import nota_debit_rencana as NDR
+    assert "ND.tolak_potongan_ber_ppn(" in inspect.getsource(NDR.rencana_posting)
+    assert "NDR.rencana_posting(conn, ctx, vc)" in inspect.getsource(VC.post_vendor_credit)
+    assert "ND.tolak_potongan_ber_ppn(" in inspect.getsource(NDR.rencana_terapkan)
     src = inspect.getsource(ND.terapkan_nota_debit)
-    assert src.index("tolak_potongan_ber_ppn(") < src.index("INSERT INTO vendor_credit_applications")
+    assert src.index("rencana_terapkan(") < src.index("INSERT INTO vendor_credit_applications")
 
 
 class _Conn:

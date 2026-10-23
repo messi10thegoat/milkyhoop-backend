@@ -489,7 +489,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Vendor Credits / Debit Notes
     # U3a (22 Okt 2026): aksi nota debit = pola standar U5-E Nota Kredit (dulu SEMUA POST sub-rute jatuh ke 'C')
     # U3d (23 Okt 2026): pratinjau aksi nota debit = izin aksinya (kembar /credit-notes/{id}/*/preview); WAJIB sebelum pola POST umum
-    (r"^/api/vendor-credits/[^/]+/(post|refund|receive-refund)/preview$", ["POST"], "debit_note", "P"),
+    (r"^/api/vendor-credits/[^/]+/(post|receive-refund)/preview$", ["POST"], "debit_note", "P"),
     (r"^/api/vendor-credits/[^/]+/(void|unapply)/preview$", ["POST"], "debit_note", "V"),
     (r"^/api/vendor-credits/[^/]+/apply/preview$", ["POST"], "debit_note", "A"),
     (r"^/api/vendor-credits/[^/]+/(post|receive-refund)$", ["POST"], "debit_note", "P"),

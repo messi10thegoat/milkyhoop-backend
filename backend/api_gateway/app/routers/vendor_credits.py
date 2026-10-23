@@ -1696,15 +1696,10 @@ async def _pratinjau_refund(request: Request, vendor_credit_id: UUID, body: Rece
     return await _pratinjau_nd(request, vendor_credit_id, "refund", isi, body.model_dump(mode="json"))
 
 
-@router.post("/{vendor_credit_id}/refund/preview")
-async def preview_refund_vendor_credit(request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest):
-    """Pratinjau TERIMA PENGEMBALIAN DANA: jurnal Dr Kas-Bank / Cr Hutang (baris_refund_nd == tulis) + cermin bank."""
-    return await _pratinjau_refund(request, vendor_credit_id, body)
-
-
 @router.post("/{vendor_credit_id}/receive-refund/preview")
 async def preview_receive_refund_vendor_credit(request: Request, vendor_credit_id: UUID, body: ReceiveRefundRequest):
-    """Alias pratinjau dgn nama rute tulis (/receive-refund)."""
+    """Pratinjau TERIMA PENGEMBALIAN DANA (nama rute == rute tulis /receive-refund; putusan MASTER 23 Okt: tanpa alias /refund/preview):
+    jurnal Dr Kas-Bank / Cr Hutang (baris_refund_nd == tulis) + cermin bank."""
     return await _pratinjau_refund(request, vendor_credit_id, body)
 
 

@@ -87,13 +87,14 @@ def test_pratinjau_read_only_dan_rute():
     pv = _fungsi(R, "async def _pratinjau_nd(", "@router.post(\"/{vendor_credit_id}/post/preview\")")
     assert "transaction(readonly=True)" in pv and "tr.rollback()" in pv and "pg_advisory" not in pv
     paths = {(r.path, tuple(sorted(r.methods))) for r in VR.router.routes}
-    for a in ("post", "apply", "unapply", "refund", "receive-refund", "void"):
+    for a in ("post", "apply", "unapply", "receive-refund", "void"):
         assert (f"/{{vendor_credit_id}}/{a}/preview", ("POST",)) in paths
+    assert not any(p == "/{vendor_credit_id}/refund/preview" for p, _ in paths)  # tanpa alias (putusan MASTER): nama == rute tulis
 
 
 def test_izin_pratinjau_sebelum_pola_umum():
     m = (APP / "middleware/permission_middleware.py").read_text()
-    i_pv = m.index('(r"^/api/vendor-credits/[^/]+/(post|refund|receive-refund)/preview$", ["POST"], "debit_note", "P")')
+    i_pv = m.index('(r"^/api/vendor-credits/[^/]+/(post|receive-refund)/preview$", ["POST"], "debit_note", "P")')
     assert i_pv < m.index('(r"^/api/vendor-credits", ["POST"], "debit_note", "C")')
     assert '(r"^/api/vendor-credits/[^/]+/(void|unapply)/preview$", ["POST"], "debit_note", "V")' in m
     assert '(r"^/api/vendor-credits/[^/]+/apply/preview$", ["POST"], "debit_note", "A")' in m
