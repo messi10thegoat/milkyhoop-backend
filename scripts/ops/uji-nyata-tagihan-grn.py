@@ -8,7 +8,12 @@ PO dinaikkan 1.100 (harga faktur vendor beda) -> /to-bill (draf) -> pratinjau po
   (c) TANPA kartu stok BILL untuk barang ber-GRN (stok masuk sekali, saat GRN)
   (d) tautan aktif 1, grni 10.000; saldo GRNI dokumen ini (jurnal GRN + tagihan) = 0
   (e) void: tautan 'reversed', jurnal pembalik mencerminkan GRNI/PPV, saldo GRNI kembali 10.000 (barang diterima belum ditagih lagi)
-  (f) blok: PO kedua terima 6 dari 10, tagih 10 -> pratinjau GRN_MELEBIHI_TERIMA == pesan galat posting
+  ATURAN D (23 Okt, putusan pemilik; kontrak BACKEND<->BACKEND2):
+  (f) PO kedua terima 6 dari 10, tagih 10 -> posting LOLOS: Dr GRNI 6.000 (terima) + 4.000 (bagian belum diterima, B), tanpa PPV, tanpa
+      Dr Persediaan, tanpa kartu stok BILL; tautan terima_dulu 1 (qty 6); pratinjau == tertulis
+  (g) qty tagihan dinaikkan 11 > pesanan 10 (sintetis, savepoint) -> pratinjau blok PO_QTY_TERLAMPAUI == pesan galat posting
+  (h) tautan 'tagih_dulu' sintetis atas tagihan (f) (penerimaan sesudah tagihan) -> pratinjau void blok TAGIHAN_TERCOCOK_GRN == pesan galat
+      void (blok DULUAN, bukan ValueError grn_tagih.balik_tautan)
 MODE JEPRET/BANDING: net 0 (jurnal, baris, stok, tagihan, GRN, tautan, tenant_features + baris flag kaos, idem).
 MERAH=1 : rencana_grn disabotase (selalu kosong) -> jurnal kembali ke Persediaan -> (b)/(c)/(d) WAJIB gagal.
 MERAH_BOCOR=1 : 1 baris idempotency_keys lewat koneksi terpisah yang COMMIT -> net 0 WAJIB gagal (.sh membersihkan + sisa 0)."""
@@ -163,13 +168,46 @@ async def tulis():
         cek(st == "reversed", "(e) void: tautan 'reversed'", str(st))
         sisa = D(await c.fetchval(sql_grni, T, grni, bid, po))
         cek(sisa == 10000, "(e) void: saldo GRNI kembali 10.000 (diterima belum ditagih)", str(sisa))
-        # (f) blok: terima 6 dari 10, tagih 10
+        # (f) ATURAN D: terima 6 dari 10, tagih 10 -> lolos, bagian belum diterima ke GRNI
         po2, bid2 = await po_terima("10", "6", None)
+        # (g) PO_QTY_TERLAMPAUI: qty tagihan 11 > pesanan 10 (savepoint, dibatalkan)
+        it2 = await c.fetchval("SELECT bi.id FROM bill_items bi JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id "
+                               "WHERE bi.bill_id = $1 AND poi.item_id IS NOT NULL", bid2)
+        sp = c.transaction(); await sp.start()
+        try:
+            await c.execute("UPDATE bill_items SET quantity = 11 WHERE id = $1", it2)
+            pvq = (await RB.preview_post_bill(req(), bid2))["data"]
+            kq = [b["code"] for b in pvq.get("blocks", [])]
+            hq = await svc.post_bill(T, bid2, uid)
+        finally:
+            await sp.rollback()
+        cek("PO_QTY_TERLAMPAUI" in kq and not hq["success"] and hq["message"] == pvq["blocks"][kq.index("PO_QTY_TERLAMPAUI")]["message"],
+            "(g) tagih 11 > pesan 10: pratinjau blok PO_QTY_TERLAMPAUI == pesan galat posting", f"{kq} / {hq.get('message')}")
         pv2 = (await RB.preview_post_bill(req(), bid2))["data"]
-        kode = [b["code"] for b in pv2.get("blocks", [])]
         h2 = await svc.post_bill(T, bid2, uid)
-        cek("GRN_MELEBIHI_TERIMA" in kode and not h2["success"] and h2["message"] == pv2["blocks"][kode.index("GRN_MELEBIHI_TERIMA")]["message"],
-            "(f) tagih > diterima: pratinjau blok GRN_MELEBIHI_TERIMA == pesan galat posting", f"{kode} / {h2.get('message')}")
+        cek(h2["success"] and not pv2.get("blocks"), "(f) D: tagih 10 atas terima 6 LOLOS (blok 7c dicabut)", f"{pv2.get('blocks')} / {h2.get('message')}")
+        jid2 = await c.fetchval("SELECT journal_id FROM bills WHERE id = $1", bid2)
+        tertulis2 = await jurnal_baris(c, jid2)
+        rencana2 = [(x["account_code"], str(D(str(x["debit"])).normalize()), str(D(str(x["credit"])).normalize()), x["memo"]) for x in pv2["journal_lines"]]
+        cek(rencana2 == tertulis2, "(f) pratinjau posting == jurnal tertulis", "" if rencana2 == tertulis2 else f"{rencana2} / {tertulis2}")
+        akun2 = {x[0]: x for x in tertulis2}
+        cek(akun2.get(kode_grni, (0, "0"))[1] == "1E+4" and ppv not in akun2 and persediaan not in akun2,
+            "(f) Dr GRNI 10.000 (6.000 terima + 4.000 tertunda), tanpa PPV, tanpa Dr Persediaan", str(tertulis2))
+        n_stok2 = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'BILL' AND source_id = $2", T, bid2)
+        tl2 = await c.fetch("""SELECT l.kind, l.quantity, l.grni_amount, l.nilai_tagih FROM goods_receipt_bill_links l JOIN bill_items bi ON bi.id = l.bill_item_id
+                               WHERE bi.bill_id = $1 AND l.status = 'active'""", bid2)
+        cek(n_stok2 == 0 and len(tl2) == 1 and tl2[0]["kind"] == "terima_dulu" and D(tl2[0]["quantity"]) == 6 and D(tl2[0]["grni_amount"]) == 6000,
+            "(f) tanpa kartu stok BILL; tautan terima_dulu qty 6 grni 6.000", f"{n_stok2} / {[dict(x) for x in tl2]}")
+        # (h) penerimaan SESUDAH tagihan (tautan tagih_dulu sintetis) -> void diblok lebih dulu
+        gri = await c.fetchval("""SELECT gi.id FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.goods_receipt_id
+                                  WHERE g.purchase_order_id = $1 AND gi.ber_stok LIMIT 1""", po2)
+        await c.execute("""INSERT INTO goods_receipt_bill_links (goods_receipt_item_id, bill_item_id, quantity, grni_amount, variance_amount, status, kind, nilai_tagih)
+                           VALUES ($1, $2, 1, 1000, 0, 'active', 'tagih_dulu', 1000)""", gri, it2)
+        pvv = (await RB.preview_void_bill(req(), bid2, {"reason": "TES E2E tagihan-GRN"}))["data"]
+        kv = [b["code"] for b in pvv.get("blocks", [])]
+        hv2 = await svc.void_bill(T, bid2, {"reason": "TES E2E tagihan-GRN"}, uid)
+        cek(kv[:1] == ["TAGIHAN_TERCOCOK_GRN"] and not hv2["success"] and hv2["message"] == pvv["blocks"][0]["message"],
+            "(h) void tagihan bertaut penerimaan sesudahnya: blok TAGIHAN_TERCOCOK_GRN == pesan galat void", f"{kv} / {hv2.get('message')}")
     finally:
         await tx.rollback(); await c.close()
     print(f"RINGKAS gagal={len(gagal)} {gagal[:6]}"); sys.exit(1 if gagal else 0)
