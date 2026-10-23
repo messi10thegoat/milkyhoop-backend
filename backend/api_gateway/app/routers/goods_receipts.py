@@ -184,7 +184,7 @@ async def preview_void_goods_receipt(request: Request, gr_id: UUID, body: Option
             if r["gr"]["journal_id"] is not None and not r["ulang"]:
                 balik = [{"account_id": str(x["account_id"]), "account_code": x["account_code"], "account_name": x["account_name"],
                           "debit": _uang(x["credit"]), "credit": _uang(x["debit"])} for x in await conn.fetch(
-                    """SELECT jl.account_id, c.account_code, c.account_name, jl.debit, jl.credit FROM journal_lines jl
+                    """SELECT jl.account_id, c.account_code, c.name AS account_name, jl.debit, jl.credit FROM journal_lines jl
                        LEFT JOIN chart_of_accounts c ON c.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""",
                     r["gr"]["journal_id"])]
             hd = await conn.fetchrow(SQL_HEADER + " AND g.id = $2", ctx["tenant_id"], gr_id)
