@@ -241,6 +241,13 @@ class _Req:
         self.state = SimpleNamespace(user={"tenant_id": "t", "user_id": "u"})
 
 
+def test_rute_kustom_tanpa_from_to_panggilan_langsung_422():
+    """Default from/to = objek Query pada panggilan langsung: tetap 422, bukan TypeError."""
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(RV.ringkasan_v2(_Req(), period="kustom"))
+    assert e.value.status_code == 422
+
+
 @pytest.mark.parametrize("dari,sampai", [(None, None), (date(2026, 2, 1), date(2026, 1, 1)), (date(2025, 1, 1), date(2026, 1, 2))])
 def test_rute_kustom_tak_sah_422_sebelum_db(dari, sampai):
     with pytest.raises(HTTPException) as e:
@@ -281,3 +288,13 @@ def test_arus_kas_neto_rentang_satu_arus_kas_harian(monkeypatch):
     monkeypatch.setattr(DA, "arus_kas_harian", harian)
     out = asyncio.run(DA.arus_kas_neto_rentang(None, "t", [(date(2026, 10, 1), date(2026, 10, 23)), (date(2026, 9, 1), date(2026, 9, 23))]))
     assert out == [Decimal("-4"), Decimal("7")] and panggil == [(date(2026, 9, 1), date(2026, 10, 23))]
+
+
+def test_daftar_faktur_tanpa_aksi_lewat_panggilan_langsung_tak_galat():
+    """Gerbang merge 23 Okt menolak T2: panggilan langsung list_invoices tanpa aksi -> default = objek Query (bukan None);
+    `aksi.startswith` meledak. Cabang umur WAJIB memeriksa tipe (isinstance str) seperti `aksi in _fa.AKSI`."""
+    import inspect
+    from app.routers import sales_invoices as SI
+    src = inspect.getsource(SI.list_invoices)
+    assert "isinstance(aksi, str) and aksi in _UMUR_KUNCI" in src and "aksi.startswith" not in src
+    assert SI._UMUR_KUNCI == JT.UMUR_KUNCI

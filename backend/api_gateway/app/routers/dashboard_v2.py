@@ -55,6 +55,9 @@ async def ringkasan_v2(request: Request,
                        from_: Optional[date] = Query(None, alias="from"), to: Optional[date] = Query(None)):
     # T2 (KONTRAK-dashboard-T2 §2): kunci lama day|week|month|year tetap (makna lama); from/to hanya untuk kustom
     tenant_id, _ = _pengguna(request)
+    # panggilan langsung (tes/harness) tanpa argumen -> default = objek Query, bukan nilai (pelajaran gerbang 23 Okt)
+    from_ = from_ if isinstance(from_, date) else None
+    to = to if isinstance(to, date) else None
     if period != "kustom":
         from_, to = None, None
     elif from_ is None or to is None or from_ > to or dv2.hari_periode_inklusif(from_, to) > dv2.MAKS_HARI_KUSTOM:

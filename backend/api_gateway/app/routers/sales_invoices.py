@@ -23,6 +23,7 @@ from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import faktur_aksi as _fa
+from ..services.jatuh_tempo import UMUR_KUNCI as _UMUR_KUNCI  # T2: kunci saring umur_* (panggilan langsung: aksi = Query)
 from ..services import faktur_daftar as _fd  # LISTPAGE-DATA (16 Okt 2026)
 from fastapi import Response as _Response
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
@@ -1214,7 +1215,7 @@ async def list_invoices(
                 conditions.append(_pred)
                 params.extend(_par)
                 param_idx += len(_par)
-            elif aksi and aksi.startswith("umur_"):  # T2 (KONTRAK-dashboard-T2 §5): rumus umur TUNGGAL services/jatuh_tempo
+            elif isinstance(aksi, str) and aksi in _UMUR_KUNCI:  # T2 (KONTRAK-dashboard-T2 §5): rumus umur TUNGGAL services/jatuh_tempo
                 _pred, _par = _fa.sql_umur_berparam(aksi, param_idx, hari_ini)
                 conditions.append(_pred)
                 params.extend(_par)
