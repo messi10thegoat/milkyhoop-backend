@@ -1,5 +1,5 @@
 """UJI NYATA Nota Debit U3d (23 Okt 2026): pratinjau aksi == tulis, penulis lama == baru. kaos SAJA; vendor 'UJI Maklun 3B09D3', tagihan
-BILL-2609-0003, barang uji dilacak 'ZZTest T179 Hoodie' (WAC 180.000) untuk jalur HPP retur. SEMUA tulisan di SATU transaksi luar yang SELALU
+BILL-2609-0003, barang uji dilacak 'UJI FG Subkontrak 3B09D3' (stok 3, WAC 50.000; retur 1 -- stok tak boleh negatif, chk_ws_quantity) untuk jalur HPP retur. SEMUA tulisan di SATU transaksi luar yang SELALU
 di-ROLLBACK (get_pool tertambal; transaksi handler = savepoint; transaksi READ ONLY pratinjau dijadikan savepoint di koneksi yang sama supaya
 melihat ND sintetis -- penentu tetap tanpa tulis, dibuktikan pencacah/hitungan sebelum == sesudah tiap pratinjau).
 Langkah (tiap langkah: PRATINJAU lewat rute nyata -> TULIS lewat rute nyata -> bandingkan jurnal baru):
@@ -23,7 +23,7 @@ from starlette.requests import Request
 
 T = "kaos-biru-konveksi"
 TAGIHAN = "BILL-2609-0003"
-BARANG = "a053cd5c-2b27-48e4-8d0a-7ea37121b03a"  # ZZTest T179 Hoodie (dilacak, WAC 180.000)
+BARANG = "34424f65-2061-4690-ba5f-de9b13942f46"  # UJI FG Subkontrak 3B09D3 (dilacak, stok gudang pertama 3, WAC 50.000)
 REKENING = "56842900-0ae4-4c25-8ad5-d0726a36e21b"  # BCA Operasional kaos
 TGL = date(2026, 10, 23)
 MODE, NAMA = os.environ["MODE"], os.environ.get("NAMA", "")
