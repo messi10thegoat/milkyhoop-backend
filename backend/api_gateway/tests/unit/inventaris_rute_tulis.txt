@@ -231,6 +231,7 @@ POST /api/bank-transfers
 POST /api/bank-transfers/{transfer_id}/post
 POST /api/bank-transfers/{transfer_id}/void
 POST /api/bill-payments
+POST /api/bill-payments/preview
 POST /api/bill-payments/preview-journal
 POST /api/bill-payments/{payment_id}/post
 POST /api/bill-payments/{payment_id}/void
@@ -244,6 +245,7 @@ POST /api/bills/{bill_id}/delete/preview
 POST /api/bills/{bill_id}/post/preview
 POST /api/bills/{bill_id}/void/preview
 POST /api/bills/{bill_id}/payments
+POST /api/bills/{bill_id}/payments/preview
 POST /api/bills/{bill_id}/post
 POST /api/bills/{bill_id}/void
 POST /api/bom

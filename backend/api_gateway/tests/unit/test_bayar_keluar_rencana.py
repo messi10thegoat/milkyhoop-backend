@@ -46,6 +46,18 @@ def peran(monkeypatch):
     monkeypatch.setattr(BKR, "resolve_account_id_or_none", kode)
 
 
+def _tanpa_docstring(src: str) -> str:
+    """Kode tanpa docstring & komentar (docstring menyebut nama cek -> urutan/teks terlarang palsu)."""
+    import ast
+    import textwrap
+    t = ast.parse(textwrap.dedent(src))
+    for n in ast.walk(t):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body and isinstance(n.body[0], ast.Expr) \
+                and isinstance(getattr(n.body[0], "value", None), ast.Constant) and isinstance(n.body[0].value.value, str):
+            n.body = n.body[1:] or [ast.Pass()]
+    return ast.unparse(t)
+
+
 def jalan(c):
     return asyncio.run(c)
 
@@ -102,10 +114,10 @@ def test_blok_tulis_melempar_pratinjau_mengumpulkan():
 
 
 def test_penentu_tak_pernah_menyentuh_sequence_atau_menulis():
-    s = (APP / "services/bayar_keluar_rencana.py").read_text()
-    kode = "\n".join(l for l in s.splitlines() if not l.lstrip().startswith("#"))
-    for terlarang in ("get_next_journal_number", "bill_payment_sequences", "generate_payment_number", "INSERT ", "UPDATE ", "DELETE "):
-        assert terlarang not in kode.replace('"""', ""), terlarang
+    kode = _tanpa_docstring((APP / "services/bayar_keluar_rencana.py").read_text())
+    for terlarang in ("get_next_journal_number", "bill_payment_sequences", "generate_payment_number"):
+        assert terlarang not in kode, terlarang
+    assert not re.search(r"\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b", kode, re.I)  # FOR UPDATE (kunci) boleh
 
 
 def test_penulis_memakai_penentu_yang_sama():
@@ -143,14 +155,14 @@ def test_rute_pratinjau_terpetakan_izin_buat():
 
 
 def test_urutan_cek_rencana_bayar_sama_dgn_kode_lama():
-    s = inspect.getsource(BKR.rencana_bayar)
-    urut = ["periode_terbuka(", '"vendor_id")', '"bank_account_id")', "normalisasi_pihak", "pastikan_pihak_sama",
+    s = _tanpa_docstring(inspect.getsource(BKR.rencana_bayar))
+    urut = ["periode_terbuka(", "VENDOR_TIDAK_DITEMUKAN", "REKENING_TIDAK_DITEMUKAN", "_sinkron(normalisasi_pihak", "_sinkron(pastikan_pihak_sama",
             "ALOKASI_MELEBIHI_PEMBAYARAN", "MELEBIHI_SISA_TAGIHAN"]
     pos = [s.index(u) for u in urut]
     assert pos == sorted(pos)
-    r = inspect.getsource(BKR.rencana_bayar_tagihan)
+    r = _tanpa_docstring(inspect.getsource(BKR.rencana_bayar_tagihan))
     urut2 = ["Bill not found", "Cannot pay voided bill", "SQL_SISA_LAMA", "Payment amount must be positive", "melebihi sisa tagihan",
              "Bank account not found or inactive", "adalah akun induk", "bank_account_id atau account_id wajib diisi"]
     pos2 = [r.index(u) for u in urut2]
     assert pos2 == sorted(pos2)
-    assert re.search(r"remaining == 0 and bill\[\"amount_paid\"\] == 0", r)  # cadangan cache lama DIPERTAHANKAN (U2a = putusan pemilik)
+    assert re.search(r"remaining == 0 and bill\[[\"']amount_paid[\"']\] == 0", r)  # cadangan cache lama DIPERTAHANKAN (U2a = putusan pemilik)
