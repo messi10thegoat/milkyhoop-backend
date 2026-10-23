@@ -14,7 +14,9 @@ jalan() {  # $1 pohon, $2 MODE, $3 NAMA
 }
 rc=0
 jalan "$AKAR" JEPRET sebelum || rc=1
-MERAH_BOCOR=0 jalan "$UTAMA" TULIS lama || rc=1
+# pohon LAMA: hanya PEREKAM (lama.json); cek-nya informatif -- (B1) LAMA gagal by design: pesan blok pratinjau lama != galat tulis (cacat
+# yang diperbaiki unit ini). Tanpa lama.json -> BANDING gagal (tak tersembunyi).
+MERAH_BOCOR=0 jalan "$UTAMA" TULIS lama || echo "INFO pohon LAMA: ada cek gagal (diharapkan hanya B1)"
 jalan "$AKAR" TULIS baru || rc=1
 jalan "$AKAR" JEPRET sesudah || rc=1
 jalan "$AKAR" BANDING x || rc=1

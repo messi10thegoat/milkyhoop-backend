@@ -126,3 +126,21 @@ Masing-masing: harness, rilis, izin pemilik sendiri-sendiri.
 - BACA koneksi read-only: kaos 23 NK × 3 aksi = 69 pratinjau, 0 galat; grapgrap 0 NK (diukur) -> tak ada yang dipratinjau.
 - Tes unit: test_nk_rencana_a (pemindai jalur pratinjau + kontrol merah pemindai, rumus status/BIGINT, pratinjau refund dengan koneksi
   tiruan yang menolak tulis); u10 / bertaut / potongan_pagar / u11 disesuaikan ke penentu. Terfokus 1025 passed.
+
+## 9. Tahap B — hasil (23 Okt 2026, cabang feat/nk-rencana-b)
+- `rencana_posting_nk` / `rencana_batal_nk` (+ `baris_posting_nk`, `baris_hpp_nk`, `_rencana_restock_nk` KHUSUS pratinjau,
+  `_jurnal_balik_nk`, `pratinjau_post_void_nk`). Inti terbit/batal memanggil penentu sesudah kunci lama; akun, porsi Dimuka, pecahan
+  piutang/KRD diambil dari rencana. Restock TULIS tetap di loop penulis (urutan inbound/WAC per baris; satu kueri keluar-faktur per baris).
+- `kunci` (bawaan True) di `cn_tertunda.hitung_untuk_nk`, `cn_tertunda.pulihkan_saat_void`, `periksa_bisa_dinotakan`; pratinjau kunci=False.
+- Pratinjau lama (`_rencana_nk`, `_jurnal_tx_ini_nk`, `_BatalkanPratinjauNk`, savepoint inti) DIHAPUS.
+- Beda yang disengaja: journal_number null; pratinjau terbit KRD baru `deposit_number` null; pesan blok "bukan draf" kini == galat penulis
+  (pratinjau LAMA: "berstatus terbit tidak bisa diterbitkan." vs penulis "berstatus Terbit — tidak bisa diterbitkan." -- cacat lama,
+  harness B1 pohon lama merah by design).
+- Harness `scripts/ops/uji-nyata-nk-rencana-b.sh` (kaos rollback): P1 NK bebas, P2 KRD sebagian (INV-2609-0122), P3 retur HPP asal + KRD
+  (INV-2609-0140 lunas), P4 retur WAC tanpa faktur, V1–V4 batal (pembalik + HPP + KRD void), V5 batal draf, B1/B2 blok. HIJAU 82 PASS rc 0:
+  penulis lama == baru (jurnal, kartu stok, KRD, DTL, kolom NK, alokasi + porsi), pratinjau lama == baru, pratinjau == keadaan nyata,
+  nol tulis + nol kunci advisory baru + pencacah tetap, NET 0. MERAH rc 1; MERAH_BOCOR rc 1 SISA 0. Putaran 1 menangkap KRD sesudah batal
+  (sisa 0) -> diperbaiki.
+- BACA read-only: kaos 23 NK × 2 = 46 pratinjau 0 galat; grapgrap-manado 2 NK × 2 = 4 pratinjau 0 galat.
+- Tes: test_nk_rencana_b (kunci=False vs True + kontrol merah), test_u5d_nk_pratinjau ditulis ulang untuk penentu, 8 tes pemindai
+  dipindah ke penentu. Terfokus 1007 passed. Temuan sampingan: impor `compute_deposit_remaining` relatif services salah -> dibetulkan ke routers.

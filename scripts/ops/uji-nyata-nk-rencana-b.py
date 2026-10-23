@@ -185,6 +185,8 @@ async def tulis():
             if isinstance(nyata.get("customer_credit"), dict):
                 nyata["customer_credit"] = {**nyata["customer_credit"], "deposit_number": None}
             after = json.loads(json.dumps(pv["after"], default=str))
+            if isinstance(after.get("customer_credit"), dict):  # nomor KRD: pratinjau terbit = null (belum terbit), batal = nomor nyata
+                after["customer_credit"]["deposit_number"] = None
             if MERAH and nama == "P1":
                 after["remaining"] = after.get("remaining", 0) + 1
             cek(pv["can_proceed"] and after == json.loads(json.dumps(nyata, default=str)), f"({nama}) after pratinjau == keadaan NK sesudah tulis",
