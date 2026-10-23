@@ -65,3 +65,16 @@ def test_bundel_po_grn_faktur_dan_riwayat():
     assert '"key": "po"' in k and '"key": "grn"' in k and '"key": "faktur"' in k and "TD.dok_tagihan" in k
     r = inspect.getsource(GD.riwayat_grn)
     assert "GRN_DITERIMA" in r and "GRN_DIBATALKAN" in r and "GRN_DITAGIH" in r and "_selesaikan" in r
+
+
+@pytest.mark.parametrize("jalur,metode,harap", [
+    ("/api/goods-receipts/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/documents", "GET", ("purchase_order", "R")),
+    ("/api/goods-receipts/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/history", "GET", ("purchase_order", "R")),
+    ("/api/goods-receipts/summary", "GET", ("purchase_order", "R")),
+    ("/api/goods-receipts", "GET", ("purchase_order", "R")),
+    ("/api/goods-receipts/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/void/preview", "POST", ("purchase_order", "V")),
+])
+def test_izin_rute_nyata_penentu_middleware(jalur, metode, harap):
+    """Penentu izin NYATA (permission_middleware.izin_untuk_jalur), bukan simulasi harness: rute seragam terpetakan purchase_order."""
+    from app.middleware.permission_middleware import izin_untuk_jalur
+    assert izin_untuk_jalur(jalur, metode) == harap
