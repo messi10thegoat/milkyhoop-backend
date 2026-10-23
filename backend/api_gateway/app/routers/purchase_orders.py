@@ -45,6 +45,7 @@ from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/docum
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
+from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
 from fastapi import Response
 
@@ -963,8 +964,9 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
     """
     Record goods receipt for a purchase order.
 
-    Updates quantity_received for specified items.
-    NOTE: This does NOT create journal entries.
+    Updates quantity_received for specified items. Flag `penerimaan_barang_v1` MATI = tanpa dokumen & tanpa jurnal (perilaku lama).
+    Flag HIDUP (GRN, services/grn_rencana): + dokumen goods_receipts; baris ber-stok masuk gudang (WAC) + jurnal Dr Persediaan / Cr
+    Barang Diterima Belum Ditagih (putusan pemilik P1); baris non-stok dokumen saja (P2).
     """
     try:
         ctx = get_user_context(request)
@@ -1002,7 +1004,12 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 # Penentu SAMA dengan /receive/preview (status, tanggal bisnis tenant, baris milik PO, qty <= sisa). Penyimpanan
                 # tanggal per penerimaan menunggu dokumen GRN (P-U4); sampai itu penghitung kumulatif tak punya kolom tanggal.
                 _hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-                _tolak((await PR.rencana_terima(conn, po, body.receive_date, [i.model_dump() for i in body.items], _hari_ini))["blocks"])
+                _rt = await PR.rencana_terima(conn, po, body.receive_date, [i.model_dump() for i in body.items], _hari_ini)
+                _tolak(_rt["blocks"])
+                _grn = None
+                if await G.aktif(conn, ctx["tenant_id"]):  # GRN di balik flag (P6): penentu SAMA dengan /receive/preview
+                    _grn = await G.rencana_grn(conn, ctx["tenant_id"], po, _rt, body.warehouse_id)
+                    _tolak(_grn["blocks"])
 
                 items_received = []
 
@@ -1092,6 +1099,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
 
+                _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes) if _grn is not None else None
+
                 logger.info(
                     f"Goods received for PO: {po_id}, items={len(items_received)}"
                 )
@@ -1104,6 +1113,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         "items_received": items_received,
                         "total_received": total_received,
                         "status": new_status,
+                        **({"goods_receipt_id": str(_dok["goods_receipt_id"]), "receipt_number": _dok["receipt_number"],
+                            "journal_id": str(_dok["journal_id"]) if _dok["journal_id"] else None} if _dok else {}),
                     },
                 }
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_RECEIVE", resp, po_id)
@@ -1440,8 +1451,18 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
                 "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
                            "akan_diterima": _f2(b["akan_diterima"])} for b in r["baris"]],
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
-                "payload": r["payload"]}
+                "payload": r["payload"],
+                **(await _pratinjau_grn(conn, ctx["tenant_id"], po, r, body.warehouse_id if body else None))}
     return await _pratinjau(request, po_id, isi)
+
+
+async def _pratinjau_grn(conn, tid: str, po, terima: dict, warehouse_id) -> dict:
+    """GRN (flag penerimaan_barang_v1): blok GRN digabung ke blok terima + rincian dokumen & jurnal yang AKAN terbentuk. Flag mati = {}."""
+    if not await G.aktif(conn, tid):
+        return {}
+    g = await G.rencana_grn(conn, tid, po, terima, warehouse_id)
+    terima["blocks"].extend(g["blocks"])
+    return {"goods_receipt": G.untuk_respons(g)}
 
 
 @router.post("/{po_id}/close/preview")

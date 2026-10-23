@@ -62,6 +62,7 @@ from .routers import stock_adjustments
 from .routers import customer_deposits
 from .routers import receive_payments
 from .routers import purchase_orders
+from .routers import goods_receipts  # Penerimaan Barang (GRN) 23 Okt 2026
 from .routers import price_lists
 from .routers import quotes
 from .routers import proformas
@@ -644,6 +645,7 @@ app.include_router(
 app.include_router(
     purchase_orders.router, prefix="/api/purchase-orders", tags=["purchase-orders"]
 )
+app.include_router(goods_receipts.router, prefix="/api/goods-receipts", tags=["goods-receipts"])
 
 # Quotes router (Penawaran Harga)
 app.include_router(quotes.router, prefix="/api/quotes", tags=["quotes"])

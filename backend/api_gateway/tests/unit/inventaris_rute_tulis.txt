@@ -356,6 +356,8 @@ POST /api/fixed-assets/{asset_id}/dispose
 POST /api/fixed-assets/{asset_id}/maintenance
 POST /api/fixed-assets/{asset_id}/sell
 POST /api/flow/flow/run
+POST /api/goods-receipts/{gr_id}/void
+POST /api/goods-receipts/{gr_id}/void/preview
 POST /api/intercompany/reconcile
 POST /api/intercompany/transactions
 POST /api/intercompany/transactions/{transaction_id}/confirm

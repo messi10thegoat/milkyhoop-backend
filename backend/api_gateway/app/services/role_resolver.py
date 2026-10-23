@@ -168,6 +168,10 @@ class AccountRole:
     COGS_SERVICE: Final[str] = "COGS_SERVICE"
     # V417 (R1 irisan 2, 12 Okt 2026): Barang Terkirim 1-10660 -- barang sudah dikirim, belum difakturkan (pola Accurate).
     GOODS_DELIVERED_NOT_INVOICED: Final[str] = "GOODS_DELIVERED_NOT_INVOICED"
+    # V452 (GRN T3, putusan pemilik P1/P3 22 Okt 2026): Barang Diterima Belum Ditagih 2-10150 (LIABILITY, bukan hutang vendor) +
+    # Selisih Harga Pembelian 5-10400 (harga tagihan vs harga terima; tanpa revaluasi).
+    GOODS_RECEIVED_NOT_INVOICED: Final[str] = "GOODS_RECEIVED_NOT_INVOICED"
+    PURCHASE_PRICE_VARIANCE: Final[str] = "PURCHASE_PRICE_VARIANCE"
     COGS_VARIANCE_MATERIAL: Final[str] = "COGS_VARIANCE_MATERIAL"
     COGS_VARIANCE_LABOR: Final[str] = "COGS_VARIANCE_LABOR"
     COGS_VARIANCE_OVERHEAD: Final[str] = "COGS_VARIANCE_OVERHEAD"
@@ -276,6 +280,8 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "COGS_PRODUCTION",
         "COGS_SERVICE",
         "GOODS_DELIVERED_NOT_INVOICED",  # V417
+        "GOODS_RECEIVED_NOT_INVOICED",  # V452
+        "PURCHASE_PRICE_VARIANCE",  # V452
         "COGS_VARIANCE_MATERIAL",
         "COGS_VARIANCE_LABOR",
         "COGS_VARIANCE_OVERHEAD",

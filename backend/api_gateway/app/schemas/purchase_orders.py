@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from decimal import Decimal
 from datetime import date
+from uuid import UUID
 
 
 # =============================================================================
@@ -118,6 +119,8 @@ class ReceiveGoodsRequest(BaseModel):
     receive_date: date
     items: List[ReceiveItemRequest] = Field(..., min_length=1)
     notes: Optional[str] = None
+    # GRN (flag penerimaan_barang_v1, 23 Okt): gudang penerima barang ber-stok; kosong = gudang PO -> gudang bawaan tenant
+    warehouse_id: Optional[UUID] = None
 
 
 class ToBillItemRequest(BaseModel):
@@ -144,6 +147,7 @@ class ReceivePreviewRequest(BaseModel):
     """POST /{id}/receive/preview: kosong = SEMUA sisa per baris pada tanggal bisnis hari ini."""
     receive_date: Optional[date] = None
     items: Optional[List[ReceiveItemRequest]] = None
+    warehouse_id: Optional[UUID] = None  # GRN (flag penerimaan_barang_v1)
 
 
 class ToBillPreviewRequest(BaseModel):

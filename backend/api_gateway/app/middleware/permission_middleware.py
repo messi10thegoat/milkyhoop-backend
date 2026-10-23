@@ -764,6 +764,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase-orders/[^/]+/cancel/preview$", ["POST"], "purchase_order", "V"),
     (r"^/api/purchase-orders/[^/]+/delete/preview$", ["POST"], "purchase_order", "D"),
     (r"^/api/purchase-orders/[^/]+/to-bill/preview$", ["POST"], "purchase_order", "P"),
+    # Penerimaan Barang (GRN, 23 Okt 2026): batal = V (pola cancel PO), pratinjau batal = V
+    (r"^/api/goods-receipts/[^/]+/void$", ["POST"], "purchase_order", "V"),
+    (r"^/api/goods-receipts/[^/]+/void/preview$", ["POST"], "purchase_order", "V"),
     # recurring_bills
     (r"^/api/recurring-bills$", ["POST"], "purchase_invoice", "C"),
     (r"^/api/recurring-bills/[^/]+$", ["DELETE"], "purchase_invoice", "D"),
@@ -1059,6 +1062,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase\-orders$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase-orders/[^/]+/documents$", ["GET"], "purchase_order", "R"),  # P-U2 bundel PO (eksplisit)
     (r"^/api/purchase-orders/[^/]+/history$", ["GET"], "purchase_order", "R"),  # riwayat PO (bentuk sama dgn SO)
+    (r"^/api/goods-receipts$", ["GET"], "purchase_order", "R"),  # GRN daftar (23 Okt 2026)
+    (r"^/api/goods-receipts/[^/]+$", ["GET"], "purchase_order", "R"),  # GRN detail
     (r"^/api/purchase\-orders/pending$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/summary$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/vendor/[^/]+$", ["GET"], "purchase_order", "R"),
