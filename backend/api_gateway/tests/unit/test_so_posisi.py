@@ -44,7 +44,7 @@ def test_4_menunggu_termin_k():
 
 
 def test_4_pelunasan_tanpa_faktur_menunggu_tagihan():
-    assert P(belum_bayar=[PEL]) == ("Menunggu tagihan", False)
+    assert P(belum_bayar=[PEL]) == ("Menunggu pelunasan", False)  # 23 Okt (putusan MASTER): DISENGAJA, dulu "Menunggu tagihan"
 
 
 def test_putusan3_pelunasan_dengan_faktur_bersisa_menunggu_pelunasan():

@@ -75,7 +75,12 @@ def posisi(status: str, sisa: Decimal, belum_bayar: list, ada_faktur: bool, sisa
     if p is not None:
         if p["purpose"] == "TERMIN":
             return f"Menunggu termin {p['termin_ke']}", False
-        return "Menunggu tagihan", False
+        if p["purpose"] == "PELUNASAN":
+            # 23 Okt 2026 (putusan MASTER, kolom = APA yang ditagih; pill menunggu_pembayaran mengelompokkan): proforma pelunasan
+            # terbit belum dibayar = pelanggan SUDAH ditagih -> "Menunggu pelunasan" (dulu "Menunggu tagihan" -- berbunyi belum ditagih,
+            # bertentangan dengan pill "Menunggu bayar"; WORKSPACE 23 Okt). Teks SAMA dengan faktur bersisa (aturan di bawah).
+            return "Menunggu pelunasan", False
+        return "Menunggu tagihan", False  # jenis proforma lain (tak ada di data 23 Okt: hanya DP/TERMIN/PELUNASAN)
     if ada_faktur and sisa_faktur > NOL:
         return "Menunggu pelunasan", False
     if ada_surat_jalan and not ada_faktur:
