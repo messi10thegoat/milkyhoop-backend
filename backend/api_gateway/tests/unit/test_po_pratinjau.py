@@ -196,6 +196,27 @@ def test_terima_status_salah_dan_tak_ada_sisa(kon):
     assert [b["code"] for b in d["blocks"]] == ["PO_TAK_BISA_DITERIMA", "TAK_ADA_SISA_TERIMA"] and d["payload"]["items"] == []
 
 
+@pytest.mark.parametrize("status", ["partial_billed", "billed"])
+def test_terima_po_sudah_ditagih_hanya_aturan_d(kon, status):
+    """GRN aturan D (pemilik 23 Okt): tagihan boleh lebih dulu -> PO ber-status tagih tetap bisa diterima HANYA saat flag GRN nyala; status
+    penagihan TIDAK diturunkan. Flag mati = perilaku lama (blok PO_TAK_BISA_DITERIMA; jalur lama memasukkan stok saat tagihan)."""
+    baris = [{"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("0"), "quantity_billed": D("10"), "unit": None,
+              "total": D("1000")}]
+    kon(Kon(status=status, items=baris))
+    d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
+    assert [b["code"] for b in d["blocks"]] == ["PO_TAK_BISA_DITERIMA"]
+
+    class KonD(Kon):
+        async def fetchval(self, sql, *a):
+            return 1 if "tenant_features" in sql else None
+    kon(KonD(status=status, items=baris))
+    d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
+    assert "PO_TAK_BISA_DITERIMA" not in [b["code"] for b in d["blocks"]] and d["status_sesudah"] == status
+    import inspect
+    src = inspect.getsource(PO.receive_goods)
+    assert 'po["status"] in PR.STATUS_DITAGIH' in src and "PD.sinkron_tagih(conn, ctx[\"tenant_id\"], po_id)" in src
+
+
 # ---------------------------------------------------------------- tutup / batal / ubah
 def test_tutup_sisa_ditagih_sesudah_nol_dan_catatan(kon):
     kon(Kon(status="partial_received"))

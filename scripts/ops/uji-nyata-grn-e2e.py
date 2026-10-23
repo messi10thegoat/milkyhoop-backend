@@ -172,8 +172,10 @@ async def main():
         po3 = UUID(str(r3["data"]["id"]))
         await RPO.send_purchase_order(req(), po3)
         it3 = await c.fetchval("SELECT id FROM purchase_order_items WHERE po_id = $1", po3)
-        await RPO.receive_goods(req(), po3, ReceiveGoodsRequest(receive_date=hari, items=[{"po_item_id": str(it3), "quantity_received": D("24")}],
-                                                                warehouse_id=gudang))
+        x3 = await RPO.receive_goods(req(), po3, ReceiveGoodsRequest(receive_date=hari, items=[{"po_item_id": str(it3), "quantity_received": D("24")}],
+                                                                     warehouse_id=gudang))
+        x3 = x3.model_dump() if hasattr(x3, "model_dump") else x3
+        g3 = UUID(x3["data"]["goods_receipt_id"])
         await RPO.convert_to_bill(req(), po3, ConvertToBillRequest(bill_date=hari, notes="TES E2E GRN E2E lusin"))
         bid3 = await c.fetchval("SELECT bill_id FROM bill_items WHERE purchase_order_item_id = $1", it3)
         await c.execute("UPDATE bill_items SET unit = 'lusin', quantity = 2 WHERE bill_id = $1", bid3)
@@ -183,6 +185,8 @@ async def main():
         cek("(c) satuan lusin vs pcs tanpa konversi: pratinjau blok SATUAN_TAK_TERKONVERSI == galat posting, tagihan tak terposting",
             "SATUAN_TAK_TERKONVERSI" in kode3 and not h3.get("success")
             and await c.fetchval("SELECT journal_id FROM bills WHERE id = $1", bid3) is None, (kode3, h3.get("message")))
+        await RGR.void_goods_receipt(req(), g3, RGR.VoidGoodsReceiptRequest(reason="TES E2E GRN E2E lusin"))  # (c) tak boleh tertinggal
+        p = await sehat("void GRN (c)")
         qty = D(str(await c.fetchval("SELECT quantity_received FROM purchase_order_items WHERE id = $1", it)))
         cek("(b) NET 0: GRNI GL & dokumen = garis dasar, hutang = garis dasar, stok = awal, qty diterima PO 0",
             p["saldo_gl"] == p0["saldo_gl"] and p["terbuka_dokumen"] == p0["terbuka_dokumen"] and D(str(await ap())) == ap0

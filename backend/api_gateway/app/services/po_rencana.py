@@ -21,6 +21,10 @@ from . import po_hitung as PH
 NOL = Decimal("0")
 STATUS_BISA_UBAH = ("draft", "sent")
 STATUS_BISA_TERIMA = ("sent", "partial_received")
+# GRN aturan D (pemilik 23 Okt): tagihan boleh LEBIH DULU dari penerimaan -> PO yang sudah (sebagian) ditagih tetap bisa diterima selama ada
+# sisa terima. HANYA saat flag penerimaan_barang_v1 nyala: jalur lama (flag mati) memasukkan stok saat tagihan, penerimaan sesudahnya = dobel.
+STATUS_BISA_TERIMA_D = STATUS_BISA_TERIMA + ("partial_billed", "billed")
+STATUS_DITAGIH = ("partial_billed", "billed")
 STATUS_TAK_BISA_TUTUP = ("draft", "cancelled", "closed")
 STATUS_TAK_BISA_BATAL = ("cancelled", "closed")
 
@@ -180,7 +184,9 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     """items: [{po_item_id, quantity_received}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks, baris[], nilai_diterima (penerimaan ini),
     amount_received_sesudah, status_sesudah, payload}. Aturan & urutan = /receive."""
     bloks = []
-    if po["status"] not in STATUS_BISA_TERIMA:
+    from . import grn_rencana as G
+    aturan_d = po["status"] in STATUS_DITAGIH and await G.aktif(conn, po.get("tenant_id"))
+    if po["status"] not in (STATUS_BISA_TERIMA_D if aturan_d else STATUS_BISA_TERIMA):
         bloks.append(blok("PO_TAK_BISA_DITERIMA", f"Barang tidak bisa diterima untuk pesanan pembelian berstatus '{po['status']}'."))
     if receive_date is None:
         receive_date = hari_ini
@@ -218,7 +224,9 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     payload = {"receive_date": receive_date.isoformat(),
                "items": [{"po_item_id": k, "quantity_received": str(v)} for k, v in akan.items() if v > NOL]}
     return {"blocks": bloks, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
-            "status_sesudah": "received" if lengkap else "partial_received", "payload": payload, "akan": akan, "semua": semua}
+            # (D) PO yang sudah ditagih: status penagihan tetap (penerimaan tak menurunkannya; po_daftar.sinkron_tagih -- tagih menang)
+            "status_sesudah": po["status"] if aturan_d else ("received" if lengkap else "partial_received"), "payload": payload, "akan": akan,
+            "semua": semua}
 
 
 # ---------------------------------------------------------------- tagih (to-bill)

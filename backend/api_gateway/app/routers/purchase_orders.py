@@ -1100,6 +1100,10 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                                     source="api:purchase_orders")
 
                 _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes) if _grn is not None else None
+                if _grn is not None and po["status"] in PR.STATUS_DITAGIH:
+                    # GRN aturan D: PO sudah (sebagian) ditagih -> status dihitung ulang dgn aturan bersama (tagih menang atas terima), bukan
+                    # diturunkan ke received/partial_received oleh UPDATE di atas. Flag mati: jalur ini tak tercapai (perilaku lama utuh).
+                    await PD.sinkron_tagih(conn, ctx["tenant_id"], po_id)
 
                 logger.info(
                     f"Goods received for PO: {po_id}, items={len(items_received)}"
