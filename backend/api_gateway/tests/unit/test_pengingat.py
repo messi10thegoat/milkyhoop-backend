@@ -50,7 +50,8 @@ def test_faktur_dan_proforma_segera_tempo_mengikuti_ambang():
 
 def test_rangkum_sum_in_out_terpisah_dan_selalu_ada():
     r = P.rangkum([])
-    assert r == {"reminders": [], "sum_in": "0.00", "sum_out": "0.00", "pengingat_versi": 1}
+    assert r == {"reminders": [], "sum_in": "0.00", "sum_in_ditagih": "0.00", "sum_in_dp_belum_ditagih": "0.00", "sum_out": "0.00",
+                 "pengingat_versi": 1}
     ps = [{"key": "a", "arah": "masuk", "amount": "100.50", "izin": "x"}, {"key": "b", "arah": "keluar", "amount": "40.25", "izin": "y"},
           {"key": "c", "arah": "non_uang", "amount": None, "izin": "z"}, {"key": "d", "arah": "masuk", "amount": "0.50", "izin": "x"}]
     r = P.rangkum(ps)
@@ -87,3 +88,18 @@ def test_rangkum_tugas_memuat_reminders_dan_dismiss():
     assert [x["key"] for x in r["reminders"]] == ["sales_invoices:jatuh_tempo:2:150000.00"] and r["sum_out"] == "0.00"
     r0 = dv2.rangkum_tugas([], set(), 0, "x")
     assert r0["reminders"] == [] and r0["sum_in"] == "0.00"
+
+
+def test_sum_in_pecah_ditagih_dan_dp_belum_ditagih_invarian():
+    """MASTER 23 Okt (pola QBO/Xero): DP yang belum diminta bukan piutang. sum_in == ditagih + dp_belum_ditagih; versi tetap 1 (aditif)."""
+    ps = [{"key": "f", "modul": "sales_invoices", "kunci_aksi": "jatuh_tempo", "arah": "masuk", "amount": "5511000.00", "izin": "x"},
+          {"key": "m", "modul": "sales_orders", "kunci_aksi": "menunggu_dp", "arah": "masuk", "amount": "150000.00", "izin": "x"},
+          {"key": "p", "modul": "sales_orders", "kunci_aksi": "perlu_minta_dp", "arah": "masuk", "amount": "60752000.00", "izin": "x"},
+          {"key": "b", "modul": "bills", "kunci_aksi": "lewat_jatuh_tempo", "arah": "keluar", "amount": "1805006.00", "izin": "y"}]
+    r = P.rangkum(ps)
+    assert r["sum_in_dp_belum_ditagih"] == "60752000.00"
+    assert r["sum_in_ditagih"] == "5661000.00"  # menunggu_dp = DP SUDAH diminta (proforma/tagihan) -> ikut ditagih
+    assert r["sum_in"] == "66413000.00" == f"{Decimal(r['sum_in_ditagih']) + Decimal(r['sum_in_dp_belum_ditagih']):.2f}"
+    assert r["sum_out"] == "1805006.00" and r["pengingat_versi"] == 1
+    assert P.KUNCI_BELUM_DITAGIH == (("sales_orders", "perlu_minta_dp"),)
+    assert set(P.KUNCI_BELUM_DITAGIH) <= {(m, k) for m, k, _l, arah, *_ in P.PENGINGAT if arah == "masuk"}

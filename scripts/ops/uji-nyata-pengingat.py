@@ -17,6 +17,7 @@ from app.utils.tanggal_tenant import tanggal_dokumen
 
 gagal = []
 MERAH = len(sys.argv) > 1 and sys.argv[1] == "merah"
+MERAH_DP = len(sys.argv) > 1 and sys.argv[1] == "merah_dp"  # kontrol merah sum_in pecah: KUNCI_BELUM_DITAGIH dikosongkan -> WAJIB FAIL
 
 
 def cek(nama, ok, rinci=""):
@@ -84,6 +85,8 @@ async def main():
         async def faktur3(conn, tid, hari_ini, ambang):
             return await FA.ringkas_aksi(conn, tid, hari_ini, 3)
         P.PENGHITUNG = {**P.PENGHITUNG, "sales_invoices": faktur3}
+    if MERAH_DP:
+        P.KUNCI_BELUM_DITAGIH = ()
     for t in ("kaos-biru-konveksi", "grapgrap-manado"):
         uid = str(await c.fetchval("SELECT created_by FROM sales_orders WHERE tenant_id=$1 AND created_by IS NOT NULL LIMIT 1", t))
         r = req(t, uid)
@@ -105,6 +108,15 @@ async def main():
                 print(f"INFO {t} {modul}/{kunci}: summary belum memuat {kunci}_count (prasyarat BACKEND)")
             n = total_daftar(await l_fn(**kw(l_fn, r, aksi=kunci)))
             cek(f"{t} {modul}/{kunci}: count == baris daftar ?aksi ({n})", p["count"] == n, (p["count"], n))
+        # sum_in dipecah (MASTER 23 Okt): dp_belum_ditagih == summary SO perlu_minta_dp_value; ditagih == Σ summary {k}_value masuk lain
+        rk = P.rangkum(list(semua.values()))
+        nilai = lambda m, k: Decimal(str(ringkas[m].get(f"{k}_value") or 0)).quantize(Decimal("0.01"))
+        dp = sum((nilai(m, k) for m, k, _l, arah, *_ in P.PENGINGAT if arah == "masuk" and (m, k) in (("sales_orders", "perlu_minta_dp"),)), Decimal("0"))
+        tg = sum((nilai(m, k) for m, k, _l, arah, *_ in P.PENGINGAT if arah == "masuk" and (m, k) not in (("sales_orders", "perlu_minta_dp"),)), Decimal("0"))
+        cek(f"{t} sum_in_dp_belum_ditagih == summary SO perlu_minta_dp ({dp})", Decimal(rk["sum_in_dp_belum_ditagih"]) == dp, (rk["sum_in_dp_belum_ditagih"], dp))
+        cek(f"{t} sum_in_ditagih == Σ summary masuk lain ({tg})", Decimal(rk["sum_in_ditagih"]) == tg, (rk["sum_in_ditagih"], tg))
+        cek(f"{t} sum_in == ditagih + dp_belum_ditagih", Decimal(rk["sum_in"]) == Decimal(rk["sum_in_ditagih"]) + Decimal(rk["sum_in_dp_belum_ditagih"]), rk)
+        print(f"INFO {t} sum_in={rk['sum_in']} ditagih={rk['sum_in_ditagih']} dp_belum_ditagih={rk['sum_in_dp_belum_ditagih']} sum_out={rk['sum_out']}")
         a = total_daftar(await RSI.list_invoices(**kw(RSI.list_invoices, r, aksi="jatuh_tempo_minggu_ini")))
         b = total_daftar(await RSI.list_invoices(**kw(RSI.list_invoices, r, aksi="segera_tempo")))
         cek(f"{t} faktur: alias jatuh_tempo_minggu_ini == segera_tempo ({b})", a == b, (a, b))

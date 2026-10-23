@@ -94,3 +94,9 @@ Hanya pengingat dengan `count > 0` dikirim. `menunggu_dp` dan `perlu_minta_dp` =
   - `count` int; `amount` string 2dp; `null` HANYA bila arah `non_uang`.
   - Alias `jatuh_tempo_minggu_ini` (faktur chip + tagihan) dipertahankan sampai rilis FE T1 yang memakai `segera_tempo` TERVERIFIKASI.
   - `sum_in` hanya arah masuk; `sum_out` hanya arah keluar (AP tak tercampur).
+
+## 8. Tambahan 23 Okt (MASTER, pola QBO/Xero) — sum_in dipecah, aditif, `pengingat_versi` tetap 1
+- `sum_in_ditagih` = Σ amount arah masuk KECUALI `sales_orders/perlu_minta_dp` (piutang + DP yang SUDAH diminta, mis. `menunggu_dp`).
+- `sum_in_dp_belum_ditagih` = Σ amount `sales_orders/perlu_minta_dp` (DP yang belum diminta = tugas, bukan uang).
+- Invarian: `sum_in == sum_in_ditagih + sum_in_dp_belum_ditagih` (string 2dp). Medan lama tak berubah. Harness nyata: dp == summary SO
+  `perlu_minta_dp_value`, ditagih == Σ summary `{k}_value` masuk lain; kontrol merah `merah_dp`.

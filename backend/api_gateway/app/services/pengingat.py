@@ -104,9 +104,17 @@ async def hitung(conn, tenant_id: str, hari_ini: date) -> list:
     return out
 
 
+# Pola QBO/Xero: piutang = yang SUDAH ditagih; DP yang belum diminta = tugas, bukan uang (MASTER 23 Okt, temuan kaos 91% sum_in).
+KUNCI_BELUM_DITAGIH = (("sales_orders", "perlu_minta_dp"),)
+
+
 def rangkum(pengingat: list) -> dict:
-    """{reminders, sum_in, sum_out, pengingat_versi} -- sesudah penyaringan izin."""
-    s_in = sum((Decimal(p["amount"]) for p in pengingat if p["arah"] == "masuk"), NOL)
+    """{reminders, sum_in, sum_in_ditagih, sum_in_dp_belum_ditagih, sum_out, pengingat_versi} -- sesudah penyaringan izin.
+    Invarian: sum_in == sum_in_ditagih + sum_in_dp_belum_ditagih (aditif; bentuk lama tak berubah -> versi tetap)."""
+    masuk = [p for p in pengingat if p["arah"] == "masuk"]
+    belum = sum((Decimal(p["amount"]) for p in masuk if (p.get("modul"), p.get("kunci_aksi")) in KUNCI_BELUM_DITAGIH), NOL)
+    ditagih = sum((Decimal(p["amount"]) for p in masuk if (p.get("modul"), p.get("kunci_aksi")) not in KUNCI_BELUM_DITAGIH), NOL)
     s_out = sum((Decimal(p["amount"]) for p in pengingat if p["arah"] == "keluar"), NOL)
     return {"reminders": [{k: v for k, v in p.items() if k != "izin"} for p in pengingat],
-            "sum_in": uang(s_in), "sum_out": uang(s_out), "pengingat_versi": PENGINGAT_VERSI}
+            "sum_in": uang(ditagih + belum), "sum_in_ditagih": uang(ditagih), "sum_in_dp_belum_ditagih": uang(belum),
+            "sum_out": uang(s_out), "pengingat_versi": PENGINGAT_VERSI}
