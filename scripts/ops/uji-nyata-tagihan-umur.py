@@ -1,5 +1,6 @@
 """UJI NYATA saring umur_* Faktur Pembelian (KONTRAK-dashboard-T2 §5, 23 Okt 2026). BACA-SAJA (transaksi READ ONLY), grapgrap + kaos, pada
-beberapa "hari ini" (tanggal bisnis asli + tanggal suntik +40/+70/+100 hari) supaya SEMUA bucket terisi.
+beberapa "hari ini" (tanggal bisnis asli, +40/+70/+100 hari, dan tanggal PEMBEDA = jatuh tempo efektif terbuka terawal + 0/1/30/31/
+60/61/90/91 hari) supaya SEMUA bucket terisi dan ada tagihan TEPAT di tiap batas.
   (a) PASANGAN SQL<->Python: id ?aksi=umur_k (SQL) == baris dengan TD.umur_tagihan == umur_k (Python, dari medan baris), tiap k
   (b) summary umur_k_count/_value == baris (nilai = outstanding_amount)
   (c) invarian: Σ umur_* == tagihan_terbuka (count & value); umur_1_30+…+umur_90_plus == lewat_jatuh_tempo (count & value)
@@ -7,8 +8,7 @@ beberapa "hari ini" (tanggal bisnis asli + tanggal suntik +40/+70/+100 hari) sup
       (rumus aging dashboard T2: bucket per baris compute_ap_outstanding sisa > 0 menurut jatuh_tempo.kelas_umur(due ?? issue))
       dan bucket dari compute_ap_outstanding == summary per kunci (count & value)
   (e) BUKAN pill: aksi baris ⊆ AKSI_TAGIHAN ∪ {None} (tak ada umur_* di baris), ?aksi=umur_* tak mengubah aksi baris
-MERAH=1 : SQL umur_1_30 disabotase (geser satu hari: 0..29 alih-alih 1..30) -> (a)/(b) WAJIB gagal (kaos: d1_30 terisi pada h0 dan
-          tagihan bertelat 0 hari ikut tersaring salah pada tanggal suntik)."""
+MERAH=1 : SQL umur_1_30 disabotase (geser satu hari: 0..29 alih-alih 1..30) -> (a)/(b) WAJIB gagal pada tanggal pembeda (telat 0 / 30)."""
 import asyncio, os, sys
 from datetime import date, timedelta
 from decimal import Decimal
@@ -52,7 +52,12 @@ async def main():
     try:
         for t in TEN:
             h0 = await asli(c, t)
-            for H in (h0, h0 + timedelta(days=40), h0 + timedelta(days=70), h0 + timedelta(days=100), h0 + timedelta(days=30)):
+            # tanggal PEMBEDA dari data: jatuh tempo efektif tagihan terbuka paling awal + tiap batas (0/1, 30/31, 60/61, 90/91) -> ada
+            # tagihan TEPAT di batas, sehingga geser-satu-hari pada predikat mana pun ketahuan (kontrol merah bermakna)
+            e = await c.fetchval(f"""SELECT MIN({TD.sql_jt_efektif('b')}) FROM bills b {TD.join_rincian()}
+                                     WHERE b.tenant_id = $1 AND {TD.sql_terbuka()}""", t)
+            batas = tuple(e + timedelta(days=n) for n in (0, 1, 30, 31, 60, 61, 90, 91)) if e else ()
+            for H in (h0, h0 + timedelta(days=40), h0 + timedelta(days=70), h0 + timedelta(days=100)) + batas:
                 async def palsu(conn, tid, _H=H): return _H
                 BS.tanggal_dokumen = palsu
                 L = f"{t}@{H}"
